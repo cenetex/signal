@@ -8,11 +8,12 @@ Oh yeah and you kill each other with rocks.
 
 **Play now:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 
-Signal is built in C11 with Sokol — no external assets for geometry, no engine,
-just procedural drawing and physics. You launch from a station, fracture
-asteroids, tow fragments into furnaces, carry goods between sovereign currency
-zones, and expand the network by building outposts at the edge of signal range.
-Every AI dreams of being a space station.
+Signal is built in C11 with Sokol — no engine, procedural drawing and physics
+for the world geometry, and lightweight runtime media for music, station
+portraits, and episode playback. You launch from a station, fracture asteroids,
+tow fragments into furnaces, carry goods between sovereign currency zones, and
+expand the network by building outposts at the edge of signal range. Every AI
+dreams of being a space station.
 
 The mining laser is a mining tool. It does not damage hulls. The only weapon
 in the game is a rock under tractor tension, released. There are no lasers,
@@ -75,6 +76,23 @@ Station operators can set the MOTD, miner/hauler chatter, and special RATi-grade
 delivery hail. See [`docs/operator-onboarding.md`](docs/operator-onboarding.md)
 for the `swarm.rati.chat` avatar sync workflow.
 
+## Docs
+
+- [`docs/operator-onboarding.md`](docs/operator-onboarding.md): practical
+  server/operator setup, station copy sync, chain health, and troubleshooting.
+- [`docs/decentralization.md`](docs/decentralization.md): station identity,
+  signed chain logs, cargo receipts, and the off-chain trust model.
+- [`docs/cargo-architecture.md`](docs/cargo-architecture.md): canonical cargo
+  vocabulary — fragments, bulk float, crates, manifests, and lineage.
+- [`docs/anime-framework.md`](docs/anime-framework.md): creative framework for
+  signal artifacts and episode themes.
+- [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current
+  in-engine episode playback architecture and remaining work.
+- [`docs/sector-x-whitepaper.md`](docs/sector-x-whitepaper.md): concept design
+  for dark-sector battery runs, megastructures, jump crystals, and gates.
+- [`tests/fixtures/README.md`](tests/fixtures/README.md): deterministic
+  `signal_verify` chain-log fixtures.
+
 ## Controls
 
 - Flight: `W` or up thrusts, `S` or down brakes along current travel; from a
@@ -100,6 +118,13 @@ for the `swarm.rati.chat` avatar sync workflow.
 Native desktop:
 
 ```sh
+make build
+./build/signal
+```
+
+Equivalent CMake path:
+
+```sh
 cmake -S . -B build
 cmake --build build
 ./build/signal
@@ -108,26 +133,49 @@ cmake --build build
 Browser / WebAssembly with Emscripten:
 
 ```sh
+make build-web
+python3 -m http.server 8080 --directory build-web
+```
+
+Equivalent CMake path:
+
+```sh
 emcmake cmake -S . -B build-web
 cmake --build build-web
 python3 -m http.server 8080 --directory build-web
 ```
 
-That produces `build-web/signal.html` plus the `.js` and `.wasm` files.
+That produces `build-web/signal.html`, `build-web/play.html`, plus the `.js`
+and `.wasm` files.
 
-Open `http://127.0.0.1:8080/signal.html` and sanity-check browser input by
-holding `W` or `Space`, alt-tabbing away, then returning. The ship should stop
-taking active input when focus is lost.
+Open `http://127.0.0.1:8080/signal.html` for singleplayer, or
+`http://127.0.0.1:8080/play.html?server=ws://127.0.0.1:9091/ws` when paired
+with a local server.
+
+Local multiplayer dev:
+
+```sh
+make dev       # docker compose server + static web client
+make dev-logs
+make stop
+```
+
+Then open `http://localhost:8080/play.html?server=ws://localhost:9091/ws`.
 
 ## Test
 
-The `make test` target rebuilds `signal_test` from current source before
-running, so a stale binary cannot mask regressions. Default output is
-quiet — only section banners, failures, and a final summary print:
+The `make test` target rebuilds `signal_test` and the native client from
+current source before running fast, non-soak tests across shards, so a stale
+binary cannot mask regressions. Default output is quiet — failures and the
+final summary print:
 
 ```sh
 make test                   # quiet: failures + summary only
 make test TEST_VERBOSE=1    # full per-test "ok" stream
+make test-soak              # long-running sim/contract/autopilot cases
+make test-all               # fast + soak suites
+make test-serial            # single-process fast suite for debugging
+make smoke                  # build wasm and run Playwright browser smoke
 ```
 
 Or invoke the binary directly:
@@ -144,8 +192,10 @@ cmake --build build-test
 
 - Singleplayer runs against an in-process authoritative server. Multiplayer
   uses the same simulation over WebSocket.
-- The game stays asset-light: geometry and HUD text are drawn directly with
-  Sokol.
+- The game stays asset-light: world geometry and HUD text are drawn directly
+  with Sokol. Music, station portraits/MOTD JSON, and MPEG episode clips are
+  runtime assets loaded from `assets/` in native development or from the asset
+  CDN in browser builds.
 - Native builds use Metal on macOS, OpenGL on Linux, and OpenGL on Windows
   through Sokol.
 - The browser target uses WebGL 2 via Emscripten.

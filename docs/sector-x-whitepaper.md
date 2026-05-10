@@ -2,6 +2,10 @@
 
 ### A Design Whitepaper for Signal's Endgame
 
+**Status:** concept design, not current shipped gameplay. The present game loop
+is mining, smelting, station trade, outpost construction, signal expansion, and
+rock combat; Sector X describes a future endgame direction.
+
 ---
 
 ## Abstract

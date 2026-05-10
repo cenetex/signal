@@ -15,15 +15,17 @@ station seed (32 bytes of `0x42`) so that:
 ## Files
 
 - `3F5qRPtKg8GhGNnbd3qCj6nVJxWsGxq7pvH84okYLAqf.log` — 48-event log
-  covering all six event types (SMELT, CRAFT, TRANSFER, TRADE, LEDGER,
-  ROCK_DESTROY) signed by the deterministic station key.
+  covering the original six core event types (SMELT, CRAFT, TRANSFER, TRADE,
+  LEDGER, ROCK_DESTROY) signed by the deterministic station key. Newer event
+  families such as OPERATOR_POST, FRAGMENT_TOW, FRAGMENT_RELEASE, and DEATH
+  are covered by C tests rather than this compact fixture.
 - `3F5qRPtKg8GhGNnbd3qCj6nVJxWsGxq7pvH84okYLAqf.golden.json` —
   expected JSON output of `signal_verify --report=json` on that log.
 
 ## Regenerating
 
 ```sh
-cc -std=c11 -I shared -I server -I src -I vendor/tweetnacl \
+cc -std=c11 -I shared -I server -I vendor/tweetnacl \
   tools/gen_chain_fixture.c \
   server/chain_log_verify.c \
   vendor/tweetnacl/tweetnacl.c \

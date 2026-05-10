@@ -1,349 +1,156 @@
-# Anime Integration Plan — Signal Space Miner
+# Anime Integration Plan - Current Implementation
 
-## Architecture Decision: Browser-Native Video
+This document tracks the shipped episode-playback architecture. The creative
+framework lives in [`anime-framework.md`](./anime-framework.md); this file is
+for code and asset integration details.
 
-The game is deployed via Emscripten at signal.ratimics.com/play. It currently has **zero external assets** — everything is procedural. Rather than pulling in a C video decoder library (complex, large WASM binary increase), we use the **browser's native `<video>` element** overlaid on the canvas.
+## Status
 
-For native desktop builds, episodes are a no-op (or we add a future stb_image/pl_mpeg path).
+Episode playback is implemented in-engine, not through a browser `<video>`
+overlay.
 
----
+- `client/episode.c` decodes MPEG-1 program streams through `pl_mpeg`.
+- Decoded frames are uploaded to a Sokol texture and rendered by the normal UI
+  pass as a bottom-right signal-artifact popup.
+- Decoded audio is mixed into the game's Sokol audio stream through
+  `episode_read_audio`.
+- Emscripten builds fetch episode files from the asset CDN.
+- Native builds load the same files from local `assets/` paths when present.
 
-## File Layout
+The old browser-native MP4 plan is retired. There is no `signalPlayEpisode`
+JavaScript bridge, no DOM overlay, and no `space_miner.html` integration point.
 
-```
-assets/
-  anime/
-    ep0-first-light.mp4
-    ep1-keplers-law.mp4
-    ep2-furnace.mp4
-    ep3-scaffold.mp4
-    ep4-naming.mp4
-    ep5-drones.mp4
-    ep6-hauler.mp4
-    ep7-dark-sector.mp4
-    ep8-every-ai-dreams.mp4
-    ep9-death.mp4           (death scene)
-```
+## Asset Layout
 
-These get copied to the build-web output directory by CMake and served alongside `space_miner.html`.
+The episode table in `client/episode.c` expects MPEG files under an `anime/`
+prefix:
 
----
-
-## Implementation Steps
-
-### Step 1: Episode State in `client.h`
-
-Add to `game_t` struct (after death screen fields, ~line 127):
-
-```c
-/* --- Episode playback --- */
-struct {
-    bool active;            /* episode currently playing */
-    bool watched[16];       /* persistent: which episodes seen */
-    int  current;           /* episode index, -1 = none */
-    float fade_timer;       /* fade in/out transition */
-    bool loaded;            /* watched state loaded from localStorage */
-} episode;
+```text
+anime/ep0-first-light.mpg
+anime/ep1-keplers-law.mpg
+anime/ep2-furnace.mpg
+anime/ep3-scaffold.mpg
+anime/ep4-naming.mpg
+anime/ep5-drones.mpg
+anime/ep6-hauler.mpg
+anime/ep7-dark-sector.mpg
+anime/ep8-every-ai-dreams.mpg
+anime/ep9-death.mpg
 ```
 
-### Step 2: Episode System — `episode.h` / `episode.c`
+Browser builds fetch those paths from:
 
-New files. Core API:
-
-```c
-#define EPISODE_COUNT 10
-
-typedef struct {
-    const char *filename;   /* "ep0-first-light.mp4" */
-    const char *title;      /* "FIRST LIGHT" */
-} episode_info_t;
-
-void episode_load(void);           /* load watched state from localStorage */
-void episode_save(void);           /* persist watched state */
-void episode_trigger(int index);   /* start playback if not already watched */
-void episode_skip(void);           /* player presses ESC to skip */
-void episode_update(float dt);     /* tick fade timer, check if video ended */
-bool episode_is_active(void);      /* true while playing */
+```text
+https://signal-ratimics-assets.s3.amazonaws.com/<filename>
 ```
 
-Episode table:
+Native development tries:
 
-```c
-static const episode_info_t episodes[EPISODE_COUNT] = {
-    { "ep0-first-light.mp4",     "FIRST LIGHT" },
-    { "ep1-keplers-law.mp4",     "KEPLER'S LAW" },
-    { "ep2-furnace.mp4",         "FURNACE" },
-    { "ep3-scaffold.mp4",        "SCAFFOLD" },
-    { "ep4-naming.mp4",          "NAMING" },
-    { "ep5-drones.mp4",          "DRONES" },
-    { "ep6-hauler.mp4",          "HAULER" },
-    { "ep7-dark-sector.mp4",     "DARK SECTOR" },
-    { "ep8-every-ai-dreams.mp4", "EVERY AI DREAMS" },
-    { "ep9-death.mp4",           "DEATH" },
-};
+```text
+assets/<filename>
 ```
 
-### Step 3: Emscripten Video Bridge (JavaScript interop)
+For example, episode 0 is loaded from
+`assets/anime/ep0-first-light.mpg` locally and from
+`https://signal-ratimics-assets.s3.amazonaws.com/anime/ep0-first-light.mpg`
+in the browser.
 
-`episode_trigger()` calls into JS via `emscripten_run_script()`:
+The decoder is `pl_mpeg`, so assets should be MPEG-1 program streams (`.mpg`),
+not MP4. If the asset pipeline changes back to MP4, the implementation needs a
+new decoder or a browser-only playback path.
 
-```c
-void episode_trigger(int index) {
-    if (index < 0 || index >= EPISODE_COUNT) return;
-    if (g.episode.watched[index]) return;
+## Code Map
 
-    g.episode.active = true;
-    g.episode.current = index;
-    g.episode.fade_timer = 0.5f;  /* fade-in duration */
-    g.episode.watched[index] = true;
-    episode_save();
+| File | Role |
+| --- | --- |
+| `client/episode.h` | Episode state, API, texture IDs, decoded-frame buffers, audio ring buffer, trigger tracking. |
+| `client/episode.c` | Episode table, CDN/local loading, `pl_mpeg` decode, Sokol texture upload/render, watched-state persistence. |
+| `client/main.c` | Initializes episodes, mixes episode audio, hooks triggers, updates decode state, uploads one frame per render frame, renders popup UI. |
+| `client/hud.c` | Suppresses some HUD affordances while an episode popup is active. |
+| `client/palette.h` | Episode UI colors. |
+| `client/pl_mpeg.h` | Vendored MPEG decoder. |
 
-#ifdef __EMSCRIPTEN__
-    char js[256];
-    snprintf(js, sizeof(js),
-        "signalPlayEpisode('assets/anime/%s', '%s')",
-        episodes[index].filename, episodes[index].title);
-    emscripten_run_script(js);
-#endif
-}
-```
+## Playback Lifecycle
 
-On the HTML side, inject a small JS module into `space_miner.html` (or a `<script>` tag):
-
-```javascript
-// Signal Episode Player
-function signalPlayEpisode(src, title) {
-    let overlay = document.getElementById('episode-overlay');
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = 'episode-overlay';
-        overlay.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85); display: flex; flex-direction: column;
-            align-items: center; justify-content: center; z-index: 1000;
-            opacity: 0; transition: opacity 0.5s;
-        `;
-        document.body.appendChild(overlay);
-    }
-    overlay.innerHTML = `
-        <div style="color: #c8a030; font-family: monospace; font-size: 14px;
-                    margin-bottom: 12px; letter-spacing: 4px;">${title}</div>
-        <video id="episode-video" autoplay style="max-width: 90%; max-height: 80%;
-               border: 1px solid rgba(200,160,48,0.3);">
-            <source src="${src}" type="video/mp4">
-        </video>
-        <div style="color: #555; font-family: monospace; font-size: 11px;
-                    margin-top: 12px;">ESC to skip</div>
-    `;
-    requestAnimationFrame(() => overlay.style.opacity = '1');
-
-    const video = document.getElementById('episode-video');
-    video.onended = () => signalEndEpisode();
-}
-
-function signalEndEpisode() {
-    const overlay = document.getElementById('episode-overlay');
-    if (overlay) {
-        overlay.style.opacity = '0';
-        setTimeout(() => overlay.remove(), 500);
-    }
-    // Notify C side
-    if (Module._episode_ended) Module._episode_ended();
-}
-
-function signalIsEpisodePlaying() {
-    return document.getElementById('episode-video') !== null;
-}
-```
-
-Export `episode_ended` from C:
-
-```c
-#ifdef __EMSCRIPTEN__
-EMSCRIPTEN_KEEPALIVE void episode_ended(void) {
-    g.episode.active = false;
-    g.episode.current = -1;
-}
-#endif
-```
-
-### Step 4: Hook Triggers into Game Events
-
-In `process_sim_events()` (main.c, ~line 173):
-
-```c
-case SIM_EVENT_LAUNCH:
-    if (ev->player_id == g.local_player_slot) {
-        audio_play_launch(&g.audio);
-        set_notice("Launch corridor clear.");
-        onboarding_mark_launched();
-        episode_trigger(0);  // Ep 0: First Light
-    }
-    break;
-
-case SIM_EVENT_DEATH:
-    if (ev->player_id == g.local_player_slot) {
-        // ... existing death screen code ...
-        episode_trigger(9);  // Ep 9: Death
-    }
-    break;
-```
-
-In `onboarding_per_frame()` or a new `episode_per_frame()` (main.c, after line 251):
-
-```c
-static void episode_per_frame(void) {
-    /* Ep 1: Kepler's Law — docked at all 3 original stations */
-    // Track via a bitmask of visited stations (add to game_t)
-
-    /* Ep 2: Furnace — smelted all 3 ore types */
-    // Check furnace interaction events
-
-    /* Ep 3: Scaffold — bought first scaffold kit */
-    if (!g.episode.watched[3] && g.onboarding.got_scaffold)
-        episode_trigger(3);
-
-    /* Ep 4: Naming — placed first outpost */
-    if (!g.episode.watched[4] && g.onboarding.placed_outpost)
-        episode_trigger(4);
-
-    /* Ep 5: Drones — first NPC mining drone at player outpost */
-    // Check NPC spawn events at player-owned stations
-
-    /* Ep 6: Hauler — first cargo hauler completes supply contract */
-    // Hook into SIM_EVENT_CONTRACT_COMPLETE for supply type
-
-    /* Ep 7: Dark Sector — enter zero-signal area */
-    // Check signal_quality_at(player_pos) < SIGNAL_FRONTIER threshold
-
-    /* Ep 8: Every AI Dreams — 5+ connected stations */
-    // Count stations where signal_connected == true
-}
-```
-
-### Step 5: Input Blocking During Playback
-
-In `sim_step()` (main.c, ~line 272), after the death screen block:
-
-```c
-/* Episode playback — block game input */
-if (g.episode.active) {
-    /* ESC to skip */
-    if (g.input.key_pressed[KEY_MENU]) {
-        episode_skip();
-    }
-    consume_pressed_input();
-    return;
-}
-```
-
-### Step 6: HUD Overlay During Playback
-
-In `draw_hud()` (hud.c, ~line 544), before the death screen check:
-
-```c
-/* --- Episode playback overlay --- */
-if (g.episode.active) {
-    /* Dark scrim (video is in HTML layer, but we dim the game canvas) */
-    float alpha = fminf(g.episode.fade_timer * 2.0f, 0.8f);
-    draw_ui_scrim(alpha);
-
-    /* Episode title at top of canvas */
-    sdtx_canvas(screen_w, screen_h);
-    sdtx_origin(0.0f, 0.0f);
-    sdtx_color3b(200, 160, 48);  /* signal gold */
-    const char *title = "SIGNAL INCOMING...";
-    float tw = (float)strlen(title) * 8.0f;
-    sdtx_pos((screen_w * 0.5f - tw * 0.5f) / 8.0f, 2.0f);
-    sdtx_puts(title);
-
-    return; /* skip normal HUD */
-}
-```
-
-### Step 7: Persistence
-
-Mirror the onboarding pattern — pack `watched[0..15]` into a 16-bit int, store in `localStorage`:
-
-```c
-void episode_save(void) {
-#ifdef __EMSCRIPTEN__
-    int flags = 0;
-    for (int i = 0; i < EPISODE_COUNT; i++)
-        if (g.episode.watched[i]) flags |= (1 << i);
-    char js[80];
-    snprintf(js, sizeof(js),
-        "localStorage.setItem('signal_episodes','%d')", flags);
-    emscripten_run_script(js);
-#endif
-}
-
-void episode_load(void) {
-#ifdef __EMSCRIPTEN__
-    int flags = emscripten_run_script_int(
-        "(function(){var s=localStorage.getItem('signal_episodes');"
-        "if(!s)return 0;return parseInt(s,10)||0;})()");
-    for (int i = 0; i < EPISODE_COUNT; i++)
-        g.episode.watched[i] = (flags & (1 << i)) != 0;
-    g.episode.loaded = true;
-#endif
-}
-```
-
-Call `episode_load()` in `init()` after `onboarding_load()`.
-
-### Step 8: CMake — Copy Assets to Web Build
-
-In `CMakeLists.txt`, add asset copying for Emscripten:
-
-```cmake
-if(EMSCRIPTEN)
-    file(GLOB ANIME_ASSETS "${CMAKE_SOURCE_DIR}/assets/anime/*.mp4")
-    foreach(ASSET ${ANIME_ASSETS})
-        get_filename_component(ASSET_NAME ${ASSET} NAME)
-        configure_file(${ASSET} ${CMAKE_BINARY_DIR}/assets/anime/${ASSET_NAME} COPYONLY)
-    endforeach()
-    # Add --preload-file or serve from same directory
-endif()
-```
-
-For web deployment: serve `assets/anime/` alongside the WASM build. The `<video>` element fetches them on demand — no preloading into WASM memory.
-
----
+1. `episode_init` zeros state and prepares the audio ring buffer.
+2. `episode_load` restores the watched bitset from browser `localStorage`.
+   Native builds currently treat watched state as session-local only.
+3. `episode_trigger` marks the episode watched, chooses the filename, and
+   starts an async CDN fetch on Emscripten or a local file load on native.
+4. Once bytes are available, `episode_start_playback` creates a `pl_mpeg`
+   decoder and registers video/audio callbacks.
+5. `episode_update` advances the decoder during normal sim stepping.
+6. Video callbacks convert frames to RGBA and stash the latest frame.
+7. `episode_upload_frame` uploads at most one stashed frame per render frame.
+   This avoids multiple `sg_update_image` calls for the same image in one
+   frame.
+8. `episode_render` draws the popup in the bottom-right UI layer.
+9. `episode_read_audio` drains decoded audio into the main audio stream.
+10. `episode_skip` or decoder end tears down the decoder and texture state.
 
 ## Trigger Summary
 
-| Episode | Title | Trigger | Hook Point |
-|---------|-------|---------|------------|
-| 0 | First Light | First launch | `SIM_EVENT_LAUNCH` + `!watched[0]` |
-| 1 | Kepler's Law | Dock at all 3 stations | New visited-stations bitmask |
-| 2 | Furnace | Smelt all 3 ore types | Furnace interaction tracking |
-| 3 | Scaffold | Buy first scaffold kit | `onboarding.got_scaffold` |
-| 4 | Naming | Place first outpost | `onboarding.placed_outpost` |
-| 5 | Drones | NPC drone spawns at your outpost | NPC spawn event at player station |
-| 6 | Hauler | Hauler completes supply contract | `SIM_EVENT_CONTRACT_COMPLETE` |
-| 7 | Dark Sector | Enter zero-signal space | `signal_quality < FRONTIER` check |
-| 8 | Every AI Dreams | 5+ connected stations | Station count per frame |
-| 9 | Death | Ship destroyed | `SIM_EVENT_DEATH` |
+| Episode | Title | Current trigger |
+| --- | --- | --- |
+| 0 | First Light | Local launch event or docked-to-undocked transition. |
+| 1 | Kepler's Law | Local player has docked at all three seeded stations. |
+| 2 | Furnace | First local sell/smelt payout event. |
+| 3 | Scaffold | Local player is towing a scaffold. |
+| 4 | Naming | Local outpost activation. |
+| 5 | Drones | First miner NPC spawned at a player/outpost station (`station >= 3`). |
+| 6 | Hauler | Tractor contract completion event. |
+| 7 | Dark Sector | Local `SIM_EVENT_SIGNAL_LOST`. |
+| 8 | Every AI Dreams | Station-connected event reports at least five connected stations. |
+| 9 | Death | Local death event or multiplayer death payload. |
 
----
+The original creative framework described episode 2 as "smelt all three ore
+types." The current code triggers it earlier, on the first local sell/smelt
+payout. Change the trigger if the stricter milestone matters for pacing.
 
-## What Ships First
+## Interaction Model
 
-1. **Copy & rename the 10 mp4s into `assets/anime/`**
-2. **Add `episode.h` + `episode.c`** with state, persistence, trigger/skip
-3. **JS bridge** in the HTML template for `<video>` overlay
-4. **Hook 3 easy triggers**: Ep 0 (launch), Ep 3 (scaffold), Ep 4 (outpost) — these piggyback on existing onboarding flags
-5. **Input blocking + HUD scrim** — copy death screen pattern
-6. **Test in browser**, then wire remaining triggers incrementally
+Episodes are diegetic popups, not full-screen blocking cutscenes.
 
----
+- The player can keep flying while the popup is active.
+- `Esc` skips the active episode.
+- Death playback is special: the death handler stops any current episode,
+  clears watched flags, triggers episode 9, and keeps episode decode/audio
+  running while the death cinematic owns input.
 
-## Future: Signal Ghost Discovery Layer
+This matches the signal-artifact framing in the creative doc: the episode is
+an object in the world, not a hard mode switch away from gameplay.
 
-The current plan plays episodes as full-screen overlays triggered by progression. Phase 2 adds the **in-world signal ghost** discovery mechanic from the framework doc:
+## Persistence
 
-- Audio fragments playing spatially when near ghost nodes in deep space
-- Visual echo entities (animated sprite/shader quads) in the asteroid field
-- Signal Archive station module that assembles fragments into full episodes
-- This requires the sector system (epic #23) to have "uncharted space" to explore
+Browser builds store the watched bitset in:
+
+```text
+localStorage["signal_episodes"]
+```
+
+The value is a decimal integer with one bit per episode. Native builds do not
+currently persist watched state to disk; they rely on in-memory session state.
+
+## Packaging Notes
+
+- Browser deployment does not need CMake to copy episode assets into
+  `build-web/` as long as the CDN remains authoritative.
+- Native development needs local files under `assets/anime/` if episode
+  playback should work offline.
+- The root Docker image serves the web bundle but does not package the episode
+  files; browser clients still fetch them from the CDN.
+- Music uses the same CDN/local-asset pattern through `client/music.c`, but
+  music files are MP3 and decoded with `minimp3`.
+
+## Remaining Work
+
+1. Add a repeatable asset-production recipe that outputs `pl_mpeg`-compatible
+   `.mpg` files from source video.
+2. Decide whether native watched-state persistence matters; if yes, mirror the
+   identity/onboarding data-dir pattern instead of inventing a new path.
+3. Add a browser smoke case that stubs or serves a tiny `.mpg` and verifies a
+   nonblank episode texture plus audio-buffer activity.
+4. Revisit the episode 2 trigger if the "all three ore types" milestone is
+   still the intended narrative beat.
+5. Implement the future Signal Ghost layer from the creative framework:
+   spatial audio fragments, in-world echo nodes, and Signal Archive assembly.

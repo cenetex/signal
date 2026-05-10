@@ -148,7 +148,7 @@ Event types currently emitted (from `chain_event_type_t` in
 
 | Event | Meaning |
 | --- | --- |
-| `CHAIN_EVT_SMELT` | Fragment or compatibility hopper batch smelted into an ingot at this station |
+| `CHAIN_EVT_SMELT` | Physical fragment smelted into an ingot at this station |
 | `CHAIN_EVT_CRAFT` | Ingots fabricated into a finished product |
 | `CHAIN_EVT_TRANSFER` | Cargo unit moved between holders |
 | `CHAIN_EVT_TRADE` | Transfer + ledger delta, atomic |
@@ -326,14 +326,18 @@ core off-chain receipt format and verifier hooks are in the repository.
 
 ## The verifier tool (Layer E — shipped)
 
-Layer E ships `signal_verify` as a standalone binary that takes a chain log
-file and a pubkey, and reports:
+Layer E ships `signal_verify` as a standalone binary that takes one or more
+chain log files. By default it derives each station pubkey from the
+`chain/<base58(station_pubkey)>.log` filename; renamed files can be checked
+with `--station-pubkey=<base58>`. It reports:
 
 - Total events walked and total bytes consumed.
 - First failed event (if any), with a short reason: `bad signature`,
   `bad prev-hash linkage`, `payload hash mismatch`, `truncated tail`.
 - The final `chain_last_hash`, suitable for cross-checking against the
   in-memory state of a running server.
+- Optional JSON output, epoch windows, decoded operator-post text, warning
+  strictness, and multi-station receipt/provenance checks.
 
 The verifier wraps the same `chain_log_verify` walker that runs at server
 startup; the only difference is the CLI surface and a non-zero exit code on

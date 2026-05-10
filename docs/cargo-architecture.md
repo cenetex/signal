@@ -127,8 +127,8 @@ Crates are **created** at one of three boundaries:
   saves. `parent_merkle` is zero (no provable parents).
 
 Once a crate exists, its identity never changes. It can move between
-manifests (`EVT_TRANSFER`), be consumed as an input to another craft
-(`EVT_CRAFT`), or be destroyed silently (e.g. consumed in repair). The
+manifests (`CHAIN_EVT_TRANSFER`), be consumed as an input to another craft
+(`CHAIN_EVT_CRAFT`), or be destroyed silently (e.g. consumed in repair). The
 chain log preserves its existence forever via the events that
 referenced its `pub`.
 
@@ -260,7 +260,7 @@ The old concern was: if the smelter consumed from `_inventory_cache[ORE]`
 `parent_merkle = 0` because there was no source fragment to attribute.
 That compatibility path is now disabled. `sim_step_refinery_production`
 is a no-op, raw-ore storage hoppers do not feed furnace buffers, and
-`EVT_SMELT` is emitted only from `step_furnace_smelting` after a physical
+`CHAIN_EVT_SMELT` is emitted only from `step_furnace_smelting` after a physical
 fragment reaches the furnace/hopper beam.
 
 The removed hopper-float-population paths were:
@@ -278,7 +278,7 @@ same as players.
 
 The decision is picked: pure fragment-tow to ingot pipeline. Tests now
 assert that directly seeded raw ore does not smelt, does not drain through
-raw hopper flow, and does not emit zero-fragment `EVT_SMELT`.
+raw hopper flow, and does not emit zero-fragment `CHAIN_EVT_SMELT`.
 
 ### Gap 3 — Players can't see provenance at all
 
@@ -309,7 +309,7 @@ named or receipt-bearing units stay individually addressable. This keeps
 inspection readable as station and hauler manifests grow.
 
 **3. Heritage contract templates.** Fragment-tow smelts emit
-`EVT_SMELT`, and fragment tow/release transitions are logged. Contracts
+`CHAIN_EVT_SMELT`, and fragment tow/release transitions are logged. Contracts
 can now start filtering on `parent_merkle` chains and real chain-log
 history. The player-facing payoff: the universe's history becomes the
 quest content.
@@ -321,7 +321,7 @@ What's *not* on this list:
   "fix" by complicating it.
 - ❌ Add ore-merge / ore-split logic. Ore doesn't have crate identity
   to merge or split.
-- ❌ Add `EVT_TRANSFER` for ore deposits as raw float movement. The
+- ❌ Add `CHAIN_EVT_TRANSFER` for ore deposits as raw float movement. The
   fragment-lifecycle events are the right unit of work; bulk ore
   transfers between locations don't happen meaningfully today.
 
@@ -331,7 +331,7 @@ What's *not* on this list:
 |---|---|
 | Fragments-as-cargo_unit_t | Fragments live in space with physics. Crates live in manifests as data. Conflating them duplicates identity (fragment_pub already exists) and violates the spatial/abstract divide. |
 | Quantity > 1 on ore crates | There are no ore crates. Fragments are individual; bulk float is anonymous. |
-| EVT_SPLIT / EVT_MERGE for ore | No crate identity to split or merge. |
+| CHAIN_EVT_SPLIT / CHAIN_EVT_MERGE for ore | No crate identity to split or merge. |
 | One unified "container" type that wraps all of {fragment, float, crate} | The three states have genuinely different identity stories. Forcing a single type makes the union as expensive as the maximum of all three, with conditionals everywhere. The current factoring is right. |
 | Chain events for every bulk float mutation | Bulk float is meant to be ephemeral. Witnessing every tick-level integration value would explode chain log volume without adding semantic information. Witness fragment-lifecycle transitions instead. |
 
@@ -366,7 +366,7 @@ instrumenting before optimizing.
 | `server/sim_ai.c` | NPC autopilot. NPCs tow fragments via `npc_ship_t.towed_fragment` (single-slot) and deliver via the fragment-tow path; they never deposit raw ore at hoppers. |
 | `server/sim_save.c` | Save format, including the manifest persistence and migration paths |
 | `server/chain_log.h` / `chain_log.c` | Append-only signed event log per station |
-| `server/cargo_receipt_issue.c` | EVT_TRANSFER emission |
+| `server/cargo_receipt_issue.c` | `CHAIN_EVT_TRANSFER` emission |
 | `shared/belt.c` / `client/asteroid_field.c` / `server/sim_asteroid.c` | Fragment generation and fracture |
 
 ---
