@@ -699,6 +699,96 @@ TEST(test_deliver_ingots_to_contract) {
     ASSERT(w.contracts[0].quantity_needed < 20.0f || !w.contracts[0].active);
 }
 
+TEST(test_first_cross_station_haul_uses_local_ledgers) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+
+    station_t *prospect = &w.stations[0];
+    station_t *kepler = &w.stations[1];
+    ASSERT_STR_EQ(prospect->currency_name, "prospect vouchers");
+    ASSERT_STR_EQ(kepler->currency_name, "kepler bonds");
+
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 2));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FRAME,
+                                           (int)MAX_PRODUCT_STOCK));
+
+    for (int i = 0; i < 4; i++) world_sim_step(&w, SIM_DT);
+
+    int kepler_contract = -1;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w.contracts[k];
+        if (ct->active && ct->action == CONTRACT_TRACTOR &&
+            ct->station_index == 1 &&
+            ct->commodity == COMMODITY_FERRITE_INGOT) {
+            kepler_contract = k;
+            break;
+        }
+    }
+    ASSERT(kepler_contract >= 0);
+
+    ledger_earn(prospect, sp->session_token, 100.0f);
+    float prospect_start = ledger_balance(prospect, sp->session_token);
+    float kepler_start = ledger_balance(kepler, sp->session_token);
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COMMON;
+    int prospect_ingots_before = station_finished_count(prospect,
+                                                        COMMODITY_FERRITE_INGOT);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
+                  prospect_ingots_before - 1);
+    ASSERT(ledger_balance(prospect, sp->session_token) < prospect_start);
+    ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token), kepler_start, 0.001f);
+    float prospect_after_buy = ledger_balance(prospect, sp->session_token);
+
+    sp->current_station = 1;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    int kepler_ingots_before = station_finished_count(kepler,
+                                                      COMMODITY_FERRITE_INGOT);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FERRITE_INGOT),
+                  kepler_ingots_before + 1);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    prospect_after_buy, 0.001f);
+    float kepler_after_delivery = ledger_balance(kepler, sp->session_token);
+    ASSERT(kepler_after_delivery > kepler_start);
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FRAME;
+    sp->input.buy_grade = MINING_GRADE_COMMON;
+    int ship_frames_before = ship_finished_count(&sp->ship, COMMODITY_FRAME);
+    int kepler_frames_before = station_finished_count(kepler, COMMODITY_FRAME);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FRAME),
+                  ship_frames_before + 1);
+    ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME),
+                  kepler_frames_before - 1);
+    ASSERT(ledger_balance(kepler, sp->session_token) < kepler_after_delivery);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    prospect_after_buy, 0.001f);
+}
+
 /* Pubkey-registered players had been getting 65% of the contract payout
  * because try_sell_station_cargo routed through ledger_credit_supply
  * (which applies the 35% smelt-station cut) instead of ledger_earn
@@ -1407,6 +1497,7 @@ void register_economy_pricing_tests(void) {
 void register_economy_mixed_cargo_tests(void) {
     TEST_SECTION("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
+    RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_deliver_ingots_full_payout_to_pubkey_player);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);

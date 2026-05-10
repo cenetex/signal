@@ -2427,14 +2427,33 @@ void draw_hud(void) {
 
     if (sell_batch_has_content) {
         const float cell = 8.0f;
-        /* Pre-measure the composed line so we can center it. Same layout as
-         * the text form flush_sell_batch used to emit:
-         *   "[ +$N  [contract]  common xA  fine xB  ... ]" */
-        char head[32], tail[160];
-        int head_len = snprintf(head, sizeof(head), "[ +$%d", g.sell_batch.total_cr);
+        /* Pre-measure the composed line so we can center it. Contract
+         * settlements name the paying station and its local currency:
+         *   "[ Kepler Yard paid +120 kepler bonds  common x1 ]" */
+        char head[128], tail[160];
+        const station_t *paid_station = NULL;
+        if (!g.sell_batch.mixed_stations &&
+            g.sell_batch.station >= 0 &&
+            g.sell_batch.station < MAX_STATIONS &&
+            station_exists(&g.world.stations[g.sell_batch.station])) {
+            paid_station = &g.world.stations[g.sell_batch.station];
+        }
+        const char *pay_cur = (paid_station && paid_station->currency_name[0])
+            ? paid_station->currency_name : "credits";
+        int head_len = 0;
+        if (g.sell_batch.any_by_contract && paid_station) {
+            head_len = snprintf(head, sizeof(head), "[ %s paid +%d %s",
+                                paid_station->name, g.sell_batch.total_cr,
+                                pay_cur);
+        } else if (g.sell_batch.any_by_contract) {
+            head_len = snprintf(head, sizeof(head), "[ stations paid +%d credits",
+                                g.sell_batch.total_cr);
+        } else {
+            head_len = snprintf(head, sizeof(head), "[ +%d %s",
+                                g.sell_batch.total_cr, pay_cur);
+        }
+        head_len = (int)strlen(head);
         int tail_off = 0;
-        if (g.sell_batch.any_by_contract)
-            tail_off += snprintf(tail + tail_off, sizeof(tail) - tail_off, "  contract");
         for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
             int n = g.sell_batch.grade_counts[gi];
             if (n <= 0) continue;
@@ -2458,20 +2477,11 @@ void draw_hud(void) {
         uint8_t total_b = g.sell_batch.any_by_contract ?  60 : 230;
         float cur_x = msg_x0;
 
-        /* "[ +$N" */
+        /* Payout head: generic station sale or station-named contract pay. */
         sdtx_pos(cur_x / cell, msg_y / cell);
         sdtx_color4b(total_r, total_g, total_b, (uint8_t)(alpha * 255.0f));
         sdtx_puts(head);
         cur_x += (float)head_len * cell;
-
-        /* "  contract" marker (fixed yellow if present) */
-        if (g.sell_batch.any_by_contract) {
-            const char *tag = "  contract";
-            sdtx_pos(cur_x / cell, msg_y / cell);
-            sdtx_color4b(255, 210, 60, (uint8_t)(alpha * 255.0f));
-            sdtx_puts(tag);
-            cur_x += (float)strlen(tag) * cell;
-        }
 
         /* Per-grade segments, each colored by mining_grade_rgb. */
         for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
