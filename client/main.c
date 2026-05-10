@@ -75,6 +75,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* station_dock_anchor, ship_cargo_space: see game_sim.c */
 
+#define NET_INPUT_HEARTBEAT_SEC (1.0f / 10.0f)
+
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
     g.collection_feedback_fragments = 0;
@@ -147,6 +149,10 @@ static void reset_world(void) {
     g.pending_net_place_station = -1;
     g.pending_net_place_ring    = -1;
     g.pending_net_place_slot    = -1;
+    g.net_input_timer = 0.0f;
+    g.net_input_have_last = false;
+    g.net_last_sent_flags = 0;
+    g.net_last_sent_mining_target = 0xFFFFu;
     g.net_input_seq = 0;
     g.net_last_server_ack = 0;
     g.net_last_server_tick = 0;
@@ -1708,33 +1714,43 @@ static void frame(void) {
             }
 #endif
         }
-        /* Send input at ~60 Hz, or immediately if there's a one-shot action. */
+        /* Send input immediately when controls change; otherwise keep a
+         * low-rate heartbeat. The server persists the last input intent, so
+         * unchanged movement does not need a fresh command every frame. */
         {
             uint8_t action = g.pending_net_action;
             g.net_input_timer -= frame_dt;
-            if (g.net_input_timer <= 0.0f || action != 0) {
-                g.net_input_timer = 1.0f / 60.0f;
-                uint8_t flags = 0;
-                input_intent_t movement_intent = {0};
-                input_sample_movement(&movement_intent);
-                if (movement_intent.thrust > 0.01f)
-                    flags |= NET_INPUT_THRUST;
-                if (movement_intent.thrust < -0.01f)
-                    flags |= NET_INPUT_BRAKE;
-                if (movement_intent.reverse_thrust)
-                    flags |= NET_INPUT_REVERSE;
-                if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
-                    flags |= NET_INPUT_LEFT;
-                if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
-                    flags |= NET_INPUT_RIGHT;
-                if (g.input.key_down[SAPP_KEYCODE_M])
-                    flags |= NET_INPUT_FIRE;
-                if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
-                    flags |= NET_INPUT_TRACTOR;
-                if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
-                     g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT]) &&
-                    !LOCAL_PLAYER.docked)
-                    flags |= NET_INPUT_BOOST;
+            uint8_t flags = 0;
+            input_intent_t movement_intent = {0};
+            input_sample_movement(&movement_intent);
+            if (movement_intent.thrust > 0.01f)
+                flags |= NET_INPUT_THRUST;
+            if (movement_intent.thrust < -0.01f)
+                flags |= NET_INPUT_BRAKE;
+            if (movement_intent.reverse_thrust)
+                flags |= NET_INPUT_REVERSE;
+            if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
+                flags |= NET_INPUT_LEFT;
+            if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
+                flags |= NET_INPUT_RIGHT;
+            if (g.input.key_down[SAPP_KEYCODE_M])
+                flags |= NET_INPUT_FIRE;
+            if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
+                flags |= NET_INPUT_TRACTOR;
+            if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
+                 g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT]) &&
+                !LOCAL_PLAYER.docked)
+                flags |= NET_INPUT_BOOST;
+            uint16_t mining_target =
+                ((flags & NET_INPUT_FIRE) != 0 &&
+                 LOCAL_PLAYER.hover_asteroid >= 0 &&
+                 LOCAL_PLAYER.hover_asteroid < MAX_ASTEROIDS)
+                ? (uint16_t)LOCAL_PLAYER.hover_asteroid : 0xFFFFu;
+            bool input_changed = !g.net_input_have_last ||
+                flags != g.net_last_sent_flags ||
+                mining_target != g.net_last_sent_mining_target;
+            bool heartbeat_due = g.net_input_timer <= 0.0f;
+            if (input_changed || heartbeat_due || action != 0) {
                 uint8_t buy_grade_byte = g.pending_net_buy_grade;
                 int8_t place_station = g.pending_net_place_station;
                 int8_t place_ring    = g.pending_net_place_ring;
@@ -1744,12 +1760,6 @@ static void frame(void) {
                 g.pending_net_place_station = -1;
                 g.pending_net_place_ring    = -1;
                 g.pending_net_place_slot    = -1;
-                uint16_t mining_target =
-                    (LOCAL_PLAYER.hover_asteroid >= 0 &&
-                     LOCAL_PLAYER.hover_asteroid < MAX_ASTEROIDS)
-                    ? (uint16_t)LOCAL_PLAYER.hover_asteroid : 0xFFFFu;
-                g.net_input_seq++;
-                if (g.net_input_seq == 0) g.net_input_seq++;
                 /* Layer A.3 of #479 — migrate state-changing actions
                  * onto the signed channel when an identity secret is
                  * available. Transient input (movement, mining-beam-on)
@@ -1773,8 +1783,16 @@ static void frame(void) {
                         action = NET_ACTION_NONE;
                     }
                 }
+                if (input_changed || action != NET_ACTION_NONE) {
+                    g.net_input_seq++;
+                    if (g.net_input_seq == 0) g.net_input_seq++;
+                }
                 net_send_input(flags, action, g.net_input_seq, mining_target,
                                buy_grade_byte, place_station, place_ring, place_slot);
+                g.net_input_timer = NET_INPUT_HEARTBEAT_SEC;
+                g.net_input_have_last = true;
+                g.net_last_sent_flags = flags;
+                g.net_last_sent_mining_target = mining_target;
             }
         }
     }

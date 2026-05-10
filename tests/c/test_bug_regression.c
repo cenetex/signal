@@ -478,12 +478,11 @@ TEST(test_bug35_no_brake_flag) {
 }
 
 TEST(test_bug36_stale_input_between_sends) {
-    /* Input is now sent at 60Hz (~16ms).  At 120Hz sim,
-     * that means at most ~2 ticks of stale input, which is acceptable. */
-    float send_interval = 1.0f / 60.0f;  /* ~16ms at 60fps */
-    float sim_dt = SIM_DT;               /* ~8.3ms */
-    int stale_ticks = (int)(send_interval / sim_dt);
-    ASSERT(stale_ticks <= 2);
+    /* Input changes are sent immediately; the low-rate heartbeat is only for
+     * unchanged controls, so it must not be part of input latency budget. */
+    float change_send_delay = 0.0f;
+    int stale_ticks = (int)(change_send_delay / SIM_DT);
+    ASSERT_EQ_INT(stale_ticks, 0);
 }
 
 TEST(test_bug37_mine_inactive_asteroid) {
