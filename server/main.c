@@ -2051,15 +2051,17 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, id_buf, (size_t)id_len);
         }
 
-        /* Send full asteroid sync to new player and mark all as sent. */
+        /* Send the same relevance-filtered asteroid view used by the
+         * periodic world tick. A full-belt join burst can be tens of KB;
+         * behind the production ALB that was enough to delay inbound
+         * REGISTER_PUBKEY / SESSION processing until the auth timer fired. */
         {
             uint8_t sync_buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
-            int sync_len = serialize_asteroids_full(sync_buf, world.asteroids);
-            ws_send(c, sync_buf, (size_t)sync_len);
-            /* Initialize per-player sent tracking */
             server_player_t *new_sp = &world.players[pid];
-            for (int ai = 0; ai < MAX_ASTEROIDS; ai++)
-                new_sp->asteroid_sent[ai] = world.asteroids[ai].active;
+            int sync_len = serialize_asteroids_for_player(
+                sync_buf, world.asteroids, new_sp->ship.pos, new_sp->asteroid_sent);
+            if (sync_len > ASTEROID_MSG_HEADER)
+                ws_send(c, sync_buf, (size_t)sync_len);
         }
 
         /* Global highscores: newcomer gets the current leaderboard so the
@@ -2870,8 +2872,11 @@ int main(void) {
 #endif
     printf("[server] ALPHA BUILD -- world may reset without notice\n");
 
-    uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0, last_save = 0;
-    uint64_t last_econ_dirty = 0;
+    uint64_t start_ms = mg_millis();
+    uint64_t last_sim = start_ms, last_state = start_ms, last_world = start_ms;
+    uint64_t last_ship = start_ms, last_save = start_ms;
+    uint64_t last_econ_dirty = start_ms;
+    last_station_identity = start_ms;
     float sim_accum = 0.0f;
 
     while (running) {
@@ -2882,6 +2887,7 @@ int main(void) {
             float elapsed = (float)(now - last_sim) / 1000.0f;
             last_sim = now;
             run_sim_ticks(&sim_accum, elapsed);
+            tick_session_timers();
             /* Mark econ dirty every ~1s as fallback for production changes. */
             if (now - last_econ_dirty >= 1000) {
                 station_econ_dirty = true;
@@ -2889,7 +2895,6 @@ int main(void) {
                 last_econ_dirty = now;
             }
         }
-        tick_session_timers();
         if (now - last_state >= STATE_TICK_MS) {
             broadcast_player_states();
             last_state = now;

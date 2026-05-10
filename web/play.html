@@ -88,13 +88,17 @@
        * which means no global highscores, no other players, no chain.
        * Production CDN sets window.SIGNAL_SERVER explicitly before this
        * script runs, so this default never fires there. */
+      function isLocalHostName(h) {
+        return (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0'
+             || /^192\.168\./.test(h) || /^10\./.test(h)
+             || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h));
+      }
+
       var signalParams = new URLSearchParams(window.location.search);
+      var signalHost = window.location.hostname;
+      var signalHostIsLocal = isLocalHostName(signalHost);
       if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
-        var h = window.location.hostname;
-        var isLocal = (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0'
-                    || /^192\.168\./.test(h) || /^10\./.test(h)
-                    || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h));
-        if (isLocal) window.SIGNAL_SERVER = 'ws://' + h + ':9091/ws';
+        if (signalHostIsLocal) window.SIGNAL_SERVER = 'ws://' + signalHost + ':9091/ws';
       }
 
       canvas.addEventListener('pointerdown', function() {
@@ -135,21 +139,32 @@
         document.body.appendChild(s);
       }
 
+      function failBundle(message) {
+        console.error('[boot] ' + message);
+        document.getElementById('loading').textContent = message;
+      }
+
       /* Pin the WASM bundle to whatever version the server is running.
        * Prevents silent wire desync when the server lags behind the CDN:
        * if /play/v/<server_hash>/ exists on CDN, we load that bundle
        * instead of ./signal.js (which may have newer wire format).
-       * Any failure path (no SIGNAL_SERVER, /health down, dev build,
-       * archive missing, timeout) falls back to the latest root bundle. */
+       * Local/dev builds may fall back to the root bundle because they do
+       * not usually have a local /play/v/<hash>/ archive. Production must
+       * fail closed instead of loading a client that may be ahead of ECS. */
       (function pickBundle() {
         var ws = window.SIGNAL_SERVER || '';
         if (!ws) { loadGame('./signal.js'); return; }
         var healthUrl = ws.replace(/^ws/, 'http').replace(/\/ws$/, '/health');
+        var allowRootFallback = signalHostIsLocal;
+        var fallbackOrFail = function(version) {
+          if (allowRootFallback) loadGame('./signal.js', version);
+          else failBundle('Relay build unavailable. Refresh shortly.');
+        };
 
         var timedOut = false;
         var timer = setTimeout(function() {
           timedOut = true;
-          loadGame('./signal.js');
+          fallbackOrFail();
         }, 3000);
 
         fetch(healthUrl, { cache: 'no-store' })
@@ -158,16 +173,16 @@
             if (timedOut) return;
             clearTimeout(timer);
             var v = info && info.version;
-            if (!v || v === 'dev') { loadGame('./signal.js'); return; }
+            if (!v || v === 'dev') { fallbackOrFail(); return; }
             var pinned = '/play/v/' + encodeURIComponent(v) + '/signal.js';
             fetch(pinned, { method: 'HEAD' })
-              .then(function(r) { loadGame(r.ok ? pinned : './signal.js', v); })
-              .catch(function() { loadGame('./signal.js', v); });
+              .then(function(r) { r.ok ? loadGame(pinned, v) : fallbackOrFail(v); })
+              .catch(function() { fallbackOrFail(v); });
           })
           .catch(function() {
             if (timedOut) return;
             clearTimeout(timer);
-            loadGame('./signal.js');
+            fallbackOrFail();
           });
       })();
     </script>
