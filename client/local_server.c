@@ -197,6 +197,11 @@ static void mirror_whole_world(const world_t *src) {
 
 /* (2a) Local player ship — always-sync fields (no client optimism). */
 static void mirror_player_always(server_player_t *dst, const server_player_t *src) {
+    memcpy(dst->session_token, src->session_token, sizeof(dst->session_token));
+    dst->session_ready = src->session_ready;
+    memcpy(dst->pubkey, src->pubkey, sizeof(dst->pubkey));
+    dst->pubkey_set = src->pubkey_set;
+    snprintf(dst->callsign, sizeof(dst->callsign), "%s", src->callsign);
     (void)manifest_clone(&dst->ship.manifest, &src->ship.manifest);
     dst->ship.pos    = src->ship.pos;
     dst->ship.vel    = src->ship.vel;

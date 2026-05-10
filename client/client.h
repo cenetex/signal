@@ -25,6 +25,11 @@
 #include "identity.h"
 #include "trade_paging.h"
 
+static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t out[32]) {
+    memset(out, 0, 32);
+    if (token) memcpy(out, token, 8);
+}
+
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
 #include "sokol_gfx.h"

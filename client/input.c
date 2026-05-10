@@ -571,15 +571,17 @@ static void sample_trade_picker(input_intent_t *intent) {
         float payout = price;
         if (!g.multiplayer_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+            uint8_t pseudo[32];
+            client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
             int idx = -1;
             for (int li = 0; li < mst->ledger_count; li++) {
                 if (memcmp(mst->ledger[li].player_pubkey,
-                           LOCAL_PLAYER.session_token, 8) == 0) { idx = li; break; }
+                           pseudo, 32) == 0) { idx = li; break; }
             }
             if (idx < 0 && mst->ledger_count < 16) {
                 idx = mst->ledger_count++;
                 memcpy(mst->ledger[idx].player_pubkey,
-                       LOCAL_PLAYER.session_token, 8);
+                       pseudo, 32);
                 mst->ledger[idx].balance = 0.0f;
                 mst->ledger[idx].lifetime_supply = 0.0f;
             }

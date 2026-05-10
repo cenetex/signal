@@ -353,7 +353,7 @@ test.describe('Browser smoke tests', () => {
     expect(await hudActionText(page)).toContain('Towing 1 // tap [Space] to release');
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
-    expect(await hudActionText(page)).toContain('H to hail // collect 123 cr');
+    expect(await hudActionText(page)).toContain('H to hail // collect 123 prospect vouchers');
 
     await setSmokeLoopState(page, smokeLoopState.hailNotice);
     expect(await hudHintText(page)).toContain('Prospect: channel open. Balance 123 cr.');
