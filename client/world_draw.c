@@ -3127,8 +3127,7 @@ void draw_scaffold_tether(void) {
 static module_type_t producer_for_commodity_client(commodity_t c) {
     switch (c) {
         case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
-        /* All three ingots come from the same physical module type now;
-         * the count tier on the station decides which ones it can mint. */
+        /* All three ingots come from commodity-tagged furnace instances. */
         case COMMODITY_FERRITE_INGOT:
         case COMMODITY_CUPRITE_INGOT:
         case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE;

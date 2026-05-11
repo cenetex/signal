@@ -869,6 +869,97 @@ TEST(test_furnace_smelting_accepts_beam_corridor_delivery) {
     ASSERT(a->smelt_progress > 0.0f);
 }
 
+TEST(test_crystal_requires_two_distinct_furnace_passes) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w.stations[2].arm_speed[arm] = 0.0f;
+        w.stations[2].arm_rotation[arm] = 0.0f;
+    }
+
+    station_t *helios = &w.stations[2];
+    int furnace_idx[2] = { -1, -1 };
+    vec2 midpoint[2] = { {0}, {0} };
+    int pair_count = 0;
+    for (int m = 0; m < helios->module_count && pair_count < 2; m++) {
+        station_module_t *f = &helios->modules[m];
+        if (f->scaffold || f->type != MODULE_FURNACE) continue;
+        if (module_instance_input_ore(f) != COMMODITY_CRYSTAL_ORE) continue;
+        int ring = f->ring;
+        vec2 furnace_pos = module_world_pos_ring(helios, ring, f->slot);
+        int best_h = -1;
+        float best_d = 1e18f;
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int h = 0; h < helios->module_count; h++) {
+                station_module_t *hm = &helios->modules[h];
+                if (hm->scaffold || hm->ring != adj) continue;
+                if (hm->type != MODULE_HOPPER) continue;
+                if ((commodity_t)hm->commodity != COMMODITY_CRYSTAL_ORE) continue;
+                vec2 hp = module_world_pos_ring(helios, adj, hm->slot);
+                float d = v2_dist_sq(furnace_pos, hp);
+                if (d < best_d) { best_d = d; best_h = h; }
+            }
+        }
+        ASSERT(best_h >= 0);
+        vec2 hopper_pos = module_world_pos_ring(helios,
+            helios->modules[best_h].ring, helios->modules[best_h].slot);
+        furnace_idx[pair_count] = m;
+        midpoint[pair_count] = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+        pair_count++;
+    }
+    ASSERT_EQ_INT(pair_count, 2);
+    ASSERT(station_can_smelt(helios, COMMODITY_CRYSTAL_ORE));
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+
+    asteroid_t *a = &w.asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_CRYSTAL_ORE;
+    a->ore = 3.0f;
+    a->max_ore = 3.0f;
+    a->radius = 7.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    a->pos = midpoint[0];
+
+    int initial_manifest = helios->manifest.count;
+    for (int i = 0; i < 400 &&
+                    a->active &&
+                    a->crystal_stage != CRYSTAL_STAGE_INTERMEDIATE; i++) {
+        step_furnace_smelting(&w, SIM_DT);
+    }
+
+    ASSERT(a->active);
+    ASSERT_EQ_INT(a->crystal_stage, CRYSTAL_STAGE_INTERMEDIATE);
+    ASSERT_EQ_INT(a->crystal_stage_station, 2);
+    ASSERT_EQ_INT(a->crystal_stage_module, furnace_idx[0]);
+    ASSERT_EQ_INT(helios->manifest.count, initial_manifest);
+
+    a->pos = midpoint[1];
+    a->vel = v2(0.0f, 0.0f);
+    a->smelt_progress = 0.0f;
+    for (int i = 0; i < 500 && w.asteroids[frag].active; i++) {
+        step_furnace_smelting(&w, SIM_DT);
+    }
+
+    ASSERT(!w.asteroids[frag].active);
+    ASSERT_EQ_INT(helios->manifest.count - initial_manifest, 3);
+    for (int i = initial_manifest; i < helios->manifest.count; i++) {
+        ASSERT_EQ_INT(helios->manifest.units[i].commodity,
+                      COMMODITY_CRYSTAL_INGOT);
+    }
+}
+
 TEST(test_station_production_dual_writes_frame_manifest) {
     WORLD_DECL;
     world_reset(&w);
@@ -1355,12 +1446,12 @@ TEST(test_scenario_npc_economy_30_seconds) {
     ASSERT(any_mined);
 
     /* Verify: at least one station has either an ingot in stock or
-     * raw ore mid-smelt. Originally checked station[0] only, but the
-     * count-tier rework gave Helios all three furnaces; on machines
-     * where Prospect's 1-furnace pipeline runs slower than Helios's
-     * 3-furnace one, station[0] can stay quiet for the first minute
-     * even though the economy is clearly working. Looking at every
-     * station catches both ends. */
+     * raw ore mid-smelt. Originally checked station[0] only, but Helios
+     * also has active furnace pairs; on machines where Prospect's
+     * ferrite pipeline runs slower than Helios's cuprite/crystal one,
+     * station[0] can stay quiet for the first minute even though the
+     * economy is clearly working. Looking at every station catches both
+     * ends. */
     bool any_ingot = false;
     for (int s = 0; s < MAX_STATIONS && !any_ingot; s++) {
         for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
@@ -2832,6 +2923,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
     RUN(test_furnace_smelting_accepts_beam_corridor_delivery);
+    RUN(test_crystal_requires_two_distinct_furnace_passes);
     RUN(test_station_production_dual_writes_frame_manifest);
     RUN(test_station_production_dual_writes_laser_manifest);
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);

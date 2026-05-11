@@ -363,12 +363,12 @@ typedef enum {
                                * roles — those subtypes were dropped in the
                                * silo cleanup. Save migration in sim_save.c
                                * remaps both back to MODULE_HOPPER. */
-    /* Single-type furnace: which ores it can smelt is determined by the
-     * station's furnace count, not the module subtype. 1 furnace ⇒
-     * ferrite only; 2 ⇒ cuprite (ferrite blocked); 3 ⇒ cuprite + crystal
-     * (ferrite still blocked). The MODULE_FURNACE_CU and MODULE_FURNACE_CR
-     * subtypes were collapsed away in the count-tier rework — save
-     * migration in sim_save.c remaps both back to MODULE_FURNACE. */
+    /* Single-type furnace: which ore it smelts is determined by the
+     * module's per-instance commodity tag (FERRITE/CUPRITE/CRYSTAL
+     * ingot), not by a station-wide furnace count. The old
+     * MODULE_FURNACE_CU and MODULE_FURNACE_CR subtypes were collapsed
+     * away — save migration in sim_save.c remaps both back to
+     * MODULE_FURNACE and tags legacy instances. */
     MODULE_FURNACE = 2,
     MODULE_REPAIR_BAY = 3,
     MODULE_SIGNAL_RELAY = 4,
@@ -421,8 +421,8 @@ typedef struct {
      *   - MODULE_FURNACE: which ingot this furnace produces (and, by
      *     symmetry, which ore it smelts). Set at build/order time.
      *     COMMODITY_COUNT on legacy/untagged furnaces falls back to
-     *     module_furnace_default_output() (FERRITE_INGOT — Prospect's
-     *     1-furnace tier).
+     *     module_furnace_default_output() (FERRITE_INGOT, Prospect's
+     *     starter refinery).
      *   - other module types: COMMODITY_COUNT (= "unset"). */
     uint8_t commodity;      /* 1 byte */
     uint8_t _pad[2];        /* explicit pad to 4-byte alignment */
@@ -695,6 +695,11 @@ typedef enum {
 } asteroid_tier_t;
 
 typedef enum {
+    CRYSTAL_STAGE_RAW = 0,
+    CRYSTAL_STAGE_INTERMEDIATE = 1,
+} crystal_stage_t;
+
+typedef enum {
     SHIP_UPGRADE_MINING,
     SHIP_UPGRADE_HOLD,
     SHIP_UPGRADE_TRACTOR,
@@ -724,6 +729,16 @@ typedef struct {
     int8_t last_towed_by;      /* player ID who last towed this, -1 = none */
     int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
     float smelt_progress;      /* 0.0-1.0: how far through smelting (in furnace beam) */
+    /* Crystal ore has a two-stage smelt. Stage 0 is the raw fractured
+     * crystal; the first crystal furnace converts it into a tractorable
+     * intermediate fragment and records the source furnace. Stage 1 must
+     * be dragged to a different crystal furnace before minting crystal
+     * ingots. Non-crystal fragments keep stage 0 and ignore the
+     * source fields. */
+    uint8_t crystal_stage;             /* crystal_stage_t */
+    uint8_t crystal_stage_station;     /* source station, 0xFF = unset */
+    uint8_t crystal_stage_module;      /* source module index, 0xFF = unset */
+    uint8_t _crystal_stage_pad;
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
     /* Fragment provenance: fracture_seed is fixed at birth. fragment_pub
      * and grade stay zero/common until the fracture claim window resolves,

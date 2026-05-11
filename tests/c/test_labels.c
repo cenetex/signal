@@ -118,20 +118,23 @@ TEST(test_station_consumes_fab_inputs) {
 
 TEST(test_station_primary_sell_per_dominant_module) {
     station_t st = {0};
-    /* 1 furnace ⇒ ferrite headline. */
+    /* Furnace headline follows the highest-tier furnace instance tag. */
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_FERRITE_INGOT);
-    /* 2 furnaces ⇒ cuprite headline. */
     memset(&st, 0, sizeof st);
     st.modules[0].type = MODULE_FURNACE;
+    st.modules[0].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
     st.modules[1].type = MODULE_FURNACE;
+    st.modules[1].commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
     st.module_count = 2;
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_CUPRITE_INGOT);
-    /* 3 furnaces ⇒ crystal headline. */
     memset(&st, 0, sizeof st);
     st.modules[0].type = MODULE_FURNACE;
+    st.modules[0].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
     st.modules[1].type = MODULE_FURNACE;
+    st.modules[1].commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
     st.modules[2].type = MODULE_FURNACE;
+    st.modules[2].commodity = (uint8_t)COMMODITY_CRYSTAL_INGOT;
     st.module_count = 3;
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_CRYSTAL_INGOT);
     seed_single_module_station(&st, MODULE_FRAME_PRESS);
@@ -149,9 +152,8 @@ TEST(test_station_primary_sell_per_dominant_module) {
 TEST(test_producer_module_for_commodity) {
     /* Pure switch — pin every branch so refactors of module priority
      * can't silently swap which module makes a given commodity. All
-     * three ingot tiers map to MODULE_FURNACE under the count-tier
-     * rules (the runtime sim_can_smelt rules pick which ingot a given
-     * stack actually mints). */
+     * three ingot tiers map to MODULE_FURNACE; the runtime furnace tag
+     * picks which ingot a given instance mints. */
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_FRAME),         MODULE_FRAME_PRESS);
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_FERRITE_INGOT), MODULE_FURNACE);
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CUPRITE_INGOT), MODULE_FURNACE);

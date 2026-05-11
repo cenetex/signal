@@ -113,6 +113,7 @@ TEST(test_roundtrip_asteroids) {
     asteroids[5].hp = 12.0f;
     asteroids[5].ore = 10.5f;
     asteroids[5].radius = 14.0f;
+    asteroids[5].crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
 
     uint8_t buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     bool sent[MAX_ASTEROIDS] = {0};
@@ -142,6 +143,7 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_INT((p1[2] >> 5) & 0x7, COMMODITY_CRYSTAL_ORE);
     ASSERT_EQ_FLOAT(read_f32_le(&p1[23]), 10.5f, 0.1f);  /* ore */
     ASSERT_EQ_FLOAT(read_f32_le(&p1[27]), 14.0f, 0.1f);  /* radius */
+    ASSERT_EQ_INT(p1[33], CRYSTAL_STAGE_INTERMEDIATE);
 }
 
 TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
@@ -164,6 +166,7 @@ TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     asteroids[5].pos = v2(-12.0f, 88.0f);
     asteroids[5].ore = 11.0f;
     asteroids[5].radius = 21.0f;
+    asteroids[5].crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
 
     uint8_t *buf = calloc(1, ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE);
     int len = serialize_asteroids_full(buf, asteroids);
@@ -190,6 +193,7 @@ TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     ASSERT_EQ_INT((p5[2] >> 2) & 0x7, ASTEROID_TIER_M);
     ASSERT_EQ_FLOAT(read_f32_le(&p5[23]), 11.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p5[27]), 21.0f, 0.1f);
+    ASSERT_EQ_INT(p5[33], CRYSTAL_STAGE_INTERMEDIATE);
     free(buf);
 }
 

@@ -4123,8 +4123,7 @@ static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 module_type_t producer_module_for_commodity(commodity_t c) {
     switch (c) {
         case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
-        /* All ingot tiers come from MODULE_FURNACE; the count tier on
-         * the station gates which ones can mint. */
+        /* All ingot tiers come from commodity-tagged furnace instances. */
         case COMMODITY_FERRITE_INGOT:
         case COMMODITY_CUPRITE_INGOT:
         case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE;
@@ -5520,16 +5519,18 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 1.0f;
     /* Helios imports frames for its shipyard kit fab. */
     w->stations[2].base_price[COMMODITY_FRAME]          = 2.0f;
-    /* No ferrite ingots produced or imported here — Helios runs at the
-     * 3-furnace tier, which the new count rules deliberately gate
-     * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
+    /* No ferrite ingots produced or imported here. Helios specializes in
+     * cuprite plus the two-pass crystal process; the ferrite-ingot
+     * pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
     /* Producers spread across all three rings; commodity-tagged
      * hoppers feed them all. */
-    /* Ring 1: dock + relay + cuprite furnace. */
+    /* Ring 1: dock + relay + first crystal furnace. Crystal now takes
+     * two crystal furnace passes: raw crystal becomes an intermediate
+     * fragment here, then the other crystal furnace finishes it. */
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CUPRITE_INGOT);
+    add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CRYSTAL_INGOT);
     /* Ring 2: fabs + paired ingot / ore hoppers + shipyard. Smelter beams
      * require the ore hopper on an adjacent ring, so cuprite/crystal ore
      * intakes live between the ring-1/ring-3 furnaces they feed. */
@@ -5541,8 +5542,8 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
     /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
      * crystal-ingot / laser / tractor module hoppers for the ring-2 fabs
-     * and shipyard. The ring-3 cuprite furnace shares the ring-2 cuprite
-     * ore intake with the inner cuprite furnace. */
+     * and shipyard. The two crystal furnaces share the ring-2 crystal
+     * ore intake; the ring-3 cuprite furnace uses the cuprite intake. */
     add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output + shipyard input */
     add_hopper_for(&w->stations[2], 3, 3, COMMODITY_FRAME);          /* feeds SHIPYARD */
     add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);

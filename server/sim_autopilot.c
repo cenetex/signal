@@ -29,7 +29,19 @@ static commodity_t autopilot_towed_commodity(const world_t *w, const server_play
     return COMMODITY_COUNT;
 }
 
-/* True if the station can smelt `ore` under the count-tier rules. When
+static const asteroid_t *autopilot_first_towed_fragment(const world_t *w,
+                                                        const server_player_t *sp) {
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &w->asteroids[idx];
+        if (!a->active) continue;
+        return a;
+    }
+    return NULL;
+}
+
+/* True if the station can smelt `ore` under the tagged furnace rules. When
  * `ore` is COMMODITY_COUNT (nothing towed), accept any station with at
  * least one furnace + a hopper — we just need somewhere to land. */
 static bool station_can_smelt_ore_for_autopilot(const station_t *st, commodity_t ore) {
@@ -40,12 +52,30 @@ static bool station_can_smelt_ore_for_autopilot(const station_t *st, commodity_t
     return station_can_smelt(st, ore);
 }
 
+static bool autopilot_furnace_allowed_for_fragment(const asteroid_t *fragment,
+                                                   int station_idx,
+                                                   int module_idx) {
+    if (!fragment) return true;
+    if (fragment->commodity != COMMODITY_CRYSTAL_ORE ||
+        fragment->crystal_stage != CRYSTAL_STAGE_INTERMEDIATE) {
+        return true;
+    }
+    if (fragment->crystal_stage_station == 0xFFu ||
+        fragment->crystal_stage_module == 0xFFu) {
+        return true;
+    }
+    return !(fragment->crystal_stage_station == (uint8_t)station_idx &&
+             fragment->crystal_stage_module == (uint8_t)module_idx);
+}
+
 /* Compute the smelt-beam drop point for `ore` at `st`: the midpoint of a
  * matching furnace and its nearest adjacent-ring ore hopper. Mirrors the
  * pairing logic in step_furnace_smelting so the autopilot parks where
  * fragments will actually be pulled in. Falls back to the station center
  * when no furnace+silo pair exists. */
-static vec2 station_smelt_drop_point(const station_t *st, commodity_t ore) {
+static vec2 station_smelt_drop_point(const station_t *st, int station_idx,
+                                     commodity_t ore,
+                                     const asteroid_t *fragment) {
     vec2 best_mid = st->pos;
     float best_silo_d = 1e18f;
     bool found = false;
@@ -54,6 +84,7 @@ static vec2 station_smelt_drop_point(const station_t *st, commodity_t ore) {
         if (st->modules[m].type != MODULE_FURNACE) continue;
         commodity_t furnace_ore = module_instance_input_ore(&st->modules[m]);
         if (ore != COMMODITY_COUNT && furnace_ore != ore) continue;
+        if (!autopilot_furnace_allowed_for_fragment(fragment, station_idx, m)) continue;
         int ring = st->modules[m].ring;
         vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
         int adj_rings[2] = { ring + 1, ring - 1 };
@@ -515,7 +546,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * the silo never reaches them. */
         bool need_repair = autopilot_needs_repair(&sp->ship);
         commodity_t towed_ore = autopilot_towed_commodity(w, sp);
-        vec2 smelt_pt = station_smelt_drop_point(st, towed_ore);
+        const asteroid_t *towed_fragment = autopilot_first_towed_fragment(w, sp);
+        vec2 smelt_pt = station_smelt_drop_point(st, s, towed_ore, towed_fragment);
 
         vec2 fly_target = need_repair
             ? station_approach_target(st, sp->ship.pos)

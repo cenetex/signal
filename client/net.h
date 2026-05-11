@@ -53,7 +53,7 @@ typedef struct {
     bool active;
 } NetPlayerState;
 
-/* Packed asteroid state for world sync (31 bytes per asteroid). */
+/* Packed asteroid state for world sync. */
 typedef struct {
     uint16_t index;     /* asteroid slot 0-2047 */
     uint8_t flags;      /* bit0=active, bit1=fracture_child, bits2-4=tier(3), bits5-7=commodity(3) */
@@ -64,6 +64,7 @@ typedef struct {
     float radius;       /* radius */
     float smelt_progress; /* 0.0-1.0, decoded from uint8 trailer */
     uint8_t grade;        /* mining_grade_t — 0 = common, set on tractor */
+    uint8_t crystal_stage; /* crystal_stage_t */
 } NetAsteroidState;
 
 /* Packed NPC state for world sync. */

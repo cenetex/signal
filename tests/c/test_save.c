@@ -319,6 +319,9 @@ TEST(test_world_save_load_preserves_fracture_children) {
     a->seed = 22.0f;
     a->age = 12.0f;
     a->smelt_progress = 0.35f;
+    a->crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
+    a->crystal_stage_station = 2;
+    a->crystal_stage_module = 7;
     a->last_towed_by = 2;
     a->last_fractured_by = 1;
     memcpy(a->last_towed_token, "TOWTOKEN", 8);
@@ -353,6 +356,9 @@ TEST(test_world_save_load_preserves_fracture_children) {
     ASSERT_EQ_FLOAT(loaded->asteroids[17].pos.x, 321.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->asteroids[17].pos.y, -654.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->asteroids[17].smelt_progress, 0.35f, 0.01f);
+    ASSERT_EQ_INT(loaded->asteroids[17].crystal_stage, CRYSTAL_STAGE_INTERMEDIATE);
+    ASSERT_EQ_INT(loaded->asteroids[17].crystal_stage_station, 2);
+    ASSERT_EQ_INT(loaded->asteroids[17].crystal_stage_module, 7);
     ASSERT_EQ_INT(loaded->asteroids[17].grade, MINING_GRADE_RATI);
     ASSERT(memcmp(loaded->asteroids[17].fracture_seed, a->fracture_seed, 32) == 0);
     ASSERT(memcmp(loaded->asteroids[17].fragment_pub, a->fragment_pub, 32) == 0);
@@ -712,7 +718,8 @@ TEST(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers) {
      * pre-Slice-1 (untagged furnaces, no LASER_MODULE / TRACTOR_MODULE
      * output hoppers). Running the migration must restore the seeded
      * invariant: every Helios producer has a matching tagged hopper
-     * for its output, and furnaces are tagged by count-tier rule. */
+     * for its output, and furnaces are tagged by the legacy migration
+     * heuristic. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -748,7 +755,7 @@ TEST(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers) {
     world_apply_cargo_schema_migration(w);
 
     /* All 3 furnaces tagged with valid ingot commodities (3-furnace
-     * tier → 1×CU + 1×CR + 1×CU according to the migration heuristic). */
+     * legacy heuristic → 2×CR + 1×CU). */
     int cu = 0, cr = 0;
     for (int m = 0; m < helios->module_count; m++) {
         if (helios->modules[m].type != MODULE_FURNACE) continue;
@@ -757,8 +764,8 @@ TEST(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers) {
         else if (tag == COMMODITY_CRYSTAL_INGOT) cr++;
         else ASSERT(false /* unexpected tag */);
     }
-    ASSERT_EQ_INT(cu, 2);
-    ASSERT_EQ_INT(cr, 1);
+    ASSERT_EQ_INT(cu, 1);
+    ASSERT_EQ_INT(cr, 2);
 
     /* Missing output hoppers were auto-spawned. */
     ASSERT(station_find_hopper_for(helios, COMMODITY_LASER_MODULE)   >= 0);
@@ -771,8 +778,10 @@ TEST(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers) {
 }
 
 TEST(test_v51_migration_furnace_count_heuristic) {
-    /* Synthetic stations covering 1/2/3-furnace tiers, all furnaces
-     * untagged. Migration tags them per the count-tier rules.
+    /* Synthetic stations covering 1/2/3-furnace legacy layouts, all
+     * furnaces untagged. Migration tags them per the legacy
+     * furnace-count heuristic, updated so 3+ furnace stations get the
+     * two crystal beams needed for the staged crystal process.
      * Use stations[3+] to avoid clobbering seeded state (which the
      * heap WORLD_DECL initializes to zero already). */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -786,7 +795,7 @@ TEST(test_v51_migration_furnace_count_heuristic) {
     st2->signal_range = 1.0f;
     add_module_at(st2, MODULE_FURNACE, 1, 0);
     add_module_at(st2, MODULE_FURNACE, 1, 1);
-    /* 3-furnace station: should tag CUPRITE + CRYSTAL + CUPRITE. */
+    /* 3-furnace station: should tag CRYSTAL + CRYSTAL + CUPRITE. */
     station_t *st3 = &w->stations[5];
     st3->signal_range = 1.0f;
     add_module_at(st3, MODULE_FURNACE, 1, 0);
@@ -800,7 +809,7 @@ TEST(test_v51_migration_furnace_count_heuristic) {
     ASSERT_EQ_INT((int)st2->modules[0].commodity, (int)COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT((int)st2->modules[1].commodity, (int)COMMODITY_CUPRITE_INGOT);
 
-    ASSERT_EQ_INT((int)st3->modules[0].commodity, (int)COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT((int)st3->modules[0].commodity, (int)COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT((int)st3->modules[1].commodity, (int)COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT((int)st3->modules[2].commodity, (int)COMMODITY_CUPRITE_INGOT);
 
@@ -1098,7 +1107,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
  * v53: station manifest entries gained inline receipt-chain payloads.
  * Fresh world station manifests are empty, so this adds no bytes to
  * EXPECTED_SAVE_SIZE until a station is holding cargo.
- * v54: +4B world_seq added immediately after belt_seed in the world tail. */
+ * v54: +4B world_seq added immediately after belt_seed in the world tail.
+ * v55: fracture-child sidecar grew by 3B for crystal staging, but fresh
+ * world.sav has zero fracture children so EXPECTED_SAVE_SIZE is unchanged. */
 #define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2 + 4)
 
 TEST(test_save_file_size_stable) {
@@ -1136,7 +1147,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 54);
+    ASSERT_EQ_INT((int)version, 55);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

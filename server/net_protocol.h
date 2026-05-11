@@ -192,7 +192,8 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
 /*
  * WORLD_ASTEROIDS message (v2 — uint16 indices):
  * [type:1][count:2] + count * ASTEROID_RECORD_SIZE-byte records
- * Record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] = 31 bytes
+ * Record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32]
+ * [radius:f32][smelt:u8][grade:u8][crystal_stage:u8]
  */
 #define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
 
@@ -229,6 +230,7 @@ static inline int serialize_asteroids_for_player(
                 p[31] = (uint8_t)(sp_f * 255.0f);
             }
             p[32] = a->grade;
+            p[33] = a->crystal_stage;
             sent[i] = true;
             count++;
         } else if (sent[i] && !in_view) {
@@ -275,6 +277,7 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
             p[31] = (uint8_t)(sp_f * 255.0f);
         }
         p[32] = a->grade;
+        p[33] = a->crystal_stage;
         count++;
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
@@ -602,7 +605,7 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
-    2 + 1 + 7 * 4 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
+    2 + 1 + 7 * 4 + 1 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(

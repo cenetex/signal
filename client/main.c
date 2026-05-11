@@ -1521,12 +1521,8 @@ static void render_world(void) {
             commodity_t sell_c = -1;
             switch (tm->type) {
                 case MODULE_FURNACE: {
-                    /* Headline ingot follows the count tier: 3+ → crystal,
-                     * 2 → cuprite, 1 → ferrite. */
-                    int n = station_furnace_count(&g.world.stations[LOCAL_PLAYER.current_station]);
-                    if (n >= 3)      sell_c = COMMODITY_CRYSTAL_INGOT;
-                    else if (n == 2) sell_c = COMMODITY_CUPRITE_INGOT;
-                    else             sell_c = COMMODITY_FERRITE_INGOT;
+                    /* Furnace output follows the instance commodity tag. */
+                    sell_c = module_instance_output(tm);
                     break;
                 }
                 case MODULE_FRAME_PRESS: sell_c = COMMODITY_FRAME; break;

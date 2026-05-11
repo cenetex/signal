@@ -243,10 +243,10 @@ static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_
            out_recipe->output == module_schema_output(mt);
 }
 
-/* The count-tier rules live in shared/station_util.c
- * (`station_can_smelt`, `station_furnace_count`) so the client-side
- * dock UI can use the same predicate. The sim wrapper here just adds
- * the existing public symbol so the rest of game_sim.c keeps working. */
+/* Tagged furnace/pair capability lives in shared/station_util.c
+ * (`station_can_smelt`) so the client-side dock UI can use the same
+ * predicate. The sim wrapper here just keeps the existing public symbol
+ * for game_sim.c callers. */
 bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
     return station_can_smelt(st, ore);
 }
@@ -377,6 +377,48 @@ void sim_step_station_production(world_t *w, float dt) {
 /* Furnace smelting (fragment hopper pull + smelt)                     */
 /* ------------------------------------------------------------------ */
 
+static bool crystal_stage_is_intermediate(const asteroid_t *a) {
+    return a && a->commodity == COMMODITY_CRYSTAL_ORE &&
+           a->crystal_stage == CRYSTAL_STAGE_INTERMEDIATE;
+}
+
+static bool crystal_stage_source_matches(const asteroid_t *a,
+                                         int station_idx,
+                                         int module_idx) {
+    if (!crystal_stage_is_intermediate(a)) return false;
+    if (a->crystal_stage_station == 0xFFu ||
+        a->crystal_stage_module == 0xFFu) {
+        return false;
+    }
+    return a->crystal_stage_station == (uint8_t)station_idx &&
+           a->crystal_stage_module == (uint8_t)module_idx;
+}
+
+static void crystal_fragment_make_intermediate(asteroid_t *a,
+                                               int station_idx,
+                                               int module_idx,
+                                               vec2 midpoint,
+                                               const station_t *st) {
+    if (!a) return;
+    a->crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
+    a->crystal_stage_station = (uint8_t)station_idx;
+    a->crystal_stage_module = (uint8_t)module_idx;
+    a->smelt_progress = 0.0f;
+    a->net_dirty = true;
+
+    vec2 away = v2_sub(a->pos, midpoint);
+    float len = v2_len(away);
+    if (len < 1.0f && st)
+        away = v2_sub(midpoint, st->pos);
+    len = v2_len(away);
+    if (len < 1.0f)
+        away = v2(1.0f, 0.0f);
+    else
+        away = v2_scale(away, 1.0f / len);
+    a->pos = v2_add(a->pos, v2_scale(away, 36.0f));
+    a->vel = v2_add(a->vel, v2_scale(away, 90.0f));
+}
+
 void step_furnace_smelting(world_t *w, float dt) {
     float pull_range = HOPPER_PULL_RANGE;
     float pull_sq = pull_range * pull_range;
@@ -386,16 +428,18 @@ void step_furnace_smelting(world_t *w, float dt) {
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
 
         int smelt_station = -1;
+        int smelt_module = -1;
+        vec2 smelt_midpoint = a->pos;
         bool smelted = false;
 
         for (int s = 0; s < MAX_STATIONS && !smelted; s++) {
             station_t *st = &w->stations[s];
             if (st->scaffold) continue;
 
-            /* Station-level capability gate: a furnace only fires if
-             * the station's count tier covers this commodity. Stops the
-             * "Helios with no ferrite capability still pulling ferrite
-             * fragments" failure mode under the new rules. */
+            /* Station-level capability gate: a station only advertises
+             * full smelt capability when it has matching tagged
+             * furnace+hoppers. Crystal requires two such pairs because
+             * stage one leaves a physical intermediate fragment. */
             if (!sim_can_smelt_ore(st, a->commodity)) continue;
 
             /* Find furnace+target pairs: only a furnace tagged for this ore
@@ -405,6 +449,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (st->modules[m].scaffold) continue;
                 if (st->modules[m].type != MODULE_FURNACE) continue;
                 if (module_instance_input_ore(&st->modules[m]) != a->commodity) continue;
+                if (crystal_stage_source_matches(a, s, m)) continue;
 
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
@@ -483,6 +528,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * just outside the old 80u threshold forever. */
                 if (d_mid < HOPPER_PULL_RANGE * 0.5f) {
                     smelt_station = s;
+                    smelt_module = m;
+                    smelt_midpoint = midpoint;
                     smelted = true;
                 }
             }
@@ -511,6 +558,16 @@ void step_furnace_smelting(world_t *w, float dt) {
                 smelt_fragment_pub_compat(a);
             /* Wait out active, unresolved fracture claims before paying out. */
             if (claim_state->active && !claim_state->resolved) continue;
+
+            if (a->commodity == COMMODITY_CRYSTAL_ORE &&
+                a->crystal_stage != CRYSTAL_STAGE_INTERMEDIATE) {
+                crystal_fragment_make_intermediate(a, smelt_station,
+                                                   smelt_module,
+                                                   smelt_midpoint, st);
+                SIM_LOG("[smelt] station %d staged crystal fragment via module %d\n",
+                        smelt_station, smelt_module);
+                continue;
+            }
 
             /* M5 backpressure removed: it stuck fragments on the beam
              * forever when the station's output bin filled up (e.g.

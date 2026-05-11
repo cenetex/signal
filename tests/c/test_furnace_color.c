@@ -91,8 +91,8 @@ TEST(test_furnace_color_helios_uses_instance_tags) {
             ASSERT(false /* unexpected Helios furnace tag */);
         }
     }
-    ASSERT_EQ_INT(saw_cu, 2);
-    ASSERT_EQ_INT(saw_cr, 1);
+    ASSERT_EQ_INT(saw_cu, 1);
+    ASSERT_EQ_INT(saw_cr, 2);
 }
 
 /* (3) Outpost growth: as furnaces are added, the inner-most furnace's
