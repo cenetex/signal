@@ -383,6 +383,20 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_ACTION_ACK:
+        if (len < NET_ACTION_ACK_SIZE) break;
+        {
+            uint16_t action_id = read_u16_le(&data[1]);
+            uint16_t input_seq = read_u16_le(&data[3]);
+            uint8_t status = data[5];
+            uint8_t action = data[6];
+            if (net_state.callbacks.on_action_ack) {
+                net_state.callbacks.on_action_ack(action_id, input_seq,
+                                                  status, action);
+            }
+        }
+        break;
+
     case NET_MSG_STATE:
         if (len < 22) break;
         {

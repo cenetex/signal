@@ -146,6 +146,14 @@ static void ws_send(struct mg_connection *c, const void *data, size_t len) {
     mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY);
 }
 
+static void send_action_ack(struct mg_connection *c, uint16_t action_id,
+                            uint16_t input_seq, uint8_t status,
+                            uint8_t action) {
+    uint8_t buf[NET_ACTION_ACK_SIZE];
+    int len = serialize_action_ack(buf, action_id, input_seq, status, action);
+    ws_send(c, buf, (size_t)len);
+}
+
 static void broadcast(const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
@@ -288,11 +296,17 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         const uint8_t *input_data = data;
         uint8_t input_copy[32];
         uint8_t action = (len >= 3) ? data[2] : NET_ACTION_NONE;
+        uint8_t ack_status = 0;
+        uint16_t action_id = 0;
+        uint16_t input_seq = (len >= 10)
+            ? (uint16_t)data[8] | ((uint16_t)data[9] << 8)
+            : 0;
         if (len >= 14 && action != NET_ACTION_NONE) {
-            uint16_t action_id = input_action_id(data, len);
+            action_id = input_action_id(data, len);
             server_player_t *sp = &world.players[pid];
             if (action_id != 0 && sp->last_input_action_id_valid &&
                 sp->last_input_action_id == action_id) {
+                ack_status = NET_ACTION_ACK_DUPLICATE;
                 if (len <= (int)sizeof(input_copy)) {
                     memcpy(input_copy, data, (size_t)len);
                     input_copy[2] = NET_ACTION_NONE;
@@ -302,13 +316,14 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             } else if (action_id != 0) {
                 sp->last_input_action_id = action_id;
                 sp->last_input_action_id_valid = true;
+                ack_status = NET_ACTION_ACK_RECEIVED;
             }
         }
         parse_input(input_data, len, &world.players[pid].input);
-        if (len >= 10) {
-            world.players[pid].last_input_seq =
-                (uint16_t)data[8] | ((uint16_t)data[9] << 8);
-        }
+        if (len >= 10)
+            world.players[pid].last_input_seq = input_seq;
+        if (ack_status != 0 && c)
+            send_action_ack(c, action_id, input_seq, ack_status, data[2]);
         /* If the player just queued a shipyard order, refresh that station's
          * identity on the next world tick so the SHIPYARD tab sees the new
          * pending count immediately instead of waiting for the 2s fallback. */

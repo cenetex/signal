@@ -80,6 +80,9 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
 
+static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
+                                 uint8_t status, uint8_t action);
+
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
     g.collection_feedback_fragments = 0;
@@ -1189,6 +1192,7 @@ static void init(void) {
             cbs.on_hold_ingots = apply_remote_hold_ingots;
             cbs.on_inspect_snapshot = apply_remote_inspect_snapshot;
             cbs.on_highscores = apply_remote_highscores;
+            cbs.on_action_ack = on_remote_action_ack;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already
              * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
@@ -1697,10 +1701,6 @@ float get_signal_strength(void) {
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
 }
 
-static bool net_seq_after_or_equal(uint16_t a, uint16_t b) {
-    return a == b || (int16_t)(a - b) > 0;
-}
-
 static net_action_queue_item_t *net_action_queue_at(int offset) {
     int index = ((int)g.net_action_queue_start + offset) % NET_ACTION_QUEUE_CAP;
     return &g.net_action_queue[index];
@@ -1715,6 +1715,26 @@ static void net_action_queue_pop_front(void) {
     if (g.net_action_queue_count == 0) g.net_action_queue_start = 0;
 }
 
+static void net_action_queue_remove_at(int offset) {
+    if (offset < 0 || offset >= (int)g.net_action_queue_count) return;
+    for (int i = offset; i < (int)g.net_action_queue_count - 1; i++) {
+        *net_action_queue_at(i) = *net_action_queue_at(i + 1);
+    }
+    memset(net_action_queue_at((int)g.net_action_queue_count - 1),
+           0, sizeof(g.net_action_queue[0]));
+    g.net_action_queue_count--;
+    if (g.net_action_queue_count == 0) g.net_action_queue_start = 0;
+}
+
+static int net_action_queue_find(uint16_t action_id) {
+    if (action_id == 0) return -1;
+    for (int i = 0; i < (int)g.net_action_queue_count; i++) {
+        const net_action_queue_item_t *item = net_action_queue_at(i);
+        if (item->active && item->action_id == action_id) return i;
+    }
+    return -1;
+}
+
 static void net_action_queue_update(float dt) {
     if (g.net_action_queue_count == 0) return;
     net_action_queue_item_t *item = net_action_queue_at(0);
@@ -1726,11 +1746,6 @@ static void net_action_queue_update(float dt) {
 
     while (g.net_action_queue_count > 0) {
         item = net_action_queue_at(0);
-        if (item->first_input_seq != 0 && g.net_last_server_ack != 0 &&
-            net_seq_after_or_equal(g.net_last_server_ack, item->first_input_seq)) {
-            net_action_queue_pop_front();
-            continue;
-        }
         if (item->age > NET_ACTION_RETRY_SEC) {
             g.net_action_dropped++;
             net_action_queue_pop_front();
@@ -1738,6 +1753,15 @@ static void net_action_queue_update(float dt) {
         }
         break;
     }
+}
+
+static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
+                                 uint8_t status, uint8_t action) {
+    (void)input_seq;
+    (void)status;
+    (void)action;
+    int offset = net_action_queue_find(action_id);
+    if (offset >= 0) net_action_queue_remove_at(offset);
 }
 
 static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
