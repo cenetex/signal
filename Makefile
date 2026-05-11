@@ -61,6 +61,10 @@ build-test:
 	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
+	# test_signal_verify shells out to signal_verify for CLI-only
+	# invariant coverage, so rebuild it here too; otherwise a stale
+	# tool binary can make the sharded suite fail or pass incorrectly.
+	cmake --build build --target signal_verify --parallel
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
@@ -227,5 +231,6 @@ deploy:
 	git push origin main
 
 clean:
-	rm -rf build build-web build-test build-coverage coverage.json crap.json
+	rm -rf build build-* _site test-results playwright-report coverage.json crap.json
+	rm -f compile_commands.json music_test
 	rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit

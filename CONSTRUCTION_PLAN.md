@@ -38,7 +38,7 @@ While undocked and not towing, `B` enters plan mode.
 - In open signal-covered space: plan mode creates a planned outpost ghost.
 - In plan mode, `R` cycles the module type and `E` reserves the current slot.
 
-While docked, `B` is a shortcut to the SHIPYARD tab if the station has one.
+Docked station tabs are cycled with `Tab`; `B` is only for undocked planning.
 
 ### 2. Order
 
@@ -62,9 +62,10 @@ can be tractored away.
 
 ### 4. Tow
 
-The tractor beam is toggled with `R`.
+The tractor beam is controlled with `Space`.
 
-- Turning the tractor off drops towed fragments and scaffolds.
+- Holding `Space` tractors fragments and scaffolds.
+- Tapping `Space` releases the current tow.
 - Scaffolds use spring-style tow physics and a speed cap.
 - Loose scaffolds can be picked up from shipyards and moved across the map.
 
