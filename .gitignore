@@ -1,5 +1,8 @@
 build/
 build-*/
+
+# Local one-off tool binary built from tools/music_test.c.
+music_test
 .claude/
 world.sav
 node_modules/
@@ -30,11 +33,7 @@ stations/
 saves/
 highscores.dat
 
-# Jekyll build output. Note: 5 stale files under _site/ are still
-# tracked from an earlier commit (space_miner.* pre-rename). The
-# .gitignore below only blocks *new* artifacts from polluting the
-# tree — run `git rm --cached _site/...` separately to retire the
-# stale tracked ones.
+# Jekyll build output.
 _site/
 
 # Media assets (too large for git — use Git LFS or external hosting)
