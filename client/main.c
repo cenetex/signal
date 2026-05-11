@@ -554,24 +554,31 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
 static void death_cinematic_spawn(const sim_event_t *ev) {
     float impact_speed = sqrtf(ev->death.vel_x * ev->death.vel_x +
                                ev->death.vel_y * ev->death.vel_y);
+    float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
     float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
     g.death_cinematic.active = true;
     g.death_cinematic.phase = 0;
     g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);
     g.death_cinematic.vel = v2(ev->death.vel_x, ev->death.vel_y);
     g.death_cinematic.angle = ev->death.angle;
-    g.death_cinematic.spin = spin_dir * clampf(1.4f + impact_speed / 90.0f, 2.0f, 8.5f);
+    g.death_cinematic.spin = spin_dir * clampf(3.0f + impact_speed / 45.0f, 5.0f, 16.0f);
     g.death_cinematic.age = 0.0f;
     g.death_cinematic.menu_alpha = 0.0f;
+    g.thrusting = false;
+    LOCAL_PLAYER.beam_active = false;
+    LOCAL_PLAYER.beam_hit = false;
+    LOCAL_PLAYER.ship.tractor_active = false;
+    g.screen_shake = fmaxf(g.screen_shake, clampf(26.0f + impact_speed * 0.12f, 38.0f, 82.0f));
     for (int s = 0; s < 8; s++) {
         float ang = ((float)s / 8.0f) * 2.0f * PI_F + (float)(s * 13 % 7) * 0.15f;
-        float speed = 30.0f + (float)((s * 7 + 3) % 5) * 12.0f;
+        float speed = 82.0f + severity * 34.0f + (float)((s * 7 + 3) % 5) * 22.0f;
         g.death_cinematic.fragments[s][0] = 0.0f;
         g.death_cinematic.fragments[s][1] = 0.0f;
-        g.death_cinematic.fragments[s][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
-        g.death_cinematic.fragments[s][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
+        g.death_cinematic.fragments[s][2] = cosf(ang) * speed + ev->death.vel_x * 0.45f;
+        g.death_cinematic.fragments[s][3] = sinf(ang) * speed + ev->death.vel_y * 0.45f;
         g.death_cinematic.fragments[s][4] = ang;
-        g.death_cinematic.fragments[s][5] = ((float)((s * 19 + 7) % 11) - 5.0f) * 0.6f;
+        g.death_cinematic.fragments[s][5] = ((float)((s * 19 + 7) % 11) - 5.0f) *
+                                            (1.0f + severity * 0.45f);
     }
 }
 
@@ -875,6 +882,10 @@ static void sim_step(float dt) {
      *   Phase 2 (closing): cinematic.active is false but menu_alpha
      *      decays back toward 0 so the stat screen visibly disappears. */
     if (g.death_cinematic.active) {
+        g.thrusting = false;
+        LOCAL_PLAYER.beam_active = false;
+        LOCAL_PLAYER.beam_hit = false;
+        LOCAL_PLAYER.ship.tractor_active = false;
         if (g.death_cinematic.phase == 0 &&
             g.death_cinematic.age >= DEATH_CINEMATIC_WORLD_PHASE_SEC) {
             g.death_cinematic.phase = 1;

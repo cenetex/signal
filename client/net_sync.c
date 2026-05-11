@@ -1190,6 +1190,7 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     if ((int)player_id != g.local_player_slot) return;
     net_replay_reset();
     float impact_speed = sqrtf(vel_x * vel_x + vel_y * vel_y);
+    float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
     float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
     g.death_ore_mined = ore_mined;
     g.death_credits_earned = credits_earned;
@@ -1203,18 +1204,24 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     g.death_cinematic.pos = v2(pos_x, pos_y);
     g.death_cinematic.vel = v2(vel_x, vel_y);
     g.death_cinematic.angle = angle;
-    g.death_cinematic.spin = spin_dir * clampf(1.4f + impact_speed / 90.0f, 2.0f, 8.5f);
+    g.death_cinematic.spin = spin_dir * clampf(3.0f + impact_speed / 45.0f, 5.0f, 16.0f);
     g.death_cinematic.age = 0.0f;
     g.death_cinematic.menu_alpha = 0.0f;
+    g.thrusting = false;
+    LOCAL_PLAYER.beam_active = false;
+    LOCAL_PLAYER.beam_hit = false;
+    LOCAL_PLAYER.ship.tractor_active = false;
+    g.screen_shake = fmaxf(g.screen_shake, clampf(26.0f + impact_speed * 0.12f, 38.0f, 82.0f));
     for (int i = 0; i < 8; i++) {
         float ang = ((float)i / 8.0f) * 2.0f * PI_F + (float)(i * 13 % 7) * 0.15f;
-        float speed = 30.0f + (float)((i * 7 + 3) % 5) * 12.0f;
+        float speed = 82.0f + severity * 34.0f + (float)((i * 7 + 3) % 5) * 22.0f;
         g.death_cinematic.fragments[i][0] = 0.0f;
         g.death_cinematic.fragments[i][1] = 0.0f;
-        g.death_cinematic.fragments[i][2] = cosf(ang) * speed + vel_x * 0.6f;
-        g.death_cinematic.fragments[i][3] = sinf(ang) * speed + vel_y * 0.6f;
+        g.death_cinematic.fragments[i][2] = cosf(ang) * speed + vel_x * 0.45f;
+        g.death_cinematic.fragments[i][3] = sinf(ang) * speed + vel_y * 0.45f;
         g.death_cinematic.fragments[i][4] = ang;
-        g.death_cinematic.fragments[i][5] = ((float)((i * 19 + 7) % 11) - 5.0f) * 0.6f;
+        g.death_cinematic.fragments[i][5] = ((float)((i * 19 + 7) % 11) - 5.0f) *
+                                            (1.0f + severity * 0.45f);
     }
     /* Suppress the legacy detector path */
     g.death_screen_timer = 0.0f;
