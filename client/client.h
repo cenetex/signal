@@ -170,6 +170,15 @@ typedef struct {
     float accumulator;
 } runtime_state_t;
 
+#define NET_REPLAY_FRAME_CAP 512
+
+typedef struct {
+    uint32_t tick;
+    uint16_t input_seq;
+    float dt;
+    input_intent_t intent;
+} input_replay_frame_t;
+
 typedef struct {
     input_state_t input;
     star_t stars[MAX_STARS];
@@ -325,6 +334,11 @@ typedef struct {
     uint16_t net_input_seq;
     uint16_t net_last_server_ack;
     uint32_t net_last_server_tick;
+    uint32_t net_prediction_tick;
+    bool net_prediction_tick_valid;
+    uint16_t net_replay_start;
+    uint16_t net_replay_count;
+    input_replay_frame_t net_replay[NET_REPLAY_FRAME_CAP];
     station_view_t station_view;
     /* TRADE tab pagination: [F] cycles through pages of 5 rows each.
      * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */
@@ -507,6 +521,8 @@ typedef struct {
         float window_elapsed;
         uint32_t samples;
         uint32_t deferred_samples;
+        uint32_t replayed_samples;
+        uint32_t replayed_frames;
     } net_motion;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];

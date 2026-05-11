@@ -156,6 +156,7 @@ static void reset_world(void) {
     g.net_input_seq = 0;
     g.net_last_server_ack = 0;
     g.net_last_server_tick = 0;
+    net_replay_reset();
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 

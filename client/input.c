@@ -53,6 +53,7 @@
 #include "local_server.h"
 #include "music.h"
 #include "net.h"
+#include "net_sync.h"
 #include "onboarding.h"
 #include "signal_model.h"
 #include "mining.h"
@@ -952,6 +953,7 @@ input_intent_t sample_input_intent(void) {
 void submit_input(const input_intent_t *intent, float dt) {
     /* Set on client world for prediction */
     LOCAL_PLAYER.input = *intent;
+    net_replay_record_prediction(intent, dt);
 
     /* Client prediction: immediate local feedback (movement, beam targeting) */
     world_sim_step_player_only(&g.world, g.local_player_slot, dt);

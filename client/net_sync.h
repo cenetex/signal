@@ -13,6 +13,10 @@
 void on_player_join(uint8_t player_id);
 void on_player_leave(uint8_t player_id);
 
+/* Local input prediction history used to replay after server correction. */
+void net_replay_reset(void);
+void net_replay_record_prediction(const input_intent_t *intent, float dt);
+
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
