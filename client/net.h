@@ -9,7 +9,7 @@
  *   JOIN  (0x01): 1 type + 1 player_id
  *   LEAVE (0x02): 1 type + 1 player_id
  *   STATE (0x03): 1 type + 1 player_id + 5 float32 (x, y, vx, vy, angle)
- *   INPUT (0x04): 14 bytes, legacy-compatible prefix + seq + uint16 target + action id
+ *   INPUT (0x04): 18 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
@@ -50,6 +50,7 @@ typedef struct {
     float beam_end_x, beam_end_y;
     uint16_t input_seq_ack;        /* last input seq the server accepted */
     uint32_t server_tick;          /* authoritative tick for this pose */
+    uint32_t input_tick_ack;       /* tick where input_seq_ack was applied */
     bool active;
 } NetPlayerState;
 
@@ -375,7 +376,8 @@ bool net_send_claim_legacy_save(const char *token_basename);
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.)
- * mining_target: client's hover_asteroid index (0xFFFF=none) */
+ * mining_target: client's hover_asteroid index (0xFFFF=none)
+ * input_tick: client-predicted sim tick this movement should affect */
 /* `buy_grade` is the 5th byte of the input msg — only meaningful when
  * `action` is in the NET_ACTION_BUY_PRODUCT range. Pass MINING_GRADE_COUNT
  * (5) to mean "any grade, FIFO"; the server parser defaults to that when
@@ -390,7 +392,7 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id);
+                    uint16_t action_id, uint32_t input_tick);
 
 /* RATi v2: purchase a specific named ingot from the docked station's
  * stockpile. Server will validate ledger balance + hold space. */

@@ -64,6 +64,63 @@ static bool highscores_dirty = true;      /* broadcast + persist pending */
 static void ws_send(struct mg_connection *c, const void *data, size_t len);
 static float player_station_balance(const server_player_t *sp);
 
+static bool tick_after_u32(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
+}
+
+static uint32_t server_input_apply_tick(uint32_t client_tick) {
+    const uint32_t max_future_ticks = 48; /* 400ms at 120Hz */
+    uint32_t next_tick = world.tick + 1u;
+    if (client_tick == 0 || !tick_after_u32(client_tick, world.tick))
+        return next_tick;
+    if (tick_after_u32(client_tick, world.tick + max_future_ticks))
+        return world.tick + max_future_ticks;
+    return client_tick;
+}
+
+static void merge_one_shot_input(input_intent_t *dst,
+                                 const input_intent_t *src) {
+    if (!dst || !src) return;
+    if (src->dock) {
+        dst->dock = true;
+        dst->interact = true;
+    }
+    if (src->launch) {
+        dst->launch = true;
+        dst->interact = true;
+    }
+    if (src->interact) dst->interact = true;
+    if (src->service_sell) {
+        dst->service_sell = true;
+        dst->service_sell_only = src->service_sell_only;
+        dst->service_sell_grade = src->service_sell_grade;
+        dst->service_sell_one = src->service_sell_one;
+    }
+    if (src->service_repair) dst->service_repair = true;
+    if (src->upgrade_mining) dst->upgrade_mining = true;
+    if (src->upgrade_hold) dst->upgrade_hold = true;
+    if (src->upgrade_tractor) dst->upgrade_tractor = true;
+    if (src->place_outpost) {
+        dst->place_outpost = true;
+        dst->place_target_station = src->place_target_station;
+        dst->place_target_ring = src->place_target_ring;
+        dst->place_target_slot = src->place_target_slot;
+    }
+    if (src->buy_scaffold_kit) {
+        dst->buy_scaffold_kit = true;
+        dst->scaffold_kit_module = src->scaffold_kit_module;
+    }
+    if (src->buy_product) {
+        dst->buy_product = true;
+        dst->buy_commodity = src->buy_commodity;
+        dst->buy_grade = src->buy_grade;
+    }
+    if (src->hail) dst->hail = true;
+    if (src->release_tow) dst->release_tow = true;
+    if (src->reset) dst->reset = true;
+    if (src->toggle_autopilot) dst->toggle_autopilot = true;
+}
+
 static void broadcast_highscores(void) {
     uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
     int len = highscore_serialize(buf, &highscores);
@@ -273,7 +330,7 @@ static uint8_t pending_action_result_status(const server_player_t *sp,
 }
 
 static void send_pending_action_results(const sim_events_t *events) {
-    uint32_t server_tick = (uint32_t)lroundf(world.time * 120.0f);
+    uint32_t server_tick = world.tick;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
         if (!sp->pending_action_result_valid) continue;
@@ -437,9 +494,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         uint16_t input_seq = (len >= 10)
             ? (uint16_t)data[8] | ((uint16_t)data[9] << 8)
             : 0;
+        uint32_t client_tick = input_client_tick(data, len);
+        server_player_t *sp = &world.players[pid];
         if (len >= 14 && action != NET_ACTION_NONE) {
             action_id = input_action_id(data, len);
-            server_player_t *sp = &world.players[pid];
             if (action_id != 0 && sp->last_input_action_id_valid &&
                 sp->last_input_action_id == action_id) {
                 ack_status = NET_ACTION_ACK_DUPLICATE;
@@ -456,9 +514,17 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 begin_pending_action_result(sp, action_id, input_seq, action);
             }
         }
-        parse_input(input_data, len, &world.players[pid].input);
-        if (len >= 10)
-            world.players[pid].last_input_seq = input_seq;
+        if (len >= 4) {
+            input_intent_t parsed = {0};
+            parsed.mining_target_hint = -1;
+            parsed.buy_grade = MINING_GRADE_COUNT;
+            parsed.service_sell_only = COMMODITY_COUNT;
+            parsed.service_sell_grade = MINING_GRADE_COUNT;
+            parse_input(input_data, len, &parsed);
+            server_player_queue_movement_input(
+                sp, &parsed, input_seq, server_input_apply_tick(client_tick));
+            merge_one_shot_input(&sp->input, &parsed);
+        }
         if (ack_status != 0 && c)
             send_action_ack(c, action_id, input_seq, ack_status, data[2]);
         /* If the player just queued a shipyard order, refresh that station's
@@ -2331,7 +2397,7 @@ static void broadcast_player_states(void) {
     /* Batch all connected player states into one message, send once per client.
      * This is O(N) sends instead of O(N^2). */
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
-    uint32_t server_tick = (uint32_t)lroundf(world.time * 120.0f);
+    uint32_t server_tick = world.tick;
     int len = serialize_all_player_states(buf, world.players, server_tick);
     broadcast(buf, (size_t)len);
 }
@@ -2608,7 +2674,7 @@ static void srv_on_death(const sim_event_t *ev) {
         memcpy(dp.victim_callsign, sp->callsign, 8);
         memcpy(dp.killer_token, ev->death.killer_token, 8);
         dp.cause = ev->death.cause;
-        dp.epoch_tick = (uint64_t)(world.time * 120.0);
+        dp.epoch_tick = (uint64_t)world.tick;
         dp.credits_earned = ev->death.credits_earned;
         dp.credits_spent = ev->death.credits_spent;
         dp.ore_mined = ev->death.ore_mined;
@@ -2623,7 +2689,7 @@ static void srv_on_death(const sim_event_t *ev) {
     uint32_t world_id = world.belt_seed;
     uint32_t world_seq = world.world_seq;
     uint32_t build_id = signal_build_id_u32();
-    uint64_t epoch_tick = (uint64_t)(world.time * 120.0);
+    uint64_t epoch_tick = (uint64_t)world.tick;
     bool qualified = highscore_submit(&highscores, cs, ev->death.credits_earned,
                                       world_id, world_seq, build_id,
                                       epoch_tick, killed_by);

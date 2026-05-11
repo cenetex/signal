@@ -183,6 +183,14 @@ typedef struct {
  * server_player_t and npc_ship_t carry one and feed the same
  * step_player / sim_ship pipeline. */
 
+#define PLAYER_MOVEMENT_QUEUE_CAP 64
+
+typedef struct {
+    uint32_t apply_tick;
+    uint16_t input_seq;
+    input_intent_t intent;
+} movement_input_cmd_t;
+
 typedef struct {
     bool connected;
     uint8_t id;
@@ -228,9 +236,12 @@ typedef struct {
     float autopilot_stuck_timer;/* seconds since meaningful movement */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
+    movement_input_cmd_t movement_queue[PLAYER_MOVEMENT_QUEUE_CAP];
+    uint8_t movement_queue_count;
     /* Last movement/control input sequence accepted from this client. Mirrored
      * back in WORLD_PLAYERS so the client can reason about prediction age. */
     uint16_t last_input_seq;
+    uint32_t last_input_tick;
     /* Last one-shot action id accepted on NET_MSG_INPUT. Retransmitted
      * action frames keep the same id, so the server can ignore duplicates
      * without discarding the packet's current movement flags. */
@@ -436,6 +447,7 @@ typedef struct {
      * possible). */
     uint32_t world_seq;
     float time;
+    uint32_t tick;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */
     /* Regression telemetry for the retired refinery-hopper smelt path.
@@ -501,6 +513,10 @@ void world_seed_station_chain_genesis(world_t *w);
 void world_cleanup(world_t *w);
 void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
+void server_player_queue_movement_input(server_player_t *sp,
+                                        const input_intent_t *intent,
+                                        uint16_t input_seq,
+                                        uint32_t apply_tick);
 void player_init_ship(server_player_t *sp, world_t *w);
 
 /* Layer A.2 of #479 — pubkey registry. */

@@ -1258,6 +1258,7 @@ bool world_load(world_t *w, const char *path) {
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);
+    w->tick = (uint32_t)lroundf(w->time / SIM_DT);
     READ_FIELD(f, w->field_spawn_timer);
 
     /* v25+: station_count header; v24: fixed at 8 */
