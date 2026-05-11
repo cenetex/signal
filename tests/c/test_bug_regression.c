@@ -564,6 +564,30 @@ TEST(test_bug39_launch_immediate_redock) {
      * but fragile. */
 }
 
+TEST(test_bug39_duplicate_launch_action_no_redock) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+
+    uint8_t launch_msg[4] = { NET_MSG_INPUT, 0, NET_ACTION_LAUNCH, 0xFF };
+    parse_input(launch_msg, sizeof(launch_msg), &w.players[0].input);
+    ASSERT(w.players[0].input.launch);
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!w.players[0].docked);
+
+    /* A duplicate or delayed LAUNCH must remain a launch semantic. The
+     * legacy generic interact bool would reinterpret the second packet as
+     * "dock" once the first packet had already launched the ship. */
+    w.players[0].in_dock_range = true;
+    w.players[0].nearby_station = 0;
+    parse_input(launch_msg, sizeof(launch_msg), &w.players[0].input);
+    ASSERT(w.players[0].input.launch);
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!w.players[0].docked);
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1354,6 +1378,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug37_mine_inactive_asteroid);
     RUN(test_bug38_dock_dampening_framerate_dependent);
     RUN(test_bug39_launch_immediate_redock);
+    RUN(test_bug39_duplicate_launch_action_no_redock);
     RUN(test_bug40_no_player_player_collision);
 }
 

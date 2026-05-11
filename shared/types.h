@@ -777,6 +777,11 @@ typedef struct {
     float turn;
     float thrust;
     bool mine;
+    /* Explicit network one-shots. The legacy/local interact field is
+     * context-sensitive, but wire actions must stay semantic so a delayed
+     * or duplicated LAUNCH cannot turn into a DOCK after state changes. */
+    bool dock;
+    bool launch;
     bool interact;
     bool service_sell;
     /* Selective delivery filter for service_sell. COMMODITY_COUNT means
