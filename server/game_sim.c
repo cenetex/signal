@@ -2971,6 +2971,25 @@ static void handle_hail(world_t *w, server_player_t *sp) {
         emit_hail_miss(w, sp);
 }
 
+static bool try_dock_from_range(world_t *w, server_player_t *sp) {
+    if (!sp->in_dock_range || sp->nearby_station < 0 ||
+        sp->nearby_station >= MAX_STATIONS) {
+        return false;
+    }
+
+    const station_t *dock_st = &w->stations[sp->nearby_station];
+    int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+    sp->dock_berth = berth;
+    vec2 bp = dock_berth_pos(dock_st, berth);
+    float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
+    if (d <= DOCK_SNAP_DISTANCE) {
+        dock_ship(w, sp);
+    } else {
+        sp->docking_approach = true;
+    }
+    return true;
+}
+
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
     /* Order scaffold from shipyard: queues build + generates material contract */
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
@@ -3028,21 +3047,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         place_towed_scaffold(w, sp);
         return;
     }
-    if (intent->interact) {
+    if (intent->launch) {
         if (sp->docked) { launch_ship(w, sp); return; }
-        if (sp->in_dock_range) {
-            const station_t *dock_st = &w->stations[sp->nearby_station];
-            int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
-            sp->dock_berth = berth;
-            vec2 bp = dock_berth_pos(dock_st, berth);
-            float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
-            if (d <= DOCK_SNAP_DISTANCE) {
-                dock_ship(w, sp);
-            } else {
-                sp->docking_approach = true;
-            }
-            return;
-        }
+    } else if (intent->dock) {
+        if (!sp->docked && try_dock_from_range(w, sp)) return;
+    } else if (intent->interact) {
+        if (sp->docked) { launch_ship(w, sp); return; }
+        if (try_dock_from_range(w, sp)) return;
     }
     /* Cancel docking approach if player thrusts away */
     if (sp->docking_approach && (intent->thrust > 0.1f || intent->thrust < -0.1f)) {
@@ -3703,6 +3714,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     }
 
     /* Clear one-shot action flags after the sim has consumed them. */
+    sp->input.dock = false;
+    sp->input.launch = false;
     sp->input.interact = false;
     sp->input.service_sell = false;
     sp->input.service_repair = false;

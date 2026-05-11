@@ -971,7 +971,11 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         uint8_t action = data[2];
         switch (action) {
         case NET_ACTION_DOCK:
+            intent->dock = true;
+            intent->interact = true;
+            break;
         case NET_ACTION_LAUNCH:
+            intent->launch = true;
             intent->interact = true;
             break;
         case NET_ACTION_SELL_CARGO:

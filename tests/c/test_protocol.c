@@ -822,13 +822,28 @@ TEST(test_parse_input_action_accumulates) {
     /* First input: dock action */
     uint8_t msg1[4] = { NET_MSG_INPUT, 0, NET_ACTION_DOCK, 0xFF };
     parse_input(msg1, 4, &intent);
+    ASSERT(intent.dock);
+    ASSERT(!intent.launch);
     ASSERT(intent.interact);
 
     /* Second input: sell action — should OR in, not replace */
     uint8_t msg2[4] = { NET_MSG_INPUT, 0, NET_ACTION_SELL_CARGO, 0xFF };
     parse_input(msg2, 4, &intent);
+    ASSERT(intent.dock);           /* still true from first */
     ASSERT(intent.interact);       /* still true from first */
     ASSERT(intent.service_sell);   /* added by second */
+}
+
+TEST(test_parse_input_launch_keeps_semantic_action) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[4] = { NET_MSG_INPUT, 0, NET_ACTION_LAUNCH, 0xFF };
+    parse_input(msg, 4, &intent);
+
+    ASSERT(intent.launch);
+    ASSERT(!intent.dock);
+    ASSERT(intent.interact);
 }
 
 void register_protocol_main_tests(void) {
@@ -855,4 +870,5 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_no_action);
     RUN(test_parse_input_v2_uint16_mining_target);
     RUN(test_parse_input_action_accumulates);
+    RUN(test_parse_input_launch_keeps_semantic_action);
 }
