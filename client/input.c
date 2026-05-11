@@ -58,6 +58,16 @@
 #include "signal_model.h"
 #include "mining.h"
 
+static float action_predict_window_sec(void) {
+    float window = 0.5f;
+    if (g.multiplayer_enabled && g.net_last_ack_rtt > 0.0f) {
+        window = 0.25f + g.net_last_ack_rtt * 2.0f;
+        if (window < 0.5f) window = 0.5f;
+        if (window > 2.0f) window = 2.0f;
+    }
+    return window;
+}
+
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
@@ -979,7 +989,7 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->cancel_plan_slot || intent->toggle_autopilot;
 
     if (has_action)
-        g.action_predict_timer = 0.5f;
+        g.action_predict_timer = action_predict_window_sec();
 
     /* Multiplayer: plan intents ride a dedicated message — they carry
      * richer payloads (target station/ring/slot/type or world position)
