@@ -379,6 +379,15 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         if (match)              { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
         else if (srv[0] == '\0'){ sdtx_color3b(PAL_SYNC_CONNECTING);  sdtx_puts("connecting..."); }
         else                    { sdtx_color3b(PAL_SYNC_RESYNCING);   sdtx_puts("syncing..."); }
+        if (g.net_last_ack_rtt > 0.0f) {
+            float net_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 156.0f : 214.0f)));
+            sdtx_pos(net_x, info_y + 1.2f);
+            sdtx_color3b(PAL_TEXT_GREY);
+            sdtx_printf("net %.0fms q%u r%u",
+                        g.net_last_ack_rtt * 1000.0f,
+                        (unsigned)g.net_action_queue_count,
+                        (unsigned)g.net_replay_count);
+        }
     } else if (g.multiplayer_enabled) {
         sdtx_color3b(PAL_SYNC_OFFLINE);
         sdtx_puts("offline [P] reconnect");

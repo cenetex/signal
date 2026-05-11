@@ -772,6 +772,20 @@ void begin_player_state_batch(void) {
     g.player_interp.t = 0.0f;
 }
 
+static void record_net_input_ack(uint16_t input_seq_ack) {
+    if (input_seq_ack == 0) return;
+    int index = (int)(input_seq_ack % NET_INPUT_TIMING_CAP);
+    net_input_timing_t *timing = &g.net_input_timing[index];
+    if (timing->seq != input_seq_ack || timing->sent_at <= 0.0f) return;
+
+    float rtt = g.net_time - timing->sent_at;
+    if (rtt < 0.0f || rtt > 30.0f) return;
+    g.net_last_ack_rtt = rtt;
+    if (rtt > g.net_max_ack_rtt_5s) g.net_max_ack_rtt_5s = rtt;
+    timing->seq = 0;
+    timing->sent_at = 0.0f;
+}
+
 static void record_local_player_motion_telemetry(float correction_dist,
                                                  float velocity_error,
                                                  float applied_correction_dist,
@@ -843,7 +857,10 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool has_unacked_input =
             has_input_ack && g.net_input_seq != 0 &&
             state->input_seq_ack != g.net_input_seq;
-        if (has_input_ack) g.net_last_server_ack = state->input_seq_ack;
+        if (has_input_ack) {
+            g.net_last_server_ack = state->input_seq_ack;
+            record_net_input_ack(state->input_seq_ack);
+        }
         if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
 
         float target_x = state->x;

@@ -284,7 +284,27 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 
     switch (data[0]) {
     case NET_MSG_INPUT:
-        parse_input(data, len, &world.players[pid].input);
+    {
+        const uint8_t *input_data = data;
+        uint8_t input_copy[32];
+        uint8_t action = (len >= 3) ? data[2] : NET_ACTION_NONE;
+        if (len >= 14 && action != NET_ACTION_NONE) {
+            uint16_t action_id = input_action_id(data, len);
+            server_player_t *sp = &world.players[pid];
+            if (action_id != 0 && sp->last_input_action_id_valid &&
+                sp->last_input_action_id == action_id) {
+                if (len <= (int)sizeof(input_copy)) {
+                    memcpy(input_copy, data, (size_t)len);
+                    input_copy[2] = NET_ACTION_NONE;
+                    input_data = input_copy;
+                    action = NET_ACTION_NONE;
+                }
+            } else if (action_id != 0) {
+                sp->last_input_action_id = action_id;
+                sp->last_input_action_id_valid = true;
+            }
+        }
+        parse_input(input_data, len, &world.players[pid].input);
         if (len >= 10) {
             world.players[pid].last_input_seq =
                 (uint16_t)data[8] | ((uint16_t)data[9] << 8);
@@ -293,7 +313,6 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
          * identity on the next world tick so the SHIPYARD tab sees the new
          * pending count immediately instead of waiting for the 2s fallback. */
         if (len >= 3) {
-            uint8_t action = data[2];
             if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
                  action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
                 action == NET_ACTION_BUY_SCAFFOLD) {
@@ -311,6 +330,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             }
         }
         break;
+    }
     case NET_MSG_PLAN:
         parse_plan(data, len, &world.players[pid].input);
         break;
@@ -945,6 +965,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 /* Seed starting credits now that session_token is set */
                 player_seed_credits(&world.players[pid], &world);
             }
+            world.players[pid].last_input_action_id = 0;
+            world.players[pid].last_input_action_id_valid = false;
             /* Layer A.2 (#479): if the client registered its pubkey before
              * SESSION, rebind the registry entry to the real session_token
              * so future lookups by pubkey find this slot. */
