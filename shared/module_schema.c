@@ -43,11 +43,9 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_FURNACE] = {
         .name = "Furnace",
         .kind = MODULE_KIND_PRODUCER,
-        /* The schema input/output reflects this module's *primary* role
-         * in the count-tier system: a single furnace smelts ferrite, so
-         * that's what the producer-recipe path references. The dynamic
-         * tier rules in sim_can_smelt_ore (1=Fe, 2=Fe+Cu, 3=Cu+Cr) live
-         * in sim_production.c and run regardless of this static label. */
+        /* The schema input/output is the legacy/default furnace role.
+         * Live smelting uses each station_module_t.commodity tag to pick
+         * the output ingot and matching input ore. */
         .input = COMMODITY_FERRITE_ORE,
         .output = COMMODITY_FERRITE_INGOT,
         .rate = 1.0f, .buffer_capacity = 12.0f,
@@ -114,7 +112,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_LASER,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cu ingots from a 2+ furnace stack */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cuprite ingots */
         .pair_intake = MODULE_HOPPER,
     },
     [MODULE_TRACTOR_FAB] = {
@@ -128,7 +126,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_TRACTOR,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cr ingots from a 3+ furnace stack */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs two-pass crystal ingots */
         .pair_intake = MODULE_HOPPER,
     },
     [MODULE_SHIPYARD] = {

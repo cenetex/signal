@@ -1193,10 +1193,8 @@ TEST(test_repair_partial_when_kits_short) {
 }
 
 TEST(test_furnace_without_hopper_does_not_smelt) {
-    /* Under the count-tier rules, a furnace requires at least one
-     * hopper on the station before it'll fire. Inverse of the prior
-     * test (which asserted a furnace alone would smelt) — that's the
-     * exact behavior we removed in the rework. */
+    /* Furnace capability is pair/tag based: a tagged furnace still
+     * requires an adjacent matching ore hopper before it'll fire. */
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -1508,49 +1506,97 @@ void register_economy_service259_tests(void) {
     RUN(test_no_passive_heal_without_kits);
 }
 
-/* Count-tier smelt rules pinned: the matrix below is the contract the
- * gameplay design rests on. Any future tweak to station_can_smelt
- * has to update this test and the design notes together. */
-TEST(test_count_tier_smelt_rules) {
+/* Tagged furnace/pair smelt rules pinned: smelt capability comes from
+ * a furnace tagged for the output ingot plus a matching ore hopper on an
+ * adjacent ring. Crystal needs two distinct crystal furnace pairs because
+ * the first pass creates a tractorable intermediate fragment. */
+TEST(test_tagged_furnace_pair_smelt_rules) {
     station_t st = {0};
-    /* 0 furnaces: nothing smelts even with a hopper. */
-    st.modules[0].type = MODULE_HOPPER;
+    /* 0 furnaces: nothing smelts even with a tagged hopper. */
+    st.modules[0] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+        .build_progress = 1.0f,
+    };
     st.module_count = 1;
     ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
     ASSERT(!station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
     ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
 
-    /* 1 furnace + hopper: ferrite only. */
-    st.modules[1].type = MODULE_FURNACE;
+    /* One ferrite furnace+hopper pair: ferrite only. */
+    st.modules[1] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 1, .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .build_progress = 1.0f,
+    };
     st.module_count = 2;
     ASSERT(station_can_smelt(&st, COMMODITY_FERRITE_ORE));
     ASSERT(!station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
     ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
 
-    /* 2 furnaces + hopper: ferrite + cuprite. */
-    st.modules[2].type = MODULE_FURNACE;
-    st.module_count = 3;
+    /* Add a cuprite pair: ferrite and cuprite both work by tag. */
+    st.modules[2] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 1,
+        .commodity = (uint8_t)COMMODITY_CUPRITE_ORE,
+        .build_progress = 1.0f,
+    };
+    st.modules[3] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 1, .slot = 1,
+        .commodity = (uint8_t)COMMODITY_CUPRITE_INGOT,
+        .build_progress = 1.0f,
+    };
+    st.module_count = 4;
     ASSERT(station_can_smelt(&st, COMMODITY_FERRITE_ORE));
     ASSERT(station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
     ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
 
-    /* 3 furnaces + hopper: cuprite + crystal (ferrite explicitly off). */
-    st.modules[3].type = MODULE_FURNACE;
-    st.module_count = 4;
-    ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+    /* One crystal pair can stage crystal, but does not advertise full
+     * station smelt capability until there is a second crystal pair. */
+    st.modules[4] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 2,
+        .commodity = (uint8_t)COMMODITY_CRYSTAL_ORE,
+        .build_progress = 1.0f,
+    };
+    st.modules[5] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 1, .slot = 2,
+        .commodity = (uint8_t)COMMODITY_CRYSTAL_INGOT,
+        .build_progress = 1.0f,
+    };
+    st.module_count = 6;
+    ASSERT(station_can_smelt(&st, COMMODITY_FERRITE_ORE));
     ASSERT(station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
+
+    st.modules[6] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 3, .slot = 2,
+        .commodity = (uint8_t)COMMODITY_CRYSTAL_INGOT,
+        .build_progress = 1.0f,
+    };
+    st.module_count = 7;
     ASSERT(station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
 
-    /* 1 furnace, no hopper: nothing smelts (hopper required). */
+    /* Tagged furnace without matching adjacent hopper: nothing smelts. */
     memset(&st, 0, sizeof st);
-    st.modules[0].type = MODULE_FURNACE;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 1, .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .build_progress = 1.0f,
+    };
     st.module_count = 1;
     ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
 
     /* Scaffold furnaces don't count. */
     memset(&st, 0, sizeof st);
-    st.modules[0].type = MODULE_HOPPER;
-    st.modules[1].type = MODULE_FURNACE;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+        .build_progress = 1.0f,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_FURNACE, .ring = 1, .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .build_progress = 1.0f,
+    };
     st.modules[1].scaffold = true;
     st.module_count = 2;
     ASSERT_EQ_INT(station_furnace_count(&st), 0);
@@ -1561,7 +1607,7 @@ void register_economy_refinery_smelt_tests(void) {
     TEST_SECTION("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_fragment_into_inventory);
     RUN(test_furnace_without_hopper_does_not_smelt);
-    RUN(test_count_tier_smelt_rules);
+    RUN(test_tagged_furnace_pair_smelt_rules);
 }
 
 /* station_top_demand: derives the top shortage from inventory + the

@@ -15,8 +15,10 @@
 #include "types.h"
 #include "palette.h"
 
-/* Pick the per-ring furnace tint for a single MODULE_FURNACE on `st`,
- * sitting at ring `my_ring`. The matrix:
+/* Legacy fallback for untagged MODULE_FURNACE instances on `st`,
+ * sitting at ring `my_ring`. Tagged furnaces use their instance
+ * commodity directly through station_palette_furnace_module_color().
+ * The fallback matrix:
  *
  *   1 furnace:    inner ring → ferrite (red)
  *   2 furnaces:   inner → ferrite, outer → cuprite (blue)
@@ -24,11 +26,10 @@
  *                 outermost → cuprite (blue),
  *                 anything in between → chunks-feeder (white)
  *
- * Rationale: 1-furnace stations (Prospect) are pure ferrite smelters;
- * 3+-furnace stations (Helios) specialize in cuprite + crystal with a
- * middle "chunks-feeder" helper. Player-planted outposts that grow
- * 1 → 2 → 3 furnaces will retint automatically as new furnaces are
- * added — the table is read at render time from station state. */
+ * Rationale: old saves and test-built stations may contain untagged
+ * furnaces. Player-planted outposts that grow 1 → 2 → 3 untagged
+ * furnaces still get deterministic render colors until save migration
+ * assigns explicit commodity tags. */
 static inline void station_palette_furnace_color(const station_t *st,
                                                  int my_ring,
                                                  float *r, float *g, float *b) {

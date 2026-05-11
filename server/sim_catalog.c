@@ -47,7 +47,8 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 6  /* v6: station-authored NPC/RATi hail text.
+#define CATALOG_VERSION 7  /* v7: Helios furnace set is 2x crystal + 1x cuprite.
+                            * v6: station-authored NPC/RATi hail text.
                             * v5: repair Helios smelter ore/furnace adjacency.
                             * v4: repair Helios seed to include shipyard + frame hopper.
                             * v3: per-module commodity tag (hopper specialization). */
@@ -89,19 +90,6 @@ static int catalog_find_hopper_for(const station_t *st, commodity_t commodity) {
     return -1;
 }
 
-static int catalog_find_furnace_for(const station_t *st, commodity_t ingot, int ordinal) {
-    if (!st) return -1;
-    int seen = 0;
-    for (int i = 0; i < st->module_count; i++) {
-        const station_module_t *m = &st->modules[i];
-        if (m->type != MODULE_FURNACE) continue;
-        if (module_instance_output(m) != ingot) continue;
-        if (seen == ordinal) return i;
-        seen++;
-    }
-    return -1;
-}
-
 static bool catalog_place_module(station_t *st, module_type_t type, int ring, int slot) {
     if (!st) return false;
     int idx = catalog_find_module(st, type);
@@ -129,20 +117,65 @@ static bool catalog_place_hopper(station_t *st, commodity_t commodity, int ring,
     return changed;
 }
 
-static bool catalog_place_furnace(station_t *st, commodity_t ingot, int ordinal,
-                                  int ring, int slot) {
+typedef struct {
+    commodity_t ingot;
+    int ring;
+    int slot;
+} catalog_furnace_spec_t;
+
+static bool catalog_normalize_furnaces(station_t *st,
+                                       const catalog_furnace_spec_t *specs,
+                                       int spec_count) {
     if (!st) return false;
-    int idx = catalog_find_furnace_for(st, ingot, ordinal);
-    if (idx < 0) {
-        if (st->module_count >= MAX_MODULES_PER_STATION) return false;
-        add_furnace_for(st, (uint8_t)ring, (uint8_t)slot, ingot);
-        return true;
+    bool changed = false;
+    int furnace_indices[MAX_MODULES_PER_STATION];
+    int furnace_count = 0;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type != MODULE_FURNACE) continue;
+        furnace_indices[furnace_count++] = i;
     }
-    bool changed = catalog_move_module(&st->modules[idx], ring, slot);
-    if ((commodity_t)st->modules[idx].commodity != ingot) {
-        st->modules[idx].commodity = (uint8_t)ingot;
+
+    for (int i = 0; i < spec_count; i++) {
+        if (i >= furnace_count) {
+            if (st->module_count >= MAX_MODULES_PER_STATION) return changed;
+            add_furnace_for(st, (uint8_t)specs[i].ring,
+                            (uint8_t)specs[i].slot, specs[i].ingot);
+            changed = true;
+            continue;
+        }
+
+        station_module_t *m = &st->modules[furnace_indices[i]];
+        if ((commodity_t)m->commodity != specs[i].ingot) {
+            m->commodity = (uint8_t)specs[i].ingot;
+            changed = true;
+        }
+        changed |= catalog_move_module(m, specs[i].ring, specs[i].slot);
+    }
+
+    for (int i = furnace_count - 1; i >= spec_count; i--) {
+        int idx = furnace_indices[i];
+        for (int k = idx + 1; k < st->module_count; k++)
+            st->modules[k - 1] = st->modules[k];
+        st->module_count--;
         changed = true;
     }
+    return changed;
+}
+
+static bool catalog_normalize_helios_furnaces(station_t *st) {
+    static const catalog_furnace_spec_t specs[] = {
+        { COMMODITY_CRYSTAL_INGOT, 1, 2 },
+        { COMMODITY_CRYSTAL_INGOT, 3, 4 },
+        { COMMODITY_CUPRITE_INGOT, 3, 6 },
+    };
+    return catalog_normalize_furnaces(st, specs,
+                                      (int)(sizeof(specs) / sizeof(specs[0])));
+}
+
+static bool station_catalog_migrate_v7_helios(station_t *st, int index, uint32_t ver) {
+    if (!st || index != 2 || ver >= 7) return false;
+    bool changed = catalog_normalize_helios_furnaces(st);
+    if (changed) rebuild_station_services(st);
     return changed;
 }
 
@@ -159,11 +192,9 @@ static bool station_catalog_migrate_v5_helios(station_t *st, int index, uint32_t
 
     changed |= catalog_place_hopper(st, COMMODITY_LASER_MODULE, 3, 2);
     changed |= catalog_place_hopper(st, COMMODITY_FRAME, 3, 3);
-    changed |= catalog_place_furnace(st, COMMODITY_CRYSTAL_INGOT, 0, 3, 4);
     changed |= catalog_place_hopper(st, COMMODITY_CRYSTAL_INGOT, 3, 5);
-    changed |= catalog_place_furnace(st, COMMODITY_CUPRITE_INGOT, 0, 1, 2);
-    changed |= catalog_place_furnace(st, COMMODITY_CUPRITE_INGOT, 1, 3, 6);
     changed |= catalog_place_hopper(st, COMMODITY_TRACTOR_MODULE, 3, 7);
+    changed |= catalog_normalize_helios_furnaces(st);
 
     if (changed) rebuild_station_services(st);
     return changed;
@@ -350,6 +381,9 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
 
     if (station_catalog_migrate_v5_helios(st, index, ver)) {
         printf("[catalog] migrated station %d to v5 Helios smelter layout\n", index);
+    }
+    if (station_catalog_migrate_v7_helios(st, index, ver)) {
+        printf("[catalog] migrated station %d to v7 Helios crystal layout\n", index);
     }
 
     /* Rebuild service flags from module list */
