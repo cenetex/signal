@@ -8,7 +8,7 @@
 # (or interleaved), every commit would either delay the deploy or
 # steal CPU from the build. So the hook runs:
 #
-#   Phase 1 (fast, ~5-10s):  wasm rebuild → server rebuild → restart
+#   Phase 1 (fast, ~5-10s):  wasm rebuild → server rebuild → restart/recreate
 #   Phase 2 (background): signal_test --quiet --no-soak, results to log
 #
 # Both phases are backgrounded + disowned so `git commit` returns
@@ -26,6 +26,49 @@ cd "$ROOT" || exit 0
 
 LOG=/tmp/signal-local-sync.log
 echo "post-commit: rebuilding wasm + docker (log: $LOG)"
+
+compose_mount_source() {
+    local cid=$1
+    local destination=$2
+    docker inspect "$cid" \
+        --format "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" \
+        2>/dev/null
+}
+
+signal_container_has_stale_mounts() {
+    local cid
+    cid=$(docker compose ps -a -q signal 2>/dev/null || true)
+    [ -n "$cid" ] || return 1
+
+    local stale=0
+    local actual
+
+    actual=$(compose_mount_source "$cid" /app/data)
+    if [ "$actual" != "$ROOT/data" ]; then
+        echo "[local-sync] container mount mismatch: /app/data is ${actual:-missing}, expected $ROOT/data"
+        stale=1
+    fi
+
+    actual=$(compose_mount_source "$cid" /app/build-web)
+    if [ "$actual" != "$ROOT/build-web" ]; then
+        echo "[local-sync] container mount mismatch: /app/build-web is ${actual:-missing}, expected $ROOT/build-web"
+        stale=1
+    fi
+
+    actual=$(compose_mount_source "$cid" /app/srv-local)
+    if [ "$actual" != "$ROOT/build-server-bin" ]; then
+        echo "[local-sync] container mount mismatch: /app/srv-local is ${actual:-missing}, expected $ROOT/build-server-bin"
+        stale=1
+    fi
+
+    actual=$(compose_mount_source "$cid" /app/entrypoint.sh)
+    if [ "$actual" != "$ROOT/docker/entrypoint.sh" ]; then
+        echo "[local-sync] container mount mismatch: /app/entrypoint.sh is ${actual:-missing}, expected $ROOT/docker/entrypoint.sh"
+        stale=1
+    fi
+
+    [ "$stale" = "1" ]
+}
 
 if [ "${SIGNAL_LOCAL_SYNC_CHILD:-}" != "1" ]; then
     if command -v python3 >/dev/null 2>&1; then
@@ -79,10 +122,13 @@ fi
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         "$ROOT/scripts/local-build-server.sh" "$GIT_HASH" \
           && {
-              # Restart the container so the new binary is picked up
-              # (entrypoint reads /app/srv-local/signal_server at
-              # spawn time, not as a hot reload).
-              if docker compose ps --status running --services 2>/dev/null | grep -q '^signal$'; then
+              # Restart the container so the new binary is picked up.
+              # If the container was first created from another checkout,
+              # a restart preserves stale bind-mount sources, so recreate it.
+              if signal_container_has_stale_mounts; then
+                  GIT_HASH="$GIT_HASH" docker compose up -d --force-recreate signal >/dev/null 2>&1 \
+                    && echo "[local-sync] server rebuilt + container recreated at $GIT_HASH"
+              elif docker compose ps --status running --services 2>/dev/null | grep -q '^signal$'; then
                   docker compose restart signal >/dev/null 2>&1 \
                     && echo "[local-sync] server rebuilt + container restarted at $GIT_HASH"
               else
