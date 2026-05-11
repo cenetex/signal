@@ -19,6 +19,9 @@
 #include <emscripten.h>
 #endif
 
+#define HUD_LATENCY_WARN_MS 100.0f
+#define HUD_LATENCY_BAD_MS 300.0f
+
 /* ------------------------------------------------------------------ */
 /* Station-local balance helper                                        */
 /* ------------------------------------------------------------------ */
@@ -381,10 +384,16 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         else                    { sdtx_color3b(PAL_SYNC_RESYNCING);   sdtx_puts("syncing..."); }
         if (g.net_last_ack_rtt > 0.0f) {
             float net_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 156.0f : 214.0f)));
+            float rtt_ms = g.net_last_ack_rtt * 1000.0f;
             sdtx_pos(net_x, info_y + 1.2f);
-            sdtx_color3b(PAL_TEXT_GREY);
+            if (rtt_ms >= HUD_LATENCY_BAD_MS)
+                sdtx_color3b(PAL_WARNING);
+            else if (rtt_ms >= HUD_LATENCY_WARN_MS)
+                sdtx_color3b(PAL_READY_YELLOW);
+            else
+                sdtx_color3b(PAL_TEXT_GREY);
             sdtx_printf("net %.0fms q%u r%u",
-                        g.net_last_ack_rtt * 1000.0f,
+                        rtt_ms,
                         (unsigned)g.net_action_queue_count,
                         (unsigned)g.net_replay_count);
         }

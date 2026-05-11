@@ -12,6 +12,11 @@
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
 #define LOCAL_PLAYER_RENDER_OFFSET_MAX 140.0f
+#define LOCAL_PLAYER_RENDER_OFFSET_LATENCY_MAX 260.0f
+#define LOCAL_PLAYER_RENDER_SNAP_DIST 200.0f
+#define LOCAL_PLAYER_RENDER_SNAP_LATENCY_DIST 360.0f
+#define NET_REPLAY_LATENCY_COMP_MIN_RTT_SEC 0.075f
+#define NET_REPLAY_LATENCY_COMP_MAX_SEC 0.45f
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -134,6 +139,23 @@ static bool net_replay_missing_prefix(uint32_t server_tick, int first_after) {
     return net_replay_frame_at(first_after)->tick != server_tick + 1u;
 }
 
+static float net_latency_blend(void) {
+    if (g.net_last_ack_rtt <= NET_REPLAY_LATENCY_COMP_MIN_RTT_SEC)
+        return 0.0f;
+    return clampf(g.net_last_ack_rtt / (NET_REPLAY_LATENCY_COMP_MAX_SEC * 2.0f),
+                  0.0f, 1.0f);
+}
+
+static uint32_t net_replay_latency_comp_ticks(void) {
+    if (g.net_last_ack_rtt < NET_REPLAY_LATENCY_COMP_MIN_RTT_SEC) return 0;
+
+    float lag = g.net_last_ack_rtt * 0.5f;
+    if (lag > NET_REPLAY_LATENCY_COMP_MAX_SEC)
+        lag = NET_REPLAY_LATENCY_COMP_MAX_SEC;
+    uint32_t ticks = (uint32_t)lroundf(lag / SIM_DT);
+    return ticks;
+}
+
 static void apply_authoritative_local_motion(const NetPlayerState *state,
                                              server_player_t *sp) {
     sp->ship.pos.x = state->x;
@@ -143,6 +165,34 @@ static void apply_authoritative_local_motion(const NetPlayerState *state,
     sp->ship.angle = state->angle;
     if ((state->flags & 4) == 0)
         sp->docked = false;
+}
+
+static int net_replay_apply_latency_comp(server_player_t *sp,
+                                         uint32_t server_tick,
+                                         uint32_t *last_tick) {
+    uint32_t comp_ticks = net_replay_latency_comp_ticks();
+    if (comp_ticks == 0) return 0;
+
+    uint32_t target_tick = server_tick + comp_ticks;
+    if (!replay_tick_after(target_tick, *last_tick)) return 0;
+
+    input_intent_t intent = replay_movement_intent(&LOCAL_PLAYER.input);
+    int replayed = 0;
+    while (replay_tick_after(target_tick, *last_tick)) {
+        uint32_t next_tick = *last_tick + 1u;
+        input_replay_frame_t frame = {
+            .tick = next_tick,
+            .input_seq = g.net_input_seq,
+            .dt = SIM_DT,
+            .intent = intent,
+        };
+        sp->input = intent;
+        world_sim_step_player_only(&g.world, g.local_player_slot, SIM_DT);
+        net_replay_append(&frame);
+        *last_tick = next_tick;
+        replayed++;
+    }
+    return replayed;
 }
 
 static bool net_replay_reconcile_local_player(const NetPlayerState *state,
@@ -171,13 +221,15 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
     sim_events_t saved_events = g.world.events;
     apply_authoritative_local_motion(state, sp);
     uint32_t last_tick = server_tick;
-    for (int i = first_after; i >= 0 && i < (int)g.net_replay_count; i++) {
+    int replay_count = (int)g.net_replay_count;
+    for (int i = first_after; i >= 0 && i < replay_count; i++) {
         input_replay_frame_t *frame = net_replay_frame_at(i);
         sp->input = frame->intent;
         world_sim_step_player_only(&g.world, g.local_player_slot, frame->dt);
         last_tick = frame->tick;
         (*out_replayed)++;
     }
+    *out_replayed += net_replay_apply_latency_comp(sp, server_tick, &last_tick);
     g.world.events = saved_events;
 
     g.net_prediction_tick = last_tick;
@@ -831,7 +883,11 @@ static void record_local_player_motion_telemetry(float correction_dist,
 static void add_local_player_render_correction(vec2 applied_delta,
                                                float correction_dist,
                                                bool docked) {
-    if (docked || correction_dist > 200.0f) {
+    float latency_blend = net_latency_blend();
+    float snap_dist = lerpf(LOCAL_PLAYER_RENDER_SNAP_DIST,
+                            LOCAL_PLAYER_RENDER_SNAP_LATENCY_DIST,
+                            latency_blend);
+    if (docked || correction_dist > snap_dist) {
         g.local_player_render_offset = v2(0.0f, 0.0f);
         return;
     }
@@ -839,10 +895,13 @@ static void add_local_player_render_correction(vec2 applied_delta,
     g.local_player_render_offset =
         v2_add(g.local_player_render_offset, applied_delta);
     float len = v2_len(g.local_player_render_offset);
-    if (len > LOCAL_PLAYER_RENDER_OFFSET_MAX) {
+    float max_offset = lerpf(LOCAL_PLAYER_RENDER_OFFSET_MAX,
+                             LOCAL_PLAYER_RENDER_OFFSET_LATENCY_MAX,
+                             latency_blend);
+    if (len > max_offset) {
         g.local_player_render_offset =
             v2_scale(g.local_player_render_offset,
-                     LOCAL_PLAYER_RENDER_OFFSET_MAX / len);
+                     max_offset / len);
     }
 }
 
