@@ -48,6 +48,144 @@ void step_remote_station_rings(float dt) {
     }
 }
 
+static bool replay_tick_after(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
+}
+
+static input_intent_t replay_movement_intent(const input_intent_t *intent) {
+    input_intent_t out = {0};
+    if (!intent) return out;
+    out.turn = intent->turn;
+    out.thrust = intent->thrust;
+    out.mine = intent->mine;
+    out.mining_target_hint = intent->mining_target_hint;
+    out.tractor_hold = intent->tractor_hold;
+    out.boost = intent->boost;
+    out.reverse_thrust = intent->reverse_thrust;
+    return out;
+}
+
+static input_replay_frame_t *net_replay_frame_at(int offset) {
+    int index = ((int)g.net_replay_start + offset) % NET_REPLAY_FRAME_CAP;
+    return &g.net_replay[index];
+}
+
+static void net_replay_clear_frames(void) {
+    g.net_replay_start = 0;
+    g.net_replay_count = 0;
+}
+
+void net_replay_reset(void) {
+    g.net_prediction_tick = 0;
+    g.net_prediction_tick_valid = false;
+    net_replay_clear_frames();
+}
+
+static void net_replay_append(const input_replay_frame_t *frame) {
+    if (g.net_replay_count >= NET_REPLAY_FRAME_CAP) {
+        g.net_replay_start =
+            (uint16_t)((g.net_replay_start + 1u) % NET_REPLAY_FRAME_CAP);
+        g.net_replay_count--;
+    }
+    int index = ((int)g.net_replay_start + (int)g.net_replay_count) %
+                NET_REPLAY_FRAME_CAP;
+    g.net_replay[index] = *frame;
+    g.net_replay_count++;
+}
+
+void net_replay_record_prediction(const input_intent_t *intent, float dt) {
+    if (!intent || dt <= 0.0f) return;
+    if (!g.multiplayer_enabled || g.local_server.active || !net_is_connected())
+        return;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+    if (!g.net_prediction_tick_valid) return;
+
+    g.net_prediction_tick++;
+    input_replay_frame_t frame = {
+        .tick = g.net_prediction_tick,
+        .input_seq = g.net_input_seq,
+        .dt = dt,
+        .intent = replay_movement_intent(intent),
+    };
+    net_replay_append(&frame);
+}
+
+static void net_replay_prune_through(uint32_t server_tick) {
+    while (g.net_replay_count > 0) {
+        input_replay_frame_t *frame = net_replay_frame_at(0);
+        if (replay_tick_after(frame->tick, server_tick)) break;
+        g.net_replay_start =
+            (uint16_t)((g.net_replay_start + 1u) % NET_REPLAY_FRAME_CAP);
+        g.net_replay_count--;
+    }
+    if (g.net_replay_count == 0) g.net_replay_start = 0;
+}
+
+static int net_replay_first_after(uint32_t server_tick) {
+    for (int i = 0; i < (int)g.net_replay_count; i++) {
+        if (replay_tick_after(net_replay_frame_at(i)->tick, server_tick))
+            return i;
+    }
+    return -1;
+}
+
+static bool net_replay_missing_prefix(uint32_t server_tick, int first_after) {
+    if (first_after < 0) return false;
+    return net_replay_frame_at(first_after)->tick != server_tick + 1u;
+}
+
+static void apply_authoritative_local_motion(const NetPlayerState *state,
+                                             server_player_t *sp) {
+    sp->ship.pos.x = state->x;
+    sp->ship.pos.y = state->y;
+    sp->ship.vel.x = state->vx;
+    sp->ship.vel.y = state->vy;
+    sp->ship.angle = state->angle;
+    if ((state->flags & 4) == 0)
+        sp->docked = false;
+}
+
+static bool net_replay_reconcile_local_player(const NetPlayerState *state,
+                                              server_player_t *sp,
+                                              int *out_replayed) {
+    *out_replayed = 0;
+    uint32_t server_tick = state->server_tick;
+    if (server_tick == 0 && !g.net_prediction_tick_valid) return false;
+
+    if (!g.net_prediction_tick_valid) {
+        g.net_prediction_tick = server_tick;
+        g.net_prediction_tick_valid = true;
+        net_replay_clear_frames();
+    }
+
+    if ((state->flags & 4) != 0) {
+        apply_authoritative_local_motion(state, sp);
+        g.net_prediction_tick = server_tick;
+        net_replay_clear_frames();
+        return true;
+    }
+
+    int first_after = net_replay_first_after(server_tick);
+    if (net_replay_missing_prefix(server_tick, first_after)) return false;
+
+    sim_events_t saved_events = g.world.events;
+    apply_authoritative_local_motion(state, sp);
+    uint32_t last_tick = server_tick;
+    for (int i = first_after; i >= 0 && i < (int)g.net_replay_count; i++) {
+        input_replay_frame_t *frame = net_replay_frame_at(i);
+        sp->input = frame->intent;
+        world_sim_step_player_only(&g.world, g.local_player_slot, frame->dt);
+        last_tick = frame->tick;
+        (*out_replayed)++;
+    }
+    g.world.events = saved_events;
+
+    g.net_prediction_tick = last_tick;
+    g.net_prediction_tick_valid = true;
+    net_replay_prune_through(server_tick);
+    return true;
+}
+
 static void server_player_cleanup_local(server_player_t *sp) {
     if (!sp) return;
     ship_cleanup(&sp->ship);
@@ -87,6 +225,8 @@ void on_player_leave(uint8_t player_id) {
 }
 
 void reset_remote_dynamic_sync(void) {
+    net_replay_reset();
+
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = 0.1f;
@@ -635,7 +775,8 @@ void begin_player_state_batch(void) {
 static void record_local_player_motion_telemetry(float correction_dist,
                                                  float velocity_error,
                                                  float applied_correction_dist,
-                                                 bool deferred) {
+                                                 bool deferred,
+                                                 int replayed_frames) {
     g.net_motion.correction_dist = correction_dist;
     g.net_motion.applied_correction_dist = applied_correction_dist;
     g.net_motion.velocity_error = velocity_error;
@@ -646,9 +787,13 @@ static void record_local_player_motion_telemetry(float correction_dist,
     g.net_motion.window_elapsed += g.net_motion.packet_interval;
     g.net_motion.samples++;
     if (deferred) g.net_motion.deferred_samples++;
+    if (replayed_frames > 0) {
+        g.net_motion.replayed_samples++;
+        g.net_motion.replayed_frames += (uint32_t)replayed_frames;
+    }
     if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
 
-    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f deferred=%u/%u\n",
+    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f deferred=%u/%u replayed=%u/%u frames=%u\n",
            g.net_motion.packet_interval,
            g.net_motion.correction_dist,
            g.net_motion.max_correction_5s,
@@ -656,12 +801,17 @@ static void record_local_player_motion_telemetry(float correction_dist,
            g.net_motion.max_applied_correction_5s,
            g.net_motion.velocity_error,
            (unsigned)g.net_motion.deferred_samples,
-           (unsigned)g.net_motion.samples);
+           (unsigned)g.net_motion.samples,
+           (unsigned)g.net_motion.replayed_samples,
+           (unsigned)g.net_motion.samples,
+           (unsigned)g.net_motion.replayed_frames);
     g.net_motion.max_correction_5s = 0.0f;
     g.net_motion.max_applied_correction_5s = 0.0f;
     g.net_motion.window_elapsed = 0.0f;
     g.net_motion.samples = 0;
     g.net_motion.deferred_samples = 0;
+    g.net_motion.replayed_samples = 0;
+    g.net_motion.replayed_frames = 0;
 }
 
 static void add_local_player_render_correction(vec2 applied_delta,
@@ -696,11 +846,6 @@ void apply_remote_player_state(const NetPlayerState* state) {
         if (has_input_ack) g.net_last_server_ack = state->input_seq_ack;
         if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
 
-        /* The client now keeps input_seq stable for unchanged heartbeats, so
-         * an ack mismatch means the server has not processed the newest
-         * control edge yet. Without a replay buffer we cannot reconstruct the
-         * exact post-ack pose, but we can avoid applying stale pre-ack motion
-         * corrections that visibly fight fresh local input under high RTT. */
         float target_x = state->x;
         float target_y = state->y;
 
@@ -712,10 +857,16 @@ void apply_remote_player_state(const NetPlayerState* state) {
         float dvy = state->vy - sp->ship.vel.y;
         float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
+        bool state_docked = (state->flags & 4) != 0;
+        int replayed_frames = 0;
+        bool used_replay = false;
+        if (!(has_unacked_input && state_docked))
+            used_replay =
+                net_replay_reconcile_local_player(state, sp, &replayed_frames);
         bool defer_motion_correction =
-            has_unacked_input && (state->flags & 4) == 0 &&
+            !used_replay && has_unacked_input &&
             dist_sq <= 200.0f * 200.0f;
-        if (!defer_motion_correction) {
+        if (!used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
                 sp->ship.pos.x = target_x;
                 sp->ship.pos.y = target_y;
@@ -732,14 +883,19 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
                 sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
             }
+            net_replay_reset();
+            if (state->server_tick != 0) {
+                g.net_prediction_tick = state->server_tick;
+                g.net_prediction_tick_valid = true;
+            }
         }
         vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
         add_local_player_render_correction(
-            applied_delta, correction_dist, (state->flags & 4) != 0);
+            applied_delta, v2_len(applied_delta), state_docked);
         record_local_player_motion_telemetry(
             correction_dist, velocity_error, v2_len(applied_delta),
-            defer_motion_correction);
-        if (!defer_motion_correction)
+            defer_motion_correction, replayed_frames);
+        if (!used_replay && !defer_motion_correction)
             sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
         /* Beam state is server-authoritative for the local player too —
          * the autopilot fires server-side and the client never predicts
@@ -832,6 +988,7 @@ void sync_local_player_slot_from_network(void) {
         return;
     }
 
+    net_replay_reset();
     have_previous = server_player_copy_local(&previous, &g.world.players[g.local_player_slot]);
     server_player_t* assigned = &g.world.players[net_id];
     server_player_cleanup_local(&g.world.players[g.local_player_slot]);
@@ -916,6 +1073,7 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
                      int asteroids_fractured,
                      uint8_t respawn_station, float respawn_fee) {
     if ((int)player_id != g.local_player_slot) return;
+    net_replay_reset();
     g.death_ore_mined = ore_mined;
     g.death_credits_earned = credits_earned;
     g.death_credits_spent = credits_spent;
