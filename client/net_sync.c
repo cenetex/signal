@@ -633,24 +633,35 @@ void begin_player_state_batch(void) {
 }
 
 static void record_local_player_motion_telemetry(float correction_dist,
-                                                 float velocity_error) {
+                                                 float velocity_error,
+                                                 float applied_correction_dist,
+                                                 bool deferred) {
     g.net_motion.correction_dist = correction_dist;
+    g.net_motion.applied_correction_dist = applied_correction_dist;
     g.net_motion.velocity_error = velocity_error;
     if (correction_dist > g.net_motion.max_correction_5s)
         g.net_motion.max_correction_5s = correction_dist;
+    if (applied_correction_dist > g.net_motion.max_applied_correction_5s)
+        g.net_motion.max_applied_correction_5s = applied_correction_dist;
     g.net_motion.window_elapsed += g.net_motion.packet_interval;
     g.net_motion.samples++;
+    if (deferred) g.net_motion.deferred_samples++;
     if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
 
-    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f velerr=%.1f samples=%u\n",
+    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f deferred=%u/%u\n",
            g.net_motion.packet_interval,
            g.net_motion.correction_dist,
            g.net_motion.max_correction_5s,
+           g.net_motion.applied_correction_dist,
+           g.net_motion.max_applied_correction_5s,
            g.net_motion.velocity_error,
+           (unsigned)g.net_motion.deferred_samples,
            (unsigned)g.net_motion.samples);
     g.net_motion.max_correction_5s = 0.0f;
+    g.net_motion.max_applied_correction_5s = 0.0f;
     g.net_motion.window_elapsed = 0.0f;
     g.net_motion.samples = 0;
+    g.net_motion.deferred_samples = 0;
 }
 
 static void add_local_player_render_correction(vec2 applied_delta,
@@ -679,15 +690,17 @@ void apply_remote_player_state(const NetPlayerState* state) {
         server_player_t* sp = &g.world.players[state->player_id];
         vec2 before_pos = sp->ship.pos;
         bool has_input_ack = state->input_seq_ack != 0;
+        bool has_unacked_input =
+            has_input_ack && g.net_input_seq != 0 &&
+            state->input_seq_ack != g.net_input_seq;
         if (has_input_ack) g.net_last_server_ack = state->input_seq_ack;
         if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
 
-        /* Keep ack/tick as diagnostics for now. The client sends periodic
-         * 60 Hz input heartbeats even when controls have not changed, so
-         * "net_input_seq != ack" is almost always true and does not prove
-         * there is meaningful unplayed input. Extrapolating a server pose
-         * without replaying the unacked input history also pulls against
-         * fresh key changes and reads as flicker/rubberbanding. */
+        /* The client now keeps input_seq stable for unchanged heartbeats, so
+         * an ack mismatch means the server has not processed the newest
+         * control edge yet. Without a replay buffer we cannot reconstruct the
+         * exact post-ack pose, but we can avoid applying stale pre-ack motion
+         * corrections that visibly fight fresh local input under high RTT. */
         float target_x = state->x;
         float target_y = state->y;
 
@@ -699,27 +712,35 @@ void apply_remote_player_state(const NetPlayerState* state) {
         float dvy = state->vy - sp->ship.vel.y;
         float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
-        if (dist_sq > 200.0f * 200.0f) {
-            sp->ship.pos.x = target_x;
-            sp->ship.pos.y = target_y;
-            sp->ship.vel.x = state->vx;
-            sp->ship.vel.y = state->vy;
-        } else if (dist_sq > 20.0f * 20.0f) {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.5f);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.5f);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
-        } else {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.2f);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.2f);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+        bool defer_motion_correction =
+            has_unacked_input && (state->flags & 4) == 0 &&
+            dist_sq <= 200.0f * 200.0f;
+        if (!defer_motion_correction) {
+            if (dist_sq > 200.0f * 200.0f) {
+                sp->ship.pos.x = target_x;
+                sp->ship.pos.y = target_y;
+                sp->ship.vel.x = state->vx;
+                sp->ship.vel.y = state->vy;
+            } else if (dist_sq > 20.0f * 20.0f) {
+                sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.5f);
+                sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.5f);
+                sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
+                sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
+            } else {
+                sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.2f);
+                sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.2f);
+                sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
+                sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+            }
         }
         vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
         add_local_player_render_correction(
             applied_delta, correction_dist, (state->flags & 4) != 0);
-        record_local_player_motion_telemetry(correction_dist, velocity_error);
-        sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
+        record_local_player_motion_telemetry(
+            correction_dist, velocity_error, v2_len(applied_delta),
+            defer_motion_correction);
+        if (!defer_motion_correction)
+            sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
         /* Beam state is server-authoritative for the local player too —
          * the autopilot fires server-side and the client never predicts
          * its laser. Combat / hit prediction will eventually rely on

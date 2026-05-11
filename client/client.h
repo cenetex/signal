@@ -500,10 +500,13 @@ typedef struct {
     struct {
         float packet_interval;
         float correction_dist;
+        float applied_correction_dist;
         float velocity_error;
         float max_correction_5s;
+        float max_applied_correction_5s;
         float window_elapsed;
         uint32_t samples;
+        uint32_t deferred_samples;
     } net_motion;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
