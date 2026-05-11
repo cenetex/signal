@@ -931,7 +931,7 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (4, 5, 8, or 12 bytes):
+ * INPUT message (4, 5, 8, 12, or 14 bytes):
  * [type:1][flags:1][action:1][mining_target:1][buy_grade:1 (optional)]
  * Older clients send 4 bytes — buy_grade is treated as MINING_GRADE_COUNT
  * ("any grade, FIFO"). Only meaningful when action is in the
@@ -940,7 +940,15 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
  * Current clients send 12 bytes. Bytes 8..9 carry a client input sequence
  * number, and bytes 10..11 carry a uint16 mining target (0xFFFF = none).
  * Byte 3 remains the low byte / legacy target sentinel for old servers.
+ * Newer clients append bytes 12..13 as a uint16 action id. The server
+ * uses it to drop duplicate one-shot actions while still accepting the
+ * packet's latest continuous movement flags.
  */
+static inline uint16_t input_action_id(const uint8_t *data, int len) {
+    if (!data || len < 14) return 0;
+    return read_u16_le(&data[12]);
+}
+
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
     if (len < 4) return;
     intent->mining_target_hint = -1;

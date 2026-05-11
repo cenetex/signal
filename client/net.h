@@ -9,7 +9,7 @@
  *   JOIN  (0x01): 1 type + 1 player_id
  *   LEAVE (0x02): 1 type + 1 player_id
  *   STATE (0x03): 1 type + 1 player_id + 5 float32 (x, y, vx, vy, angle)
- *   INPUT (0x04): 12 bytes, legacy-compatible prefix + seq + uint16 target
+ *   INPUT (0x04): 14 bytes, legacy-compatible prefix + seq + uint16 target + action id
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
@@ -382,7 +382,8 @@ bool net_send_claim_legacy_save(const char *token_basename);
 void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
-                    int8_t place_ring, int8_t place_slot);
+                    int8_t place_ring, int8_t place_slot,
+                    uint16_t action_id);
 
 /* RATi v2: purchase a specific named ingot from the docked station's
  * stockpile. Server will validate ledger balance + hold space. */

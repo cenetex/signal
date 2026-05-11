@@ -815,6 +815,29 @@ TEST(test_parse_input_v2_uint16_mining_target) {
     ASSERT_EQ_INT(intent.mining_target_hint, -1);
 }
 
+TEST(test_parse_input_v3_action_id) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[14] = {
+        NET_MSG_INPUT,
+        NET_INPUT_THRUST,
+        NET_ACTION_LAUNCH,
+        0xFF,
+        MINING_GRADE_COUNT,
+        0xFF, 0xFF, 0xFF,
+        0x78, 0x56,
+        0xFF, 0xFF,
+        0x34, 0x12
+    };
+
+    parse_input(msg, sizeof(msg), &intent);
+    ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
+    ASSERT(intent.launch);
+    ASSERT_EQ_INT((int)input_action_id(msg, sizeof(msg)), 0x1234);
+    ASSERT_EQ_INT((int)input_action_id(msg, 12), 0);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -869,6 +892,7 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_too_short);
     RUN(test_parse_input_no_action);
     RUN(test_parse_input_v2_uint16_mining_target);
+    RUN(test_parse_input_v3_action_id);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

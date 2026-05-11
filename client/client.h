@@ -171,6 +171,8 @@ typedef struct {
 } runtime_state_t;
 
 #define NET_REPLAY_FRAME_CAP 512
+#define NET_ACTION_QUEUE_CAP 8
+#define NET_INPUT_TIMING_CAP 64
 
 typedef struct {
     uint32_t tick;
@@ -178,6 +180,25 @@ typedef struct {
     float dt;
     input_intent_t intent;
 } input_replay_frame_t;
+
+typedef struct {
+    bool active;
+    uint8_t action;
+    uint8_t buy_grade;
+    int8_t place_station;
+    int8_t place_ring;
+    int8_t place_slot;
+    uint16_t action_id;
+    uint16_t first_input_seq;
+    float age;
+    float resend_timer;
+    uint8_t send_count;
+} net_action_queue_item_t;
+
+typedef struct {
+    uint16_t seq;
+    float sent_at;
+} net_input_timing_t;
 
 typedef struct {
     input_state_t input;
@@ -328,12 +349,25 @@ typedef struct {
     int8_t  pending_net_place_slot;
     float action_predict_timer;
     float net_input_timer;
+    float net_time;
     bool net_input_have_last;
     uint8_t net_last_sent_flags;
     uint16_t net_last_sent_mining_target;
     uint16_t net_input_seq;
     uint16_t net_last_server_ack;
     uint32_t net_last_server_tick;
+    float net_last_ack_rtt;
+    float net_max_ack_rtt_5s;
+    float net_ack_window_elapsed;
+    uint32_t net_input_packets_sent;
+    uint32_t net_action_packets_sent;
+    uint32_t net_action_resend_packets;
+    uint32_t net_action_dropped;
+    uint16_t net_next_action_id;
+    uint8_t net_action_queue_start;
+    uint8_t net_action_queue_count;
+    net_action_queue_item_t net_action_queue[NET_ACTION_QUEUE_CAP];
+    net_input_timing_t net_input_timing[NET_INPUT_TIMING_CAP];
     uint32_t net_prediction_tick;
     bool net_prediction_tick_valid;
     uint16_t net_replay_start;

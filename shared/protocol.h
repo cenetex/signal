@@ -7,7 +7,7 @@
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
- *   INPUT           (0x04): legacy 4-8 bytes, current 12 bytes with seq + uint16 target
+ *   INPUT           (0x04): legacy 4-8 bytes, current 14 bytes with seq + uint16 target + action id
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 29-byte records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records

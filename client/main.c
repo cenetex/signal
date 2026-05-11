@@ -76,6 +76,9 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 /* station_dock_anchor, ship_cargo_space: see game_sim.c */
 
 #define NET_INPUT_HEARTBEAT_SEC (1.0f / 10.0f)
+#define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 20.0f)
+#define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
+#define NET_ACTION_RETRY_SEC 6.0f
 
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
@@ -145,17 +148,31 @@ static void reset_world(void) {
     g.thrusting = false;
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
+    g.pending_net_action = NET_ACTION_NONE;
     g.pending_net_buy_grade = MINING_GRADE_COUNT; /* sentinel = any */
     g.pending_net_place_station = -1;
     g.pending_net_place_ring    = -1;
     g.pending_net_place_slot    = -1;
     g.net_input_timer = 0.0f;
+    g.net_time = 0.0f;
     g.net_input_have_last = false;
     g.net_last_sent_flags = 0;
     g.net_last_sent_mining_target = 0xFFFFu;
     g.net_input_seq = 0;
     g.net_last_server_ack = 0;
     g.net_last_server_tick = 0;
+    g.net_last_ack_rtt = 0.0f;
+    g.net_max_ack_rtt_5s = 0.0f;
+    g.net_ack_window_elapsed = 0.0f;
+    g.net_input_packets_sent = 0;
+    g.net_action_packets_sent = 0;
+    g.net_action_resend_packets = 0;
+    g.net_action_dropped = 0;
+    g.net_next_action_id = 1;
+    g.net_action_queue_start = 0;
+    g.net_action_queue_count = 0;
+    memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
+    memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
     net_replay_reset();
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
@@ -1680,15 +1697,155 @@ float get_signal_strength(void) {
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
 }
 
+static bool net_seq_after_or_equal(uint16_t a, uint16_t b) {
+    return a == b || (int16_t)(a - b) > 0;
+}
+
+static net_action_queue_item_t *net_action_queue_at(int offset) {
+    int index = ((int)g.net_action_queue_start + offset) % NET_ACTION_QUEUE_CAP;
+    return &g.net_action_queue[index];
+}
+
+static void net_action_queue_pop_front(void) {
+    if (g.net_action_queue_count == 0) return;
+    memset(net_action_queue_at(0), 0, sizeof(g.net_action_queue[0]));
+    g.net_action_queue_start =
+        (uint8_t)((g.net_action_queue_start + 1u) % NET_ACTION_QUEUE_CAP);
+    g.net_action_queue_count--;
+    if (g.net_action_queue_count == 0) g.net_action_queue_start = 0;
+}
+
+static void net_action_queue_update(float dt) {
+    if (g.net_action_queue_count == 0) return;
+    net_action_queue_item_t *item = net_action_queue_at(0);
+    item->age += dt;
+    if (item->resend_timer > 0.0f) {
+        item->resend_timer -= dt;
+        if (item->resend_timer < 0.0f) item->resend_timer = 0.0f;
+    }
+
+    while (g.net_action_queue_count > 0) {
+        item = net_action_queue_at(0);
+        if (item->first_input_seq != 0 && g.net_last_server_ack != 0 &&
+            net_seq_after_or_equal(g.net_last_server_ack, item->first_input_seq)) {
+            net_action_queue_pop_front();
+            continue;
+        }
+        if (item->age > NET_ACTION_RETRY_SEC) {
+            g.net_action_dropped++;
+            net_action_queue_pop_front();
+            continue;
+        }
+        break;
+    }
+}
+
+static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
+                                  int8_t place_station, int8_t place_ring,
+                                  int8_t place_slot) {
+    if (action == NET_ACTION_NONE) return;
+    if (g.net_action_queue_count >= NET_ACTION_QUEUE_CAP) {
+        g.net_action_dropped++;
+        return;
+    }
+
+    uint16_t id = g.net_next_action_id++;
+    if (g.net_next_action_id == 0) g.net_next_action_id = 1;
+    if (id == 0) id = g.net_next_action_id++;
+
+    net_action_queue_item_t *item =
+        net_action_queue_at((int)g.net_action_queue_count);
+    memset(item, 0, sizeof(*item));
+    item->active = true;
+    item->action = action;
+    item->buy_grade = buy_grade;
+    item->place_station = place_station;
+    item->place_ring = place_ring;
+    item->place_slot = place_slot;
+    item->action_id = id;
+    g.net_action_queue_count++;
+}
+
+static void net_queue_pending_action_if_any(void) {
+    uint8_t action = g.pending_net_action;
+    if (action == NET_ACTION_NONE) return;
+
+    uint8_t buy_grade = g.pending_net_buy_grade;
+    int8_t place_station = g.pending_net_place_station;
+    int8_t place_ring = g.pending_net_place_ring;
+    int8_t place_slot = g.pending_net_place_slot;
+
+    g.pending_net_action = NET_ACTION_NONE;
+    g.pending_net_buy_grade = MINING_GRADE_COUNT;
+    g.pending_net_place_station = -1;
+    g.pending_net_place_ring = -1;
+    g.pending_net_place_slot = -1;
+
+    if (action >= NET_ACTION_BUY_PRODUCT &&
+        action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT &&
+        net_has_identity_secret()) {
+        uint8_t payload[2] = {
+            (uint8_t)(action - NET_ACTION_BUY_PRODUCT),
+            buy_grade
+        };
+        if (net_send_signed_action(SIGNED_ACTION_BUY_PRODUCT,
+                                   payload, sizeof(payload))) {
+            return;
+        }
+    }
+
+    net_action_queue_push(action, buy_grade, place_station, place_ring,
+                          place_slot);
+}
+
+static bool net_action_queue_peek_due(uint8_t *action, uint8_t *buy_grade,
+                                      int8_t *place_station,
+                                      int8_t *place_ring,
+                                      int8_t *place_slot,
+                                      uint16_t *action_id) {
+    if (g.net_action_queue_count == 0) return false;
+    net_action_queue_item_t *item = net_action_queue_at(0);
+    if (!item->active || item->resend_timer > 0.0f) return false;
+    *action = item->action;
+    *buy_grade = item->buy_grade;
+    *place_station = item->place_station;
+    *place_ring = item->place_ring;
+    *place_slot = item->place_slot;
+    *action_id = item->action_id;
+    return true;
+}
+
+static void net_action_queue_mark_sent(uint16_t input_seq) {
+    if (g.net_action_queue_count == 0) return;
+    net_action_queue_item_t *item = net_action_queue_at(0);
+    if (item->first_input_seq == 0)
+        item->first_input_seq = input_seq;
+    else
+        g.net_action_resend_packets++;
+    item->send_count++;
+    item->resend_timer = NET_ACTION_RESEND_SEC;
+    g.net_action_packets_sent++;
+}
+
+static void net_track_input_send(uint16_t seq) {
+    if (seq == 0) return;
+    int index = (int)(seq % NET_INPUT_TIMING_CAP);
+    g.net_input_timing[index].seq = seq;
+    g.net_input_timing[index].sent_at = g.net_time;
+}
+
 static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
+    g.net_time += frame_dt;
 
     /* --- Multiplayer: poll incoming and send input BEFORE sim --- */
     if (g.multiplayer_enabled) {
         bool was_connected = net_is_connected();
         net_poll();
         sync_local_player_slot_from_network();
+        net_action_queue_update(frame_dt);
+        net_queue_pending_action_if_any();
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Reload to reconnect.");
             /* world_t owns station/player manifest buffers; never copy it
@@ -1719,7 +1876,15 @@ static void frame(void) {
          * low-rate heartbeat. The server persists the last input intent, so
          * unchanged movement does not need a fresh command every frame. */
         {
-            uint8_t action = g.pending_net_action;
+            uint8_t action = NET_ACTION_NONE;
+            uint8_t buy_grade_byte = MINING_GRADE_COUNT;
+            int8_t place_station = -1;
+            int8_t place_ring = -1;
+            int8_t place_slot = -1;
+            uint16_t action_id = 0;
+            bool action_due = net_action_queue_peek_due(
+                &action, &buy_grade_byte, &place_station, &place_ring,
+                &place_slot, &action_id);
             g.net_input_timer -= frame_dt;
             uint8_t flags = 0;
             input_intent_t movement_intent = {0};
@@ -1750,47 +1915,25 @@ static void frame(void) {
             bool input_changed = !g.net_input_have_last ||
                 flags != g.net_last_sent_flags ||
                 mining_target != g.net_last_sent_mining_target;
+            bool active_controls = flags != 0;
             bool heartbeat_due = g.net_input_timer <= 0.0f;
-            if (input_changed || heartbeat_due || action != 0) {
-                uint8_t buy_grade_byte = g.pending_net_buy_grade;
-                int8_t place_station = g.pending_net_place_station;
-                int8_t place_ring    = g.pending_net_place_ring;
-                int8_t place_slot    = g.pending_net_place_slot;
-                g.pending_net_action = 0;
-                g.pending_net_buy_grade = MINING_GRADE_COUNT;
-                g.pending_net_place_station = -1;
-                g.pending_net_place_ring    = -1;
-                g.pending_net_place_slot    = -1;
-                /* Layer A.3 of #479 — migrate state-changing actions
-                 * onto the signed channel when an identity secret is
-                 * available. Transient input (movement, mining-beam-on)
-                 * stays on the unsigned NET_MSG_INPUT channel: signing
-                 * every 60Hz frame would saturate the server. We send
-                 * the signed action FIRST, then clear `action` so the
-                 * unsigned send below carries only transient bits.
-                 *
-                 * Pre-A.3 clients (no identity secret) keep using the
-                 * unsigned action path; the server still accepts both
-                 * for the deprecation window. */
-                if (action >= NET_ACTION_BUY_PRODUCT &&
-                    action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT &&
-                    net_has_identity_secret()) {
-                    uint8_t payload[2] = {
-                        (uint8_t)(action - NET_ACTION_BUY_PRODUCT),
-                        buy_grade_byte
-                    };
-                    if (net_send_signed_action(SIGNED_ACTION_BUY_PRODUCT,
-                                               payload, sizeof(payload))) {
-                        action = NET_ACTION_NONE;
-                    }
-                }
+            if (input_changed || heartbeat_due || action_due) {
+                bool seq_advanced = false;
                 if (input_changed || action != NET_ACTION_NONE) {
                     g.net_input_seq++;
                     if (g.net_input_seq == 0) g.net_input_seq++;
+                    seq_advanced = true;
                 }
                 net_send_input(flags, action, g.net_input_seq, mining_target,
-                               buy_grade_byte, place_station, place_ring, place_slot);
-                g.net_input_timer = NET_INPUT_HEARTBEAT_SEC;
+                               buy_grade_byte, place_station, place_ring,
+                               place_slot, action_id);
+                g.net_input_packets_sent++;
+                if (seq_advanced) net_track_input_send(g.net_input_seq);
+                if (action != NET_ACTION_NONE)
+                    net_action_queue_mark_sent(g.net_input_seq);
+                g.net_input_timer = active_controls
+                    ? NET_ACTIVE_INPUT_HEARTBEAT_SEC
+                    : NET_INPUT_HEARTBEAT_SEC;
                 g.net_input_have_last = true;
                 g.net_last_sent_flags = flags;
                 g.net_last_sent_mining_target = mining_target;
