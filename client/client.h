@@ -36,6 +36,12 @@ static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t 
 #include "sokol_gl.h"
 #include "sokol_debugtext.h"
 
+/* In-world death aftermath timing. The stats/video milestone is separate;
+ * these values control how long the crash remains visible in the world. */
+#define DEATH_CINEMATIC_WARNING_SEC       3.2f
+#define DEATH_CINEMATIC_WORLD_PHASE_SEC   5.5f
+#define DEATH_CINEMATIC_FADE_TO_BLACK_SEC 6.5f
+
 /* ------------------------------------------------------------------ */
 /* Station docked view enum                                           */
 /* ------------------------------------------------------------------ */
