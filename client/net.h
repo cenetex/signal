@@ -235,7 +235,7 @@ typedef void (*net_on_hold_ingots_fn)(const NetNamedIngotEntry *entries,
  * values in server_player_t: 0 none, 1 station/module, 2 NPC, 3 player.
  * For NPC targets, rows project the scanned ship manifest into
  * cargo-unit identity and portable receipt-chain heads. Quantity is
- * greater than 1 for grouped anonymous ingot buckets. */
+ * greater than 1 for grouped anonymous ingot and finished-good buckets. */
 typedef struct {
     uint8_t  commodity;
     uint8_t  grade;

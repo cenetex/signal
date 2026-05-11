@@ -312,7 +312,7 @@ enum {
  *   0 none, 1 station/module, 2 NPC, 3 player.
  * target_index/module_index/home_station/dest_station use 0xFF as
  * unknown/none. flags bit0 = row has at least one receipt link;
- * bit1 = row is a grouped bulk row with no individual cargo identity. */
+ * bit1 = row is a grouped bulk/finished-good row with no individual cargo identity. */
 enum {
     INSPECT_TARGET_NONE    = 0,
     INSPECT_TARGET_STATION = 1,
@@ -328,6 +328,24 @@ enum {
 
 #define INSPECT_SNAPSHOT_MAX_SIZE \
     (INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_MAX_ROWS * INSPECT_SNAPSHOT_ROW)
+
+static inline bool inspect_snapshot_unit_is_groupable(const cargo_unit_t *u) {
+    if (!u) return false;
+    if (u->commodity >= COMMODITY_COUNT) return false;
+    if (u->grade >= MINING_GRADE_COUNT) return false;
+    switch ((cargo_kind_t)u->kind) {
+    case CARGO_KIND_INGOT:
+        return (ingot_prefix_t)u->prefix_class == INGOT_PREFIX_ANONYMOUS;
+    case CARGO_KIND_FRAME:
+        return u->commodity == COMMODITY_FRAME;
+    case CARGO_KIND_LASER:
+        return u->commodity == COMMODITY_LASER_MODULE;
+    case CARGO_KIND_TRACTOR:
+        return u->commodity == COMMODITY_TRACTOR_MODULE;
+    default:
+        return false;
+    }
+}
 
 /* Client-hashed fracture window */
 #define FRACTURE_CHALLENGE_BURST_CAP 50

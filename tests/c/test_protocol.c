@@ -369,6 +369,71 @@ TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
     ship_cleanup(&ship);
 }
 
+TEST(test_inspect_snapshot_groups_finished_goods_by_grade) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_TRAVEL_TO_DEST;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    const struct {
+        cargo_kind_t kind;
+        commodity_t commodity;
+        int count;
+    } buckets[] = {
+        { CARGO_KIND_FRAME,   COMMODITY_FRAME,          4 },
+        { CARGO_KIND_LASER,   COMMODITY_LASER_MODULE,   2 },
+        { CARGO_KIND_TRACTOR, COMMODITY_TRACTOR_MODULE, 3 },
+    };
+    uint8_t pub_seed = 0x30;
+    for (int b = 0; b < 3; b++) {
+        for (int i = 0; i < buckets[b].count; i++) {
+            cargo_unit_t u;
+            memset(&u, 0, sizeof(u));
+            u.kind = (uint8_t)buckets[b].kind;
+            u.commodity = (uint8_t)buckets[b].commodity;
+            u.grade = (uint8_t)MINING_GRADE_FINE;
+            u.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+            u.quantity = 1;
+            u.pub[31] = pub_seed++;
+            ASSERT(ship_manifest_push_with_chain(&ship, &u, NULL));
+        }
+    }
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[8], 3);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 9);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 3 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *frames = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(frames[0], COMMODITY_FRAME);
+    ASSERT_EQ_INT(frames[1], MINING_GRADE_FINE);
+    ASSERT(frames[3] & INSPECT_ROW_GROUPED);
+    ASSERT_EQ_INT(read_u16_le(&frames[12]), 4);
+
+    uint8_t *lasers = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(lasers[0], COMMODITY_LASER_MODULE);
+    ASSERT_EQ_INT(lasers[1], MINING_GRADE_FINE);
+    ASSERT(lasers[3] & INSPECT_ROW_GROUPED);
+    ASSERT_EQ_INT(read_u16_le(&lasers[12]), 2);
+
+    uint8_t *tractors = &buf[INSPECT_SNAPSHOT_HEADER + 2 * INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(tractors[0], COMMODITY_TRACTOR_MODULE);
+    ASSERT_EQ_INT(tractors[1], MINING_GRADE_FINE);
+    ASSERT(tractors[3] & INSPECT_ROW_GROUPED);
+    ASSERT_EQ_INT(read_u16_le(&tractors[12]), 3);
+
+    ship_cleanup(&ship);
+}
+
 TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
     /* Hauler scan should group common anonymous bulk, but every named
      * / prefix-class ingot stays per-unit so the hash and provenance can
@@ -908,6 +973,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
+    RUN(test_inspect_snapshot_groups_finished_goods_by_grade);
     RUN(test_inspect_snapshot_keeps_named_ingots_individual);
     RUN(test_roundtrip_stations);
     RUN(test_station_identity_serializes_module_commodities);

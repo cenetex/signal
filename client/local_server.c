@@ -268,15 +268,6 @@ static void local_server_copy_inspect_row(NetInspectSnapshotRow *row,
     }
 }
 
-static bool local_inspect_unit_is_groupable_bulk(const cargo_unit_t *unit) {
-    if (!unit) return false;
-    if ((cargo_kind_t)unit->kind != CARGO_KIND_INGOT) return false;
-    if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) return false;
-    if (unit->commodity >= COMMODITY_COUNT) return false;
-    if (unit->grade >= MINING_GRADE_COUNT) return false;
-    return true;
-}
-
 static void local_server_copy_inspect_group(NetInspectSnapshotRow *row,
                                             uint8_t commodity,
                                             uint8_t grade,
@@ -336,7 +327,7 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
             memset(bulk, 0, sizeof(bulk));
             for (uint16_t i = 0; i < snap.manifest_count; i++) {
                 const cargo_unit_t *unit = &ship->manifest.units[i];
-                if (local_inspect_unit_is_groupable_bulk(unit)) {
+                if (inspect_snapshot_unit_is_groupable(unit)) {
                     if (bulk[unit->commodity][unit->grade] < 0xFFFF)
                         bulk[unit->commodity][unit->grade]++;
                 }
@@ -355,7 +346,7 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
                          snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
                         const cargo_unit_t *unit = &ship->manifest.units[i];
                         if (unit->commodity != c || unit->grade != gr) continue;
-                        if (local_inspect_unit_is_groupable_bulk(unit)) continue;
+                        if (inspect_snapshot_unit_is_groupable(unit)) continue;
                         const cargo_receipt_chain_t *chain =
                             (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
                         local_server_copy_inspect_row(&snap.rows[snap.row_count],

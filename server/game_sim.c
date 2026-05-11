@@ -911,7 +911,7 @@ static int ship_collision_count; /* per-frame overlap counter for crush detectio
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float impact = resolve_ship_circle_pushback(&sp->ship, center, radius);
     if (impact > 0.0f) ship_collision_count++;
-    if (impact <= 0.0f || sp->docked) return;
+    if (impact <= 0.0f || sp->docked || w->player_only_mode) return;
     float dmg = collision_damage_for(impact, 1.0f);
     if (dmg > 0.0f) {
         /* Source = the offending station-module circle. Player's
@@ -933,9 +933,16 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
 static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
     /* Geometric push-out + mass-equal bounce live in sim_ship now;
      * player-only attribution / self-damage suppression sits on top. */
+    vec2 asteroid_vel_before = a->vel;
+    bool asteroid_dirty_before = a->net_dirty;
     float impact = resolve_ship_asteroid_pushback(&sp->ship, a);
+    if (w->player_only_mode) {
+        a->vel = asteroid_vel_before;
+        a->net_dirty = asteroid_dirty_before;
+    }
     if (impact <= 0.0f) return;
     ship_collision_count++;
+    if (w->player_only_mode) return;
 
     /* Self-damage skip: your own thrown rock can't hurt you. The
      * pushback already resolved geometrically — we just gate the
@@ -971,7 +978,7 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
     float impact = resolve_ship_annular_pushback(&sp->ship, center, ring_r,
                                                   angle_a, arc_delta);
     if (impact <= 0.0f) return;
-    if (sp->docked) return;
+    if (sp->docked || w->player_only_mode) return;
     float dmg = collision_damage_for(impact, 1.0f);
     if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
 }
@@ -1751,7 +1758,7 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     }
     /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules
      * on the same ring is normal, only crush when truly trapped) */
-    if (!sp->docked && ship_collision_count >= 3) {
+    if (!w->player_only_mode && !sp->docked && ship_collision_count >= 3) {
         float crush = (float)(ship_collision_count - 2) * 2.0f;
         apply_ship_damage(w, sp, crush);
     }
@@ -3424,11 +3431,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (spd > tow_cap)
                 sp->ship.vel = v2_scale(sp->ship.vel, tow_cap / spd);
         }
-        /* Skip collision in client prediction — authoritative server handles it.
-         * Running collision on both client and server worlds with slightly
-         * different ring rotations causes jitter and invisible walls. */
-        if (!w->player_only_mode)
-            resolve_world_collisions(w, sp);
+        /* Prediction and server both run the same collision geometry so
+         * obstacles feel solid immediately. The collision handlers suppress
+         * damage/events/server-only dirtying while w->player_only_mode is set. */
+        resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
         /* In client prediction mode (player_only_mode), skip station
          * interactions — the server is authoritative for dock/launch,

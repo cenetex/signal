@@ -762,6 +762,60 @@ TEST(test_bug47_interference_uses_world_rng) {
     ASSERT(w.rng == rng_before);
 }
 
+TEST(test_player_only_predicts_asteroid_collision_geometry) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.hull = 100.0f;
+    w.players[0].ship.pos = v2(1000.0f, 1000.0f);
+    w.players[0].ship.vel = v2(160.0f, 0.0f);
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f;
+    w.asteroids[0].hp = 100.0f;
+    w.asteroids[0].max_hp = 100.0f;
+    w.asteroids[0].pos = v2(1030.0f, 1000.0f);
+    w.asteroids[0].vel = v2(-120.0f, 0.0f);
+    vec2 asteroid_vel_before = w.asteroids[0].vel;
+    bool asteroid_dirty_before = w.asteroids[0].net_dirty;
+
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    float min_dist = w.asteroids[0].radius +
+        ship_hull_def(&w.players[0].ship)->ship_radius;
+    float dist = sqrtf(v2_dist_sq(w.players[0].ship.pos, w.asteroids[0].pos));
+    ASSERT(dist >= min_dist);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].vel.x, asteroid_vel_before.x, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].vel.y, asteroid_vel_before.y, 0.001f);
+    ASSERT(w.asteroids[0].net_dirty == asteroid_dirty_before);
+}
+
+TEST(test_player_only_predicts_station_collision_geometry) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.hull = 100.0f;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+
+    vec2 module_pos = module_world_pos_ring(&w.stations[0], 1, 1);
+    w.players[0].ship.pos = module_pos;
+
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    float min_dist = STATION_MODULE_COL_RADIUS +
+        ship_hull_def(&w.players[0].ship)->ship_radius;
+    float dist = sqrtf(v2_dist_sq(w.players[0].ship.pos, module_pos));
+    ASSERT(dist >= min_dist);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.001f);
+}
+
 TEST(test_bug48_titan_fracture_overflow) {
     WORLD_DECL;
     world_reset(&w);
@@ -1391,6 +1445,8 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_bug45_player_only_still_mines);
     RUN(test_bug46_player_only_advances_time);
     RUN(test_bug47_interference_uses_world_rng);
+    RUN(test_player_only_predicts_asteroid_collision_geometry);
+    RUN(test_player_only_predicts_station_collision_geometry);
     RUN(test_bug48_titan_fracture_overflow);
     RUN(test_bug49_asteroid_sticks_to_station);
     RUN(test_bug50_ship_collision_energy_gain);

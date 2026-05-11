@@ -73,6 +73,39 @@ static void sdtx_centered_text(float center_x, float row_idx, float cell, const 
     sdtx_puts(text);
 }
 
+static uint32_t hud_alpha_pipeline_id;
+
+static void hud_draw_alpha_rect(float x, float y, float width, float height,
+                                float r, float g0, float b, float a) {
+    if (width <= 0.0f || height <= 0.0f || a <= 0.0f) return;
+    if (hud_alpha_pipeline_id == 0) {
+        sgl_pipeline pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = {
+                    .enabled = true,
+                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                },
+            },
+        });
+        hud_alpha_pipeline_id = pip.id;
+    }
+
+    sgl_push_pipeline();
+    sgl_load_pipeline((sgl_pipeline){ hud_alpha_pipeline_id });
+    sgl_begin_quads();
+    sgl_c4f(r, g0, b, a);
+    sgl_v2f(x, y);
+    sgl_v2f(x + width, y);
+    sgl_v2f(x + width, y + height);
+    sgl_v2f(x, y + height);
+    sgl_end();
+    sgl_pop_pipeline();
+}
+
 /* ------------------------------------------------------------------ */
 /* Action row classification — single priority chain shared by the     */
 /* compact and wide HUDs. hud_classify_action() inspects player +      */
@@ -697,6 +730,30 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
 
+    const contract_t *tracked_contract = hud_tracked_tractor_contract();
+    int max_rows = (screen_h < 520.0f) ? 5 : 8;
+    if (tracked_contract && max_rows > 1) max_rows--;
+    int rows = snap->row_count;
+    if (rows > max_rows) rows = max_rows;
+    unsigned visible_units = 0;
+    for (int i = 0; i < rows; i++) {
+        const NetInspectSnapshotRow *row = &snap->rows[i];
+        visible_units += row->quantity > 0 ? row->quantity : 1;
+    }
+    bool has_more_units = snap->manifest_count > visible_units;
+    {
+        float bg_x = fmaxf(8.0f, px - 12.0f);
+        float bg_y = fmaxf(8.0f, py - 10.0f);
+        float bg_w = fmaxf(340.0f, screen_w - bg_x - 16.0f);
+        float row_stride = tracked_contract ? 40.0f : 28.0f;
+        float bg_h = (snap->manifest_count == 0)
+            ? 72.0f
+            : 58.0f + (float)rows * row_stride + (has_more_units ? 22.0f : 0.0f);
+        bg_h = fminf(bg_h, screen_h - bg_y - 16.0f);
+        hud_draw_alpha_rect(bg_x, bg_y, bg_w, bg_h, 0.02f, 0.015f, 0.025f, 0.58f);
+        hud_draw_alpha_rect(bg_x, bg_y, 3.0f, bg_h, 0.18f, 0.55f, 0.75f, 0.34f);
+    }
+
     int target_idx = (snap->target_index == 0xFFu) ? -1 : (int)snap->target_index;
     sdtx_pos(px / cell, py / cell);
     sdtx_color3b(PAL_ORE_AMBER);
@@ -724,12 +781,6 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         return;
     }
 
-    const contract_t *tracked_contract = hud_tracked_tractor_contract();
-    int max_rows = (screen_h < 520.0f) ? 5 : 8;
-    if (tracked_contract && max_rows > 1) max_rows--;
-    int rows = snap->row_count;
-    if (rows > max_rows) rows = max_rows;
-    unsigned visible_units = 0;
     float next_y = py + 48.0f;
     float now = g.world.time;
     for (int i = 0; i < rows; i++) {
@@ -737,7 +788,6 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         char cargo[12];
         hud_cargo_label(row->cargo_pub, cargo);
         unsigned qty = row->quantity > 0 ? row->quantity : 1;
-        visible_units += qty;
         bool grouped = (row->flags & INSPECT_ROW_GROUPED) != 0;
 
         /* On grouped rows, chain_len is repurposed as the prefix_class
@@ -1828,6 +1878,11 @@ void hull_fog_init(void) {
 }
 
 void hull_fog_shutdown(void) {
+    if (hud_alpha_pipeline_id) {
+        sgl_destroy_pipeline((sgl_pipeline){ hud_alpha_pipeline_id });
+        hud_alpha_pipeline_id = 0;
+    }
+
     if (!hull_fog.initialized) return;
 
     if (hull_fog.blend_pip_id) {

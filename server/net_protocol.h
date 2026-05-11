@@ -433,15 +433,6 @@ static inline int serialize_inspect_snapshot_target(uint8_t *buf,
     return INSPECT_SNAPSHOT_HEADER;
 }
 
-static inline bool inspect_unit_is_groupable_bulk(const cargo_unit_t *u) {
-    if (!u) return false;
-    if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT) return false;
-    if ((ingot_prefix_t)u->prefix_class != INGOT_PREFIX_ANONYMOUS) return false;
-    if (u->commodity >= COMMODITY_COUNT) return false;
-    if (u->grade >= MINING_GRADE_COUNT) return false;
-    return true;
-}
-
 static inline void write_inspect_snapshot_row(uint8_t *p,
                                               const cargo_unit_t *u,
                                               uint8_t commodity,
@@ -500,7 +491,7 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
     const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
     for (uint16_t i = 0; i < manifest_count; i++) {
         const cargo_unit_t *u = &ship->manifest.units[i];
-        if (inspect_unit_is_groupable_bulk(u)) {
+        if (inspect_snapshot_unit_is_groupable(u)) {
             if (bulk[u->commodity][u->grade] < 0xFFFF)
                 bulk[u->commodity][u->grade]++;
         }
@@ -520,7 +511,7 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
             for (uint16_t i = 0; i < manifest_count && row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
                 const cargo_unit_t *u = &ship->manifest.units[i];
                 if (u->commodity != c || u->grade != gr) continue;
-                if (inspect_unit_is_groupable_bulk(u)) continue;
+                if (inspect_snapshot_unit_is_groupable(u)) continue;
                 const cargo_receipt_chain_t *chain =
                     (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
                 uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW];
