@@ -552,12 +552,15 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
 
 /* Spawn the 8 shards + cinematic state for a death event. */
 static void death_cinematic_spawn(const sim_event_t *ev) {
+    float impact_speed = sqrtf(ev->death.vel_x * ev->death.vel_x +
+                               ev->death.vel_y * ev->death.vel_y);
+    float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
     g.death_cinematic.active = true;
     g.death_cinematic.phase = 0;
     g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);
     g.death_cinematic.vel = v2(ev->death.vel_x, ev->death.vel_y);
     g.death_cinematic.angle = ev->death.angle;
-    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
+    g.death_cinematic.spin = spin_dir * clampf(1.4f + impact_speed / 90.0f, 2.0f, 8.5f);
     g.death_cinematic.age = 0.0f;
     g.death_cinematic.menu_alpha = 0.0f;
     for (int s = 0; s < 8; s++) {
@@ -861,8 +864,10 @@ static void sim_step(float dt) {
     }
 
     /* Death cinematic.
-     *   Phase 0 (drift): wreckage tumbles, fog rolls in. After 2s the
-     *      cinematic auto-advances to phase 1 — no input required.
+     *   Phase 0 (drift): wreckage tumbles, fog rolls in, and the HUD
+     *      flashes SYSTEM CRITICAL while the world fades down.
+     *      After DEATH_CINEMATIC_WORLD_PHASE_SEC the cinematic
+     *      auto-advances to phase 1 — no input required.
      *   Phase 1 (stats): the stat menu fades in over the wreckage.
      *      Pressing E (after the menu has settled) releases the
      *      cinematic and lets the same E press fall through to the
@@ -870,7 +875,8 @@ static void sim_step(float dt) {
      *   Phase 2 (closing): cinematic.active is false but menu_alpha
      *      decays back toward 0 so the stat screen visibly disappears. */
     if (g.death_cinematic.active) {
-        if (g.death_cinematic.phase == 0 && g.death_cinematic.age >= 2.0f) {
+        if (g.death_cinematic.phase == 0 &&
+            g.death_cinematic.age >= DEATH_CINEMATIC_WORLD_PHASE_SEC) {
             g.death_cinematic.phase = 1;
         }
         if (g.death_cinematic.phase == 1 && g.death_cinematic.menu_alpha >= 0.85f

@@ -4,6 +4,7 @@
  * Split from main.c for Phase 3 refactoring.
  */
 #include "client.h"
+#include "world_draw.h"
 #include "render.h"
 #include "npc.h"
 #include "net.h"
@@ -1861,14 +1862,35 @@ void draw_death_wreckage(void) {
     if (!g.death_cinematic.active) return;
     float age = g.death_cinematic.age;
     vec2 wp = g.death_cinematic.pos;
+    float impact_speed = sqrtf(v2_len_sq(g.death_cinematic.vel));
+    float severity = clampf(impact_speed / 260.0f, 0.7f, 2.2f);
 
-    /* --- Initial explosion flare (first ~0.4s) --- */
-    if (age < 0.4f) {
-        float flare = 1.0f - (age / 0.4f);
-        float r1 = 50.0f + (1.0f - flare) * 60.0f;
-        draw_circle_outline(wp, r1, 24, 1.0f, 0.55f, 0.20f, flare * 0.85f);
-        draw_circle_outline(wp, r1 * 0.6f, 18, 1.0f, 0.85f, 0.40f, flare * 0.60f);
-        draw_circle_outline(wp, r1 * 0.3f, 14, 1.0f, 0.95f, 0.70f, flare * 0.40f);
+    /* --- Initial explosion flare: long enough to read before fade/menu. --- */
+    if (age < 1.45f) {
+        float t = age / 1.45f;
+        float flare = 1.0f - t;
+        float r1 = 45.0f + severity * 18.0f + t * (120.0f + severity * 34.0f);
+        draw_circle_filled(wp, r1 * 0.24f, 18, 1.0f, 0.38f, 0.12f, flare * 0.26f);
+        draw_circle_outline(wp, r1, 32, 1.0f, 0.28f, 0.16f, flare * 0.90f);
+        draw_circle_outline(wp, r1 * 0.62f, 24, 1.0f, 0.72f, 0.24f, flare * 0.65f);
+        draw_circle_outline(wp, r1 * 0.32f, 18, 1.0f, 0.95f, 0.70f, flare * 0.45f);
+        draw_spark_burst(wp, 1.3f + severity, true, 51.0f + severity * 3.1f);
+    }
+
+    /* Hot spiral trails make the impact readable even after the first flash. */
+    float trail_alpha = clampf(1.0f - age / DEATH_CINEMATIC_WORLD_PHASE_SEC, 0.0f, 1.0f);
+    if (trail_alpha > 0.01f) {
+        for (int arm = 0; arm < 3; arm++) {
+            float base = g.death_cinematic.angle + (float)arm * (2.0f * PI_F / 3.0f);
+            float twist = -g.death_cinematic.spin * (0.18f + 0.05f * (float)arm);
+            float a0 = base + twist;
+            float a1 = base + twist * 2.1f + 0.9f;
+            float len0 = 16.0f + severity * 5.0f;
+            float len1 = 54.0f + severity * 18.0f;
+            vec2 p0 = v2_add(wp, v2(cosf(a0) * len0, sinf(a0) * len0));
+            vec2 p1 = v2_add(wp, v2(cosf(a1) * len1, sinf(a1) * len1));
+            draw_segment(p0, p1, 1.0f, 0.22f, 0.08f, 0.40f * trail_alpha);
+        }
     }
 
     /* --- Charred hull core: a few jagged triangles, scorched colors --- */

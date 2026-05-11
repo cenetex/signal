@@ -1150,6 +1150,8 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
                      uint8_t respawn_station, float respawn_fee) {
     if ((int)player_id != g.local_player_slot) return;
     net_replay_reset();
+    float impact_speed = sqrtf(vel_x * vel_x + vel_y * vel_y);
+    float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
     g.death_ore_mined = ore_mined;
     g.death_credits_earned = credits_earned;
     g.death_credits_spent = credits_spent;
@@ -1162,7 +1164,7 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     g.death_cinematic.pos = v2(pos_x, pos_y);
     g.death_cinematic.vel = v2(vel_x, vel_y);
     g.death_cinematic.angle = angle;
-    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
+    g.death_cinematic.spin = spin_dir * clampf(1.4f + impact_speed / 90.0f, 2.0f, 8.5f);
     g.death_cinematic.age = 0.0f;
     g.death_cinematic.menu_alpha = 0.0f;
     for (int i = 0; i < 8; i++) {
@@ -1178,10 +1180,11 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     /* Suppress the legacy detector path */
     g.death_screen_timer = 0.0f;
     g.death_screen_max = 0.0f;
-    episode_trigger(&g.episode, 9);
     memset(g.episode.watched, 0, sizeof(g.episode.watched));
     g.episode.stations_visited = 0;
+    episode_trigger(&g.episode, 9);
     episode_save(&g.episode);
+    music_enter_death(&g.music);
 }
 
 void on_remote_world_time(float server_time) {

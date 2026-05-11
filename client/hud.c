@@ -2131,34 +2131,45 @@ void draw_hud_panels(void) {
 /* draw_hud -- the main HUD text layer                                 */
 /* ------------------------------------------------------------------ */
 
-/* Death-screen overlay — full-screen scrim + stats + leaderboard +
- * "[E] launch" prompt. Returns true if the overlay drew (caller skips
- * the regular flight HUD), false otherwise. */
+/* Death overlay. Phase 0 keeps the world visible: wreckage tumbles,
+ * critical warning flashes, and the screen fades slowly toward black.
+ * Phase 1 fades in stats + "[E] launch". Returns true when it owns the
+ * HUD layer so regular flight chrome stays hidden. */
 static bool draw_death_overlay(float screen_w, float screen_h) {
-    if (!g.death_cinematic.active && g.death_cinematic.menu_alpha <= 0.001f)
+    bool active = g.death_cinematic.active;
+    if (!active && g.death_cinematic.menu_alpha <= 0.001f)
         return false;
 
     float menu_alpha = g.death_cinematic.menu_alpha;
     if (menu_alpha < 0.0f) menu_alpha = 0.0f;
     if (menu_alpha > 1.0f) menu_alpha = 1.0f;
-    float scrim = 0.55f * menu_alpha;
-
-    /* Dark scrim under the menu. */
-    sgl_begin_quads();
-    sgl_c4f(0.0f, 0.0f, 0.0f, scrim);
-    sgl_v2f(0.0f, 0.0f);
-    sgl_v2f(screen_w, 0.0f);
-    sgl_v2f(screen_w, screen_h);
-    sgl_v2f(0.0f, screen_h);
-    sgl_end();
-    float alpha = menu_alpha;
+    float age = active ? g.death_cinematic.age : DEATH_CINEMATIC_FADE_TO_BLACK_SEC;
+    float fade_t = active ? clampf(age / DEATH_CINEMATIC_FADE_TO_BLACK_SEC, 0.0f, 1.0f)
+                          : menu_alpha;
+    fade_t = fade_t * fade_t * (3.0f - 2.0f * fade_t);
+    float scrim = fmaxf(0.74f * fade_t, 0.55f * menu_alpha);
+    if (scrim > 0.001f)
+        hud_draw_alpha_rect(0.0f, 0.0f, screen_w, screen_h, 0.0f, 0.0f, 0.0f, scrim);
 
     /* 1:1 canvas so text fills the screen. */
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
     float cx = screen_w * 0.5f;
     float cy = screen_h * 0.5f;
-    float cell = 8.0f;
+    float cell = (screen_w < 380.0f) ? 7.0f : 8.0f;
+
+    if (active && age < DEATH_CINEMATIC_WARNING_SEC) {
+        float warning_fade = clampf((DEATH_CINEMATIC_WARNING_SEC - age) / 0.8f, 0.0f, 1.0f);
+        float blink = (sinf(g.world.time * 18.0f) > 0.0f) ? 1.0f : 0.20f;
+        uint8_t wa = (uint8_t)(255.0f * warning_fade * blink);
+        sdtx_color4b(PAL_DEATH_PROMPT, wa);
+        sdtx_centered_text(cx, fmaxf(2.0f, (screen_h * 0.18f) / cell),
+                           cell, "[ SYSTEM CRITICAL :::: SIGNAL LOST ]");
+    }
+
+    if (menu_alpha <= 0.001f) return true;
+
+    float alpha = menu_alpha;
     uint8_t a8 = (uint8_t)(alpha * 255.0f);
 
     /* Title. */
