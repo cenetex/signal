@@ -68,6 +68,13 @@ static void write_f32_le(uint8_t* buf, float v) {
     buf[3] = (uint8_t)(conv.u >> 24);
 }
 
+static void write_u32_le(uint8_t* buf, uint32_t v) {
+    buf[0] = (uint8_t)(v & 0xFFu);
+    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
+    buf[2] = (uint8_t)((v >> 16) & 0xFFu);
+    buf[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
 static uint32_t read_u32_le(const uint8_t* buf) {
     return (uint32_t)buf[0]
          | ((uint32_t)buf[1] << 8)
@@ -450,6 +457,10 @@ static void handle_message(const uint8_t* data, int len) {
             int count = (int)data[1];
             int record_size = PLAYER_RECORD_SIZE;
             int expected = 2 + count * record_size;
+            if (len < expected && len >= 2 + count * 73) {
+                record_size = 73; /* pre-input-tick-ack server */
+                expected = 2 + count * record_size;
+            }
             if (len < expected && len >= 2 + count * 67) {
                 record_size = 67; /* pre-input-ack server */
                 expected = 2 + count * record_size;
@@ -487,6 +498,8 @@ static void handle_message(const uint8_t* data, int len) {
                     ps->input_seq_ack = 0;
                     ps->server_tick = 0;
                 }
+                ps->input_tick_ack =
+                    (record_size >= 77) ? read_u32_le(&p[73]) : 0;
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
@@ -1292,8 +1305,8 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id) {
-    uint8_t buf[14];
+                    uint16_t action_id, uint32_t input_tick) {
+    uint8_t buf[18];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
@@ -1309,7 +1322,8 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[11] = (uint8_t)(mining_target >> 8);
     buf[12] = (uint8_t)(action_id & 0xFFu);
     buf[13] = (uint8_t)(action_id >> 8);
-    ws_send_binary(buf, 14);
+    write_u32_le(&buf[14], input_tick);
+    ws_send_binary(buf, 18);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
@@ -1464,8 +1478,8 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id) {
-    uint8_t buf[14];
+                    uint16_t action_id, uint32_t input_tick) {
+    uint8_t buf[18];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
@@ -1481,7 +1495,8 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[11] = (uint8_t)(mining_target >> 8);
     buf[12] = (uint8_t)(action_id & 0xFFu);
     buf[13] = (uint8_t)(action_id >> 8);
-    ws_send_binary(buf, 14);
+    write_u32_le(&buf[14], input_tick);
+    ws_send_binary(buf, 18);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {

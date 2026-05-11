@@ -45,6 +45,7 @@ TEST(test_roundtrip_batched_player_states) {
     players[0].actual_thrusting = true;
     players[0].docked = false;
     players[0].last_input_seq = 321;
+    players[0].last_input_tick = 12340u;
 
     players[3].connected = true;
     players[3].ship.pos = v2(-50.0f, 300.0f);
@@ -74,6 +75,7 @@ TEST(test_roundtrip_batched_player_states) {
     ASSERT(!(p0[21] & 4)); /* not docked */
     ASSERT_EQ_INT((int)((uint16_t)p0[67] | ((uint16_t)p0[68] << 8)), 321);
     ASSERT_EQ_INT((int)read_u32_le(&p0[69]), 12345);
+    ASSERT_EQ_INT((int)read_u32_le(&p0[73]), 12340);
 
     /* Second record: player 3 */
     uint8_t *p1 = &buf[2 + PLAYER_RECORD_SIZE];
@@ -903,6 +905,57 @@ TEST(test_parse_input_v3_action_id) {
     ASSERT_EQ_INT((int)input_action_id(msg, 12), 0);
 }
 
+TEST(test_parse_input_v4_client_tick) {
+    uint8_t msg[18] = {
+        NET_MSG_INPUT,
+        NET_INPUT_THRUST,
+        NET_ACTION_NONE,
+        0xFF,
+        MINING_GRADE_COUNT,
+        0xFF, 0xFF, 0xFF,
+        0x78, 0x56,
+        0xFF, 0xFF,
+        0x34, 0x12,
+        0xEF, 0xCD, 0xAB, 0x89
+    };
+
+    ASSERT_EQ_INT((int)input_client_tick(msg, sizeof(msg)), (int)0x89ABCDEFu);
+    ASSERT_EQ_INT((int)input_client_tick(msg, 14), 0);
+}
+
+TEST(test_ticked_movement_input_applies_on_sim_tick) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    input_intent_t intent = {0};
+    intent.turn = 1.0f;
+    intent.thrust = 1.0f;
+    intent.mine = true;
+    intent.mining_target_hint = 7;
+    server_player_queue_movement_input(sp, &intent, 77, 2);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 1);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 0);
+    ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.01f);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 2);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 77);
+    ASSERT_EQ_INT((int)sp->last_input_tick, 2);
+    ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.01f);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.01f);
+    ASSERT(sp->input.mine);
+    ASSERT_EQ_INT(sp->input.mining_target_hint, 7);
+
+    world_cleanup(&w);
+}
+
 TEST(test_action_ack_roundtrip) {
     uint8_t buf[NET_ACTION_ACK_SIZE];
     int len = serialize_action_ack(buf, 0x1234, 0x5678,
@@ -989,6 +1042,8 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_no_action);
     RUN(test_parse_input_v2_uint16_mining_target);
     RUN(test_parse_input_v3_action_id);
+    RUN(test_parse_input_v4_client_tick);
+    RUN(test_ticked_movement_input_applies_on_sim_tick);
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
     RUN(test_parse_input_action_accumulates);

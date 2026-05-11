@@ -1986,9 +1986,13 @@ static void frame(void) {
                     if (g.net_input_seq == 0) g.net_input_seq++;
                     seq_advanced = true;
                 }
+                uint32_t input_tick = g.net_prediction_tick_valid
+                    ? g.net_prediction_tick + 1u
+                    : g.net_last_server_tick + 1u;
+                if (input_tick == 0) input_tick = 1;
                 net_send_input(flags, action, g.net_input_seq, mining_target,
                                buy_grade_byte, place_station, place_ring,
-                               place_slot, action_id);
+                               place_slot, action_id, input_tick);
                 g.net_input_packets_sent++;
                 if (seq_advanced) net_track_input_send(g.net_input_seq);
                 if (action != NET_ACTION_NONE)

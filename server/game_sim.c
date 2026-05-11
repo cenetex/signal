@@ -4987,8 +4987,104 @@ static void sync_npc_paired_ship_physics(world_t *w, int npc_slot) {
     ship->hull_class = npc->ship.hull_class;
 }
 
+static bool sim_tick_after(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
+}
+
+static bool input_seq_after(uint16_t a, uint16_t b) {
+    return (int16_t)(a - b) > 0;
+}
+
+static input_intent_t movement_intent_from_input(const input_intent_t *intent) {
+    input_intent_t out = {0};
+    if (!intent) return out;
+    out.turn = intent->turn;
+    out.thrust = intent->thrust;
+    out.mine = intent->mine;
+    out.mining_target_hint = intent->mining_target_hint;
+    out.tractor_hold = intent->tractor_hold;
+    out.boost = intent->boost;
+    out.reverse_thrust = intent->reverse_thrust;
+    return out;
+}
+
+static void apply_movement_intent(server_player_t *sp,
+                                  const input_intent_t *intent) {
+    if (!sp || !intent) return;
+    sp->input.turn = intent->turn;
+    sp->input.thrust = intent->thrust;
+    sp->input.mine = intent->mine;
+    sp->input.mining_target_hint = intent->mining_target_hint;
+    sp->input.tractor_hold = intent->tractor_hold;
+    sp->input.boost = intent->boost;
+    sp->input.reverse_thrust = intent->reverse_thrust;
+}
+
+void server_player_queue_movement_input(server_player_t *sp,
+                                        const input_intent_t *intent,
+                                        uint16_t input_seq,
+                                        uint32_t apply_tick) {
+    if (!sp || !intent || apply_tick == 0) return;
+
+    input_intent_t movement = movement_intent_from_input(intent);
+    if (input_seq != 0) {
+        if (sp->last_input_seq != 0 &&
+            !input_seq_after(input_seq, sp->last_input_seq)) {
+            return;
+        }
+        for (int i = 0; i < (int)sp->movement_queue_count; i++) {
+            movement_input_cmd_t *cmd = &sp->movement_queue[i];
+            if (cmd->input_seq == input_seq) {
+                cmd->intent = movement;
+                return;
+            }
+        }
+    }
+
+    uint8_t count = sp->movement_queue_count;
+    if (count >= PLAYER_MOVEMENT_QUEUE_CAP) {
+        memmove(&sp->movement_queue[0], &sp->movement_queue[1],
+                (PLAYER_MOVEMENT_QUEUE_CAP - 1) *
+                    sizeof(sp->movement_queue[0]));
+        count = PLAYER_MOVEMENT_QUEUE_CAP - 1;
+        sp->movement_queue_count = count;
+    }
+
+    int insert = (int)count;
+    while (insert > 0 &&
+           sim_tick_after(sp->movement_queue[insert - 1].apply_tick,
+                          apply_tick)) {
+        sp->movement_queue[insert] = sp->movement_queue[insert - 1];
+        insert--;
+    }
+    sp->movement_queue[insert] = (movement_input_cmd_t){
+        .apply_tick = apply_tick,
+        .input_seq = input_seq,
+        .intent = movement,
+    };
+    sp->movement_queue_count = (uint8_t)(count + 1u);
+}
+
+static void server_player_apply_queued_movement(server_player_t *sp,
+                                                uint32_t tick) {
+    if (!sp) return;
+    while (sp->movement_queue_count > 0) {
+        const movement_input_cmd_t *cmd = &sp->movement_queue[0];
+        if (sim_tick_after(cmd->apply_tick, tick)) break;
+        apply_movement_intent(sp, &cmd->intent);
+        sp->last_input_seq = cmd->input_seq;
+        sp->last_input_tick = tick;
+        sp->movement_queue_count--;
+        if (sp->movement_queue_count > 0) {
+            memmove(&sp->movement_queue[0], &sp->movement_queue[1],
+                    sp->movement_queue_count * sizeof(sp->movement_queue[0]));
+        }
+    }
+}
+
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
+    w->tick++;
     w->time += dt;
     step_station_ring_dynamics(w, dt);
     step_station_jostle(w, dt);
@@ -5049,6 +5145,7 @@ void world_sim_step(world_t *w, float dt) {
     generate_npc_distress_contracts(w, dt);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
+        server_player_apply_queued_movement(&w->players[p], w->tick);
         step_player(w, &w->players[p], dt);
     }
 
@@ -5182,7 +5279,7 @@ void world_sim_step(world_t *w, float dt) {
 
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
-    /* Do NOT advance w->time — world time is server-authoritative (bug 46) */
+    /* Do NOT advance w->time or w->tick — both are server-authoritative. */
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_idx];
     if (!sp->connected) return;

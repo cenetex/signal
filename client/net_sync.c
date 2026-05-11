@@ -21,13 +21,11 @@
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
 #define NPC_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
-/* Emergency disable: the replay buffer is keyed by locally-invented ticks,
- * while the server applies movement input on packet arrival. Even at low
- * latency those clocks can disagree, so rewinding to a server snapshot and
- * replaying by local tick can amplify corrections into an uncontrollable
- * feedback loop. Keep local prediction + bounded authoritative correction
- * until movement packets carry server-anchored input ticks. */
-#define NET_REPLAY_ENABLED 0
+/* Replay is keyed to server-anchored sim ticks. Movement packets carry the
+ * client-predicted target tick, and the server only applies them during the
+ * matching world_sim_step(), so snapshots and prediction frames share one
+ * integer clock instead of racing packet-arrival time. */
+#define NET_REPLAY_ENABLED 1
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];

@@ -7,7 +7,7 @@
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
- *   INPUT           (0x04): legacy 4-8 bytes, current 14 bytes with seq + uint16 target + action id
+ *   INPUT           (0x04): legacy 4-14 bytes, current 18 bytes with seq + uint16 target + action id + input tick
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
  *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
@@ -470,15 +470,16 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
  * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
- * [input_ack:u16][server_tick:u32]
+ * [input_ack:u16][server_tick:u32][input_tick_ack:u32]
  * towed_frags: 10 × uint16_t asteroid index, 0xFFFF = unused. Widened
  * from uint8_t in #285 Phase 3 so slots 255-2047 survive the wire.
  * flags bits: 1=thrust 2=beam_active 4=docked 8=scan 16=tractor 32=beam_ineffective 64=beam_hit
  * Beam coords are server-authoritative — fixes autopilot mining visuals
  * and (eventually) combat hit prediction. input_ack/server_tick let the
  * client reconcile against the server state age instead of blindly pulling
- * predicted controls back to a stale packet. */
-#define PLAYER_RECORD_SIZE 73  /* 51 + 16 beam coords + 2 ack + 4 tick */
+ * predicted controls back to a stale packet. input_tick_ack is the sim tick
+ * where that input was actually applied. */
+#define PLAYER_RECORD_SIZE 77  /* 51 + 16 beam coords + 2 ack + 4 pose tick + 4 input tick */
 
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8] */
 #define ASTEROID_RECORD_SIZE 33  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
