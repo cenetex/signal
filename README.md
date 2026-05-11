@@ -162,6 +162,18 @@ make stop
 
 Then open `http://localhost:8080/play.html?server=ws://localhost:9091/ws`.
 
+High-latency multiplayer test:
+
+```sh
+make dev
+make latency-proxy-high
+```
+
+Then open `http://localhost:8080/play.html?server=ws://127.0.0.1:19091/ws`.
+The proxy delays browser→server and server→browser websocket frames while
+preserving frame order. Tune it with `LATENCY_CLIENT_MS`, `LATENCY_SERVER_MS`,
+`LATENCY_JITTER_MS`, `LATENCY_LISTEN`, and `LATENCY_UPSTREAM`.
+
 ## Test
 
 The `make test` target rebuilds `signal_test` and the native client from

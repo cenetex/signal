@@ -9,6 +9,7 @@
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
  *   INPUT           (0x04): legacy 4-8 bytes, current 14 bytes with seq + uint16 target + action id
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
+ *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 29-byte records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
@@ -153,6 +154,15 @@ enum {
                                             * This is a transport/dedupe ack, not a semantic success
                                             * response. The normal authoritative snapshots still decide
                                             * whether the action visibly succeeded. */
+    NET_MSG_ACTION_RESULT          = 0x3B, /* server -> client. Semantic result for an accepted
+                                            * one-shot action after the server sim tick has consumed it.
+                                            *
+                                            *   [type:1=0x3B][action_id:u16][input_seq:u16]
+                                            *   [status:1][action:1][server_tick:u32]
+                                            *
+                                            * This is paired with ACTION_ACK: ACK says the packet arrived;
+                                            * RESULT says the authoritative sim accepted, rejected, or no-op'd
+                                            * the requested action. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -402,6 +412,14 @@ enum {
 };
 
 #define NET_ACTION_ACK_SIZE 7
+
+enum {
+    NET_ACTION_RESULT_OK       = 1,
+    NET_ACTION_RESULT_REJECTED = 2,
+    NET_ACTION_RESULT_NOOP     = 3,
+};
+
+#define NET_ACTION_RESULT_SIZE 11
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

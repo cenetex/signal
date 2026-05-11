@@ -62,6 +62,7 @@ static bool highscores_dirty = true;      /* broadcast + persist pending */
  * use the same send wrapper as every other broadcast in this file
  * (consistent with future send-queue / rate-limiting changes). */
 static void ws_send(struct mg_connection *c, const void *data, size_t len);
+static float player_station_balance(const server_player_t *sp);
 
 static void broadcast_highscores(void) {
     uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
@@ -152,6 +153,141 @@ static void send_action_ack(struct mg_connection *c, uint16_t action_id,
     uint8_t buf[NET_ACTION_ACK_SIZE];
     int len = serialize_action_ack(buf, action_id, input_seq, status, action);
     ws_send(c, buf, (size_t)len);
+}
+
+static void send_action_result(struct mg_connection *c, uint16_t action_id,
+                               uint16_t input_seq, uint8_t status,
+                               uint8_t action, uint32_t server_tick) {
+    uint8_t buf[NET_ACTION_RESULT_SIZE];
+    int len = serialize_action_result(buf, action_id, input_seq, status,
+                                      action, server_tick);
+    ws_send(c, buf, (size_t)len);
+}
+
+static int action_result_station_index(const server_player_t *sp) {
+    return sp->docked ? sp->current_station : sp->nearby_station;
+}
+
+static int action_result_station_pending_count(const server_player_t *sp) {
+    int st = sp->pending_action_before_station;
+    if (st < 0 || st >= MAX_STATIONS) return -1;
+    (void)sp;
+    return world.stations[st].pending_scaffold_count;
+}
+
+static void begin_pending_action_result(server_player_t *sp,
+                                        uint16_t action_id,
+                                        uint16_t input_seq,
+                                        uint8_t action) {
+    if (!sp || action_id == 0 || action == NET_ACTION_NONE) return;
+    int st = action_result_station_index(sp);
+    sp->pending_action_result_valid = true;
+    sp->pending_action_result_action = action;
+    sp->pending_action_result_id = action_id;
+    sp->pending_action_result_input_seq = input_seq;
+    sp->pending_action_before_docked = sp->docked;
+    sp->pending_action_before_docking_approach = sp->docking_approach;
+    sp->pending_action_before_station = st;
+    sp->pending_action_before_autopilot_mode = sp->autopilot_mode;
+    sp->pending_action_before_hull = sp->ship.hull;
+    sp->pending_action_before_cargo_total = ship_total_cargo(&sp->ship);
+    sp->pending_action_before_manifest_count = sp->ship.manifest.count;
+    sp->pending_action_before_mining_level = (uint8_t)sp->ship.mining_level;
+    sp->pending_action_before_hold_level = (uint8_t)sp->ship.hold_level;
+    sp->pending_action_before_tractor_level = (uint8_t)sp->ship.tractor_level;
+    sp->pending_action_before_towed_count = sp->ship.towed_count;
+    sp->pending_action_before_towed_scaffold = sp->ship.towed_scaffold;
+    sp->pending_action_before_station_pending_scaffold_count =
+        (st >= 0 && st < MAX_STATIONS) ? world.stations[st].pending_scaffold_count : -1;
+    sp->pending_action_before_station_balance = player_station_balance(sp);
+}
+
+static bool pending_action_state_changed(const server_player_t *sp) {
+    if (!sp || !sp->pending_action_result_valid) return false;
+    if (sp->pending_action_before_docked != sp->docked) return true;
+    if (sp->pending_action_before_docking_approach != sp->docking_approach) return true;
+    if (sp->pending_action_before_station != action_result_station_index(sp)) return true;
+    if (sp->pending_action_before_autopilot_mode != sp->autopilot_mode) return true;
+    if (fabsf(sp->pending_action_before_hull - sp->ship.hull) > 0.01f) return true;
+    if (fabsf(sp->pending_action_before_cargo_total - ship_total_cargo(&sp->ship)) > 0.01f) return true;
+    if (sp->pending_action_before_manifest_count != sp->ship.manifest.count) return true;
+    if (sp->pending_action_before_mining_level != (uint8_t)sp->ship.mining_level) return true;
+    if (sp->pending_action_before_hold_level != (uint8_t)sp->ship.hold_level) return true;
+    if (sp->pending_action_before_tractor_level != (uint8_t)sp->ship.tractor_level) return true;
+    if (sp->pending_action_before_towed_count != sp->ship.towed_count) return true;
+    if (sp->pending_action_before_towed_scaffold != sp->ship.towed_scaffold) return true;
+    if (sp->pending_action_before_station_pending_scaffold_count !=
+        action_result_station_pending_count(sp)) {
+        return true;
+    }
+    if (fabsf(sp->pending_action_before_station_balance -
+              player_station_balance(sp)) > 0.01f) {
+        return true;
+    }
+    return false;
+}
+
+static bool action_matches_event(uint8_t action, uint8_t event_type) {
+    if (action == NET_ACTION_DOCK) return event_type == SIM_EVENT_DOCK;
+    if (action == NET_ACTION_LAUNCH) return event_type == SIM_EVENT_LAUNCH;
+    if (action == NET_ACTION_SELL_CARGO ||
+        (action >= NET_ACTION_DELIVER_COMMODITY &&
+         action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT)) {
+        return event_type == SIM_EVENT_SELL ||
+               event_type == SIM_EVENT_CONTRACT_COMPLETE;
+    }
+    if (action == NET_ACTION_REPAIR) return event_type == SIM_EVENT_REPAIR;
+    if (action == NET_ACTION_UPGRADE_MINING ||
+        action == NET_ACTION_UPGRADE_HOLD ||
+        action == NET_ACTION_UPGRADE_TRACTOR) {
+        return event_type == SIM_EVENT_UPGRADE;
+    }
+    if (action == NET_ACTION_PLACE_OUTPOST) return event_type == SIM_EVENT_OUTPOST_PLACED;
+    if (action == NET_ACTION_HAIL) return event_type == SIM_EVENT_HAIL_RESPONSE;
+    if (action == NET_ACTION_RESET) return event_type == SIM_EVENT_DEATH;
+    if (action >= NET_ACTION_BUY_PRODUCT &&
+        action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
+        return event_type == SIM_EVENT_SELL;
+    }
+    return false;
+}
+
+static uint8_t pending_action_result_status(const server_player_t *sp,
+                                            const sim_events_t *events) {
+    bool matched_event = false;
+    bool rejected = false;
+    if (sp && events) {
+        for (int i = 0; i < events->count; i++) {
+            const sim_event_t *ev = &events->events[i];
+            if (ev->player_id != sp->id) continue;
+            if (ev->type == SIM_EVENT_ORDER_REJECTED) rejected = true;
+            if (action_matches_event(sp->pending_action_result_action,
+                                     (uint8_t)ev->type)) {
+                matched_event = true;
+            }
+        }
+    }
+    if (rejected) return NET_ACTION_RESULT_REJECTED;
+    if (matched_event || pending_action_state_changed(sp)) return NET_ACTION_RESULT_OK;
+    return NET_ACTION_RESULT_NOOP;
+}
+
+static void send_pending_action_results(const sim_events_t *events) {
+    uint32_t server_tick = (uint32_t)lroundf(world.time * 120.0f);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &world.players[i];
+        if (!sp->pending_action_result_valid) continue;
+        uint8_t status = pending_action_result_status(sp, events);
+        if (sp->connected && sp->conn) {
+            send_action_result(sp->conn,
+                               sp->pending_action_result_id,
+                               sp->pending_action_result_input_seq,
+                               status,
+                               sp->pending_action_result_action,
+                               server_tick);
+        }
+        sp->pending_action_result_valid = false;
+    }
 }
 
 static void broadcast(const void *data, size_t len) {
@@ -317,6 +453,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 sp->last_input_action_id = action_id;
                 sp->last_input_action_id_valid = true;
                 ack_status = NET_ACTION_ACK_RECEIVED;
+                begin_pending_action_result(sp, action_id, input_seq, action);
             }
         }
         parse_input(input_data, len, &world.players[pid].input);
@@ -982,6 +1119,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             }
             world.players[pid].last_input_action_id = 0;
             world.players[pid].last_input_action_id_valid = false;
+            world.players[pid].pending_action_result_valid = false;
             /* Layer A.2 (#479): if the client registered its pubkey before
              * SESSION, rebind the registry entry to the real session_token
              * so future lookups by pubkey find this slot. */
@@ -2808,6 +2946,7 @@ static void run_sim_ticks(float *sim_accum, float elapsed) {
             int elen = serialize_events(ebuf, &world.events);
             if (elen > 2) broadcast(ebuf, (size_t)elen);
         }
+        send_pending_action_results(&world.events);
         broadcast_fracture_updates();
         *sim_accum -= SIM_DT;
         steps++;

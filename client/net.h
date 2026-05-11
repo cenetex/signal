@@ -279,6 +279,9 @@ typedef void (*net_on_highscores_fn)(const NetHighscoreEntry *entries, int count
 typedef void (*net_on_players_begin_fn)(void);
 typedef void (*net_on_action_ack_fn)(uint16_t action_id, uint16_t input_seq,
                                      uint8_t status, uint8_t action);
+typedef void (*net_on_action_result_fn)(uint16_t action_id, uint16_t input_seq,
+                                        uint8_t status, uint8_t action,
+                                        uint32_t server_tick);
 
 typedef struct {
     net_on_player_join_fn on_join;
@@ -309,6 +312,7 @@ typedef struct {
     net_on_inspect_snapshot_fn on_inspect_snapshot;
     net_on_highscores_fn       on_highscores;
     net_on_action_ack_fn       on_action_ack;
+    net_on_action_result_fn    on_action_result;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.
