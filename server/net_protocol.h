@@ -70,6 +70,17 @@ static inline float read_f32_le(const uint8_t *buf) {
 /* Serialisation (server -> client)                                   */
 /* ------------------------------------------------------------------ */
 
+static inline int serialize_action_ack(uint8_t *buf, uint16_t action_id,
+                                       uint16_t input_seq, uint8_t status,
+                                       uint8_t action) {
+    buf[0] = NET_MSG_ACTION_ACK;
+    write_u16_le(&buf[1], action_id);
+    write_u16_le(&buf[3], input_seq);
+    buf[5] = status;
+    buf[6] = action;
+    return NET_ACTION_ACK_SIZE;
+}
+
 /*
  * STATE message (45 bytes):
  * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]
