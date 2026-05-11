@@ -236,6 +236,24 @@ typedef struct {
      * without discarding the packet's current movement flags. */
     uint16_t last_input_action_id;
     bool last_input_action_id_valid;
+    bool pending_action_result_valid;
+    uint8_t pending_action_result_action;
+    uint16_t pending_action_result_id;
+    uint16_t pending_action_result_input_seq;
+    bool pending_action_before_docked;
+    bool pending_action_before_docking_approach;
+    int pending_action_before_station;
+    uint8_t pending_action_before_autopilot_mode;
+    float pending_action_before_hull;
+    float pending_action_before_cargo_total;
+    uint16_t pending_action_before_manifest_count;
+    uint8_t pending_action_before_mining_level;
+    uint8_t pending_action_before_hold_level;
+    uint8_t pending_action_before_tractor_level;
+    int pending_action_before_towed_count;
+    int pending_action_before_towed_scaffold;
+    int pending_action_before_station_pending_scaffold_count;
+    float pending_action_before_station_balance;
     /* Last damage attribution. Set by apply_ship_damage_attributed and
      * read by emergency_recover_ship when populating SIM_EVENT_DEATH so
      * the death cinematic can name a killer. Cleared when the player

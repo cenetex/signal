@@ -82,6 +82,9 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action);
+static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
+                                    uint8_t status, uint8_t action,
+                                    uint32_t server_tick);
 
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
@@ -1193,6 +1196,7 @@ static void init(void) {
             cbs.on_inspect_snapshot = apply_remote_inspect_snapshot;
             cbs.on_highscores = apply_remote_highscores;
             cbs.on_action_ack = on_remote_action_ack;
+            cbs.on_action_result = on_remote_action_result;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already
              * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
@@ -1762,6 +1766,23 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
     (void)action;
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
+}
+
+static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
+                                    uint8_t status, uint8_t action,
+                                    uint32_t server_tick) {
+    (void)action_id;
+    (void)input_seq;
+    (void)status;
+    (void)action;
+    if (server_tick != 0) {
+        g.net_last_server_tick = server_tick;
+        if (!g.net_prediction_tick_valid) {
+            g.net_prediction_tick = server_tick;
+            g.net_prediction_tick_valid = true;
+        }
+    }
+    g.action_predict_timer = 0.0f;
 }
 
 static void net_action_queue_push(uint8_t action, uint8_t buy_grade,

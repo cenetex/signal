@@ -852,6 +852,22 @@ TEST(test_action_ack_roundtrip) {
     ASSERT_EQ_INT(buf[6], NET_ACTION_DOCK);
 }
 
+TEST(test_action_result_roundtrip) {
+    uint8_t buf[NET_ACTION_RESULT_SIZE];
+    int len = serialize_action_result(buf, 0x1234, 0x5678,
+                                      NET_ACTION_RESULT_OK,
+                                      NET_ACTION_LAUNCH,
+                                      0xAABBCCDDu);
+
+    ASSERT_EQ_INT(len, NET_ACTION_RESULT_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_ACTION_RESULT);
+    ASSERT_EQ_INT((int)read_u16_le(&buf[1]), 0x1234);
+    ASSERT_EQ_INT((int)read_u16_le(&buf[3]), 0x5678);
+    ASSERT_EQ_INT(buf[5], NET_ACTION_RESULT_OK);
+    ASSERT_EQ_INT(buf[6], NET_ACTION_LAUNCH);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[7]), (int)0xAABBCCDDu);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -908,6 +924,7 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_v2_uint16_mining_target);
     RUN(test_parse_input_v3_action_id);
     RUN(test_action_ack_roundtrip);
+    RUN(test_action_result_roundtrip);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

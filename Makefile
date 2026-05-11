@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap profile-machine dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -172,6 +172,23 @@ crap:
 
 profile-machine:
 	tools/profile_machine.sh
+
+LATENCY_LISTEN ?= 127.0.0.1:19091
+LATENCY_UPSTREAM ?= ws://127.0.0.1:9091/ws
+LATENCY_CLIENT_MS ?= 250
+LATENCY_SERVER_MS ?= 250
+LATENCY_JITTER_MS ?= 80
+
+latency-proxy:
+	node scripts/ws-latency-proxy.mjs \
+		--listen=$(LATENCY_LISTEN) \
+		--upstream=$(LATENCY_UPSTREAM) \
+		--client-ms=$(LATENCY_CLIENT_MS) \
+		--server-ms=$(LATENCY_SERVER_MS) \
+		--jitter-ms=$(LATENCY_JITTER_MS)
+
+latency-proxy-high:
+	$(MAKE) latency-proxy LATENCY_CLIENT_MS=450 LATENCY_SERVER_MS=450 LATENCY_JITTER_MS=150
 
 # --- Local dev = docker compose (single source of truth) ---
 # One canonical local path. The container's entrypoint cd's into
