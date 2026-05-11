@@ -362,6 +362,7 @@ typedef struct {
     uint16_t net_input_seq;
     uint16_t net_last_server_ack;
     uint32_t net_last_server_tick;
+    bool net_input_tick_protocol;
     float net_last_ack_rtt;
     float net_max_ack_rtt_5s;
     float net_ack_window_elapsed;
