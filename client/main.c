@@ -167,6 +167,7 @@ static void reset_world(void) {
     g.net_input_seq = 0;
     g.net_last_server_ack = 0;
     g.net_last_server_tick = 0;
+    g.net_input_tick_protocol = false;
     g.net_last_ack_rtt = 0.0f;
     g.net_max_ack_rtt_5s = 0.0f;
     g.net_ack_window_elapsed = 0.0f;

@@ -444,6 +444,7 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int t = 0; t < 10; t++) ps->towed_fragments[t] = 0xFFFFu;
             }
             ps->active = true;
+            ps->has_input_tick_ack = false;
 
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
@@ -500,6 +501,7 @@ static void handle_message(const uint8_t* data, int len) {
                 }
                 ps->input_tick_ack =
                     (record_size >= 77) ? read_u32_le(&p[73]) : 0;
+                ps->has_input_tick_ack = record_size >= 77;
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);

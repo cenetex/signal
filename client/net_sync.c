@@ -30,6 +30,10 @@
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
 
+static bool net_replay_enabled(void) {
+    return NET_REPLAY_ENABLED && g.net_input_tick_protocol;
+}
+
 static float nearest_angle_delta(float from, float to) {
     float delta = to - from;
     while (delta >  PI_F) delta -= TWO_PI_F;
@@ -109,7 +113,7 @@ static void net_replay_append(const input_replay_frame_t *frame) {
 
 void net_replay_record_prediction(const input_intent_t *intent, float dt) {
     if (!intent || dt <= 0.0f) return;
-    if (!NET_REPLAY_ENABLED) return;
+    if (!net_replay_enabled()) return;
     if (!g.multiplayer_enabled || g.local_server.active || !net_is_connected())
         return;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
@@ -171,7 +175,7 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
                                               server_player_t *sp,
                                               int *out_replayed) {
     *out_replayed = 0;
-    if (!NET_REPLAY_ENABLED) return false;
+    if (!net_replay_enabled()) return false;
     uint32_t server_tick = state->server_tick;
     if (server_tick == 0 && !g.net_prediction_tick_valid) return false;
 
@@ -287,6 +291,7 @@ static npc_ship_t npc_render_state_at(int slot, float elapsed) {
 }
 
 void reset_remote_dynamic_sync(void) {
+    g.net_input_tick_protocol = false;
     net_replay_reset();
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
@@ -927,6 +932,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
         vec2 before_pos = sp->ship.pos;
+        if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
         bool has_input_ack = state->input_seq_ack != 0;
         bool has_unacked_input =
             has_input_ack && g.net_input_seq != 0 &&

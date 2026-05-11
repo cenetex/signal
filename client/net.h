@@ -51,6 +51,7 @@ typedef struct {
     uint16_t input_seq_ack;        /* last input seq the server accepted */
     uint32_t server_tick;          /* authoritative tick for this pose */
     uint32_t input_tick_ack;       /* tick where input_seq_ack was applied */
+    bool has_input_tick_ack;       /* WORLD_PLAYERS used the 77-byte tick protocol */
     bool active;
 } NetPlayerState;
 
