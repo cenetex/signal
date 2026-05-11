@@ -17,6 +17,10 @@
 #define LOCAL_PLAYER_RENDER_SNAP_LATENCY_DIST 360.0f
 #define NET_REPLAY_LATENCY_COMP_MIN_RTT_SEC 0.075f
 #define NET_REPLAY_LATENCY_COMP_MAX_SEC 0.45f
+#define ASTEROID_RENDER_CORRECTION_SEC 0.18f
+#define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
+#define NPC_RENDER_CORRECTION_SEC 0.18f
+#define NPC_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -276,6 +280,44 @@ void on_player_leave(uint8_t player_id) {
     g.world.players[player_id].connected = false;
 }
 
+static asteroid_t asteroid_render_state_at(int slot, float elapsed) {
+    const asteroid_t *prev = &g.asteroid_interp.prev[slot];
+    const asteroid_t *curr = &g.asteroid_interp.curr[slot];
+    asteroid_t out = *curr;
+    if (!curr->active) return out;
+
+    out.pos.x += curr->vel.x * elapsed;
+    out.pos.y += curr->vel.y * elapsed;
+    out.age += elapsed;
+    out.rotation = wrap_angle(curr->rotation + curr->spin * elapsed);
+
+    if (prev->active) {
+        float blend = clampf(elapsed / ASTEROID_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
+        out.pos.x = lerpf(prev->pos.x, out.pos.x, blend);
+        out.pos.y = lerpf(prev->pos.y, out.pos.y, blend);
+        out.rotation = lerp_angle(prev->rotation, out.rotation, blend);
+    }
+    return out;
+}
+
+static npc_ship_t npc_render_state_at(int slot, float elapsed) {
+    const npc_ship_t *prev = &g.npc_interp.prev[slot];
+    const npc_ship_t *curr = &g.npc_interp.curr[slot];
+    npc_ship_t out = *curr;
+    if (!curr->active) return out;
+
+    out.ship.pos.x += curr->ship.vel.x * elapsed;
+    out.ship.pos.y += curr->ship.vel.y * elapsed;
+
+    if (prev->active) {
+        float blend = clampf(elapsed / NPC_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
+        out.ship.pos.x = lerpf(prev->ship.pos.x, out.ship.pos.x, blend);
+        out.ship.pos.y = lerpf(prev->ship.pos.y, out.ship.pos.y, blend);
+        out.ship.angle = lerp_angle(prev->ship.angle, out.ship.angle, blend);
+    }
+    return out;
+}
+
 void reset_remote_dynamic_sync(void) {
     net_replay_reset();
 
@@ -292,13 +334,17 @@ void reset_remote_dynamic_sync(void) {
 }
 
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
-    /* Shift current -> previous for interpolation.
-     * Compute interval as blend of measured elapsed and previous interval
-     * to smooth out network jitter. */
-    memcpy(g.asteroid_interp.prev, g.asteroid_interp.curr, sizeof(g.asteroid_interp.prev));
+    /* Keep asteroid motion at client frame speed. Before applying the
+     * new server packet, carry the current visual state forward by
+     * velocity. The authoritative snapshot then blends from that visible
+     * state instead of snapping rocks back to packet-age positions. */
     float elapsed = g.asteroid_interp.t * g.asteroid_interp.interval;
-    elapsed = clampf(elapsed, 0.05f, 0.2f);
-    g.asteroid_interp.interval = lerpf(g.asteroid_interp.interval, elapsed, 0.3f);
+    elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        g.asteroid_interp.prev[i] = asteroid_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
+    g.asteroid_interp.interval = lerpf(g.asteroid_interp.interval, packet_interval, 0.3f);
     g.asteroid_interp.t = 0.0f;
 
     bool received[MAX_ASTEROIDS];
@@ -329,11 +375,9 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!received[i] && g.asteroid_interp.curr[i].active) {
-            /* Not in this delta — extrapolate position from velocity.
-             * Shift prev to current extrapolated position for smooth interp. */
-            g.asteroid_interp.prev[i] = g.asteroid_interp.curr[i];
-            g.asteroid_interp.curr[i].pos.x += g.asteroid_interp.curr[i].vel.x * g.asteroid_interp.interval;
-            g.asteroid_interp.curr[i].pos.y += g.asteroid_interp.curr[i].vel.y * g.asteroid_interp.interval;
+            /* Not in this delta: continue from the dead-reckoned visual
+             * position instead of freezing until a later packet. */
+            g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
         }
     }
 
@@ -342,10 +386,13 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 }
 
 void apply_remote_npcs(const NetNpcState* npcs, int count) {
-    memcpy(g.npc_interp.prev, g.npc_interp.curr, sizeof(g.npc_interp.prev));
     float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, npc_elapsed, 0.3f);
+    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
+
+    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
     g.npc_interp.t = 0.0f;
 
     bool received[MAX_NPC_SHIPS];
@@ -1088,7 +1135,8 @@ void interpolate_world_for_render(void) {
      * g.world already has authoritative state from local_server_sync_to_client. */
     if (g.local_server.active) return;
 
-    float t = clampf(g.asteroid_interp.t, 0.0f, 1.0f);
+    float asteroid_elapsed = clampf(g.asteroid_interp.t * g.asteroid_interp.interval,
+                                    0.0f, ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *curr = &g.asteroid_interp.curr[i];
@@ -1099,15 +1147,11 @@ void interpolate_world_for_render(void) {
             continue;
         }
         asteroid_t *dst = &g.world.asteroids[i];
-        *dst = *curr;
-        if (prev->active && curr->active) {
-            dst->pos.x = lerpf(prev->pos.x, curr->pos.x, t);
-            dst->pos.y = lerpf(prev->pos.y, curr->pos.y, t);
-            dst->rotation = lerp_angle(prev->rotation, curr->rotation, t);
-        }
+        *dst = asteroid_render_state_at(i, asteroid_elapsed);
     }
 
-    float nt = clampf(g.npc_interp.t, 0.0f, 1.0f);
+    float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,
+                               0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *curr = &g.npc_interp.curr[i];
         const npc_ship_t *prev = &g.npc_interp.prev[i];
@@ -1116,12 +1160,7 @@ void interpolate_world_for_render(void) {
             continue;
         }
         npc_ship_t *dst = &g.world.npc_ships[i];
-        *dst = *curr;
-        if (prev->active && curr->active) {
-            dst->ship.pos.x = lerpf(prev->ship.pos.x, curr->ship.pos.x, nt);
-            dst->ship.pos.y = lerpf(prev->ship.pos.y, curr->ship.pos.y, nt);
-            dst->ship.angle = lerp_angle(prev->ship.angle, curr->ship.angle, nt);
-        }
+        *dst = npc_render_state_at(i, npc_elapsed);
     }
 }
 
