@@ -78,7 +78,7 @@ static bool world_hash32_is_zero(const uint8_t hash[32]) {
 
 static void world_hash_short_label(const uint8_t hash[32], char out[8]) {
     if (!hash || world_hash32_is_zero(hash)) {
-        snprintf(out, 8, "no-id");
+        out[0] = '\0';
         return;
     }
     mining_callsign_from_pubkey(hash, out);
@@ -101,7 +101,7 @@ static void hail_asteroid_identity_label(const asteroid_t *a, char out[8]) {
         snprintf(out, 8, "pending");
         return;
     }
-    snprintf(out, 8, "no-id");
+    out[0] = '\0';
 }
 
 static const char *world_npc_role_label(npc_role_t role) {
@@ -2814,21 +2814,41 @@ void draw_npc_chatter(void) {
             else if (a->grade == (uint8_t)MINING_GRADE_COMMISSIONED) grade = "comm";
 
             if (grade) {
-                snprintf(label, sizeof(label), "%s %s %s %s",
-                         commodity_code((commodity_t)a->commodity),
-                         asteroid_tier_name((asteroid_tier_t)a->tier),
-                         grade, id);
+                if (id[0]) {
+                    snprintf(label, sizeof(label), "%s %s %s %s",
+                             commodity_code((commodity_t)a->commodity),
+                             asteroid_tier_name((asteroid_tier_t)a->tier),
+                             grade, id);
+                } else {
+                    snprintf(label, sizeof(label), "%s %s %s",
+                             commodity_code((commodity_t)a->commodity),
+                             asteroid_tier_name((asteroid_tier_t)a->tier),
+                             grade);
+                }
             } else {
-                snprintf(label, sizeof(label), "%s %s %.0f %s",
-                         commodity_code((commodity_t)a->commodity),
-                         asteroid_tier_name((asteroid_tier_t)a->tier),
-                         a->ore, id);
+                if (id[0]) {
+                    snprintf(label, sizeof(label), "%s %s %.0f %s",
+                             commodity_code((commodity_t)a->commodity),
+                             asteroid_tier_name((asteroid_tier_t)a->tier),
+                             a->ore, id);
+                } else {
+                    snprintf(label, sizeof(label), "%s %s %.0f",
+                             commodity_code((commodity_t)a->commodity),
+                             asteroid_tier_name((asteroid_tier_t)a->tier),
+                             a->ore);
+                }
             }
         } else {
-            snprintf(label, sizeof(label), "%s %s %s",
-                     commodity_code((commodity_t)a->commodity),
-                     asteroid_tier_name((asteroid_tier_t)a->tier),
-                     id);
+            if (id[0]) {
+                snprintf(label, sizeof(label), "%s %s %s",
+                         commodity_code((commodity_t)a->commodity),
+                         asteroid_tier_name((asteroid_tier_t)a->tier),
+                         id);
+            } else {
+                snprintf(label, sizeof(label), "%s %s",
+                         commodity_code((commodity_t)a->commodity),
+                         asteroid_tier_name((asteroid_tier_t)a->tier));
+            }
         }
 
         uint8_t r, gg, b;

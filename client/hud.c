@@ -595,7 +595,7 @@ static bool hash32_is_zero(const uint8_t hash[32]) {
 
 static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
     if (hash32_is_zero(hash)) {
-        snprintf(out, 8, "no-id");
+        out[0] = '\0';
         return;
     }
     mining_callsign_from_pubkey(hash, out);
@@ -603,7 +603,7 @@ static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
 
 static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
     if (hash32_is_zero(pub)) {
-        snprintf(out, 12, "no-id");
+        out[0] = '\0';
         return;
     }
     mining_render_callsign(pub, out);
