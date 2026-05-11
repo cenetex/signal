@@ -21,6 +21,13 @@
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
 #define NPC_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
+/* Emergency disable: the replay buffer is keyed by locally-invented ticks,
+ * while the server applies movement input on packet arrival. Even at low
+ * latency those clocks can disagree, so rewinding to a server snapshot and
+ * replaying by local tick can amplify corrections into an uncontrollable
+ * feedback loop. Keep local prediction + bounded authoritative correction
+ * until movement packets carry server-anchored input ticks. */
+#define NET_REPLAY_ENABLED 0
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -104,6 +111,7 @@ static void net_replay_append(const input_replay_frame_t *frame) {
 
 void net_replay_record_prediction(const input_intent_t *intent, float dt) {
     if (!intent || dt <= 0.0f) return;
+    if (!NET_REPLAY_ENABLED) return;
     if (!g.multiplayer_enabled || g.local_server.active || !net_is_connected())
         return;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
@@ -165,6 +173,7 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
                                               server_player_t *sp,
                                               int *out_replayed) {
     *out_replayed = 0;
+    if (!NET_REPLAY_ENABLED) return false;
     uint32_t server_tick = state->server_tick;
     if (server_tick == 0 && !g.net_prediction_tick_valid) return false;
 
