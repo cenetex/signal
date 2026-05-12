@@ -30,6 +30,11 @@
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
 
+bool net_local_prediction_enabled(void) {
+    if (!g.multiplayer_enabled || g.local_server.active) return true;
+    return g.net_input_tick_protocol;
+}
+
 static bool net_replay_enabled(void) {
     return NET_REPLAY_ENABLED && g.net_input_tick_protocol;
 }
@@ -961,7 +966,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
             used_replay =
                 net_replay_reconcile_local_player(state, sp, &replayed_frames);
         bool defer_motion_correction =
-            !used_replay && has_unacked_input &&
+            net_local_prediction_enabled() && !used_replay && has_unacked_input &&
             dist_sq <= 200.0f * 200.0f;
         if (!used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {

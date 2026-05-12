@@ -14,6 +14,7 @@ void on_player_join(uint8_t player_id);
 void on_player_leave(uint8_t player_id);
 
 /* Local input prediction history used to replay after server correction. */
+bool net_local_prediction_enabled(void);
 void net_replay_reset(void);
 void net_replay_record_prediction(const input_intent_t *intent, float dt);
 
