@@ -192,6 +192,13 @@ typedef struct {
 } movement_input_cmd_t;
 
 typedef struct {
+    bool valid;
+    void *conn;
+    uint16_t len;
+    uint64_t hash;
+} net_payload_cache_t;
+
+typedef struct {
     bool connected;
     uint8_t id;
     void *conn;
@@ -236,6 +243,11 @@ typedef struct {
     float autopilot_stuck_timer;/* seconds since meaningful movement */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
+    net_payload_cache_t player_ship_cache;
+    net_payload_cache_t hold_ingots_cache;
+    net_payload_cache_t player_manifest_cache;
+    net_payload_cache_t inspect_snapshot_cache;
+    net_payload_cache_t known_contracts_cache;
     movement_input_cmd_t movement_queue[PLAYER_MOVEMENT_QUEUE_CAP];
     uint8_t movement_queue_count;
     /* Last movement/control input sequence accepted from this client. Mirrored

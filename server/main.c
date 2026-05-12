@@ -204,6 +204,38 @@ static void ws_send(struct mg_connection *c, const void *data, size_t len) {
     mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY);
 }
 
+static uint64_t wire_payload_hash(const uint8_t *data, size_t len) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (uint64_t)data[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static void ws_send_if_changed(struct mg_connection *c,
+                               net_payload_cache_t *cache,
+                               const uint8_t *data,
+                               size_t len) {
+    if (!c || !data) return;
+    if (!cache || len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return;
+    }
+    uint64_t hash = wire_payload_hash(data, len);
+    if (cache->valid &&
+        cache->conn == c &&
+        cache->len == (uint16_t)len &&
+        cache->hash == hash) {
+        return;
+    }
+    ws_send(c, data, len);
+    cache->valid = true;
+    cache->conn = c;
+    cache->len = (uint16_t)len;
+    cache->hash = hash;
+}
+
 static void send_action_ack(struct mg_connection *c, uint16_t action_id,
                             uint16_t input_seq, uint8_t status,
                             uint8_t action) {
@@ -2413,7 +2445,7 @@ static void broadcast_world(void) {
         uint8_t abuf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
         for (int p = 0; p < MAX_PLAYERS; p++) {
             server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->conn) continue;
+            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
             int alen = serialize_asteroids_for_player(
                 abuf, world.asteroids, sp->ship.pos, sp->asteroid_sent);
             if (alen > 2) /* skip empty messages */
@@ -2429,7 +2461,7 @@ static void broadcast_world(void) {
         uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
         for (int p = 0; p < MAX_PLAYERS; p++) {
             server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->conn) continue;
+            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
             int count = 0;
             for (int i = 0; i < MAX_NPC_SHIPS; i++) {
                 if (!world.npc_ships[i].active) continue;
@@ -2469,7 +2501,7 @@ static void broadcast_world(void) {
         uint8_t scbuf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
         for (int p = 0; p < MAX_PLAYERS; p++) {
             server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->conn) continue;
+            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
             int count = 0;
             for (int i = 0; i < MAX_SCAFFOLDS; i++) {
                 if (!world.scaffolds[i].active) continue;
@@ -2531,18 +2563,19 @@ static int send_inspect_snapshot(uint8_t *buf, const server_player_t *sp) {
 
 static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!world.players[i].connected || !world.players[i].conn) continue;
+        server_player_t *sp = &world.players[i];
+        if (!sp->connected || !sp->session_ready || !sp->conn) continue;
         uint8_t buf[PLAYER_SHIP_SIZE + 4]; /* +4 headroom */
-        int len = send_player_ship(buf, (uint8_t)i, &world.players[i]);
+        int len = send_player_ship(buf, (uint8_t)i, sp);
         /* Full ship state sent only to the owning player. */
-        ws_send(world.players[i].conn, buf, (size_t)len);
+        ws_send_if_changed(sp->conn, &sp->player_ship_cache, buf, (size_t)len);
 
         /* RATi v2: also push hold-ingot snapshot, derived from the
          * ship manifest. Wire shape unchanged. Sized for the wire cap
          * (u8 count) so an unusually full hold can't truncate. */
         uint8_t hbuf[HOLD_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
-        int hlen = serialize_hold_ingots(hbuf, &world.players[i].ship);
-        ws_send(world.players[i].conn, hbuf, (size_t)hlen);
+        int hlen = serialize_hold_ingots(hbuf, &sp->ship);
+        ws_send_if_changed(sp->conn, &sp->hold_ingots_cache, hbuf, (size_t)hlen);
 
         /* Player manifest summary — keeps the trade UI's SELL rows in
          * sync with server-authoritative manifest mutations (buy/sell/
@@ -2552,12 +2585,12 @@ static void broadcast_ship_states(void) {
          * + entries with a generous bound. */
         uint8_t pmbuf[PLAYER_MANIFEST_HEADER
                       + COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY];
-        int pmlen = serialize_player_manifest(pmbuf, &world.players[i].ship);
-        ws_send(world.players[i].conn, pmbuf, (size_t)pmlen);
+        int pmlen = serialize_player_manifest(pmbuf, &sp->ship);
+        ws_send_if_changed(sp->conn, &sp->player_manifest_cache, pmbuf, (size_t)pmlen);
 
         uint8_t ibuf[INSPECT_SNAPSHOT_MAX_SIZE];
-        int ilen = send_inspect_snapshot(ibuf, &world.players[i]);
-        ws_send(world.players[i].conn, ibuf, (size_t)ilen);
+        int ilen = send_inspect_snapshot(ibuf, sp);
+        ws_send_if_changed(sp->conn, &sp->inspect_snapshot_cache, ibuf, (size_t)ilen);
 
         /* Gossip-contract visibility mask. The dock UI on the client
          * reads NET_MSG_CONTRACTS for the global authoritative array
@@ -2565,8 +2598,8 @@ static void broadcast_ship_states(void) {
          * contracts they've heard about via dock contact. 5 bytes. */
         uint8_t kbuf[5];
         int klen = serialize_player_known_contracts(kbuf, world.contracts,
-                                                    &world.players[i].ship);
-        ws_send(world.players[i].conn, kbuf, (size_t)klen);
+                                                    &sp->ship);
+        ws_send_if_changed(sp->conn, &sp->known_contracts_cache, kbuf, (size_t)klen);
     }
 
     if (station_econ_dirty) {
