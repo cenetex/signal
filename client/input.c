@@ -963,10 +963,14 @@ input_intent_t sample_input_intent(void) {
 void submit_input(const input_intent_t *intent, float dt) {
     /* Set on client world for prediction */
     LOCAL_PLAYER.input = *intent;
-    net_replay_record_prediction(intent, dt);
 
-    /* Client prediction: immediate local feedback (movement, beam targeting) */
-    world_sim_step_player_only(&g.world, g.local_player_slot, dt);
+    /* Client prediction is stable only when the server snapshots and local
+     * frames share the input-tick clock. Pre-tick remote servers remain
+     * server-authoritative while the client still sends inputs normally. */
+    if (net_local_prediction_enabled()) {
+        net_replay_record_prediction(intent, dt);
+        world_sim_step_player_only(&g.world, g.local_player_slot, dt);
+    }
 
     /* Authoritative step: local server or remote */
     if (g.local_server.active) {
