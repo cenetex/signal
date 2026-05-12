@@ -79,6 +79,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 20.0f)
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
+#define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
+#define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action);
@@ -1656,7 +1658,10 @@ static void step_local_player_render_offset(float dt) {
 
     /* Decay the visual correction over a few frames. Simulation state stays
      * corrected; only the rendered ship/camera eases out the packet snap. */
-    float keep = expf(-dt / 0.18f);
+    float correction_sec = lerpf(LOCAL_PLAYER_RENDER_CORRECTION_SEC,
+                                 LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC,
+                                 net_prediction_latency_blend());
+    float keep = expf(-dt / correction_sec);
     g.local_player_render_offset =
         v2_scale(g.local_player_render_offset, keep);
 }
