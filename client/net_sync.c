@@ -15,6 +15,7 @@
 #define LOCAL_PLAYER_RENDER_OFFSET_LATENCY_MAX 260.0f
 #define LOCAL_PLAYER_RENDER_SNAP_DIST 200.0f
 #define LOCAL_PLAYER_RENDER_SNAP_LATENCY_DIST 360.0f
+#define LOCAL_PLAYER_STALE_ACK_DEFER_DIST 200.0f
 #define NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC 0.075f
 #define NET_REPLAY_LATENCY_BLEND_MAX_SEC 0.45f
 #define ASTEROID_RENDER_CORRECTION_SEC 0.18f
@@ -158,11 +159,31 @@ static bool net_replay_missing_prefix(uint32_t server_tick, int first_after) {
     return net_replay_frame_at(first_after)->tick != server_tick + 1u;
 }
 
-static float net_latency_blend(void) {
+float net_prediction_latency_blend(void) {
     if (g.net_last_ack_rtt <= NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC)
         return 0.0f;
-    return clampf(g.net_last_ack_rtt / (NET_REPLAY_LATENCY_BLEND_MAX_SEC * 2.0f),
+    return clampf((g.net_last_ack_rtt - NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC) /
+                  (NET_REPLAY_LATENCY_BLEND_MAX_SEC -
+                   NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC),
                   0.0f, 1.0f);
+}
+
+static bool net_replay_has_frames_after(uint32_t server_tick) {
+    if (!g.net_prediction_tick_valid) return false;
+    if (!replay_tick_after(g.net_prediction_tick, server_tick)) return false;
+    return net_replay_first_after(server_tick) >= 0;
+}
+
+static bool should_defer_stale_unacked_motion(const NetPlayerState *state,
+                                              bool has_unacked_input,
+                                              float dist_sq) {
+    if (!state || !net_local_prediction_enabled() || !has_unacked_input)
+        return false;
+    float defer_dist = LOCAL_PLAYER_STALE_ACK_DEFER_DIST;
+    if (dist_sq > defer_dist * defer_dist) return false;
+    if ((state->flags & 4) != 0) return true;
+    if (!net_replay_enabled()) return true;
+    return !net_replay_has_frames_after(state->server_tick);
 }
 
 static void apply_authoritative_local_motion(const NetPlayerState *state,
@@ -908,7 +929,7 @@ static void record_local_player_motion_telemetry(float correction_dist,
 static void add_local_player_render_correction(vec2 applied_delta,
                                                float correction_dist,
                                                bool docked) {
-    float latency_blend = net_latency_blend();
+    float latency_blend = net_prediction_latency_blend();
     float snap_dist = lerpf(LOCAL_PLAYER_RENDER_SNAP_DIST,
                             LOCAL_PLAYER_RENDER_SNAP_LATENCY_DIST,
                             latency_blend);
@@ -962,12 +983,15 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool state_docked = (state->flags & 4) != 0;
         int replayed_frames = 0;
         bool used_replay = false;
-        if (!(has_unacked_input && state_docked))
+        bool defer_motion_correction =
+            should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
+        if (!defer_motion_correction)
             used_replay =
                 net_replay_reconcile_local_player(state, sp, &replayed_frames);
-        bool defer_motion_correction =
-            net_local_prediction_enabled() && !used_replay && has_unacked_input &&
-            dist_sq <= 200.0f * 200.0f;
+        if (!defer_motion_correction && !used_replay) {
+            defer_motion_correction =
+                should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
+        }
         if (!used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
                 sp->ship.pos.x = target_x;
