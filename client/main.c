@@ -180,6 +180,7 @@ static void reset_world(void) {
     g.net_next_action_id = 1;
     g.net_action_queue_start = 0;
     g.net_action_queue_count = 0;
+    memset(&g.net_motion, 0, sizeof(g.net_motion));
     memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
     memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
     net_replay_reset();
@@ -1726,6 +1727,70 @@ EMSCRIPTEN_KEEPALIVE
 float get_signal_strength(void) {
     if (g.local_player_slot < 0) return 0.0f;
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int reset_net_motion_telemetry(void) {
+    memset(&g.net_motion, 0, sizeof(g.net_motion));
+    return 1;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_correction(void) {
+    return g.net_motion.max_correction_run;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_applied_correction(void) {
+    return g.net_motion.max_applied_correction_run;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_velocity_error(void) {
+    return g.net_motion.max_velocity_error_run;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_last_ack_rtt_ms(void) {
+    return g.net_last_ack_rtt * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_samples(void) {
+    return (int)g.net_motion.total_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_deferred_samples(void) {
+    return (int)g.net_motion.total_deferred_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_replayed_samples(void) {
+    return (int)g.net_motion.total_replayed_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_replayed_frames(void) {
+    return (int)g.net_motion.total_replayed_frames;
 }
 
 static net_action_queue_item_t *net_action_queue_at(int offset) {

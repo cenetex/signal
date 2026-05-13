@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke smoke-latency crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -138,6 +138,11 @@ test-serial: build-test
 # drives the canvas through the same Playwright smoke used after deploy.
 smoke: build-web
 	npm run smoke
+
+SMOKE_LATENCY_URL ?= http://localhost:8080/play.html?server=ws://127.0.0.1:19091/ws
+
+smoke-latency:
+	SMOKE_URL="$(SMOKE_LATENCY_URL)" SMOKE_LATENCY_ASSERT=1 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "high-latency"
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs the fast/non-soak tests,

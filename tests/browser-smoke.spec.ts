@@ -16,6 +16,17 @@ type CanvasStats = {
   avgLuma: number;
 };
 
+type NetMotionSnapshot = {
+  samples: number;
+  deferredSamples: number;
+  replayedSamples: number;
+  replayedFrames: number;
+  maxCorrection: number;
+  maxAppliedCorrection: number;
+  maxVelocityError: number;
+  lastAckRttMs: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -185,6 +196,42 @@ async function signalStrength(page: Page): Promise<number | null> {
   });
 }
 
+async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') {
+      return {
+        samples: 0,
+        deferredSamples: 0,
+        replayedSamples: 0,
+        replayedFrames: 0,
+        maxCorrection: 0,
+        maxAppliedCorrection: 0,
+        maxVelocityError: 0,
+        lastAckRttMs: 0,
+      };
+    }
+
+    const read = (name: string) => {
+      const value = mod.ccall!(name, 'number', [], []);
+      return Number.isFinite(value) ? value : 0;
+    };
+
+    return {
+      samples: read('get_net_motion_total_samples'),
+      deferredSamples: read('get_net_motion_total_deferred_samples'),
+      replayedSamples: read('get_net_motion_total_replayed_samples'),
+      replayedFrames: read('get_net_motion_total_replayed_frames'),
+      maxCorrection: read('get_net_motion_max_correction'),
+      maxAppliedCorrection: read('get_net_motion_max_applied_correction'),
+      maxVelocityError: read('get_net_motion_max_velocity_error'),
+      lastAckRttMs: read('get_net_motion_last_ack_rtt_ms'),
+    };
+  });
+}
+
 async function hudHintText(page: Page): Promise<string> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -293,6 +340,16 @@ async function hold(page: Page, key: string, ms: number): Promise<void> {
   await page.keyboard.down(key);
   await page.waitForTimeout(ms);
   await page.keyboard.up(key);
+  await page.waitForTimeout(80);
+}
+
+async function holdChord(page: Page, keys: string[], ms: number): Promise<void> {
+  for (const key of keys) await page.keyboard.down(key);
+  try {
+    await page.waitForTimeout(ms);
+  } finally {
+    for (let i = keys.length - 1; i >= 0; i--) await page.keyboard.up(keys[i]);
+  }
   await page.waitForTimeout(80);
 }
 
@@ -422,6 +479,42 @@ test.describe('Browser smoke tests', () => {
       .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
       .toBeGreaterThan(0.05);
 
+    expectNoFatalErrors(logs);
+  });
+
+  test('high-latency multiplayer correction telemetry stays bounded', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_LATENCY_ASSERT,
+      'set SMOKE_LATENCY_ASSERT=1 with SMOKE_URL pointed at a latency proxy',
+    );
+    test.setTimeout(70_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, true);
+
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+
+    for (let i = 0; i < 6; i++) {
+      await holdChord(page, ['W', i % 2 === 0 ? 'A' : 'D'], 850);
+      await hold(page, 'Shift', 300);
+    }
+    await page.waitForTimeout(2_000);
+
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).samples, {
+        timeout: 20_000,
+        message: 'latency smoke should collect local correction samples',
+      })
+      .toBeGreaterThan(0);
+
+    const motion = await netMotionSnapshot(page);
+    expect(motion.samples).toBeGreaterThan(10);
+    expect(motion.lastAckRttMs).toBeGreaterThan(250);
+    expect(motion.maxAppliedCorrection).toBeLessThan(360);
+    expect(motion.maxCorrection).toBeLessThan(900);
     expectNoFatalErrors(logs);
   });
 });

@@ -384,7 +384,7 @@ if(EMSCRIPTEN)
         "SHELL:-sMIN_WEBGL_VERSION=2"
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
-        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull','_get_signal_strength','_get_hud_hint_text','_get_hud_action_text','_set_smoke_loop_state']"
+        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull','_get_signal_strength','_reset_net_motion_telemetry','_get_net_motion_max_correction','_get_net_motion_max_applied_correction','_get_net_motion_max_velocity_error','_get_net_motion_last_ack_rtt_ms','_get_net_motion_total_samples','_get_net_motion_total_deferred_samples','_get_net_motion_total_replayed_samples','_get_net_motion_total_replayed_frames','_get_hud_hint_text','_get_hud_action_text','_set_smoke_loop_state']"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"

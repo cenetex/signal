@@ -564,6 +564,13 @@ typedef struct {
         uint32_t deferred_samples;
         uint32_t replayed_samples;
         uint32_t replayed_frames;
+        float max_correction_run;
+        float max_applied_correction_run;
+        float max_velocity_error_run;
+        uint32_t total_samples;
+        uint32_t total_deferred_samples;
+        uint32_t total_replayed_samples;
+        uint32_t total_replayed_frames;
     } net_motion;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
