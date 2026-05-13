@@ -896,12 +896,22 @@ static void record_local_player_motion_telemetry(float correction_dist,
         g.net_motion.max_correction_5s = correction_dist;
     if (applied_correction_dist > g.net_motion.max_applied_correction_5s)
         g.net_motion.max_applied_correction_5s = applied_correction_dist;
+    if (correction_dist > g.net_motion.max_correction_run)
+        g.net_motion.max_correction_run = correction_dist;
+    if (applied_correction_dist > g.net_motion.max_applied_correction_run)
+        g.net_motion.max_applied_correction_run = applied_correction_dist;
+    if (velocity_error > g.net_motion.max_velocity_error_run)
+        g.net_motion.max_velocity_error_run = velocity_error;
     g.net_motion.window_elapsed += g.net_motion.packet_interval;
     g.net_motion.samples++;
+    g.net_motion.total_samples++;
     if (deferred) g.net_motion.deferred_samples++;
+    if (deferred) g.net_motion.total_deferred_samples++;
     if (replayed_frames > 0) {
         g.net_motion.replayed_samples++;
         g.net_motion.replayed_frames += (uint32_t)replayed_frames;
+        g.net_motion.total_replayed_samples++;
+        g.net_motion.total_replayed_frames += (uint32_t)replayed_frames;
     }
     if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
 
