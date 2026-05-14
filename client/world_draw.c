@@ -67,17 +67,6 @@ void grade_tint(uint8_t grade, float *r, float *g, float *b) {
     *b = (float)bb / 255.0f;
 }
 
-static bool hail_scan_active(void) {
-    return g.hail_ping_timer > 0.0f &&
-           g.hail_ping_timer <= HAIL_PING_LIFECYCLE;
-}
-
-static bool fragment_in_hail_scan(const asteroid_t *a) {
-    if (!a || a->tier != ASTEROID_TIER_S || !hail_scan_active()) return false;
-    float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
-    return v2_dist_sq(a->pos, g.hail_ping_origin) <= hail_range * hail_range;
-}
-
 static bool world_hash32_is_zero(const uint8_t hash[32]) {
     for (int i = 0; i < 32; i++) {
         if (hash[i] != 0) return false;
@@ -445,33 +434,32 @@ void draw_asteroids(void) {
             sgl_end();
         }
 
-        /* Glow core (the "dot"). Fragment rarity blooms only during the
-         * H scan pulse; outside scan, fragments stay commodity-tinted.
-         * M-tier always uses commodity tint too (no payable ore). */
+        /* Glow core (the "dot"). Common fragments keep the original
+         * muted commodity tint. Fine+ fragments use grade tint with the
+         * original bloom/halo treatment. M-tier always uses commodity
+         * tint (no payable ore). */
         if (a->tier == ASTEROID_TIER_S) {
-            if (fragment_in_hail_scan(a)) {
-                uint8_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
-                    ? a->grade
-                    : (uint8_t)MINING_GRADE_COMMON;
-                float cr, cg, cb;
-                grade_tint(grade, &cr, &cg, &cb);
-                float bloom = 1.05f + 0.14f * (float)grade;
-                float pulse = (grade >= (uint8_t)MINING_GRADE_RATI)
-                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
-                    : 1.0f;
-                float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
-                draw_circle_filled(a->pos, base_r, 12,
-                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
-                float halo_r = base_r * ((grade >= (uint8_t)MINING_GRADE_RARE) ? 1.9f : 1.55f);
-                float halo_a = (grade == (uint8_t)MINING_GRADE_COMMON) ? 0.22f :
-                    ((grade == (uint8_t)MINING_GRADE_FINE) ? 0.32f : 0.45f);
-                draw_circle_outline(a->pos, halo_r, 18, cr, cg, cb, halo_a * pulse);
-            } else {
+            if (a->grade == (uint8_t)MINING_GRADE_COMMON ||
+                a->grade >= (uint8_t)MINING_GRADE_COUNT) {
                 float cr, cg, cb;
                 commodity_material_tint(a->commodity, &cr, &cg, &cb);
                 draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
                     lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
                     lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
+            } else {
+                float cr, cg, cb;
+                grade_tint(a->grade, &cr, &cg, &cb);
+                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
+                float pulse = (a->grade >= (uint8_t)MINING_GRADE_RATI)
+                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
+                    : 1.0f;
+                float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
+                draw_circle_filled(a->pos, base_r, 12,
+                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
+                if (a->grade >= (uint8_t)MINING_GRADE_RARE) {
+                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
+                        cr, cg, cb, 0.45f * pulse);
+                }
             }
         } else if (a->tier == ASTEROID_TIER_M) {
             float cr, cg, cb;
