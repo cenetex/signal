@@ -461,7 +461,7 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     a->max_ore = 1.0f;
     a->radius = 8.0f;
     a->pos = w.stations[0].pos;
-    for (int i = 0; i < 32; i++) a->fracture_seed[i] = (uint8_t)(0x30 + i);
+    memset(a->fracture_seed, 0, sizeof(a->fracture_seed));
 
     state->active = true;
     state->fracture_id = 77;
@@ -471,6 +471,7 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     sha256_bytes(w.players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
+    ASSERT(best_grade > MINING_GRADE_COMMON);
 
     ASSERT(!submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)(best_grade + 1)));
@@ -478,6 +479,7 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
                                  (uint8_t)best_grade));
     ASSERT_EQ_INT(state->best_nonce, best_nonce);
     ASSERT_EQ_INT(state->best_grade, best_grade);
+    ASSERT_EQ_INT(a->grade, best_grade);
     ASSERT(memcmp(state->best_player_pub, zero_pub, 32) != 0);
     ASSERT_EQ_INT(state->seen_claimant_count, 1);
     ASSERT(memcmp(state->seen_claimant_tokens[0],
