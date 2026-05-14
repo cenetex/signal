@@ -481,8 +481,8 @@ TEST(test_autopilot_multiple_players) {
 
     /* 240s of sim. The earlier 180s was tight when only player↔player
      * collision existed; now NPC↔NPC collision (added in #469) plus the
-     * count-tier furnace rework's heavier traffic at the single
-     * Prospect smelt anchor make it routine for one autopilot to be
+     * tagged furnace/pair rework's traffic at the single Prospect smelt
+     * anchor make it routine for one autopilot to be
      * still queuing for a smelt slot at 180s. 240s gives the third ship
      * room to land its first cycle. */
     for (int i = 0; i < 240 * 120; i++) {
@@ -490,8 +490,8 @@ TEST(test_autopilot_multiple_players) {
     }
 
     /* At least one of three autopilots should land a smelt in 240s.
-     * Originally 2/3, but the count-tier rework consolidated all
-     * ferrite smelting at Prospect's single furnace+silo midpoint —
+     * Originally 2/3, but ferrite smelting is concentrated at
+     * Prospect's single furnace+silo midpoint —
      * three autopilots queueing at one anchor get heavily contended by
      * the new NPC↔NPC collision pass and routinely lose their tow
      * chain to ramming. The economic invariant is "at least one made

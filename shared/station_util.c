@@ -68,17 +68,25 @@ int station_furnace_count(const station_t *st) {
     return n;
 }
 
+static bool station_has_adjacent_hopper_for(const station_t *st,
+                                            const station_module_t *m,
+                                            commodity_t commodity);
+
 bool station_can_smelt(const station_t *st, commodity_t ore) {
     if (!st) return false;
-    if (!station_has_module(st, MODULE_HOPPER)) return false;
-    int n = station_furnace_count(st);
-    if (n <= 0) return false;
-    switch (ore) {
-        case COMMODITY_FERRITE_ORE: return n == 1 || n == 2;
-        case COMMODITY_CUPRITE_ORE: return n >= 2;
-        case COMMODITY_CRYSTAL_ORE: return n >= 3;
-        default: return false;
+    if (ore >= COMMODITY_RAW_ORE_COUNT) return false;
+
+    int matching_pairs = 0;
+    for (int m = 0; m < st->module_count; m++) {
+        const station_module_t *f = &st->modules[m];
+        if (f->type != MODULE_FURNACE || f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+        if (!station_has_adjacent_hopper_for(st, f, ore)) continue;
+        matching_pairs++;
     }
+    if (ore == COMMODITY_CRYSTAL_ORE)
+        return matching_pairs >= 2;
+    return matching_pairs >= 1;
 }
 
 bool station_consumes(const station_t *st, commodity_t c) {
@@ -161,15 +169,24 @@ commodity_t station_primary_buy(const station_t *st) {
 
 commodity_t station_primary_sell(const station_t *st) {
     module_type_t dom = station_dominant_module(st);
-    /* For dominant=FURNACE we infer the smelt output from the count
-     * tier: 3+ means crystal is the headline product, 2 means cuprite,
-     * 1 means ferrite. Stations whose dominant module isn't a furnace
-     * keep the existing fab-based primary sell. */
+    /* For dominant=FURNACE, infer the headline product from furnace
+     * instance tags rather than station-wide count tiers. Prefer the
+     * highest-tier tagged ingot present. */
     if (dom == MODULE_FURNACE) {
-        int n = station_furnace_count(st);
-        if (n >= 3) return COMMODITY_CRYSTAL_INGOT;
-        if (n == 2) return COMMODITY_CUPRITE_INGOT;
-        if (n == 1) return COMMODITY_FERRITE_INGOT;
+        bool has_fe = false, has_cu = false, has_cr = false;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].type != MODULE_FURNACE ||
+                st->modules[i].scaffold) {
+                continue;
+            }
+            commodity_t out = module_instance_output(&st->modules[i]);
+            if (out == COMMODITY_FERRITE_INGOT) has_fe = true;
+            if (out == COMMODITY_CUPRITE_INGOT) has_cu = true;
+            if (out == COMMODITY_CRYSTAL_INGOT) has_cr = true;
+        }
+        if (has_cr) return COMMODITY_CRYSTAL_INGOT;
+        if (has_cu) return COMMODITY_CUPRITE_INGOT;
+        if (has_fe) return COMMODITY_FERRITE_INGOT;
     }
     switch (dom) {
         case MODULE_FRAME_PRESS: return COMMODITY_FRAME;

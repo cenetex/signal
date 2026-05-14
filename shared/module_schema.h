@@ -99,7 +99,7 @@ bool                   module_requires_pair(module_type_t type);
  * commodities.
  *
  * FURNACE is special at the SCHEMA level: it accepts ANY ore (the
- * count-tier rules in sim_production gate which ones actually smelt).
+ * per-instance commodity tag gates which one actually smelts).
  * The list returns all three ore commodities but with `.any_satisfies
  * = true` so the validator only requires one of them. At the INSTANCE
  * level, a furnace tagged with an ingot output commodity (Slice 1 of
@@ -134,8 +134,8 @@ commodity_t            module_required_output(module_type_t type);
 commodity_t            module_instance_output(const station_module_t *m);
 commodity_t            module_instance_input_ore(const station_module_t *m);
 
-/* Default output commodity for an untagged FURNACE — matches Prospect
- * (1-furnace tier, ferrite-only). Used by save migration and seeds. */
+/* Default output commodity for an untagged FURNACE — matches Prospect's
+ * ferrite-only starter refinery. Used by save migration and seeds. */
 commodity_t            module_furnace_default_output(void);
 
 /* Map an ingot commodity to its source ore (and back). Returns

@@ -1038,9 +1038,8 @@ TEST(test_build_outpost_full_economy) {
 
     /* Step 9 — plant a HOPPER on the furnace's adjacent-ring pair slot.
      * The live fragment beam requires a real furnace/hopper pair, not
-     * just the station-level "has any hopper" count-tier gate. The
-     * furnace's tag defaults to ferrite (1-furnace tier); we tag the
-     * hopper for FERRITE_ORE explicitly. */
+     * just a station-level "has any hopper" gate. The furnace's tag
+     * defaults to ferrite; we tag the hopper for FERRITE_ORE explicitly. */
     sp->docked = false;
     /* Need slack in cargo: bring the budget for the hopper module up
      * front so the player has frames left to deliver. The earlier
@@ -1696,8 +1695,8 @@ TEST(test_seeded_stations_layout_ok) {
 
 TEST(test_seeded_furnaces_tagged) {
     /* Slice 1 — seeded stations tag every furnace with its output ingot.
-     * Prospect runs ferrite tier (1 furnace → FERRITE_INGOT). Helios runs
-     * the 3-furnace tier and tags 2× CUPRITE_INGOT + 1× CRYSTAL_INGOT. */
+     * Prospect runs ferrite. Helios tags one cuprite furnace and two
+     * crystal furnaces for the two-stage crystal process. */
     WORLD_DECL;
     world_reset(&w);
     int prospect_furnaces = 0;
@@ -1719,8 +1718,8 @@ TEST(test_seeded_furnaces_tagged) {
         else if (tag == COMMODITY_CRYSTAL_INGOT) helios_cr++;
         else ASSERT(false /* unexpected Helios furnace tag */);
     }
-    ASSERT_EQ_INT(helios_cu, 2);
-    ASSERT_EQ_INT(helios_cr, 1);
+    ASSERT_EQ_INT(helios_cu, 1);
+    ASSERT_EQ_INT(helios_cr, 2);
 }
 
 static bool test_furnace_has_adjacent_ore_hopper(const station_t *st,
@@ -2146,10 +2145,9 @@ TEST(test_helios_ring2_rotates_under_dynamics) {
 
 TEST(test_targeted_spokes_drive_only_loaded_rings) {
     /* With per-instance furnace tags, Helios no longer gets fake spoke
-     * torque from unrelated ore hoppers. Ring 3 still has asymmetric
-     * furnace/fab load and should visibly move; ring 1's cuprite furnace
-     * happens to be symmetric with its targeted hoppers and can stay near
-     * static instead of being driven by irrelevant crystal beams. */
+     * torque from unrelated ore hoppers. Both furnace rings now carry
+     * real load: ring 1 is the first crystal pass, and ring 3 carries
+     * the second crystal pass plus cuprite/fab load. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -2158,7 +2156,7 @@ TEST(test_targeted_spokes_drive_only_loaded_rings) {
     for (int m = 0; m < st->module_count; m++) {
         if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
     }
-    float r1_0 = st->arm_rotation[0];  /* symmetric targeted load */
+    float r1_0 = st->arm_rotation[0];  /* first crystal pass */
     float r3_0 = st->arm_rotation[2];  /* ring 3 */
     for (int i = 0; i < 1200; i++) {  /* 10 sim seconds */
         for (int m = 0; m < st->module_count; m++) {
@@ -2168,7 +2166,7 @@ TEST(test_targeted_spokes_drive_only_loaded_rings) {
     }
     float r1_1 = st->arm_rotation[0];
     float r3_1 = st->arm_rotation[2];
-    ASSERT(fabsf(r1_1 - r1_0) < 0.01f);
+    ASSERT(fabsf(r1_1 - r1_0) > 0.01f);
     ASSERT(fabsf(r3_1 - r3_0) > 0.01f);
 }
 

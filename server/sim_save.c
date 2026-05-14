@@ -81,7 +81,14 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 54  /* v54: world_seq added — monotonic u32 written
+#define SAVE_VERSION 55  /* v55: crystal fragments gained a two-stage
+                          * furnace process. Active fracture-child
+                          * sidecars persist crystal_stage plus source
+                          * station/module so a staged crystal must still
+                          * go to a different crystal furnace after
+                          * save/load. Fresh world.sav size is unchanged
+                          * when no fracture children are active.
+                          * v54: world_seq added — monotonic u32 written
                           * after belt_seed for total ordering across
                           * worlds (newer-world-wins highscore policy).
                           * Pre-v54 saves migrate by defaulting world_seq=0,
@@ -106,7 +113,7 @@ static uint32_t crc32_file(FILE *f) {
                           * COMMODITY_COUNT) get tagged on load by a
                           * station-furnace-count heuristic — 1 furnace
                           * → FERRITE_INGOT, 2 → 1×FERRITE+1×CUPRITE,
-                          * 3+ → CUPRITE+CRYSTAL split — and missing
+                          * 3+ → 2×CRYSTAL+rest CUPRITE — and missing
                           * output hoppers are auto-spawned into free
                           * outer-ring slots. Layout-preserving on
                           * disk. v50 was: Hoppers tag a single commodity each, the
@@ -218,11 +225,11 @@ static int g_loaded_save_version = SAVE_VERSION;
 
 /* v51 cargo-in-space schema migration (Slice 1):
  * - Tag every untagged FURNACE (commodity == COMMODITY_COUNT) with an
- *   output ingot using a station-furnace-count heuristic that matches
- *   the existing count-tier smelt rules:
+ *   output ingot using a station-furnace-count heuristic for legacy
+ *   layouts:
  *     1 furnace → FERRITE_INGOT
  *     2 furnaces → 1× FERRITE + 1× CUPRITE
- *     3+ furnaces → 1× CUPRITE + 1× CRYSTAL + rest CUPRITE
+ *     3+ furnaces → 2× CRYSTAL + rest CUPRITE
  * - Auto-spawn missing output hoppers in free outer-ring slots so the
  *   seeded layout invariant (every producer has a tagged output
  *   hopper) holds for migrated saves too.
@@ -251,8 +258,8 @@ static int cargo_schema_live_furnace_count(const station_t *st) {
 
 static commodity_t cargo_schema_furnace_tag(int n_furnaces, int seen) {
     if (n_furnaces >= 3) {
-        return seen == 1 ? COMMODITY_CRYSTAL_INGOT
-                         : COMMODITY_CUPRITE_INGOT;
+        return seen < 2 ? COMMODITY_CRYSTAL_INGOT
+                        : COMMODITY_CUPRITE_INGOT;
     }
     if (n_furnaces == 2) {
         return seen == 0 ? COMMODITY_FERRITE_INGOT
@@ -791,6 +798,9 @@ static bool write_fracture_child(FILE *f, uint16_t slot,
     WRITE_FIELD(f, a->fracture_seed);
     WRITE_FIELD(f, a->fragment_pub);
     WRITE_FIELD(f, a->grade);
+    WRITE_FIELD(f, a->crystal_stage);
+    WRITE_FIELD(f, a->crystal_stage_station);
+    WRITE_FIELD(f, a->crystal_stage_module);
     if (state) {
         if (state->active) claim_flags |= 1u;
         if (state->resolved) claim_flags |= 2u;
@@ -862,6 +872,15 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     READ_FIELD(f, a->fracture_seed);
     READ_FIELD(f, a->fragment_pub);
     READ_FIELD(f, a->grade);
+    if (g_loaded_save_version >= 55) {
+        READ_FIELD(f, a->crystal_stage);
+        READ_FIELD(f, a->crystal_stage_station);
+        READ_FIELD(f, a->crystal_stage_module);
+    } else {
+        a->crystal_stage = CRYSTAL_STAGE_RAW;
+        a->crystal_stage_station = 0xFFu;
+        a->crystal_stage_module = 0xFFu;
+    }
     READ_FIELD(f, claim_flags);
     READ_FIELD(f, state->fracture_id);
     READ_FIELD(f, state->deadline_ms);
