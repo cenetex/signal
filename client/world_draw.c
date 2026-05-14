@@ -113,12 +113,6 @@ static void hail_asteroid_identity_label(const asteroid_t *a, char out[8]) {
     out[0] = '\0';
 }
 
-static const char *world_fragment_grade_label(uint8_t grade) {
-    if (grade >= (uint8_t)MINING_GRADE_COUNT)
-        grade = (uint8_t)MINING_GRADE_COMMON;
-    return mining_grade_label((mining_grade_t)grade);
-}
-
 static const char *world_npc_role_label(npc_role_t role) {
     switch (role) {
     case NPC_ROLE_MINER:  return "MINER";
@@ -455,20 +449,23 @@ void draw_asteroids(void) {
          * H scan pulse; outside scan, fragments stay commodity-tinted.
          * M-tier always uses commodity tint too (no payable ore). */
         if (a->tier == ASTEROID_TIER_S) {
-            if (fragment_in_hail_scan(a) && a->grade > (uint8_t)MINING_GRADE_COMMON) {
+            if (fragment_in_hail_scan(a)) {
+                uint8_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
+                    ? a->grade
+                    : (uint8_t)MINING_GRADE_COMMON;
                 float cr, cg, cb;
-                grade_tint(a->grade, &cr, &cg, &cb);
-                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
-                float pulse = (a->grade >= (uint8_t)MINING_GRADE_RATI)
+                grade_tint(grade, &cr, &cg, &cb);
+                float bloom = 1.05f + 0.14f * (float)grade;
+                float pulse = (grade >= (uint8_t)MINING_GRADE_RATI)
                     ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
                     : 1.0f;
                 float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
                 draw_circle_filled(a->pos, base_r, 12,
                     cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
-                if (a->grade >= (uint8_t)MINING_GRADE_RARE) {
-                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
-                        cr, cg, cb, 0.45f * pulse);
-                }
+                float halo_r = base_r * ((grade >= (uint8_t)MINING_GRADE_RARE) ? 1.9f : 1.55f);
+                float halo_a = (grade == (uint8_t)MINING_GRADE_COMMON) ? 0.22f :
+                    ((grade == (uint8_t)MINING_GRADE_FINE) ? 0.32f : 0.45f);
+                draw_circle_outline(a->pos, halo_r, 18, cr, cg, cb, halo_a * pulse);
             } else {
                 float cr, cg, cb;
                 commodity_material_tint(a->commodity, &cr, &cg, &cb);
@@ -2818,18 +2815,13 @@ void draw_npc_chatter(void) {
         char id[8];
         hail_asteroid_identity_label(a, id);
         if (a->tier == ASTEROID_TIER_S) {
-            const char *grade = world_fragment_grade_label(a->grade);
+            const char *code = commodity_code((commodity_t)a->commodity);
             if (id[0]) {
-                snprintf(label, sizeof(label), "%s %s fragment %.0fu %s",
-                         grade,
-                         commodity_short_name((commodity_t)a->commodity),
-                         a->ore,
-                         id);
+                snprintf(label, sizeof(label), "%s fragment %.0fu %s",
+                         code, a->ore, id);
             } else {
-                snprintf(label, sizeof(label), "%s %s fragment %.0fu",
-                         grade,
-                         commodity_short_name((commodity_t)a->commodity),
-                         a->ore);
+                snprintf(label, sizeof(label), "%s fragment %.0fu",
+                         code, a->ore);
             }
         } else {
             if (id[0]) {
@@ -2845,7 +2837,10 @@ void draw_npc_chatter(void) {
         }
 
         uint8_t r, gg, b;
-        mining_grade_rgb((mining_grade_t)a->grade, &r, &gg, &b);
+        uint8_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
+            ? a->grade
+            : (uint8_t)MINING_GRADE_COMMON;
+        mining_grade_rgb((mining_grade_t)grade, &r, &gg, &b);
         sdtx_color4b(r, gg, b, 220);
         int len = (int)strlen(label);
         sdtx_world_pos(a->pos.x - len * cell * 0.5f,
