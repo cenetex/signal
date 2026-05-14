@@ -1793,6 +1793,111 @@ int get_net_motion_total_replayed_frames(void) {
     return (int)g.net_motion.total_replayed_frames;
 }
 
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_player_interval_ms(void) {
+    return g.net_motion.packet_interval * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_player_interval_ms(void) {
+    return g.net_motion.max_packet_interval_run * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_player_jitter_ms(void) {
+    return g.net_motion.max_packet_jitter_run * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_ack_rtt_ms(void) {
+    return g.net_motion.max_ack_rtt_run * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_current_render_offset(void) {
+    return v2_len(g.local_player_render_offset);
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_render_offset(void) {
+    return g.net_motion.max_render_offset_run;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_player_batches(void) {
+    return (int)g.net_motion.total_player_batches;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_snap_samples(void) {
+    return (int)g.net_motion.total_snap_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_lerp_samples(void) {
+    return (int)g.net_motion.total_lerp_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_input_acks(void) {
+    return (int)g.net_motion.total_input_acks;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_tick_skew(void) {
+    return (int)g.net_motion.tick_skew;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_max_tick_skew_abs(void) {
+    return (int)g.net_motion.max_tick_skew_abs;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_replay_depth(void) {
+    return (int)g.net_replay_count;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_unacked_inputs(void) {
+    return (int)((uint16_t)(g.net_input_seq - g.net_last_server_ack));
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_action_queue_depth(void) {
+    return (int)g.net_action_queue_count;
+}
+
 static net_action_queue_item_t *net_action_queue_at(int offset) {
     int index = ((int)g.net_action_queue_start + offset) % NET_ACTION_QUEUE_CAP;
     return &g.net_action_queue[index];

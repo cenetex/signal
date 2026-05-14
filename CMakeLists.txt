@@ -376,6 +376,39 @@ if(NOT MSVC)
 endif()
 
 if(EMSCRIPTEN)
+    set(SIGNAL_EMSCRIPTEN_EXPORTS
+        "'_main'"
+        "'__saudio_emsc_pull'"
+        "'_get_signal_strength'"
+        "'_reset_net_motion_telemetry'"
+        "'_get_net_motion_max_correction'"
+        "'_get_net_motion_max_applied_correction'"
+        "'_get_net_motion_max_velocity_error'"
+        "'_get_net_motion_last_ack_rtt_ms'"
+        "'_get_net_motion_total_samples'"
+        "'_get_net_motion_total_deferred_samples'"
+        "'_get_net_motion_total_replayed_samples'"
+        "'_get_net_motion_total_replayed_frames'"
+        "'_get_net_motion_player_interval_ms'"
+        "'_get_net_motion_max_player_interval_ms'"
+        "'_get_net_motion_max_player_jitter_ms'"
+        "'_get_net_motion_max_ack_rtt_ms'"
+        "'_get_net_motion_current_render_offset'"
+        "'_get_net_motion_max_render_offset'"
+        "'_get_net_motion_total_player_batches'"
+        "'_get_net_motion_total_snap_samples'"
+        "'_get_net_motion_total_lerp_samples'"
+        "'_get_net_motion_total_input_acks'"
+        "'_get_net_motion_tick_skew'"
+        "'_get_net_motion_max_tick_skew_abs'"
+        "'_get_net_motion_replay_depth'"
+        "'_get_net_motion_unacked_inputs'"
+        "'_get_net_motion_action_queue_depth'"
+        "'_get_hud_hint_text'"
+        "'_get_hud_action_text'"
+        "'_set_smoke_loop_state'"
+    )
+    list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
     set_target_properties(signal PROPERTIES SUFFIX ".html")
     target_link_options(signal PRIVATE
         "SHELL:-sWASM=1"
@@ -384,7 +417,7 @@ if(EMSCRIPTEN)
         "SHELL:-sMIN_WEBGL_VERSION=2"
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
-        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull','_get_signal_strength','_reset_net_motion_telemetry','_get_net_motion_max_correction','_get_net_motion_max_applied_correction','_get_net_motion_max_velocity_error','_get_net_motion_last_ack_rtt_ms','_get_net_motion_total_samples','_get_net_motion_total_deferred_samples','_get_net_motion_total_replayed_samples','_get_net_motion_total_replayed_frames','_get_hud_hint_text','_get_hud_action_text','_set_smoke_loop_state']"
+        "SHELL:-sEXPORTED_FUNCTIONS=[${SIGNAL_EMSCRIPTEN_EXPORTS_CSV}]"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
