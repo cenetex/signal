@@ -231,7 +231,8 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
         w.stations[0]._inventory_cache[i] = 0.0f;
     /* Put enough ingots at station 1 to exceed the hauler reserve, so
      * relocation can actually result in a load. */
-    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 40.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT, 40));
     float initial_stock = w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT];
     /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
     for (int i = 0; i < 7200; i++)

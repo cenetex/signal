@@ -93,6 +93,22 @@ TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
+TEST(test_can_afford_upgrade_rejects_float_only_finished_goods) {
+    SHIP_DECL(ship);
+    STATION_DECL(station);
+    ship.hull_class = HULL_CLASS_MINER;
+    ASSERT(ship_manifest_bootstrap(&ship));
+    ASSERT(station_manifest_bootstrap(&station));
+
+    int need = (int)ceilf(upgrade_product_cost(&ship, SHIP_UPGRADE_HOLD));
+    ship.cargo[COMMODITY_FRAME] = (float)need;
+    station._inventory_cache[COMMODITY_FRAME] = (float)need;
+
+    ASSERT_EQ_INT(ship_finished_count(&ship, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 0);
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, 10000.0f));
+}
+
 TEST(test_contract_generated_from_hopper_deficit) {
     /* A refinery with low ore_buffer should generate an ore contract */
     WORLD_DECL;
@@ -1192,6 +1208,63 @@ TEST(test_repair_partial_when_kits_short) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
 }
 
+TEST(test_repair_rejects_float_only_kits) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x04, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_REPAIR_KIT, 0,
+                                        MINING_GRADE_COMMON));
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 100.0f;
+
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    w.players[0].ship.hull = max_hull - 20.0f;
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT],
+                    100.0f, 0.001f);
+}
+
+TEST(test_repair_kit_fab_requires_manifest_inputs) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int shipyard = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w.stations[s], MODULE_SHIPYARD)) {
+            shipyard = s;
+            break;
+        }
+    }
+    ASSERT(shipyard >= 0);
+    station_t *st = &w.stations[shipyard];
+
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_REPAIR_KIT, 0));
+    st->_inventory_cache[COMMODITY_FRAME] = 5.0f;
+    st->_inventory_cache[COMMODITY_LASER_MODULE] = 5.0f;
+    st->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 5.0f;
+    st->repair_kit_fab_timer = 0.0f;
+
+    step_dock_repair_kit_fab(&w, 60.0f);
+
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_REPAIR_KIT), 0);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.001f);
+}
+
 TEST(test_furnace_without_hopper_does_not_smelt) {
     /* Furnace capability is pair/tag based: a tagged furnace still
      * requires an adjacent matching ore hopper before it'll fire. */
@@ -1452,6 +1525,7 @@ void register_economy_basic_tests(void) {
     RUN(test_can_afford_upgrade_no_credits_for_dock_fallback);
     RUN(test_can_afford_upgrade_no_product_anywhere);
     RUN(test_can_afford_upgrade_cargo_only_no_credits_needed);
+    RUN(test_can_afford_upgrade_rejects_float_only_finished_goods);
     RUN(test_commodity_volume_kit_dense);
     RUN(test_ship_total_cargo_kit_density);
 }
@@ -1477,6 +1551,8 @@ void register_economy_contracts_tests(void) {
     RUN(test_repair_falls_back_to_station_inventory);
     RUN(test_repair_at_shipyard_no_labor_fee);
     RUN(test_repair_partial_when_kits_short);
+    RUN(test_repair_rejects_float_only_kits);
+    RUN(test_repair_kit_fab_requires_manifest_inputs);
 }
 
 void register_economy_contract3_tests(void) {
