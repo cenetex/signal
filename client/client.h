@@ -557,9 +557,13 @@ typedef struct {
         float correction_dist;
         float applied_correction_dist;
         float velocity_error;
+        float max_packet_interval_run;
+        float max_packet_jitter_run;
         float max_correction_5s;
         float max_applied_correction_5s;
         float window_elapsed;
+        int32_t tick_skew;
+        int32_t max_tick_skew_abs;
         uint32_t samples;
         uint32_t deferred_samples;
         uint32_t replayed_samples;
@@ -567,10 +571,16 @@ typedef struct {
         float max_correction_run;
         float max_applied_correction_run;
         float max_velocity_error_run;
+        float max_render_offset_run;
+        float max_ack_rtt_run;
+        uint32_t total_player_batches;
         uint32_t total_samples;
         uint32_t total_deferred_samples;
         uint32_t total_replayed_samples;
         uint32_t total_replayed_frames;
+        uint32_t total_snap_samples;
+        uint32_t total_lerp_samples;
+        uint32_t total_input_acks;
     } net_motion;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];

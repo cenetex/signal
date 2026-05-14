@@ -25,6 +25,21 @@ type NetMotionSnapshot = {
   maxAppliedCorrection: number;
   maxVelocityError: number;
   lastAckRttMs: number;
+  playerIntervalMs: number;
+  maxPlayerIntervalMs: number;
+  maxPlayerJitterMs: number;
+  maxAckRttMs: number;
+  currentRenderOffset: number;
+  maxRenderOffset: number;
+  playerBatches: number;
+  snapSamples: number;
+  lerpSamples: number;
+  inputAcks: number;
+  tickSkew: number;
+  maxTickSkewAbs: number;
+  replayDepth: number;
+  unackedInputs: number;
+  actionQueueDepth: number;
 };
 
 function addQueryParam(rawUrl: string, key: string, value: string): string {
@@ -211,6 +226,21 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
         maxAppliedCorrection: 0,
         maxVelocityError: 0,
         lastAckRttMs: 0,
+        playerIntervalMs: 0,
+        maxPlayerIntervalMs: 0,
+        maxPlayerJitterMs: 0,
+        maxAckRttMs: 0,
+        currentRenderOffset: 0,
+        maxRenderOffset: 0,
+        playerBatches: 0,
+        snapSamples: 0,
+        lerpSamples: 0,
+        inputAcks: 0,
+        tickSkew: 0,
+        maxTickSkewAbs: 0,
+        replayDepth: 0,
+        unackedInputs: 0,
+        actionQueueDepth: 0,
       };
     }
 
@@ -228,6 +258,21 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
       maxAppliedCorrection: read('get_net_motion_max_applied_correction'),
       maxVelocityError: read('get_net_motion_max_velocity_error'),
       lastAckRttMs: read('get_net_motion_last_ack_rtt_ms'),
+      playerIntervalMs: read('get_net_motion_player_interval_ms'),
+      maxPlayerIntervalMs: read('get_net_motion_max_player_interval_ms'),
+      maxPlayerJitterMs: read('get_net_motion_max_player_jitter_ms'),
+      maxAckRttMs: read('get_net_motion_max_ack_rtt_ms'),
+      currentRenderOffset: read('get_net_motion_current_render_offset'),
+      maxRenderOffset: read('get_net_motion_max_render_offset'),
+      playerBatches: read('get_net_motion_total_player_batches'),
+      snapSamples: read('get_net_motion_total_snap_samples'),
+      lerpSamples: read('get_net_motion_total_lerp_samples'),
+      inputAcks: read('get_net_motion_total_input_acks'),
+      tickSkew: read('get_net_motion_tick_skew'),
+      maxTickSkewAbs: read('get_net_motion_max_tick_skew_abs'),
+      replayDepth: read('get_net_motion_replay_depth'),
+      unackedInputs: read('get_net_motion_unacked_inputs'),
+      actionQueueDepth: read('get_net_motion_action_queue_depth'),
     };
   });
 }
@@ -512,7 +557,19 @@ test.describe('Browser smoke tests', () => {
 
     const motion = await netMotionSnapshot(page);
     expect(motion.samples).toBeGreaterThan(10);
+    expect(motion.playerBatches).toBeGreaterThan(10);
+    expect(motion.inputAcks).toBeGreaterThan(0);
     expect(motion.lastAckRttMs).toBeGreaterThan(250);
+    expect(motion.maxAckRttMs).toBeGreaterThan(250);
+    expect(motion.maxPlayerIntervalMs).toBeGreaterThan(0);
+    expect(motion.maxPlayerIntervalMs).toBeLessThanOrEqual(150);
+    expect(motion.maxTickSkewAbs).toBeLessThan(240);
+    expect(motion.actionQueueDepth).toBeLessThanOrEqual(1);
+    expect(motion.replayDepth).toBeLessThan(512);
+    expect(motion.unackedInputs).toBeLessThan(64);
+    expect(motion.snapSamples).toBeLessThan(5);
+    expect(motion.maxRenderOffset).toBeLessThanOrEqual(260);
+    expect(motion.currentRenderOffset).toBeLessThanOrEqual(260);
     expect(motion.maxAppliedCorrection).toBeLessThan(360);
     expect(motion.maxCorrection).toBeLessThan(900);
     expectNoFatalErrors(logs);

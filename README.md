@@ -181,6 +181,9 @@ client-side correction metrics with:
 make smoke-latency
 ```
 
+The latency smoke reads wasm telemetry for RTT, player-state cadence, correction
+mode counts, replay depth, tick skew, unacked inputs, and render-offset bounds.
+
 ## Test
 
 The `make test` target rebuilds `signal_test` and the native client from

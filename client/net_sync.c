@@ -863,9 +863,18 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
 void begin_player_state_batch(void) {
     memcpy(g.player_interp.prev, g.player_interp.curr,
            sizeof(g.player_interp.prev));
+    float prev_interval = g.net_motion.packet_interval;
     float elapsed = g.player_interp.t * g.player_interp.interval;
     elapsed = clampf(elapsed, 0.03f, 0.15f);
     g.net_motion.packet_interval = elapsed;
+    if (elapsed > g.net_motion.max_packet_interval_run)
+        g.net_motion.max_packet_interval_run = elapsed;
+    if (prev_interval > 0.0f) {
+        float jitter = fabsf(elapsed - prev_interval);
+        if (jitter > g.net_motion.max_packet_jitter_run)
+            g.net_motion.max_packet_jitter_run = jitter;
+    }
+    g.net_motion.total_player_batches++;
     g.player_interp.interval = lerpf(g.player_interp.interval, elapsed, 0.3f);
     g.player_interp.t = 0.0f;
 }
@@ -880,6 +889,9 @@ static void record_net_input_ack(uint16_t input_seq_ack) {
     if (rtt < 0.0f || rtt > 30.0f) return;
     g.net_last_ack_rtt = rtt;
     if (rtt > g.net_max_ack_rtt_5s) g.net_max_ack_rtt_5s = rtt;
+    if (rtt > g.net_motion.max_ack_rtt_run)
+        g.net_motion.max_ack_rtt_run = rtt;
+    g.net_motion.total_input_acks++;
     timing->seq = 0;
     timing->sent_at = 0.0f;
 }
@@ -958,7 +970,10 @@ static void add_local_player_render_correction(vec2 applied_delta,
         g.local_player_render_offset =
             v2_scale(g.local_player_render_offset,
                      max_offset / len);
+        len = max_offset;
     }
+    if (len > g.net_motion.max_render_offset_run)
+        g.net_motion.max_render_offset_run = len;
 }
 
 void apply_remote_player_state(const NetPlayerState* state) {
@@ -969,6 +984,14 @@ void apply_remote_player_state(const NetPlayerState* state) {
         server_player_t* sp = &g.world.players[state->player_id];
         vec2 before_pos = sp->ship.pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
+        if (state->server_tick != 0 && g.net_prediction_tick_valid) {
+            int32_t skew =
+                (int32_t)(g.net_prediction_tick - state->server_tick);
+            int32_t abs_skew = skew < 0 ? -skew : skew;
+            g.net_motion.tick_skew = skew;
+            if (abs_skew > g.net_motion.max_tick_skew_abs)
+                g.net_motion.max_tick_skew_abs = abs_skew;
+        }
         bool has_input_ack = state->input_seq_ack != 0;
         bool has_unacked_input =
             has_input_ack && g.net_input_seq != 0 &&
@@ -993,6 +1016,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool state_docked = (state->flags & 4) != 0;
         int replayed_frames = 0;
         bool used_replay = false;
+        bool used_snap = false;
+        bool used_lerp = false;
         bool defer_motion_correction =
             should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
         if (!defer_motion_correction)
@@ -1004,16 +1029,19 @@ void apply_remote_player_state(const NetPlayerState* state) {
         }
         if (!used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
+                used_snap = true;
                 sp->ship.pos.x = target_x;
                 sp->ship.pos.y = target_y;
                 sp->ship.vel.x = state->vx;
                 sp->ship.vel.y = state->vy;
             } else if (dist_sq > 20.0f * 20.0f) {
+                used_lerp = true;
                 sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.5f);
                 sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.5f);
                 sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
                 sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
             } else {
+                used_lerp = dist_sq > 0.01f;
                 sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.2f);
                 sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.2f);
                 sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
@@ -1025,6 +1053,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 g.net_prediction_tick_valid = true;
             }
         }
+        if (used_snap) g.net_motion.total_snap_samples++;
+        if (used_lerp) g.net_motion.total_lerp_samples++;
         vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
         add_local_player_render_correction(
             applied_delta, v2_len(applied_delta), state_docked);
