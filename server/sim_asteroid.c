@@ -592,6 +592,11 @@ bool submit_fracture_claim(world_t *w, int player_id, uint32_t fracture_id,
         state->best_grade = (uint8_t)actual_grade;
         state->best_nonce = burst_nonce;
         memcpy(state->best_player_pub, player_pub, sizeof(state->best_player_pub));
+        /* Surface the current winning grade immediately. The claim window
+         * stays open for better later claims, but visuals and scan labels
+         * should not sit at COMMON until the deadline expires. */
+        a->grade = (uint8_t)actual_grade;
+        a->net_dirty = true;
     }
     fracture_claim_mark_seen_token(state, session_token);
     return true;
