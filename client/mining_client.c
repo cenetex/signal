@@ -7,6 +7,7 @@
  * SIM_EVENT_SELL; this TU just keeps a session tally.
  */
 #include "mining_client.h"
+#include "protocol.h"
 
 #include <string.h>
 
@@ -60,11 +61,13 @@ bool mining_client_search_fracture(uint32_t fracture_id, const uint8_t seed[32],
     out_claim->burst_nonce = best_nonce;
     out_claim->claimed_grade = best_grade;
     /* Track the active fracture so resolve can clear the HUD state on arrival.
-     * The 0.6s timer is a cosmetic cap; if the server answer beats it,
-     * mining_client_resolve_fracture clears both. */
+     * The timer mirrors the server claim window with a small visual cushion;
+     * if the server answer beats it, mining_client_resolve_fracture clears
+     * both. */
     g_mining.fracture_search_id = fracture_id;
-    if (g_mining.fracture_search_timer < 0.6f)
-        g_mining.fracture_search_timer = 0.6f;
+    float claim_window = ((float)FRACTURE_CLAIM_WINDOW_MS + 100.0f) / 1000.0f;
+    if (g_mining.fracture_search_timer < claim_window)
+        g_mining.fracture_search_timer = claim_window;
     return true;
 }
 

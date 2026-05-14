@@ -2816,13 +2816,7 @@ void draw_npc_chatter(void) {
         hail_asteroid_identity_label(a, id);
         if (a->tier == ASTEROID_TIER_S) {
             const char *code = commodity_code((commodity_t)a->commodity);
-            if (id[0]) {
-                snprintf(label, sizeof(label), "%s fragment %.0fu %s",
-                         code, a->ore, id);
-            } else {
-                snprintf(label, sizeof(label), "%s fragment %.0fu",
-                         code, a->ore);
-            }
+            snprintf(label, sizeof(label), "%s", code);
         } else {
             if (id[0]) {
                 snprintf(label, sizeof(label), "%s %s %s",

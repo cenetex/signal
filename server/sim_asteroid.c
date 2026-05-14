@@ -170,7 +170,7 @@ static void fracture_begin_claim_window(world_t *w, int asteroid_idx) {
     state->active = true;
     state->challenge_dirty = true;
     state->fracture_id = w->next_fracture_id;
-    state->deadline_ms = (uint32_t)(w->time * 1000.0f) + 500u;
+    state->deadline_ms = (uint32_t)(w->time * 1000.0f) + FRACTURE_CLAIM_WINDOW_MS;
     state->burst_cap = mining_burst_cap_for_position(a->pos);
     a->grade = MINING_GRADE_COMMON;
     memset(a->fragment_pub, 0, sizeof(a->fragment_pub));

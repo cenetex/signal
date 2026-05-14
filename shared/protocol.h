@@ -349,6 +349,7 @@ static inline bool inspect_snapshot_unit_is_groupable(const cargo_unit_t *u) {
 
 /* Client-hashed fracture window */
 #define FRACTURE_CHALLENGE_BURST_CAP 50
+#define FRACTURE_CLAIM_WINDOW_MS     1500u
 #define FRACTURE_CHALLENGE_SIZE      (1 + 4 + 32 + 4 + 2)
 #define FRACTURE_CLAIM_SIZE          (1 + 4 + 4 + 1)
 #define FRACTURE_RESOLVED_SIZE       (1 + 4 + 32 + 32 + 1)
