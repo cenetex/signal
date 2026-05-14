@@ -58,9 +58,9 @@ int lod_segments(int base_segments, float radius) {
 }
 
 /* Float-RGB wrapper of the canonical mining_grade_rgb palette (defined
- * alongside the grade enum in shared/mining.h) for sokol_gl callers —
- * rock dots, tow tethers, anything that feeds sgl_c4f. UI code should
- * call mining_grade_rgb directly instead of going through world_draw. */
+ * alongside the grade enum in shared/mining.h) for sokol_gl callers.
+ * Keep fragment rarity usage to scan/inspection surfaces; ambient world
+ * rendering should not call this for unscreened fragments. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b) {
     uint8_t rr, gg, bb;
     mining_grade_rgb((mining_grade_t)grade, &rr, &gg, &bb);
@@ -436,33 +436,16 @@ void draw_asteroids(void) {
             sgl_end();
         }
 
-        /* Glow core (the "dot"). Common fragments keep the original
-         * muted commodity tint — the belt should look mostly the
-         * same. Fine+ rocks get the grade tint with a halo + pulse so
-         * a strike actually catches the eye against the sea of dim
-         * dots. M-tier always uses commodity tint (no payable ore). */
+        /* Glow core (the "dot"). Fragment rarity is only revealed by the
+         * H scan labels; ambient dots stay commodity-tinted so a rare
+         * fragment is not visually identifiable before scan. M-tier always
+         * uses commodity tint too (no payable ore). */
         if (a->tier == ASTEROID_TIER_S) {
-            if (a->grade == 0) {
-                float cr, cg, cb;
-                commodity_material_tint(a->commodity, &cr, &cg, &cb);
-                draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
-                    lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
-                    lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
-            } else {
-                float cr, cg, cb;
-                grade_tint(a->grade, &cr, &cg, &cb);
-                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
-                float pulse = (a->grade >= 3)
-                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
-                    : 1.0f;
-                float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
-                draw_circle_filled(a->pos, base_r, 12,
-                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
-                if (a->grade >= 2) {
-                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
-                        cr, cg, cb, 0.45f * pulse);
-                }
-            }
+            float cr, cg, cb;
+            commodity_material_tint(a->commodity, &cr, &cg, &cb);
+            draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
+                lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
+                lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
         } else if (a->tier == ASTEROID_TIER_M) {
             float cr, cg, cb;
             commodity_material_tint(a->commodity, &cr, &cg, &cb);
@@ -1758,9 +1741,9 @@ void draw_ship_tractor_field(void) {
         float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
     } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-        /* LEASHED: beam lines to fragments. Base color reflects ore
-         * grade (RATi visible during tow), brightness ramps with leash
-         * stretch so taut still reads as urgent. */
+        /* LEASHED: beam lines to fragments. Color stays commodity/tractor
+         * neutral; rarity is intentionally only revealed by H scan labels.
+         * Brightness still ramps with leash stretch so taut reads as urgent. */
         float slack = tr * 0.5f;
         float band = tr - slack;
         for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
@@ -1771,9 +1754,7 @@ void draw_ship_tractor_field(void) {
             float dist = sqrtf(v2_dist_sq(LOCAL_PLAYER.ship.pos, fpos));
             float stretch = clampf((dist - slack) / band, 0.0f, 1.0f);
             float gr, gg, gb;
-            grade_tint(a->grade, &gr, &gg, &gb);
-            /* Stretch boosts saturation so a strained tether on RATi ore
-             * reads as "danger of snapping the chain on a strike". */
+            commodity_material_tint(a->commodity, &gr, &gg, &gb);
             float boost = 1.0f + 0.5f * stretch;
             float beam_r = fminf(1.0f, gr * boost);
             float beam_g = fminf(1.0f, gg * boost);
@@ -2411,9 +2392,8 @@ void draw_autopilot_path(void) {
     }
 }
 
-/* Draw tractor tether lines from ship to towed fragments. Color is
- * the fragment's RATi grade so the player can see at a glance which
- * tow contains a strike. */
+/* Draw tractor tether lines from ship to towed fragments. Keep these
+ * neutral with respect to rarity; H scan is the reveal path. */
 void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
     if (LOCAL_PLAYER.ship.towed_count == 0) return;
@@ -2423,10 +2403,8 @@ void draw_towed_tethers(void) {
         const asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
         float r, gg, b;
-        grade_tint(a->grade, &r, &gg, &b);
+        commodity_material_tint(a->commodity, &r, &gg, &b);
         float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
-        /* Rare+ tethers pulse a bit faster so they catch the eye. */
-        if (a->grade >= 2) pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
         draw_segment(LOCAL_PLAYER.ship.pos, a->pos, r, gg, b, pulse);
     }
 }
@@ -2699,9 +2677,8 @@ void draw_remote_players(void) {
                 const asteroid_t *a = &g.world.asteroids[raw];
                 if (!a->active) continue;
                 float rr, rg, rb;
-                grade_tint(a->grade, &rr, &rg, &rb);
+                commodity_material_tint(a->commodity, &rr, &rg, &rb);
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
-                if (a->grade >= 2) tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
                 draw_segment(pos, a->pos, rr, rg, rb, tp);
             }
         }
