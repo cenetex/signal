@@ -58,15 +58,24 @@ int lod_segments(int base_segments, float radius) {
 }
 
 /* Float-RGB wrapper of the canonical mining_grade_rgb palette (defined
- * alongside the grade enum in shared/mining.h) for sokol_gl callers.
- * Keep fragment rarity usage to scan/inspection surfaces; ambient world
- * rendering should not call this for unscreened fragments. */
+ * alongside the grade enum in shared/mining.h) for sokol_gl callers. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b) {
     uint8_t rr, gg, bb;
     mining_grade_rgb((mining_grade_t)grade, &rr, &gg, &bb);
     *r = (float)rr / 255.0f;
     *g = (float)gg / 255.0f;
     *b = (float)bb / 255.0f;
+}
+
+static bool hail_scan_active(void) {
+    return g.hail_ping_timer > 0.0f &&
+           g.hail_ping_timer <= HAIL_PING_LIFECYCLE;
+}
+
+static bool fragment_in_hail_scan(const asteroid_t *a) {
+    if (!a || a->tier != ASTEROID_TIER_S || !hail_scan_active()) return false;
+    float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
+    return v2_dist_sq(a->pos, g.hail_ping_origin) <= hail_range * hail_range;
 }
 
 static bool world_hash32_is_zero(const uint8_t hash[32]) {
@@ -102,6 +111,12 @@ static void hail_asteroid_identity_label(const asteroid_t *a, char out[8]) {
         return;
     }
     out[0] = '\0';
+}
+
+static const char *world_fragment_grade_label(uint8_t grade) {
+    if (grade >= (uint8_t)MINING_GRADE_COUNT)
+        grade = (uint8_t)MINING_GRADE_COMMON;
+    return mining_grade_label((mining_grade_t)grade);
 }
 
 static const char *world_npc_role_label(npc_role_t role) {
@@ -436,16 +451,31 @@ void draw_asteroids(void) {
             sgl_end();
         }
 
-        /* Glow core (the "dot"). Fragment rarity is only revealed by the
-         * H scan labels; ambient dots stay commodity-tinted so a rare
-         * fragment is not visually identifiable before scan. M-tier always
-         * uses commodity tint too (no payable ore). */
+        /* Glow core (the "dot"). Fragment rarity blooms only during the
+         * H scan pulse; outside scan, fragments stay commodity-tinted.
+         * M-tier always uses commodity tint too (no payable ore). */
         if (a->tier == ASTEROID_TIER_S) {
-            float cr, cg, cb;
-            commodity_material_tint(a->commodity, &cr, &cg, &cb);
-            draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
-                lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
-                lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
+            if (fragment_in_hail_scan(a) && a->grade > (uint8_t)MINING_GRADE_COMMON) {
+                float cr, cg, cb;
+                grade_tint(a->grade, &cr, &cg, &cb);
+                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
+                float pulse = (a->grade >= (uint8_t)MINING_GRADE_RATI)
+                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
+                    : 1.0f;
+                float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
+                draw_circle_filled(a->pos, base_r, 12,
+                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
+                if (a->grade >= (uint8_t)MINING_GRADE_RARE) {
+                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
+                        cr, cg, cb, 0.45f * pulse);
+                }
+            } else {
+                float cr, cg, cb;
+                commodity_material_tint(a->commodity, &cr, &cg, &cb);
+                draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
+                    lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
+                    lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
+            }
         } else if (a->tier == ASTEROID_TIER_M) {
             float cr, cg, cb;
             commodity_material_tint(a->commodity, &cr, &cg, &cb);
@@ -1741,9 +1771,9 @@ void draw_ship_tractor_field(void) {
         float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
     } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-        /* LEASHED: beam lines to fragments. Color stays commodity/tractor
-         * neutral; rarity is intentionally only revealed by H scan labels.
-         * Brightness still ramps with leash stretch so taut reads as urgent. */
+        /* LEASHED: beam lines to fragments. Towed fragments are already in
+         * custody, so showing rarity here is intentional; brightness still
+         * ramps with leash stretch so taut reads as urgent. */
         float slack = tr * 0.5f;
         float band = tr - slack;
         for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
@@ -1754,7 +1784,7 @@ void draw_ship_tractor_field(void) {
             float dist = sqrtf(v2_dist_sq(LOCAL_PLAYER.ship.pos, fpos));
             float stretch = clampf((dist - slack) / band, 0.0f, 1.0f);
             float gr, gg, gb;
-            commodity_material_tint(a->commodity, &gr, &gg, &gb);
+            grade_tint(a->grade, &gr, &gg, &gb);
             float boost = 1.0f + 0.5f * stretch;
             float beam_r = fminf(1.0f, gr * boost);
             float beam_g = fminf(1.0f, gg * boost);
@@ -2392,8 +2422,8 @@ void draw_autopilot_path(void) {
     }
 }
 
-/* Draw tractor tether lines from ship to towed fragments. Keep these
- * neutral with respect to rarity; H scan is the reveal path. */
+/* Draw tractor tether lines from ship to towed fragments. Tethers show
+ * rarity because the fragment has already been collected/towed. */
 void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
     if (LOCAL_PLAYER.ship.towed_count == 0) return;
@@ -2403,8 +2433,10 @@ void draw_towed_tethers(void) {
         const asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
         float r, gg, b;
-        commodity_material_tint(a->commodity, &r, &gg, &b);
+        grade_tint(a->grade, &r, &gg, &b);
         float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+        if (a->grade >= (uint8_t)MINING_GRADE_RARE)
+            pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
         draw_segment(LOCAL_PLAYER.ship.pos, a->pos, r, gg, b, pulse);
     }
 }
@@ -2677,8 +2709,10 @@ void draw_remote_players(void) {
                 const asteroid_t *a = &g.world.asteroids[raw];
                 if (!a->active) continue;
                 float rr, rg, rb;
-                commodity_material_tint(a->commodity, &rr, &rg, &rb);
+                grade_tint(a->grade, &rr, &rg, &rb);
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+                if (a->grade >= (uint8_t)MINING_GRADE_RARE)
+                    tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
                 draw_segment(pos, a->pos, rr, rg, rb, tp);
             }
         }
@@ -2784,36 +2818,18 @@ void draw_npc_chatter(void) {
         char id[8];
         hail_asteroid_identity_label(a, id);
         if (a->tier == ASTEROID_TIER_S) {
-            const char *grade = NULL;
-            if (a->grade == (uint8_t)MINING_GRADE_FINE) grade = "fine";
-            else if (a->grade == (uint8_t)MINING_GRADE_RARE) grade = "rare";
-            else if (a->grade == (uint8_t)MINING_GRADE_RATI) grade = "RATi";
-            else if (a->grade == (uint8_t)MINING_GRADE_COMMISSIONED) grade = "comm";
-
-            if (grade) {
-                if (id[0]) {
-                    snprintf(label, sizeof(label), "%s %s %s %s",
-                             commodity_code((commodity_t)a->commodity),
-                             asteroid_tier_name((asteroid_tier_t)a->tier),
-                             grade, id);
-                } else {
-                    snprintf(label, sizeof(label), "%s %s %s",
-                             commodity_code((commodity_t)a->commodity),
-                             asteroid_tier_name((asteroid_tier_t)a->tier),
-                             grade);
-                }
+            const char *grade = world_fragment_grade_label(a->grade);
+            if (id[0]) {
+                snprintf(label, sizeof(label), "%s %s fragment %.0fu %s",
+                         grade,
+                         commodity_short_name((commodity_t)a->commodity),
+                         a->ore,
+                         id);
             } else {
-                if (id[0]) {
-                    snprintf(label, sizeof(label), "%s %s %.0f %s",
-                             commodity_code((commodity_t)a->commodity),
-                             asteroid_tier_name((asteroid_tier_t)a->tier),
-                             a->ore, id);
-                } else {
-                    snprintf(label, sizeof(label), "%s %s %.0f",
-                             commodity_code((commodity_t)a->commodity),
-                             asteroid_tier_name((asteroid_tier_t)a->tier),
-                             a->ore);
-                }
+                snprintf(label, sizeof(label), "%s %s fragment %.0fu",
+                         grade,
+                         commodity_short_name((commodity_t)a->commodity),
+                         a->ore);
             }
         } else {
             if (id[0]) {
