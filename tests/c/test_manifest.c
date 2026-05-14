@@ -622,7 +622,7 @@ static void setup_fracture_claim_scenario(world_t *w, int asteroid_idx, int play
                                           uint32_t fracture_id);
 
 TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
-    /* Late joiners to the 500ms claim window must still see the
+    /* Late joiners to the fracture claim window must still see the
      * challenge. The initial broadcast is fired by
      * fracture_begin_claim_window; step_fracture_claims re-arms
      * challenge_dirty at FRACTURE_CHALLENGE_REBROADCAST_MS cadence
@@ -646,7 +646,7 @@ TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
     a->pos = w.stations[0].pos;
     state->active = true;
     state->fracture_id = 501;
-    /* Window still open — deadline 500ms. */
+    /* Window still open. */
     state->deadline_ms = 500;
     state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
     /* Simulate "initial broadcast consumed by transport at t=0". */
