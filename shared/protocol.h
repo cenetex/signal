@@ -481,8 +481,8 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * where that input was actually applied. */
 #define PLAYER_RECORD_SIZE 77  /* 51 + 16 beam coords + 2 ack + 4 pose tick + 4 input tick */
 
-/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8] */
-#define ASTEROID_RECORD_SIZE 33  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
+/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8][crystal_stage:u8] */
+#define ASTEROID_RECORD_SIZE 34  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 */
 
 /* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
  * [target:u16][towed_fragment:u16][rarity_tint:3], 0xFFFF = none */

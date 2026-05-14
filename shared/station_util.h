@@ -29,16 +29,17 @@ bool          station_consumes(const station_t *st, commodity_t c);
 bool          station_produces(const station_t *st, commodity_t c);
 void          rebuild_station_services(station_t *st);
 
-/* Count active (non-scaffold) MODULE_FURNACE modules. The count drives
- * the smelt-tier rules below. */
+/* Count active (non-scaffold) MODULE_FURNACE modules. Kept for labels,
+ * tests, and migration diagnostics; smelt capability itself is
+ * tag/pair-based. */
 int           station_furnace_count(const station_t *st);
 
-/* Count-tier smelt capability, shared between sim + client (the client
- * uses it to label dock UI rows and station persona text):
- *   1 furnace  → ferrite only
- *   2 furnaces → ferrite + cuprite
- *   3+ furnaces → cuprite + crystal (ferrite blocked)
- * Always requires ≥1 hopper. */
+/* Tagged furnace smelt capability, shared between sim + client. A station
+ * can smelt an ore when it has an active FURNACE tagged for the matching
+ * output ingot plus an active matching ore HOPPER on an adjacent ring.
+ * Crystal is special: full crystal processing requires two distinct
+ * crystal furnace+hopper pairs because the first pass creates a
+ * tractorable intermediate and the second pass mints the ingot. */
 bool          station_can_smelt(const station_t *st, commodity_t ore);
 
 /* Display / trade derivations from the dominant module. */

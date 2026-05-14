@@ -536,6 +536,7 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].radius = read_f32_le(&p[27]);
                     arr[i].smelt_progress = (float)p[31] / 255.0f;
                     arr[i].grade = p[32];
+                    arr[i].crystal_stage = p[33];
                 }
                 net_state.callbacks.on_asteroids(arr, decoded);
             }

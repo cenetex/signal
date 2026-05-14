@@ -411,12 +411,70 @@ static bool station_smelt_pair_for_ore(const station_t *st, commodity_t ore,
     return found;
 }
 
+static bool station_smelt_pair_for_fragment(const station_t *st,
+                                            int station_idx,
+                                            const asteroid_t *fragment,
+                                            vec2 *drop_point) {
+    if (!st || !fragment || fragment->commodity == COMMODITY_COUNT) return false;
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE) continue;
+        if (f->scaffold) continue;
+        if (module_instance_input_ore(f) != fragment->commodity) continue;
+        if (fragment->commodity == COMMODITY_CRYSTAL_ORE &&
+            fragment->crystal_stage == CRYSTAL_STAGE_INTERMEDIATE &&
+            fragment->crystal_stage_station != 0xFFu &&
+            fragment->crystal_stage_module != 0xFFu &&
+            fragment->crystal_stage_station == (uint8_t)station_idx &&
+            fragment->crystal_stage_module == (uint8_t)fm) {
+            continue;
+        }
+
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj) continue;
+                if (h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != fragment->commodity) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    if (drop_point)
+                        *drop_point = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
 static bool npc_home_has_smelt_endpoint(const world_t *w, const npc_ship_t *npc,
                                         commodity_t ore, vec2 *drop_point) {
     if (!w || !npc) return false;
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return false;
     return station_smelt_pair_for_ore(&w->stations[npc->home_station], ore,
                                       drop_point);
+}
+
+static bool npc_home_has_smelt_endpoint_for_fragment(const world_t *w,
+                                                     const npc_ship_t *npc,
+                                                     const asteroid_t *fragment,
+                                                     vec2 *drop_point) {
+    if (!w || !npc) return false;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return false;
+    return station_smelt_pair_for_fragment(&w->stations[npc->home_station],
+                                           npc->home_station, fragment,
+                                           drop_point);
 }
 
 /* ================================================================== */
@@ -934,7 +992,7 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
     for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
         const asteroid_t *f = &w->asteroids[fi];
         if (!f->active || f->tier != ASTEROID_TIER_S) continue;
-        if (!npc_home_has_smelt_endpoint(w, self, f->commodity, NULL)) continue;
+        if (!npc_home_has_smelt_endpoint_for_fragment(w, self, f, NULL)) continue;
         if (station_raw_ore_need_score(home, f->commodity) <= 0.0f) continue;
         bool taken = false;
         /* Player tow check. */
@@ -2268,7 +2326,10 @@ void step_npc_ships(world_t *w, float dt) {
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
-                    have_delivery_target = station_smelt_pair_for_ore(home, tow->commodity, &delivery_target);
+                    have_delivery_target = station_smelt_pair_for_fragment(home,
+                                                                           npc->home_station,
+                                                                           tow,
+                                                                           &delivery_target);
                     if (!have_delivery_target) {
                         npc->towed_fragment = -1;
                         npc->state = NPC_STATE_IDLE;

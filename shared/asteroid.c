@@ -109,6 +109,8 @@ void clear_asteroid(asteroid_t* asteroid) {
     memset(asteroid, 0, sizeof(*asteroid));
     asteroid->last_towed_by = -1;
     asteroid->last_fractured_by = -1;
+    asteroid->crystal_stage_station = 0xFFu;
+    asteroid->crystal_stage_module = 0xFFu;
     if (was_active) asteroid->net_dirty = true; /* signal deactivation to network */
 }
 
@@ -131,6 +133,9 @@ void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodi
     asteroid->spin = rand_range(rng, -spin_limit, spin_limit);
     asteroid->seed = rand_range(rng, 0.0f, 100.0f);
     asteroid->age = 0.0f;
+    asteroid->crystal_stage = CRYSTAL_STAGE_RAW;
+    asteroid->crystal_stage_station = 0xFFu;
+    asteroid->crystal_stage_module = 0xFFu;
 }
 
 void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, float dt) {
