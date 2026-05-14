@@ -21,6 +21,7 @@
 
 #define HUD_LATENCY_WARN_MS 100.0f
 #define HUD_LATENCY_BAD_MS 300.0f
+#define HUD_FRAGMENT_NEARBY_RANGE 220.0f
 
 /* ------------------------------------------------------------------ */
 /* Station-local balance helper                                        */
@@ -141,10 +142,47 @@ typedef struct {
      * own short/long flavor of the same data. */
     int tier;            /* asteroid_tier_t */
     int commodity;       /* commodity_t */
+    int grade;           /* mining_grade_t, for fragment text color */
 } hud_action_t;
 
+static uint8_t hud_best_towed_fragment_grade(void) {
+    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
+    for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        if (a->grade < (uint8_t)MINING_GRADE_COUNT && a->grade > best)
+            best = a->grade;
+    }
+    return best;
+}
+
+static uint8_t hud_best_nearby_fragment_grade(void) {
+    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
+    float range_sq = HUD_FRAGMENT_NEARBY_RANGE * HUD_FRAGMENT_NEARBY_RANGE;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &g.world.asteroids[i];
+        if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        if (v2_dist_sq(a->pos, LOCAL_PLAYER.ship.pos) > range_sq) continue;
+        if (a->grade < (uint8_t)MINING_GRADE_COUNT && a->grade > best)
+            best = a->grade;
+    }
+    return best;
+}
+
+static void hud_set_grade_color(uint8_t grade) {
+    uint8_t r, g0, b;
+    if (grade >= (uint8_t)MINING_GRADE_COUNT)
+        grade = (uint8_t)MINING_GRADE_COMMON;
+    mining_grade_rgb((mining_grade_t)grade, &r, &g0, &b);
+    sdtx_color3b(r, g0, b);
+}
+
 static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, float sig_quality) {
-    hud_action_t out = { HUD_ACTION_IDLE, 0, 0, NULL, NULL, 0, 0 };
+    hud_action_t out = {0};
+    out.kind = HUD_ACTION_IDLE;
+    out.grade = (int)MINING_GRADE_COMMON;
     if (LOCAL_PLAYER.docked) { out.kind = HUD_ACTION_DOCKED; return out; }
     /* Target asteroid (laser-pointed). */
     if (LOCAL_PLAYER.hover_asteroid >= 0 &&
@@ -154,6 +192,7 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.int_a = (int)lroundf(a->hp);
         out.tier = (int)a->tier;
         out.commodity = (int)a->commodity;
+        out.grade = (int)a->grade;
         return out;
     }
     /* Scan results take precedence over towing/fragments — the player
@@ -189,9 +228,11 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.kind = HUD_ACTION_TOWING;
         out.int_a = LOCAL_PLAYER.ship.towed_count;
         out.int_b = LOCAL_PLAYER.ship.tractor_active ? 1 : 0;
+        out.grade = (int)hud_best_towed_fragment_grade();
         return out;
     }
     if (LOCAL_PLAYER.nearby_fragments > 0) {
+        out.grade = (int)hud_best_nearby_fragment_grade();
         if (LOCAL_PLAYER.ship.tractor_active && LOCAL_PLAYER.tractor_fragments > 0) {
             out.kind = HUD_ACTION_TRACTOR_LOCK;
             out.int_a = LOCAL_PLAYER.tractor_fragments;
@@ -356,7 +397,7 @@ static void hud_set_action_color(const hud_action_t *a) {
         sdtx_color3b(PAL_SCAN_ACTIVE);
         return;
     case HUD_ACTION_FRAGMENTS_NEARBY:
-        sdtx_color3b(PAL_TRACTOR_OFF);
+        hud_set_grade_color((uint8_t)a->grade);
         return;
     case HUD_ACTION_HOLD_FULL:
     case HUD_ACTION_PENDING_COLLECT:
@@ -365,12 +406,20 @@ static void hud_set_action_color(const hud_action_t *a) {
     case HUD_ACTION_IDLE:
         sdtx_color3b(PAL_TEXT_MUTED);
         return;
-    case HUD_ACTION_DOCKED:
     case HUD_ACTION_TARGET_ASTEROID:
-    case HUD_ACTION_MINING:
+        if (a->tier == (int)ASTEROID_TIER_S) {
+            hud_set_grade_color((uint8_t)a->grade);
+            return;
+        }
+        sdtx_color3b(PAL_ACTIVE);
+        return;
     case HUD_ACTION_TOWING:
     case HUD_ACTION_TRACTOR_LOCK:
     case HUD_ACTION_TRACTOR_REACHING:
+        hud_set_grade_color((uint8_t)a->grade);
+        return;
+    case HUD_ACTION_DOCKED:
+    case HUD_ACTION_MINING:
     default:
         sdtx_color3b(PAL_ACTIVE);
         return;
@@ -1578,7 +1627,8 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         snprintf(message, message_size, "+%d fragment%s collected.",
             g.collection_feedback_fragments,
             g.collection_feedback_fragments == 1 ? "" : "s");
-        *r = 120; *g0 = 150; *b = 120;
+        mining_grade_rgb((mining_grade_t)hud_best_towed_fragment_grade(),
+                         r, g0, b);
         return true;
     }
 
