@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
     <meta http-equiv="Permissions-Policy" content="cross-origin-isolated=(self)">
     <title>Signal</title>
     <style>
@@ -22,7 +22,10 @@
         margin: 0;
         min-height: 100dvh;
         overflow: hidden;
+        overscroll-behavior: none;
         color: #dce9ff;
+        -webkit-user-select: none;
+        user-select: none;
       }
 
       .shell {
@@ -69,6 +72,7 @@
         height: 100%;
         display: block;
         outline: none;
+        touch-action: none;
       }
 
       @media (max-width: 760px), (max-height: 680px) {
@@ -102,6 +106,7 @@
           console.error(text);
         }
       };
+      window.SignalGameModule = Module;
 
       /* ?singleplayer=1 forces the in-process server for local smoke
        * tests and client-only iteration. Otherwise, default
@@ -122,6 +127,7 @@
         if (isLocal) window.SIGNAL_SERVER = 'ws://' + h + ':9091/ws';
       }
     </script>
+    <script src="./signal-touch-controls.js"></script>
     {{{ SCRIPT }}}
   </body>
 </html>

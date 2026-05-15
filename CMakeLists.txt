@@ -407,6 +407,8 @@ if(EMSCRIPTEN)
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
+        "'_signal_mobile_key'"
+        "'_signal_mobile_clear'"
     )
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
     set_target_properties(signal PROPERTIES SUFFIX ".html")
@@ -429,6 +431,9 @@ if(EMSCRIPTEN)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-touch-controls.js
+            ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
     )
 elseif(APPLE)
     target_link_libraries(signal PRIVATE
