@@ -25,10 +25,13 @@
 #define HAIL_PING_IN_END     0.10f   /* lifecycle frac where widen finishes (~0.8s) */
 #define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
 #define HAIL_SCAN_ASTEROID_TAG_LIMIT 32
+#define HAIL_SCAN_REVEAL_SOFTNESS 120.0f
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
 static float g_cam_half_w; /* cached for LOD calculations */
+
+static float ping_ease_out(float t);
 
 void set_camera_bounds(vec2 camera, float half_w, float half_h) {
     g_cam_left   = camera.x - half_w;
@@ -72,10 +75,32 @@ static bool hail_scan_active(void) {
            g.hail_ping_timer <= HAIL_PING_LIFECYCLE;
 }
 
-static bool fragment_in_hail_scan(const asteroid_t *a) {
-    if (!a || a->tier != ASTEROID_TIER_S || !hail_scan_active()) return false;
-    float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
-    return v2_dist_sq(a->pos, g.hail_ping_origin) <= hail_range * hail_range;
+static float hail_scan_range(void) {
+    return (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
+}
+
+static float hail_scan_wave_radius(void) {
+    if (!hail_scan_active()) return 0.0f;
+    float t = clampf(g.hail_ping_timer / HAIL_PING_DURATION, 0.0f, 1.0f);
+    return hail_scan_range() * ping_ease_out(t);
+}
+
+static float hail_scan_reveal_alpha(vec2 pos) {
+    if (!hail_scan_active()) return 0.0f;
+
+    float range = hail_scan_range();
+    float dist_sq = v2_dist_sq(pos, g.hail_ping_origin);
+    if (dist_sq > range * range) return 0.0f;
+
+    float dist = sqrtf(dist_sq);
+    float wave = hail_scan_wave_radius();
+    if (dist > wave) return 0.0f;
+
+    float reveal = clampf((wave - dist) / HAIL_SCAN_REVEAL_SOFTNESS,
+                          0.0f, 1.0f);
+    float life_left = HAIL_PING_LIFECYCLE - g.hail_ping_timer;
+    float fade = clampf(life_left / 0.45f, 0.0f, 1.0f);
+    return reveal * fade;
 }
 
 static bool world_hash32_is_zero(const uint8_t hash[32]) {
@@ -453,7 +478,8 @@ void draw_asteroids(void) {
             uint8_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
                 ? a->grade
                 : (uint8_t)MINING_GRADE_COMMON;
-            bool reveal_grade = fragment_in_hail_scan(a) &&
+            float scan_reveal = hail_scan_reveal_alpha(a->pos);
+            bool reveal_grade = scan_reveal > 0.01f &&
                 grade > (uint8_t)MINING_GRADE_COMMON;
             if (!reveal_grade) {
                 float cr, cg, cb;
@@ -470,10 +496,10 @@ void draw_asteroids(void) {
                     : 1.0f;
                 float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
                 draw_circle_filled(a->pos, base_r, 12,
-                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
+                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio) * scan_reveal);
                 if (grade >= (uint8_t)MINING_GRADE_RARE) {
                     draw_circle_outline(a->pos, base_r * 1.9f, 18,
-                        cr, cg, cb, 0.45f * pulse);
+                        cr, cg, cb, 0.45f * pulse * scan_reveal);
                 }
             }
         } else if (a->tier == ASTEROID_TIER_M) {
@@ -2776,7 +2802,7 @@ void draw_callsigns(void) {
 
 void draw_npc_chatter(void) {
     if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > HAIL_PING_LIFECYCLE) return;
-    float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
+    float hail_range = hail_scan_range();
     float hail_range_sq = hail_range * hail_range;
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
@@ -2787,6 +2813,7 @@ void draw_npc_chatter(void) {
     typedef struct {
         int index;
         float dist_sq;
+        float reveal;
     } hail_asteroid_tag_t;
 
     hail_asteroid_tag_t tags[HAIL_SCAN_ASTEROID_TAG_LIMIT];
@@ -2799,16 +2826,18 @@ void draw_npc_chatter(void) {
 
         float dist_sq = v2_dist_sq(a->pos, g.hail_ping_origin);
         if (dist_sq > hail_range_sq) continue;
+        float reveal = hail_scan_reveal_alpha(a->pos);
+        if (reveal <= 0.01f) continue;
 
         if (tag_count < HAIL_SCAN_ASTEROID_TAG_LIMIT) {
-            tags[tag_count++] = (hail_asteroid_tag_t){ i, dist_sq };
+            tags[tag_count++] = (hail_asteroid_tag_t){ i, dist_sq, reveal };
         } else {
             int worst = 0;
             for (int j = 1; j < HAIL_SCAN_ASTEROID_TAG_LIMIT; j++) {
                 if (tags[j].dist_sq > tags[worst].dist_sq) worst = j;
             }
             if (dist_sq < tags[worst].dist_sq)
-                tags[worst] = (hail_asteroid_tag_t){ i, dist_sq };
+                tags[worst] = (hail_asteroid_tag_t){ i, dist_sq, reveal };
         }
     }
 
@@ -2838,7 +2867,8 @@ void draw_npc_chatter(void) {
             ? a->grade
             : (uint8_t)MINING_GRADE_COMMON;
         mining_grade_rgb((mining_grade_t)grade, &r, &gg, &b);
-        sdtx_color4b(r, gg, b, 220);
+        uint8_t alpha = (uint8_t)(220.0f * tags[t].reveal);
+        sdtx_color4b(r, gg, b, alpha);
         int len = (int)strlen(label);
         sdtx_world_pos(a->pos.x - len * cell * 0.5f,
                        a->pos.y + a->radius + 18.0f, cell);
@@ -2850,6 +2880,8 @@ void draw_npc_chatter(void) {
         if (!npc->active) continue;
         if (!on_screen(npc->ship.pos.x, npc->ship.pos.y, 50.0f)) continue;
         if (v2_dist_sq(npc->ship.pos, g.hail_ping_origin) > hail_range_sq) continue;
+        float reveal = hail_scan_reveal_alpha(npc->ship.pos);
+        if (reveal <= 0.01f) continue;
 
         /* Rotate line every 8 seconds, offset by NPC index. Station-authored
          * lines override the global fallback when this NPC's home station
@@ -2878,7 +2910,8 @@ void draw_npc_chatter(void) {
         char ident[32];
         world_npc_scan_label(npc, i, ident);
         int ident_len = (int)strlen(ident);
-        sdtx_color4b(PAL_WORLD_STATION_CYAN, 220);
+        uint8_t ident_alpha = (uint8_t)(220.0f * reveal);
+        sdtx_color4b(PAL_WORLD_STATION_CYAN, ident_alpha);
         sdtx_world_pos(npc->ship.pos.x - ident_len * cell * 0.5f,
                        npc->ship.pos.y + 34.0f, cell);
         sdtx_puts(ident);
@@ -2887,7 +2920,8 @@ void draw_npc_chatter(void) {
         uint8_t nr = (uint8_t)(clampf(npc->tint_r, 0.0f, 1.0f) * 255.0f);
         uint8_t ng = (uint8_t)(clampf(npc->tint_g, 0.0f, 1.0f) * 255.0f);
         uint8_t nb = (uint8_t)(clampf(npc->tint_b, 0.0f, 1.0f) * 255.0f);
-        sdtx_color4b(nr, ng, nb, 230);
+        uint8_t line_alpha = (uint8_t)(230.0f * reveal);
+        sdtx_color4b(nr, ng, nb, line_alpha);
         /* Sit chatter just below the NPC sprite. World Y-up: smaller
          * world_y is below on screen. */
         sdtx_world_pos(npc->ship.pos.x - len * cell * 0.5f,
