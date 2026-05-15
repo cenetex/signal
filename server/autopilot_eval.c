@@ -44,6 +44,10 @@ int main(int argc, char **argv) {
     printf("=== Autopilot Eval: %d ships, %d seconds ===\n\n", num_ships, sim_seconds);
 
     world_t *w = calloc(1, sizeof(world_t));
+    if (!w) {
+        fprintf(stderr, "failed to allocate world\n");
+        return 1;
+    }
     world_reset(w);
 
     ship_eval_t evals[MAX_PLAYERS] = {0};

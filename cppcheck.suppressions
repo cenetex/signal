@@ -1,0 +1,10 @@
+# Cppcheck suppressions for bundled single-header/vendor code.
+#
+# These headers are intentionally scanned indirectly by owned client/server
+# translation units, but their allocation-model and portability warnings are
+# not useful signal for this project.
+*:client/pl_mpeg.h
+*:client/minimp3.h
+*:client/stb_image.h
+*:server/mongoose.h
+*:server/mongoose.c

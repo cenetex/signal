@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke smoke-latency crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke smoke-latency cppcheck crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -133,6 +133,25 @@ test-all: build-test
 
 test-serial: build-test
 	./build/signal_test --no-soak $(TEST_QUIET)
+
+# Static analysis for owned C sources. Avoid --project=compile_commands.json
+# here: it pulls in test fixtures and single-header vendor libraries whose
+# allocation-model warnings swamp actionable project-code findings.
+CPPCHECK ?= cppcheck
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c
+
+cppcheck:
+	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \
+		--suppressions-list=cppcheck.suppressions \
+		--suppress=missingIncludeSystem \
+		--platform=unix64 \
+		-DMG_ARCH=MG_ARCH_UNIX \
+		-DMG_ENABLE_LOG=0 \
+		-DSOKOL_METAL=1 \
+		-DGIT_HASH=\"cppcheck\" \
+		-Iclient -Ishared -Iserver \
+		-i server/mongoose.c \
+		$(CPPCHECK_SOURCES)
 
 # Browser smoke: builds the WASM client, serves build-web locally, and
 # drives the canvas through the same Playwright smoke used after deploy.
