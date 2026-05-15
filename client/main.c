@@ -2249,6 +2249,54 @@ static void event(const sapp_event* event) {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+static sapp_keycode mobile_action_key(int action) {
+    switch (action) {
+    case 1:  return SAPP_KEYCODE_W;          /* thrust */
+    case 2:  return SAPP_KEYCODE_S;          /* brake / sell */
+    case 3:  return SAPP_KEYCODE_A;          /* turn left */
+    case 4:  return SAPP_KEYCODE_D;          /* turn right */
+    case 5:  return SAPP_KEYCODE_M;          /* mine / upgrade mining */
+    case 6:  return SAPP_KEYCODE_SPACE;      /* tractor / tow release */
+    case 7:  return SAPP_KEYCODE_E;          /* interact / launch / place */
+    case 8:  return SAPP_KEYCODE_H;          /* hail / scan */
+    case 9:  return SAPP_KEYCODE_LEFT_SHIFT; /* boost */
+    case 10: return SAPP_KEYCODE_B;          /* plan mode */
+    case 11: return SAPP_KEYCODE_R;          /* repair / cycle plan */
+    case 12: return SAPP_KEYCODE_TAB;        /* station view */
+    case 13: return SAPP_KEYCODE_F;          /* trade page */
+    case 14: return SAPP_KEYCODE_S;          /* sell / deliver */
+    case 20: return SAPP_KEYCODE_1;
+    case 21: return SAPP_KEYCODE_2;
+    case 22: return SAPP_KEYCODE_3;
+    case 23: return SAPP_KEYCODE_4;
+    case 24: return SAPP_KEYCODE_5;
+    case 30: return SAPP_KEYCODE_O;          /* autopilot */
+    case 31: return SAPP_KEYCODE_ESCAPE;     /* back / close */
+    default: return SAPP_KEYCODE_INVALID;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void signal_mobile_key(int action, int down) {
+    int kc = (int)mobile_action_key(action);
+    if (kc < 0 || kc >= KEY_COUNT) return;
+
+    if (down) {
+        if (!g.input.key_down[kc])
+            g.input.key_pressed[kc] = true;
+        g.input.key_down[kc] = true;
+    } else {
+        g.input.key_down[kc] = false;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void signal_mobile_clear(void) {
+    clear_input_state();
+}
+#endif
+
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
