@@ -363,6 +363,8 @@ else()
 endif()
 
 if(EMSCRIPTEN)
+    set_source_files_properties(client/net.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-overlength-strings")
     target_compile_definitions(signal PRIVATE SOKOL_GLES3)
 elseif(APPLE)
     target_compile_definitions(signal PRIVATE SOKOL_METAL)
@@ -409,6 +411,12 @@ if(EMSCRIPTEN)
         "'_set_smoke_loop_state'"
         "'_signal_mobile_key'"
         "'_signal_mobile_clear'"
+        "'_signal_net_transport_open'"
+        "'_signal_net_transport_message'"
+        "'_signal_net_transport_close'"
+        "'_signal_net_transport_error'"
+        "'_malloc'"
+        "'_free'"
     )
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
     set_target_properties(signal PROPERTIES SUFFIX ".html")

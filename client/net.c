@@ -118,6 +118,40 @@ static void read_named_ingot_entry(NetNamedIngotEntry *out, const uint8_t *p) {
 
 /* Forward declaration — implemented per platform below. */
 static void ws_send_binary(const uint8_t* data, int len);
+static void ensure_session_token(void);
+static void ensure_callsign(void);
+static void send_register_pubkey(void);
+static void send_session_token(void);
+static void handle_message(const uint8_t* data, int len);
+
+static void transport_connected(const char *label) {
+    net_state.connected = true;
+    printf("[net] connected to %s\n", label ? label : "transport");
+    /* Layer A.2 of #479 — pubkey registration MUST precede the session
+     * handshake so the server can fold the pubkey into reconnect
+     * resolution. */
+    send_register_pubkey();
+    ensure_session_token();
+    ensure_callsign();
+    send_session_token();
+    mining_client_set_session_token(net_state.session_token);
+}
+
+static void transport_message(const uint8_t *data, int len) {
+    handle_message(data, len);
+}
+
+static void transport_disconnected(const char *label) {
+    printf("[net] disconnected from %s\n", label ? label : "transport");
+    net_state.connected = false;
+}
+
+#ifdef __EMSCRIPTEN__
+static void transport_error(const char *label) {
+    printf("[net] %s error\n", label ? label : "transport");
+    net_state.connected = false;
+}
+#endif
 
 static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
                                 mining_grade_t claimed_grade) {
@@ -1159,42 +1193,227 @@ static void handle_message(const uint8_t* data, int len) {
 #include <emscripten/websocket.h>
 
 static EMSCRIPTEN_WEBSOCKET_T ws_socket = 0;
+static bool wasm_use_webrtc = false;
+
+EMSCRIPTEN_KEEPALIVE void signal_net_transport_open(void) {
+    transport_connected("webrtc datachannel");
+}
+
+EMSCRIPTEN_KEEPALIVE void signal_net_transport_message(uintptr_t ptr, int len) {
+    if (!ptr || len <= 0) return;
+    transport_message((const uint8_t *)ptr, len);
+}
+
+EMSCRIPTEN_KEEPALIVE void signal_net_transport_close(void) {
+    transport_disconnected("webrtc datachannel");
+}
+
+EMSCRIPTEN_KEEPALIVE void signal_net_transport_error(void) {
+    transport_error("webrtc datachannel");
+}
+
+EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
+    const rawUrl = UTF8ToString(url_ptr);
+    function randomId() {
+        if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
+        const a = new Uint8Array(16);
+        crypto.getRandomValues(a);
+        return Array.from(a, x => x.toString(16).padStart(2, '0')).join("");
+    }
+    function signalingUrl(raw) {
+        if (raw.startsWith('rtc://')) return 'ws://' + raw.slice('rtc://'.length);
+        if (raw.startsWith('rtcs://')) return 'wss://' + raw.slice('rtcs://'.length);
+        if (raw.startsWith('webrtc+ws://')) return 'ws://' + raw.slice('webrtc+ws://'.length);
+        if (raw.startsWith('webrtc+wss://')) return 'wss://' + raw.slice('webrtc+wss://'.length);
+        return raw;
+    }
+    const sigUrl = signalingUrl(rawUrl);
+    let parsed;
+    try {
+        parsed = new URL(sigUrl, globalThis.location ? location.href : undefined);
+    } catch (e) {
+        console.error('[net/webrtc] bad rendezvous url', rawUrl, e);
+        return 0;
+    }
+    const roomFromQuery = parsed.searchParams.get('room');
+    const roomFromPath = parsed.pathname && parsed.pathname !== '/'
+        ? parsed.pathname.replace(new RegExp("^/+"), "")
+        : "";
+    const room = roomFromQuery || roomFromPath || 'signal-main';
+    let nodeId = localStorage.getItem('signal_node_id');
+    if (!nodeId) {
+        nodeId = randomId();
+        localStorage.setItem('signal_node_id', nodeId);
+    }
+
+    const state = {
+        ws: null,
+        pc: null,
+        dc: null,
+        room,
+        nodeId,
+        remotePeer: null,
+        opened: false
+    };
+    Module.signalWebRTCTransport = state;
+
+    function sendSignal(to, data) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        state.ws.send(JSON.stringify({ type: 'signal', room, from: nodeId, to, data }));
+    }
+
+    function attachDataChannel(dc) {
+        state.dc = dc;
+        dc.binaryType = 'arraybuffer';
+        dc.onopen = () => {
+            if (!state.opened) {
+                state.opened = true;
+                Module.ccall('signal_net_transport_open');
+            }
+        };
+        dc.onclose = () => {
+            state.opened = false;
+            Module.ccall('signal_net_transport_close');
+        };
+        dc.onerror = () => Module.ccall('signal_net_transport_error');
+        dc.onmessage = (ev) => {
+            let bytes;
+            if (ev.data instanceof ArrayBuffer) {
+                bytes = new Uint8Array(ev.data);
+            } else if (ev.data && ev.data.arrayBuffer) {
+                ev.data.arrayBuffer().then((buf) => dc.onmessage({ data: buf }));
+                return;
+            } else {
+                return;
+            }
+            const ptr = Module._malloc(bytes.length);
+            HEAPU8.set(bytes, ptr);
+            Module.ccall('signal_net_transport_message', null,
+                         ['number', 'number'], [ptr, bytes.length]);
+            Module._free(ptr);
+        };
+    }
+
+    function ensurePeer(peerId, initiator) {
+        if (state.pc) return state.pc;
+        state.remotePeer = peerId;
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        state.pc = pc;
+        pc.onicecandidate = (ev) => {
+            if (ev.candidate) sendSignal(peerId, {
+                type: 'candidate',
+                candidate: ev.candidate
+            });
+        };
+        pc.onconnectionstatechange = () => {
+            if (pc.connectionState === 'failed' ||
+                pc.connectionState === 'disconnected' ||
+                pc.connectionState === 'closed') {
+                state.opened = false;
+                Module.ccall('signal_net_transport_close');
+            }
+        };
+        pc.ondatachannel = (ev) => attachDataChannel(ev.channel);
+        if (initiator) attachDataChannel(pc.createDataChannel('signal', { ordered: true }));
+        return pc;
+    }
+
+    async function createOffer(peerId) {
+        const pc = ensurePeer(peerId, true);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal(peerId, { type: 'offer', sdp: pc.localDescription });
+    }
+
+    async function handleSignal(msg) {
+        const data = msg.data || {};
+        const peerId = msg.from;
+        if (!peerId || peerId === nodeId) return;
+        const pc = ensurePeer(peerId, false);
+        if (data.type === 'offer') {
+            await pc.setRemoteDescription(data.sdp);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sendSignal(peerId, { type: 'answer', sdp: pc.localDescription });
+        } else if (data.type === 'answer') {
+            await pc.setRemoteDescription(data.sdp);
+        } else if (data.type === 'candidate' && data.candidate) {
+            try {
+                await pc.addIceCandidate(data.candidate);
+            } catch (e) {
+                console.warn('[net/webrtc] ICE candidate rejected', e);
+            }
+        }
+    }
+
+    const ws = new WebSocket(sigUrl);
+    state.ws = ws;
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'join', room, peer: nodeId }));
+    ws.onerror = () => Module.ccall('signal_net_transport_error');
+    ws.onclose = () => {
+        state.opened = false;
+        Module.ccall('signal_net_transport_close');
+    };
+    ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        if (msg.type === 'peers' && Array.isArray(msg.peers) && msg.peers.length > 0) {
+            createOffer(msg.peers[0]).catch((e) => {
+                console.error('[net/webrtc] offer failed', e);
+                Module.ccall('signal_net_transport_error');
+            });
+        } else if (msg.type === 'signal') {
+            handleSignal(msg).catch((e) => {
+                console.error('[net/webrtc] signal failed', e);
+                Module.ccall('signal_net_transport_error');
+            });
+        }
+    };
+    console.log('[net/webrtc] rendezvous', sigUrl, 'room', room, 'peer', nodeId);
+    return 1;
+})
+
+EM_JS(int, signal_webrtc_send_js, (const uint8_t *data, int len), {
+    const t = Module.signalWebRTCTransport;
+    if (!t || !t.dc || t.dc.readyState !== 'open') return 0;
+    const bytes = HEAPU8.slice(data, data + len);
+    t.dc.send(bytes);
+    return 1;
+})
+
+EM_JS(void, signal_webrtc_close_js, (), {
+    const t = Module.signalWebRTCTransport;
+    if (!t) return;
+    if (t.dc) t.dc.close();
+    if (t.pc) t.pc.close();
+    if (t.ws) t.ws.close();
+    Module.signalWebRTCTransport = null;
+})
 
 static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* event, void* userData) {
     (void)eventType; (void)event; (void)userData;
-    net_state.connected = true;
-    printf("[net] connected to relay server\n");
-    /* Layer A.2 of #479 — pubkey registration MUST precede the session
-     * handshake so the server can fold the pubkey into reconnect
-     * resolution. */
-    send_register_pubkey();
-    /* Send session token immediately so server can match grace slots */
-    ensure_session_token();
-    ensure_callsign();
-    send_session_token();
-    /* Rebind the mining identity to the real (server-known) token. */
-    mining_client_set_session_token(net_state.session_token);
+    transport_connected("websocket relay");
     return EM_TRUE;
 }
 
 static EM_BOOL on_ws_message(int eventType, const EmscriptenWebSocketMessageEvent* event, void* userData) {
     (void)eventType; (void)userData;
     if (event->isText) return EM_TRUE;
-    handle_message((const uint8_t*)event->data, (int)event->numBytes);
+    transport_message((const uint8_t*)event->data, (int)event->numBytes);
     return EM_TRUE;
 }
 
 static EM_BOOL on_ws_error(int eventType, const EmscriptenWebSocketErrorEvent* event, void* userData) {
     (void)eventType; (void)event; (void)userData;
-    printf("[net] websocket error\n");
-    net_state.connected = false;
+    transport_error("websocket");
     return EM_TRUE;
 }
 
 static EM_BOOL on_ws_close(int eventType, const EmscriptenWebSocketCloseEvent* event, void* userData) {
     (void)eventType; (void)event; (void)userData;
-    printf("[net] disconnected from relay server\n");
-    net_state.connected = false;
+    transport_disconnected("websocket relay");
     ws_socket = 0;
     return EM_TRUE;
 }
@@ -1226,6 +1445,19 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
         return false;
     }
     snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
+    wasm_use_webrtc = (strncmp(url, "rtc://", 6) == 0 ||
+                       strncmp(url, "rtcs://", 7) == 0 ||
+                       strncmp(url, "webrtc+ws://", 13) == 0 ||
+                       strncmp(url, "webrtc+wss://", 14) == 0);
+    if (wasm_use_webrtc) {
+        if (!signal_webrtc_connect_js(url)) {
+            printf("[net] failed to start WebRTC rendezvous transport\n");
+            wasm_use_webrtc = false;
+            return false;
+        }
+        printf("[net] connecting via WebRTC rendezvous %s\n", url);
+        return true;
+    }
     if (!emscripten_websocket_is_supported()) {
         printf("[net] WebSocket not supported in this browser\n");
         return false;
@@ -1254,6 +1486,15 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
 bool net_reconnect(void) {
     if (net_state.server_url[0] == '\0') return false;
+    if (wasm_use_webrtc) {
+        signal_webrtc_close_js();
+        net_state.connected = false;
+        net_state.local_id = 0xFF;
+        net_state.server_hash[0] = '\0';
+        memset(net_state.players, 0, sizeof(net_state.players));
+        printf("[net] reconnecting via WebRTC rendezvous %s\n", net_state.server_url);
+        return signal_webrtc_connect_js(net_state.server_url) != 0;
+    }
     if (ws_socket > 0) {
         emscripten_websocket_delete(ws_socket);
         ws_socket = 0;
@@ -1284,6 +1525,12 @@ bool net_reconnect(void) {
 }
 
 void net_shutdown(void) {
+    if (wasm_use_webrtc) {
+        signal_webrtc_close_js();
+        net_state.connected = false;
+        wasm_use_webrtc = false;
+        return;
+    }
     if (ws_socket > 0) {
         emscripten_websocket_close(ws_socket, 1000, "shutdown");
         emscripten_websocket_delete(ws_socket);
@@ -1293,6 +1540,11 @@ void net_shutdown(void) {
 }
 
 static void ws_send_binary(const uint8_t* data, int len) {
+    if (wasm_use_webrtc) {
+        if (!net_state.connected) return;
+        (void)signal_webrtc_send_js(data, len);
+        return;
+    }
     if (!net_state.connected || ws_socket <= 0) return;
     emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
 }
@@ -1393,25 +1645,17 @@ static void ws_send_binary(const uint8_t* data, int len) {
 
 static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_WS_OPEN) {
-        net_state.connected = true;
         ws_conn = c;
-        printf("[net] connected to server\n");
-        /* Layer A.2 of #479 — pubkey registration before SESSION. */
-        send_register_pubkey();
-        ensure_session_token();
-        ensure_callsign();
-        send_session_token();
-        mining_client_set_session_token(net_state.session_token);
+        transport_connected("websocket server");
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
-        handle_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
+        transport_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
     } else if (ev == MG_EV_ERROR) {
         printf("[net] connection error: %s\n", (char *)ev_data);
         net_state.connected = false;
         ws_conn = NULL;
     } else if (ev == MG_EV_CLOSE) {
-        printf("[net] disconnected from server\n");
-        net_state.connected = false;
+        transport_disconnected("websocket server");
         ws_conn = NULL;
     }
 }
@@ -1442,6 +1686,14 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
         printf("[net] no server URL provided, multiplayer disabled\n");
         return false;
     }
+    if (strncmp(url, "rtc://", 6) == 0 ||
+        strncmp(url, "rtcs://", 7) == 0 ||
+        strncmp(url, "webrtc+ws://", 13) == 0 ||
+        strncmp(url, "webrtc+wss://", 14) == 0) {
+        printf("[net] WebRTC transport is only available in browser builds\n");
+        return false;
+    }
+    snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
 
     mg_mgr_init(&net_mgr);
     mgr_initialized = true;
