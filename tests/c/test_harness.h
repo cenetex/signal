@@ -98,7 +98,15 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
     server_player_t __attribute__((cleanup(server_player_auto_cleanup))) name = {0}
 #endif
 
-#define TEST(name) static void name(void)
+#if defined(_MSC_VER)
+#define TEST_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define TEST_NOINLINE __attribute__((noinline))
+#else
+#define TEST_NOINLINE
+#endif
+
+#define TEST(name) static TEST_NOINLINE void name(void)
 /* RUN snapshots tests_failed before/after the test body. The body uses
  * `return` from inside ASSERT* on failure, so RUN cannot return a value
  * — instead we observe whether the global failure counter moved. This
