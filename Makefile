@@ -142,8 +142,12 @@ CPPCHECK_SOURCES := server shared client tools/signal_verify.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \
-		--suppressions-list=cppcheck.suppressions \
 		--suppress=missingIncludeSystem \
+		--suppress='*:client/pl_mpeg.h' \
+		--suppress='*:client/minimp3.h' \
+		--suppress='*:client/stb_image.h' \
+		--suppress='*:server/mongoose.h' \
+		--suppress='*:server/mongoose.c' \
 		--platform=unix64 \
 		-DMG_ARCH=MG_ARCH_UNIX \
 		-DMG_ENABLE_LOG=0 \
