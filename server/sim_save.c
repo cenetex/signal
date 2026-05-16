@@ -170,8 +170,8 @@ static uint32_t crc32_file(FILE *f) {
                           * (chain_last_hash 32B + chain_event_count 8B). */
 /* v40: Layer B of #479 — per-station Ed25519 pubkey + outpost
  * provenance tail in the session block. The matching private key is
- * rederivable from the world seed (or saved provenance, for outposts)
- * and is deliberately NOT written to disk.
+ * rederivable from the station authority secret plus world seed or
+ * saved outpost provenance and is deliberately NOT written to disk.
  * v39: Layer A.3 — per-player last_signed_nonce in the player save
  * (PLY6); world.sav layout itself was unchanged.
  * v38 added destroyed_rocks destroyed_at_ms timestamps (#285 slice 2). */
@@ -1690,12 +1690,12 @@ bool world_load(world_t *w, const char *path) {
     rebuild_signal_chain(w);
     if (!characters_rebuilt)
         rebuild_characters_from_npcs(w);
-    /* Layer B of #479: rederive every station's private key from its
-     * persisted pubkey + provenance. The secret was never written to
-     * disk — this is what makes a save leak NOT a key leak. v39 and
-     * earlier saves additionally rederive the pubkey itself (seeded
-     * indices 0/1/2 from world seed; outposts from a zero-founder
-     * placeholder, accepted v39 provenance gap).
+    /* Layer B of #479: rederive every station's private key from the
+     * operator-held station authority secret plus persisted provenance.
+     * The secret was never written to disk — this is what makes a save
+     * leak NOT a key leak. v39 and earlier saves additionally rederive
+     * the pubkey itself (seeded indices 0/1/2 from world seed; outposts
+     * from a zero-founder placeholder, accepted v39 provenance gap).
      *
      * We rederive seeded slots 0/1/2 unconditionally — they always
      * exist in any reachable world state — and also any outpost slot
@@ -1707,8 +1707,19 @@ bool world_load(world_t *w, const char *path) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (i < 3 ||
             memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
-            station_authority_rederive_secret(&w->stations[i],
-                                              w->belt_seed, i);
+            bool rekeyed = station_authority_rederive_secret(&w->stations[i],
+                                                             w->belt_seed, i);
+            if (rekeyed) {
+                station_t *st = &w->stations[i];
+                st->chain_event_count = 0;
+                memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
+                chain_log_health_set(st, CHAIN_HEALTH_EMPTY, false, 0,
+                                     st->chain_last_hash,
+                                     "station authority rekeyed at load");
+                SIM_LOG("[chain] station %d (%s): station authority rekeyed; "
+                        "starting fresh chain identity\n",
+                        i, st->name);
+            }
         }
     }
     /* Layer C of #479: walk every station's chain log on disk and

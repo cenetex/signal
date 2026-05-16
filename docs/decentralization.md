@@ -97,25 +97,25 @@ between holders without a central authority renaming the rows.
 ### Station authority — `station_pubkey`
 
 Layer B of #479 (PR #493) gave each station its own Ed25519 keypair, derived
-deterministically:
+deterministically from operator-held secret material plus public world data:
 
 - **Seeded stations** (Prospect Refinery, Kepler Yard, Helios Works — indices
   0/1/2) derive their seed as
-  `SHA256("signal-station-v1" || world_seed_u32 || station_index_u32)`. Every
-  server running the same world seed agrees on every seeded station's pubkey
-  bit-for-bit. See
+  `SHA256("signal-station-v1" || operator_secret || world_seed_u32 || station_index_u32)`.
+  Every server running the same operator secret and world seed agrees on every
+  seeded station's pubkey bit-for-bit. See
   [`server/station_authority.c`](../server/station_authority.c) and the seeded
   bootstrap in [`server/game_sim.c`](../server/game_sim.c).
 - **Player-planted outposts** (indices 3+) derive their seed as
-  `SHA256("signal-outpost-v1" || founder_pub[32] || station_name[16] || planted_tick_u64)`.
-  An auditor with the founding event can rederive the outpost's pubkey from the
-  world state alone.
+  `SHA256("signal-outpost-v1" || operator_secret || founder_pub[32] || station_name[16] || planted_tick_u64)`.
+  An operator with the station authority secret and founding event can rederive
+  the outpost's pubkey.
 
-The private key is rederivable on demand; it is **never** serialized to disk and
-**never** sent over the wire. The struct layout enforces this — `station_secret`
-is the last field of `station_t` and a `_Static_assert` keeps it that way
-([`shared/types.h`](../shared/types.h)). Losing the disk does not leak the
-private key.
+The private key is rederivable on demand only with that operator secret; it is
+**never** serialized to disk and **never** sent over the wire. The struct layout
+enforces this — `station_secret` is the last field of `station_t` and a
+`_Static_assert` keeps it that way ([`shared/types.h`](../shared/types.h)).
+Losing the disk does not leak the private key.
 
 ### Player identity — `player_identity_t`
 
@@ -221,15 +221,14 @@ with:
   serialized), and `chain_last_hash` + `chain_event_count` so the chain
   survives restart.
 - For outposts: an `outpost_founder_pubkey` and `outpost_planted_tick` so the
-  keypair can be rederived deterministically on save load.
+  keypair can be rederived deterministically on save load when the operator
+  secret is present.
 
 Authority is structural: the keypair *is* the station. There is no separate
 operator identity registered with the station — whoever holds the private key
-*is* the operator. For seeded stations, the world seed itself is the custody
-authority: anyone with the same world seed can rederive every seeded station's
-keypair, which is why seeded stations are agreed-upon globally without any
-explicit registration. For outposts, the founder's pubkey + the station name +
-the planting tick is sufficient.
+*is* the operator. Station authority custody is the configured station secret;
+world seed and outpost provenance identify the station, but no longer reveal
+the signing key.
 
 ## Per-station ledgers and per-zone economics
 

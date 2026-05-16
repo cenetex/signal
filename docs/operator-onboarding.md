@@ -27,10 +27,10 @@ server: keep the process up, keep the disk healthy, keep an eye on the logs.
 Federation adds a few cryptographic responsibilities on top.
 
 - **Custody of the station's private key.** For a seeded station the key is
-  rederivable from the world seed, so custody is automatic. For an outpost
-  you operate, custody is the same as custody of the running server's
-  filesystem (the secret is rederivable from the founding event, which lives
-  in the save). Treat the world save like any other production state.
+  rederivable from the station authority secret plus the world seed. For an
+  outpost you operate, custody is the same authority secret plus the founding
+  event stored in the save. Treat both the authority secret and world save
+  like production state.
 - **Continuous chain log integrity.** Your station's chain log is the
   authoritative history of every state mutation it authored. Don't truncate
   it. Don't edit it. Don't replace it from a backup unless you also revert
@@ -95,17 +95,20 @@ later changes the keypair. Pick something you can live with.
 
 The keypair is derived deterministically from a 32-byte seed via
 `signal_crypto_keypair_from_seed` ([`shared/signal_crypto.h`](../shared/signal_crypto.h)).
-The seed itself comes from one of two recipes:
+The seed itself comes from one of two recipes. Both include the configured
+station authority secret (`SIGNAL_STATION_AUTH_SECRET`, or `SIGNAL_API_TOKEN`
+as a fallback) so the public world seed alone is not enough to reproduce a
+station's private key:
 
 - **Seeded slot (you operate one of indices 0/1/2).**
-  `seed = SHA256("signal-station-v1" || world_seed_u32 || station_index_u32)`.
-  Every server with the same world seed agrees on this seeded station's
-  keypair, which is the whole point — auditors can rederive it. The helper
-  is `station_authority_seeded_seed` and the bootstrap is
+  `seed = SHA256("signal-station-v1" || operator_secret || world_seed_u32 || station_index_u32)`.
+  Every server with the same operator secret and world seed agrees on this
+  seeded station's keypair. The helper is `station_authority_seeded_seed`
+  and the bootstrap is
   `station_authority_init_seeded`
   ([`server/station_authority.h`](../server/station_authority.h)).
 - **Outpost (indices 3+).**
-  `seed = SHA256("signal-outpost-v1" || founder_pub[32] || station_name[16] || planted_tick_u64)`.
+  `seed = SHA256("signal-outpost-v1" || operator_secret || founder_pub[32] || station_name[16] || planted_tick_u64)`.
   The founder is the player who planted the outpost, the name is the
   station name, and the planted tick is `world.time * 120` at the moment
   of planting. The helper is `station_authority_outpost_seed` and the
@@ -113,14 +116,10 @@ The seed itself comes from one of two recipes:
   are stamped onto `s->outpost_founder_pubkey` and
   `s->outpost_planted_tick` so the secret can be rederived on save load.
 
-For stations you operate yourself, the world-seed-anchored derivation is the
-conventional path because it makes the keypair reproducible by anyone with the
-world seed; you do not have to publish anything separately. If your operational
-constraints require a keypair that is *not* derivable from the world (for
-example, a station that you want to revoke and re-key without changing the
-world seed), generate the seed by any other means and feed it to
-`signal_crypto_keypair_from_seed` directly — the contract is just "32 bytes
-of high-entropy seed in, deterministic Ed25519 keypair out."
+For stations you operate yourself, keep the same station authority secret
+available across restarts and replicas. Changing it intentionally rekeys
+stations; on load, the server starts a fresh chain identity for any station
+whose saved pubkey no longer matches the configured secret.
 
 The private key is never written to disk and never sent over the wire. Layer B
 keeps `station_secret` as the last field of `station_t` and re-derives it on
@@ -142,14 +141,14 @@ because both you and the server agreed on the seed.
 If you are planting an outpost, the founding event itself is the wiring:
 `station_authority_init_outpost` runs at plant time, stamps the founder + tick
 onto the station record, and the chain log emitted on plant carries the new
-pubkey forward. Subsequent server starts rederive the secret from the saved
-provenance.
+pubkey forward. Subsequent server starts rederive the secret from the station
+authority secret plus the saved provenance.
 
 If you are joining an *existing* world as a second operator running an
-*additional* seeded slot, the world seed must be agreed upon before launch.
-Coordinate the world seed (or the seed-bytes-by-other-means override) with
-the existing operator out of band; once both servers boot with the same seed,
-the seeded-station pubkeys match by construction.
+*additional* seeded slot, the world seed and station authority secret must be
+agreed upon before launch. Coordinate them with the existing operator out of
+band; once both servers boot with the same values, the seeded-station pubkeys
+match by construction.
 
 ### 4. Run the server
 
@@ -172,7 +171,11 @@ Relevant environment variables (read in [`server/main.c`](../server/main.c)):
   Docker-compose dev flow sets this to `9091` because the same container also
   serves the static web client on host port `8080`.
 - `SIGNAL_API_TOKEN` — bearer token for `/api/station/<id>/command` and other
-  admin REST surfaces.
+  admin REST surfaces. If `SIGNAL_STATION_AUTH_SECRET` is unset, this token is
+  also used as the station authority secret fallback.
+- `SIGNAL_STATION_AUTH_SECRET` — operator-held secret mixed into every station
+  keypair derivation. Required for `external_s3` persistence unless
+  `SIGNAL_API_TOKEN` is set.
 - `SIGNAL_REQUIRE_API_TOKEN` — when set, refuses admin requests that don't
   present `SIGNAL_API_TOKEN`; startup fails if this is set without a token.
 - `SIGNAL_INTERNAL_SHARED_KEY` — bearer for `/internal/v1/operator-post`.
@@ -264,11 +267,11 @@ and `chain/` before making manual repairs.
 
 ## Operational hygiene
 
-- **Backup the world save, not the keypair.** For seeded stations the
-  keypair is rederivable from the world seed alone; back up the world
-  seed (or the world.sav, which records `belt_seed`) and you can rebuild
-  the keypair from scratch. For outposts the founder pubkey + name +
-  planted tick live in the world.sav; back up the save.
+- **Backup the world save and station authority secret, not per-station
+  keypairs.** For seeded stations the keypair is rederivable from
+  `SIGNAL_STATION_AUTH_SECRET` (or the `SIGNAL_API_TOKEN` fallback) plus the
+  world seed. For outposts the founder pubkey + name + planted tick live in
+  the world.sav; back up the save and the same authority secret.
 - **Monitor disk for chain log growth.** Expect ~2 MB/hour at busy times
   per station. If it grows much faster, something is emitting more than
   it should — investigate before it eats the volume.
@@ -325,13 +328,14 @@ A non-exhaustive list of recoverable failure modes.
 
 ### Lost the keypair
 
-For a **seeded station**: regenerate from the world seed. The seeded path is
-deterministic. Run the same world seed, and the same pubkey + secret falls out
-of `station_authority_init_seeded`.
+For a **seeded station**: regenerate from the station authority secret plus the
+world seed. The seeded path is deterministic. Run the same secret and world
+seed, and the same pubkey + secret falls out of `station_authority_init_seeded`.
 
-For an **outpost**: if you have the world.sav, the secret is rederivable from
-`outpost_founder_pubkey` + station name + `outpost_planted_tick`, all of which
-are persisted. Boot the server against the save and the secret is rederived
+For an **outpost**: if you have the world.sav and station authority secret, the
+station secret is rederivable from that secret plus `outpost_founder_pubkey`,
+station name, and `outpost_planted_tick`, all of which are persisted. Boot the
+server against the save and the secret is rederived
 automatically. If you have lost both the save and the founding event,
 the outpost's identity is gone — start fresh by planting a new outpost.
 
@@ -401,10 +405,11 @@ header has been written, the verifier returns zero events.
 
 The asserted `authority` pubkey on the failing event does not match the
 station's `station_pubkey`. This usually means the chain log was authored
-by a *different* keypair — for example, the world seed changed between
-the run that authored the log and the current run, or you replaced an
-outpost's founding event. Identify the run that authored the log and
-restore the world seed (or founding event) it expects.
+by a *different* keypair — for example, the station authority secret or world
+seed changed between the run that authored the log and the current run, or you
+replaced an outpost's founding event. Identify the run that authored the log
+and restore the station authority secret plus world seed or founding event it
+expects.
 
 ### "Verifier reports `bad prev-hash linkage`"
 
@@ -428,9 +433,9 @@ continuity with the permanent history.
 writing it to disk ([`server/chain_log.c`](../server/chain_log.c)).
 A failure here means the secret slot was zero or rederive failed. Check
 that the world load called `station_authority_rederive_secret` for every
-station. For seeded stations, the world seed must be set before
-`world_reset` runs the bootstrap. For outposts, the founder + tick must
-have been loaded from the save.
+station and that the station authority secret was configured before
+`world_reset` or `world_load`. For outposts, the founder + tick must have been
+loaded from the save.
 
 ### "Disk is filling up faster than expected"
 

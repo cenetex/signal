@@ -17,8 +17,40 @@
  * frozen unless a deliberate identity migration is in flight. */
 static const char STATION_SEED_DOMAIN[]  = "signal-station-v1";
 static const char OUTPOST_SEED_DOMAIN[]  = "signal-outpost-v1";
+static const char SECRET_SEED_DOMAIN[]   = "signal-station-operator-secret-v1";
+static const char DEV_SECRET[]           = "signal-dev-station-authority-secret";
 
 #define STATION_AUTH_NAME_HASH_LEN 16
+
+static uint8_t station_auth_secret_root[32];
+static bool station_auth_secret_ready = false;
+
+static void station_authority_hash_secret(const char *secret,
+                                          uint8_t out_root[32]) {
+    sha256_ctx_t c;
+    sha256_init(&c);
+    sha256_update(&c, SECRET_SEED_DOMAIN, sizeof(SECRET_SEED_DOMAIN) - 1);
+    sha256_update(&c, secret, strlen(secret));
+    sha256_final(&c, out_root);
+}
+
+bool station_authority_configure_secret(const char *secret) {
+    if (!secret || secret[0] == '\0') return false;
+    station_authority_hash_secret(secret, station_auth_secret_root);
+    station_auth_secret_ready = true;
+    return true;
+}
+
+void station_authority_use_dev_secret(void) {
+    station_authority_hash_secret(DEV_SECRET, station_auth_secret_root);
+    station_auth_secret_ready = true;
+}
+
+static const uint8_t *station_authority_secret_root(void) {
+    if (!station_auth_secret_ready)
+        station_authority_use_dev_secret();
+    return station_auth_secret_root;
+}
 
 void station_authority_seeded_seed(uint32_t world_seed,
                                    uint32_t station_index,
@@ -26,6 +58,7 @@ void station_authority_seeded_seed(uint32_t world_seed,
     sha256_ctx_t c;
     sha256_init(&c);
     sha256_update(&c, STATION_SEED_DOMAIN, sizeof(STATION_SEED_DOMAIN) - 1);
+    sha256_update(&c, station_authority_secret_root(), 32);
     /* Little-endian fixed-width — same byte order on every host so
      * the derivation is deterministic across architectures. */
     uint8_t seed_le[4];
@@ -64,6 +97,7 @@ void station_authority_outpost_seed(const uint8_t founder_pub[32],
     sha256_ctx_t c;
     sha256_init(&c);
     sha256_update(&c, OUTPOST_SEED_DOMAIN, sizeof(OUTPOST_SEED_DOMAIN) - 1);
+    sha256_update(&c, station_authority_secret_root(), 32);
     static const uint8_t zero_pub[32] = {0};
     sha256_update(&c, founder_pub ? founder_pub : zero_pub, 32);
     sha256_update(&c, name_buf, sizeof(name_buf));
@@ -98,10 +132,10 @@ void station_authority_init_outpost(station_t *s,
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
 }
 
-void station_authority_rederive_secret(station_t *s,
+bool station_authority_rederive_secret(station_t *s,
                                        uint32_t world_seed,
                                        int station_index) {
-    if (!s) return;
+    if (!s) return false;
     uint8_t seed[32];
     if (station_index >= 0 && station_index < 3) {
         station_authority_seeded_seed(world_seed,
@@ -115,16 +149,18 @@ void station_authority_rederive_secret(station_t *s,
     uint8_t derived_pub[32];
     signal_crypto_keypair_from_seed(seed, derived_pub, s->station_secret);
     /* If the saved pubkey is zero (pre-v40 save with no station
-     * identity field), stamp the rederived pubkey so the station
-     * has a usable identity. If a pubkey was loaded from disk,
-     * keep it as authoritative — for v40+ saves it's exactly
-     * `derived_pub`; for v40 saves where `s->name` was lost (e.g.
-     * catalog-less load) the saved pubkey is the canonical record
-     * and the secret we just derived should pair with it. */
+     * identity field), stamp the rederived pubkey so the station has a
+     * usable identity. If a non-zero saved pubkey no longer matches the
+     * configured operator secret, rotate it deliberately instead of
+     * keeping a public key that cannot verify signatures from the
+     * rederived private key. */
     static const uint8_t zero_pub[32] = {0};
-    if (memcmp(s->station_pubkey, zero_pub, 32) == 0) {
+    bool saved_zero = memcmp(s->station_pubkey, zero_pub, 32) == 0;
+    bool rekeyed = !saved_zero && memcmp(s->station_pubkey, derived_pub, 32) != 0;
+    if (saved_zero || rekeyed) {
         memcpy(s->station_pubkey, derived_pub, 32);
     }
+    return rekeyed;
 }
 
 void station_sign(const station_t *s, const uint8_t *msg, size_t len,
