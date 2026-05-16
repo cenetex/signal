@@ -46,6 +46,7 @@ _Static_assert(CHAIN_UNSIGNED_HEADER_SIZE ==
 /* ------------------------------------------------------------------ */
 
 static char g_chain_dir[256] = "chain";
+static bool g_chain_log_disk_enabled = true;
 
 void chain_log_set_dir(const char *dir) {
     if (!dir || dir[0] == '\0') {
@@ -57,6 +58,10 @@ void chain_log_set_dir(const char *dir) {
 
 const char *chain_log_get_dir(void) {
     return g_chain_dir;
+}
+
+void chain_log_set_disk_enabled(bool enabled) {
+    g_chain_log_disk_enabled = enabled;
 }
 
 /* mkdir -p the chain dir. Best-effort — collisions / permission
@@ -267,6 +272,12 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
     if (!station_verify(s, unsigned_blob, CHAIN_UNSIGNED_HEADER_SIZE, hdr.signature)) {
         SIM_LOG("[chain] self-verify failed for station; skipping emit\n");
         return 0;
+    }
+
+    if (!g_chain_log_disk_enabled) {
+        chain_event_header_hash(&hdr, s->chain_last_hash);
+        s->chain_event_count = hdr.event_id;
+        return hdr.event_id;
     }
 
     /* Open the log in append mode; create dir on first emit. */

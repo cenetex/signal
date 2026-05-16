@@ -199,6 +199,10 @@ task definition already sends server stdout to CloudWatch Logs at
 `/ecs/signal-relay-server`; the relay emits JSON analytics events and
 CloudWatch EMF summaries there.
 
+Production runs the relay as disposable compute with explicit external state.
+See [`docs/production-ephemeral-relay.md`](docs/production-ephemeral-relay.md)
+for persistence modes, S3 state sync, and `/health` reporting.
+
 ## Test
 
 The `make test` target rebuilds `signal_test` and the native client from

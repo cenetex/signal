@@ -273,6 +273,12 @@ void chain_log_set_dir(const char *dir);
 /* Returns the currently configured chain directory (default "chain/"). */
 const char *chain_log_get_dir(void);
 
+/* Controls whether chain_log_emit writes append records to disk. When
+ * disabled, emits still sign and advance the in-memory station chain so
+ * same-session receipt flows continue to work, but no local files are
+ * created. */
+void chain_log_set_disk_enabled(bool enabled);
+
 /* Append a signed event to station s's chain log.
  *
  * Computes payload_hash (SHA-256 of the payload bytes), reads

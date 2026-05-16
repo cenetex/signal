@@ -4651,7 +4651,14 @@ static void signal_chain_hash_block(const uint8_t prev_hash[32],
  * Format: each record is a fixed-size signal_channel_msg_t blob (no
  * prev_hash field needed since prev_hash = previous record's entry_hash;
  * genesis is the all-zero hash). */
+static bool signal_chain_disk_enabled = true;
+
+void signal_chain_set_disk_enabled(bool enabled) {
+    signal_chain_disk_enabled = enabled;
+}
+
 static void signal_chain_persist(int station, const signal_channel_msg_t *m) {
+    if (!signal_chain_disk_enabled) return;
     char dir[]  = "chain";
     char path[64];
     snprintf(path, sizeof(path), "%s/%d.chain", dir, station);

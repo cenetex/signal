@@ -459,7 +459,16 @@ jobs:
             --task-definition signal-relay-server \
             --query 'taskDefinition' > taskdef.json
           jq --arg image "${IMAGE_REPO}@${ARM64_DIGEST}" '
+            def upsert_env($name; $value):
+              .containerDefinitions[0].environment =
+                ((.containerDefinitions[0].environment // [])
+                 | map(select(.name != $name))
+                 + [{"name": $name, "value": $value}]);
             .containerDefinitions[0].image = $image |
+            upsert_env("SIGNAL_PERSISTENCE_MODE"; "external_s3") |
+            upsert_env("SIGNAL_DATA_DIR"; "/app/data") |
+            upsert_env("SIGNAL_STATE_S3_URI"; "s3://signal-ratimics-state/prod/") |
+            upsert_env("SIGNAL_STATE_SYNC_INTERVAL_SEC"; "60") |
             del(
               .taskDefinitionArn,
               .revision,
