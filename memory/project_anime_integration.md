@@ -1,11 +1,11 @@
 ---
-name: Anime integration direction
-description: Signal game integrating anime episodes as in-world signal artifacts discovered through gameplay progression
+name: Milestone video integration status
+description: Anime scope is narrowed to shipped milestone-video playback, not a broader narrative system
 type: project
 ---
 
-Anime episodes are being produced for Signal, delivered as "signal ghosts" — narrative fragments discovered in deep space. Three delivery layers: audio fragments (low cost, ships first), visual echoes (holographic loops in-world), full 3-5min anime shorts (unlocked at Signal Archive stations).
+The old broad anime roadmap is cut from MVP scope. Current product scope is narrow: play existing milestone videos at meaningful progression beats through the in-engine episode popup. There is no Signal Ghost, Signal Archive module, audio-fragment collection, visual-echo discovery layer, or future-season roadmap in current scope.
 
-**Why:** The game's signal mechanic (stations broadcasting in expanding circles) naturally supports narrative discovery — episodes become objects in the world, not cutscenes. Extends the thesis "intelligence persists as long as the signal does" into storytelling.
+**Why:** The current docs intentionally keep videos secondary to play. Milestone videos should reward real progress without adding a parallel narrative collection system or delaying mining, hauling, construction, station economy, and rock-combat readability.
 
-**How to apply:** 9 episodes planned (Ep 0-8) mapped to game phases from tutorial through endgame. Audio-first production model — procedural audio already exists in sokol_audio. Visual style: desaturated world / saturated signal, industrial realism influenced by Planetes/Bebop/BLAME!. Full framework saved at `docs/anime-framework.md`.
+**How to apply:** Use `docs/anime-framework.md` and `docs/anime-integration-plan.md` as the current source of truth. Episodes are MPEG-1 `.mpg` assets decoded in `client/episode.c`, rendered as bottom-right milestone popups, and triggered from gameplay events. Remaining work is asset-production workflow, optional native watched-state persistence, browser smoke coverage, and revisiting the episode 2 trigger if the stricter "all three ore types" milestone still matters.

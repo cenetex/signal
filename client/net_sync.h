@@ -37,6 +37,9 @@ void apply_remote_station_manifest(uint8_t station_id,
 /* Local player ship manifest summary (server-mirrored). */
 void apply_remote_player_manifest(const NetStationManifestEntry *entries,
                                   int count);
+/* Portable cargo receipt bundle for the local player's carried manifest. */
+void apply_remote_cargo_receipt_bundle(const cargo_receipt_t *receipts,
+                                       int count);
 /* Detailed named-ingot snapshots that supplement manifest summaries with
  * per-unit provenance for trade-row display. */
 void apply_remote_station_ingots(uint8_t station_id,

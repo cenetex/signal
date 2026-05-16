@@ -63,6 +63,29 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
                                      const uint8_t prev_receipt_hash[32],
                                      cargo_receipt_t *out_receipt);
 
+typedef enum {
+    CARGO_RECEIPT_PRESENT_OK = 0,
+    CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS,
+    CARGO_RECEIPT_PRESENT_REJECT_NO_PLAYER_KEY,
+    CARGO_RECEIPT_PRESENT_REJECT_NOT_CARRIED,
+    CARGO_RECEIPT_PRESENT_REJECT_VERIFY,
+    CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT,
+    CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH,
+    CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE
+} cargo_receipt_present_result_t;
+
+/* Accept a peer-presented receipt chain for cargo currently carried by `sp`.
+ *
+ * The chain must verify for `cargo_pub`, its head recipient must be the
+ * player's registered pubkey, and any already-attached local chain must be
+ * an exact prefix of the presented chain. On success the chain is stored in
+ * the ship's parallel receipt store at the matching manifest index. */
+cargo_receipt_present_result_t cargo_receipt_present_to_ship(
+    server_player_t *sp,
+    const uint8_t cargo_pub[32],
+    const cargo_receipt_t *chain,
+    uint8_t chain_len);
+
 #ifdef __cplusplus
 }
 #endif

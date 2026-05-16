@@ -13,7 +13,7 @@
  * size. If anyone reorders fields or changes alignment this fires
  * before the byte format silently drifts on disk / wire. */
 _Static_assert(sizeof(cargo_receipt_t) == CARGO_RECEIPT_SIZE,
-               "cargo_receipt_t must be exactly 232 bytes");
+               "cargo_receipt_t must be exactly 208 bytes");
 _Static_assert(CARGO_RECEIPT_UNSIGNED_SIZE == CARGO_RECEIPT_SIZE - 64,
                "unsigned span = full size minus 64-byte signature");
 
@@ -42,6 +42,27 @@ void cargo_receipt_pack(const cargo_receipt_t *r,
                         uint8_t out[CARGO_RECEIPT_SIZE]) {
     cargo_receipt_unsigned_pack(r, out);
     memcpy(&out[CARGO_RECEIPT_UNSIGNED_SIZE], r->signature, 64);
+}
+
+static uint64_t cargo_receipt_read_u64_le(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= ((uint64_t)p[i]) << (8 * i);
+    return v;
+}
+
+bool cargo_receipt_unpack(const uint8_t in[CARGO_RECEIPT_SIZE],
+                          cargo_receipt_t *out) {
+    if (!in || !out) return false;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->cargo_pub, in, 32);
+    memcpy(out->authoring_station, &in[32], 32);
+    memcpy(out->recipient_pubkey, &in[64], 32);
+    out->event_id = cargo_receipt_read_u64_le(&in[96]);
+    out->epoch = cargo_receipt_read_u64_le(&in[104]);
+    memcpy(out->prev_receipt_hash, &in[112], 32);
+    memcpy(out->signature, &in[CARGO_RECEIPT_UNSIGNED_SIZE], 64);
+    return true;
 }
 
 void cargo_receipt_hash(const cargo_receipt_t *r, uint8_t out[32]) {

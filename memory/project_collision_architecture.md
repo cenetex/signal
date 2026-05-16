@@ -1,11 +1,11 @@
 ---
-name: Collision architecture gap
-description: Station collision is fragmented across 4 code paths that have drifted; needs unified geometry emitter
+name: Collision architecture status
+description: Unified station geometry emitter is in place; keep collision/render consumers on it
 type: project
 ---
 
-Collision is 4 separate implementations that have drifted: player vs station, NPC vs station, asteroid vs station, and rendered geometry. Core problem: corridor geometry is implicit and copied.
+The old collision architecture gap is substantially resolved. Station geometry now has a shared emitter in `shared/station_geom.h`: `station_build_geom` produces core circles, module circles, corridor arcs, cross-ring spokes, and dock positions, with `STATION_CORRIDOR_HW` and `STATION_MODULE_COL_RADIUS` as the shared constants.
 
-**Why:** Each collision fix touches one path but not the others, causing recurring invisible walls, dock-skip inconsistencies, and render/collision mismatches. CORRIDOR_HW is defined separately in game_sim.c and hardcoded in world_draw.c.
+**Why:** The prior failure mode was four drifting interpretations of station shape: player collision, NPC collision, asteroid collision, and rendering. That drift caused invisible walls, dock-skip inconsistencies, and render/collision mismatches. The shared emitter is now the contract those consumers should keep using.
 
-**How to apply:** The fix is architectural — one shared station-geometry emitter that produces core circles, module circles, corridor arcs (solid/open), and dock openings. All four consumers (player/NPC/asteroid collision + rendering) read from this. Don't keep treating #238 as individual bugs. Full analysis in the conversation from 2026-04-05.
+**How to apply:** Treat this as a regression guard, not an open first-implementation backlog item. When station shape changes, update `station_build_geom` and the station geometry/collision tests first, then keep player/NPC/asteroid collision and rendering consuming the emitted shapes. Do not reintroduce local corridor constants or per-consumer station geometry rules.

@@ -15,8 +15,13 @@ data model is correct; we don't need to crateify ore.
 The chain log coverage gap that motivated this doc has mostly been closed:
 normal fragment-tow smelts now emit `CHAIN_EVT_SMELT`, fragment tow/release
 transitions emit their own lifecycle events, and the legacy hopper-path smelt
-compatibility behavior is retired. The remaining work is receipt-chain parity
-and player-facing lineage display — not a cargo data-model rewrite.
+compatibility behavior is retired. Remote multiplayer now receives, caches, and
+actively presents full receipt chains before queued sell/deliver actions on
+matching named cargo transfers, and authorities can verify presented chains for
+carried cargo. Signed handoff tickets now bind ship snapshots to
+manifest/receipt roots. The remaining work is handoff ticket
+issue/present/accept wiring, chain compaction/backfill, and player-facing
+lineage display — not a cargo data-model rewrite.
 
 ## The conceptual model
 

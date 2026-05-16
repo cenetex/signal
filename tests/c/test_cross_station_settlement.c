@@ -19,6 +19,7 @@
 #include "cargo_receipt.h"
 #include "cargo_receipt_issue.h"
 #include "chain_log.h"
+#include "handoff_ticket.h"
 #include "station_authority.h"
 
 #include <stdio.h>
@@ -64,6 +65,36 @@ static void crs_world_init(world_t *w, uint32_t seed) {
 /* Synthesize a deterministic player pubkey + cargo pub for a test. */
 static void fill_test_pubkey(uint8_t out[32], uint8_t seed) {
     for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
+}
+
+static bool crs_prepare_player_carrier(world_t *w,
+                                       const uint8_t player_pk[32],
+                                       const uint8_t cargo_pk[32],
+                                       const cargo_receipt_chain_t *chain) {
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->pubkey_set = true;
+    memcpy(sp->pubkey, player_pk, 32);
+    if (!ship_manifest_bootstrap(&sp->ship)) return false;
+
+    cargo_unit_t cu = {0};
+    cu.kind = CARGO_KIND_INGOT;
+    cu.commodity = COMMODITY_FERRITE_INGOT;
+    cu.grade = MINING_GRADE_COMMON;
+    cu.recipe_id = RECIPE_SMELT;
+    cu.prefix_class = INGOT_PREFIX_M;
+    cu.quantity = 1;
+    memcpy(cu.pub, cargo_pk, 32);
+    return ship_manifest_push_with_chain(&sp->ship, &cu, chain);
+}
+
+static void crs_init_foreign_station(station_t *foreign) {
+    memset(foreign, 0, sizeof(*foreign));
+    snprintf(foreign->name, sizeof(foreign->name), "Foreign");
+    uint8_t founder_pk[32];
+    fill_test_pubkey(founder_pk, 0xE0);
+    station_authority_init_outpost(foreign, founder_pk, 777);
 }
 
 /* ---------------- Test 1: single-hop receipt ----------------------- */
@@ -464,6 +495,273 @@ TEST(test_cross_station_chain_length_cap) {
     crs_teardown();
 }
 
+/* ---------------- Test 10: presented peer chain attaches ------------ */
+
+TEST(test_present_receipt_chain_to_carried_cargo) {
+    crs_setup("present_attach");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00A);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA0);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD0);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+
+    server_player_t *sp = &w->players[0];
+    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+           == CARGO_RECEIPT_PRESENT_OK);
+
+    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->count, 1);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
+    ASSERT(memcmp(&rcpts->chains[0].links[0], &r1, sizeof(r1)) == 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 11: foreign authority is accepted ------------ */
+
+TEST(test_present_foreign_authority_receipt_chain) {
+    crs_setup("present_foreign");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00B);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA1);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD1);
+    station_t foreign;
+    crs_init_foreign_station(&foreign);
+    for (int i = 0; i < 3; i++) {
+        ASSERT(memcmp(foreign.station_pubkey,
+                      w->stations[i].station_pubkey, 32) != 0);
+    }
+
+    ASSERT(chain_log_emit(w, &foreign, CHAIN_EVT_SMELT, "foreign", 7) >= 1);
+    cargo_receipt_t r1;
+    ASSERT(cargo_receipt_emit_transfer(w, &foreign,
+                                       foreign.station_pubkey, player_pk,
+                                       cargo_pk, (uint8_t)CARGO_KIND_INGOT,
+                                       foreign.chain_last_hash, &r1) != 0);
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+
+    server_player_t *sp = &w->players[0];
+    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+           == CARGO_RECEIPT_PRESENT_OK);
+    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
+    ASSERT(memcmp(rcpts->chains[0].links[0].authoring_station,
+                  foreign.station_pubkey, 32) == 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 12: presented chain must name bearer --------- */
+
+TEST(test_present_receipt_chain_rejects_wrong_recipient) {
+    crs_setup("present_recipient");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00C);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA2);
+    uint8_t other_pk[32];  fill_test_pubkey(other_pk,  0xB2);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD2);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], other_pk, cargo_pk, &r1));
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+
+    server_player_t *sp = &w->players[0];
+    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+           == CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT);
+    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 13: local chain cannot be rewritten ---------- */
+
+TEST(test_present_receipt_chain_rejects_existing_mismatch) {
+    crs_setup("present_mismatch");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00D);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA3);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD3);
+    cargo_receipt_t original;
+    cargo_receipt_t alternate;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &original));
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &alternate));
+    ASSERT(memcmp(&original, &alternate, sizeof(original)) != 0);
+
+    cargo_receipt_chain_t existing = {0};
+    existing.links[0] = original;
+    existing.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &existing));
+
+    server_player_t *sp = &w->players[0];
+    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &alternate, 1)
+           == CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH);
+    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
+    ASSERT(memcmp(&rcpts->chains[0].links[0], &original, sizeof(original)) == 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 14: handoff ticket round-trip --------------- */
+
+TEST(test_handoff_ticket_roundtrip_verifies_ship_and_cargo) {
+    crs_setup("handoff_roundtrip");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00E);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA4);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD4);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
+
+    server_player_t *sp = &w->players[0];
+    sp->ship.pos = (vec2){123.0f, -45.5f};
+    sp->ship.vel = (vec2){1.25f, 2.5f};
+    sp->ship.angle = 0.75f;
+    sp->ship.hull = 91.0f;
+
+    handoff_ticket_t ticket;
+    ASSERT(handoff_ticket_issue_for_ship(
+        w->stations[2].station_pubkey, w->stations[2].station_secret,
+        w->stations[1].station_pubkey, player_pk,
+        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+    ASSERT_EQ_INT((int)ticket.cargo_count, 1);
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+
+    uint8_t packed[HANDOFF_TICKET_SIZE];
+    handoff_ticket_t unpacked;
+    handoff_ticket_pack(&ticket, packed);
+    ASSERT(handoff_ticket_unpack(packed, &unpacked));
+    ASSERT(handoff_ticket_verify_for_ship(
+        &unpacked, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 15: handoff binds ship state ---------------- */
+
+TEST(test_handoff_ticket_rejects_tampered_ship_state) {
+    crs_setup("handoff_ship_tamper");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00F);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA5);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD5);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
+
+    server_player_t *sp = &w->players[0];
+    handoff_ticket_t ticket;
+    ASSERT(handoff_ticket_issue_for_ship(
+        w->stations[2].station_pubkey, w->stations[2].station_secret,
+        w->stations[1].station_pubkey, player_pk,
+        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+    sp->ship.hull -= 1.0f;
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_SHIP_STATE);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 16: handoff binds receipt chains ------------ */
+
+TEST(test_handoff_ticket_rejects_tampered_cargo_root) {
+    crs_setup("handoff_cargo_tamper");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD010);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA6);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD6);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
+
+    server_player_t *sp = &w->players[0];
+    handoff_ticket_t ticket;
+    ASSERT(handoff_ticket_issue_for_ship(
+        w->stations[2].station_pubkey, w->stations[2].station_secret,
+        w->stations[1].station_pubkey, player_pk,
+        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+
+    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(rcpts != NULL);
+    rcpts->chains[0].links[0].signature[0] ^= 0x01u;
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_CARGO_ROOT);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 17: handoff rejects stale or forged ticket --- */
+
+TEST(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery) {
+    crs_setup("handoff_rejects");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD011);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA7);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD7);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
+
+    server_player_t *sp = &w->players[0];
+    handoff_ticket_t ticket;
+    ASSERT(handoff_ticket_issue_for_ship(
+        w->stations[2].station_pubkey, w->stations[2].station_secret,
+        w->stations[1].station_pubkey, player_pk,
+        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 161u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_EXPIRED);
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[0].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_DEST);
+
+    ticket.dest_zone ^= 0x01u;
+    ASSERT(handoff_ticket_verify_for_ship(
+        &ticket, 120u,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_BAD_SIGNATURE);
+
+    crs_teardown();
+}
+
 void register_cross_station_settlement_tests(void);
 void register_cross_station_settlement_tests(void) {
     TEST_SECTION("\n--- Cross-Station Settlement (#479 D) ---\n");
@@ -476,4 +774,12 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_cross_station_npc_mediated_transfer);
     RUN(test_cross_station_save_load_preserves_receipts);
     RUN(test_cross_station_chain_length_cap);
+    RUN(test_present_receipt_chain_to_carried_cargo);
+    RUN(test_present_foreign_authority_receipt_chain);
+    RUN(test_present_receipt_chain_rejects_wrong_recipient);
+    RUN(test_present_receipt_chain_rejects_existing_mismatch);
+    RUN(test_handoff_ticket_roundtrip_verifies_ship_and_cargo);
+    RUN(test_handoff_ticket_rejects_tampered_ship_state);
+    RUN(test_handoff_ticket_rejects_tampered_cargo_root);
+    RUN(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery);
 }

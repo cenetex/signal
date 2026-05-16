@@ -320,9 +320,30 @@ The schema is split deliberately: `cargo_unit_t.parent_merkle`
 origin receipt pins to the hash of the originating `SMELT` or `CRAFT` chain
 event header; later receipts link to the prior receipt hash.
 
-The remaining Layer D work is product hardening: richer operator policy,
-cross-operator replication, and UX around failed receipt verification. The
-core off-chain receipt format and verifier hooks are in the repository.
+Remote multiplayer now mirrors that bearer state in both directions. Buy/deliver
+flows send `NET_MSG_CARGO_RECEIPT_BUNDLE` as the full carried receipt chain for
+the named cargo unit, and the client caches the chain by `cargo_pub` so the next
+manifest refresh can reattach it to the local ship entry. Before queued
+sell/deliver actions, the client actively presents matching verified chains via
+`NET_MSG_PRESENT_RECEIPT_CHAIN`. The server accepts that message for cargo
+currently carried by a pubkey-identified player: the presented chain must
+verify, the head receipt must name that player, and any local chain already
+attached to the cargo must be an exact prefix. This keeps the WebSocket and
+WebRTC transports aligned with the future mesh rule: the peer carrying cargo
+also carries the portable proof of custody.
+
+The handoff ticket primitive now lives in
+[`shared/handoff_ticket.h`](../shared/handoff_ticket.h). A source authority can
+sign a portable envelope over source/destination authority pubkeys, player
+pubkey, expiry, a canonical ship-state hash, and a cargo root that includes the
+manifest plus attached receipt chains. The destination can verify the envelope
+against the presented ship snapshot before accepting cross-zone state.
+
+The remaining Layer D work is the full cross-authority handoff product path:
+wire ticket issuance/consumption into zone traversal, make the handoff path
+present its receipt chains with the ticket, define destination hydration and
+replay policy, then harden chain compaction/backfill, operator policy,
+cross-operator replication, and UX around failed verification.
 
 ## The verifier tool (Layer E — shipped)
 

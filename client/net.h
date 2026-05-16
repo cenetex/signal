@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "cargo_receipt.h"
 #include "types.h"      /* COMMODITY_COUNT */
 #include "protocol.h"   /* shared protocol enums, message types, record sizes */
 
@@ -213,6 +214,8 @@ typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
  * server-side ship.manifest contents in multiplayer. */
 typedef void (*net_on_player_manifest_fn)(const NetStationManifestEntry *entries,
                                           int count);
+typedef void (*net_on_cargo_receipt_bundle_fn)(const cargo_receipt_t *receipts,
+                                               int count);
 
 /* Detailed named-ingot snapshot entry. These records supplement the
  * grade-grouped manifest summaries with per-unit provenance for the
@@ -310,6 +313,7 @@ typedef struct {
     net_on_signal_channel_fn on_signal_channel;
     net_on_station_manifest_fn on_station_manifest;
     net_on_player_manifest_fn  on_player_manifest;
+    net_on_cargo_receipt_bundle_fn on_cargo_receipt_bundle;
     net_on_station_ingots_fn   on_station_ingots;
     net_on_hold_ingots_fn      on_hold_ingots;
     net_on_inspect_snapshot_fn on_inspect_snapshot;
@@ -403,6 +407,14 @@ void net_send_buy_ingot(const uint8_t ingot_pubkey[32]);
 /* RATi v2: deposit a hold ingot into the docked station's stockpile.
  * Pays a small delivery credit; LRU evicts on full. */
 void net_send_deliver_ingot(uint8_t hold_index);
+
+/* Present a carried cargo receipt chain to the current authority. The
+ * multiplayer client sends these immediately before queued sell/deliver
+ * actions for matching carried units; the future zone-handoff flow will
+ * reuse the same message. The server attaches the chain to the matching
+ * carried cargo unit if it verifies. */
+void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
+                                    const cargo_receipt_chain_t *chain);
 
 /* Send a planning intent (outpost create / module slot / cancel). */
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,

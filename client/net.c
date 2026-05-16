@@ -146,6 +146,22 @@ static void transport_disconnected(const char *label) {
     net_state.connected = false;
 }
 
+void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
+                                    const cargo_receipt_chain_t *chain) {
+    if (!cargo_pub || !chain || chain->len == 0 ||
+        chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return;
+    }
+    uint8_t buf[35 + CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE];
+    buf[0] = NET_MSG_PRESENT_RECEIPT_CHAIN;
+    memcpy(&buf[1], cargo_pub, 32);
+    buf[33] = chain->len;
+    buf[34] = 0;
+    for (uint8_t i = 0; i < chain->len; i++)
+        cargo_receipt_pack(&chain->links[i], &buf[35 + i * CARGO_RECEIPT_SIZE]);
+    ws_send_binary(buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
+}
+
 #ifdef __EMSCRIPTEN__
 static void transport_error(const char *label) {
     printf("[net] %s error\n", label ? label : "transport");
@@ -932,6 +948,21 @@ static void handle_message(const uint8_t* data, int len) {
                 pmscratch[i].count     = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
             }
             net_state.callbacks.on_player_manifest(pmscratch, count);
+        }
+        break;
+
+    case NET_MSG_CARGO_RECEIPT_BUNDLE:
+        if (len >= 3 && net_state.callbacks.on_cargo_receipt_bundle) {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * CARGO_RECEIPT_SIZE;
+            if (count <= 0 || count > CARGO_RECEIPT_CHAIN_MAX_LEN) break;
+            if (len < expected) break;
+            cargo_receipt_t receipts[CARGO_RECEIPT_CHAIN_MAX_LEN];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[3 + i * CARGO_RECEIPT_SIZE];
+                (void)cargo_receipt_unpack(p, &receipts[i]);
+            }
+            net_state.callbacks.on_cargo_receipt_bundle(receipts, count);
         }
         break;
 
