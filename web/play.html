@@ -104,8 +104,47 @@
       var signalHost = window.location.hostname;
       var signalHostIsLocal = isLocalHostName(signalHost);
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
+      else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
       if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
         if (signalHostIsLocal) window.SIGNAL_SERVER = 'ws://' + signalHost + ':9091/ws';
+      }
+
+      function setLoading(message) {
+        document.getElementById('loading').textContent = message;
+      }
+
+      function clientTimezone() {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        } catch (e) {
+          return '';
+        }
+      }
+
+      function resolveRelayServer() {
+        if (window.SIGNAL_SERVER || signalParams.has('singleplayer')) {
+          return Promise.resolve({ ws: window.SIGNAL_SERVER || '', brokered: false });
+        }
+        var broker = window.SIGNAL_RELAY_BROKER || signalParams.get('relayBroker');
+        if (!broker) return Promise.resolve({ ws: '', brokered: false });
+
+        var tz = clientTimezone();
+        var preferredRegion = signalParams.get('region');
+        var url = new URL(broker, window.location.href);
+        if (preferredRegion) url.searchParams.set('region', preferredRegion);
+        if (tz) url.searchParams.set('tz', tz);
+
+        setLoading('Starting regional relay...');
+        return fetch(url.toString(), { cache: 'no-store' })
+          .then(function(r) {
+            if (!r.ok) throw new Error('Relay broker returned ' + r.status);
+            return r.json();
+          })
+          .then(function(info) {
+            if (!info || !info.server) throw new Error('Relay broker did not return a server');
+            window.SIGNAL_SERVER = info.server;
+            return { ws: info.server, brokered: true };
+          });
       }
 
       canvas.addEventListener('pointerdown', function() {
@@ -148,7 +187,28 @@
 
       function failBundle(message) {
         console.error('[boot] ' + message);
-        document.getElementById('loading').textContent = message;
+        setLoading(message);
+      }
+
+      function delay(ms) {
+        return new Promise(function(resolve) { setTimeout(resolve, ms); });
+      }
+
+      function fetchHealthWithRetry(healthUrl, timeoutMs, brokered) {
+        var started = Date.now();
+        function attempt() {
+          return fetch(healthUrl, { cache: 'no-store' })
+            .then(function(r) {
+              if (!r.ok) throw new Error('Relay health returned ' + r.status);
+              return r.json();
+            })
+            .catch(function(err) {
+              if (Date.now() - started >= timeoutMs) throw err;
+              if (brokered) setLoading('Waiting for regional relay...');
+              return delay(1500).then(attempt);
+            });
+        }
+        return attempt();
       }
 
       /* Pin the WASM bundle to whatever version the server is running.
@@ -158,8 +218,7 @@
        * Local/dev builds may fall back to the root bundle because they do
        * not usually have a local /play/v/<hash>/ archive. Production must
        * fail closed instead of loading a client that may be ahead of ECS. */
-      (function pickBundle() {
-        var ws = window.SIGNAL_SERVER || '';
+      function pickBundle(ws, brokered) {
         if (!ws) { loadGame('./signal.js'); return; }
         var healthUrl = ws.replace(/^ws/, 'http').replace(/\/ws$/, '/health');
         var allowRootFallback = signalHostIsLocal;
@@ -167,18 +226,12 @@
           if (allowRootFallback) loadGame('./signal.js', version);
           else failBundle('Relay build unavailable. Refresh shortly.');
         };
+        var healthTimeoutMs = brokered
+          ? (Number(window.SIGNAL_RELAY_START_TIMEOUT_MS) || 90000)
+          : 3000;
 
-        var timedOut = false;
-        var timer = setTimeout(function() {
-          timedOut = true;
-          fallbackOrFail();
-        }, 3000);
-
-        fetch(healthUrl, { cache: 'no-store' })
-          .then(function(r) { return r.json(); })
+        fetchHealthWithRetry(healthUrl, healthTimeoutMs, brokered)
           .then(function(info) {
-            if (timedOut) return;
-            clearTimeout(timer);
             var v = info && info.version;
             if (!v || v === 'dev') { fallbackOrFail(); return; }
             var pinned = '/play/v/' + encodeURIComponent(v) + '/signal.js';
@@ -187,11 +240,15 @@
               .catch(function() { fallbackOrFail(v); });
           })
           .catch(function() {
-            if (timedOut) return;
-            clearTimeout(timer);
             fallbackOrFail();
           });
-      })();
+      }
+
+      resolveRelayServer()
+        .then(function(relay) { pickBundle(relay.ws, relay.brokered); })
+        .catch(function(err) {
+          failBundle(err && err.message ? err.message : 'Relay unavailable. Refresh shortly.');
+        });
     </script>
     <script src="./signal-touch-controls.js"></script>
   </body>

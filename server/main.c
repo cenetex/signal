@@ -58,6 +58,9 @@ typedef enum {
 static persistence_mode_t persistence_mode = PERSISTENCE_LOCAL;
 static const char *persistence_data_dir = ".";
 static const char *persistence_state_uri = "";
+static uint64_t idle_shutdown_after_ms = 0;
+static uint64_t idle_shutdown_empty_since_ms = 0;
+static bool idle_shutdown_armed = false;
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -95,6 +98,14 @@ static bool persistence_save_enabled(void) {
 
 static bool persistence_externalized(void) {
     return persistence_mode == PERSISTENCE_EXTERNAL_S3;
+}
+
+static int live_player_connection_count(void) {
+    int count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (world.players[i].connected && world.players[i].conn) count++;
+    }
+    return count;
 }
 
 /* Dirty flags: only re-broadcast station identity when something changed */
@@ -1737,6 +1748,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             analytics_record_activity(&world.players[pid], now);
             analytics_log_player_event("player_session", pid, &world.players[pid],
                                        now, 0);
+            idle_shutdown_armed = true;
         }
         break;
     default:
@@ -2662,6 +2674,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
                 if (world.players[i].connected) count++;
+            int live_connections = live_player_connection_count();
+            uint64_t idle_empty_for_ms = 0;
+            if (idle_shutdown_empty_since_ms != 0) {
+                uint64_t health_now = mg_millis();
+                if (health_now >= idle_shutdown_empty_since_ms)
+                    idle_empty_for_ms = health_now - idle_shutdown_empty_since_ms;
+            }
             static const uint8_t zero_pub[32] = {0};
             int chain_station_count = 0;
             int chain_blocked_count = 0;
@@ -2696,12 +2715,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             }
             int pos = 0;
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
-                       "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
+                       "{\"status\":\"ok\",\"players\":%d,\"live_connections\":%d,"
+                       "\"version\":\"%s\","
                        "\"persistence\":{\"mode\":\"%s\","
                        "\"load_enabled\":%s,\"save_enabled\":%s,"
                        "\"externalized\":%s,\"external_store\":\"%s\","
                        "\"state_uri\":\"",
-                       count, version,
+                       count, live_connections, version,
                        persistence_mode_name(),
                        persistence_load_enabled() ? "true" : "false",
                        persistence_save_enabled() ? "true" : "false",
@@ -2712,12 +2732,18 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             json_escape_append(buf, &pos, HEALTH_BUFSZ, persistence_data_dir);
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "\"},"
+                       "\"idle_shutdown\":{\"enabled\":%s,\"armed\":%s,"
+                       "\"after_sec\":%llu,\"empty_for_ms\":%llu},"
                        "\"signed_action_count\":%llu,"
                        "\"signed_action_reject_count\":%llu,"
                        "\"unsigned_action_count\":%llu,"
                        "\"hopper_smelt_events\":%llu,"
                        "\"hopper_smelt_units\":%.3f,"
                        "\"chain\":{\"status\":\"%s\",\"chain_dir\":\"",
+                       idle_shutdown_after_ms > 0 ? "true" : "false",
+                       idle_shutdown_armed ? "true" : "false",
+                       (unsigned long long)(idle_shutdown_after_ms / 1000ull),
+                       (unsigned long long)idle_empty_for_ms,
                        (unsigned long long)signed_action_count,
                        (unsigned long long)signed_action_reject_count,
                        (unsigned long long)unsigned_action_count,
@@ -3397,6 +3423,23 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
     if (persistence_mode == PERSISTENCE_EPHEMERAL) {
         printf("[server] Ephemeral persistence: local save/catalog/player files are ignored and not written\n");
     }
+    {
+        const char *idle = getenv("SIGNAL_IDLE_SHUTDOWN_AFTER_SEC");
+        if (idle && idle[0] != '\0') {
+            char *end = NULL;
+            errno = 0;
+            unsigned long seconds = strtoul(idle, &end, 10);
+            if (errno != 0 || end == idle || *end != '\0') {
+                fprintf(stderr, "[FATAL] invalid SIGNAL_IDLE_SHUTDOWN_AFTER_SEC=%s\n", idle);
+                return false;
+            }
+            idle_shutdown_after_ms = (uint64_t)seconds * 1000ull;
+        }
+        if (idle_shutdown_after_ms > 0) {
+            printf("[server] Idle shutdown: enabled after %llu second(s) with no live player connections\n",
+                   (unsigned long long)(idle_shutdown_after_ms / 1000ull));
+        }
+    }
     api_token = getenv("SIGNAL_API_TOKEN");
     if (api_token && api_token[0] != '\0') {
         printf("[server] Station API enabled (token set)\n");
@@ -3702,6 +3745,30 @@ static void tick_session_timers(void) {
     }
 }
 
+static void tick_idle_shutdown(uint64_t now) {
+    if (idle_shutdown_after_ms == 0 || !idle_shutdown_armed) return;
+
+    int live_connections = live_player_connection_count();
+    if (live_connections > 0) {
+        idle_shutdown_empty_since_ms = 0;
+        return;
+    }
+
+    if (idle_shutdown_empty_since_ms == 0) {
+        idle_shutdown_empty_since_ms = now;
+        printf("[server] no live player connections; idle shutdown in %llu second(s)\n",
+               (unsigned long long)(idle_shutdown_after_ms / 1000ull));
+        return;
+    }
+
+    if (now >= idle_shutdown_empty_since_ms &&
+        now - idle_shutdown_empty_since_ms >= idle_shutdown_after_ms) {
+        printf("[server] idle shutdown after %llu second(s) with no live player connections\n",
+               (unsigned long long)(idle_shutdown_after_ms / 1000ull));
+        running = false;
+    }
+}
+
 /* WORLD_TICK_MS broadcast: dirty station identities + named-ingot
  * stockpiles + manifest summaries. */
 static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_identity_p) {
@@ -3824,6 +3891,7 @@ int main(void) {
             analytics_emit_emf(now);
             last_analytics = now;
         }
+        tick_idle_shutdown(now);
         if (now - last_save >= AUTOSAVE_MS) {
             if (persistence_save_enabled()) {
                 station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);

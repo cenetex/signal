@@ -2,7 +2,8 @@
   "private": true,
   "scripts": {
     "smoke": "playwright test",
-    "smoke:headed": "playwright test --headed"
+    "smoke:headed": "playwright test --headed",
+    "test:relay-broker": "node scripts/test-relay-region-broker.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"
