@@ -3,10 +3,16 @@ import { inflateSync } from 'node:zlib';
 
 const fatalPattern =
   /abort|unreachable|RuntimeError|LinkError|compile failed|Cannot enlarge memory|exception thrown|websocket error|WebSocket is already in CLOSING|WebSocket connection .* failed/i;
+const expectedLiveClosePattern =
+  /^(websocket error wss:\/\/signal-ws\.ratimics\.com\/ws: undefined|WebSocket connection to 'wss:\/\/signal-ws\.ratimics\.com\/ws' failed: Data frame received after close)$/i;
 
 type FatalCollectors = {
   pageErrors: string[];
   consoleErrors: string[];
+};
+
+type FatalExpectationOptions = {
+  allowExpectedLiveClose?: boolean;
 };
 
 type CanvasStats = {
@@ -73,9 +79,12 @@ function installFatalCollectors(page: Page): FatalCollectors {
   return logs;
 }
 
-function expectNoFatalErrors(logs: FatalCollectors): void {
+function expectNoFatalErrors(logs: FatalCollectors, options: FatalExpectationOptions = {}): void {
   expect(logs.pageErrors.filter((e) => fatalPattern.test(e))).toEqual([]);
-  expect(logs.consoleErrors.filter((e) => fatalPattern.test(e))).toEqual([]);
+  const consoleErrors = logs.consoleErrors.filter((e) => fatalPattern.test(e));
+  expect(
+    options.allowExpectedLiveClose ? consoleErrors.filter((e) => !expectedLiveClosePattern.test(e)) : consoleErrors,
+  ).toEqual([]);
 }
 
 function paethPredictor(a: number, b: number, c: number): number {
@@ -471,7 +480,7 @@ test.describe('Browser smoke tests', () => {
       .poll(async () => (await readCanvasStats(canvas)).uniqueBuckets, { timeout: 5_000 })
       .toBeGreaterThan(8);
 
-    expectNoFatalErrors(logs);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
   test('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
@@ -524,7 +533,7 @@ test.describe('Browser smoke tests', () => {
       .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
       .toBeGreaterThan(0.05);
 
-    expectNoFatalErrors(logs);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
   test('high-latency multiplayer correction telemetry stays bounded', async ({ page }) => {
@@ -572,6 +581,6 @@ test.describe('Browser smoke tests', () => {
     expect(motion.currentRenderOffset).toBeLessThanOrEqual(260);
     expect(motion.maxAppliedCorrection).toBeLessThan(360);
     expect(motion.maxCorrection).toBeLessThan(900);
-    expectNoFatalErrors(logs);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 });

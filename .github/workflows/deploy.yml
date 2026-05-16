@@ -314,6 +314,7 @@ jobs:
           mkdir -p "_site/play/v/$GIT_HASH"
           cp web/index.html _site/index.html
           cp web/play.html _site/play/index.html
+          cp web/signal-touch-controls.js _site/play/signal-touch-controls.js
           cp web/music.html _site/music/index.html
           cp web/music.html _site/ost/index.html
           cp build-web/signal.js _site/play/signal.js
