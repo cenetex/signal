@@ -169,7 +169,7 @@ typedef struct {
                                  * production; >1 reserved for grouped rows.
                                  * Was _pad pre-v45; legacy saves with
                                  * quantity == 0 migrate to 1 on load. */
-    uint64_t mined_block;       /* chain block id at mint (0 for non-ingot) */
+    uint64_t mined_block;       /* mint tick/event marker when known; 0 = unknown/legacy */
     uint8_t  pub[32];           /* content hash */
     uint8_t  parent_merkle[32]; /* sorted-input merkle root */
 } cargo_unit_t;                 /* 80 bytes */

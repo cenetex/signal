@@ -8,6 +8,7 @@
 #include "mining_client.h"
 #include "contract_objective.h"
 #include "manifest.h"
+#include "cargo_lineage.h"
 #include "station_authority.h"
 #include "contract_fit.h"
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
@@ -801,6 +802,35 @@ static int manifest_market_lineage_count_cg(const manifest_t *manifest,
     return n;
 }
 
+static bool station_ui_hash_is_zero(const uint8_t hash[32])
+{
+    return cargo_lineage_hash_is_zero(hash);
+}
+
+static bool cargo_unit_has_player_origin(const cargo_unit_t *u)
+{
+    if (!u) return false;
+    if (u->recipe_id == (uint16_t)RECIPE_LEGACY_MIGRATE) return false;
+    if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT && u->mined_block == 0)
+        return false;
+    if (station_short_name((int)u->origin_station)[0] == '?') return false;
+    return !station_ui_hash_is_zero(u->pub);
+}
+
+static void trade_row_attach_inspect(trade_row_t *row,
+                                     const cargo_unit_t *unit,
+                                     const cargo_receipt_chain_t *chain)
+{
+    if (!row || !unit || station_ui_hash_is_zero(unit->pub)) return;
+    row->has_inspect = true;
+    row->inspect_kind = unit->kind;
+    row->inspect_recipe_id = unit->recipe_id;
+    row->inspect_chain_len = (chain && chain->len <= CARGO_RECEIPT_CHAIN_MAX_LEN)
+        ? chain->len : 0;
+    memcpy(row->inspect_pub, unit->pub, sizeof(row->inspect_pub));
+    memcpy(row->inspect_parent, unit->parent_merkle, sizeof(row->inspect_parent));
+}
+
 static int manifest_find_first_market_cg(const manifest_t *manifest,
                                          commodity_t commodity,
                                          mining_grade_t grade)
@@ -973,13 +1003,15 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             uint8_t origin_idx = 0;
             uint64_t mined_blk = 0;
             bool has_lineage = false;
+            const cargo_unit_t *inspect_unit = NULL;
+            const cargo_receipt_chain_t *inspect_chain = NULL;
             int represented = manifest_market_count_cg_direct(&st->manifest,
                                                               (commodity_t)c,
                                                               (mining_grade_t)gi);
             int lineage_count = manifest_market_lineage_count_cg(&st->manifest,
                                                                  (commodity_t)c,
                                                                  (mining_grade_t)gi);
-            if (represented == stock && lineage_count == stock) {
+            if (represented == stock) {
                 int rep_idx = manifest_find_first_market_cg(&st->manifest,
                                                             (commodity_t)c,
                                                             (mining_grade_t)gi);
@@ -987,10 +1019,15 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                     const cargo_unit_t *rep = &st->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
                     mined_blk = rep->mined_block;
-                    has_lineage = (mined_blk != 0);
+                    has_lineage = (lineage_count == stock && mined_blk != 0) ||
+                                  cargo_unit_has_player_origin(rep);
+                    inspect_unit = rep;
+                    const ship_receipts_t *rcpts = station_get_receipts_const(st);
+                    if (rcpts && (uint16_t)rep_idx < rcpts->count)
+                        inspect_chain = &rcpts->chains[rep_idx];
                 }
             }
-            out[row_count++] = (trade_row_t){
+            trade_row_t row = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .quantity = qty,
                 .unit_price = price, .total_price = price * qty,
@@ -1001,6 +1038,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .origin_station_idx = origin_idx,
                 .mined_block = mined_blk,
             };
+            trade_row_attach_inspect(&row, inspect_unit, inspect_chain);
+            out[row_count++] = row;
         }
     }
 
@@ -1047,18 +1086,25 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             uint8_t origin_idx = 0;
             uint64_t mined_blk = 0;
             bool has_lineage = false;
+            const cargo_unit_t *inspect_unit = NULL;
+            const cargo_receipt_chain_t *inspect_chain = NULL;
             int lineage_count = manifest_lineage_count_cg(&ship->manifest,
                                                           (commodity_t)c,
                                                           (mining_grade_t)gi);
-            if (held > 0 && lineage_count >= held) {
+            if (held > 0) {
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
                     mined_blk = rep->mined_block;
-                    has_lineage = (mined_blk != 0);
+                    has_lineage = (lineage_count >= held && mined_blk != 0) ||
+                                  cargo_unit_has_player_origin(rep);
+                    inspect_unit = rep;
+                    const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+                    if (rcpts && (uint16_t)rep_idx < rcpts->count)
+                        inspect_chain = &rcpts->chains[rep_idx];
                 }
             }
-            out[row_count++] = (trade_row_t){
+            trade_row_t row = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = held, .quantity = held > 0 ? 1 : 0,
                 .unit_price = price, .total_price = price,
@@ -1070,6 +1116,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .origin_station_idx = origin_idx,
                 .mined_block = mined_blk,
             };
+            trade_row_attach_inspect(&row, inspect_unit, inspect_chain);
+            out[row_count++] = row;
         }
     }
     return row_count;
@@ -1273,14 +1321,50 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
         }
 
-        /* Lineage tag — "from Prospect ep 4422" — drawn as a faded
-         * single-line suffix on rows whose representative cargo_unit
-         * carries real provenance. Anonymous bulk rows and legacy-
-         * migrate rows (mined_block == 0) skip this line so the dock
-         * UI doesn't bloat for cargo with no story to tell. */
-        char lineage_buf[48];
+        /* Lineage tag — compact #344 inspection of the representative
+         * cargo_unit_t behind this row. The row already names grade;
+         * this line adds serial, recipe, parent summary, origin, and
+         * receipt seal count where the client has those bytes locally. */
+        char lineage_buf[112];
         lineage_buf[0] = '\0';
-        if (r->has_lineage) {
+        if (r->has_inspect) {
+            cargo_unit_t inspect = {0};
+            inspect.kind = r->inspect_kind;
+            inspect.commodity = (uint8_t)r->commodity;
+            inspect.grade = (uint8_t)r->grade;
+            inspect.recipe_id = r->inspect_recipe_id;
+            inspect.origin_station = r->origin_station_idx;
+            inspect.quantity = 1;
+            inspect.mined_block = r->mined_block;
+            memcpy(inspect.pub, r->inspect_pub, sizeof(inspect.pub));
+            memcpy(inspect.parent_merkle, r->inspect_parent,
+                   sizeof(inspect.parent_merkle));
+            char serial[12], parent[8], origin[24];
+            cargo_lineage_serial_label(&inspect, serial, sizeof(serial));
+            cargo_lineage_parent_label(&inspect, parent, sizeof(parent));
+            bool origin_known = inspect.recipe_id != (uint16_t)RECIPE_LEGACY_MIGRATE &&
+                ((cargo_kind_t)inspect.kind == CARGO_KIND_INGOT ||
+                 inspect.mined_block != 0 || r->inspect_chain_len > 0);
+            if (origin_known)
+                cargo_lineage_origin_label(&inspect, origin, sizeof(origin));
+            else
+                snprintf(origin, sizeof(origin), "origin ?");
+            const char *recipe = cargo_lineage_recipe_label(&inspect);
+            char seal[16] = "";
+            if (r->inspect_chain_len > 0)
+                snprintf(seal, sizeof(seal), " seal x%u",
+                         (unsigned)r->inspect_chain_len);
+            if (r->mined_block != 0) {
+                snprintf(lineage_buf, sizeof(lineage_buf),
+                         "serial %s  %s parent %s  %s ep%llu%s",
+                         serial, recipe, parent, origin,
+                         (unsigned long long)r->mined_block, seal);
+            } else {
+                snprintf(lineage_buf, sizeof(lineage_buf),
+                         "serial %s  %s parent %s  %s%s",
+                         serial, recipe, parent, origin, seal);
+            }
+        } else if (r->has_lineage) {
             snprintf(lineage_buf, sizeof(lineage_buf),
                      "from %s, ep %llu",
                      station_short_name((int)r->origin_station_idx),
@@ -1301,8 +1385,12 @@ static void draw_trade_view(const station_ui_state_t *ui,
             /* Optional third line — lineage flavor. Drawn dim so it
              * reads as background context, not actionable state. */
             if (lineage_buf[0]) {
+                char lineage_fit[112];
+                int lineage_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
+                ui_fit_text(lineage_buf, lineage_chars, lineage_fit,
+                            sizeof(lineage_fit));
                 cell_t lineage[] = {
-                    {  4, lineage_buf, COL_FADED },
+                    {  4, lineage_fit, COL_FADED },
                 };
                 draw_row_cells(cx, my, lineage, 1);
                 my += row_h;
@@ -1322,8 +1410,12 @@ static void draw_trade_view(const station_ui_state_t *ui,
             /* Wide mode also gets a lineage line beneath the row.
              * Same dim styling, indented under the commodity label. */
             if (lineage_buf[0]) {
+                char lineage_fit[112];
+                int lineage_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
+                ui_fit_text(lineage_buf, lineage_chars, lineage_fit,
+                            sizeof(lineage_fit));
                 cell_t lineage[] = {
-                    {  4, lineage_buf, COL_FADED },
+                    {  4, lineage_fit, COL_FADED },
                 };
                 draw_row_cells(cx, my, lineage, 1);
                 my += row_h;

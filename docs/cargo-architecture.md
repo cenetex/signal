@@ -285,28 +285,29 @@ The decision is picked: pure fragment-tow to ingot pipeline. Tests now
 assert that directly seeded raw ore does not smelt, does not drain through
 raw hopper flow, and does not emit zero-fragment `CHAIN_EVT_SMELT`.
 
-### Gap 3 — Players can't see provenance at all
+### Closed gap — Docked cargo rows show player-readable lineage
 
-The HUD shows hold contents as a commodity-and-grade summary. There's no
-display surface that says "this ferrite ingot came from Belt-7's
-fracture by 0F3H-CH at tick 4422." The substrate has the data; the UI
-ignores it.
+The docked TRADE view now surfaces the representative cargo unit behind
+held and station-stock rows. Rows backed by a concrete `cargo_unit_t`
+show a compact inspection line with the unit serial/callsign, recipe,
+parent summary, origin station, mint epoch when available, and attached
+receipt seal count when the local manifest has the chain.
 
-The fix is the "lineage-as-name" mechanic from the prior design
-discussion. Cargo rows render with a one-line provenance haiku
-generated from `cargo_unit_t.parent_merkle` walked against the chain
-log. No new screens, no new keys, just a string format change.
+This is intentionally a player-facing first slice, not a full proof
+endpoint. It makes the existing manifest/receipt substrate visible in
+normal trade without adding a debug screen or new keybinding. Full tree
+walks, station-root freshness, credit-note panels, and on-demand proof
+fetching remain future proof-surface work.
 
 ## Recommended next moves
 
 Ranked by value-per-effort after the fragment-chain coverage pass.
 
-**1. Build the lineage display layer.** Trade rows now surface
-representative `origin_station` / `mined_block` text from local
-manifests, and multiplayer preserves detailed named-ingot snapshots.
-Anonymous ingots and fabricated goods still need either richer wire
-records or a compact provenance-summary record if they should display
-the same player-facing history.
+**1. Extend inspection beyond docked rows.** Trade rows now surface
+representative serial, recipe, parent, origin, epoch, and receipt count
+from local manifests. The next useful slice is scan-to-inspect for held
+cargo, haulers, station stock, and tracked contract matching using the
+same player-facing vocabulary.
 
 **2. Group manifest presentation before showing every hash.** Common
 anonymous stock should compress into commodity/grade buckets, while
