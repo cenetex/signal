@@ -297,6 +297,7 @@ jobs:
       - name: Prepare artifacts
         env:
           GIT_HASH: ${{ steps.build_wasm.outputs.git_hash }}
+          SIGNAL_RELAY_BROKER_URL: ${{ vars.SIGNAL_RELAY_BROKER_URL }}
         run: |
           mkdir -p _site/play _site/music _site/ost _site/docs
           mkdir -p "_site/play/v/$GIT_HASH"
@@ -313,7 +314,20 @@ jobs:
           cp build-web/signal.wasm "_site/play/v/$GIT_HASH/signal.wasm"
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           cp docs/*.png _site/docs/ 2>/dev/null || true
-          sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("_site/play/index.html")
+          html = path.read_text()
+          broker = os.environ.get("SIGNAL_RELAY_BROKER_URL", "").strip()
+          if broker:
+              script = f"<script>window.SIGNAL_RELAY_BROKER={json.dumps(broker)};</script>"
+          else:
+              script = '<script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>'
+          path.write_text(html.replace("<head>", "<head>" + script, 1))
+          PY
 
       - name: Upload client artifact
         uses: actions/upload-artifact@v4

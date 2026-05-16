@@ -5,6 +5,10 @@ DATA_DIR="${SIGNAL_DATA_DIR:-/app/data}"
 MODE="${SIGNAL_PERSISTENCE_MODE:-local}"
 STATE_URI="${SIGNAL_STATE_S3_URI:-}"
 SYNC_INTERVAL="${SIGNAL_STATE_SYNC_INTERVAL_SEC:-60}"
+IDLE_ECS_SCALE_DOWN="${SIGNAL_IDLE_ECS_SCALE_DOWN:-0}"
+ECS_CLUSTER="${SIGNAL_ECS_CLUSTER:-}"
+ECS_SERVICE="${SIGNAL_ECS_SERVICE:-}"
+ECS_REGION="${SIGNAL_AWS_REGION:-${AWS_REGION:-}}"
 SERVER_PID=""
 SYNC_PID=""
 BOOT_SYNC_OK=0
@@ -33,6 +37,32 @@ sync_up() {
   log "sync up ($reason): $DATA_DIR -> $STATE_URI"
   aws s3 sync "$DATA_DIR/" "$STATE_URI" --delete --only-show-errors || \
     log "WARN: sync up failed ($reason)"
+}
+
+scale_down_service_after_idle_exit() {
+  status="${1:-1}"
+  if [ "$status" != "0" ] || [ "$IDLE_ECS_SCALE_DOWN" != "1" ]; then
+    return 0
+  fi
+  if [ -z "$ECS_CLUSTER" ] || [ -z "$ECS_SERVICE" ]; then
+    log "WARN: SIGNAL_IDLE_ECS_SCALE_DOWN=1 but SIGNAL_ECS_CLUSTER or SIGNAL_ECS_SERVICE is unset"
+    return 0
+  fi
+  log "idle exit: scaling ECS service $ECS_CLUSTER/$ECS_SERVICE to desired-count 0"
+  if [ -n "$ECS_REGION" ]; then
+    aws ecs update-service \
+      --cluster "$ECS_CLUSTER" \
+      --service "$ECS_SERVICE" \
+      --desired-count 0 \
+      --region "$ECS_REGION" >/dev/null || \
+      log "WARN: ECS idle scale-down failed"
+  else
+    aws ecs update-service \
+      --cluster "$ECS_CLUSTER" \
+      --service "$ECS_SERVICE" \
+      --desired-count 0 >/dev/null || \
+      log "WARN: ECS idle scale-down failed"
+  fi
 }
 
 stop_children() {
@@ -95,4 +125,5 @@ if [ -n "$SYNC_PID" ] && kill -0 "$SYNC_PID" 2>/dev/null; then
   wait "$SYNC_PID" 2>/dev/null || true
 fi
 sync_up "exit"
+scale_down_service_after_idle_exit "$STATUS"
 exit "$STATUS"
