@@ -108,6 +108,186 @@ static uint32_t server_input_apply_tick(uint32_t client_tick) {
     return client_tick;
 }
 
+#define ANALYTICS_ACTIVE_WINDOW_MS 60000ull
+#define ANALYTICS_METRIC_STALE_MS 120000ull
+#define ANALYTICS_EMF_INTERVAL_MS 60000ull
+#define ANALYTICS_USER_KEY_LEN 24
+
+static const char *analytics_build_hash(void) {
+#ifdef GIT_HASH
+    return GIT_HASH;
+#else
+    return "dev";
+#endif
+}
+
+static uint64_t analytics_epoch_ms(void) {
+    return (uint64_t)time(NULL) * 1000ull;
+}
+
+static void analytics_hash_key(const char *prefix, const uint8_t *data,
+                               size_t len, char out[ANALYTICS_USER_KEY_LEN]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t digest[32];
+    sha256_bytes(data, len, digest);
+    out[0] = prefix[0];
+    out[1] = prefix[1];
+    out[2] = '_';
+    for (int i = 0; i < 8; i++) {
+        out[3 + i * 2] = hex[digest[i] >> 4];
+        out[4 + i * 2] = hex[digest[i] & 0x0Fu];
+    }
+    out[19] = '\0';
+}
+
+static void analytics_user_key(const server_player_t *sp,
+                               char out[ANALYTICS_USER_KEY_LEN]) {
+    if (sp && sp->pubkey_set) {
+        analytics_hash_key("pk", sp->pubkey, sizeof(sp->pubkey), out);
+        return;
+    }
+    if (sp && sp->session_ready) {
+        analytics_hash_key("st", sp->session_token, sizeof(sp->session_token), out);
+        return;
+    }
+    snprintf(out, ANALYTICS_USER_KEY_LEN, "anon");
+}
+
+static void analytics_record_activity(server_player_t *sp, uint64_t now_ms) {
+    if (sp) sp->analytics_last_activity_ms = now_ms;
+}
+
+static void analytics_log_player_event(const char *event, int pid,
+                                       const server_player_t *sp,
+                                       uint64_t now_ms,
+                                       uint64_t duration_ms) {
+    char user_key[ANALYTICS_USER_KEY_LEN];
+    analytics_user_key(sp, user_key);
+    bool connected = sp && sp->connected &&
+                     strcmp(event, "player_disconnect") != 0;
+    printf("{\"event\":\"%s\",\"service\":\"signal-relay\",\"build\":\"%s\","
+           "\"ts_epoch_ms\":%llu,\"uptime_ms\":%llu,\"user_key\":\"%s\","
+           "\"player_slot\":%d,\"session_ready\":%s,\"connected\":%s,"
+           "\"duration_ms\":%llu}\n",
+           event,
+           analytics_build_hash(),
+           (unsigned long long)analytics_epoch_ms(),
+           (unsigned long long)now_ms,
+           user_key,
+           pid,
+           (sp && sp->session_ready) ? "true" : "false",
+           connected ? "true" : "false",
+           (unsigned long long)duration_ms);
+}
+
+static void analytics_handle_client_metrics(int pid, server_player_t *sp,
+                                            const uint8_t *data, int len,
+                                            uint64_t now_ms) {
+    if (!sp || !data || len < NET_CLIENT_METRICS_SIZE) return;
+    sp->analytics_metrics_seq = read_u32_le(&data[1]);
+    sp->analytics_ping_ms = read_u16_le(&data[5]);
+    sp->analytics_ack_ms = read_u16_le(&data[7]);
+    sp->analytics_ack_gap_ms = read_u16_le(&data[9]);
+    sp->analytics_server_turnaround_ms = read_u16_le(&data[11]);
+    sp->analytics_player_interval_ms = read_u16_le(&data[13]);
+    sp->analytics_unacked_inputs = read_u16_le(&data[15]);
+    sp->analytics_replay_depth = read_u16_le(&data[17]);
+    sp->analytics_action_queue_depth = data[19];
+    sp->analytics_metrics_last_ms = now_ms;
+    sp->analytics_metrics_samples++;
+    analytics_record_activity(sp, now_ms);
+
+    char user_key[ANALYTICS_USER_KEY_LEN];
+    analytics_user_key(sp, user_key);
+    printf("{\"event\":\"player_metrics\",\"service\":\"signal-relay\","
+           "\"build\":\"%s\",\"ts_epoch_ms\":%llu,\"uptime_ms\":%llu,"
+           "\"user_key\":\"%s\",\"player_slot\":%d,\"session_ready\":%s,"
+           "\"seq\":%u,\"ping_ms\":%u,\"ack_ms\":%u,\"ack_gap_ms\":%u,"
+           "\"server_turnaround_ms\":%u,\"player_interval_ms\":%u,"
+           "\"unacked_inputs\":%u,\"replay_depth\":%u,"
+           "\"action_queue_depth\":%u,\"sample_count\":%u}\n",
+           analytics_build_hash(),
+           (unsigned long long)analytics_epoch_ms(),
+           (unsigned long long)now_ms,
+           user_key,
+           pid,
+           sp->session_ready ? "true" : "false",
+           (unsigned)sp->analytics_metrics_seq,
+           (unsigned)sp->analytics_ping_ms,
+           (unsigned)sp->analytics_ack_ms,
+           (unsigned)sp->analytics_ack_gap_ms,
+           (unsigned)sp->analytics_server_turnaround_ms,
+           (unsigned)sp->analytics_player_interval_ms,
+           (unsigned)sp->analytics_unacked_inputs,
+           (unsigned)sp->analytics_replay_depth,
+           (unsigned)sp->analytics_action_queue_depth,
+           (unsigned)sp->analytics_metrics_samples);
+}
+
+static void analytics_emit_emf(uint64_t now_ms) {
+    int connected = 0;
+    int ready = 0;
+    int active_1m = 0;
+    int metric_players = 0;
+    uint64_t ping_sum = 0;
+    uint64_t ack_sum = 0;
+    uint64_t gap_sum = 0;
+    uint16_t max_gap = 0;
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        const server_player_t *sp = &world.players[i];
+        if (!sp->connected || !sp->conn) continue;
+        connected++;
+        if (sp->session_ready) ready++;
+        if (sp->analytics_last_activity_ms != 0 &&
+            now_ms >= sp->analytics_last_activity_ms &&
+            now_ms - sp->analytics_last_activity_ms <= ANALYTICS_ACTIVE_WINDOW_MS) {
+            active_1m++;
+        }
+        if (sp->analytics_metrics_samples == 0 ||
+            sp->analytics_metrics_last_ms == 0 ||
+            now_ms < sp->analytics_metrics_last_ms ||
+            now_ms - sp->analytics_metrics_last_ms > ANALYTICS_METRIC_STALE_MS) {
+            continue;
+        }
+        metric_players++;
+        ping_sum += sp->analytics_ping_ms;
+        ack_sum += sp->analytics_ack_ms;
+        gap_sum += sp->analytics_ack_gap_ms;
+        if (sp->analytics_ack_gap_ms > max_gap) max_gap = sp->analytics_ack_gap_ms;
+    }
+
+    double avg_ping = metric_players ? (double)ping_sum / (double)metric_players : 0.0;
+    double avg_ack = metric_players ? (double)ack_sum / (double)metric_players : 0.0;
+    double avg_gap = metric_players ? (double)gap_sum / (double)metric_players : 0.0;
+
+    printf("{\"_aws\":{\"Timestamp\":%llu,\"CloudWatchMetrics\":[{\"Namespace\":\"Signal\","
+           "\"Dimensions\":[[\"Service\",\"Build\"]],\"Metrics\":["
+           "{\"Name\":\"ConnectedPlayers\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"ReadyPlayers\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"ActiveUsers1m\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"MetricPlayers\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"AvgPingMs\",\"Unit\":\"Milliseconds\"},"
+           "{\"Name\":\"AvgAckMs\",\"Unit\":\"Milliseconds\"},"
+           "{\"Name\":\"AvgAckGapMs\",\"Unit\":\"Milliseconds\"},"
+           "{\"Name\":\"MaxAckGapMs\",\"Unit\":\"Milliseconds\"}]}]},"
+           "\"Service\":\"signal-relay\",\"Build\":\"%s\","
+           "\"ConnectedPlayers\":%d,\"ReadyPlayers\":%d,"
+           "\"ActiveUsers1m\":%d,\"MetricPlayers\":%d,"
+           "\"AvgPingMs\":%.2f,\"AvgAckMs\":%.2f,"
+           "\"AvgAckGapMs\":%.2f,\"MaxAckGapMs\":%u}\n",
+           (unsigned long long)analytics_epoch_ms(),
+           analytics_build_hash(),
+           connected,
+           ready,
+           active_1m,
+           metric_players,
+           avg_ping,
+           avg_ack,
+           avg_gap,
+           (unsigned)max_gap);
+}
+
 static void merge_one_shot_input(input_intent_t *dst,
                                  const input_intent_t *src) {
     if (!dst || !src) return;
@@ -280,6 +460,16 @@ static void send_action_result(struct mg_connection *c, uint16_t action_id,
     uint8_t buf[NET_ACTION_RESULT_SIZE];
     int len = serialize_action_result(buf, action_id, input_seq, status,
                                       action, server_tick);
+    ws_send(c, buf, (size_t)len);
+}
+
+static void send_latency_pong(struct mg_connection *c, uint32_t seq,
+                              uint32_t client_sent_ms,
+                              uint32_t server_recv_ms) {
+    uint8_t buf[NET_LATENCY_PONG_SIZE];
+    uint32_t server_send_ms = (uint32_t)mg_millis();
+    int len = serialize_latency_pong(buf, seq, client_sent_ms,
+                                     server_recv_ms, server_send_ms);
     ws_send(c, buf, (size_t)len);
 }
 
@@ -544,8 +734,19 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     const uint8_t *data = (const uint8_t *)wm->data.buf;
     int len = (int)wm->data.len;
     if (len < 1 || pid < 0 || pid >= MAX_PLAYERS) return;
+    analytics_record_activity(&world.players[pid], now);
 
     switch (data[0]) {
+    case NET_MSG_LATENCY_PING:
+        if (len >= NET_LATENCY_PING_SIZE && c) {
+            uint32_t seq = read_u32_le(&data[1]);
+            uint32_t client_sent_ms = read_u32_le(&data[5]);
+            send_latency_pong(c, seq, client_sent_ms, (uint32_t)now);
+        }
+        break;
+    case NET_MSG_CLIENT_METRICS:
+        analytics_handle_client_metrics(pid, &world.players[pid], data, len, now);
+        break;
     case NET_MSG_INPUT:
     {
         const uint8_t *input_data = data;
@@ -1143,6 +1344,9 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             (void)registry_register_pubkey(&world, pk, sp->session_token);
             printf("[server] player %d: registered pubkey %02x%02x%02x%02x...\n",
                    pid, pk[0], pk[1], pk[2], pk[3]);
+            if (sp->session_ready) {
+                analytics_log_player_event("player_identity", pid, sp, now, 0);
+            }
 
             /* Layer A.4 of #479: try to restore the player's record from
              * a pubkey-keyed save. If none exists, advertise legacy saves
@@ -1297,6 +1501,9 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 (void)registry_register_pubkey(&world, world.players[pid].pubkey,
                                                world.players[pid].session_token);
             }
+            analytics_record_activity(&world.players[pid], now);
+            analytics_log_player_event("player_session", pid, &world.players[pid],
+                                       now, 0);
         }
         break;
     default:
@@ -2375,9 +2582,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->conn = c;
         sp->session_ready = false;
         sp->grace_timer = 5.0f;  /* Must send SESSION within 5 seconds */
+        sp->analytics_connected_ms = mg_millis();
+        sp->analytics_last_activity_ms = sp->analytics_connected_ms;
         /* Start with fresh ship — save is loaded when client sends SESSION */
         player_init_ship(sp, &world);
         printf("[server] player %d: awaiting session token\n", pid);
+        analytics_log_player_event("player_connect", pid, sp,
+                                   sp->analytics_connected_ms, 0);
 
         /* Send JOIN to new player (their own ID). */
         uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
@@ -2473,6 +2684,15 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     } else if (ev == MG_EV_CLOSE) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (world.players[i].conn == c) {
+                uint64_t now_ms = mg_millis();
+                uint64_t duration_ms =
+                    (world.players[i].analytics_connected_ms != 0 &&
+                     now_ms >= world.players[i].analytics_connected_ms)
+                    ? now_ms - world.players[i].analytics_connected_ms
+                    : 0;
+                analytics_log_player_event("player_disconnect", i,
+                                           &world.players[i], now_ms,
+                                           duration_ms);
                 player_save(&world.players[i], PLAYER_SAVE_DIR, i);
                 world.players[i].conn = NULL;
                 if (world.players[i].session_ready) {
@@ -3231,6 +3451,7 @@ int main(void) {
     uint64_t start_ms = mg_millis();
     uint64_t last_sim = start_ms, last_state = start_ms, last_world = start_ms;
     uint64_t last_ship = start_ms, last_save = start_ms;
+    uint64_t last_analytics = start_ms;
     uint64_t last_econ_dirty = start_ms;
     last_station_identity = start_ms;
     float sim_accum = 0.0f;
@@ -3267,6 +3488,10 @@ int main(void) {
         if (highscores_dirty) {
             broadcast_highscores();
             highscores_dirty = false;
+        }
+        if (now - last_analytics >= ANALYTICS_EMF_INTERVAL_MS) {
+            analytics_emit_emf(now);
+            last_analytics = now;
         }
         if (now - last_save >= AUTOSAVE_MS) {
             station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);

@@ -1,0 +1,56 @@
+{
+  "widgets": [
+    {
+      "type": "log",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-1",
+        "title": "DAU",
+        "view": "timeSeries",
+        "query": "SOURCE '/ecs/signal-relay-server'\n| fields @timestamp, event, user_key\n| filter (event = \"player_session\" or event = \"player_metrics\")\n| filter user_key != \"anon\"\n| stats count_distinct(user_key) as dau by bin(1d)"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-1",
+        "title": "Latency",
+        "view": "timeSeries",
+        "query": "SOURCE '/ecs/signal-relay-server'\n| fields @timestamp, event, ping_ms, ack_ms, ack_gap_ms\n| filter event = \"player_metrics\"\n| stats avg(ping_ms) as avg_ping_ms, avg(ack_ms) as avg_ack_ms, avg(ack_gap_ms) as avg_ack_gap_ms, pct(ack_gap_ms, 95) as p95_ack_gap_ms by bin(5m)"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-1",
+        "title": "Concurrency",
+        "view": "timeSeries",
+        "query": "SOURCE '/ecs/signal-relay-server'\n| fields @timestamp, ConnectedPlayers, ReadyPlayers, ActiveUsers1m\n| filter ispresent(ConnectedPlayers)\n| stats max(ConnectedPlayers) as connected, max(ReadyPlayers) as ready, max(ActiveUsers1m) as active_1m by bin(1m)"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-1",
+        "title": "Worst Ack Gap Users",
+        "view": "table",
+        "query": "SOURCE '/ecs/signal-relay-server'\n| fields @timestamp, event, user_key, ping_ms, ack_gap_ms, unacked_inputs, replay_depth\n| filter event = \"player_metrics\" and user_key != \"anon\"\n| stats count(*) as samples, avg(ping_ms) as avg_ping_ms, avg(ack_gap_ms) as avg_gap_ms, max(ack_gap_ms) as max_gap_ms, max(unacked_inputs) as max_unacked, max(replay_depth) as max_replay by user_key\n| sort avg_gap_ms desc\n| limit 20"
+      }
+    }
+  ]
+}

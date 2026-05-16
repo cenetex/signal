@@ -254,6 +254,21 @@ typedef struct {
      * back in WORLD_PLAYERS so the client can reason about prediction age. */
     uint16_t last_input_seq;
     uint32_t last_input_tick;
+    /* Runtime-only analytics state. Persisted identity remains session_token
+     * / pubkey; these fields only drive stdout JSON and CloudWatch EMF. */
+    uint64_t analytics_connected_ms;
+    uint64_t analytics_last_activity_ms;
+    uint64_t analytics_metrics_last_ms;
+    uint32_t analytics_metrics_seq;
+    uint32_t analytics_metrics_samples;
+    uint16_t analytics_ping_ms;
+    uint16_t analytics_ack_ms;
+    uint16_t analytics_ack_gap_ms;
+    uint16_t analytics_server_turnaround_ms;
+    uint16_t analytics_player_interval_ms;
+    uint16_t analytics_unacked_inputs;
+    uint16_t analytics_replay_depth;
+    uint8_t analytics_action_queue_depth;
     /* Last one-shot action id accepted on NET_MSG_INPUT. Retransmitted
      * action frames keep the same id, so the server can ignore duplicates
      * without discarding the packet's current movement flags. */

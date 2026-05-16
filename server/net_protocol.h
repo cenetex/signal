@@ -94,6 +94,18 @@ static inline int serialize_action_result(uint8_t *buf, uint16_t action_id,
     return NET_ACTION_RESULT_SIZE;
 }
 
+static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
+                                         uint32_t client_sent_ms,
+                                         uint32_t server_recv_ms,
+                                         uint32_t server_send_ms) {
+    buf[0] = NET_MSG_LATENCY_PONG;
+    write_u32_le(&buf[1], seq);
+    write_u32_le(&buf[5], client_sent_ms);
+    write_u32_le(&buf[9], server_recv_ms);
+    write_u32_le(&buf[13], server_send_ms);
+    return NET_LATENCY_PONG_SIZE;
+}
+
 /*
  * STATE message (45 bytes):
  * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]

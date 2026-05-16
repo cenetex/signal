@@ -464,20 +464,52 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         if (match)              { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
         else if (srv[0] == '\0'){ sdtx_color3b(PAL_SYNC_CONNECTING);  sdtx_puts("connecting..."); }
         else                    { sdtx_color3b(PAL_SYNC_RESYNCING);   sdtx_puts("syncing..."); }
-        if (g.net_last_ack_rtt > 0.0f) {
-            float net_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 156.0f : 214.0f)));
-            float rtt_ms = g.net_last_ack_rtt * 1000.0f;
+        if (g.net_last_ack_rtt > 0.0f || g.net_last_ping_rtt > 0.0f) {
+            float net_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 176.0f : 304.0f)));
+            float ack_ms = g.net_last_ack_rtt * 1000.0f;
+            float ping_ms = g.net_last_ping_rtt * 1000.0f;
+            float gap_ms = (ack_ms > 0.0f && ping_ms > 0.0f && ack_ms > ping_ms)
+                ? ack_ms - ping_ms : 0.0f;
+            float warning_ms = (ack_ms > 0.0f) ? ack_ms : ping_ms;
             sdtx_pos(net_x, info_y + 1.2f);
-            if (rtt_ms >= HUD_LATENCY_BAD_MS)
+            if (warning_ms >= HUD_LATENCY_BAD_MS)
                 sdtx_color3b(PAL_WARNING);
-            else if (rtt_ms >= HUD_LATENCY_WARN_MS)
+            else if (warning_ms >= HUD_LATENCY_WARN_MS)
                 sdtx_color3b(PAL_READY_YELLOW);
             else
                 sdtx_color3b(PAL_TEXT_GREY);
-            sdtx_printf("net %.0fms q%u r%u",
-                        rtt_ms,
-                        (unsigned)g.net_action_queue_count,
-                        (unsigned)g.net_replay_count);
+            if (compact) {
+                if (ping_ms > 0.0f && ack_ms > 0.0f)
+                    sdtx_printf("ping %.0f ack %.0f", ping_ms, ack_ms);
+                else if (ping_ms > 0.0f)
+                    sdtx_printf("ping %.0fms", ping_ms);
+                else
+                    sdtx_printf("ack %.0fms", ack_ms);
+                if (ping_ms > 0.0f && ack_ms > 0.0f) {
+                    sdtx_pos(net_x, info_y + 2.4f);
+                    sdtx_printf("gap %.0f q%u r%u",
+                                gap_ms,
+                                (unsigned)g.net_action_queue_count,
+                                (unsigned)g.net_replay_count);
+                }
+            } else if (ping_ms > 0.0f && ack_ms > 0.0f) {
+                sdtx_printf("ping %.0fms ack %.0fms gap %.0fms q%u r%u",
+                            ping_ms,
+                            ack_ms,
+                            gap_ms,
+                            (unsigned)g.net_action_queue_count,
+                            (unsigned)g.net_replay_count);
+            } else if (ping_ms > 0.0f) {
+                sdtx_printf("ping %.0fms q%u r%u",
+                            ping_ms,
+                            (unsigned)g.net_action_queue_count,
+                            (unsigned)g.net_replay_count);
+            } else {
+                sdtx_printf("ack %.0fms q%u r%u",
+                            ack_ms,
+                            (unsigned)g.net_action_queue_count,
+                            (unsigned)g.net_replay_count);
+            }
         }
     } else if (g.multiplayer_enabled) {
         sdtx_color3b(PAL_SYNC_OFFLINE);
