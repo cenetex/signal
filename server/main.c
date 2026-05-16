@@ -64,6 +64,36 @@ static bool highscores_dirty = true;      /* broadcast + persist pending */
 static void ws_send(struct mg_connection *c, const void *data, size_t len);
 static float player_station_balance(const server_player_t *sp);
 
+static void send_cargo_receipt_chain(struct mg_connection *c,
+                                     const cargo_receipt_chain_t *chain) {
+    if (!c || !chain || chain->len == 0 ||
+        chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return;
+    }
+    uint8_t buf[3 + CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE];
+    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
+    buf[1] = chain->len;
+    buf[2] = 0;
+    for (uint8_t i = 0; i < chain->len; i++)
+        cargo_receipt_pack(&chain->links[i], &buf[3 + i * CARGO_RECEIPT_SIZE]);
+    ws_send(c, buf, 3u + (size_t)chain->len * CARGO_RECEIPT_SIZE);
+}
+
+static const char *cargo_receipt_present_result_name(
+    cargo_receipt_present_result_t result) {
+    switch (result) {
+    case CARGO_RECEIPT_PRESENT_OK: return "ok";
+    case CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS: return "bad-args";
+    case CARGO_RECEIPT_PRESENT_REJECT_NO_PLAYER_KEY: return "no-player-key";
+    case CARGO_RECEIPT_PRESENT_REJECT_NOT_CARRIED: return "not-carried";
+    case CARGO_RECEIPT_PRESENT_REJECT_VERIFY: return "verify";
+    case CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT: return "recipient";
+    case CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH: return "existing-mismatch";
+    case CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE: return "receipt-store";
+    default: return "unknown";
+    }
+}
+
 static bool tick_after_u32(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
 }
@@ -662,14 +692,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     break;
                 }
                 if (xfer_id != 0) {
-                    /* Fire NET_MSG_CARGO_RECEIPT_BUNDLE to the client. */
-                    uint8_t buf[3 + CARGO_RECEIPT_SIZE];
-                    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
-                    buf[1] = 1;
-                    buf[2] = 0;
-                    cargo_receipt_pack(&receipt, &buf[3]);
-                    ws_send(c, buf, sizeof(buf));
-
+                    send_cargo_receipt_chain(c, &outgoing_chain);
                     chain_payload_trade_t trade = {0};
                     trade.transfer_event_id = xfer_id;
                     trade.ledger_delta_signed = -(int64_t)price;
@@ -801,17 +824,11 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             }
             {
                 if (xfer_id != 0) {
-                    /* Send the destination's reissued receipt back to
-                     * the player. The cargo is now in the station; the
-                     * receipt is what the player would carry if the
-                     * cargo ever flowed back to them. For now it's a
-                     * confirmation token. */
-                    uint8_t buf[3 + CARGO_RECEIPT_SIZE];
-                    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
-                    buf[1] = 1;
-                    buf[2] = 0;
-                    cargo_receipt_pack(&receipt, &buf[3]);
-                    ws_send(c, buf, sizeof(buf));
+                    /* The cargo is now in station custody, but returning
+                     * the full reissued chain keeps the client as a
+                     * potential bearer if this same cargo later comes
+                     * back to the ship through a different authority. */
+                    send_cargo_receipt_chain(c, &station_chain);
 
                     /* Trade event records the actual prefix-scaled
                      * delivery amount (#501), not a flat constant. */
@@ -827,6 +844,29 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             char msg[96];
             snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);
             signal_channel_post(&world, sidx, msg, "");
+        }
+        break;
+    case NET_MSG_PRESENT_RECEIPT_CHAIN:
+        if (len >= 35) {
+            const uint8_t *cargo_pub = &data[1];
+            uint16_t chain_len = read_u16_le(&data[33]);
+            size_t expected = 35u + (size_t)chain_len * CARGO_RECEIPT_SIZE;
+            if (chain_len == 0 || chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                break;
+            if ((size_t)len < expected) break;
+
+            cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN];
+            for (uint16_t i = 0; i < chain_len; i++) {
+                const uint8_t *p = &data[35u + (size_t)i * CARGO_RECEIPT_SIZE];
+                (void)cargo_receipt_unpack(p, &chain[i]);
+            }
+
+            cargo_receipt_present_result_t pr = cargo_receipt_present_to_ship(
+                &world.players[pid], cargo_pub, chain, (uint8_t)chain_len);
+            if (pr != CARGO_RECEIPT_PRESENT_OK) {
+                printf("[server] receipt_present rejected player=%d reason=%s\n",
+                       pid, cargo_receipt_present_result_name(pr));
+            }
         }
         break;
     case NET_MSG_FRACTURE_CLAIM:
@@ -907,11 +947,43 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                 : ledger_spend(st, sp->session_token, (float)price, ship));
                             if (spent) {
                                 cargo_unit_t copy = {0};
-                                cargo_receipt_chain_t chain = {0};
+                                cargo_receipt_chain_t station_chain = {0};
                                 if (station_manifest_remove_with_chain(st, (uint16_t)slot,
-                                                                       &copy, &chain)) {
-                                    if (!ship_manifest_push_with_chain(ship, &copy, &chain)) {
-                                        (void)station_manifest_push_with_chain(st, &copy, &chain);
+                                                                       &copy, &station_chain)) {
+                                    cargo_receipt_t receipt = {0};
+                                    uint8_t prev_hash[32] = {0};
+                                    cargo_receipt_chain_t outgoing_chain = station_chain;
+                                    if (station_chain.len > 0) {
+                                        cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
+                                                           prev_hash);
+                                    }
+                                    uint64_t xfer_id = cargo_receipt_emit_transfer(
+                                        &world, st,
+                                        st->station_pubkey,
+                                        sp->pubkey,
+                                        copy.pub,
+                                        (uint8_t)CARGO_KIND_INGOT,
+                                        station_chain.len > 0 ? prev_hash : st->chain_last_hash,
+                                        &receipt);
+                                    if (xfer_id != 0 &&
+                                        outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                                        outgoing_chain.links[outgoing_chain.len++] = receipt;
+                                    }
+                                    if (!ship_manifest_push_with_chain(ship, &copy, &outgoing_chain)) {
+                                        (void)station_manifest_push_with_chain(st, &copy, &station_chain);
+                                    } else if (xfer_id != 0) {
+                                        send_cargo_receipt_chain(c, &outgoing_chain);
+                                        chain_payload_trade_t trade = {0};
+                                        trade.transfer_event_id = xfer_id;
+                                        trade.ledger_delta_signed = -(int64_t)price;
+                                        memcpy(trade.ledger_pubkey, sp->pubkey, 32);
+                                        (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
+                                                             &trade, (uint16_t)sizeof(trade));
+                                        char cs[12]; mining_render_callsign(copy.pub, cs);
+                                        char msg[96];
+                                        snprintf(msg, sizeof(msg), "%s purchased %s for %d",
+                                                 sp->callsign, cs, price);
+                                        signal_channel_post(&world, sidx, msg, "");
                                     }
                                 }
                             }

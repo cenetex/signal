@@ -94,17 +94,22 @@ typedef enum {
     CARGO_RECEIPT_REJECT_ZERO_ORIGIN      = 7  /* origin receipt's prev hash is all zero */
 } cargo_receipt_result_t;
 
-/* Pack the unsigned span (the 168 bytes that get signed / hashed) into
+/* Pack the unsigned span (the 144 bytes that get signed / hashed) into
  * a canonical little-endian byte buffer. Same mechanism as
  * chain_event_header_pack — independent of host endianness. */
 void cargo_receipt_unsigned_pack(const cargo_receipt_t *r,
                                  uint8_t out[CARGO_RECEIPT_UNSIGNED_SIZE]);
 
-/* Pack the FULL 232-byte record (unsigned span + 64-byte signature). */
+/* Pack the FULL 208-byte record (unsigned span + 64-byte signature). */
 void cargo_receipt_pack(const cargo_receipt_t *r,
                         uint8_t out[CARGO_RECEIPT_SIZE]);
 
-/* SHA-256 of the full 232-byte packed record. This is what the NEXT
+/* Unpack the FULL 208-byte record from the canonical wire/disk order.
+ * Returns false on NULL args; otherwise fills `out` exactly from `in`. */
+bool cargo_receipt_unpack(const uint8_t in[CARGO_RECEIPT_SIZE],
+                          cargo_receipt_t *out);
+
+/* SHA-256 of the full 208-byte packed record. This is what the NEXT
  * receipt's prev_receipt_hash must equal. */
 void cargo_receipt_hash(const cargo_receipt_t *r, uint8_t out[32]);
 

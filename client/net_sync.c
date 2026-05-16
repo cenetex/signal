@@ -22,6 +22,7 @@
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
 #define NPC_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
+#define REMOTE_PENDING_RECEIPT_CAP 64
 /* Replay is keyed to server-anchored sim ticks. Movement packets carry the
  * client-predicted target tick, and the server only applies them during the
  * matching world_sim_step(), so snapshots and prediction frames share one
@@ -30,6 +31,9 @@
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
+static cargo_receipt_chain_t remote_pending_receipts[REMOTE_PENDING_RECEIPT_CAP];
+static uint8_t remote_pending_receipt_pub[REMOTE_PENDING_RECEIPT_CAP][32];
+static uint8_t remote_pending_receipt_count;
 
 bool net_local_prediction_enabled(void) {
     if (!g.multiplayer_enabled || g.local_server.active) return true;
@@ -536,6 +540,103 @@ void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
         g.remote_hold_named_ingots[g.remote_hold_named_ingot_count++] = entries[i];
 }
 
+static int remote_pending_receipt_find(const uint8_t cargo_pub[32]) {
+    if (!cargo_pub) return -1;
+    for (int i = 0; i < remote_pending_receipt_count; i++) {
+        if (memcmp(remote_pending_receipt_pub[i], cargo_pub, 32) == 0)
+            return i;
+    }
+    return -1;
+}
+
+static bool receipt_chain_cargo_pub(const cargo_receipt_chain_t *chain,
+                                    uint8_t out[32]) {
+    static const uint8_t zero32[32] = {0};
+    if (!chain || chain->len == 0 || chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+        return false;
+    if (memcmp(chain->links[0].cargo_pub, zero32, 32) == 0) return false;
+    memcpy(out, chain->links[0].cargo_pub, 32);
+    return true;
+}
+
+static bool remote_attach_receipt_chain(ship_t *ship,
+                                        const cargo_receipt_chain_t *chain) {
+    uint8_t cargo_pub[32];
+    if (!ship || !chain || !receipt_chain_cargo_pub(chain, cargo_pub))
+        return false;
+    if (!ship->manifest.units || !ship->receipts_opaque) return false;
+    int idx = manifest_find(&ship->manifest, cargo_pub);
+    if (idx < 0) return false;
+    ship_receipts_t *receipts = ship_get_receipts(ship);
+    if (!receipts || idx >= (int)receipts->count) return false;
+    receipts->chains[idx] = *chain;
+    return true;
+}
+
+static void remote_store_receipt_chain(const cargo_receipt_chain_t *chain) {
+    uint8_t cargo_pub[32];
+    if (!receipt_chain_cargo_pub(chain, cargo_pub)) return;
+    int idx = remote_pending_receipt_find(cargo_pub);
+    if (idx < 0) {
+        if (remote_pending_receipt_count >= REMOTE_PENDING_RECEIPT_CAP) {
+            memmove(remote_pending_receipt_pub,
+                    &remote_pending_receipt_pub[1],
+                    (REMOTE_PENDING_RECEIPT_CAP - 1) * sizeof(remote_pending_receipt_pub[0]));
+            memmove(remote_pending_receipts,
+                    &remote_pending_receipts[1],
+                    (REMOTE_PENDING_RECEIPT_CAP - 1) * sizeof(remote_pending_receipts[0]));
+            idx = REMOTE_PENDING_RECEIPT_CAP - 1;
+        } else {
+            idx = remote_pending_receipt_count++;
+        }
+    }
+    memcpy(remote_pending_receipt_pub[idx], cargo_pub, 32);
+    remote_pending_receipts[idx] = *chain;
+
+    if (g.local_player_slot >= 0 && g.local_player_slot < MAX_PLAYERS)
+        (void)remote_attach_receipt_chain(&g.world.players[g.local_player_slot].ship,
+                                          chain);
+}
+
+static bool receipt_bundle_is_one_chain(const cargo_receipt_t *receipts,
+                                        int count) {
+    if (!receipts || count <= 0 || count > CARGO_RECEIPT_CHAIN_MAX_LEN)
+        return false;
+    const uint8_t *cargo_pub = receipts[0].cargo_pub;
+    for (int i = 1; i < count; i++) {
+        if (memcmp(receipts[i].cargo_pub, cargo_pub, 32) != 0)
+            return false;
+    }
+    return cargo_receipt_chain_verify(receipts, (size_t)count, cargo_pub)
+        == CARGO_RECEIPT_OK;
+}
+
+void apply_remote_cargo_receipt_bundle(const cargo_receipt_t *receipts,
+                                       int count) {
+    if (!receipts || count <= 0) return;
+    if (count > CARGO_RECEIPT_CHAIN_MAX_LEN)
+        count = CARGO_RECEIPT_CHAIN_MAX_LEN;
+
+    if (receipt_bundle_is_one_chain(receipts, count)) {
+        cargo_receipt_chain_t chain = {0};
+        memcpy(chain.links, receipts, (size_t)count * sizeof(receipts[0]));
+        chain.len = (uint8_t)count;
+        remote_store_receipt_chain(&chain);
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (cargo_receipt_chain_verify(&receipts[i], 1, receipts[i].cargo_pub)
+            != CARGO_RECEIPT_OK) {
+            continue;
+        }
+        cargo_receipt_chain_t chain = {0};
+        chain.links[0] = receipts[i];
+        chain.len = 1;
+        remote_store_receipt_chain(&chain);
+    }
+}
+
 void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot) {
     if (!snapshot) return;
 
@@ -632,6 +733,10 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
             cargo_unit_t unit = {0};
             if (!cargo_unit_from_named_ingot_entry(entry, &unit)) continue;
             if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return;
+            int pending_idx = remote_pending_receipt_find(unit.pub);
+            if (pending_idx >= 0)
+                (void)remote_attach_receipt_chain(ship,
+                                                  &remote_pending_receipts[pending_idx]);
             named_used[j] = true;
             remaining--;
         }

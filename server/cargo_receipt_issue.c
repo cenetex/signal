@@ -8,6 +8,7 @@
 #include "cargo_receipt_issue.h"
 
 #include "game_sim.h"
+#include "manifest.h"
 #include "station_authority.h"
 
 #include <string.h>
@@ -68,4 +69,68 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
                              prev_receipt_hash, out_receipt))
         return 0;
     return event_id;
+}
+
+static bool receipt_chain_prefix_matches(const cargo_receipt_chain_t *existing,
+                                         const cargo_receipt_t *presented,
+                                         uint8_t presented_len) {
+    if (!existing || existing->len == 0) return true;
+    if (!presented || presented_len < existing->len) return false;
+    for (uint8_t i = 0; i < existing->len; i++) {
+        if (memcmp(&existing->links[i], &presented[i],
+                   sizeof(existing->links[i])) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+cargo_receipt_present_result_t cargo_receipt_present_to_ship(
+    server_player_t *sp,
+    const uint8_t cargo_pub[32],
+    const cargo_receipt_t *chain,
+    uint8_t chain_len) {
+    static const uint8_t zero32[32] = {0};
+
+    if (!sp || !cargo_pub || !chain || chain_len == 0 ||
+        chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS;
+    }
+    if (!sp->pubkey_set || memcmp(sp->pubkey, zero32, 32) == 0)
+        return CARGO_RECEIPT_PRESENT_REJECT_NO_PLAYER_KEY;
+    if (memcmp(cargo_pub, zero32, 32) == 0)
+        return CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS;
+
+    if (cargo_receipt_chain_verify(chain, chain_len, cargo_pub) !=
+        CARGO_RECEIPT_OK) {
+        return CARGO_RECEIPT_PRESENT_REJECT_VERIFY;
+    }
+    if (memcmp(chain[chain_len - 1].recipient_pubkey, sp->pubkey, 32) != 0)
+        return CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT;
+
+    if (!ship_manifest_bootstrap(&sp->ship))
+        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+
+    int idx = manifest_find(&sp->ship.manifest, cargo_pub);
+    if (idx < 0) return CARGO_RECEIPT_PRESENT_REJECT_NOT_CARRIED;
+
+    ship_receipts_t *receipts = ship_get_receipts(&sp->ship);
+    if (!receipts) return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+    if ((uint16_t)idx >= receipts->count) {
+        if (!ship_receipts_reserve(receipts, sp->ship.manifest.count))
+            return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+        while (receipts->count < sp->ship.manifest.count) {
+            if (!ship_receipts_push_empty(receipts))
+                return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+        }
+    }
+
+    cargo_receipt_chain_t *slot = &receipts->chains[idx];
+    if (!receipt_chain_prefix_matches(slot, chain, chain_len))
+        return CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH;
+
+    memset(slot, 0, sizeof(*slot));
+    memcpy(slot->links, chain, (size_t)chain_len * sizeof(chain[0]));
+    slot->len = chain_len;
+    return CARGO_RECEIPT_PRESENT_OK;
 }

@@ -113,29 +113,27 @@ enum {
                                             * the chain to destination stations.
                                             *
                                             *   [type:1=0x36][count:u16]
-                                            *     count × cargo_receipt_t (232 bytes each)
+                                            *     count × cargo_receipt_t (208 bytes each)
                                             *
-                                            * `count` is the number of fresh
-                                            * receipts; each receipt corresponds 1:1
-                                            * with a cargo unit added to the ship
-                                            * manifest in this transaction. */
+                                            * If the receipts all name the same cargo_pub
+                                            * and link chronologically, the bundle is the
+                                            * full carried chain for that cargo. Older
+                                            * servers may send independent singleton
+                                            * receipts; clients accept both shapes. */
     NET_MSG_PRESENT_RECEIPT_CHAIN  = 0x37, /* client -> server. Layer D of #479.
                                             *
                                             *   [type:1=0x37][cargo_pub:32][chain_len:u16]
                                             *     chain_len × cargo_receipt_t
                                             *
-                                            * Sent alongside a SIGNED_ACTION_SELL_CARGO
-                                            * or SIGNED_ACTION_DELIVER for the cargo
-                                            * being sold. The destination station
-                                            * walks the chain, verifies each
-                                            * receipt's signature against its
-                                            * authoring_station pubkey, verifies
-                                            * prev_receipt_hash linkage, and refuses
-                                            * the transfer on any failure. On
-                                            * success the destination signs and
-                                            * issues its OWN receipt back to the
-                                            * player (next BUY_BACK / DELIVER cycle
-                                            * grows the chain by one). */
+                                            * Sent before a sell/deliver/handoff action
+                                            * for cargo carried by the peer. The
+                                            * authority verifies signature/linkage,
+                                            * verifies the chain head names the
+                                            * player's pubkey, then attaches the
+                                            * chain to the matching carried manifest
+                                            * unit. A later accept path removes that
+                                            * cargo, signs the destination receipt,
+                                            * and grows the chain by one. */
     NET_MSG_PLAYER_KNOWN_CONTRACTS = 0x39, /* server -> client. Per-player gossip-contract visibility
                                             * mask. Wire shape: [type:1][mask:u32].
                                             * Bit i set iff compact NET_MSG_CONTRACTS record i matches

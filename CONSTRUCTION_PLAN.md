@@ -18,7 +18,7 @@ the loose scaffold through space with the tractor, and commit placement with
 ```
 PLAYER enters plan mode with B
   → reserve slot or create planned outpost with E
-    → dock at SHIPYARD and order matching scaffold
+    → dock at SHIPYARD and order an unlocked scaffold kit
       → station inventory feeds a nascent scaffold at station center
         → completed scaffold ejects as a loose world entity
           → PLAYER tractors scaffold through space
@@ -37,19 +37,23 @@ While undocked and not towing, `B` enters plan mode.
   open slot.
 - In open signal-covered space: plan mode creates a planned outpost ghost.
 - In plan mode, `R` cycles the module type and `E` reserves the current slot.
+- Plans reserve placement destinations. They are useful for coordinating where a
+  kit should go later, but they are not required before ordering a scaffold.
 
 Docked station tabs are cycled with `Tab`; `B` is only for undocked planning.
 
 ### 2. Order
 
 Dock at a station with a `MODULE_SHIPYARD`, open the SHIPYARD tab, and press
-`1-9` to order a scaffold that matches one of the currently planned module
-types.
+`1-9` to order an unlocked scaffold type that the station can fabricate.
 
 - Credits are charged up front.
 - The order goes into that station's pending scaffold queue.
 - Material cost is pulled from station inventory during manufacture, not after
   placement.
+- Ordering is independent from the shared placement plan set. A kit can be
+  ordered before a destination is reserved, as long as the player has unlocked
+  that module type and the shipyard knows how to build it.
 
 ### 3. Manufacture
 
@@ -123,8 +127,8 @@ Planning is server-side and faction-shared:
 
 - planned outpost ghosts live in the station array
 - placement plans reserve ring/slot/module-type combinations
-- shipyard menus only surface scaffold types that are already present in the
-  shared planned set
+- shipyard menus surface unlocked scaffold types the current station can
+  fabricate; the shared planned set does not filter ordering
 
 ## Known Gaps Relative to the Target Design
 
@@ -137,8 +141,8 @@ Planning is server-side and faction-shared:
 ## Verification
 
 1. Press `B` in flight to create a planned outpost or reserve a module slot.
-2. Dock at Kepler or Helios, open SHIPYARD, and order a scaffold that matches
-   the active plan.
+2. Dock at Kepler or Helios, open SHIPYARD, and order any unlocked scaffold the
+   yard can fabricate. If you already made a plan, order a type that fits it.
 3. Wait for the scaffold to eject as a loose object near the station.
 4. Toggle the tractor with `R`, tow the scaffold, and press `E` to place it.
 5. For a new outpost, deliver frames until the station activates.

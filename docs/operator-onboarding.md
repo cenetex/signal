@@ -8,7 +8,15 @@ read [`decentralization.md`](./decentralization.md) first.
 The off-chain federation stack is shipped through Layer F. The cross-operator
 handshake (different operators verifying each other's chain logs at the zone
 boundary) relies on the shipped Layer D cargo receipt chain for off-chain cargo
-settlement, and on the future on-chain anchor in #480 for fork resistance.
+settlement. Multiplayer clients now receive full receipt chains for named cargo
+they carry, which is the bearer-state shape the federation handoff will use.
+Before queued sell/deliver actions, the client presents matching verified
+chains; the server-side `NET_MSG_PRESENT_RECEIPT_CHAIN` ingress path verifies
+those peer-presented chains and attaches them to carried cargo. The signed
+handoff ticket primitive can bind those proofs to a ship snapshot; the remaining
+cross-operator product gap is wiring ticket issue/present/accept into actual
+zone traversal.
+Byzantine fork resistance still depends on the future on-chain anchor in #480.
 Where this guide says "post-#480", it means you can run the station today, but
 Byzantine fork resistance only becomes real once the anchor lands.
 
@@ -298,6 +306,13 @@ When a second operator joins the federation:
 5. Cargo crossing the zone boundary carries a chain of signed transfer
    receipts. The destination station verifies the chain before accepting the
    unit.
+
+The current multiplayer server already sends full receipt chains back to the
+client for named cargo transfers, clients present matching chains before
+sell/deliver actions, and destination authorities can verify and attach a
+presented chain from a peer or foreign operator. The shared handoff ticket
+format can bind those proofs to cross-zone ship state; the remaining federation
+gap is consuming that ticket during an actual authority handoff.
 
 Until #480 lands, federation is "informal" against Byzantine operators. The
 off-chain receipt chain can prove cargo history, but without a public

@@ -16,6 +16,7 @@
 #include "avatar.h"
 #include "mining_client.h"
 #include "base58.h"
+#include "manifest.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -1212,6 +1213,7 @@ static void init(void) {
             cbs.on_signal_channel = apply_remote_signal_channel;
             cbs.on_station_manifest = apply_remote_station_manifest;
             cbs.on_player_manifest = apply_remote_player_manifest;
+            cbs.on_cargo_receipt_bundle = apply_remote_cargo_receipt_bundle;
             cbs.on_station_ingots = apply_remote_station_ingots;
             cbs.on_hold_ingots = apply_remote_hold_ingots;
             cbs.on_inspect_snapshot = apply_remote_inspect_snapshot;
@@ -2000,6 +2002,70 @@ static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
     g.net_action_queue_count++;
 }
 
+static bool net_action_queue_head_first_send(void) {
+    if (g.net_action_queue_count == 0) return false;
+    const net_action_queue_item_t *item = net_action_queue_at(0);
+    return item->active && item->send_count == 0;
+}
+
+static bool action_receipt_filters(uint8_t action, uint8_t buy_grade,
+                                   commodity_t *out_commodity,
+                                   mining_grade_t *out_grade) {
+    if (out_commodity) *out_commodity = COMMODITY_COUNT;
+    if (out_grade) *out_grade = MINING_GRADE_COUNT;
+    if (action == NET_ACTION_SELL_CARGO) return true;
+    if (action >= NET_ACTION_DELIVER_COMMODITY &&
+        action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT) {
+        if (out_commodity)
+            *out_commodity = (commodity_t)(action - NET_ACTION_DELIVER_COMMODITY);
+        if (out_grade && buy_grade < MINING_GRADE_COUNT)
+            *out_grade = (mining_grade_t)buy_grade;
+        return true;
+    }
+    return false;
+}
+
+static void net_present_receipt_chains_for_action(uint8_t action,
+                                                  uint8_t buy_grade) {
+    commodity_t commodity_filter = COMMODITY_COUNT;
+    mining_grade_t grade_filter = MINING_GRADE_COUNT;
+    if (!action_receipt_filters(action, buy_grade,
+                                &commodity_filter, &grade_filter)) {
+        return;
+    }
+
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return;
+    ship_t *ship = &g.world.players[g.local_player_slot].ship;
+    if (!ship || !ship->manifest.units) return;
+    const ship_receipts_t *receipts = ship_get_receipts_const(ship);
+    if (!receipts || !receipts->chains) return;
+
+    uint16_t count = ship->manifest.count;
+    if (count > receipts->count) count = receipts->count;
+    for (uint16_t i = 0; i < count; i++) {
+        const cargo_unit_t *unit = &ship->manifest.units[i];
+        const cargo_receipt_chain_t *chain = &receipts->chains[i];
+        if (commodity_filter < COMMODITY_COUNT &&
+            unit->commodity != (uint8_t)commodity_filter) {
+            continue;
+        }
+        if (grade_filter < MINING_GRADE_COUNT &&
+            unit->grade != (uint8_t)grade_filter) {
+            continue;
+        }
+        if (!chain || chain->len == 0 ||
+            chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            continue;
+        }
+        if (cargo_receipt_chain_verify(chain->links, chain->len, unit->pub)
+            != CARGO_RECEIPT_OK) {
+            continue;
+        }
+        net_send_present_receipt_chain(unit->pub, chain);
+    }
+}
+
 static void net_queue_pending_action_if_any(void) {
     uint8_t action = g.pending_net_action;
     if (action == NET_ACTION_NONE) return;
@@ -2157,6 +2223,10 @@ static void frame(void) {
                     g.net_input_seq++;
                     if (g.net_input_seq == 0) g.net_input_seq++;
                     seq_advanced = true;
+                }
+                if (action != NET_ACTION_NONE &&
+                    net_action_queue_head_first_send()) {
+                    net_present_receipt_chains_for_action(action, buy_grade_byte);
                 }
                 uint32_t input_tick = g.net_prediction_tick_valid
                     ? g.net_prediction_tick + 1u

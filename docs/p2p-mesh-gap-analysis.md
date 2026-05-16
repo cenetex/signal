@@ -48,6 +48,39 @@ unit. This does not make the current server decentralized, but it moves one
 hard-state invariant out of private server memory and onto the peer that must
 eventually present it during mesh handoff.
 
+The authority ingress path exists too: `NET_MSG_PRESENT_RECEIPT_CHAIN` verifies
+a peer-presented chain, requires the head receipt to name the player's pubkey,
+and attaches it to the matching carried manifest unit without allowing a
+shorter or conflicting chain to overwrite local knowledge. Foreign station
+pubkeys are accepted by signature, not by local station registry membership.
+The multiplayer client now sends matching verified chains immediately before
+queued sell/deliver actions. Zone handoff still needs to reuse this ingress as
+part of a ticketed issue/present/accept flow.
+
+## Third Drop-In Slice
+
+Signed handoff ticket primitives now exist in `shared/handoff_ticket.h`. A
+source authority can issue an Ed25519-signed envelope binding:
+
+```text
+HANDOFF_TICKET {
+  source_authority,
+  dest_authority,
+  player_pubkey,
+  source_zone,
+  dest_zone,
+  issued_tick,
+  expires_tick,
+  ship_state_hash,
+  cargo_root
+}
+```
+
+`ship_state_hash` covers the physical ship snapshot and upgrades; `cargo_root`
+covers the ordered manifest plus attached receipt-chain bytes. Verification
+checks source/destination/player expectations, expiry, ship hash, cargo root,
+and the source authority signature.
+
 ## What Is Still Missing
 
 ### Authority Role
@@ -131,13 +164,12 @@ HANDOFF_OUT {
 }
 ```
 
-The destination verifies the source signature, cargo receipts, and expiry before
-emitting `HANDOFF_IN`.
+The destination verifies the source signature, cargo receipts, ship/cargo hashes,
+and expiry before emitting `HANDOFF_IN`.
 
-The current gap immediately before this is `NET_MSG_PRESENT_RECEIPT_CHAIN`: a
-client can receive and retain a portable receipt chain, but a destination
-authority still needs the accept/verify path for chains presented by a peer or
-by another operator.
+The current gap is product wiring: the ticket format exists, but zone traversal
+still needs explicit issue/present/accept messages, destination ship hydration,
+and replay prevention around a consumed handoff ticket.
 
 ### Browser, Native, Mobile
 
@@ -152,12 +184,12 @@ by another operator.
 ## Implementation Order
 
 1. Keep WebSocket default and stabilize the new transport seam.
-2. Keep receipt bearer state attached to clients and implement
+2. Keep receipt bearer state attached to clients and use
    `NET_MSG_PRESENT_RECEIPT_CHAIN` on authority ingress.
-3. Add a `signal_node` core that can run the sim without HTTP/WebSocket coupling.
-4. Add node identity and `PEER_HELLO`.
-5. Add chain-tip/event gossip between nodes.
-6. Add signed handoff tickets.
+3. Use signed handoff tickets for explicit issue/present/accept zone traversal.
+4. Add a `signal_node` core that can run the sim without HTTP/WebSocket coupling.
+5. Add node identity and `PEER_HELLO`.
+6. Add chain-tip/event gossip between nodes.
 7. Add witness attestations for epoch snapshots.
 8. Add multi-authority committees only after single-authority mesh works.
 
