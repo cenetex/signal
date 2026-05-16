@@ -8,6 +8,8 @@
  *   LEAVE           (0x02): [type:1][player_id:1]
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
  *   INPUT           (0x04): legacy 4-14 bytes, current 18 bytes with seq + uint16 target + action id + input tick
+ *   LATENCY_PING    (0x3C): [type:1][seq:u32][client_sent_ms:u32]
+ *   LATENCY_PONG    (0x3D): [type:1][seq:u32][client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32]
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
  *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
@@ -161,6 +163,31 @@ enum {
                                             * This is paired with ACTION_ACK: ACK says the packet arrived;
                                             * RESULT says the authoritative sim accepted, rejected, or no-op'd
                                             * the requested action. */
+    NET_MSG_LATENCY_PING           = 0x3C, /* client -> server. App-level transport RTT probe.
+                                            *
+                                            *   [type:1=0x3C][seq:u32][client_sent_ms:u32]
+                                            *
+                                            * This measures the wire/transport path only. It is intentionally
+                                            * separate from input_seq acknowledgements, which are gated by
+                                            * server sim and WORLD_PLAYERS broadcast cadence. */
+    NET_MSG_LATENCY_PONG           = 0x3D, /* server -> client. Immediate echo for LATENCY_PING.
+                                            *
+                                            *   [type:1=0x3D][seq:u32][client_sent_ms:u32]
+                                            *   [server_recv_ms:u32][server_send_ms:u32]
+                                            *
+                                            * The client computes ping RTT from its own echoed timestamp.
+                                            * The two server timestamps are same-clock server turnaround
+                                            * telemetry only; clients must not compare them with client time. */
+    NET_MSG_CLIENT_METRICS         = 0x3E, /* client -> server. Periodic end-user telemetry report.
+                                            *
+                                            *   [type:1=0x3E][seq:u32]
+                                            *   [ping_rtt_ms:u16][ack_ms:u16][ack_gap_ms:u16]
+                                            *   [server_turnaround_ms:u16][player_interval_ms:u16]
+                                            *   [unacked_inputs:u16][replay_depth:u16]
+                                            *   [action_queue_depth:u8][reserved:u8]
+                                            *
+                                            * The relay logs this as structured analytics. It never carries
+                                            * raw session tokens, pubkeys, or client IPs. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -437,6 +464,10 @@ enum {
 };
 
 #define NET_ACTION_RESULT_SIZE 11
+
+#define NET_LATENCY_PING_SIZE 9
+#define NET_LATENCY_PONG_SIZE 17
+#define NET_CLIENT_METRICS_SIZE 21
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

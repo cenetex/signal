@@ -55,6 +55,7 @@ static struct {
      * the server's persisted last_signed_nonce in practice (server
      * also rejects strict-replay, so monotonicity is what matters). */
     uint64_t signed_action_nonce;
+    uint32_t latency_ping_seq;
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -73,6 +74,33 @@ static void write_u32_le(uint8_t* buf, uint32_t v) {
     buf[1] = (uint8_t)((v >> 8) & 0xFFu);
     buf[2] = (uint8_t)((v >> 16) & 0xFFu);
     buf[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void write_u16_le(uint8_t* buf, uint16_t v) {
+    buf[0] = (uint8_t)(v & 0xFFu);
+    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static uint32_t net_now_ms32(void) {
+#ifdef __EMSCRIPTEN__
+    double ms = emscripten_get_now();
+    return (uint32_t)(ms > 0.0 ? ms : 0.0);
+#elif defined(_WIN32)
+    FILETIME ft;
+    ULARGE_INTEGER uli;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    return (uint32_t)(uli.QuadPart / 10000ull);
+#else
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
+        uint64_t ms = (uint64_t)ts.tv_sec * 1000ull +
+                      (uint64_t)ts.tv_nsec / 1000000ull;
+        return (uint32_t)ms;
+    }
+    return (uint32_t)((uint64_t)time(NULL) * 1000ull);
+#endif
 }
 
 static uint32_t read_u32_le(const uint8_t* buf) {
@@ -160,6 +188,48 @@ void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
     for (uint8_t i = 0; i < chain->len; i++)
         cargo_receipt_pack(&chain->links[i], &buf[35 + i * CARGO_RECEIPT_SIZE]);
     ws_send_binary(buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
+}
+
+void net_send_latency_ping(void) {
+    if (!net_state.connected) return;
+    uint8_t buf[NET_LATENCY_PING_SIZE];
+    uint32_t seq = ++net_state.latency_ping_seq;
+    if (seq == 0) seq = ++net_state.latency_ping_seq;
+    buf[0] = NET_MSG_LATENCY_PING;
+    write_u32_le(&buf[1], seq);
+    write_u32_le(&buf[5], net_now_ms32());
+    ws_send_binary(buf, NET_LATENCY_PING_SIZE);
+}
+
+static uint16_t metric_ms_u16(float ms) {
+    if (!(ms > 0.0f)) return 0;
+    if (ms >= 65535.0f) return 65535u;
+    return (uint16_t)(ms + 0.5f);
+}
+
+void net_send_client_metrics(uint32_t seq,
+                             float ping_rtt_ms,
+                             float ack_ms,
+                             float ack_gap_ms,
+                             float server_turnaround_ms,
+                             float player_interval_ms,
+                             uint16_t unacked_inputs,
+                             uint16_t replay_depth,
+                             uint8_t action_queue_depth) {
+    if (!net_state.connected) return;
+    uint8_t buf[NET_CLIENT_METRICS_SIZE];
+    buf[0] = NET_MSG_CLIENT_METRICS;
+    write_u32_le(&buf[1], seq);
+    write_u16_le(&buf[5], metric_ms_u16(ping_rtt_ms));
+    write_u16_le(&buf[7], metric_ms_u16(ack_ms));
+    write_u16_le(&buf[9], metric_ms_u16(ack_gap_ms));
+    write_u16_le(&buf[11], metric_ms_u16(server_turnaround_ms));
+    write_u16_le(&buf[13], metric_ms_u16(player_interval_ms));
+    write_u16_le(&buf[15], unacked_inputs);
+    write_u16_le(&buf[17], replay_depth);
+    buf[19] = action_queue_depth;
+    buf[20] = 0;
+    ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
 }
 
 #ifdef __EMSCRIPTEN__
@@ -466,6 +536,24 @@ static void handle_message(const uint8_t* data, int len) {
                 net_state.callbacks.on_action_result(action_id, input_seq,
                                                      status, action,
                                                      server_tick);
+            }
+        }
+        break;
+
+    case NET_MSG_LATENCY_PONG:
+        if (len < NET_LATENCY_PONG_SIZE) break;
+        {
+            uint32_t seq = read_u32_le(&data[1]);
+            uint32_t client_sent_ms = read_u32_le(&data[5]);
+            uint32_t server_recv_ms = read_u32_le(&data[9]);
+            uint32_t server_send_ms = read_u32_le(&data[13]);
+            uint32_t now_ms = net_now_ms32();
+            float rtt_ms = (float)(uint32_t)(now_ms - client_sent_ms);
+            float server_turnaround_ms =
+                (float)(uint32_t)(server_send_ms - server_recv_ms);
+            if (net_state.callbacks.on_latency_sample) {
+                net_state.callbacks.on_latency_sample(seq, rtt_ms,
+                                                      server_turnaround_ms);
             }
         }
         break;

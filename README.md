@@ -174,6 +174,14 @@ The proxy delays browser→server and server→browser websocket frames while
 preserving frame order. Tune it with `LATENCY_CLIENT_MS`, `LATENCY_SERVER_MS`,
 `LATENCY_JITTER_MS`, `LATENCY_LISTEN`, and `LATENCY_UPSTREAM`.
 
+The multiplayer HUD keeps two latency numbers separate:
+
+- `ping` is an app-level `LATENCY_PING`/`LATENCY_PONG` round trip on the
+  current transport.
+- `ack` is input-sent to authoritative `WORLD_PLAYERS` acknowledgement age.
+- `gap` is `ack - ping`; this is the cadence/sim/snapshot/render budget to
+  optimize after raw transport is accounted for.
+
 With `make dev` and `make latency-proxy-high` still running, validate the
 client-side correction metrics with:
 
@@ -181,8 +189,15 @@ client-side correction metrics with:
 make smoke-latency
 ```
 
-The latency smoke reads wasm telemetry for RTT, player-state cadence, correction
-mode counts, replay depth, tick skew, unacked inputs, and render-offset bounds.
+The latency smoke reads wasm telemetry for ping RTT, authoritative ack age,
+ack-minus-ping gap, player-state cadence, correction mode counts, replay depth,
+tick skew, unacked inputs, and render-offset bounds.
+
+Operator metrics for DAU, average latency, ack-gap budget, and concurrency are
+documented in [`docs/operator-metrics.md`](docs/operator-metrics.md). The ECS
+task definition already sends server stdout to CloudWatch Logs at
+`/ecs/signal-relay-server`; the relay emits JSON analytics events and
+CloudWatch EMF summaries there.
 
 ## Test
 

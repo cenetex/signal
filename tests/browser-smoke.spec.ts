@@ -31,6 +31,11 @@ type NetMotionSnapshot = {
   maxAppliedCorrection: number;
   maxVelocityError: number;
   lastAckRttMs: number;
+  lastPingRttMs: number;
+  lastAckGapMs: number;
+  maxPingRttMs: number;
+  pingSamples: number;
+  pingServerTurnaroundMs: number;
   playerIntervalMs: number;
   maxPlayerIntervalMs: number;
   maxPlayerJitterMs: number;
@@ -235,6 +240,11 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
         maxAppliedCorrection: 0,
         maxVelocityError: 0,
         lastAckRttMs: 0,
+        lastPingRttMs: 0,
+        lastAckGapMs: 0,
+        maxPingRttMs: 0,
+        pingSamples: 0,
+        pingServerTurnaroundMs: 0,
         playerIntervalMs: 0,
         maxPlayerIntervalMs: 0,
         maxPlayerJitterMs: 0,
@@ -267,6 +277,11 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
       maxAppliedCorrection: read('get_net_motion_max_applied_correction'),
       maxVelocityError: read('get_net_motion_max_velocity_error'),
       lastAckRttMs: read('get_net_motion_last_ack_rtt_ms'),
+      lastPingRttMs: read('get_net_motion_last_ping_rtt_ms'),
+      lastAckGapMs: read('get_net_motion_last_ack_gap_ms'),
+      maxPingRttMs: read('get_net_motion_max_ping_rtt_ms'),
+      pingSamples: read('get_net_motion_total_ping_samples'),
+      pingServerTurnaroundMs: read('get_net_motion_last_ping_server_turnaround_ms'),
       playerIntervalMs: read('get_net_motion_player_interval_ms'),
       maxPlayerIntervalMs: read('get_net_motion_max_player_interval_ms'),
       maxPlayerJitterMs: read('get_net_motion_max_player_jitter_ms'),
@@ -568,8 +583,13 @@ test.describe('Browser smoke tests', () => {
     expect(motion.samples).toBeGreaterThan(10);
     expect(motion.playerBatches).toBeGreaterThan(10);
     expect(motion.inputAcks).toBeGreaterThan(0);
+    expect(motion.pingSamples).toBeGreaterThan(0);
+    expect(motion.lastPingRttMs).toBeGreaterThan(250);
+    expect(motion.maxPingRttMs).toBeGreaterThan(250);
     expect(motion.lastAckRttMs).toBeGreaterThan(250);
     expect(motion.maxAckRttMs).toBeGreaterThan(250);
+    expect(motion.lastAckGapMs).toBeGreaterThanOrEqual(0);
+    expect(motion.pingServerTurnaroundMs).toBeGreaterThanOrEqual(0);
     expect(motion.maxPlayerIntervalMs).toBeGreaterThan(0);
     expect(motion.maxPlayerIntervalMs).toBeLessThanOrEqual(150);
     expect(motion.maxTickSkewAbs).toBeLessThan(240);

@@ -288,6 +288,8 @@ typedef void (*net_on_action_ack_fn)(uint16_t action_id, uint16_t input_seq,
 typedef void (*net_on_action_result_fn)(uint16_t action_id, uint16_t input_seq,
                                         uint8_t status, uint8_t action,
                                         uint32_t server_tick);
+typedef void (*net_on_latency_sample_fn)(uint32_t seq, float rtt_ms,
+                                         float server_turnaround_ms);
 
 typedef struct {
     net_on_player_join_fn on_join;
@@ -320,6 +322,7 @@ typedef struct {
     net_on_highscores_fn       on_highscores;
     net_on_action_ack_fn       on_action_ack;
     net_on_action_result_fn    on_action_result;
+    net_on_latency_sample_fn   on_latency_sample;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.
@@ -378,6 +381,24 @@ bool net_has_identity_secret(void);
  * trigger this manually for stranded players; a docked-UI flow is a
  * follow-up issue. */
 bool net_send_claim_legacy_save(const char *token_basename);
+
+/* Send an app-level ping probe. The server immediately echoes it via
+ * NET_MSG_LATENCY_PONG; the callback reports raw transport RTT, separate
+ * from authoritative input-ack age. */
+void net_send_latency_ping(void);
+
+/* Periodically report client-observed network/runtime metrics to the relay.
+ * The server writes structured analytics logs from this packet, using its
+ * own pseudonymous user key; no raw token or public key is sent here. */
+void net_send_client_metrics(uint32_t seq,
+                             float ping_rtt_ms,
+                             float ack_ms,
+                             float ack_gap_ms,
+                             float server_turnaround_ms,
+                             float player_interval_ms,
+                             uint16_t unacked_inputs,
+                             uint16_t replay_depth,
+                             uint8_t action_queue_depth);
 
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.

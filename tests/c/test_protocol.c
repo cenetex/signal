@@ -990,6 +990,19 @@ TEST(test_action_result_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[7]), (int)0xAABBCCDDu);
 }
 
+TEST(test_latency_pong_roundtrip) {
+    uint8_t buf[NET_LATENCY_PONG_SIZE];
+    int len = serialize_latency_pong(buf, 0x11223344u, 0x55667788u,
+                                     0x99AABBCDu, 0xDDEEFF00u);
+
+    ASSERT_EQ_INT(len, NET_LATENCY_PONG_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_LATENCY_PONG);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[1]), (int)0x11223344u);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[5]), (int)0x55667788u);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[9]), (int)0x99AABBCDu);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[13]), (int)0xDDEEFF00u);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -1050,6 +1063,7 @@ void register_protocol_main_tests(void) {
     RUN(test_ticked_movement_input_applies_on_sim_tick);
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
+    RUN(test_latency_pong_roundtrip);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

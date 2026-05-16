@@ -80,6 +80,7 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 20.0f)
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
+#define NET_CLIENT_METRICS_SEC 15.0f
 #define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
@@ -88,6 +89,8 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick);
+static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
+                                     float server_turnaround_ms);
 
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
@@ -172,6 +175,13 @@ static void reset_world(void) {
     g.net_last_server_tick = 0;
     g.net_input_tick_protocol = false;
     g.net_last_ack_rtt = 0.0f;
+    g.net_last_ping_rtt = 0.0f;
+    g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_max_ping_rtt_5s = 0.0f;
+    g.net_ping_samples = 0;
+    g.net_ping_timer = 0.0f;
+    g.net_metrics_timer = 0.0f;
+    g.net_metrics_seq = 0;
     g.net_max_ack_rtt_5s = 0.0f;
     g.net_ack_window_elapsed = 0.0f;
     g.net_input_packets_sent = 0;
@@ -1220,6 +1230,7 @@ static void init(void) {
             cbs.on_highscores = apply_remote_highscores;
             cbs.on_action_ack = on_remote_action_ack;
             cbs.on_action_result = on_remote_action_result;
+            cbs.on_latency_sample = on_remote_latency_sample;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already
              * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
@@ -1766,6 +1777,44 @@ float get_net_motion_last_ack_rtt_ms(void) {
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 #endif
+float get_net_motion_last_ping_rtt_ms(void) {
+    return g.net_last_ping_rtt * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_last_ack_gap_ms(void) {
+    float ack_ms = g.net_last_ack_rtt * 1000.0f;
+    float ping_ms = g.net_last_ping_rtt * 1000.0f;
+    if (ack_ms <= 0.0f || ping_ms <= 0.0f) return 0.0f;
+    return (ack_ms > ping_ms) ? (ack_ms - ping_ms) : 0.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_last_ping_server_turnaround_ms(void) {
+    return g.net_last_ping_server_turnaround_ms;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_ping_rtt_ms(void) {
+    return g.net_max_ping_rtt_5s * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_total_ping_samples(void) {
+    return (int)g.net_ping_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
 int get_net_motion_total_samples(void) {
     return (int)g.net_motion.total_samples;
 }
@@ -1976,6 +2025,17 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
     g.action_predict_timer = 0.0f;
 }
 
+static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
+                                     float server_turnaround_ms) {
+    (void)seq;
+    if (rtt_ms < 0.0f || rtt_ms > 30000.0f) return;
+    g.net_last_ping_rtt = rtt_ms / 1000.0f;
+    g.net_last_ping_server_turnaround_ms = server_turnaround_ms;
+    if (g.net_last_ping_rtt > g.net_max_ping_rtt_5s)
+        g.net_max_ping_rtt_5s = g.net_last_ping_rtt;
+    g.net_ping_samples++;
+}
+
 static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
                                   int8_t place_station, int8_t place_ring,
                                   int8_t place_slot) {
@@ -2143,6 +2203,30 @@ static void frame(void) {
     if (g.multiplayer_enabled) {
         bool was_connected = net_is_connected();
         net_poll();
+        if (net_is_connected()) {
+            g.net_ping_timer -= frame_dt;
+            if (g.net_ping_timer <= 0.0f) {
+                net_send_latency_ping();
+                g.net_ping_timer = 1.0f;
+            }
+            g.net_metrics_timer -= frame_dt;
+            if (g.net_metrics_timer <= 0.0f &&
+                (g.net_ping_samples > 0 || g.net_motion.total_input_acks > 0)) {
+                uint32_t seq = ++g.net_metrics_seq;
+                if (seq == 0) seq = ++g.net_metrics_seq;
+                net_send_client_metrics(
+                    seq,
+                    g.net_last_ping_rtt * 1000.0f,
+                    g.net_last_ack_rtt * 1000.0f,
+                    get_net_motion_last_ack_gap_ms(),
+                    g.net_last_ping_server_turnaround_ms,
+                    g.net_motion.packet_interval * 1000.0f,
+                    (uint16_t)(g.net_input_seq - g.net_last_server_ack),
+                    g.net_replay_count,
+                    g.net_action_queue_count);
+                g.net_metrics_timer = NET_CLIENT_METRICS_SEC;
+            }
+        }
         sync_local_player_slot_from_network();
         net_action_queue_update(frame_dt);
         net_queue_pending_action_if_any();
