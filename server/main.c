@@ -23,8 +23,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <time.h>       /* time() for fresh-boot belt_seed rotation */
+
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR_PATH(p) _mkdir(p)
+#define CHDIR_PATH(p) _chdir(p)
+#define PATH_IS_DIR(m) (((m) & _S_IFDIR) != 0)
+#else
+#include <unistd.h>
+#define MKDIR_PATH(p) mkdir((p), 0755)
+#define CHDIR_PATH(p) chdir(p)
+#define PATH_IS_DIR(m) S_ISDIR(m)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                       */
@@ -34,6 +47,16 @@ static world_t world;
 static bool running = true;
 static const char *allowed_origin = NULL;
 static const char *internal_token = NULL;
+
+typedef enum {
+    PERSISTENCE_LOCAL = 0,
+    PERSISTENCE_EPHEMERAL,
+    PERSISTENCE_EXTERNAL_S3,
+} persistence_mode_t;
+
+static persistence_mode_t persistence_mode = PERSISTENCE_LOCAL;
+static const char *persistence_data_dir = ".";
+static const char *persistence_state_uri = "";
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -50,6 +73,29 @@ static char api_headers[256];
 static uint64_t signed_action_count = 0;
 static uint64_t signed_action_reject_count = 0;
 static uint64_t unsigned_action_count = 0;
+
+static const char *persistence_mode_name(void) {
+    switch (persistence_mode) {
+    case PERSISTENCE_LOCAL: return "local";
+    case PERSISTENCE_EPHEMERAL: return "ephemeral";
+    case PERSISTENCE_EXTERNAL_S3: return "external_s3";
+    default: return "unknown";
+    }
+}
+
+static bool persistence_load_enabled(void) {
+    return persistence_mode == PERSISTENCE_LOCAL ||
+           persistence_mode == PERSISTENCE_EXTERNAL_S3;
+}
+
+static bool persistence_save_enabled(void) {
+    return persistence_mode == PERSISTENCE_LOCAL ||
+           persistence_mode == PERSISTENCE_EXTERNAL_S3;
+}
+
+static bool persistence_externalized(void) {
+    return persistence_mode == PERSISTENCE_EXTERNAL_S3;
+}
 
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
@@ -1351,9 +1397,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             /* Layer A.4 of #479: try to restore the player's record from
              * a pubkey-keyed save. If none exists, advertise legacy saves
              * (if any) so the client can present a claim UI. */
-            if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
+            if (persistence_load_enabled() &&
+                player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
                 printf("[server] player %d: restored save by pubkey\n", pid);
-            } else {
+            } else if (persistence_load_enabled()) {
                 char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
                 char names[LEGACY_SAVES_MAX_LIST][64];
                 int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
@@ -1372,6 +1419,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     printf("[server] player %d: advertised %d legacy save(s)\n",
                            pid, n);
                 }
+            } else {
+                printf("[server] player %d: persistence disabled, fresh pubkey session\n", pid);
             }
         }
         break;
@@ -1379,6 +1428,11 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         /* Layer A.4 of #479. Client supplies (token_hex, signature). We
          * verify sig against the registered pubkey, then rename the
          * legacy save to the pubkey-keyed path and load it. */
+        if (!persistence_load_enabled() || !persistence_save_enabled()) {
+            printf("[server] player %d: legacy save claim ignored in %s mode\n",
+                   pid, persistence_mode_name());
+            break;
+        }
         if (len < 2) break;
         server_player_t *sp = &world.players[pid];
         if (!sp->pubkey_set) break;
@@ -1482,7 +1536,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 memcpy(world.players[pid].session_token, token, 8);
                 world.players[pid].session_ready = true;
                 /* Try to restore saved state keyed by session token */
-                if (player_load_by_token(&world.players[pid], &world,
+                if (persistence_load_enabled() &&
+                    player_load_by_token(&world.players[pid], &world,
                                          PLAYER_SAVE_DIR, token)) {
                     printf("[server] player %d: restored save by session\n", pid);
                 } else {
@@ -2464,13 +2519,27 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int pos = 0;
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
+                       "\"persistence\":{\"mode\":\"%s\","
+                       "\"load_enabled\":%s,\"save_enabled\":%s,"
+                       "\"externalized\":%s,\"external_store\":\"%s\","
+                       "\"state_uri\":\"",
+                       count, version,
+                       persistence_mode_name(),
+                       persistence_load_enabled() ? "true" : "false",
+                       persistence_save_enabled() ? "true" : "false",
+                       persistence_externalized() ? "true" : "false",
+                       persistence_externalized() ? "s3" : "none");
+            json_escape_append(buf, &pos, HEALTH_BUFSZ, persistence_state_uri);
+            BUF_APPEND(pos, buf, HEALTH_BUFSZ, "\",\"data_dir\":\"");
+            json_escape_append(buf, &pos, HEALTH_BUFSZ, persistence_data_dir);
+            BUF_APPEND(pos, buf, HEALTH_BUFSZ,
+                       "\"},"
                        "\"signed_action_count\":%llu,"
                        "\"signed_action_reject_count\":%llu,"
                        "\"unsigned_action_count\":%llu,"
                        "\"hopper_smelt_events\":%llu,"
                        "\"hopper_smelt_units\":%.3f,"
                        "\"chain\":{\"status\":\"%s\",\"chain_dir\":\"",
-                       count, version,
                        (unsigned long long)signed_action_count,
                        (unsigned long long)signed_action_reject_count,
                        (unsigned long long)unsigned_action_count,
@@ -2693,7 +2762,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 analytics_log_player_event("player_disconnect", i,
                                            &world.players[i], now_ms,
                                            duration_ms);
-                player_save(&world.players[i], PLAYER_SAVE_DIR, i);
+                if (persistence_save_enabled())
+                    player_save(&world.players[i], PLAYER_SAVE_DIR, i);
                 world.players[i].conn = NULL;
                 if (world.players[i].session_ready) {
                     /* Keep slot alive for reconnect grace window */
@@ -3120,6 +3190,35 @@ static void srv_dispatch_sim_event(const sim_event_t *ev) {
 static bool read_env_config(char *listen_url, size_t listen_url_size) {
     const char *port = getenv("PORT");
     if (!port) port = "8080";
+    const char *mode = getenv("SIGNAL_PERSISTENCE_MODE");
+    if (!mode || mode[0] == '\0') mode = "local";
+    if (strcmp(mode, "local") == 0) {
+        persistence_mode = PERSISTENCE_LOCAL;
+    } else if (strcmp(mode, "ephemeral") == 0) {
+        persistence_mode = PERSISTENCE_EPHEMERAL;
+    } else if (strcmp(mode, "external_s3") == 0) {
+        persistence_mode = PERSISTENCE_EXTERNAL_S3;
+    } else {
+        fprintf(stderr, "[FATAL] invalid SIGNAL_PERSISTENCE_MODE=%s (use local, ephemeral, or external_s3)\n",
+                mode);
+        return false;
+    }
+    persistence_data_dir = getenv("SIGNAL_DATA_DIR");
+    if (!persistence_data_dir || persistence_data_dir[0] == '\0')
+        persistence_data_dir = ".";
+    persistence_state_uri = getenv("SIGNAL_STATE_S3_URI");
+    if (!persistence_state_uri) persistence_state_uri = "";
+    if (persistence_mode == PERSISTENCE_EXTERNAL_S3 &&
+        persistence_state_uri[0] == '\0') {
+        fprintf(stderr, "[FATAL] external_s3 persistence requires SIGNAL_STATE_S3_URI\n");
+        return false;
+    }
+    printf("[server] Persistence mode: %s (data_dir=%s state_uri=%s)\n",
+           persistence_mode_name(), persistence_data_dir,
+           persistence_state_uri[0] ? persistence_state_uri : "none");
+    if (persistence_mode == PERSISTENCE_EPHEMERAL) {
+        printf("[server] Ephemeral persistence: local save/catalog/player files are ignored and not written\n");
+    }
     api_token = getenv("SIGNAL_API_TOKEN");
     if (api_token && api_token[0] != '\0') {
         printf("[server] Station API enabled (token set)\n");
@@ -3149,17 +3248,42 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
 }
 
 static void ensure_persistence_dirs(void) {
-#ifdef _WIN32
-    _mkdir(PLAYER_SAVE_DIR);
-    _mkdir(STATION_CATALOG_DIR);
-#else
-    mkdir(PLAYER_SAVE_DIR, 0755);
-    mkdir(STATION_CATALOG_DIR, 0755);
-#endif
+    if (!persistence_load_enabled() && !persistence_save_enabled()) return;
+    MKDIR_PATH(PLAYER_SAVE_DIR);
+    MKDIR_PATH(STATION_CATALOG_DIR);
     /* Layer A.4 of #479: ensure pubkey/ + legacy/ subdirs exist and any
      * existing top-level *.sav files (v39 and earlier layout) get moved
      * into legacy/ so the new path layout takes effect. Idempotent. */
     player_save_migrate_legacy_layout(PLAYER_SAVE_DIR);
+}
+
+static bool enter_persistence_data_dir(void) {
+    if (!persistence_load_enabled() && !persistence_save_enabled()) return true;
+    if (!persistence_data_dir || persistence_data_dir[0] == '\0' ||
+        strcmp(persistence_data_dir, ".") == 0) {
+        return true;
+    }
+
+    struct stat st;
+    if (stat(persistence_data_dir, &st) != 0) {
+        if (MKDIR_PATH(persistence_data_dir) != 0 && errno != EEXIST) {
+            fprintf(stderr, "[FATAL] could not create SIGNAL_DATA_DIR=%s: %s\n",
+                    persistence_data_dir, strerror(errno));
+            return false;
+        }
+    } else if (!PATH_IS_DIR(st.st_mode)) {
+        fprintf(stderr, "[FATAL] SIGNAL_DATA_DIR=%s is not a directory\n",
+                persistence_data_dir);
+        return false;
+    }
+
+    if (CHDIR_PATH(persistence_data_dir) != 0) {
+        fprintf(stderr, "[FATAL] could not enter SIGNAL_DATA_DIR=%s: %s\n",
+                persistence_data_dir, strerror(errno));
+        return false;
+    }
+    printf("[server] Persistence data cwd: %s\n", persistence_data_dir);
+    return true;
 }
 
 static void emit_world_identity_anchor(void);
@@ -3175,14 +3299,16 @@ static void load_world_state(void) {
      * resume, world_load below overwrites belt_seed and world_seq with
      * the persisted values so asteroid layout, station Ed25519 pubkeys,
      * and the leaderboard's world ordering all stay stable. */
-    bool fresh_world = false;
-    {
+    bool fresh_world = true;
+    if (persistence_load_enabled()) {
         FILE *probe = fopen(SAVE_PATH, "rb");
         if (probe) {
             fclose(probe);
-        } else {
-            fresh_world = true;
+            fresh_world = false;
         }
+    } else {
+        printf("[server] %s mode: skipping local world/catalog/player load\n",
+               persistence_mode_name());
     }
     if (fresh_world) {
         world.rng = (uint32_t)time(NULL);
@@ -3190,12 +3316,14 @@ static void load_world_state(void) {
     }
     world_reset(&world);
 
-    int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
-                                                  STATION_CATALOG_DIR);
-    if (catalog_count > 0)
-        printf("[server] loaded %d station(s) from catalog\n", catalog_count);
+    if (persistence_load_enabled()) {
+        int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
+                                                     STATION_CATALOG_DIR);
+        if (catalog_count > 0)
+            printf("[server] loaded %d station(s) from catalog\n", catalog_count);
+    }
 
-    if (world_load(&world, SAVE_PATH)) {
+    if (persistence_load_enabled() && world_load(&world, SAVE_PATH)) {
         printf("[server] loaded session from %s (belt_seed=%u world_seq=%u)\n",
                SAVE_PATH, world.belt_seed, world.world_seq);
     } else {
@@ -3245,7 +3373,8 @@ static void load_world_state(void) {
     /* Replay the on-disk hash chain so the Network tab survives a
      * server restart and the chain links continue from where we left
      * off (no fork at the genesis block). */
-    signal_chain_load(&world);
+    if (persistence_load_enabled())
+        signal_chain_load(&world);
 
     /* Highscores are now a *view* of the chain log: walk every
      * chain/<base58>.log file and project CHAIN_EVT_DEATH events
@@ -3253,10 +3382,12 @@ static void load_world_state(void) {
      * survive as orphans (their station pubkeys differ once
      * belt_seed rotates) and contribute alongside the current
      * world's runs — each row carries its world_id. */
-    highscore_replay_from_chain(&highscores, chain_log_get_dir());
-    if (highscores.count > 0)
-        printf("[server] replayed %d highscore(s) from chain log\n",
-               highscores.count);
+    if (persistence_load_enabled()) {
+        highscore_replay_from_chain(&highscores, chain_log_get_dir());
+        if (highscores.count > 0)
+            printf("[server] replayed %d highscore(s) from chain log\n",
+                   highscores.count);
+    }
 
     /* Anchor the current world's identity in station 0's chain. The
      * BUILD_INFO + WORLD_INFO operator posts let the replay walker
@@ -3435,6 +3566,9 @@ int main(void) {
     char listen_url[64];
     if (!read_env_config(listen_url, sizeof(listen_url))) return 1;
 
+    chain_log_set_disk_enabled(persistence_save_enabled());
+    signal_chain_set_disk_enabled(persistence_save_enabled());
+    if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     load_world_state();
 
@@ -3494,16 +3628,22 @@ int main(void) {
             last_analytics = now;
         }
         if (now - last_save >= AUTOSAVE_MS) {
-            station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
-            world_save(&world, SAVE_PATH);
+            if (persistence_save_enabled()) {
+                station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
+                world_save(&world, SAVE_PATH);
+            }
             last_save = now;
         }
     }
 
     mg_mgr_free(&mgr);
-    station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
-    world_save(&world, SAVE_PATH);
-    printf("[server] world saved\n");
+    if (persistence_save_enabled()) {
+        station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
+        world_save(&world, SAVE_PATH);
+        printf("[server] world saved\n");
+    } else {
+        printf("[server] world save skipped (%s mode)\n", persistence_mode_name());
+    }
     printf("[server] shutdown\n");
     return 0;
 }

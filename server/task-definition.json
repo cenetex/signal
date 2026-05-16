@@ -34,6 +34,22 @@
         {
           "name": "SIGNAL_REQUIRE_API_TOKEN",
           "value": "1"
+        },
+        {
+          "name": "SIGNAL_PERSISTENCE_MODE",
+          "value": "external_s3"
+        },
+        {
+          "name": "SIGNAL_DATA_DIR",
+          "value": "/app/data"
+        },
+        {
+          "name": "SIGNAL_STATE_S3_URI",
+          "value": "s3://signal-ratimics-state/prod/"
+        },
+        {
+          "name": "SIGNAL_STATE_SYNC_INTERVAL_SEC",
+          "value": "60"
         }
       ],
       "secrets": [

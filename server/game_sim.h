@@ -736,6 +736,7 @@ void ledger_record_dock(station_t *st, const uint8_t pubkey[32], uint64_t tick);
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
+void signal_chain_set_disk_enabled(bool enabled);
 
 /* Replay the on-disk hash chain into the world's signal_channel ring
  * buffer at server boot. Idempotent — safe to call once after world

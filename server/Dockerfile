@@ -41,11 +41,14 @@ RUN cmake -S . -B build \
     && cmake --build build --target signal_server --parallel
 
 FROM alpine:3.19
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates aws-cli
 WORKDIR /app
 COPY --from=builder /app/build/signal_server ./signal-server
+COPY server/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 EXPOSE 8080
 ENV PORT=8080
+ENV SIGNAL_DATA_DIR=/app/data
 
-ENTRYPOINT ["./signal-server"]
+ENTRYPOINT ["./entrypoint.sh"]
