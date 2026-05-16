@@ -124,6 +124,16 @@ typedef struct {
     bool           has_lineage;
     uint8_t        origin_station_idx;  /* world index of the producing/smelt station */
     uint64_t       mined_block;          /* signal_channel_post tick at mint */
+    /* Compact #344 inspect payload for the representative cargo_unit_t
+     * behind the visible row. Grade is already a first-class row column;
+     * these fields let the row reveal serial, recipe, parent summary,
+     * origin, and seal count without opening a separate debug screen. */
+    bool           has_inspect;
+    uint8_t        inspect_kind;          /* cargo_kind_t */
+    uint16_t       inspect_recipe_id;     /* recipe_id_t */
+    uint8_t        inspect_chain_len;     /* attached station receipt count, 0 if none */
+    uint8_t        inspect_pub[32];
+    uint8_t        inspect_parent[32];
 } trade_row_t;
 
 /* Why an otherwise-valid row is non-actionable. Drives the status text

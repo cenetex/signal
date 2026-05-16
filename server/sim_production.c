@@ -174,6 +174,10 @@ static int station_manifest_craft_product_batch(world_t *w, station_t *st,
                           (uint16_t)out_idx, &product)) {
             break;
         }
+        if (w && st >= w->stations && st < w->stations + MAX_STATIONS) {
+            product.origin_station = (uint8_t)(st - w->stations);
+            product.mined_block = (uint64_t)(w->time * 120.0);
+        }
         if (!station_manifest_push_finished(st, &product)) break;
         crafted++;
 
@@ -1176,6 +1180,7 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
                               (uint16_t)k, &unit))
                 break;
             unit.origin_station = (uint8_t)s;
+            unit.mined_block = (uint64_t)(w->time * 120.0);
             if (!station_manifest_push_finished(st, &unit)) break;
             actual_minted++;
         }
