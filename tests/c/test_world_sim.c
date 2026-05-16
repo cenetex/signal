@@ -880,7 +880,7 @@ TEST(test_crystal_requires_two_distinct_furnace_passes) {
 
     station_t *helios = &w.stations[2];
     int furnace_idx[2] = { -1, -1 };
-    vec2 midpoint[2] = { {0}, {0} };
+    vec2 midpoint[2] = { {0.0f, 0.0f}, {0.0f, 0.0f} };
     int pair_count = 0;
     for (int m = 0; m < helios->module_count && pair_count < 2; m++) {
         station_module_t *f = &helios->modules[m];
