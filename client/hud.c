@@ -23,6 +23,30 @@
 #define HUD_LATENCY_BAD_MS 300.0f
 #define HUD_FRAGMENT_NEARBY_RANGE 220.0f
 
+#ifdef __EMSCRIPTEN__
+EM_JS(int, signal_relay_debug_region_js, (char *out, int cap), {
+    if (cap <= 0) return 0;
+    var dbg = window.SIGNAL_RELAY_DEBUG || {};
+    var value = dbg.region || "";
+    var preferred = dbg.preferredRegion || "";
+    if (value && preferred && value !== preferred) value = value + "<-" + preferred;
+    stringToUTF8(String(value), out, cap);
+    return lengthBytesUTF8(String(value));
+})
+
+EM_JS(int, signal_relay_debug_broker_latency_ms_js, (), {
+    var dbg = window.SIGNAL_RELAY_DEBUG || {};
+    var ms = Number(dbg.brokerLatencyMs || 0);
+    return (isFinite(ms) && ms > 0) ? Math.round(ms) : 0;
+})
+
+EM_JS(int, signal_relay_debug_health_latency_ms_js, (), {
+    var dbg = window.SIGNAL_RELAY_DEBUG || {};
+    var ms = Number(dbg.healthLatencyMs || 0);
+    return (isFinite(ms) && ms > 0) ? Math.round(ms) : 0;
+})
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Station-local balance helper                                        */
 /* ------------------------------------------------------------------ */
@@ -442,6 +466,53 @@ static void hud_render_action_wide(const hud_action_t *a, const station_t *curre
     sdtx_puts(text);
 }
 
+static void hud_format_region_label(char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+#ifdef __EMSCRIPTEN__
+    (void)signal_relay_debug_region_js(out, (int)cap);
+#endif
+    if (out[0] == '\0') {
+        if (g.multiplayer_enabled)
+            snprintf(out, cap, "direct");
+        else
+            snprintf(out, cap, "solo");
+    }
+}
+
+static void hud_format_latency_label(char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+
+    float ping_ms = g.net_last_ping_rtt * 1000.0f;
+    float ack_ms = g.net_last_ack_rtt * 1000.0f;
+    if (ping_ms > 0.0f && ack_ms > 0.0f) {
+        snprintf(out, cap, "ping %.0fms ack %.0fms", ping_ms, ack_ms);
+        return;
+    }
+    if (ping_ms > 0.0f) {
+        snprintf(out, cap, "ping %.0fms", ping_ms);
+        return;
+    }
+    if (ack_ms > 0.0f) {
+        snprintf(out, cap, "ack %.0fms", ack_ms);
+        return;
+    }
+
+#ifdef __EMSCRIPTEN__
+    int health_ms = signal_relay_debug_health_latency_ms_js();
+    int broker_ms = signal_relay_debug_broker_latency_ms_js();
+    if (health_ms > 0 && broker_ms > 0)
+        snprintf(out, cap, "boot %dms health %dms", broker_ms, health_ms);
+    else if (health_ms > 0)
+        snprintf(out, cap, "health %dms", health_ms);
+    else if (broker_ms > 0)
+        snprintf(out, cap, "boot %dms", broker_ms);
+    else
+#endif
+        snprintf(out, cap, "latency pending");
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared post-classify panels — render in BOTH compact and wide so a  */
 /* small window doesn't silently lose signal-lost warnings, MP status, */
@@ -528,8 +599,14 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
                fmaxf(1.0f, ui_safe_positive(sapp_dpi_scale(), 1.0f));
     int cols = (int)(bw / 8.0f);
     char banner[512];
-    char segment[64];
-    snprintf(segment, sizeof(segment), "ALPHA // v%s // frequent server resets // ", client_hash);
+    char segment[192];
+    char region[48];
+    char latency[80];
+    hud_format_region_label(region, sizeof(region));
+    hud_format_latency_label(latency, sizeof(latency));
+    snprintf(segment, sizeof(segment),
+             "ALPHA // v%s // region %s // %s // frequent server resets // ",
+             client_hash, region, latency);
     int seg_len = (int)strlen(segment);
     int pos = 0;
     while (pos < cols && pos < (int)sizeof(banner) - 1) {

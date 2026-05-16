@@ -103,6 +103,18 @@
       var signalParams = new URLSearchParams(window.location.search);
       var signalHost = window.location.hostname;
       var signalHostIsLocal = isLocalHostName(signalHost);
+      window.SIGNAL_RELAY_DEBUG = window.SIGNAL_RELAY_DEBUG || {};
+
+      function setRelayDebug(fields) {
+        var dbg = window.SIGNAL_RELAY_DEBUG || {};
+        Object.keys(fields).forEach(function(k) { dbg[k] = fields[k]; });
+        window.SIGNAL_RELAY_DEBUG = dbg;
+      }
+
+      function nowMs() {
+        return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      }
+
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
       if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
@@ -123,6 +135,14 @@
 
       function resolveRelayServer() {
         if (window.SIGNAL_SERVER || signalParams.has('singleplayer')) {
+          setRelayDebug({
+            brokered: false,
+            region: signalParams.has('singleplayer') ? 'solo' : (signalHostIsLocal ? 'local' : 'direct'),
+            preferredRegion: '',
+            brokerLatencyMs: 0,
+            healthLatencyMs: 0,
+            launched: false
+          });
           return Promise.resolve({ ws: window.SIGNAL_SERVER || '', brokered: false });
         }
         var broker = window.SIGNAL_RELAY_BROKER || signalParams.get('relayBroker');
@@ -135,6 +155,15 @@
         if (tz) url.searchParams.set('tz', tz);
 
         setLoading('Starting regional relay...');
+        setRelayDebug({
+          brokered: true,
+          region: preferredRegion || 'selecting',
+          preferredRegion: preferredRegion || '',
+          brokerLatencyMs: 0,
+          healthLatencyMs: 0,
+          launched: false
+        });
+        var brokerStarted = nowMs();
         return fetch(url.toString(), { cache: 'no-store' })
           .then(function(r) {
             if (!r.ok) throw new Error('Relay broker returned ' + r.status);
@@ -143,6 +172,14 @@
           .then(function(info) {
             if (!info || !info.server) throw new Error('Relay broker did not return a server');
             window.SIGNAL_SERVER = info.server;
+            var brokerEnded = nowMs();
+            setRelayDebug({
+              brokered: true,
+              region: info.region || preferredRegion || 'selected',
+              preferredRegion: info.preferredRegion || preferredRegion || '',
+              brokerLatencyMs: Math.max(0, Math.round(brokerEnded - brokerStarted)),
+              launched: !!info.launched
+            });
             return { ws: info.server, brokered: true };
           });
       }
@@ -197,10 +234,18 @@
       function fetchHealthWithRetry(healthUrl, timeoutMs, brokered) {
         var started = Date.now();
         function attempt() {
+          var healthStarted = nowMs();
           return fetch(healthUrl, { cache: 'no-store' })
             .then(function(r) {
               if (!r.ok) throw new Error('Relay health returned ' + r.status);
               return r.json();
+            })
+            .then(function(info) {
+              var healthEnded = nowMs();
+              setRelayDebug({
+                healthLatencyMs: Math.max(0, Math.round(healthEnded - healthStarted))
+              });
+              return info;
             })
             .catch(function(err) {
               if (Date.now() - started >= timeoutMs) throw err;
