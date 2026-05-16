@@ -568,23 +568,23 @@ typedef struct {
     float         repair_kit_fab_timer;
     /* Layer B of #479 — per-station Ed25519 identity.
      *
-     * `station_pubkey` is the station's public identity, derived
-     * deterministically from the world seed (seeded stations 0/1/2)
-     * or from (founder_pubkey || station_name || planted_tick) for
-     * player-planted outposts (indices 3+). Public; baked into the
-     * world snapshot sent to clients on connect. Persisted by the
-     * world save.
+     * `station_pubkey` is the station's public identity, derived from
+     * operator-held station authority secret material plus the world
+     * seed (seeded stations 0/1/2) or plus (founder_pubkey ||
+     * station_name || planted_tick) for player-planted outposts
+     * (indices 3+). Public; baked into the world snapshot sent to
+     * clients on connect. Persisted by the world save.
      *
      * `outpost_planted_tick` records the world.time *128 (tick) at
-     * which the outpost was planted, used to re-derive its keypair
-     * on save/load without persisting the secret. Zero for seeded
-     * stations and unfounded slots.
+     * which the outpost was planted, used with the operator-held secret
+     * to re-derive its keypair on save/load without persisting the
+     * station secret. Zero for seeded stations and unfounded slots.
      *
      * `station_secret` is the operator-only Ed25519 private material
      * (seed||pub per the NaCl convention). It is NEVER serialized
      * over the wire and NEVER written to disk — both seeded and
-     * outpost stations rederive it from the world seed (or saved
-     * founder + name + tick) at load time. A save leak therefore
+     * outpost stations rederive it from the configured station authority
+     * secret plus public provenance at load time. A save leak therefore
      * does not leak the private key.
      *
      * If you add fields between `outpost_planted_tick` and

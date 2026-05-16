@@ -249,6 +249,8 @@ typedef enum {
     SIGNED_ACTION_FRACTURE_CLAIM  = 6, /* payload: [fracture_id:4][burst_nonce:4][grade:1] */
     SIGNED_ACTION_CLAIM_CONTRACT  = 7, /* payload: [contract_id:1] */
     SIGNED_ACTION_CANCEL_CONTRACT = 8, /* payload: [contract_id:1] */
+    SIGNED_ACTION_INPUT_ACTION    = 9, /* payload: [net_action:1][buy_grade:1][station:1][ring:1][slot:1] */
+    SIGNED_ACTION_PLAN            = 10, /* payload: NET_MSG_PLAN bytes after the type byte */
     SIGNED_ACTION_COUNT
 } signed_action_type_t;
 

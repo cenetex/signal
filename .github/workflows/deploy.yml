@@ -151,20 +151,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tools clang-tidy
 
       - name: cppcheck
-        run: |
-          cppcheck --enable=warning,performance,portability \
-            --error-exitcode=1 \
-            --suppress=missingIncludeSystem \
-            --suppress=unusedFunction \
-            --suppress=unknownMacro \
-            --suppress='*:src/pl_mpeg.h' \
-            --suppress='*:src/minimp3.h' \
-            --suppress='*:src/stb_image.h' \
-            --suppress='*:server/mongoose.h' \
-            --suppress='*:server/mongoose.c' \
-            -DEM_JS\(...\)= \
-            -I shared/ -I src/ -I server/ \
-            src/*.c server/game_sim.c server/sim_nav.c server/sim_autopilot.c server/sim_ai.c server/sim_save.c 2>&1
+        run: make cppcheck
 
       - name: Clang static analyzer (scan-build)
         run: |
@@ -211,11 +198,11 @@ jobs:
       - name: Generate gcovr JSON
         run: |
           gcovr -r . --json coverage.json --gcov-ignore-parse-errors \
-            --filter 'server/.*' --filter 'src/.*' --filter 'shared/.*' \
+            --filter 'server/.*' --filter 'client/.*' --filter 'shared/.*' \
             --exclude 'server/mongoose\..*' \
-            --exclude 'src/stb_image\.h' \
-            --exclude 'src/pl_mpeg\.h' \
-            --exclude 'src/minimp3\.h' \
+            --exclude 'client/stb_image\.h' \
+            --exclude 'client/pl_mpeg\.h' \
+            --exclude 'client/minimp3\.h' \
             build-coverage
 
       # Sim code + pure helpers are the files signal_test actually links,
@@ -232,8 +219,8 @@ jobs:
                     server/sim_catalog.c server/sim_asteroid.c \
                     server/sim_physics.c server/sim_production.c \
                     server/sim_construction.c \
-                    src/commodity.c src/manifest.c src/ship.c src/economy.c \
-                    src/asteroid.c src/rng.c \
+                    shared/commodity.c shared/manifest.c shared/ship.c \
+                    shared/economy.c shared/asteroid.c shared/rng.c \
                     shared \
             --top 30 --threshold 25 --fail-on-exceed \
             --json-out crap-tested.json | tee crap-tested.txt
@@ -245,9 +232,10 @@ jobs:
         if: always()
         run: |
           python3 scripts/crap.py --coverage coverage.json \
-            --paths src/main.c src/hud.c src/input.c src/world_draw.c \
-                    src/station_ui.c src/net.c src/net_sync.c src/audio.c \
-                    src/client.h src/local_server.c \
+            --paths client/main.c client/hud.c client/input.c \
+                    client/world_draw.c client/station_ui.c client/net.c \
+                    client/net_sync.c client/audio.c client/client.h \
+                    client/local_server.c \
                     server/main.c \
             --top 30 --threshold 30 \
             --json-out crap-client.json | tee crap-client.txt
@@ -381,7 +369,7 @@ jobs:
   # diagnostics such as CRAP and sanitizers run after promotion on main.
   deploy:
     runs-on: ubuntu-latest
-    needs: [test-basic, test-soak, test-static, build-client, build-server]
+    needs: [test-basic, test-soak, test-static, build-client, build-server, native]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

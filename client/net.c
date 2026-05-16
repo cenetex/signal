@@ -242,6 +242,14 @@ static void transport_error(const char *label) {
 static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
                                 mining_grade_t claimed_grade) {
     uint8_t buf[FRACTURE_CLAIM_SIZE];
+    uint8_t payload[9];
+    write_u32_le(&payload[0], fracture_id);
+    write_u32_le(&payload[4], burst_nonce);
+    payload[8] = (uint8_t)claimed_grade;
+    if (net_send_signed_action(SIGNED_ACTION_FRACTURE_CLAIM,
+                               payload, sizeof(payload))) {
+        return;
+    }
     buf[0] = NET_MSG_FRACTURE_CLAIM;
     buf[1] = (uint8_t)(fracture_id);
     buf[2] = (uint8_t)(fracture_id >> 8);
@@ -1701,6 +1709,10 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
+    if (net_send_signed_action(SIGNED_ACTION_BUY_INGOT,
+                               ingot_pubkey, 32)) {
+        return;
+    }
     uint8_t buf[33];
     buf[0] = NET_MSG_BUY_INGOT;
     memcpy(&buf[1], ingot_pubkey, 32);
@@ -1708,6 +1720,10 @@ void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
 }
 
 void net_send_deliver_ingot(uint8_t hold_index) {
+    if (net_send_signed_action(SIGNED_ACTION_DELIVER,
+                               &hold_index, 1)) {
+        return;
+    }
     uint8_t buf[2];
     buf[0] = NET_MSG_DELIVER_INGOT;
     buf[1] = hold_index;
@@ -1725,6 +1741,10 @@ void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
     buf[5] = module_type;
     write_f32_le(&buf[6], px);
     write_f32_le(&buf[10], py);
+    if (net_send_signed_action(SIGNED_ACTION_PLAN,
+                               &buf[1], NET_PLAN_MSG_SIZE - 1)) {
+        return;
+    }
     ws_send_binary(buf, NET_PLAN_MSG_SIZE);
 }
 
@@ -1874,6 +1894,10 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
+    if (net_send_signed_action(SIGNED_ACTION_BUY_INGOT,
+                               ingot_pubkey, 32)) {
+        return;
+    }
     uint8_t buf[33];
     buf[0] = NET_MSG_BUY_INGOT;
     memcpy(&buf[1], ingot_pubkey, 32);
@@ -1881,6 +1905,10 @@ void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
 }
 
 void net_send_deliver_ingot(uint8_t hold_index) {
+    if (net_send_signed_action(SIGNED_ACTION_DELIVER,
+                               &hold_index, 1)) {
+        return;
+    }
     uint8_t buf[2];
     buf[0] = NET_MSG_DELIVER_INGOT;
     buf[1] = hold_index;
@@ -1898,6 +1926,10 @@ void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
     buf[5] = module_type;
     write_f32_le(&buf[6], px);
     write_f32_le(&buf[10], py);
+    if (net_send_signed_action(SIGNED_ACTION_PLAN,
+                               &buf[1], NET_PLAN_MSG_SIZE - 1)) {
+        return;
+    }
     ws_send_binary(buf, NET_PLAN_MSG_SIZE);
 }
 

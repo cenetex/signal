@@ -2141,14 +2141,16 @@ static void net_queue_pending_action_if_any(void) {
     g.pending_net_place_ring = -1;
     g.pending_net_place_slot = -1;
 
-    if (action >= NET_ACTION_BUY_PRODUCT &&
-        action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT &&
-        net_has_identity_secret()) {
-        uint8_t payload[2] = {
-            (uint8_t)(action - NET_ACTION_BUY_PRODUCT),
-            buy_grade
+    if (net_has_identity_secret()) {
+        uint8_t payload[5] = {
+            action,
+            buy_grade,
+            (uint8_t)place_station,
+            (uint8_t)place_ring,
+            (uint8_t)place_slot,
         };
-        if (net_send_signed_action(SIGNED_ACTION_BUY_PRODUCT,
+        net_present_receipt_chains_for_action(action, buy_grade);
+        if (net_send_signed_action(SIGNED_ACTION_INPUT_ACTION,
                                    payload, sizeof(payload))) {
             return;
         }

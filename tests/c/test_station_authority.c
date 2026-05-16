@@ -1,7 +1,7 @@
 /*
  * test_station_authority.c -- Tests for per-station Ed25519 identity.
  *
- * Layer B of #479. Covers seed-derived determinism, outpost
+ * Layer B of #479. Covers operator-secret-derived determinism, outpost
  * derivation, sign/verify round trips, save/load secret rederivation,
  * and the wire-format omission discipline (station_secret never on
  * the wire, never on disk).
@@ -53,6 +53,27 @@ TEST(test_station_authority_seeded_distinct_seeds) {
                   w1->stations[2].station_pubkey, 32) != 0);
     ASSERT(memcmp(w1->stations[0].station_pubkey,
                   w1->stations[2].station_pubkey, 32) != 0);
+}
+
+TEST(test_station_authority_operator_secret_affects_pubkey) {
+    /* Public world data alone must not be enough to reproduce station
+     * signing keys. Same world seed + station index under different
+     * operator secrets should produce different pubkeys. */
+    station_authority_configure_secret("operator-secret-alpha");
+    WORLD_HEAP w1 = calloc(1, sizeof(world_t));
+    ASSERT(w1);
+    w1->rng = 424242u;
+    world_reset(w1);
+
+    station_authority_configure_secret("operator-secret-beta");
+    WORLD_HEAP w2 = calloc(1, sizeof(world_t));
+    ASSERT(w2);
+    w2->rng = 424242u;
+    world_reset(w2);
+
+    ASSERT(memcmp(w1->stations[0].station_pubkey,
+                  w2->stations[0].station_pubkey, 32) != 0);
+    station_authority_use_dev_secret();
 }
 
 TEST(test_station_authority_outpost_derivation) {
@@ -230,6 +251,7 @@ void register_station_authority_tests(void) {
     TEST_SECTION("\n--- Station Authority (#479 B) ---\n");
     RUN(test_station_authority_seeded_determinism);
     RUN(test_station_authority_seeded_distinct_seeds);
+    RUN(test_station_authority_operator_secret_affects_pubkey);
     RUN(test_station_authority_outpost_derivation);
     RUN(test_station_authority_sign_verify_roundtrip);
     RUN(test_station_authority_save_load_rederives_secret);
