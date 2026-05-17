@@ -960,6 +960,53 @@ TEST(test_ticked_movement_input_applies_on_sim_tick) {
     world_cleanup(&w);
 }
 
+TEST(test_latency_pong_can_arrive_before_authoritative_input_ack) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    input_intent_t intent = {0};
+    intent.thrust = 1.0f;
+    server_player_queue_movement_input(sp, &intent, 42, 6);
+
+    uint8_t pong[NET_LATENCY_PONG_SIZE];
+    int pong_len = serialize_latency_pong(pong, 99u, 1000u, 1001u, 1001u);
+    ASSERT_EQ_INT(pong_len, NET_LATENCY_PONG_SIZE);
+    ASSERT_EQ_INT(pong[0], NET_MSG_LATENCY_PONG);
+    ASSERT_EQ_INT((int)read_u32_le(&pong[1]), 99);
+
+    uint8_t players[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    int players_len = serialize_all_player_states(players, w.players, w.tick);
+    ASSERT_EQ_INT(players_len, 2 + PLAYER_RECORD_SIZE);
+    ASSERT_EQ_INT(players[0], NET_MSG_WORLD_PLAYERS);
+    ASSERT_EQ_INT(players[1], 1);
+    ASSERT_EQ_INT((int)read_u16_le(&players[2 + 67]), 0);
+    ASSERT_EQ_INT((int)read_u32_le(&players[2 + 69]), 0);
+    ASSERT_EQ_INT((int)read_u32_le(&players[2 + 73]), 0);
+
+    for (int tick = 1; tick < 6; tick++) {
+        world_sim_step(&w, SIM_DT);
+        players_len = serialize_all_player_states(players, w.players, w.tick);
+        ASSERT_EQ_INT(players_len, 2 + PLAYER_RECORD_SIZE);
+        ASSERT_EQ_INT((int)w.tick, tick);
+        ASSERT_EQ_INT((int)read_u16_le(&players[2 + 67]), 0);
+    }
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 6);
+    players_len = serialize_all_player_states(players, w.players, w.tick);
+    ASSERT_EQ_INT(players_len, 2 + PLAYER_RECORD_SIZE);
+    ASSERT_EQ_INT((int)read_u16_le(&players[2 + 67]), 42);
+    ASSERT_EQ_INT((int)read_u32_le(&players[2 + 69]), 6);
+    ASSERT_EQ_INT((int)read_u32_le(&players[2 + 73]), 6);
+
+    world_cleanup(&w);
+}
+
 TEST(test_action_ack_roundtrip) {
     uint8_t buf[NET_ACTION_ACK_SIZE];
     int len = serialize_action_ack(buf, 0x1234, 0x5678,
@@ -1061,6 +1108,7 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_v3_action_id);
     RUN(test_parse_input_v4_client_tick);
     RUN(test_ticked_movement_input_applies_on_sim_tick);
+    RUN(test_latency_pong_can_arrive_before_authoritative_input_ack);
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
     RUN(test_latency_pong_roundtrip);

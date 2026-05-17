@@ -13,6 +13,7 @@ Options:
   --upstream=ws://HOST:PORT/P upstream websocket URL (default: ws://127.0.0.1:9091/ws)
   --client-ms=N               one-way delay for browser -> server frames (default: 0)
   --server-ms=N               one-way delay for server -> browser frames (default: 0)
+  --server-world-players-ms=N extra delay for server WORLD_PLAYERS frames (default: 0)
   --jitter-ms=N               additive per-frame jitter, preserving order (default: 0)
   --log-frames                log forwarded frame sizes
 `);
@@ -24,6 +25,7 @@ function parseArgs(argv) {
     upstream: 'ws://127.0.0.1:9091/ws',
     clientMs: 0,
     serverMs: 0,
+    serverWorldPlayersMs: 0,
     jitterMs: 0,
     logFrames: false,
   };
@@ -40,6 +42,8 @@ function parseArgs(argv) {
       out.clientMs = Number(arg.slice('--client-ms='.length));
     } else if (arg.startsWith('--server-ms=')) {
       out.serverMs = Number(arg.slice('--server-ms='.length));
+    } else if (arg.startsWith('--server-world-players-ms=')) {
+      out.serverWorldPlayersMs = Number(arg.slice('--server-world-players-ms='.length));
     } else if (arg.startsWith('--jitter-ms=')) {
       out.jitterMs = Number(arg.slice('--jitter-ms='.length));
     } else if (arg === '--log-frames') {
@@ -54,6 +58,7 @@ function parseArgs(argv) {
   for (const [name, value] of [
     ['client-ms', out.clientMs],
     ['server-ms', out.serverMs],
+    ['server-world-players-ms', out.serverWorldPlayersMs],
     ['jitter-ms', out.jitterMs],
   ]) {
     if (!Number.isFinite(value) || value < 0) {
@@ -73,6 +78,32 @@ function parseHostPort(value) {
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`invalid port in ${value}`);
   return { host, port };
+}
+
+function websocketPayloadType(frame) {
+  if (frame.length < 2) return -1;
+  const masked = (frame[1] & 0x80) !== 0;
+  let len = frame[1] & 0x7f;
+  let off = 2;
+  if (len === 126) {
+    if (frame.length < off + 2) return -1;
+    len = frame.readUInt16BE(off);
+    off += 2;
+  } else if (len === 127) {
+    if (frame.length < off + 8) return -1;
+    const high = frame.readUInt32BE(off);
+    const low = frame.readUInt32BE(off + 4);
+    if (high !== 0) return -1;
+    len = low;
+    off += 8;
+  }
+  if (len <= 0) return -1;
+  if (masked) {
+    if (frame.length < off + 5) return -1;
+    return frame[off + 4] ^ frame[off];
+  }
+  if (frame.length < off + 1) return -1;
+  return frame[off];
 }
 
 function findHeaderEnd(buffer) {
@@ -95,13 +126,14 @@ function wsAccept(key) {
   return crypto.createHash('sha1').update(key + GUID).digest('base64');
 }
 
-function makeForwarder({ from, to, label, delayMs, jitterMs, logFrames }) {
+function makeForwarder({ from, to, label, delayMs, extraDelayForFrame, jitterMs, logFrames }) {
   let buffer = Buffer.alloc(0);
   let nextWriteAt = 0;
 
   function schedule(frame) {
+    const extraDelayMs = extraDelayForFrame ? extraDelayForFrame(frame) : 0;
     const jitter = jitterMs > 0 ? Math.floor(Math.random() * (jitterMs + 1)) : 0;
-    let due = Date.now() + delayMs + jitter;
+    let due = Date.now() + delayMs + extraDelayMs + jitter;
     /* Model fixed path latency, not a bandwidth bottleneck. If frames arrive
      * faster than the delay, they should still emerge at roughly that same
      * cadence after the latency offset; only clamp enough to prevent jitter
@@ -246,6 +278,8 @@ async function handleClient(client, opts) {
         to: client,
         label: 'server->client',
         delayMs: opts.serverMs,
+        extraDelayForFrame: (frame) =>
+          websocketPayloadType(frame) === 0x18 ? opts.serverWorldPlayersMs : 0,
         jitterMs: opts.jitterMs,
         logFrames: opts.logFrames,
       });
@@ -272,7 +306,8 @@ server.listen(listen.port, listen.host, () => {
   const port = typeof addr === 'object' && addr ? addr.port : listen.port;
   console.error(
     `[ws-latency] listening ws://${host}:${port}/ -> ${opts.upstream} ` +
-    `(client=${opts.clientMs}ms server=${opts.serverMs}ms jitter=${opts.jitterMs}ms)`
+    `(client=${opts.clientMs}ms server=${opts.serverMs}ms ` +
+    `world_players=${opts.serverWorldPlayersMs}ms jitter=${opts.jitterMs}ms)`
   );
 });
 

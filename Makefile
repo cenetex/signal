@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke smoke-latency cppcheck crap profile-machine latency-proxy latency-proxy-high dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-flight-trace flight-trace test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -29,10 +29,11 @@ install-hooks:
 # better dependency tracking than Make. Falls back to Make otherwise.
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
 BUILD_TYPE ?= RelWithDebInfo
+GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 
 # --- Native desktop client ---
 build:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal --parallel
 
@@ -43,9 +44,31 @@ build-web:
 
 # --- Headless game server ---
 build-server:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_server --parallel
+
+# --- Offline WASD flight-brain training traces ---
+FLIGHT_TRACE_EPISODES ?= 1000
+FLIGHT_TRACE_TICKS ?= 600
+FLIGHT_TRACE_SEED ?= 2037
+FLIGHT_TRACE_SHARD ?= 0/1
+FLIGHT_TRACE_FORMAT ?= csv
+FLIGHT_TRACE_OUT ?= /tmp/signal-flight-trace.csv
+
+build-flight-trace:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	@ln -sf build/compile_commands.json compile_commands.json
+	cmake --build build --target flight_trace --parallel
+
+flight-trace: build-flight-trace
+	./build/flight_trace \
+		--episodes $(FLIGHT_TRACE_EPISODES) \
+		--ticks $(FLIGHT_TRACE_TICKS) \
+		--seed $(FLIGHT_TRACE_SEED) \
+		--shard $(FLIGHT_TRACE_SHARD) \
+		--format $(FLIGHT_TRACE_FORMAT) \
+		--out $(FLIGHT_TRACE_OUT)
 
 # --- Tests ---
 # Always rebuild signal_test from current source before running, so a stale
@@ -58,7 +81,7 @@ TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 # ~180s to ~56s (3.25x). All 340 tests pass identically — see PR that
 # introduced this. Keep -g for usable stack traces on failure.
 build-test:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
 	# test_signal_verify shells out to signal_verify for CLI-only
@@ -138,7 +161,7 @@ test-serial: build-test
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/flight_trace.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \
@@ -166,6 +189,9 @@ SMOKE_LATENCY_URL ?= http://localhost:8080/play.html?server=ws://127.0.0.1:19091
 
 smoke-latency:
 	SMOKE_URL="$(SMOKE_LATENCY_URL)" SMOKE_LATENCY_ASSERT=1 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "high-latency"
+
+smoke-ack-lag:
+	SMOKE_URL="$(SMOKE_LATENCY_URL)" SMOKE_ACK_LAG_ASSERT=1 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "low-ping high-ack"
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs the fast/non-soak tests,
@@ -209,6 +235,7 @@ LATENCY_LISTEN ?= 127.0.0.1:19091
 LATENCY_UPSTREAM ?= ws://127.0.0.1:9091/ws
 LATENCY_CLIENT_MS ?= 250
 LATENCY_SERVER_MS ?= 250
+LATENCY_WORLD_PLAYERS_MS ?= 0
 LATENCY_JITTER_MS ?= 80
 
 latency-proxy:
@@ -217,10 +244,14 @@ latency-proxy:
 		--upstream=$(LATENCY_UPSTREAM) \
 		--client-ms=$(LATENCY_CLIENT_MS) \
 		--server-ms=$(LATENCY_SERVER_MS) \
+		--server-world-players-ms=$(LATENCY_WORLD_PLAYERS_MS) \
 		--jitter-ms=$(LATENCY_JITTER_MS)
 
 latency-proxy-high:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=450 LATENCY_SERVER_MS=450 LATENCY_JITTER_MS=150
+
+latency-proxy-ack-lag:
+	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
 
 # --- Local dev = docker compose (single source of truth) ---
 # One canonical local path. The container's entrypoint cd's into

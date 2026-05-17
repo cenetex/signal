@@ -717,4 +717,57 @@ test.describe('Browser smoke tests', () => {
     expect(motion.maxCorrection).toBeLessThan(900);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
+
+  test('low-ping high-ack multiplayer telemetry exposes authoritative lag', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_ACK_LAG_ASSERT,
+      'set SMOKE_ACK_LAG_ASSERT=1 with SMOKE_URL pointed at a WORLD_PLAYERS-delay proxy',
+    );
+    test.setTimeout(80_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, true);
+
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+
+    for (let i = 0; i < 8; i++) {
+      await holdChord(page, ['W', i % 2 === 0 ? 'A' : 'D'], 750);
+      await hold(page, 'Shift', 250);
+    }
+    await page.waitForTimeout(3_000);
+
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 30_000,
+        message: 'ack-lag smoke should collect authoritative input acks',
+      })
+      .toBeGreaterThan(0);
+
+    const motion = await netMotionSnapshot(page);
+    expect(motion.samples).toBeGreaterThan(10);
+    expect(motion.playerBatches).toBeGreaterThan(10);
+    expect(motion.pingSamples).toBeGreaterThan(0);
+    expect(motion.inputAcks).toBeGreaterThan(0);
+    expect(motion.lastPingRttMs).toBeGreaterThan(0);
+    expect(motion.lastPingRttMs).toBeLessThan(180);
+    expect(motion.maxPingRttMs).toBeLessThan(220);
+    expect(motion.lastAckRttMs).toBeGreaterThan(450);
+    expect(motion.maxAckRttMs).toBeGreaterThan(450);
+    expect(motion.lastAckGapMs).toBeGreaterThan(300);
+    expect(motion.pingServerTurnaroundMs).toBeGreaterThanOrEqual(0);
+    expect(motion.maxPlayerIntervalMs).toBeLessThanOrEqual(170);
+    expect(motion.maxTickSkewAbs).toBeLessThan(260);
+    expect(motion.actionQueueDepth).toBeLessThanOrEqual(1);
+    expect(motion.replayDepth).toBeLessThan(512);
+    expect(motion.unackedInputs).toBeLessThan(96);
+    expect(motion.snapSamples).toBeLessThan(8);
+    expect(motion.maxRenderOffset).toBeLessThanOrEqual(260);
+    expect(motion.currentRenderOffset).toBeLessThanOrEqual(260);
+    expect(motion.maxAppliedCorrection).toBeLessThan(420);
+    expect(motion.maxCorrection).toBeLessThan(1100);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
 });

@@ -286,6 +286,24 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
+
+    add_executable(flight_trace
+        tools/flight_trace.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(flight_trace PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_link_libraries(flight_trace PRIVATE m)
+        target_compile_options(flight_trace PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    else()
+        target_compile_options(flight_trace PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(flight_trace PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
 endif()
 
 # Short-circuit before wiring up the sokol-dependent client target so

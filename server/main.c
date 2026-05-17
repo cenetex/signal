@@ -156,7 +156,7 @@ static bool tick_after_u32(uint32_t a, uint32_t b) {
 }
 
 static uint32_t server_input_apply_tick(uint32_t client_tick) {
-    const uint32_t max_future_ticks = 48; /* 400ms at 120Hz */
+    const uint32_t max_future_ticks = 12; /* 100ms at 120Hz */
     uint32_t next_tick = world.tick + 1u;
     if (client_tick == 0 || !tick_after_u32(client_tick, world.tick))
         return next_tick;
