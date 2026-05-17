@@ -12,6 +12,7 @@
 #include "avatar.h"
 #include "mining_client.h"
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
+#include "manifest.h"
 #include "signal_model.h"
 #include "palette.h"
 #include "contract_fit.h"
@@ -1643,6 +1644,145 @@ static void wrap_hud_message_lines(const char *text, int max_cols,
     }
 }
 
+typedef struct {
+    int station_idx;
+    int module_idx;          /* -1 means station shell scaffold. */
+    module_type_t type;
+    commodity_t material;
+    int needed;
+    int held;
+    bool station_shell;
+} hud_construction_need_t;
+
+typedef struct {
+    int station_idx;
+    int ring;
+    int slot;
+    module_type_t type;
+} hud_snapping_scaffold_t;
+
+static const char *hud_station_short_name(int station_idx) {
+    const char *name = station_short_name(station_idx);
+    return (name && name[0] != '?') ? name : "station";
+}
+
+static int hud_ship_material_count(commodity_t material) {
+    if ((unsigned)material >= COMMODITY_COUNT) return 0;
+    if (material >= COMMODITY_RAW_ORE_COUNT)
+        return manifest_count_by_commodity(&LOCAL_PLAYER.ship.manifest, material);
+    return (int)floorf(LOCAL_PLAYER.ship.cargo[material] + 0.001f);
+}
+
+static const char *hud_material_source_hint(commodity_t material) {
+    switch (material) {
+    case COMMODITY_FRAME:
+        return "Make frames at a Frame Press, then dock and press [S].";
+    case COMMODITY_FERRITE_INGOT:
+    case COMMODITY_CUPRITE_INGOT:
+    case COMMODITY_CRYSTAL_INGOT:
+        return "Smelt matching ore at a Furnace, then dock and press [S].";
+    case COMMODITY_LASER_MODULE:
+    case COMMODITY_TRACTOR_MODULE:
+        return "Fabricate modules at a fab, then dock and press [S].";
+    default:
+        return "Haul the material here, then dock and press [S].";
+    }
+}
+
+static bool hud_station_construction_need(const station_t *st, int station_idx,
+                                          hud_construction_need_t *out) {
+    if (!st || !out) return false;
+    if (st->scaffold && st->scaffold_progress < 0.999f) {
+        int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED *
+                                (1.0f - st->scaffold_progress));
+        if (needed < 1) needed = 1;
+        *out = (hud_construction_need_t){
+            .station_idx = station_idx,
+            .module_idx = -1,
+            .type = MODULE_SIGNAL_RELAY,
+            .material = COMMODITY_FRAME,
+            .needed = needed,
+            .held = hud_ship_material_count(COMMODITY_FRAME),
+            .station_shell = true,
+        };
+        return true;
+    }
+
+    for (int m = 0; m < st->module_count; m++) {
+        const station_module_t *mod = &st->modules[m];
+        if (module_build_state(mod) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        commodity_t material = module_build_material_lookup(mod->type);
+        float cost = module_build_cost_lookup(mod->type);
+        int needed = (int)ceilf(cost * (1.0f - module_supply_fraction(mod)));
+        if (needed < 1) needed = 1;
+        *out = (hud_construction_need_t){
+            .station_idx = station_idx,
+            .module_idx = m,
+            .type = mod->type,
+            .material = material,
+            .needed = needed,
+            .held = hud_ship_material_count(material),
+            .station_shell = false,
+        };
+        return true;
+    }
+    return false;
+}
+
+static bool hud_find_construction_need(hud_construction_need_t *out) {
+    if (!out) return false;
+    int focus = -1;
+    if (LOCAL_PLAYER.docked) focus = LOCAL_PLAYER.current_station;
+    else if (LOCAL_PLAYER.in_dock_range) focus = LOCAL_PLAYER.nearby_station;
+    if (focus >= 0 && focus < MAX_STATIONS &&
+        hud_station_construction_need(&g.world.stations[focus], focus, out)) {
+        return true;
+    }
+
+    const float max_range = 1400.0f;
+    float best_d2 = max_range * max_range;
+    bool found = false;
+    hud_construction_need_t best = {0};
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st)) continue;
+        float d2 = v2_dist_sq(st->pos, LOCAL_PLAYER.ship.pos);
+        if (d2 >= best_d2) continue;
+        hud_construction_need_t candidate;
+        if (!hud_station_construction_need(st, s, &candidate)) continue;
+        best = candidate;
+        best_d2 = d2;
+        found = true;
+    }
+    if (found) *out = best;
+    return found;
+}
+
+static bool hud_find_snapping_scaffold(hud_snapping_scaffold_t *out) {
+    if (!out) return false;
+    const float max_range = 900.0f;
+    float best_d2 = max_range * max_range;
+    bool found = false;
+    hud_snapping_scaffold_t best = {0};
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &g.world.scaffolds[i];
+        if (!sc->active || sc->state != SCAFFOLD_SNAPPING) continue;
+        if (sc->placed_station < 0 || sc->placed_station >= MAX_STATIONS) continue;
+        float d2 = v2_dist_sq(sc->pos, LOCAL_PLAYER.ship.pos);
+        if (d2 >= best_d2) continue;
+        best = (hud_snapping_scaffold_t){
+            .station_idx = sc->placed_station,
+            .ring = sc->placed_ring,
+            .slot = sc->placed_slot,
+            .type = sc->module_type,
+        };
+        best_d2 = d2;
+        found = true;
+    }
+    if (found) *out = best;
+    return found;
+}
+
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     /* ================================================================
@@ -1675,19 +1815,30 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 
     /* Plan mode */
     if (g.plan_mode_active) {
-        label[0] = '\0';
+        bool ghost = (g.plan_target_station == -1);
+        snprintf(label, label_size, "%s", ghost ? "PLAN GHOST" : "PLAN SLOT");
         if (g.placement_target_ring > 0 && g.placement_target_slot >= 0) {
-            snprintf(message, message_size,
-                     "Planning %s for ring %d slot %d. R changes type; E places; B exits.",
-                     module_type_name((module_type_t)g.plan_type),
-                     g.placement_target_ring,
-                     g.placement_target_slot);
+            if (ghost) {
+                snprintf(message, message_size,
+                         "%s preview ring %d slot %d. [E] locks an outpost; [R] changes type; [B] exits.",
+                         module_type_name((module_type_t)g.plan_type),
+                         g.placement_target_ring,
+                         g.placement_target_slot);
+            } else {
+                snprintf(message, message_size,
+                         "%s at %s ring %d slot %d. [E] toggles this slot; [R] changes type; [B] exits.",
+                         module_type_name((module_type_t)g.plan_type),
+                         hud_station_short_name(g.placement_target_station),
+                         g.placement_target_ring,
+                         g.placement_target_slot);
+            }
         } else {
             snprintf(message, message_size,
-                     "Planning %s. R changes type; E places; B exits.",
+                     "%s planning. [R] changes type; [E] places; [B] exits.",
                      module_type_name((module_type_t)g.plan_type));
         }
-        *r = 130; *g0 = 180; *b = 200;
+        if (ghost) { *r = 180; *g0 = 165; *b = 115; }
+        else       { *r = 130; *g0 = 190; *b = 210; }
         return true;
     }
 
@@ -1699,17 +1850,51 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* Onboarding */
-    if (onboarding_hint(label, label_size, message, message_size)) {
-        *r = 255; *g0 = 221; *b = 119;
+    /* Scaffold tow */
+    if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+        snprintf(label, label_size, "SCAFFOLD TOW");
+        snprintf(message, message_size, "Towing scaffold. [E] place, tap [Space] release.");
+        *r = 160; *g0 = 150; *b = 100;
         return true;
     }
 
-    /* Scaffold tow */
-    if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        label[0] = '\0';
-        snprintf(message, message_size, "Towing scaffold. [E] place, tap [Space] release.");
-        *r = 160; *g0 = 150; *b = 100;
+    hud_snapping_scaffold_t snap;
+    if (hud_find_snapping_scaffold(&snap)) {
+        snprintf(label, label_size, "SCAFFOLD SNAP");
+        snprintf(message, message_size,
+                 "%s snapping to %s ring %d slot %d. Supply starts when it locks.",
+                 module_type_name(snap.type),
+                 hud_station_short_name(snap.station_idx),
+                 snap.ring,
+                 snap.slot);
+        *r = 190; *g0 = 170; *b = 100;
+        return true;
+    }
+
+    hud_construction_need_t need;
+    if (hud_find_construction_need(&need)) {
+        snprintf(label, label_size, "SUPPLY NEED");
+        const char *station = hud_station_short_name(need.station_idx);
+        const char *mat = commodity_short_label(need.material);
+        if (need.held > 0) {
+            snprintf(message, message_size,
+                     "%s needs %d %s at %s. You carry %d; dock and press [S].",
+                     need.station_shell ? "Outpost scaffold" : module_type_name(need.type),
+                     need.needed, mat, station, need.held);
+        } else {
+            snprintf(message, message_size,
+                     "%s needs %d %s at %s. %s",
+                     need.station_shell ? "Outpost scaffold" : module_type_name(need.type),
+                     need.needed, mat, station,
+                     hud_material_source_hint(need.material));
+        }
+        *r = 205; *g0 = 165; *b = 90;
+        return true;
+    }
+
+    /* Onboarding */
+    if (onboarding_hint(label, label_size, message, message_size)) {
+        *r = 255; *g0 = 221; *b = 119;
         return true;
     }
 
@@ -1815,6 +2000,10 @@ enum {
     SMOKE_LOOP_STATE_TOWING = 4,
     SMOKE_LOOP_STATE_HAIL_READY = 5,
     SMOKE_LOOP_STATE_HAIL_NOTICE = 6,
+    SMOKE_LOOP_STATE_PLAN_GHOST = 7,
+    SMOKE_LOOP_STATE_PLAN_SLOT = 8,
+    SMOKE_LOOP_STATE_SCAFFOLD_SNAP = 9,
+    SMOKE_LOOP_STATE_SUPPLY_NEED = 10,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -1851,6 +2040,16 @@ static void smoke_clear_loop_state(void) {
     g.hail_message[0] = '\0';
     g.hail_credits = 0.0f;
     g.hail_station_index = -1;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        g.world.scaffolds[i].active = false;
+    }
+    if (MAX_STATIONS > 3) {
+        station_t *ghost = &g.world.stations[3];
+        ghost->scaffold = false;
+        ghost->planned = false;
+        ghost->scaffold_progress = 1.0f;
+        ghost->name[0] = '\0';
+    }
 
     if (g.world.station_count > 0 && station_exists(&g.world.stations[0]))
         sp->ship.pos = g.world.stations[0].pos;
@@ -1895,6 +2094,40 @@ static int smoke_apply_loop_state(int state) {
         g.hail_credits = 123.0f;
         g.hail_timer = 6.0f;
         g.hail_station_index = 0;
+        return 1;
+    case SMOKE_LOOP_STATE_PLAN_GHOST:
+        g.plan_mode_active = true;
+        g.plan_target_station = -1;
+        g.placement_target_station = -1;
+        g.placement_target_ring = 1;
+        g.placement_target_slot = 2;
+        g.plan_type = MODULE_SIGNAL_RELAY;
+        return 1;
+    case SMOKE_LOOP_STATE_PLAN_SLOT:
+        g.plan_mode_active = true;
+        g.plan_target_station = 0;
+        g.placement_target_station = 0;
+        g.placement_target_ring = 1;
+        g.placement_target_slot = 0;
+        g.plan_type = MODULE_HOPPER;
+        return 1;
+    case SMOKE_LOOP_STATE_SCAFFOLD_SNAP:
+        if (MAX_STATIONS <= 3) return 0;
+        g.world.scaffolds[0].active = true;
+        g.world.scaffolds[0].state = SCAFFOLD_SNAPPING;
+        g.world.scaffolds[0].module_type = MODULE_FURNACE;
+        g.world.scaffolds[0].placed_station = 3;
+        g.world.scaffolds[0].placed_ring = 2;
+        g.world.scaffolds[0].placed_slot = 3;
+        g.world.scaffolds[0].pos = sp->ship.pos;
+        return 1;
+    case SMOKE_LOOP_STATE_SUPPLY_NEED:
+        if (MAX_STATIONS <= 3) return 0;
+        g.world.stations[3].pos = sp->ship.pos;
+        g.world.stations[3].scaffold = true;
+        g.world.stations[3].planned = false;
+        g.world.stations[3].scaffold_progress = 0.5f;
+        g.world.stations[3].dock_radius = OUTPOST_DOCK_RADIUS;
         return 1;
     default:
         return 0;

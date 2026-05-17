@@ -382,6 +382,10 @@ const smokeLoopState = {
   towing: 4,
   hailReady: 5,
   hailNotice: 6,
+  planGhost: 7,
+  planSlot: 8,
+  scaffoldSnap: 9,
+  supplyNeed: 10,
 } as const;
 
 const mobileFlag = {
@@ -569,6 +573,26 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.hailNotice);
     expect(await hudHintText(page)).toContain('Prospect: channel open. Balance 123 cr.');
+
+    expectNoFatalErrors(logs);
+  });
+
+  test('exposes deterministic HUD copy for plan, snap, and construction supply states', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+
+    await setSmokeLoopState(page, smokeLoopState.planGhost);
+    expect(await hudHintText(page)).toContain('PLAN GHOST :: Signal Relay preview ring 1 slot 2');
+
+    await setSmokeLoopState(page, smokeLoopState.planSlot);
+    expect(await hudHintText(page)).toContain('PLAN SLOT :: Hopper at Prospect ring 1 slot 0');
+
+    await setSmokeLoopState(page, smokeLoopState.scaffoldSnap);
+    expect(await hudHintText(page)).toContain('SCAFFOLD SNAP :: Furnace snapping to Outpost 3 ring 2 slot 3');
+
+    await setSmokeLoopState(page, smokeLoopState.supplyNeed);
+    expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 30 frames at Outpost 3.');
 
     expectNoFatalErrors(logs);
   });

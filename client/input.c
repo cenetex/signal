@@ -627,15 +627,22 @@ static void sample_placement_tow(input_intent_t *intent) {
     reticle_target_t targets[RETICLE_MAX_TARGETS];
     int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
     intent->place_outpost = true;
+    const char *scaffold_name = "scaffold";
+    int sc_idx = LOCAL_PLAYER.ship.towed_scaffold;
+    if (sc_idx >= 0 && sc_idx < MAX_SCAFFOLDS && g.world.scaffolds[sc_idx].active)
+        scaffold_name = module_type_name(g.world.scaffolds[sc_idx].module_type);
     if (n > 0) {
         intent->place_target_station = (int8_t)targets[0].station;
         intent->place_target_ring = (int8_t)targets[0].ring;
         intent->place_target_slot = (int8_t)targets[0].slot;
+        set_notice("Placing %s at ring %d slot %d.",
+                   scaffold_name, targets[0].ring, targets[0].slot);
+    } else {
+        set_notice("Placing %s as an outpost seed.", scaffold_name);
     }
     /* No outpost in range falls through with all -1 sentinels — server
      * decides whether to materialize a nearby planned station or found
      * a new outpost from scratch. */
-    set_notice("Placing scaffold...");
 }
 
 /* Plan mode (real station target): pull reticle target every frame so
@@ -762,7 +769,8 @@ static void plan_mode_handle_ghost_lock(input_intent_t *intent) {
     /* Wait for the server to send back the created station, then switch
      * to real plan mode targeting it. */
     g.plan_mode_grace_until = g.world.time + 1.5f;
-    set_notice("Outpost planned at ring %d slot %d. R changes type; E places; B exits.",
+    set_notice("Outpost blueprint locked: %s ring %d slot %d. R changes type; E toggles slot; B exits.",
+               module_type_name((module_type_t)g.plan_type),
                g.placement_target_ring, g.placement_target_slot);
 }
 
@@ -786,7 +794,7 @@ static void plan_mode_handle_real_place(input_intent_t *intent) {
         intent->cancel_plan_st = (int8_t)ps;
         intent->cancel_plan_ring = (int8_t)pr;
         intent->cancel_plan_sl = (int8_t)psl;
-        set_notice("Cleared plan at ring %d slot %d. R changes type; E toggles slot; B exits.",
+        set_notice("Cleared reserved slot ring %d slot %d. R changes type; E toggles slot; B exits.",
                    pr, psl);
         return;
     }
@@ -795,7 +803,7 @@ static void plan_mode_handle_real_place(input_intent_t *intent) {
     intent->plan_ring = (int8_t)pr;
     intent->plan_slot = (int8_t)psl;
     intent->plan_type = (module_type_t)g.plan_type;
-    set_notice("Planned %s at ring %d slot %d. R changes type; E toggles slot; B exits.",
+    set_notice("Reserved %s at ring %d slot %d. R changes type; E toggles slot; B exits.",
                module_type_name((module_type_t)g.plan_type), pr, psl);
 }
 
@@ -848,7 +856,8 @@ static void sample_b_enter_plan(void) {
         g.placement_target_ring = targets[0].ring;
         g.placement_target_slot = targets[0].slot;
         g.plan_target_station = targets[0].station;
-        set_notice("Plan mode: ring %d slot %d. R changes type; E places; B exits.",
+        set_notice("Station plan: %s ring %d slot %d. R changes type; E toggles slot; B exits.",
+                   module_type_name((module_type_t)g.plan_type),
                    targets[0].ring, targets[0].slot);
     } else {
         g.plan_mode_active = true;
@@ -856,7 +865,9 @@ static void sample_b_enter_plan(void) {
         g.placement_target_station = -1;
         g.placement_target_ring = 1;
         g.placement_target_slot = 0;
-        set_notice("Plan mode: new outpost ghost. R changes type; E locks outpost; B exits.");
+        set_notice("Ghost preview: %s ring %d slot %d. R changes type; E locks outpost; B exits.",
+                   module_type_name((module_type_t)g.plan_type),
+                   g.placement_target_ring, g.placement_target_slot);
     }
 }
 
