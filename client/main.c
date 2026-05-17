@@ -81,6 +81,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
 #define NET_CLIENT_METRICS_SEC 15.0f
+#define NET_INPUT_LEAD_MIN_TICKS 2u
+#define NET_INPUT_LEAD_MAX_TICKS 12u
 #define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
@@ -91,6 +93,42 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint32_t server_tick);
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
                                      float server_turnaround_ms);
+
+static bool net_tick_after_u32(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
+}
+
+static uint32_t net_input_lead_ticks(void) {
+    float rtt = g.net_last_ping_rtt > 0.0f
+        ? g.net_last_ping_rtt
+        : g.net_last_ack_rtt;
+    uint32_t lead = NET_INPUT_LEAD_MIN_TICKS;
+    if (rtt > 0.0f) {
+        float one_way_ticks = (rtt * 0.5f) / SIM_DT;
+        lead = (uint32_t)ceilf(one_way_ticks) + NET_INPUT_LEAD_MIN_TICKS;
+    }
+    if (lead < NET_INPUT_LEAD_MIN_TICKS) lead = NET_INPUT_LEAD_MIN_TICKS;
+    if (lead > NET_INPUT_LEAD_MAX_TICKS) lead = NET_INPUT_LEAD_MAX_TICKS;
+    return lead;
+}
+
+static uint32_t net_next_input_apply_tick(void) {
+    if (g.net_last_server_tick != 0) {
+        uint32_t target = g.net_last_server_tick + net_input_lead_ticks();
+        if (g.net_prediction_tick_valid) {
+            uint32_t predicted_next = g.net_prediction_tick + 1u;
+            if (net_tick_after_u32(predicted_next, g.net_last_server_tick) &&
+                net_tick_after_u32(target, predicted_next)) {
+                target = predicted_next;
+            }
+        }
+        if (!net_tick_after_u32(target, g.net_last_server_tick))
+            target = g.net_last_server_tick + 1u;
+        return target;
+    }
+    if (g.net_prediction_tick_valid) return g.net_prediction_tick + 1u;
+    return 1u;
+}
 
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
@@ -2314,10 +2352,7 @@ static void frame(void) {
                     net_action_queue_head_first_send()) {
                     net_present_receipt_chains_for_action(action, buy_grade_byte);
                 }
-                uint32_t input_tick = g.net_prediction_tick_valid
-                    ? g.net_prediction_tick + 1u
-                    : g.net_last_server_tick + 1u;
-                if (input_tick == 0) input_tick = 1;
+                uint32_t input_tick = net_next_input_apply_tick();
                 net_send_input(flags, action, g.net_input_seq, mining_target,
                                buy_grade_byte, place_station, place_ring,
                                place_slot, action_id, input_tick);

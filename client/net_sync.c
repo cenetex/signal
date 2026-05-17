@@ -18,6 +18,7 @@
 #define LOCAL_PLAYER_STALE_ACK_DEFER_DIST 200.0f
 #define NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC 0.075f
 #define NET_REPLAY_LATENCY_BLEND_MAX_SEC 0.45f
+#define NET_REPLAY_REBASE_SKEW_TICKS 96
 #define ASTEROID_RENDER_CORRECTION_SEC 0.18f
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
@@ -1090,6 +1091,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
         server_player_t* sp = &g.world.players[state->player_id];
         vec2 before_pos = sp->ship.pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
+        bool force_rebase = false;
         if (state->server_tick != 0 && g.net_prediction_tick_valid) {
             int32_t skew =
                 (int32_t)(g.net_prediction_tick - state->server_tick);
@@ -1097,6 +1099,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
             g.net_motion.tick_skew = skew;
             if (abs_skew > g.net_motion.max_tick_skew_abs)
                 g.net_motion.max_tick_skew_abs = abs_skew;
+            force_rebase = skew > NET_REPLAY_REBASE_SKEW_TICKS;
         }
         bool has_input_ack = state->input_seq_ack != 0;
         bool has_unacked_input =
@@ -1124,16 +1127,25 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool used_replay = false;
         bool used_snap = false;
         bool used_lerp = false;
-        bool defer_motion_correction =
-            should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
-        if (!defer_motion_correction)
-            used_replay =
-                net_replay_reconcile_local_player(state, sp, &replayed_frames);
-        if (!defer_motion_correction && !used_replay) {
+        bool defer_motion_correction = false;
+        if (force_rebase) {
+            apply_authoritative_local_motion(state, sp);
+            net_replay_clear_frames();
+            g.net_prediction_tick = state->server_tick;
+            g.net_prediction_tick_valid = state->server_tick != 0;
+            used_snap = true;
+        } else {
             defer_motion_correction =
                 should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
         }
-        if (!used_replay && !defer_motion_correction) {
+        if (!force_rebase && !defer_motion_correction)
+            used_replay =
+                net_replay_reconcile_local_player(state, sp, &replayed_frames);
+        if (!force_rebase && !defer_motion_correction && !used_replay) {
+            defer_motion_correction =
+                should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
+        }
+        if (!force_rebase && !used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
                 used_snap = true;
                 sp->ship.pos.x = target_x;
