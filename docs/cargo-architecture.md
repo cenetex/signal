@@ -303,10 +303,11 @@ fetching remain future proof-surface work.
 
 Ranked by value-per-effort after the fragment-chain coverage pass.
 
-**1. Extend inspection beyond docked rows.** Trade rows now surface
-representative serial, recipe, parent, origin, epoch, and receipt count
-from local manifests. The next useful slice is scan-to-inspect for held
-cargo, haulers, station stock, and tracked contract matching using the
+**1. Extend inspection beyond the shipped inspect slices.** Trade rows
+now surface representative serial, recipe, parent, origin, epoch, and
+receipt count from local manifests, and NPC/hauler inspect snapshots carry
+the same cargo identity rows. The next useful slice is scan-to-inspect for
+player-held cargo, station stock, and tracked contract matching using the
 same player-facing vocabulary.
 
 **2. Group manifest presentation before showing every hash.** Common

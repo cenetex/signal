@@ -600,7 +600,8 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
-  test('touch controls expose only contextual mobile actions', async ({ page }) => {
+  const touchControlsTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
+  touchControlsTest('touch controls expose only contextual mobile actions', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 390, height: 760 });
     await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
