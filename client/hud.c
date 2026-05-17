@@ -1708,7 +1708,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* Scaffold tow */
     if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
         label[0] = '\0';
-        snprintf(message, message_size, "Towing scaffold. E place, tap SPACE release.");
+        snprintf(message, message_size, "Towing scaffold. [E] place, tap [Space] release.");
         *r = 160; *g0 = 150; *b = 100;
         return true;
     }
@@ -2568,7 +2568,7 @@ void draw_hud(void) {
             sdtx_printf("%s // E launch", dock_role);
         } else if (LOCAL_PLAYER.in_dock_range) {
             sdtx_color3b(PAL_SIGNAL_MINT);
-            sdtx_puts("DOCK RING // E dock");
+            sdtx_puts("DOCK RANGE // E dock");
         } else {
             sdtx_color3b(PAL_NAV_BLUE);
             sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);

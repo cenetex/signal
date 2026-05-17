@@ -1568,7 +1568,7 @@ static void render_world(void) {
                 int stock = (int)lroundf(tst->_inventory_cache[sell_c]);
                 int price = (int)lroundf(station_sell_price(tst, sell_c));
                 if (stock > 0)
-                    sdtx_printf("[Fire] buy 1 @ %dcr  (stock %d)", price, stock);
+                    sdtx_printf("Stock %d // dock to trade @ %d cr", stock, price);
                 else
                     sdtx_puts("Out of stock");
             } else switch (tm->type) {
@@ -1576,7 +1576,7 @@ static void render_world(void) {
                     sdtx_puts("Dock to repair hull");
                     break;
                 case MODULE_DOCK:
-                    sdtx_puts("[Fire] dock");
+                    sdtx_puts("[E] dock");
                     break;
                 case MODULE_SIGNAL_RELAY:
                     sdtx_printf("Signal range %.0f", tst->signal_range);
