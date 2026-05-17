@@ -1676,8 +1676,17 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* Plan mode */
     if (g.plan_mode_active) {
         label[0] = '\0';
-        snprintf(message, message_size, "Planning %s. R cycle, E place, B exit.",
-            module_type_name((module_type_t)g.plan_type));
+        if (g.placement_target_ring > 0 && g.placement_target_slot >= 0) {
+            snprintf(message, message_size,
+                     "Planning %s for ring %d slot %d. R changes type; E places; B exits.",
+                     module_type_name((module_type_t)g.plan_type),
+                     g.placement_target_ring,
+                     g.placement_target_slot);
+        } else {
+            snprintf(message, message_size,
+                     "Planning %s. R changes type; E places; B exits.",
+                     module_type_name((module_type_t)g.plan_type));
+        }
         *r = 130; *g0 = 180; *b = 200;
         return true;
     }

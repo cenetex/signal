@@ -762,7 +762,8 @@ static void plan_mode_handle_ghost_lock(input_intent_t *intent) {
     /* Wait for the server to send back the created station, then switch
      * to real plan mode targeting it. */
     g.plan_mode_grace_until = g.world.time + 1.5f;
-    set_notice("Station locked! [R] type [E] place [B] exit");
+    set_notice("Outpost planned at ring %d slot %d. R changes type; E places; B exits.",
+               g.placement_target_ring, g.placement_target_slot);
 }
 
 /* Plan mode E on a real station: toggle the slot's plan. */
@@ -785,7 +786,8 @@ static void plan_mode_handle_real_place(input_intent_t *intent) {
         intent->cancel_plan_st = (int8_t)ps;
         intent->cancel_plan_ring = (int8_t)pr;
         intent->cancel_plan_sl = (int8_t)psl;
-        set_notice("Plan cleared. [R] type [E] place [B] exit");
+        set_notice("Cleared plan at ring %d slot %d. R changes type; E toggles slot; B exits.",
+                   pr, psl);
         return;
     }
     intent->add_plan = true;
@@ -793,8 +795,8 @@ static void plan_mode_handle_real_place(input_intent_t *intent) {
     intent->plan_ring = (int8_t)pr;
     intent->plan_slot = (int8_t)psl;
     intent->plan_type = (module_type_t)g.plan_type;
-    set_notice("Planned %s. [R] type [E] place [B] exit",
-               module_type_name((module_type_t)g.plan_type));
+    set_notice("Planned %s at ring %d slot %d. R changes type; E toggles slot; B exits.",
+               module_type_name((module_type_t)g.plan_type), pr, psl);
 }
 
 /* Plan mode E dispatch: lock, type-cycle, or place. */
@@ -811,7 +813,7 @@ static void plan_mode_handle_e(input_intent_t *intent, bool ghost_mode) {
         return;
     }
     if (!already && planned_n >= PLAYER_PLAN_TYPE_LIMIT) {
-        set_notice("Plan limit %d types. Cancel one first.", PLAYER_PLAN_TYPE_LIMIT);
+        set_notice("You can plan %d module types. Clear one first.", PLAYER_PLAN_TYPE_LIMIT);
         return;
     }
     if (ghost_mode) plan_mode_handle_ghost_lock(intent);
@@ -846,14 +848,15 @@ static void sample_b_enter_plan(void) {
         g.placement_target_ring = targets[0].ring;
         g.placement_target_slot = targets[0].slot;
         g.plan_target_station = targets[0].station;
-        set_notice("Plan: [R] type [E] place [B] exit");
+        set_notice("Plan mode: ring %d slot %d. R changes type; E places; B exits.",
+                   targets[0].ring, targets[0].slot);
     } else {
         g.plan_mode_active = true;
         g.plan_target_station = -1; /* sentinel: ghost */
         g.placement_target_station = -1;
         g.placement_target_ring = 1;
         g.placement_target_slot = 0;
-        set_notice("Plan: [R] type [E] lock [B] exit");
+        set_notice("Plan mode: new outpost ghost. R changes type; E locks outpost; B exits.");
     }
 }
 
