@@ -321,6 +321,49 @@ async function hudActionText(page: Page): Promise<string> {
   });
 }
 
+async function mobileControlFlags(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_mobile_control_flags', 'number', [], []) | 0;
+  });
+}
+
+async function expectTouchControlsFit(page: Page): Promise<void> {
+  const problems = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.signal-touch-button'));
+    const visible = buttons.filter((el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return !el.hidden && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+    });
+    const issues: string[] = [];
+
+    for (const el of visible) {
+      if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
+        issues.push(`${el.dataset.control || 'button'} text overflow`);
+      }
+    }
+
+    for (let i = 0; i < visible.length; i++) {
+      const a = visible[i].getBoundingClientRect();
+      for (let j = i + 1; j < visible.length; j++) {
+        const b = visible[j].getBoundingClientRect();
+        const overlapX = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+        const overlapY = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        if (overlapX > 1 && overlapY > 1) {
+          issues.push(`${visible[i].dataset.control || 'button'} overlaps ${visible[j].dataset.control || 'button'}`);
+        }
+      }
+    }
+
+    return issues;
+  });
+  expect(problems).toEqual([]);
+}
+
 async function setSmokeLoopState(page: Page, state: number): Promise<void> {
   const ok = await page.evaluate((nextState) => {
     const mod = (window as unknown as {
@@ -339,6 +382,12 @@ const smokeLoopState = {
   towing: 4,
   hailReady: 5,
   hailNotice: 6,
+} as const;
+
+const mobileFlag = {
+  docked: 1 << 0,
+  planActive: 1 << 3,
+  canFlight: 1 << 16,
 } as const;
 
 async function waitForRenderedGame(
@@ -549,6 +598,45 @@ test.describe('Browser smoke tests', () => {
       .toBeGreaterThan(0.05);
 
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('touch controls expose only contextual mobile actions', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.docked, { timeout: 5_000 })
+      .toBe(mobileFlag.docked);
+    await expect(page.locator('[data-control="use"]')).toHaveText('Launch');
+    await expect(page.locator('[data-control="left"]')).toBeHidden();
+    await expect(page.locator('[data-control="thrust"]')).toBeHidden();
+    await expect(page.locator('[data-control="tab"]')).toBeVisible();
+    await expectTouchControlsFit(page);
+
+    await page.locator('[data-control="use"]').click();
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canFlight, { timeout: 8_000 })
+      .toBe(mobileFlag.canFlight);
+    await expect(page.locator('[data-control="left"]')).toBeVisible();
+    await expect(page.locator('[data-control="right"]')).toBeVisible();
+    await expect(page.locator('[data-control="boost"]')).toBeVisible();
+    await expect(page.locator('[data-control="thrust"]')).toBeVisible();
+    await expect(page.locator('[data-control="brake"]')).toBeVisible();
+    await expect(page.locator('[data-control="tab"]')).toBeHidden();
+    await expectTouchControlsFit(page);
+
+    await page.locator('[data-control="plan"]').click();
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.planActive, { timeout: 5_000 })
+      .toBe(mobileFlag.planActive);
+    await expect(page.locator('[data-control="plan"]')).toHaveText('Exit');
+    await expect(page.locator('[data-control="cycle"]')).toBeVisible();
+    await expect(page.locator('[data-control="fire"]')).toBeHidden();
+    await expectTouchControlsFit(page);
+
+    expectNoFatalErrors(logs);
   });
 
   test('high-latency multiplayer correction telemetry stays bounded', async ({ page }) => {

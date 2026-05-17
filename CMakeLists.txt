@@ -410,6 +410,8 @@ if(EMSCRIPTEN)
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
+        "'_signal_mobile_control_flags'"
+        "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
         "'_signal_mobile_clear'"
         "'_signal_net_transport_open'"
@@ -433,17 +435,30 @@ if(EMSCRIPTEN)
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
     )
-    # Copy play.html into the build-web output dir so it's reachable from
-    # the SimpleHTTP server (and so docker bind-mounts of build-web serve
-    # it without needing the image's COPY layer).
-    add_custom_command(TARGET signal POST_BUILD
+    # Copy static web assets into build-web as real dependencies so JS-only
+    # iteration updates the local smoke-test server without forcing a relink.
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/play.html
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
+                ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
+                ${CMAKE_CURRENT_BINARY_DIR}/play.html
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-touch-controls.js
+                ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-touch-controls.js
+        VERBATIM
+    )
+    add_custom_target(signal_web_assets
+        DEPENDS
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-touch-controls.js
             ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
     )
+    add_dependencies(signal signal_web_assets)
 elseif(APPLE)
     target_link_libraries(signal PRIVATE
         objc

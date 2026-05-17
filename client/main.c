@@ -2406,6 +2406,174 @@ static void event(const sapp_event* event) {
 }
 
 #ifdef __EMSCRIPTEN__
+enum {
+    MOBILE_CTRL_DOCKED            = 1u << 0,
+    MOBILE_CTRL_IN_DOCK_RANGE     = 1u << 1,
+    MOBILE_CTRL_DOCKING_APPROACH  = 1u << 2,
+    MOBILE_CTRL_PLAN_ACTIVE       = 1u << 3,
+    MOBILE_CTRL_PLAN_GHOST        = 1u << 4,
+    MOBILE_CTRL_TOWING_SCAFFOLD   = 1u << 5,
+    MOBILE_CTRL_TARGET_MODULE     = 1u << 6,
+    MOBILE_CTRL_TARGET_DOCK       = 1u << 7,
+    MOBILE_CTRL_INSPECTING_TARGET = 1u << 8,
+    MOBILE_CTRL_STATION_DOCK      = 1u << 9,
+    MOBILE_CTRL_STATION_TRADE     = 1u << 10,
+    MOBILE_CTRL_STATION_WORK      = 1u << 11,
+    MOBILE_CTRL_STATION_YARD      = 1u << 12,
+    MOBILE_CTRL_HAS_CARGO         = 1u << 13,
+    MOBILE_CTRL_AUTOPILOT_ON      = 1u << 14,
+    MOBILE_CTRL_AUTOPILOT_READY   = 1u << 15,
+    MOBILE_CTRL_CAN_FLIGHT        = 1u << 16,
+    MOBILE_CTRL_CAN_MINE          = 1u << 17,
+    MOBILE_CTRL_CAN_TRACTOR       = 1u << 18,
+    MOBILE_CTRL_CAN_SCAN          = 1u << 19,
+    MOBILE_CTRL_CAN_USE           = 1u << 20,
+    MOBILE_CTRL_CAN_PLAN          = 1u << 21,
+    MOBILE_CTRL_CAN_CYCLE         = 1u << 22,
+    MOBILE_CTRL_CAN_PAGE          = 1u << 23,
+    MOBILE_CTRL_CAN_SELL          = 1u << 24,
+    MOBILE_CTRL_CAN_DIGITS        = 1u << 25,
+    MOBILE_CTRL_CAN_REPAIR        = 1u << 26,
+    MOBILE_CTRL_CAN_UPGRADE_MINE  = 1u << 27,
+    MOBILE_CTRL_CAN_UPGRADE_HOLD  = 1u << 28,
+    MOBILE_CTRL_CAN_UPGRADE_TOW   = 1u << 29,
+};
+
+EMSCRIPTEN_KEEPALIVE
+int signal_mobile_control_flags(void) {
+    uint32_t flags = MOBILE_CTRL_CAN_SCAN;
+    const bool docked = LOCAL_PLAYER.docked;
+
+    if (docked) {
+        flags |= MOBILE_CTRL_DOCKED | MOBILE_CTRL_CAN_USE;
+        switch (g.station_view) {
+        case STATION_VIEW_DOCK:  flags |= MOBILE_CTRL_STATION_DOCK; break;
+        case STATION_VIEW_TRADE: flags |= MOBILE_CTRL_STATION_TRADE |
+                                       MOBILE_CTRL_CAN_PAGE |
+                                       MOBILE_CTRL_CAN_SELL |
+                                       MOBILE_CTRL_CAN_DIGITS; break;
+        case STATION_VIEW_WORK:  flags |= MOBILE_CTRL_STATION_WORK |
+                                       MOBILE_CTRL_CAN_SELL |
+                                       MOBILE_CTRL_CAN_DIGITS; break;
+        case STATION_VIEW_YARD:  flags |= MOBILE_CTRL_STATION_YARD |
+                                       MOBILE_CTRL_CAN_DIGITS; break;
+        case STATION_VIEW_COUNT: break;
+        }
+
+        if (g.station_view == STATION_VIEW_DOCK) {
+            station_ui_state_t ui = { 0 };
+            build_station_ui_state(&ui);
+            if (ui.can_repair)          flags |= MOBILE_CTRL_CAN_REPAIR;
+            if (ui.can_upgrade_mining)  flags |= MOBILE_CTRL_CAN_UPGRADE_MINE;
+            if (ui.can_upgrade_hold)    flags |= MOBILE_CTRL_CAN_UPGRADE_HOLD;
+            if (ui.can_upgrade_tractor) flags |= MOBILE_CTRL_CAN_UPGRADE_TOW;
+        }
+    } else {
+        flags |= MOBILE_CTRL_CAN_FLIGHT;
+        if (!g.plan_mode_active) {
+            flags |= MOBILE_CTRL_CAN_MINE | MOBILE_CTRL_CAN_TRACTOR;
+        }
+        if (!g.plan_mode_active && LOCAL_PLAYER.ship.towed_scaffold < 0)
+            flags |= MOBILE_CTRL_CAN_PLAN;
+    }
+
+    if (LOCAL_PLAYER.in_dock_range) flags |= MOBILE_CTRL_IN_DOCK_RANGE;
+    if (LOCAL_PLAYER.docking_approach) flags |= MOBILE_CTRL_DOCKING_APPROACH;
+    if (ship_total_cargo(&LOCAL_PLAYER.ship) > 0.0f)
+        flags |= MOBILE_CTRL_HAS_CARGO;
+
+    if (g.plan_mode_active) {
+        flags |= MOBILE_CTRL_PLAN_ACTIVE | MOBILE_CTRL_CAN_USE |
+                 MOBILE_CTRL_CAN_PLAN | MOBILE_CTRL_CAN_CYCLE;
+        if (g.plan_target_station < 0) flags |= MOBILE_CTRL_PLAN_GHOST;
+    }
+
+    if (!docked && LOCAL_PLAYER.ship.towed_scaffold >= 0)
+        flags |= MOBILE_CTRL_TOWING_SCAFFOLD | MOBILE_CTRL_CAN_USE;
+
+    if (!docked && LOCAL_PLAYER.in_dock_range)
+        flags |= MOBILE_CTRL_CAN_USE;
+
+    if (!docked && g.target_station >= 0 && g.target_station < MAX_STATIONS &&
+        g.target_module >= 0) {
+        const station_t *st = &g.world.stations[g.target_station];
+        if (g.target_module < st->module_count) {
+            flags |= MOBILE_CTRL_TARGET_MODULE | MOBILE_CTRL_CAN_USE;
+            if (st->modules[g.target_module].type == MODULE_DOCK)
+                flags |= MOBILE_CTRL_TARGET_DOCK;
+            if (g.inspect_station == g.target_station &&
+                g.inspect_module == g.target_module)
+                flags |= MOBILE_CTRL_INSPECTING_TARGET;
+        }
+    }
+
+    if (LOCAL_PLAYER.autopilot_mode) {
+        flags |= MOBILE_CTRL_AUTOPILOT_ON | MOBILE_CTRL_AUTOPILOT_READY;
+    } else if (signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos) >=
+               SIGNAL_BAND_OPERATIONAL) {
+        flags |= MOBILE_CTRL_AUTOPILOT_READY;
+    }
+
+    return (int)flags;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_mobile_digit_mask(void) {
+    if (!LOCAL_PLAYER.docked) return 0;
+    const station_t *st = current_station_ptr();
+    if (!st) return 0;
+
+    int mask = 0;
+    switch (g.station_view) {
+    case STATION_VIEW_TRADE: {
+        trade_row_t rows[TRADE_MAX_ROWS];
+        int row_count = build_trade_rows(st, &LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
+        int page_first = 0, page_last = 0, total_pages = 1;
+        trade_page_range(rows, row_count, (int)g.trade_page,
+                         &page_first, &page_last, &total_pages);
+        if ((int)g.trade_page >= total_pages) {
+            trade_page_range(rows, row_count, 0,
+                             &page_first, &page_last, &total_pages);
+        }
+        for (int i = 0; i < 5 && page_first + i < page_last; i++) {
+            if (rows[page_first + i].actionable) mask |= (1 << i);
+        }
+        break;
+    }
+    case STATION_VIEW_WORK: {
+        int slot_contract[3] = {-1, -1, -1};
+        bool slot_fulfillable[3] = {false, false, false};
+        int slot_held[3] = {0, 0, 0};
+        vec2 here_pos = st->pos;
+        (void)build_work_slots(LOCAL_PLAYER.current_station, here_pos,
+                               slot_contract, slot_fulfillable, slot_held);
+        for (int i = 0; i < 3; i++) {
+            if (slot_contract[i] >= 0) mask |= (1 << i);
+        }
+        break;
+    }
+    case STATION_VIEW_YARD: {
+        if (!station_has_module(st, MODULE_SHIPYARD)) break;
+        int shown = 0;
+        for (int t = 0; t < MODULE_COUNT && shown < 5; t++) {
+            module_type_t kit = (module_type_t)t;
+            if (module_kind(kit) == MODULE_KIND_NONE) continue;
+            if (!station_has_module(st, kit)) continue;
+            if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit))
+                continue;
+            mask |= (1 << shown);
+            shown++;
+        }
+        break;
+    }
+    case STATION_VIEW_DOCK:
+    case STATION_VIEW_COUNT:
+        break;
+    }
+
+    return mask;
+}
+
 static sapp_keycode mobile_action_key(int action) {
     switch (action) {
     case 1:  return SAPP_KEYCODE_W;          /* thrust */
@@ -2422,6 +2590,8 @@ static sapp_keycode mobile_action_key(int action) {
     case 12: return SAPP_KEYCODE_TAB;        /* station view */
     case 13: return SAPP_KEYCODE_F;          /* trade page */
     case 14: return SAPP_KEYCODE_S;          /* sell / deliver */
+    case 15: return SAPP_KEYCODE_C;          /* cargo hold upgrade */
+    case 16: return SAPP_KEYCODE_T;          /* tractor upgrade */
     case 20: return SAPP_KEYCODE_1;
     case 21: return SAPP_KEYCODE_2;
     case 22: return SAPP_KEYCODE_3;
