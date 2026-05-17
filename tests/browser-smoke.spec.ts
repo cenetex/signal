@@ -501,6 +501,8 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
 }
 
 test.describe('Browser smoke tests', () => {
+  const rootBundleSmokeTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
+
   test('boots, renders, and persists browser identity across reload', async ({ page }) => {
     const logs = installFatalCollectors(page);
 
@@ -551,7 +553,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
-  test('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
+  rootBundleSmokeTest('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });
@@ -577,7 +579,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  test('exposes deterministic HUD copy for plan, snap, and construction supply states', async ({ page }) => {
+  rootBundleSmokeTest('exposes deterministic HUD copy for plan, snap, and construction supply states', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });
@@ -624,8 +626,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
-  const touchControlsTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
-  touchControlsTest('touch controls expose only contextual mobile actions', async ({ page }) => {
+  rootBundleSmokeTest('touch controls expose only contextual mobile actions', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 390, height: 760 });
     await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
