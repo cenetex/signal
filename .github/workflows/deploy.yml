@@ -511,7 +511,7 @@ jobs:
       - name: Smoke test before root client promotion
         id: smoke-pre-promote
         continue-on-error: true
-        run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
+        run: SIGNAL_PRE_PROMOTION_SMOKE=1 SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
 
       - name: Upload pre-promotion smoke results
         if: steps.smoke-pre-promote.outcome == 'failure'
