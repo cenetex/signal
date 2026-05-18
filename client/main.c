@@ -1012,15 +1012,17 @@ static void sim_step(float dt) {
         g.selected_contract = -1; /* fresh dock — no carryover selection */
         reset_trade_session_rows(LOCAL_PLAYER.current_station);
         /* Clear blueprint pip if we docked at the blueprint station */
-        if (st && g.nav_pip_is_blueprint) {
-            float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
-            if (d < 200.0f) {
-                g.nav_pip_is_blueprint = false;
+        if (st) {
+            if (g.nav_pip_is_blueprint) {
+                float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
+                if (d < 200.0f) {
+                    g.nav_pip_is_blueprint = false;
+                    g.nav_pip_pos = st->pos;
+                }
+            } else {
+                g.nav_pip_active = true;
                 g.nav_pip_pos = st->pos;
             }
-        } else {
-            g.nav_pip_active = true;
-            g.nav_pip_pos = st->pos;
         }
     }
     submit_input(&intent, dt);
