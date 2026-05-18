@@ -1704,92 +1704,6 @@ static void ws_send_binary(const uint8_t* data, int len) {
     emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
 }
 
-void net_send_session(const uint8_t token[8]) {
-    uint8_t buf[9];
-    buf[0] = NET_MSG_SESSION;
-    memcpy(&buf[1], token, 8);
-    ws_send_binary(buf, 9);
-    send_pubkey_proof_for_token(token);
-}
-
-void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
-                    uint16_t mining_target,
-                    uint8_t buy_grade, int8_t place_station,
-                    int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id, uint32_t input_tick) {
-    uint8_t buf[18];
-    buf[0] = NET_MSG_INPUT;
-    buf[1] = flags;
-    buf[2] = action;
-    buf[3] = (mining_target == 0xFFFFu) ? 0xFFu : (uint8_t)(mining_target & 0xFFu);
-    buf[4] = buy_grade;
-    /* int8 -> uint8 round-trip preserves sentinel -1 (=> 0xFF). */
-    buf[5] = (uint8_t)place_station;
-    buf[6] = (uint8_t)place_ring;
-    buf[7] = (uint8_t)place_slot;
-    buf[8] = (uint8_t)(input_seq & 0xFFu);
-    buf[9] = (uint8_t)(input_seq >> 8);
-    buf[10] = (uint8_t)(mining_target & 0xFFu);
-    buf[11] = (uint8_t)(mining_target >> 8);
-    buf[12] = (uint8_t)(action_id & 0xFFu);
-    buf[13] = (uint8_t)(action_id >> 8);
-    write_u32_le(&buf[14], input_tick);
-    ws_send_binary(buf, 18);
-}
-
-void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
-    if (net_send_signed_action(SIGNED_ACTION_BUY_INGOT,
-                               ingot_pubkey, 32)) {
-        return;
-    }
-    uint8_t buf[33];
-    buf[0] = NET_MSG_BUY_INGOT;
-    memcpy(&buf[1], ingot_pubkey, 32);
-    ws_send_binary(buf, 33);
-}
-
-void net_send_deliver_ingot(uint8_t hold_index) {
-    if (net_send_signed_action(SIGNED_ACTION_DELIVER,
-                               &hold_index, 1)) {
-        return;
-    }
-    uint8_t buf[2];
-    buf[0] = NET_MSG_DELIVER_INGOT;
-    buf[1] = hold_index;
-    ws_send_binary(buf, 2);
-}
-
-void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
-                   uint8_t module_type, float px, float py) {
-    uint8_t buf[NET_PLAN_MSG_SIZE];
-    buf[0] = NET_MSG_PLAN;
-    buf[1] = op;
-    buf[2] = (uint8_t)station;
-    buf[3] = (uint8_t)ring;
-    buf[4] = (uint8_t)slot;
-    buf[5] = module_type;
-    write_f32_le(&buf[6], px);
-    write_f32_le(&buf[10], py);
-    if (net_send_signed_action(SIGNED_ACTION_PLAN,
-                               &buf[1], NET_PLAN_MSG_SIZE - 1)) {
-        return;
-    }
-    ws_send_binary(buf, NET_PLAN_MSG_SIZE);
-}
-
-void net_send_state(float x, float y, float vx, float vy, float angle) {
-    uint8_t buf[23];
-    buf[0] = NET_MSG_STATE;
-    buf[1] = net_state.local_id;
-    write_f32_le(&buf[2], x);
-    write_f32_le(&buf[6], y);
-    write_f32_le(&buf[10], vx);
-    write_f32_le(&buf[14], vy);
-    write_f32_le(&buf[18], angle);
-    buf[22] = 0;
-    ws_send_binary(buf, 23);
-}
-
 void net_poll(void) {
     /* Emscripten WebSocket callbacks fire on the main thread automatically. */
 }
@@ -1890,6 +1804,27 @@ void net_shutdown(void) {
     net_state.connected = false;
 }
 
+bool net_reconnect(void) {
+    /* Native: reconnect via mongoose */
+    if (net_state.server_url[0] == '\0') return false;
+    if (ws_conn) { ws_conn->is_closing = 1; ws_conn = NULL; }
+    net_state.connected = false;
+    net_state.local_id = 0xFF;
+    net_state.server_hash[0] = '\0';
+    memset(net_state.players, 0, sizeof(net_state.players));
+    ws_conn = mg_ws_connect(&net_mgr, net_state.server_url, net_ev_handler, NULL, NULL);
+    printf("[net] reconnecting to %s\n", net_state.server_url);
+    return ws_conn != NULL;
+}
+
+void net_poll(void) {
+    if (mgr_initialized) {
+        mg_mgr_poll(&net_mgr, 0);  /* non-blocking */
+    }
+}
+
+#endif /* __EMSCRIPTEN__ */
+
 void net_send_session(const uint8_t token[8]) {
     uint8_t buf[9];
     buf[0] = NET_MSG_SESSION;
@@ -1975,27 +1910,6 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     buf[22] = 0;
     ws_send_binary(buf, 23);
 }
-
-bool net_reconnect(void) {
-    /* Native: reconnect via mongoose */
-    if (net_state.server_url[0] == '\0') return false;
-    if (ws_conn) { ws_conn->is_closing = 1; ws_conn = NULL; }
-    net_state.connected = false;
-    net_state.local_id = 0xFF;
-    net_state.server_hash[0] = '\0';
-    memset(net_state.players, 0, sizeof(net_state.players));
-    ws_conn = mg_ws_connect(&net_mgr, net_state.server_url, net_ev_handler, NULL, NULL);
-    printf("[net] reconnecting to %s\n", net_state.server_url);
-    return ws_conn != NULL;
-}
-
-void net_poll(void) {
-    if (mgr_initialized) {
-        mg_mgr_poll(&net_mgr, 0);  /* non-blocking */
-    }
-}
-
-#endif /* __EMSCRIPTEN__ */
 
 /* ---------- Common accessors --------------------------------------------- */
 

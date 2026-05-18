@@ -304,34 +304,6 @@ static void crystal_spike_corners(const asteroid_t *a, int i, int n,
     }
 }
 
-void draw_crystal_asteroid_fill(const asteroid_t *a) {
-    int n = crystal_spike_count(a);
-    for (int i = 0; i < n; i++) {
-        float wx[4], wy[4];
-        crystal_spike_corners(a, i, n, wx, wy);
-        /* Two CCW triangles cover the rectangle. Caller has already
-         * pushed the body color and opened sgl_begin_triangles. */
-        sgl_v2f(wx[0], wy[0]); sgl_v2f(wx[1], wy[1]); sgl_v2f(wx[2], wy[2]);
-        sgl_v2f(wx[0], wy[0]); sgl_v2f(wx[2], wy[2]); sgl_v2f(wx[3], wy[3]);
-    }
-}
-
-void draw_crystal_asteroid_outline(const asteroid_t *a, float r, float g, float b, float alpha) {
-    int n = crystal_spike_count(a);
-    sgl_c4f(r, g, b, alpha);
-    sgl_begin_lines();
-    for (int i = 0; i < n; i++) {
-        float wx[4], wy[4];
-        crystal_spike_corners(a, i, n, wx, wy);
-        for (int k = 0; k < 4; k++) {
-            int next = (k + 1) % 4;
-            sgl_v2f(wx[k],    wy[k]);
-            sgl_v2f(wx[next], wy[next]);
-        }
-    }
-    sgl_end();
-}
-
 static int asteroid_render_base_segments(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 28;

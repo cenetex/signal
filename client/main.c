@@ -6,7 +6,6 @@
 #include "npc.h"
 #include "render.h"
 #include "rng.h"
-#include "asteroid_field.h"
 #include "net.h"
 #include "world_draw.h"
 #include "signal_model.h"
@@ -66,11 +65,10 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* ship_total_cargo, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
-/* format_ingot_stock_line: see station_ui.c */
 /* station_at ... navigation_station_ptr: see station_ui.c */
 /* station_role_name, station_role_short_name: see station_ui.c */
 /* build_station_ui_state, format_station_* helpers: see station_ui.c */
-/* station_role_hub_label, station_role_market_title, station_role_fit_title: see station_ui.c */
+/* station_role_hub_label: see station_ui.c */
 /* station_role_color: see station_ui.c */
 /* can_afford_upgrade: see economy.h/c */
 
@@ -135,10 +133,6 @@ static void clear_collection_feedback(void) {
     g.collection_feedback_fragments = 0;
     g.collection_feedback_timer = 0.0f;
 }
-
-/* random_field_asteroid_tier, client_max_signal_range, spawn_field_asteroid_of_tier,
- * spawn_field_asteroid, spawn_child_asteroid, desired_child_count,
- * inspect_asteroid_field: see asteroid_field.h/c */
 
 static void init_starfield(void) {
     for (int i = 0; i < MAX_STARS; i++) {

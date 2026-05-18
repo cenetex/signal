@@ -134,7 +134,6 @@ set(SIGNAL_CLIENT_SOURCES
     client/hud.c
     client/world_draw.c
     client/audio.c
-    client/asteroid_field.c
     client/npc.c
     client/render.c
     client/input.c

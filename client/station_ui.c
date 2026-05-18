@@ -48,20 +48,6 @@ int nearest_station_index(vec2 pos) {
     return best_index;
 }
 
-int nearest_signal_station(vec2 pos) {
-    float best = 0.0f;
-    int best_idx = -1;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        const station_t *st = &g.world.stations[s];
-        if (!station_provides_signal(st)) continue;
-        float dist = sqrtf(v2_dist_sq(pos, st->pos));
-        if (dist > st->signal_range) continue;
-        float strength = 1.0f - dist / st->signal_range;
-        if (strength > best) { best = strength; best_idx = s; }
-    }
-    return (best_idx >= 0) ? best_idx : nearest_station_index(pos);
-}
-
 int player_planned_types(module_type_t *out, int max) {
     if (!out || max <= 0) return 0;
     /* Faction-shared blueprints: count distinct types across all
@@ -133,30 +119,6 @@ const char* station_role_hub_label(const station_t* station) {
     }
 }
 
-const char* station_role_market_title(const station_t* station) {
-    module_type_t dom = station_dominant_module(station);
-    switch (dom) {
-        case MODULE_FURNACE:     return "SMELTER";
-        case MODULE_FRAME_PRESS: return "FRAME BAY";
-        case MODULE_LASER_FAB:   return "FIELD BENCH";
-        case MODULE_TRACTOR_FAB: return "FIELD BENCH";
-        case MODULE_SIGNAL_RELAY:return "OUTPOST";
-        default:                 return "MARKET";
-    }
-}
-
-const char* station_role_fit_title(const station_t* station) {
-    module_type_t dom = station_dominant_module(station);
-    switch (dom) {
-        case MODULE_FURNACE:     return "HAUL";
-        case MODULE_FRAME_PRESS: return "FIT";
-        case MODULE_LASER_FAB:   return "TUNING";
-        case MODULE_TRACTOR_FAB: return "TUNING";
-        case MODULE_SIGNAL_RELAY:return "OUTPOST";
-        default:                 return "STATUS";
-    }
-}
-
 void station_role_color(const station_t* station, float* r, float* g0, float* b) {
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
@@ -180,18 +142,6 @@ static bool can_afford_upgrade_manifest_ui(const station_t *station,
                                            const ship_t *ship,
                                            ship_upgrade_t upgrade,
                                            float balance);
-
-void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
-    int fe = station_manifest_count_c(station, COMMODITY_FERRITE_INGOT);
-    int cu = station_manifest_count_c(station, COMMODITY_CUPRITE_INGOT);
-    int cr = station_manifest_count_c(station, COMMODITY_CRYSTAL_INGOT);
-    /* Use full short names so the player can parse the line without
-     * memorising 2-letter ingot codes (FR/CO/LN are non-obvious). */
-    snprintf(text, text_size, "%s %d  %s %d  %s %d",
-        commodity_short_name(COMMODITY_FERRITE_INGOT), fe,
-        commodity_short_name(COMMODITY_CUPRITE_INGOT), cu,
-        commodity_short_name(COMMODITY_CRYSTAL_INGOT), cr);
-}
 
 /* ------------------------------------------------------------------ */
 /* WORK-tab contract slot builder                                      */

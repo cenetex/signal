@@ -22,14 +22,6 @@ float cam_bottom(void);
 /* --- Asteroid helpers --- */
 float asteroid_profile(const asteroid_t* asteroid, float angle);
 
-/* Crystal-ore asteroids use constructed rectangle geometry instead of
- * the polar profile path (rectangles can't be expressed as a single
- * radius-per-angle without rounding the corners). The fill helper is
- * called inside an open sgl_begin_triangles() / sgl_end() batch; the
- * outline helper opens its own sgl_begin_lines/end. */
-void draw_crystal_asteroid_fill(const asteroid_t *a);
-void draw_crystal_asteroid_outline(const asteroid_t *a, float r, float g, float b, float alpha);
-
 /* Number of rectangle "spikes" a crystal asteroid renders with — 3 for
  * fragments and small clusters, 5 for the larger ones. Same math is
  * used by the AABB / hit-test code if any. */
@@ -69,7 +61,6 @@ void draw_shipyard_intake_beams(void);
 void draw_placement_reticle(void);
 
 /* --- Signal field helpers --- */
-int nearest_signal_station(vec2 pos);
 void draw_signal_borders(void);
 
 /* --- Compass ring --- */

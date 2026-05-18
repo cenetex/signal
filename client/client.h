@@ -674,8 +674,6 @@ void draw_ui_rule(float x0, float x1, float y, float r, float g0, float b, float
 void draw_ui_panel(float x, float y, float width, float height, float accent);
 void draw_ui_scrim(float alpha);
 void draw_ui_meter(float x, float y, float width, float height, float fill, float r, float g0, float b);
-void draw_upgrade_pips(float x, float y, int level, float r, float g0, float b);
-void draw_service_card(float x, float y, float width, float height, float accent_r, float accent_g, float accent_b, bool hot);
 
 /* HUD layout helpers */
 void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h,
@@ -730,8 +728,6 @@ int build_work_slots(int here_idx, vec2 here_pos,
 
 /* Station label/color helpers */
 const char* station_role_hub_label(const station_t* station);
-const char* station_role_market_title(const station_t* station);
-const char* station_role_fit_title(const station_t* station);
 const char* station_role_name(const station_t* station);
 const char* station_role_short_name(const station_t* station);
 void station_role_color(const station_t* station, float* r, float* g0, float* b);
@@ -741,7 +737,6 @@ const station_t* station_at(int station_index);
 const station_t* current_station_ptr(void);
 const station_t* nearby_station_ptr(void);
 int nearest_station_index(vec2 pos);
-int nearest_signal_station(vec2 pos);
 const station_t* navigation_station_ptr(void);
 
 /* (Old MARKET / STATUS formatter helpers retired in the docked-UI

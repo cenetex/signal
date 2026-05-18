@@ -176,7 +176,7 @@ not a thing you can put your hand on.
 | NPC tow | NPCs use a *different* shape: `npc_ship_t.towed_fragment` (single int16, not an array) in `shared/types.h`. NPC ships only tow one fragment at a time. |
 | Tow-add site | `server/game_sim.c` tractor collection. Fragment ownership is stamped via `last_towed_by` and `last_towed_token[8]` at the same instant. |
 | Tow-remove sites (player) | `server/sim_production.c` for smelt completion; `server/game_sim.c` for asteroid destruction, band snap, station-beam landing, and manual `R` release. |
-| Fragment generation | Initial spawn from `shared/belt.c` and `client/asteroid_field.c`. Fracture children created in `server/sim_asteroid.c`. |
+| Fragment generation | Initial spawn/materialization from `shared/belt.c` and `server/sim_asteroid.c`. Fracture children are also created in `server/sim_asteroid.c`. |
 
 ### Bulk float
 
@@ -374,7 +374,7 @@ instrumenting before optimizing.
 | `server/sim_save.c` | Save format, including the manifest persistence and migration paths |
 | `server/chain_log.h` / `chain_log.c` | Append-only signed event log per station |
 | `server/cargo_receipt_issue.c` | `CHAIN_EVT_TRANSFER` emission |
-| `shared/belt.c` / `client/asteroid_field.c` / `server/sim_asteroid.c` | Fragment generation and fracture |
+| `shared/belt.c` / `server/sim_asteroid.c` | Fragment generation and fracture |
 
 ---
 

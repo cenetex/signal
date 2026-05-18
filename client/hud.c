@@ -1513,38 +1513,6 @@ void draw_ui_meter(float x, float y, float width, float height, float fill, floa
     draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.12f, 0.22f, 0.32f, 0.48f);
 }
 
-void draw_upgrade_pips(float x, float y, int level, float r, float g0, float b) {
-    const float pip_w = 16.0f;
-    const float pip_h = 7.0f;
-    const float gap = 6.0f;
-
-    for (int i = 0; i < SHIP_UPGRADE_MAX_LEVEL; i++) {
-        float px = x + ((pip_w + gap) * (float)i);
-        float alpha = i < level ? 0.95f : 0.35f;
-        draw_rect_centered(v2(px + (pip_w * 0.5f), y + (pip_h * 0.5f)), pip_w * 0.5f, pip_h * 0.5f,
-            i < level ? r : 0.12f,
-            i < level ? g0 : 0.18f,
-            i < level ? b : 0.24f,
-            alpha);
-        draw_rect_outline(v2(px + (pip_w * 0.5f), y + (pip_h * 0.5f)), pip_w * 0.5f, pip_h * 0.5f, 0.18f, 0.30f, 0.42f, 0.88f);
-    }
-}
-
-void draw_service_card(float x, float y, float width, float height, float accent_r, float accent_g, float accent_b, bool hot) {
-    vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
-    float border_a = hot ? 0.84f : 0.30f;
-    float accent_a = hot ? 0.92f : 0.48f;
-    float body_tint = hot ? 0.10f : 0.06f;
-    float status_w = fminf(92.0f, width * 0.24f);
-
-    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.025f, body_tint, 0.09f, 0.94f);
-    draw_rect_centered(v2(x + width - (status_w * 0.5f) - 8.0f, y + (height * 0.5f)), status_w * 0.5f, (height * 0.5f) - 5.0f, 0.02f, 0.05f, 0.08f, 0.92f);
-    draw_rect_centered(v2(x + 4.0f, y + (height * 0.5f)), 3.0f, height * 0.5f, accent_r, accent_g, accent_b, accent_a);
-    draw_ui_rule(x + 14.0f, x + fminf(90.0f, width * 0.20f), y + 8.0f, accent_r, accent_g, accent_b, hot ? 0.78f : 0.38f);
-    draw_ui_rule(x + 10.0f, x + width - 10.0f, y + height - 2.0f, accent_r * 0.5f, accent_g * 0.5f, accent_b * 0.5f, hot ? 0.26f : 0.14f);
-    draw_rect_outline(center, width * 0.5f, height * 0.5f, accent_r * 0.30f, accent_g * 0.30f, accent_b * 0.30f, border_a);
-}
-
 /* ------------------------------------------------------------------ */
 /* HUD layout rects                                                    */
 /* ------------------------------------------------------------------ */
