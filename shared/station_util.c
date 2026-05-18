@@ -799,6 +799,102 @@ const char *station_flow_diag_label(station_flow_diag_t diag) {
     }
 }
 
+station_flow_diag_t station_module_flow_diag_view(const station_t *st,
+                                                  int module_index,
+                                                  bool mirrored_authoritative)
+{
+    if (!st || module_index < 0 || module_index >= st->module_count ||
+        module_index >= MAX_MODULES_PER_STATION) {
+        return STATION_FLOW_DIAG_NONE;
+    }
+    if (mirrored_authoritative)
+        return (station_flow_diag_t)st->module_diag[module_index];
+    if (st->module_diag[module_index] != STATION_FLOW_DIAG_NONE)
+        return (station_flow_diag_t)st->module_diag[module_index];
+    return station_module_flow_diag(st, module_index);
+}
+
+static int station_flow_diag_rank(station_flow_diag_t diag)
+{
+    switch (diag) {
+    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return 60;
+    case STATION_FLOW_DIAG_OUTPUT_FULL:     return 50;
+    case STATION_FLOW_DIAG_CONSUMER_FULL:   return 49;
+    case STATION_FLOW_DIAG_NO_CONSUMER:     return 48;
+    case STATION_FLOW_DIAG_NO_INPUT:        return 47;
+    case STATION_FLOW_DIAG_SLOW_FEED:       return 30;
+    case STATION_FLOW_DIAG_RUNNING:         return 10;
+    case STATION_FLOW_DIAG_NONE:
+    default:                                return 0;
+    }
+}
+
+bool station_flow_summary(const station_t *st, bool mirrored_authoritative,
+                          station_flow_summary_t *out)
+{
+    if (!out) return false;
+    *out = (station_flow_summary_t){
+        .diag = STATION_FLOW_DIAG_NONE,
+        .module_index = -1,
+        .module_type = MODULE_COUNT,
+        .active_count = 0,
+    };
+    if (!st) return false;
+
+    int best_rank = 0;
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+        station_flow_diag_t diag =
+            station_module_flow_diag_view(st, i, mirrored_authoritative);
+        if (diag == STATION_FLOW_DIAG_NONE) continue;
+        if (diag == STATION_FLOW_DIAG_RUNNING) out->active_count++;
+        int rank = station_flow_diag_rank(diag);
+        if (rank > best_rank) {
+            best_rank = rank;
+            out->diag = diag;
+            out->module_index = i;
+            out->module_type = st->modules[i].type;
+        }
+    }
+
+    if (out->module_index >= 0 && out->diag != STATION_FLOW_DIAG_RUNNING)
+        return true;
+    if (out->active_count > 0) {
+        out->diag = STATION_FLOW_DIAG_RUNNING;
+        out->module_index = -1;
+        out->module_type = MODULE_COUNT;
+        return true;
+    }
+    *out = (station_flow_summary_t){
+        .diag = STATION_FLOW_DIAG_NONE,
+        .module_index = -1,
+        .module_type = MODULE_COUNT,
+        .active_count = 0,
+    };
+    return false;
+}
+
+bool station_flow_summary_format(const station_flow_summary_t *summary,
+                                 char *out, size_t cap)
+{
+    if (!summary || !out || cap == 0) return false;
+    out[0] = '\0';
+    if (summary->diag == STATION_FLOW_DIAG_NONE) return false;
+
+    if (summary->diag == STATION_FLOW_DIAG_RUNNING) {
+        int active = summary->active_count > 0 ? summary->active_count : 1;
+        snprintf(out, cap, "FLOW %d module%s active", active,
+                 active == 1 ? "" : "s");
+        return true;
+    }
+
+    const char *module = "module";
+    if ((int)summary->module_type >= 0 && summary->module_type < MODULE_COUNT)
+        module = module_type_name(summary->module_type);
+    snprintf(out, cap, "FLOW %s: %s", module,
+             station_flow_diag_label(summary->diag));
+    return true;
+}
+
 const char *station_short_name(int station_idx) {
     /* Founding stations have stable, well-known short names that match
      * the in-fiction station identities. Anything beyond the three

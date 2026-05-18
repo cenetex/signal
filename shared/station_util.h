@@ -9,6 +9,7 @@
 #define STATION_UTIL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 /* types.h includes this file at the bottom — don't re-include types.h.
  * All types (station_t, module_type_t, commodity_t, vec2, etc.) and the
  * STATION_NUM_RINGS / STATION_RING_RADIUS / STATION_RING_SLOTS constants
@@ -148,6 +149,25 @@ typedef enum {
 station_flow_diag_t station_module_flow_diag(const station_t *st,
                                              int module_index);
 const char *station_flow_diag_label(station_flow_diag_t diag);
+
+typedef struct {
+    station_flow_diag_t diag;
+    int                 module_index;  /* -1 for aggregate summaries */
+    module_type_t       module_type;
+    int                 active_count;
+} station_flow_summary_t;
+
+/* Display-facing flow summary. `mirrored_authoritative` means callers
+ * should trust station_t.module_diag exactly, as multiplayer clients do.
+ * Otherwise the helper uses any mirrored non-idle byte when present and
+ * falls back to deriving local sim state. */
+station_flow_diag_t station_module_flow_diag_view(const station_t *st,
+                                                  int module_index,
+                                                  bool mirrored_authoritative);
+bool station_flow_summary(const station_t *st, bool mirrored_authoritative,
+                          station_flow_summary_t *out);
+bool station_flow_summary_format(const station_flow_summary_t *summary,
+                                 char *out, size_t cap);
 
 /* ----- Demand: what is this station starving for, right now? -----
  *

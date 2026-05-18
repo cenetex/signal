@@ -635,73 +635,6 @@ static const uint8_t HDR_SERVICE[3] = { PAL_ORE_AMBER };
 static const uint8_t HDR_FIT[3]     = { PAL_NAV_BLUE };
 static const uint8_t HDR_YARD[3]    = { PAL_HOLD_CYAN };
 
-static station_flow_diag_t station_ui_module_diag(const station_t *st, int idx)
-{
-    if (!st || idx < 0 || idx >= st->module_count || idx >= MAX_MODULES_PER_STATION)
-        return STATION_FLOW_DIAG_NONE;
-    if (g.multiplayer_enabled && net_is_connected())
-        return (station_flow_diag_t)st->module_diag[idx];
-    if (st->module_diag[idx] != STATION_FLOW_DIAG_NONE)
-        return (station_flow_diag_t)st->module_diag[idx];
-    return station_module_flow_diag(st, idx);
-}
-
-static int station_flow_diag_rank(station_flow_diag_t diag)
-{
-    switch (diag) {
-    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return 60;
-    case STATION_FLOW_DIAG_OUTPUT_FULL:     return 50;
-    case STATION_FLOW_DIAG_CONSUMER_FULL:   return 49;
-    case STATION_FLOW_DIAG_NO_CONSUMER:     return 48;
-    case STATION_FLOW_DIAG_NO_INPUT:        return 47;
-    case STATION_FLOW_DIAG_SLOW_FEED:       return 30;
-    case STATION_FLOW_DIAG_RUNNING:         return 10;
-    case STATION_FLOW_DIAG_NONE:
-    default:                                return 0;
-    }
-}
-
-static bool station_flow_summary_line(const station_t *st, char *out,
-                                      size_t cap,
-                                      station_flow_diag_t *out_diag)
-{
-    if (!st || !out || cap == 0) return false;
-    out[0] = '\0';
-    int best_idx = -1;
-    int best_rank = 0;
-    int active = 0;
-    station_flow_diag_t best_diag = STATION_FLOW_DIAG_NONE;
-
-    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
-        station_flow_diag_t diag = station_ui_module_diag(st, i);
-        if (diag == STATION_FLOW_DIAG_NONE) continue;
-        if (diag == STATION_FLOW_DIAG_RUNNING) active++;
-        int rank = station_flow_diag_rank(diag);
-        if (rank > best_rank) {
-            best_rank = rank;
-            best_idx = i;
-            best_diag = diag;
-        }
-    }
-
-    if (best_idx >= 0 && best_diag != STATION_FLOW_DIAG_RUNNING) {
-        snprintf(out, cap, "FLOW %s: %s",
-                 module_type_name(st->modules[best_idx].type),
-                 station_flow_diag_label(best_diag));
-        if (out_diag) *out_diag = best_diag;
-        return true;
-    }
-
-    if (active > 0) {
-        snprintf(out, cap, "FLOW %d module%s active", active,
-                 active == 1 ? "" : "s");
-        if (out_diag) *out_diag = STATION_FLOW_DIAG_RUNNING;
-        return true;
-    }
-
-    return false;
-}
-
 /* Station manifest readers — unified through the client-side summary
  * (g.station_manifest_summary) populated every frame in SP and by the
  * net sync in MP. UI no longer pokes at station_t.manifest directly;
@@ -1220,12 +1153,14 @@ static void draw_trade_view(const station_ui_state_t *ui,
     }
 
     {
-        station_flow_diag_t diag = STATION_FLOW_DIAG_NONE;
-        if (station_flow_summary_line(st, flow_line, sizeof(flow_line), &diag)) {
+        station_flow_summary_t summary;
+        bool mirrored_authoritative = g.multiplayer_enabled && net_is_connected();
+        if (station_flow_summary(st, mirrored_authoritative, &summary) &&
+            station_flow_summary_format(&summary, flow_line, sizeof(flow_line))) {
             flow_rgb = COL_FLOW_OK;
-            if (diag == STATION_FLOW_DIAG_SLOW_FEED)
+            if (summary.diag == STATION_FLOW_DIAG_SLOW_FEED)
                 flow_rgb = COL_FLOW_WARN;
-            else if (diag != STATION_FLOW_DIAG_RUNNING)
+            else if (summary.diag != STATION_FLOW_DIAG_RUNNING)
                 flow_rgb = COL_FLOW_BAD;
         }
     }

@@ -2115,6 +2115,61 @@ TEST(test_station_diag_serializes_module_flow_diag) {
     ASSERT_EQ_INT(buf[3], STATION_FLOW_DIAG_NO_INPUT);
 }
 
+TEST(test_station_flow_summary_formats_active_modules) {
+    station_t st = {0};
+    station_flow_summary_t summary;
+    char line[64];
+
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){ .type = MODULE_FRAME_PRESS };
+    st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB };
+    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+
+    ASSERT(station_flow_summary(&st, true, &summary));
+    ASSERT_EQ_INT(summary.diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(summary.active_count, 2);
+    ASSERT(station_flow_summary_format(&summary, line, sizeof(line)));
+    ASSERT_STR_EQ(line, "FLOW 2 modules active");
+}
+
+TEST(test_station_flow_summary_prioritizes_blocked_module) {
+    station_t st = {0};
+    station_flow_summary_t summary;
+    char line[96];
+
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){ .type = MODULE_FRAME_PRESS };
+    st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB };
+    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
+
+    ASSERT(station_flow_summary(&st, true, &summary));
+    ASSERT_EQ_INT(summary.diag, STATION_FLOW_DIAG_OUTPUT_FULL);
+    ASSERT_EQ_INT(summary.module_index, 1);
+    ASSERT(station_flow_summary_format(&summary, line, sizeof(line)));
+    ASSERT(strstr(line, "Laser") != NULL);
+    ASSERT(strstr(line, "output full") != NULL);
+}
+
+TEST(test_station_flow_summary_mirrored_authoritative) {
+    station_t st = {0};
+    station_flow_summary_t summary;
+
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+
+    ASSERT(!station_flow_summary(&st, true, &summary));
+    ASSERT(station_flow_summary(&st, false, &summary));
+    ASSERT_EQ_INT(summary.diag, STATION_FLOW_DIAG_NO_INPUT);
+}
+
 void register_construction_outposts_tests(void) {
     TEST_SECTION("\nStation construction (#83):\n");
     RUN(test_outpost_requires_signal_range);
@@ -2430,6 +2485,9 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_diag_storage_consumer_full);
     RUN(test_module_flow_diag_awaiting_supply);
     RUN(test_station_diag_serializes_module_flow_diag);
+    RUN(test_station_flow_summary_formats_active_modules);
+    RUN(test_station_flow_summary_prioritizes_blocked_module);
+    RUN(test_station_flow_summary_mirrored_authoritative);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seeded_kepler_shipyard_inner_ring_layout);
