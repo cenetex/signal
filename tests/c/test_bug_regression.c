@@ -589,6 +589,31 @@ TEST(test_bug39_duplicate_launch_action_no_redock) {
     ASSERT(!w.players[0].docked);
 }
 
+TEST(test_launch_clears_dock_berth_under_thrust) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+
+    vec2 start = w.players[0].ship.pos;
+    float start_center_dist = v2_len(v2_sub(start, w.stations[0].pos));
+    w.players[0].input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!w.players[0].docked);
+
+    w.players[0].input.thrust = 1.0f;
+    for (int i = 0; i < 180; i++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT(!w.players[0].docked);
+    }
+
+    float moved = v2_len(v2_sub(w.players[0].ship.pos, start));
+    float end_center_dist = v2_len(v2_sub(w.players[0].ship.pos, w.stations[0].pos));
+    ASSERT(moved > 80.0f);
+    ASSERT(end_center_dist > start_center_dist + 50.0f);
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1434,6 +1459,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug38_dock_dampening_framerate_dependent);
     RUN(test_bug39_launch_immediate_redock);
     RUN(test_bug39_duplicate_launch_action_no_redock);
+    RUN(test_launch_clears_dock_berth_under_thrust);
     RUN(test_bug40_no_player_player_collision);
 }
 

@@ -776,13 +776,16 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
-    /* Kick ship away from station so it clears dock range */
+    /* Kick and face the ship away from station so the player's first
+     * forward thrust clears the berth instead of driving back into it. */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(sp->ship.pos, st->pos);
     float len = sqrtf(v2_len_sq(away));
     if (len > 1.0f) {
+        sp->ship.angle = atan2f(away.y, away.x);
         sp->ship.vel = v2_scale(away, 40.0f / len);
     } else {
+        sp->ship.angle = -PI_F * 0.5f;
         sp->ship.vel = v2(0.0f, -40.0f);
     }
     /* First launch: "Hull integrity 94%" */

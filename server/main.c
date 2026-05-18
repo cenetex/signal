@@ -787,10 +787,12 @@ static void apply_signed_input_action(int pid, const uint8_t *payload,
                                       uint16_t payload_len) {
     if (pid < 0 || pid >= MAX_PLAYERS || !payload || payload_len < 5) return;
     server_player_t *sp = &world.players[pid];
+    uint8_t action = payload[0];
+    uint16_t action_id = (payload_len >= 7) ? read_u16_le(&payload[5]) : 0;
     uint8_t buf[8] = {
         NET_MSG_INPUT,
         0,
-        payload[0],
+        action,
         0xFF,
         payload[1],
         payload[2],
@@ -803,11 +805,12 @@ static void apply_signed_input_action(int pid, const uint8_t *payload,
     parsed.service_sell_only = COMMODITY_COUNT;
     parsed.service_sell_grade = MINING_GRADE_COUNT;
     parse_input(buf, (int)sizeof(buf), &parsed);
+    if (action_id != 0) begin_pending_action_result(sp, action_id, 0, action);
     merge_one_shot_input(&sp->input, &parsed);
 
-    if ((payload[0] >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
-         payload[0] < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
-        payload[0] == NET_ACTION_BUY_SCAFFOLD) {
+    if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
+         action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
+        action == NET_ACTION_BUY_SCAFFOLD) {
         int s = sp->current_station;
         if (s >= 0 && s < MAX_STATIONS) station_identity_dirty[s] = true;
     }

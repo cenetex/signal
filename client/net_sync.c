@@ -1142,12 +1142,16 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool used_snap = false;
         bool used_lerp = false;
         bool defer_motion_correction = false;
+        bool defer_predicted_undock =
+            state_docked && !sp->docked && g.action_predict_timer > 0.0f;
         if (force_rebase) {
             apply_authoritative_local_motion(state, sp);
             net_replay_clear_frames();
             g.net_prediction_tick = state->server_tick;
             g.net_prediction_tick_valid = state->server_tick != 0;
             used_snap = true;
+        } else if (defer_predicted_undock) {
+            defer_motion_correction = true;
         } else {
             defer_motion_correction =
                 should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
@@ -1228,16 +1232,19 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
     if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
 
     server_player_t* sp = &g.world.players[state->player_id];
+    g.station_balance = state->station_balance;
     /* While the action predict timer is active, the client has made an
      * optimistic change (buy/sell/upgrade/launch) that the server hasn't
      * confirmed yet.  Skip overwriting mutable ship state to prevent
-     * flicker from stale PLAYER_SHIP messages. */
+     * flicker from stale PLAYER_SHIP messages. Station balance is not
+     * locally predicted in multiplayer, so keep it authoritative even
+     * during the predict window; otherwise ws_send_if_changed can deliver
+     * the only changed balance packet while the client is ignoring it. */
     if (g.action_predict_timer <= 0.0f) {
         /* Death detection moved to on_remote_death (NET_MSG_DEATH).
          * The packet now carries position + stats so the cinematic can
          * anchor at the wreckage. */
         sp->ship.hull = state->hull;
-        g.station_balance = state->station_balance;
         sp->ship.mining_level = (int)state->mining_level;
         sp->ship.hold_level = (int)state->hold_level;
         sp->ship.tractor_level = (int)state->tractor_level;

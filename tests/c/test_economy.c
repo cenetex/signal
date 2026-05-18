@@ -805,6 +805,41 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
                     prospect_after_buy, 0.001f);
 }
 
+TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+    memset(sp->pubkey, 0xA5, sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->docked = true;
+    sp->current_station = 0;
+
+    station_t *prospect = &w.stations[0];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 1));
+    ledger_earn_by_pubkey(prospect, sp->pubkey, 1000.0f);
+    ledger_earn(prospect, sp->session_token, 333.0f);
+    float pubkey_before = ledger_balance_by_pubkey(prospect, sp->pubkey);
+    float session_before = ledger_balance(prospect, sp->session_token);
+    float expected_cost = station_sell_price(prospect, COMMODITY_FERRITE_INGOT);
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COMMON;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_FLOAT(pubkey_before - ledger_balance_by_pubkey(prospect, sp->pubkey),
+                    expected_cost, 0.01f);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    session_before, 0.001f);
+}
+
 /* Pubkey-registered players had been getting 65% of the contract payout
  * because try_sell_station_cargo routed through ledger_credit_supply
  * (which applies the 35% smelt-station cut) instead of ledger_earn
@@ -1607,6 +1642,7 @@ void register_economy_mixed_cargo_tests(void) {
     TEST_SECTION("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
+    RUN(test_prospect_pubkey_buy_debits_pubkey_ledger);
     RUN(test_deliver_ingots_full_payout_to_pubkey_player);
     RUN(test_deliver_ingots_pending_pubkey_uses_session_ledger);
     RUN(test_mixed_cargo_sell_and_deliver);

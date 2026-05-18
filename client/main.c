@@ -2033,6 +2033,13 @@ static int net_action_queue_find(uint16_t action_id) {
     return -1;
 }
 
+static uint16_t net_next_action_id_alloc(void) {
+    uint16_t id = g.net_next_action_id++;
+    if (g.net_next_action_id == 0) g.net_next_action_id = 1;
+    if (id == 0) id = g.net_next_action_id++;
+    return id;
+}
+
 static void net_action_queue_update(float dt) {
     if (g.net_action_queue_count == 0) return;
     net_action_queue_item_t *item = net_action_queue_at(0);
@@ -2101,9 +2108,7 @@ static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
         return;
     }
 
-    uint16_t id = g.net_next_action_id++;
-    if (g.net_next_action_id == 0) g.net_next_action_id = 1;
-    if (id == 0) id = g.net_next_action_id++;
+    uint16_t id = net_next_action_id_alloc();
 
     net_action_queue_item_t *item =
         net_action_queue_at((int)g.net_action_queue_count);
@@ -2198,12 +2203,15 @@ static void net_queue_pending_action_if_any(void) {
     g.pending_net_place_slot = -1;
 
     if (net_has_identity_secret()) {
-        uint8_t payload[5] = {
+        uint16_t action_id = net_next_action_id_alloc();
+        uint8_t payload[7] = {
             action,
             buy_grade,
             (uint8_t)place_station,
             (uint8_t)place_ring,
             (uint8_t)place_slot,
+            (uint8_t)(action_id & 0xFFu),
+            (uint8_t)(action_id >> 8),
         };
         net_present_receipt_chains_for_action(action, buy_grade);
         if (net_send_signed_action(SIGNED_ACTION_INPUT_ACTION,
