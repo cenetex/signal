@@ -236,7 +236,9 @@ cmake --build build-test
 - The game stays asset-light: world geometry and HUD text are drawn directly
   with Sokol. Music, station portraits/MOTD JSON, and MPEG episode clips are
   runtime assets loaded from `assets/` in native development or from the asset
-  CDN in browser builds.
+  CDN in browser builds. The large media pack is not tracked in git; run
+  `make assets` to fetch the native/dev copy from S3 using
+  [`assets/manifest.txt`](assets/manifest.txt).
 - Native builds use Metal on macOS, OpenGL on Linux, and OpenGL on Windows
   through Sokol.
 - The browser target uses WebGL 2 via Emscripten.

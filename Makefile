@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-flight-trace flight-trace test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-flight-trace flight-trace assets test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -69,6 +69,9 @@ flight-trace: build-flight-trace
 		--shard $(FLIGHT_TRACE_SHARD) \
 		--format $(FLIGHT_TRACE_FORMAT) \
 		--out $(FLIGHT_TRACE_OUT)
+
+assets:
+	./scripts/sync-assets.sh
 
 # --- Tests ---
 # Always rebuild signal_test from current source before running, so a stale

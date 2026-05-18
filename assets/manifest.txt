@@ -1,0 +1,43 @@
+# Signal external asset pack.
+# Paths are relative to the local assets/ directory and the CDN base below.
+# Default CDN: https://signal-ratimics-assets.s3.amazonaws.com
+
+music/nebula_drift_protocol.mp3
+music/nebula_drift_protocol_2.mp3
+music/last_light_in_the_belt.mp3
+music/last_light_in_the_belt_2.mp3
+music/echoes.mp3
+music/echoes_2.mp3
+music/echoes_3.mp3
+music/lofi_drift_jam.mp3
+music/belt_drifters.mp3
+music/belt_drifters_2.mp3
+music/belt_drifters_3.mp3
+music/belt_drifters_4.mp3
+music/clock_thunder.mp3
+music/clock_thunder_2.mp3
+music/vector_miners_epoch.mp3
+music/vector_miners_epoch_2.mp3
+music/kings_of_nowhere.mp3
+music/kings_of_nowhere_2.mp3
+music/vector_economy.mp3
+music/vector_economy_2.mp3
+music/vector_veins.mp3
+music/vector_veins_lofi.mp3
+music/vector_veins_80s.mp3
+music/vector_veins_80s_2.mp3
+music/fade_out_at_seventeen.mp3
+music/fade_out_at_seventeen_2.mp3
+music/vacuum_in_my_lungs.mp3
+music/vacuum_in_my_lungs_2.mp3
+
+anime/ep0-first-light.mpg
+anime/ep1-keplers-law.mpg
+anime/ep2-furnace.mpg
+anime/ep3-scaffold.mpg
+anime/ep4-naming.mpg
+anime/ep5-drones.mpg
+anime/ep6-hauler.mpg
+anime/ep7-dark-sector.mpg
+anime/ep8-every-ai-dreams.mpg
+anime/ep9-death.mpg
