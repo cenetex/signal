@@ -700,12 +700,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                     float credited = 0.0f;
                     server_player_t *pt = &w->players[tower];
                     if (pt->session_ready) {
-                        credited = pt->pubkey_set
+                        credited = server_player_can_use_pubkey_persistence(pt)
                             ? ledger_credit_supply_amount_by_pubkey(st, pt->pubkey, graded_value)
                             : ledger_credit_supply_amount(st, pt->session_token, graded_value);
                     }
-                    SIM_LOG("[smelt-pay] player %d tower credit: graded=%.2f credited=%.2f pubkey_set=%d session_ready=%d\n",
-                            tower, graded_value, credited, pt->pubkey_set ? 1 : 0,
+                    SIM_LOG("[smelt-pay] player %d tower credit: graded=%.2f credited=%.2f pubkey_ledger=%d session_ready=%d\n",
+                            tower, graded_value, credited,
+                            server_player_can_use_pubkey_persistence(pt) ? 1 : 0,
                             pt->session_ready ? 1 : 0);
                     pt->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
@@ -718,7 +719,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                         float fcredited = 0.0f;
                         server_player_t *pf = &w->players[fracturer];
                         if (pf->session_ready) {
-                            fcredited = pf->pubkey_set
+                            fcredited = server_player_can_use_pubkey_persistence(pf)
                                 ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, finders)
                                 : ledger_credit_supply_amount(st, pf->session_token, finders);
                         }
@@ -735,7 +736,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                     float credited = 0.0f;
                     server_player_t *pf = &w->players[fracturer];
                     if (pf->session_ready) {
-                        credited = pf->pubkey_set
+                        credited = server_player_can_use_pubkey_persistence(pf)
                             ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, half)
                             : ledger_credit_supply_amount(st, pf->session_token, half);
                     }

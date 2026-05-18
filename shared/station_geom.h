@@ -70,7 +70,10 @@ typedef struct {
  * tint it with the matching ore/ingot/product palette. `pulse` ∈
  * [0, 1] tracks the producer's activity: 1 when the producer is
  * actively consuming inputs, decays to 0 over the production sim's
- * RING_PULSE_LINGER_SEC. Renderer fades alpha by pulse. */
+ * RING_PULSE_LINGER_SEC. Mirrored multiplayer stations may only have
+ * compact module diagnostics, so geometry derives a small fallback
+ * pulse from those bytes when the local pulse is absent. Renderer fades
+ * alpha by pulse. */
 typedef struct {
     vec2    a;         /* producer module world position */
     vec2    b;         /* paired hopper world position */
@@ -115,6 +118,22 @@ typedef struct {
     geom_dock_t docks[STATION_GEOM_MAX_DOCKS];
     int dock_count;
 } station_geom_t;
+
+static inline float station_geom_spoke_pulse(const station_t *st, int module_index) {
+    if (!st || module_index < 0 || module_index >= MAX_MODULES_PER_STATION)
+        return 0.0f;
+
+    float pulse = st->module_active_pulse[module_index];
+    if (pulse > 0.01f) return pulse;
+
+    switch ((station_flow_diag_t)st->module_diag[module_index]) {
+    case STATION_FLOW_DIAG_RUNNING:
+    case STATION_FLOW_DIAG_SLOW_FEED:
+        return 0.65f;
+    default:
+        return 0.0f;
+    }
+}
 
 /*
  * Build the collision/render geometry for a station.
@@ -282,7 +301,7 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             sp->ring_a = prod->ring;
             sp->ring_b = hm->ring;
             sp->commodity = (uint8_t)c;
-            sp->pulse = st->module_active_pulse[m];
+            sp->pulse = station_geom_spoke_pulse(st, m);
 
             /* LoS gate for FURNACE → ore-hopper beams only. */
             bool furnace_ore = (prod->type == MODULE_FURNACE) &&

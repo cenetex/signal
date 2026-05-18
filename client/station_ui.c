@@ -594,12 +594,14 @@ static void draw_row_lr(float cx, float my, float inner_right,
 
     if (left_txt && left_txt[0]) {
         char left_fit[96];
-        const char *left_draw = left_txt;
+        const char *left_draw = left_fit;
+        int left_chars;
         if (right_draw) {
-            int left_chars = (int)floorf((right_x - cx - 8.0f) / cell_w);
-            ui_fit_text(left_txt, left_chars, left_fit, sizeof(left_fit));
-            left_draw = left_fit;
+            left_chars = (int)floorf((right_x - cx - 8.0f) / cell_w);
+        } else {
+            left_chars = (int)floorf((inner_right - cx) / cell_w);
         }
+        ui_fit_text(left_txt, left_chars, left_fit, sizeof(left_fit));
         if (left_draw[0]) {
             sdtx_color3b(left_rgb[0], left_rgb[1], left_rgb[2]);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
@@ -632,6 +634,73 @@ static const uint8_t HDR_TRADE[3]   = { PAL_CONTRACT_AFFORD };
 static const uint8_t HDR_SERVICE[3] = { PAL_ORE_AMBER };
 static const uint8_t HDR_FIT[3]     = { PAL_NAV_BLUE };
 static const uint8_t HDR_YARD[3]    = { PAL_HOLD_CYAN };
+
+static station_flow_diag_t station_ui_module_diag(const station_t *st, int idx)
+{
+    if (!st || idx < 0 || idx >= st->module_count || idx >= MAX_MODULES_PER_STATION)
+        return STATION_FLOW_DIAG_NONE;
+    if (g.multiplayer_enabled && net_is_connected())
+        return (station_flow_diag_t)st->module_diag[idx];
+    if (st->module_diag[idx] != STATION_FLOW_DIAG_NONE)
+        return (station_flow_diag_t)st->module_diag[idx];
+    return station_module_flow_diag(st, idx);
+}
+
+static int station_flow_diag_rank(station_flow_diag_t diag)
+{
+    switch (diag) {
+    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return 60;
+    case STATION_FLOW_DIAG_OUTPUT_FULL:     return 50;
+    case STATION_FLOW_DIAG_CONSUMER_FULL:   return 49;
+    case STATION_FLOW_DIAG_NO_CONSUMER:     return 48;
+    case STATION_FLOW_DIAG_NO_INPUT:        return 47;
+    case STATION_FLOW_DIAG_SLOW_FEED:       return 30;
+    case STATION_FLOW_DIAG_RUNNING:         return 10;
+    case STATION_FLOW_DIAG_NONE:
+    default:                                return 0;
+    }
+}
+
+static bool station_flow_summary_line(const station_t *st, char *out,
+                                      size_t cap,
+                                      station_flow_diag_t *out_diag)
+{
+    if (!st || !out || cap == 0) return false;
+    out[0] = '\0';
+    int best_idx = -1;
+    int best_rank = 0;
+    int active = 0;
+    station_flow_diag_t best_diag = STATION_FLOW_DIAG_NONE;
+
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+        station_flow_diag_t diag = station_ui_module_diag(st, i);
+        if (diag == STATION_FLOW_DIAG_NONE) continue;
+        if (diag == STATION_FLOW_DIAG_RUNNING) active++;
+        int rank = station_flow_diag_rank(diag);
+        if (rank > best_rank) {
+            best_rank = rank;
+            best_idx = i;
+            best_diag = diag;
+        }
+    }
+
+    if (best_idx >= 0 && best_diag != STATION_FLOW_DIAG_RUNNING) {
+        snprintf(out, cap, "FLOW %s: %s",
+                 module_type_name(st->modules[best_idx].type),
+                 station_flow_diag_label(best_diag));
+        if (out_diag) *out_diag = best_diag;
+        return true;
+    }
+
+    if (active > 0) {
+        snprintf(out, cap, "FLOW %d module%s active", active,
+                 active == 1 ? "" : "s");
+        if (out_diag) *out_diag = STATION_FLOW_DIAG_RUNNING;
+        return true;
+    }
+
+    return false;
+}
 
 /* Station manifest readers — unified through the client-side summary
  * (g.station_manifest_summary) populated every frame in SP and by the
@@ -1106,6 +1175,11 @@ static void draw_trade_view(const station_ui_state_t *ui,
     const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
     const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
     const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
+    const uint8_t COL_FLOW_OK[3]   = { 120, 220, 170 };
+    const uint8_t COL_FLOW_WARN[3] = { 235, 195, 95 };
+    const uint8_t COL_FLOW_BAD[3]  = { 235, 110, 110 };
+    char flow_line[96] = "";
+    const uint8_t *flow_rgb = NULL;
 
     my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
@@ -1145,6 +1219,17 @@ static void draw_trade_view(const station_ui_state_t *ui,
         my += row_h;
     }
 
+    {
+        station_flow_diag_t diag = STATION_FLOW_DIAG_NONE;
+        if (station_flow_summary_line(st, flow_line, sizeof(flow_line), &diag)) {
+            flow_rgb = COL_FLOW_OK;
+            if (diag == STATION_FLOW_DIAG_SLOW_FEED)
+                flow_rgb = COL_FLOW_WARN;
+            else if (diag != STATION_FLOW_DIAG_RUNNING)
+                flow_rgb = COL_FLOW_BAD;
+        }
+    }
+
     /* Single source of truth for the row list (shared with input.c so
      * a [1] keypress always hits the same row drawn here). */
     trade_row_t rows[TRADE_MAX_ROWS];
@@ -1175,7 +1260,16 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
         const char *page_kind = (first < last && rows[first].kind == 1)
             ? "SELL" : "BUY";
-        draw_row_lr(cx, my, inner_right, COL_ACTIVE, page_kind, COL_FADED,
+        char page_left[128];
+        const uint8_t *page_left_rgb = COL_ACTIVE;
+        if (flow_line[0]) {
+            snprintf(page_left, sizeof(page_left), "%s  %s",
+                     page_kind, flow_line);
+            page_left_rgb = flow_rgb ? flow_rgb : COL_ACTIVE;
+        } else {
+            snprintf(page_left, sizeof(page_left), "%s", page_kind);
+        }
+        draw_row_lr(cx, my, inner_right, page_left_rgb, page_left, COL_FADED,
                     pg[0] ? pg : NULL);
         my += row_h;
     }

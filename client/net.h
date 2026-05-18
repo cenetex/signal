@@ -164,6 +164,10 @@ typedef struct {
                                  * stays server-side and is never wired here. */
 } NetStationIdentity;
 
+/* Station diagnostics callback: compact live flow state for modules. */
+typedef void (*net_on_station_diag_fn)(uint8_t station_id,
+                                       const uint8_t *diag,
+                                       int module_count);
 /* Packed scaffold state — server pushes the active scaffold pool.
  * Mirrors enough of scaffold_t for client rendering + tow logic. */
 typedef struct {
@@ -300,6 +304,7 @@ typedef struct {
     net_on_npcs_fn on_npcs;
     net_on_stations_fn on_stations;
     net_on_station_identity_fn on_station_identity;
+    net_on_station_diag_fn on_station_diag;
     net_on_scaffolds_fn on_scaffolds;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;

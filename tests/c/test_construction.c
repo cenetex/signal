@@ -594,6 +594,28 @@ TEST(test_furnace_geom_spokes_use_instance_ore_tag) {
     ASSERT_EQ_INT(geom.spokes[0].commodity, COMMODITY_CUPRITE_ORE);
 }
 
+TEST(test_station_geom_spoke_uses_module_diag_fallback) {
+    station_t st = {0};
+    station_geom_t geom;
+
+    st.signal_range = 1.0f;
+    add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
+    st.module_active_pulse[0] = 0.0f;
+    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+
+    station_build_geom(&st, &geom);
+
+    ASSERT_EQ_INT(geom.spoke_count, 1);
+    ASSERT(geom.spokes[0].pulse > 0.1f);
+
+    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_CONSUMER_FULL;
+    station_build_geom(&st, &geom);
+
+    ASSERT_EQ_INT(geom.spoke_count, 1);
+    ASSERT(geom.spokes[0].pulse <= 0.01f);
+}
+
 TEST(test_scaffold_spawn) {
     WORLD_DECL;
     world_reset(&w);
@@ -903,9 +925,10 @@ TEST(test_build_outpost_full_economy) {
     uint8_t token[8] = {0xB1, 0xD9, 0x07, 0x12, 0x33, 0x44, 0x55, 0x66};
     memcpy(sp->session_token, token, 8);
     sp->session_ready = true;
-    /* Synthesize a non-zero pubkey so ledger ops use the pubkey path. */
+    /* Synthesize a verified pubkey so ledger ops use the pubkey path. */
     for (int i = 0; i < 32; i++) sp->pubkey[i] = (uint8_t)(0xA0 + i);
     sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
     ASSERT(registry_register_pubkey(&w, sp->pubkey, sp->session_token));
 
     sp->connected = true;
@@ -1978,6 +2001,120 @@ TEST(test_module_flow_storage_feeds_consumer) {
     ASSERT(flowed);
 }
 
+TEST(test_module_flow_diag_no_input) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 1,
+        .build_progress = 1.0f, .commodity = (uint8_t)COMMODITY_FRAME,
+    };
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_NO_INPUT);
+}
+
+TEST(test_module_flow_diag_output_full) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+    st.module_output[0] = module_buffer_capacity(MODULE_FRAME_PRESS);
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_OUTPUT_FULL);
+}
+
+TEST(test_module_flow_diag_no_consumer) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+    st.module_output[0] = 2.0f;
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_NO_CONSUMER);
+}
+
+TEST(test_module_flow_diag_slow_feed) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 3,
+        .slot = (uint8_t)(STATION_RING_SLOTS[3] / 2),
+        .build_progress = 1.0f, .commodity = (uint8_t)COMMODITY_FRAME,
+    };
+    st.module_output[0] = 2.0f;
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_SLOW_FEED);
+}
+
+TEST(test_module_flow_diag_storage_consumer_full) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 0,
+        .build_progress = 1.0f, .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 1,
+        .build_progress = 1.0f,
+    };
+    st._inventory_cache[COMMODITY_FERRITE_INGOT] = 10.0f;
+    st.module_input[1] = module_buffer_capacity(MODULE_FRAME_PRESS);
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_CONSUMER_FULL);
+}
+
+TEST(test_module_flow_diag_awaiting_supply) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .scaffold = true, .build_progress = 0.25f,
+    };
+
+    ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
+                  STATION_FLOW_DIAG_AWAITING_SUPPLY);
+}
+
+TEST(test_station_diag_serializes_module_flow_diag) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+
+    uint8_t buf[STATION_DIAG_SIZE];
+    int len = serialize_station_diag(buf, 7, &st);
+    ASSERT_EQ_INT(len, STATION_DIAG_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_STATION_DIAG);
+    ASSERT_EQ_INT(buf[1], 7);
+    ASSERT_EQ_INT(buf[2], 1);
+    ASSERT_EQ_INT(buf[3], STATION_FLOW_DIAG_NO_INPUT);
+}
+
 void register_construction_outposts_tests(void) {
     TEST_SECTION("\nStation construction (#83):\n");
     RUN(test_outpost_requires_signal_range);
@@ -2014,6 +2151,7 @@ void register_construction_station_geom_tests(void) {
     TEST_SECTION("\nStation geometry emitter:\n");
     RUN(test_station_geom_emitter_prospect);
     RUN(test_furnace_geom_spokes_use_instance_ore_tag);
+    RUN(test_station_geom_spoke_uses_module_diag_fallback);
 }
 
 void register_construction_scaffold_tests(void) {
@@ -2285,6 +2423,13 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);
     RUN(test_module_flow_storage_feeds_consumer);
+    RUN(test_module_flow_diag_no_input);
+    RUN(test_module_flow_diag_output_full);
+    RUN(test_module_flow_diag_no_consumer);
+    RUN(test_module_flow_diag_slow_feed);
+    RUN(test_module_flow_diag_storage_consumer_full);
+    RUN(test_module_flow_diag_awaiting_supply);
+    RUN(test_station_diag_serializes_module_flow_diag);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seeded_kepler_shipyard_inner_ring_layout);

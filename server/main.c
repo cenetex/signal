@@ -111,6 +111,9 @@ static int live_player_connection_count(void) {
 
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
+static bool station_diag_valid[MAX_STATIONS];
+static uint64_t station_diag_last_sent_ms[MAX_STATIONS];
+static uint8_t station_diag_last[MAX_STATIONS][MAX_MODULES_PER_STATION];
 static bool station_econ_dirty = true;   /* station inventories changed */
 static bool contracts_dirty = true;       /* contract list changed */
 static highscore_table_t highscores;
@@ -406,6 +409,7 @@ static void send_highscores_to(struct mg_connection *c) {
 }
 
 #define STATION_IDENTITY_FALLBACK_MS 2000
+#define STATION_DIAG_MIN_MS 300
 static uint64_t last_station_identity = 0;
 
 /* Timing intervals in milliseconds */
@@ -897,7 +901,7 @@ static void handle_deliver_ingot_index(struct mg_connection *c, int pid,
     float floor_f = (float)INGOT_DELIVERY_CREDIT;
     if (delivery_f < floor_f) delivery_f = floor_f;
     int delivery_int = (int)lroundf(delivery_f);
-    if (sp->pubkey_set) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         ledger_credit_supply_by_pubkey(st, sp->pubkey, (float)delivery_int);
     } else {
         ledger_credit_supply(st, sp->session_token, (float)delivery_int);
@@ -1160,7 +1164,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 station_chain = station_receipts->chains[slot];
             if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) break;
             /* Use ledger_spend so the credit pool stays conserved. */
-            bool spent = sp->pubkey_set
+            bool spent = server_player_can_use_pubkey_persistence(sp)
                 ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
                 : ledger_spend(st, sp->session_token, (float)price, ship);
             if (!spent) break;
@@ -1328,7 +1332,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             float floor_f = (float)INGOT_DELIVERY_CREDIT;
             if (delivery_f < floor_f) delivery_f = floor_f;
             int delivery_int = (int)lroundf(delivery_f);
-            if (world.players[pid].pubkey_set) {
+            if (server_player_can_use_pubkey_persistence(&world.players[pid])) {
                 ledger_credit_supply_by_pubkey(st, world.players[pid].pubkey, (float)delivery_int);
             } else {
                 ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
@@ -1460,7 +1464,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                 !ship_manifest_bootstrap(ship)) {
                                 break;
                             }
-                            bool spent = price > 0 && (sp->pubkey_set
+                            bool spent = price > 0 && (server_player_can_use_pubkey_persistence(sp)
                                 ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
                                 : ledger_spend(st, sp->session_token, (float)price, ship));
                             if (spent) {
@@ -2497,6 +2501,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
         if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
         st->base_price[commodity] = clamped;
+        station_identity_dirty[sid] = true;
         mg_http_reply(c, 200, api_headers,
                       "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}", commodity, clamped);
     } else if (strcmp(action, "build_module") == 0 && module_type >= 0 && module_type < MODULE_COUNT) {
@@ -2505,6 +2510,8 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
                           "{\"ok\":false,\"error\":\"station full\"}");
         } else {
             begin_module_construction(&world, st, sid, (module_type_t)module_type);
+            station_identity_dirty[sid] = true;
+            contracts_dirty = true;
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"build_module\",\"type\":%ld}", module_type);
         }
@@ -2882,6 +2889,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
             int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
             ws_send(c, id_buf, (size_t)id_len);
+            uint8_t diag_buf[STATION_DIAG_SIZE];
+            int diag_len = serialize_station_diag(diag_buf, s, &world.stations[s]);
+            ws_send(c, diag_buf, (size_t)diag_len);
         }
 
         /* Send the same relevance-filtered asteroid view used by the
@@ -3769,6 +3779,53 @@ static void tick_idle_shutdown(uint64_t now) {
     }
 }
 
+static bool station_diag_changed(int station_idx) {
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    station_t *st = &world.stations[station_idx];
+    if (!station_exists(st)) {
+        station_diag_valid[station_idx] = false;
+        memset(station_diag_last[station_idx], 0,
+               sizeof(station_diag_last[station_idx]));
+        return false;
+    }
+
+    uint8_t current[MAX_MODULES_PER_STATION] = {0};
+    int module_count = st->module_count;
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION)
+        module_count = MAX_MODULES_PER_STATION;
+    for (int m = 0; m < module_count; m++)
+        current[m] = (uint8_t)station_module_flow_diag(st, m);
+
+    if (station_diag_valid[station_idx] &&
+        memcmp(station_diag_last[station_idx], current,
+               sizeof(current)) == 0) {
+        return false;
+    }
+
+    memcpy(station_diag_last[station_idx], current, sizeof(current));
+    station_diag_valid[station_idx] = true;
+    return true;
+}
+
+static void broadcast_dirty_station_diag(uint64_t now) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_exists(&world.stations[s])) {
+            station_diag_valid[s] = false;
+            station_diag_last_sent_ms[s] = 0;
+            continue;
+        }
+        uint64_t last_diag = station_diag_last_sent_ms[s];
+        if (last_diag != 0 && now - last_diag < STATION_DIAG_MIN_MS)
+            continue;
+        if (!station_diag_changed(s)) continue;
+        uint8_t diag_buf[STATION_DIAG_SIZE];
+        int diag_len = serialize_station_diag(diag_buf, s, &world.stations[s]);
+        broadcast(diag_buf, (size_t)diag_len);
+        station_diag_last_sent_ms[s] = now;
+    }
+}
+
 /* WORLD_TICK_MS broadcast: dirty station identities + named-ingot
  * stockpiles + manifest summaries. */
 static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_identity_p) {
@@ -3776,6 +3833,7 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
         *last_station_identity_p = now;
     }
+    broadcast_dirty_station_diag(now);
     /* Re-broadcast dirty station identities only to players in signal range. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_identity_dirty[s]) continue;

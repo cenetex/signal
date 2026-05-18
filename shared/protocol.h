@@ -17,8 +17,9 @@
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
- *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
+ *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed structural trailers
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
+ *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
  */
 #ifndef SHARED_PROTOCOL_H
 #define SHARED_PROTOCOL_H
@@ -199,6 +200,14 @@ enum {
                                             * observed proof cannot be replayed onto a rotated session. The server
                                             * only rebinds the pubkey registry, restores pubkey-keyed saves, or
                                             * advertises legacy saves after this verifies. */
+    NET_MSG_STATION_DIAG           = 0x40, /* server -> client: live per-module station diagnostics.
+                                            *
+                                            *   [type:1=0x40][station:1][module_count:1]
+                                            *   [diag:MAX_MODULES_PER_STATION]
+                                            *
+                                            * This is live telemetry, intentionally split from
+                                            * NET_MSG_STATION_IDENTITY so flow changes do not
+                                            * resend static text, prices, pubkeys, or layout. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -545,6 +554,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * [arm_count:1][arm_speed:MAX_ARMS×f32][ring_offset:MAX_ARMS×f32]
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
  * [pending_count:1][pending:4 × (type:1, owner:1)]
+ * [...text trailers...][station_pubkey:32]
  * flags: bit0=scaffold, bit1=planned */
 #define STATION_MODULE_RECORD_SIZE 9  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 + commodity:1 */
 #define STATION_PLAN_RECORD_SIZE 4    /* type:1 + ring:1 + slot:1 + owner:1 */
@@ -568,6 +578,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
     + STATION_IDENTITY_RATI_HAIL_LEN \
     + STATION_IDENTITY_CURRENCY_NAME_LEN \
     + STATION_IDENTITY_PUBKEY_LEN)
+#define STATION_DIAG_SIZE (3 + MAX_MODULES_PER_STATION)
 /* The four "MAX_ARMS * 4" terms above are arm_speed[], ring_offset[],
  * arm_rotation[], and arm_omega[]. arm_omega is needed alongside
  * arm_rotation so the client can interpolate ring rotation forward

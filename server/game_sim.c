@@ -753,7 +753,7 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
     /* Track dock event for relationship data (#257). w->time is a
      * float — explicitly cast to the uint64_t tick parameter. */
-    if (sp->current_station >= 0 && sp->pubkey_set) {
+    if (sp->current_station >= 0 && server_player_can_use_pubkey_persistence(sp)) {
         ledger_record_dock(&w->stations[sp->current_station], sp->pubkey,
                             (uint64_t)w->time);
     }
@@ -807,10 +807,10 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
      * the next-run mining target, which is the whole point of the debt
      * loop. Unlike player_seed_credits, this fires on EVERY respawn so
      * the cost of dying is visible and recurring. Identity-aware:
-     * registered players debit their pubkey entry (the same one that
-     * carries their earnings); legacy players use session-token. */
+     * verified pubkey players debit their pubkey entry (the same one that
+     * carries their earnings); legacy/pending players use session-token. */
     int fee = station_spawn_fee(&w->stations[best]);
-    if (sp->pubkey_set) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         ledger_force_debit_by_pubkey(&w->stations[best], sp->pubkey,
                                      (float)fee, &sp->ship);
     } else {
@@ -1349,7 +1349,7 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     /* Pool decrement is implicit via ledger_earn; pool is now derived
      * from -Σ(balance), so the credit on the player's ledger naturally
      * shows up as a deeper net-issuance for the station. */
-    if (sp->pubkey_set) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         ledger_earn_by_pubkey(st, sp->pubkey, graded_price);
         ledger_record_ore_sold(st, sp->pubkey, 1, commodity);
     } else {
@@ -1516,7 +1516,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
          * received `payout * 0.65`. Reported as "press S, popup says
          * +152, wallet only sees +99." */
         {
-            if (sp->pubkey_set) {
+            if (server_player_can_use_pubkey_persistence(sp)) {
                 ledger_earn_by_pubkey(st, sp->pubkey, payout);
             } else {
                 ledger_earn(st, sp->session_token, payout);
@@ -1603,7 +1603,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     float labor_cost = is_shipyard ? 0.0f : (float)actual_apply * LABOR_FEE_PER_HP;
     float cost = ceilf(station_kit_cost + labor_cost);
     if (cost > 0.0f) {
-        if (sp->pubkey_set) {
+        if (server_player_can_use_pubkey_persistence(sp)) {
             ledger_force_debit_by_pubkey(st, sp->pubkey, cost, &sp->ship);
         } else {
             ledger_force_debit(st, sp->session_token, cost, &sp->ship);
@@ -1642,7 +1642,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
 
     float credit_cost = (float)from_station * station_sell_price(st, comm);
     if (credit_cost > 0.0f) {
-        bool can_afford = sp->pubkey_set ?
+        bool can_afford = server_player_can_use_pubkey_persistence(sp) ?
             ledger_spend_by_pubkey(st, sp->pubkey, credit_cost, &sp->ship) :
             ledger_spend(st, sp->session_token, credit_cost, &sp->ship);
         if (!can_afford) return;
@@ -2920,7 +2920,7 @@ static void emit_station_hail_response(world_t *w, server_player_t *sp, int stat
         return;
     }
 
-    float balance = sp->pubkey_set
+    float balance = server_player_can_use_pubkey_persistence(sp)
         ? ledger_balance_by_pubkey(&w->stations[station_idx], sp->pubkey)
         : ledger_balance(&w->stations[station_idx], sp->session_token);
     int contract_idx = hail_find_station_work_contract(w, sp, station_idx);
@@ -3014,7 +3014,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_LOCKED }});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
-            bool can_afford = sp->pubkey_set ?
+            bool can_afford = server_player_can_use_pubkey_persistence(sp) ?
                 ledger_spend_by_pubkey(st, sp->pubkey, fee, &sp->ship) :
                 ledger_spend(st, sp->session_token, fee, &sp->ship);
             if (!can_afford) {
@@ -3081,7 +3081,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                                                   sp->current_station,
                                                   &sp->ship, filter);
         if (build_payout > 0.01f) {
-            if (sp->pubkey_set) {
+            if (server_player_can_use_pubkey_persistence(sp)) {
                 ledger_earn_by_pubkey(docked_st, sp->pubkey, build_payout);
             } else {
                 ledger_earn(docked_st, sp->session_token, build_payout);
@@ -3142,16 +3142,17 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * once the named ones run out. Bulk-buy can come back as
              * an explicit `buy_quantity` intent if/when needed. */
             /* Balance and spend MUST use the same identity the SELL path
-             * credits — pubkey when registered (the real Ed25519 entry),
-             * else the session-token-hashed pseudokey. Mismatch here was
+             * credits — pubkey when verified (the real Ed25519 entry),
+             * else the session-token pseudokey. Mismatch here was
              * the "client predicts buy, server snaps it back" bug:
              * earnings landed on the pubkey ledger entry but the buy
              * path was reading the (empty) session-token entry. */
-            float bal = sp->pubkey_set
+            bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
+            float bal = pubkey_ledger
                 ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
                 : ledger_balance(docked_st, sp->session_token);
-            SIM_LOG("[buy-bal] player %d at station %d: pubkey_set=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
-                    sp->id, sp->current_station, sp->pubkey_set ? 1 : 0,
+            SIM_LOG("[buy-bal] player %d at station %d: pubkey_ledger=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
+                    sp->id, sp->current_station, pubkey_ledger ? 1 : 0,
                     sp->pubkey[0], sp->pubkey[1], sp->pubkey[2], sp->pubkey[3],
                     bal, docked_st->ledger_count);
             for (int li = 0; li < docked_st->ledger_count; li++) {
@@ -3199,7 +3200,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             }
             bool spent = false;
             if (charge_amount > 0.01f) {
-                spent = sp->pubkey_set
+                spent = pubkey_ledger
                     ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
                     : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
             }
@@ -3457,7 +3458,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float price_per = base * gmult;
                     /* Same pubkey-vs-session-token identity rule as the
                      * docked-buy path. */
-                    float nbal = sp->pubkey_set
+                    bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
+                    float nbal = pubkey_ledger
                         ? ledger_balance_by_pubkey(nearby_st, sp->pubkey)
                         : ledger_balance(nearby_st, sp->session_token);
                     float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
@@ -3471,7 +3473,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                             return;
                         }
                         float cost = (float)moved * price_per;
-                        bool spent = sp->pubkey_set
+                        bool spent = pubkey_ledger
                             ? ledger_spend_by_pubkey(nearby_st, sp->pubkey, cost, &sp->ship)
                             : ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
                         if (spent) {
@@ -5941,7 +5943,7 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
     /* Already established a ledger here? Skip — debt and earnings
      * carry across reconnects and respawns.
      *
-     * Identity-aware lookup: pubkey-registered players match the
+     * Identity-aware lookup: verified-pubkey players match the
      * full 32-byte pubkey entry (the same one their earnings credit
      * to). Legacy session-token players match the SHA256-of-token
      * pseudokey via the existing ledger_balance shim. The OLD code
@@ -5949,7 +5951,7 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
      * comparing the first 8 bytes of a 32-byte sha256 against the
      * raw session token, which never matches even for legacy
      * players, so the fee was charged on every reconnect. */
-    if (sp->pubkey_set) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         for (int i = 0; i < w->stations[st].ledger_count; i++) {
             if (memcmp(w->stations[st].ledger[i].player_pubkey,
                        sp->pubkey, 32) == 0) {

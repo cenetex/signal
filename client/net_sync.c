@@ -786,6 +786,8 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     st->module_count = si->module_count;
     for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
         st->modules[m] = si->modules[m];
+    for (int m = si->module_count; m < MAX_MODULES_PER_STATION; m++)
+        st->module_diag[m] = STATION_FLOW_DIAG_NONE;
     st->arm_count = si->arm_count;
     for (int a = 0; a < MAX_ARMS; a++) {
         st->arm_speed[a] = si->arm_speed[a];
@@ -829,6 +831,17 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     /* Mirror the station's Ed25519 pubkey for client-side verification of
      * future signed events (#479 B). The secret stays server-side. */
     memcpy(st->station_pubkey, si->station_pubkey, sizeof(st->station_pubkey));
+}
+
+void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
+                               int module_count) {
+    if (station_id >= MAX_STATIONS || !diag) return;
+    station_t *st = &g.world.stations[station_id];
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION)
+        module_count = MAX_MODULES_PER_STATION;
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+        st->module_diag[m] = (m < module_count) ? diag[m] : STATION_FLOW_DIAG_NONE;
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {

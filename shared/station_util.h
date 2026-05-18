@@ -130,6 +130,25 @@ typedef enum {
 station_layout_status_t station_module_layout_status(const station_t *st,
                                                      const station_module_t *m);
 
+/* Flow diagnostics for a single module. This is intentionally compact
+ * because it is mirrored over STATION_DIAG as one byte per module:
+ * enough for the dock UI to say why production is stuck without exposing
+ * raw sim buffers on the wire. */
+typedef enum {
+    STATION_FLOW_DIAG_NONE = 0,
+    STATION_FLOW_DIAG_RUNNING,
+    STATION_FLOW_DIAG_NO_INPUT,
+    STATION_FLOW_DIAG_OUTPUT_FULL,
+    STATION_FLOW_DIAG_NO_CONSUMER,
+    STATION_FLOW_DIAG_CONSUMER_FULL,
+    STATION_FLOW_DIAG_SLOW_FEED,
+    STATION_FLOW_DIAG_AWAITING_SUPPLY,
+} station_flow_diag_t;
+
+station_flow_diag_t station_module_flow_diag(const station_t *st,
+                                             int module_index);
+const char *station_flow_diag_label(station_flow_diag_t diag);
+
 /* ----- Demand: what is this station starving for, right now? -----
  *
  * Pure derived state — there is no stored demand field. The primitive

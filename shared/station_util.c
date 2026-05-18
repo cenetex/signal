@@ -617,6 +617,188 @@ station_layout_status_t station_module_layout_status(const station_t *st,
     return STATION_LAYOUT_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* Module-flow diagnostics                                             */
+/* ------------------------------------------------------------------ */
+
+#define STATION_FLOW_DIAG_EPS 0.01f
+#define STATION_FLOW_DIAG_SLOW_RATE 1.0f
+
+static int station_flow_ring_slot_distance(int slot_a, int slot_b,
+                                           int total_slots) {
+    int d = slot_a - slot_b;
+    if (d < 0) d = -d;
+    if (total_slots > 0 && d > total_slots / 2)
+        d = total_slots - d;
+    return d > 0 ? d : 1;
+}
+
+/* Keep this in sync with server/sim_production.c::module_flow_rate:
+ * diagnostics should describe the same flow graph the sim actually runs. */
+static float station_flow_rate_between(const station_t *st,
+                                       int producer_idx,
+                                       int consumer_idx) {
+    const station_module_t *p = &st->modules[producer_idx];
+    const station_module_t *c = &st->modules[consumer_idx];
+    if (p->ring == c->ring && p->ring >= 1 && p->ring <= STATION_NUM_RINGS) {
+        int slots = STATION_RING_SLOTS[p->ring];
+        int d = station_flow_ring_slot_distance((int)p->slot, (int)c->slot, slots);
+        return 5.0f / (float)d;
+    }
+    if (p->ring >= 1 && p->ring <= STATION_NUM_RINGS &&
+        c->ring >= 1 && c->ring <= STATION_NUM_RINGS) {
+        float p_angle = TWO_PI_F * (float)p->slot / (float)STATION_RING_SLOTS[p->ring];
+        float c_angle = TWO_PI_F * (float)c->slot / (float)STATION_RING_SLOTS[c->ring];
+        float da = fabsf(p_angle - c_angle);
+        if (da > PI_F) da = TWO_PI_F - da;
+        float t = da / PI_F;
+        return 3.0f - t * 2.5f;
+    }
+    return 0.5f;
+}
+
+static bool station_flow_accepts_input(const station_module_t *consumer,
+                                       commodity_t commodity) {
+    const module_schema_t *cs = module_schema(consumer->type);
+    if (cs->kind == MODULE_KIND_PRODUCER) {
+        commodity_t input = consumer->type == MODULE_FURNACE
+                          ? module_instance_input_ore(consumer)
+                          : cs->input;
+        if (input == commodity) return true;
+    }
+    if (cs->kind == MODULE_KIND_STORAGE) {
+        if ((commodity_t)consumer->commodity == commodity) return true;
+    }
+    return false;
+}
+
+typedef struct {
+    bool any;
+    bool any_space;
+    float best_rate;
+} station_flow_consumer_status_t;
+
+static station_flow_consumer_status_t
+station_flow_consumer_status(const station_t *st, int producer_idx,
+                             commodity_t commodity) {
+    station_flow_consumer_status_t status = {0};
+    for (int c = 0; c < st->module_count; c++) {
+        if (c == producer_idx) continue;
+        if (st->modules[c].scaffold) continue;
+        if (!station_flow_accepts_input(&st->modules[c], commodity)) continue;
+        float cap = module_buffer_capacity(st->modules[c].type);
+        if (cap <= 0.0f) continue;
+        status.any = true;
+        if (st->module_input[c] + STATION_FLOW_DIAG_EPS >= cap) continue;
+        status.any_space = true;
+        float rate = station_flow_rate_between(st, producer_idx, c);
+        if (rate > status.best_rate) status.best_rate = rate;
+    }
+    return status;
+}
+
+static commodity_t station_flow_storage_tag(const station_module_t *m) {
+    commodity_t tag = (commodity_t)m->commodity;
+    if (tag >= COMMODITY_COUNT) return COMMODITY_COUNT;
+    /* Raw-ore hoppers are physical fragment-smelt anchors. Finished
+     * goods hoppers participate in module flow. */
+    if (tag < COMMODITY_RAW_ORE_COUNT) return COMMODITY_COUNT;
+    return tag;
+}
+
+station_flow_diag_t station_module_flow_diag(const station_t *st,
+                                             int module_index) {
+    if (!st) return STATION_FLOW_DIAG_NONE;
+    if (!station_is_active(st)) return STATION_FLOW_DIAG_NONE;
+    if (module_index < 0 || module_index >= st->module_count ||
+        module_index >= MAX_MODULES_PER_STATION)
+        return STATION_FLOW_DIAG_NONE;
+
+    const station_module_t *m = &st->modules[module_index];
+    if (m->scaffold) {
+        return m->build_progress < 1.0f
+             ? STATION_FLOW_DIAG_AWAITING_SUPPLY
+             : STATION_FLOW_DIAG_NONE;
+    }
+
+    module_kind_t kind = module_kind(m->type);
+    if (kind == MODULE_KIND_SERVICE || kind == MODULE_KIND_NONE)
+        return STATION_FLOW_DIAG_NONE;
+
+    if (kind == MODULE_KIND_STORAGE) {
+        commodity_t tag = station_flow_storage_tag(m);
+        if (tag == COMMODITY_COUNT) return STATION_FLOW_DIAG_NONE;
+        float cap = module_buffer_capacity(m->type);
+        if (cap > 0.0f && st->module_output[module_index] + STATION_FLOW_DIAG_EPS >= cap)
+            return STATION_FLOW_DIAG_OUTPUT_FULL;
+        station_flow_consumer_status_t downstream =
+            station_flow_consumer_status(st, module_index, tag);
+        if (st->module_output[module_index] > STATION_FLOW_DIAG_EPS) {
+            if (!downstream.any) return STATION_FLOW_DIAG_NO_CONSUMER;
+            if (!downstream.any_space) return STATION_FLOW_DIAG_CONSUMER_FULL;
+            if (downstream.best_rate <= STATION_FLOW_DIAG_SLOW_RATE)
+                return STATION_FLOW_DIAG_SLOW_FEED;
+            return STATION_FLOW_DIAG_RUNNING;
+        }
+        if (downstream.any && !downstream.any_space)
+            return STATION_FLOW_DIAG_CONSUMER_FULL;
+        if (downstream.any && st->_inventory_cache[tag] <= STATION_FLOW_DIAG_EPS)
+            return STATION_FLOW_DIAG_NO_INPUT;
+        return downstream.any_space ? STATION_FLOW_DIAG_RUNNING
+                                    : STATION_FLOW_DIAG_NONE;
+    }
+
+    if (kind == MODULE_KIND_SHIPYARD) {
+        if (st->pending_scaffold_count <= 0) return STATION_FLOW_DIAG_NONE;
+        return st->module_input[module_index] > STATION_FLOW_DIAG_EPS
+             ? STATION_FLOW_DIAG_RUNNING
+             : STATION_FLOW_DIAG_NO_INPUT;
+    }
+
+    commodity_t output = module_instance_output(m);
+    float cap = module_buffer_capacity(m->type);
+    if (cap > 0.0f && st->module_output[module_index] + STATION_FLOW_DIAG_EPS >= cap)
+        return STATION_FLOW_DIAG_OUTPUT_FULL;
+
+    if (output != COMMODITY_COUNT &&
+        st->module_output[module_index] > STATION_FLOW_DIAG_EPS) {
+        station_flow_consumer_status_t downstream =
+            station_flow_consumer_status(st, module_index, output);
+        if (!downstream.any) return STATION_FLOW_DIAG_NO_CONSUMER;
+        if (!downstream.any_space) return STATION_FLOW_DIAG_CONSUMER_FULL;
+        if (downstream.best_rate <= STATION_FLOW_DIAG_SLOW_RATE)
+            return STATION_FLOW_DIAG_SLOW_FEED;
+    }
+
+    commodity_t input = m->type == MODULE_FURNACE
+                      ? module_instance_input_ore(m)
+                      : module_schema_input(m->type);
+    if (input != COMMODITY_COUNT &&
+        st->module_input[module_index] <= STATION_FLOW_DIAG_EPS)
+        return STATION_FLOW_DIAG_NO_INPUT;
+
+    if (st->module_input[module_index] > STATION_FLOW_DIAG_EPS ||
+        st->module_output[module_index] > STATION_FLOW_DIAG_EPS ||
+        st->module_craft_progress[module_index] > STATION_FLOW_DIAG_EPS)
+        return STATION_FLOW_DIAG_RUNNING;
+
+    return STATION_FLOW_DIAG_NONE;
+}
+
+const char *station_flow_diag_label(station_flow_diag_t diag) {
+    switch (diag) {
+    case STATION_FLOW_DIAG_RUNNING:         return "running";
+    case STATION_FLOW_DIAG_NO_INPUT:        return "no input";
+    case STATION_FLOW_DIAG_OUTPUT_FULL:     return "output full";
+    case STATION_FLOW_DIAG_NO_CONSUMER:     return "no consumer";
+    case STATION_FLOW_DIAG_CONSUMER_FULL:   return "consumer full";
+    case STATION_FLOW_DIAG_SLOW_FEED:       return "slow feed";
+    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return "awaiting supply";
+    case STATION_FLOW_DIAG_NONE:
+    default:                                return "idle";
+    }
+}
+
 const char *station_short_name(int station_idx) {
     /* Founding stations have stable, well-known short names that match
      * the in-fiction station identities. Anything beyond the three

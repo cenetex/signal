@@ -538,6 +538,10 @@ typedef struct {
      * manufacture). Service modules leave both at 0. */
     float module_input[MAX_MODULES_PER_STATION];
     float module_output[MAX_MODULES_PER_STATION];
+    /* Transient/client-mirrored production diagnosis. Server derives
+     * this from module buffers when serializing STATION_DIAG; clients
+     * render it in the dock UI. Not persisted. */
+    uint8_t module_diag[MAX_MODULES_PER_STATION];
     /* Runtime-only production accumulator. Producer recipes advance in
      * whole batches so identity can consume one input set and mint every
      * output unit from that same parent set. Not persisted in saves. */

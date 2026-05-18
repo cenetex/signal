@@ -49,6 +49,12 @@ game_t g;
 
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
 
+static float station_render_cull_radius(const station_t *st) {
+    if (!st) return 0.0f;
+    return fmaxf(st->dock_radius, STATION_RING_RADIUS[STATION_NUM_RINGS]) +
+        STATION_MODULE_COL_RADIUS + 12.0f;
+}
+
 /* Audio mix callback: blends episode video audio + music into SFX output */
 static void mix_external_audio(float *buffer, int frames, int channels, void *user) {
     (void)user;
@@ -1244,6 +1250,7 @@ static void init(void) {
             cbs.on_npcs = apply_remote_npcs;
             cbs.on_stations = apply_remote_stations;
             cbs.on_station_identity = apply_remote_station_identity;
+            cbs.on_station_diag = apply_remote_station_diag;
             cbs.on_scaffolds = apply_remote_scaffolds;
             cbs.on_hail_response = apply_remote_hail_response;
             cbs.on_player_ship = apply_remote_player_ship;
@@ -1504,7 +1511,7 @@ static void render_world(void) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         const station_t* st = &g.world.stations[i];
         if (!station_exists(st) && !st->scaffold) continue;
-        if (!on_screen(st->pos.x, st->pos.y, st->dock_radius + 20.0f)) continue;
+        if (!on_screen(st->pos.x, st->pos.y, station_render_cull_radius(st))) continue;
         bool is_current = LOCAL_PLAYER.docked && (i == LOCAL_PLAYER.current_station);
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
         draw_station(st, is_current, is_nearby);
@@ -1548,7 +1555,7 @@ static void render_world(void) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         const station_t* st = &g.world.stations[i];
         if (!station_exists(st)) continue;
-        if (!on_screen(st->pos.x, st->pos.y, st->dock_radius + 40.0f)) continue;
+        if (!on_screen(st->pos.x, st->pos.y, station_render_cull_radius(st))) continue;
         bool is_current = LOCAL_PLAYER.docked && (i == LOCAL_PLAYER.current_station);
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
         draw_station_rings(st, is_current, is_nearby);

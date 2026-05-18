@@ -818,9 +818,10 @@ TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
     w.players[0].connected = true;
     w.players[0].session_ready = true;
     memset(w.players[0].session_token, 0x01, 8);
-    /* Register a pubkey so the bulk-sell path takes the pubkey branch. */
+    /* Verify the pubkey so the bulk-sell path takes the pubkey ledger. */
     memset(w.players[0].pubkey, 0xAA, 32);
     w.players[0].pubkey_set = true;
+    w.players[0].pubkey_proof_ok = true;
     /* Player carries 10 ferrite ingots; contract pays 20 cr each. */
     ASSERT(test_set_ship_finished_units(&w.players[0].ship,
                                         COMMODITY_FERRITE_INGOT, 10,
@@ -844,6 +845,40 @@ TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
     float gained = bal_after - bal_before;
     ASSERT(gained > 199.0f);
     ASSERT(gained < 201.0f);
+}
+
+TEST(test_deliver_ingots_pending_pubkey_uses_session_ledger) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x02, 8);
+    memset(w.players[0].pubkey, 0xBB, 32);
+    w.players[0].pubkey_set = true;
+    w.players[0].pubkey_proof_ok = false;
+
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 1,
+                                        MINING_GRADE_COMMON));
+    float session_before = ledger_balance(&w.stations[1],
+                                          w.players[0].session_token);
+    float pubkey_before = ledger_balance_by_pubkey(&w.stations[1],
+                                                   w.players[0].pubkey);
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].input.service_sell = true;
+    w.players[0].input.service_sell_one = true;
+    w.players[0].input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    w.players[0].input.service_sell_grade = MINING_GRADE_COMMON;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(ledger_balance(&w.stations[1], w.players[0].session_token) >
+           session_before + 0.01f);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[1],
+                                             w.players[0].pubkey),
+                    pubkey_before, 0.001f);
 }
 
 TEST(test_mixed_cargo_sell_and_deliver) {
@@ -1573,6 +1608,7 @@ void register_economy_mixed_cargo_tests(void) {
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_deliver_ingots_full_payout_to_pubkey_player);
+    RUN(test_deliver_ingots_pending_pubkey_uses_session_ledger);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
 }

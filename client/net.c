@@ -904,7 +904,19 @@ static void handle_message(const uint8_t* data, int len) {
             /* Station Ed25519 pubkey (#479 B). The server only sends the
              * pubkey; private material stays operator-side. */
             memcpy(si.station_pubkey, &data[moff], STATION_IDENTITY_PUBKEY_LEN);
+            moff += STATION_IDENTITY_PUBKEY_LEN;
+            (void)moff;
             net_state.callbacks.on_station_identity(&si);
+        }
+        break;
+
+    case NET_MSG_STATION_DIAG:
+        if (len >= STATION_DIAG_SIZE && net_state.callbacks.on_station_diag) {
+            uint8_t station_id = data[1];
+            int module_count = data[2];
+            if (module_count > MAX_MODULES_PER_STATION)
+                module_count = MAX_MODULES_PER_STATION;
+            net_state.callbacks.on_station_diag(station_id, &data[3], module_count);
         }
         break;
 

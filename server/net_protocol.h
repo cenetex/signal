@@ -653,11 +653,11 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
 }
 
 /*
- * STATION_IDENTITY message — full static fields for one station.
- * Sent on player join (for all active stations) and when a new outpost is placed.
+ * STATION_IDENTITY message — structural/static fields for one station.
+ * Sent on player join (for all active stations) and when structural data changes.
  * [type:1][index:1][reserved:1][services:4][pos_x:f32][pos_y:f32]
- * [radius:f32][dock_radius:f32][signal_range:f32][name:32]
- * = 59 bytes per message
+ * [radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed trailers.
+ * Live per-module flow diagnostics are sent separately via STATION_DIAG.
  */
 static inline int serialize_station_identity(uint8_t *buf, int index, const station_t *st) {
     buf[0] = NET_MSG_STATION_IDENTITY;
@@ -789,11 +789,31 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     moff += STATION_IDENTITY_CURRENCY_NAME_LEN;
     /* Layer B of #479: per-station Ed25519 pubkey. The matching
      * station_secret is operator-only and is NEVER written to the
-     * wire — see the station_t comment for why this field is kept
-     * last and the secret stays out of every serializer. */
+     * wire. */
     memcpy(&buf[moff], st->station_pubkey, STATION_IDENTITY_PUBKEY_LEN);
     moff += STATION_IDENTITY_PUBKEY_LEN;
+    (void)moff;
     return STATION_IDENTITY_SIZE;
+}
+
+/*
+ * STATION_DIAG message — live per-module flow diagnostics.
+ * [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
+ */
+static inline int serialize_station_diag(uint8_t *buf, int index, const station_t *st) {
+    buf[0] = NET_MSG_STATION_DIAG;
+    buf[1] = (uint8_t)index;
+    int module_count = st ? st->module_count : 0;
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION) module_count = MAX_MODULES_PER_STATION;
+    buf[2] = (uint8_t)module_count;
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        station_flow_diag_t diag = STATION_FLOW_DIAG_NONE;
+        if (st && m < module_count)
+            diag = station_module_flow_diag(st, m);
+        buf[3 + m] = (uint8_t)diag;
+    }
+    return STATION_DIAG_SIZE;
 }
 
 /*
