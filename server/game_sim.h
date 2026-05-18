@@ -305,6 +305,8 @@ typedef struct {
      * still the 8-byte session_token; pubkey is additive state. */
     uint8_t pubkey[32];
     bool    pubkey_set;
+    bool    pubkey_proof_ok;
+    bool    pubkey_identity_finalized;
     /* Layer A.3 of #479 — monotonic per-player nonce for NET_MSG_SIGNED_ACTION.
      * Persisted in the player save (PLY6+). Any signed action whose nonce is
      * <= this value is rejected as a replay; on accept, this becomes the
@@ -561,6 +563,7 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
  * server_player_t side. */
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
+bool server_player_can_use_pubkey_persistence(const server_player_t *sp);
 
 /* Layer A.3 of #479 — signed-action verification.
  *

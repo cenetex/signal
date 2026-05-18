@@ -2007,8 +2007,9 @@ static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
 
 /* Layer A.4 of #479 — per-player save layout.
  *
- *   <dir>/pubkey/<base58(pubkey)>.sav   if pubkey_set
- *   <dir>/legacy/<token_hex>.sav        otherwise (anonymous / pre-A.1 client)
+ *   <dir>/pubkey/<base58(pubkey)>.sav   if pubkey proof is verified
+ *   <dir>/legacy/<token_hex>.sav        otherwise (anonymous / pre-A.1 client
+ *                                       or asserted-but-unverified pubkey)
  *
  * Subdirectories are created on demand with 0700. The "pubkey" tier is
  * the persistent identity story; "legacy" exists so an A.0/A.1 client
@@ -2036,7 +2037,7 @@ static bool pubkey_is_zero32(const uint8_t pk[32]) {
 bool player_save_path(char *out, size_t outlen, const char *dir,
                       const server_player_t *sp, int slot) {
     static const uint8_t zero_token[8] = {0};
-    if (sp->pubkey_set && !pubkey_is_zero32(sp->pubkey)) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         char b58[64];
         if (base58_encode(sp->pubkey, 32, b58, sizeof(b58)) == 0) return false;
         snprintf(out, outlen, "%s/%s/%s.sav", dir, PUBKEY_SUBDIR, b58);

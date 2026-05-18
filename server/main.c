@@ -10,6 +10,7 @@
 #include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
+#include "pubkey_proof.h"
 #include "signal_crypto.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
@@ -199,7 +200,7 @@ static void analytics_hash_key(const char *prefix, const uint8_t *data,
 
 static void analytics_user_key(const server_player_t *sp,
                                char out[ANALYTICS_USER_KEY_LEN]) {
-    if (sp && sp->pubkey_set) {
+    if (server_player_can_use_pubkey_persistence(sp)) {
         analytics_hash_key("pk", sp->pubkey, sizeof(sp->pubkey), out);
         return;
     }
@@ -916,6 +917,88 @@ static void handle_deliver_ingot_index(struct mg_connection *c, int pid,
     signal_channel_post(&world, sidx, msg, "");
 }
 
+static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
+                                              uint64_t now) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    if (!server_player_can_use_pubkey_persistence(sp)) return;
+    if (sp->pubkey_identity_finalized) return;
+
+    const uint8_t *pk = sp->pubkey;
+    int existing = registry_lookup_by_pubkey(&world, pk);
+    if (existing >= 0 && existing != pid) {
+        server_player_t *old = &world.players[existing];
+        if (memcmp(old->session_token, sp->session_token, 8) != 0) {
+            if (ship_copy(&sp->ship, &old->ship)) {
+                sp->current_station = old->current_station;
+                sp->nearby_station = old->nearby_station;
+                sp->docked = old->docked;
+                sp->in_dock_range = old->in_dock_range;
+
+                uint8_t old_pseudo[32] = {0};
+                uint8_t new_pseudo[32] = {0};
+                memcpy(old_pseudo, old->session_token, 8);
+                memcpy(new_pseudo, sp->session_token, 8);
+                for (int s = 0; s < MAX_STATIONS; s++) {
+                    station_t *st = &world.stations[s];
+                    for (int e = 0; e < st->ledger_count; e++) {
+                        if (memcmp(st->ledger[e].player_pubkey,
+                                   old_pseudo, 32) == 0) {
+                            memcpy(st->ledger[e].player_pubkey,
+                                   new_pseudo, 32);
+                        }
+                    }
+                }
+
+                old->connected = false;
+                old->grace_period = false;
+                old->conn = NULL;
+                memset(old->session_token, 0, 8);
+                old->session_ready = false;
+                old->pubkey_proof_ok = false;
+                old->pubkey_identity_finalized = false;
+                uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
+                broadcast(leave_old, 2);
+                printf("[server] player %d: pubkey reconnect (was slot %d)\n",
+                       pid, existing);
+            }
+        }
+    }
+
+    (void)registry_register_pubkey(&world, pk, sp->session_token);
+    sp->pubkey_identity_finalized = true;
+    printf("[server] player %d: verified pubkey %02x%02x%02x%02x...\n",
+           pid, pk[0], pk[1], pk[2], pk[3]);
+    analytics_log_player_event("player_identity", pid, sp, now, 0);
+
+    if (persistence_load_enabled() &&
+        player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
+        printf("[server] player %d: restored save by pubkey\n", pid);
+    } else if (persistence_load_enabled()) {
+        char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
+        char names[LEGACY_SAVES_MAX_LIST][64];
+        int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
+                                        LEGACY_SAVES_MAX_LIST);
+        if (n > 0) {
+            uint8_t buf[LEGACY_SAVES_HEADER +
+                        LEGACY_SAVES_MAX_LIST * LEGACY_SAVES_PREFIX_LEN];
+            buf[0] = NET_MSG_LEGACY_SAVES_AVAILABLE;
+            buf[1] = (uint8_t)n;
+            for (int i = 0; i < n; i++) {
+                memcpy(&buf[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
+                       prefixes[i], LEGACY_SAVES_PREFIX_LEN);
+            }
+            ws_send(c, buf,
+                    (size_t)(LEGACY_SAVES_HEADER + n * LEGACY_SAVES_PREFIX_LEN));
+            printf("[server] player %d: advertised %d legacy save(s)\n",
+                   pid, n);
+        }
+    } else {
+        printf("[server] player %d: persistence disabled, fresh pubkey session\n",
+               pid);
+    }
+}
+
 static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm) {
     int pid = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -1006,8 +1089,14 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 sp, &parsed, input_seq, server_input_apply_tick(client_tick));
             merge_one_shot_input(&sp->input, &parsed);
         }
-        if (ack_status != 0 && c)
-            send_action_ack(c, action_id, input_seq, ack_status, data[2]);
+        if (c) {
+            if (ack_status != 0) {
+                send_action_ack(c, action_id, input_seq, ack_status, data[2]);
+            } else if (input_seq != 0) {
+                send_action_ack(c, 0, input_seq, NET_ACTION_ACK_RECEIVED,
+                                NET_ACTION_NONE);
+            }
+        }
         /* If the player just queued a shipyard order, refresh that station's
          * identity on the next world tick so the SHIPYARD tab sees the new
          * pending count immediately instead of waiting for the 2s fallback. */
@@ -1488,129 +1577,44 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     }
     case NET_MSG_REGISTER_PUBKEY:
         /* Layer A.2 of #479: client asserts its persisted Ed25519 pubkey.
-         * TODO(#479-A.3): unauthenticated registration — A.3 will require
-         * the client to sign every input and the server to verify. Until
-         * then, an attacker on the network can spoof another player's
-         * pubkey, but cannot act as them because identity at the wire
-         * level is still the 8-byte session_token. */
+         * The assertion alone does not bind registry or persistence; that
+         * waits for NET_MSG_PROVE_PUBKEY. */
         if (len >= REGISTER_PUBKEY_MSG_SIZE) {
             const uint8_t *pk = &data[1];
             server_player_t *sp = &world.players[pid];
-            /* Idempotent: same pubkey + already-set => no-op. */
-            if (sp->pubkey_set && memcmp(sp->pubkey, pk, 32) == 0) break;
-            /* If this pubkey already maps to a different (live) player slot
-             * — i.e. a returning player whose token rotated — transfer the
-             * persistent state from the old slot into this connection's
-             * slot so the player resumes their save by pubkey, then
-             * disconnect the old slot. Only meaningful once SESSION has
-             * already populated the per-slot session_token of the existing
-             * record; a registry entry pointing at no live slot just gets
-             * rebound below. */
-            int existing = registry_lookup_by_pubkey(&world, pk);
-            if (existing >= 0 && existing != pid) {
-                server_player_t *old = &world.players[existing];
-                if (sp->session_ready &&
-                    memcmp(old->session_token, sp->session_token, 8) != 0) {
-                    /* Transfer persistent state. The old slot's ledger
-                     * balances live in station_t.ledger[] keyed by the
-                     * old session_token — they survive the swap because
-                     * we copy the old token's ship + station context into
-                     * the new slot but leave ledger entries untouched.
-                     * For A.2 we model "carry the player record across"
-                     * by adopting the old slot's session_token: future
-                     * ledger reads on this connection use the old token,
-                     * so the manifest + ledger are preserved.
-                     *
-                     * NOTE: this is a best-effort A.2 reconcile —
-                     * cross-token ledger merging is out of scope and
-                     * lands with A.3 / A.4. */
-                    if (ship_copy(&sp->ship, &old->ship)) {
-                        sp->current_station = old->current_station;
-                        sp->nearby_station = old->nearby_station;
-                        sp->docked = old->docked;
-                        sp->in_dock_range = old->in_dock_range;
-                        /* Migrate ledger entries from the old token →
-                         * the new connection's session_token across
-                         * every station, so balances stay spendable
-                         * after the rebinding.
-                         *
-                         * Compare and write the FULL 32-byte pseudokey
-                         * form (token bytes + 24 trailing zeros — see
-                         * token_to_pseudo_pubkey). The old version did
-                         * memcmp/memcpy on 8 bytes against a 32-byte
-                         * field, which (a) could partially-match a real
-                         * Ed25519 pubkey by 1/2^64 chance and (b) left
-                         * the trailing 24 bytes of a touched entry
-                         * holding stale data, orphaning the entry from
-                         * future lookups. Both bugs are silent —
-                         * 32-byte compare + 32-byte write fixes them. */
-                        uint8_t old_pseudo[32] = {0};
-                        uint8_t new_pseudo[32] = {0};
-                        memcpy(old_pseudo, old->session_token, 8);
-                        memcpy(new_pseudo, sp->session_token, 8);
-                        for (int s = 0; s < MAX_STATIONS; s++) {
-                            station_t *st = &world.stations[s];
-                            for (int e = 0; e < st->ledger_count; e++) {
-                                if (memcmp(st->ledger[e].player_pubkey, old_pseudo, 32) == 0) {
-                                    memcpy(st->ledger[e].player_pubkey,
-                                           new_pseudo, 32);
-                                }
-                            }
-                        }
-                        old->connected = false;
-                        old->grace_period = false;
-                        old->conn = NULL;
-                        memset(old->session_token, 0, 8);
-                        old->session_ready = false;
-                        uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
-                        broadcast(leave_old, 2);
-                        printf("[server] player %d: pubkey reconnect (was slot %d)\n",
-                               pid, existing);
-                    }
-                }
+            if (sp->pubkey_set && memcmp(sp->pubkey, pk, 32) == 0) {
+                finalize_verified_pubkey_identity(c, pid, now);
+                break;
             }
             memcpy(sp->pubkey, pk, 32);
             sp->pubkey_set = true;
-            /* Bind / rebind the registry to this slot's session_token.
-             * If session_token isn't ready yet (REGISTER_PUBKEY arrived
-             * before SESSION, the expected order), bind to the
-             * placeholder zero token; the SESSION handler rebinds once
-             * the real token is known. */
-            (void)registry_register_pubkey(&world, pk, sp->session_token);
-            printf("[server] player %d: registered pubkey %02x%02x%02x%02x...\n",
+            sp->pubkey_proof_ok = false;
+            sp->pubkey_identity_finalized = false;
+            printf("[server] player %d: registered pubkey pending proof %02x%02x%02x%02x...\n",
                    pid, pk[0], pk[1], pk[2], pk[3]);
-            if (sp->session_ready) {
-                analytics_log_player_event("player_identity", pid, sp, now, 0);
+        }
+        break;
+    case NET_MSG_PROVE_PUBKEY:
+        if (len >= PROVE_PUBKEY_MSG_SIZE) {
+            server_player_t *sp = &world.players[pid];
+            const uint8_t *pk = &data[PROVE_PUBKEY_PUBKEY_OFFSET];
+            const uint8_t *token = &data[PROVE_PUBKEY_TOKEN_OFFSET];
+            const uint8_t *sig = &data[PROVE_PUBKEY_SIG_OFFSET];
+            if (!sp->pubkey_set || !sp->session_ready) break;
+            if (memcmp(pk, sp->pubkey, 32) != 0) {
+                printf("[server] player %d: pubkey proof rejected (pubkey mismatch)\n", pid);
+                break;
             }
-
-            /* Layer A.4 of #479: try to restore the player's record from
-             * a pubkey-keyed save. If none exists, advertise legacy saves
-             * (if any) so the client can present a claim UI. */
-            if (persistence_load_enabled() &&
-                player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
-                printf("[server] player %d: restored save by pubkey\n", pid);
-            } else if (persistence_load_enabled()) {
-                char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
-                char names[LEGACY_SAVES_MAX_LIST][64];
-                int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
-                                                LEGACY_SAVES_MAX_LIST);
-                if (n > 0) {
-                    uint8_t buf[LEGACY_SAVES_HEADER +
-                                LEGACY_SAVES_MAX_LIST * LEGACY_SAVES_PREFIX_LEN];
-                    buf[0] = NET_MSG_LEGACY_SAVES_AVAILABLE;
-                    buf[1] = (uint8_t)n;
-                    for (int i = 0; i < n; i++) {
-                        memcpy(&buf[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
-                               prefixes[i], LEGACY_SAVES_PREFIX_LEN);
-                    }
-                    ws_send(c, buf,
-                            (size_t)(LEGACY_SAVES_HEADER + n * LEGACY_SAVES_PREFIX_LEN));
-                    printf("[server] player %d: advertised %d legacy save(s)\n",
-                           pid, n);
-                }
-            } else {
-                printf("[server] player %d: persistence disabled, fresh pubkey session\n", pid);
+            if (memcmp(token, sp->session_token, 8) != 0) {
+                printf("[server] player %d: pubkey proof rejected (session mismatch)\n", pid);
+                break;
             }
+            if (!pubkey_proof_verify(pk, token, sig)) {
+                printf("[server] player %d: pubkey proof rejected (bad signature)\n", pid);
+                break;
+            }
+            sp->pubkey_proof_ok = true;
+            finalize_verified_pubkey_identity(c, pid, now);
         }
         break;
     case NET_MSG_CLAIM_LEGACY_SAVE: {
@@ -1624,7 +1628,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         }
         if (len < 2) break;
         server_player_t *sp = &world.players[pid];
-        if (!sp->pubkey_set) break;
+        if (!server_player_can_use_pubkey_persistence(sp)) break;
         uint8_t hex_len = data[1];
         if (hex_len == 0 || hex_len > 64) break;
         if (len < (int)(2 + hex_len + SIGNED_ACTION_SIG_SIZE)) break;
@@ -1718,6 +1722,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 old->connected = false;
                 old->grace_period = false;
                 old->conn = NULL;
+                old->pubkey_proof_ok = false;
+                old->pubkey_identity_finalized = false;
                 uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
@@ -1738,13 +1744,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             world.players[pid].last_input_action_id = 0;
             world.players[pid].last_input_action_id_valid = false;
             world.players[pid].pending_action_result_valid = false;
-            /* Layer A.2 (#479): if the client registered its pubkey before
-             * SESSION, rebind the registry entry to the real session_token
-             * so future lookups by pubkey find this slot. */
-            if (world.players[pid].pubkey_set) {
-                (void)registry_register_pubkey(&world, world.players[pid].pubkey,
-                                               world.players[pid].session_token);
-            }
+            finalize_verified_pubkey_identity(c, pid, now);
             analytics_record_activity(&world.players[pid], now);
             analytics_log_player_event("player_session", pid, &world.players[pid],
                                        now, 0);
@@ -3092,7 +3092,7 @@ static void broadcast_world(void) {
 
 /* Compute station-local balance for a player at their current/nearby
  * station. Must read the same ledger entry the buy/credit paths use:
- * pubkey when registered, session-token-pseudokey otherwise. Reading
+ * pubkey when verified, session-token-pseudokey otherwise. Reading
  * the wrong entry was the visible-bug-symptom that motivated the
  * earlier identity-fix series — broadcast balance came from a stale
  * (often negative) session-token entry while real earnings sat on
@@ -3100,7 +3100,7 @@ static void broadcast_world(void) {
 static float player_station_balance(const server_player_t *sp) {
     int st = sp->docked ? sp->current_station : sp->nearby_station;
     if (st < 0 || st >= MAX_STATIONS) return 0.0f;
-    if (sp->pubkey_set)
+    if (server_player_can_use_pubkey_persistence(sp))
         return ledger_balance_by_pubkey(&world.stations[st], sp->pubkey);
     return ledger_balance(&world.stations[st], sp->session_token);
 }

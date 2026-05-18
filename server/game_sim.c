@@ -5801,6 +5801,14 @@ bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
     return false; /* registry full */
 }
 
+bool server_player_can_use_pubkey_persistence(const server_player_t *sp) {
+    if (!sp) return false;
+    return sp->session_ready &&
+           sp->pubkey_set &&
+           sp->pubkey_proof_ok &&
+           !pubkey_is_zero(sp->pubkey);
+}
+
 /* ================================================================== */
 /* Layer A.3 of #479 — signed-action verification                     */
 /* ================================================================== */
@@ -5832,7 +5840,7 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
         return SIGNED_ACTION_REJECT_MALFORMED;
 
     const server_player_t *sp = &w->players[player_idx];
-    if (!sp->pubkey_set || pubkey_is_zero(sp->pubkey))
+    if (!server_player_can_use_pubkey_persistence(sp))
         return SIGNED_ACTION_REJECT_NO_PUBKEY;
 
     /* Layout: [type:1][nonce:8][action_type:1][payload_len:2][payload][sig:64] */

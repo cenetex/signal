@@ -66,9 +66,9 @@ enum {
                                         * [killed_by:8] (40 bytes/entry) */
     NET_MSG_PLAYER_MANIFEST    = 0x31, /* server -> client: local player's ship manifest summary, same shape as STATION_MANIFEST minus station idx — see PLAYER_MANIFEST_* below. */
     NET_MSG_REGISTER_PUBKEY    = 0x32, /* client -> server: [type:1][pubkey:32]. Layer A.2 of #479 — sent once per
-                                        * connection BEFORE NET_MSG_SESSION so the server can bind the pubkey to
-                                        * the session_token for this connection. NOTE: this is identity assertion,
-                                        * not proof of possession; A.3 requires signed inputs to authenticate. */
+                                        * connection BEFORE NET_MSG_SESSION so the server can remember the pubkey
+                                        * assertion. Pubkey persistence/registry rebinding stays pending until
+                                        * NET_MSG_PROVE_PUBKEY proves possession of the matching private key. */
     NET_MSG_SIGNED_ACTION      = 0x33, /* Layer A.3 of #479 — Ed25519-signed state-changing action.
                                         *
                                         * Wire layout (little-endian):
@@ -145,15 +145,15 @@ enum {
                                             * global authoritative snapshot but filters the player-facing
                                             * dock UI to gossip-legal entries only. Sent per-tick,
                                             * per-player. */
-    NET_MSG_ACTION_ACK             = 0x3A, /* server -> client. Immediate delivery ack for one-shot
-                                            * action bytes carried inside NET_MSG_INPUT.
+    NET_MSG_ACTION_ACK             = 0x3A, /* server -> client. Immediate delivery ack for NET_MSG_INPUT.
                                             *
                                             *   [type:1=0x3A][action_id:u16][input_seq:u16]
                                             *   [status:1][action:1]
                                             *
-                                            * This is a transport/dedupe ack, not a semantic success
-                                            * response. The normal authoritative snapshots still decide
-                                            * whether the action visibly succeeded. */
+                                            * Movement-only input uses action_id=0/action=NET_ACTION_NONE.
+                                            * This is a transport/dedupe ack, not a semantic success response.
+                                            * The normal authoritative snapshots still decide whether an action
+                                            * visibly succeeded. */
     NET_MSG_ACTION_RESULT          = 0x3B, /* server -> client. Semantic result for an accepted
                                             * one-shot action after the server sim tick has consumed it.
                                             *
@@ -188,6 +188,17 @@ enum {
                                             *
                                             * The relay logs this as structured analytics. It never carries
                                             * raw session tokens, pubkeys, or client IPs. */
+    NET_MSG_PROVE_PUBKEY           = 0x3F, /* client -> server: proof-of-possession for the registered pubkey.
+                                            *
+                                            *   [type:1=0x3F][pubkey:32][session_token:8][signature:64]
+                                            *
+                                            * Signature is Ed25519 over
+                                            *   PUBKEY_PROOF_DOMAIN || pubkey || session_token
+                                            *
+                                            * The session token binds the proof to this live connection, so an
+                                            * observed proof cannot be replayed onto a rotated session. The server
+                                            * only rebinds the pubkey registry, restores pubkey-keyed saves, or
+                                            * advertises legacy saves after this verifies. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -233,6 +244,15 @@ enum {
 
 /* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
 #define REGISTER_PUBKEY_MSG_SIZE 33
+
+/* NET_MSG_PROVE_PUBKEY wire constants. */
+#define PUBKEY_PROOF_DOMAIN       "prove-pubkey-v1"
+#define PUBKEY_PROOF_DOMAIN_LEN   15
+#define PUBKEY_PROOF_MESSAGE_SIZE (PUBKEY_PROOF_DOMAIN_LEN + 32 + 8)
+#define PROVE_PUBKEY_PUBKEY_OFFSET 1
+#define PROVE_PUBKEY_TOKEN_OFFSET  33
+#define PROVE_PUBKEY_SIG_OFFSET    41
+#define PROVE_PUBKEY_MSG_SIZE      (1 + 32 + 8 + 64)
 
 /* ------------------------------------------------------------------ */
 /* Signed-action types (#479 Layer A.3)                                */

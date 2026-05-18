@@ -118,6 +118,7 @@ set(SIGNAL_SIM_HELPERS
     shared/module_schema.c
     shared/station_util.c
     shared/cargo_receipt.c
+    shared/pubkey_proof.c
     shared/handoff_ticket.c
     shared/tractor.c
     shared/laser.c

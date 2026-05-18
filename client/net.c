@@ -7,6 +7,7 @@
 #include "net.h"
 #include "mining_client.h"
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
+#include "pubkey_proof.h"
 #include "signal_crypto.h"
 
 #include <string.h>
@@ -149,6 +150,7 @@ static void ws_send_binary(const uint8_t* data, int len);
 static void ensure_session_token(void);
 static void ensure_callsign(void);
 static void send_register_pubkey(void);
+static void send_pubkey_proof(void);
 static void send_session_token(void);
 static void handle_message(const uint8_t* data, int len);
 
@@ -339,9 +341,8 @@ static void ensure_callsign(void) {
 
 /* Layer A.2 of #479 — send the persistent Ed25519 pubkey to the server
  * immediately on connect, BEFORE the SESSION handshake, so the server
- * can bind (pubkey ↔ session_token) for this connection. Identity at
- * the wire level is still the 8-byte session_token; A.3 will require
- * signed inputs. */
+ * can stage the pubkey assertion. Registry/persistence binding waits for
+ * send_pubkey_proof() after the SESSION token is known. */
 static void send_register_pubkey(void) {
     if (!net_state.identity_pubkey_ready) return;
     uint8_t buf[REGISTER_PUBKEY_MSG_SIZE];
@@ -351,6 +352,32 @@ static void send_register_pubkey(void) {
     printf("[net] sent pubkey registration (%02x%02x%02x%02x...)\n",
            net_state.identity_pubkey[0], net_state.identity_pubkey[1],
            net_state.identity_pubkey[2], net_state.identity_pubkey[3]);
+}
+
+static void send_pubkey_proof_for_token(const uint8_t token[8]) {
+    if (!token ||
+        !net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready) {
+        return;
+    }
+    uint8_t buf[PROVE_PUBKEY_MSG_SIZE];
+    buf[0] = NET_MSG_PROVE_PUBKEY;
+    memcpy(&buf[PROVE_PUBKEY_PUBKEY_OFFSET],
+           net_state.identity_pubkey, SIGNAL_CRYPTO_PUBKEY_BYTES);
+    memcpy(&buf[PROVE_PUBKEY_TOKEN_OFFSET], token, 8);
+    if (!pubkey_proof_sign(&buf[PROVE_PUBKEY_SIG_OFFSET],
+                           net_state.identity_pubkey,
+                           net_state.identity_secret,
+                           token)) {
+        return;
+    }
+    ws_send_binary(buf, PROVE_PUBKEY_MSG_SIZE);
+    printf("[net] sent pubkey proof\n");
+}
+
+static void send_pubkey_proof(void) {
+    if (!net_state.session_token_ready) return;
+    send_pubkey_proof_for_token(net_state.session_token);
 }
 
 void net_set_identity_pubkey(const uint8_t pubkey[32]) {
@@ -477,6 +504,7 @@ static void send_session_token(void) {
     memcpy(&buf[1], net_state.session_token, 8);
     memcpy(&buf[9], net_state.callsign, 7);
     ws_send_binary(buf, 16);
+    send_pubkey_proof();
     printf("[net] sent session token + callsign %s\n", net_state.callsign);
 }
 
@@ -1681,6 +1709,7 @@ void net_send_session(const uint8_t token[8]) {
     buf[0] = NET_MSG_SESSION;
     memcpy(&buf[1], token, 8);
     ws_send_binary(buf, 9);
+    send_pubkey_proof_for_token(token);
 }
 
 void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
@@ -1866,6 +1895,7 @@ void net_send_session(const uint8_t token[8]) {
     buf[0] = NET_MSG_SESSION;
     memcpy(&buf[1], token, 8);
     ws_send_binary(buf, 9);
+    send_pubkey_proof_for_token(token);
 }
 
 void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,

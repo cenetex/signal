@@ -72,6 +72,7 @@ static void setup_player_with_keypair(world_t *w, int slot,
     sp->session_ready = true;
     memcpy(sp->pubkey, out_pubkey, 32);
     sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
     ASSERT(registry_register_pubkey(w, out_pubkey, sp->session_token));
 }
 
@@ -264,6 +265,7 @@ TEST(test_signed_action_save_load_persists_nonce) {
     sp2->session_ready = true;
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
+    sp2->pubkey_proof_ok = true;
     ASSERT(registry_register_pubkey(w2, pk, sp2->session_token));
     /* Layer A.4 of #479: when a pubkey is registered, the save is keyed
      * by pubkey, not by session_token. */

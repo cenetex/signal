@@ -51,6 +51,7 @@ void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot);
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count);
 void apply_remote_events(const sim_event_t *events, int count);
 void begin_player_state_batch(void);
+void net_record_input_ack(uint16_t input_seq_ack);
 void apply_remote_player_state(const NetPlayerState* state);
 void apply_remote_player_ship(const NetPlayerShipState* state);
 

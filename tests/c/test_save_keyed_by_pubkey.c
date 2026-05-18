@@ -37,6 +37,7 @@
 #endif
 
 #include "base58.h"
+#include "pubkey_proof.h"
 #include "protocol.h"
 #include "signal_crypto.h"
 
@@ -129,6 +130,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     sp->session_ready = true;
     memcpy(sp->pubkey, pk, 32);
     sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
     sp->last_signed_nonce = 12345;
     /* Stamp something on the ship so we know we loaded the right file. */
     sp->ship.cargo[COMMODITY_FERRITE_ORE] = 7.0f;
@@ -151,6 +153,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     sp2->id = 0;
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
+    sp2->pubkey_proof_ok = true;
     ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
     ASSERT_EQ_FLOAT(sp2->ship.cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.001f);
     ASSERT(sp2->last_signed_nonce == 12345);
@@ -219,6 +222,52 @@ TEST(test_save_legacy_claim_bad_signature_rejected) {
     signal_crypto_sign(real_sig, msg, dlen + tlen, sk2);
     ASSERT(signal_crypto_verify(real_sig, msg, dlen + tlen, pk2));
     ASSERT(!signal_crypto_verify(real_sig, msg, dlen + tlen, pk));
+}
+
+TEST(test_pubkey_proof_is_session_bound) {
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+
+    uint8_t token[8];
+    uint8_t other_token[8];
+    fill_token(token, 14);
+    fill_token(other_token, 15);
+
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    ASSERT(pubkey_proof_sign(sig, pk, sk, token));
+    ASSERT(pubkey_proof_verify(pk, token, sig));
+    ASSERT(!pubkey_proof_verify(pk, other_token, sig));
+
+    uint8_t other_pk[32], other_sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(other_pk, other_sk);
+    ASSERT(!pubkey_proof_verify(other_pk, token, sig));
+}
+
+TEST(test_pubkey_persistence_gate_requires_verified_proof) {
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+    (void)sk;
+
+    server_player_t sp = {0};
+    sp.id = 7;
+    fill_token(sp.session_token, 16);
+    ASSERT(!server_player_can_use_pubkey_persistence(&sp));
+
+    sp.session_ready = true;
+    ASSERT(!server_player_can_use_pubkey_persistence(&sp));
+
+    memcpy(sp.pubkey, pk, 32);
+    sp.pubkey_set = true;
+    ASSERT(!server_player_can_use_pubkey_persistence(&sp));
+
+    char path[512];
+    ASSERT(player_save_path(path, sizeof(path), TMP("a4_gate"), &sp, 7));
+    ASSERT(strstr(path, "/legacy/") != NULL);
+
+    sp.pubkey_proof_ok = true;
+    ASSERT(server_player_can_use_pubkey_persistence(&sp));
+    ASSERT(player_save_path(path, sizeof(path), TMP("a4_gate"), &sp, 7));
+    ASSERT(strstr(path, "/pubkey/") != NULL);
 }
 
 /* 4. Wrong-pubkey-claims-someone-else's-save — first-claim-wins.
@@ -383,6 +432,8 @@ void register_save_keyed_by_pubkey_tests(void) {
     RUN(test_save_keyed_by_pubkey_roundtrip);
     RUN(test_save_legacy_claim_renames_to_pubkey);
     RUN(test_save_legacy_claim_bad_signature_rejected);
+    RUN(test_pubkey_proof_is_session_bound);
+    RUN(test_pubkey_persistence_gate_requires_verified_proof);
     RUN(test_save_legacy_claim_wrong_pubkey_first_claim_wins);
     RUN(test_save_legacy_claim_race_second_loses);
     RUN(test_save_anonymous_fallback_legacy_path);
