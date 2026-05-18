@@ -9,6 +9,7 @@ FORCE=0
 
 usage() {
     echo "usage: $0 [--force]" >&2
+    echo "manifest: blank lines and # comments are ignored; prefix optional assets with ?" >&2
     echo "env: SIGNAL_ASSET_CDN, SIGNAL_ASSET_DIR, SIGNAL_ASSET_MANIFEST" >&2
 }
 
@@ -38,6 +39,14 @@ while IFS= read -r rel || [ -n "$rel" ]; do
         ""|\#*) continue ;;
     esac
 
+    optional=0
+    case "$rel" in
+        \?*)
+            optional=1
+            rel=${rel#\?}
+            ;;
+    esac
+
     dest="$ASSET_DIR/$rel"
     if [ "$FORCE" -eq 0 ] && [ -s "$dest" ]; then
         echo "sync-assets: keep $rel"
@@ -48,7 +57,14 @@ while IFS= read -r rel || [ -n "$rel" ]; do
     tmp="$dest.part"
     url="$CDN_BASE/$rel"
     echo "sync-assets: fetch $url"
-    curl -fL --retry 3 --retry-delay 1 -o "$tmp" "$url"
+    if ! curl -fL --retry 3 --retry-delay 1 -o "$tmp" "$url"; then
+        rm -f "$tmp"
+        if [ "$optional" -eq 1 ]; then
+            echo "sync-assets: optional asset unavailable: $rel" >&2
+            continue
+        fi
+        exit 1
+    fi
     mv "$tmp" "$dest"
 done < "$MANIFEST"
 

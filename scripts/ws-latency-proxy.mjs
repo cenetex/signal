@@ -13,7 +13,9 @@ Options:
   --upstream=ws://HOST:PORT/P upstream websocket URL (default: ws://127.0.0.1:9091/ws)
   --client-ms=N               one-way delay for browser -> server frames (default: 0)
   --server-ms=N               one-way delay for server -> browser frames (default: 0)
-  --server-world-players-ms=N extra delay for server WORLD_PLAYERS frames (default: 0)
+  --server-world-players-ms=N extra delay for server WORLD_PLAYERS frames (default: 0).
+                              This is a logical stream delay; immediate control
+                              frames such as LATENCY_PONG can pass it.
   --jitter-ms=N               additive per-frame jitter, preserving order (default: 0)
   --log-frames                log forwarded frame sizes
 `);
@@ -129,6 +131,7 @@ function wsAccept(key) {
 function makeForwarder({ from, to, label, delayMs, extraDelayForFrame, jitterMs, logFrames }) {
   let buffer = Buffer.alloc(0);
   let nextWriteAt = 0;
+  let nextExtraWriteAt = 0;
 
   function schedule(frame) {
     const extraDelayMs = extraDelayForFrame ? extraDelayForFrame(frame) : 0;
@@ -137,9 +140,16 @@ function makeForwarder({ from, to, label, delayMs, extraDelayForFrame, jitterMs,
     /* Model fixed path latency, not a bandwidth bottleneck. If frames arrive
      * faster than the delay, they should still emerge at roughly that same
      * cadence after the latency offset; only clamp enough to prevent jitter
-     * from reordering the TCP byte stream. */
-    if (due <= nextWriteAt) due = nextWriteAt + 1;
-    nextWriteAt = due;
+     * from reordering each logical lane. Class-specific extra delays simulate
+     * an authoritative snapshot stream lagging behind control probes, so they
+     * must not head-of-line block LATENCY_PONG or other base-latency frames. */
+    if (extraDelayMs > 0) {
+      if (due <= nextExtraWriteAt) due = nextExtraWriteAt + 1;
+      nextExtraWriteAt = due;
+    } else {
+      if (due <= nextWriteAt) due = nextWriteAt + 1;
+      nextWriteAt = due;
+    }
     if (logFrames) {
       console.error(`[ws-latency] ${label} ${frame.length}B delay=${due - Date.now()}ms`);
     }

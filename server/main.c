@@ -2587,7 +2587,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (station_mutation_operator_text(sid, OPERATOR_POST_HAIL_MOTD, 0,
                                            hail, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_hail\",\"event_id\":%llu}",
+                          "{\"ok\":true,\"action\":\"set_hail\",\"audited\":true,\"event_id\":%llu}",
                           (unsigned long long)event_id);
         } else {
             mg_http_reply(c, 400, api_headers,
@@ -2599,7 +2599,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (station_mutation_operator_text(sid, OPERATOR_POST_MINER_CHATTER,
                                            slot, message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_miner_chatter\",\"slot\":%ld,\"event_id\":%llu}",
+                          "{\"ok\":true,\"action\":\"set_miner_chatter\",\"slot\":%ld,\"audited\":true,\"event_id\":%llu}",
                           slot, (unsigned long long)event_id);
         } else {
             mg_http_reply(c, 400, api_headers,
@@ -2611,7 +2611,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (station_mutation_operator_text(sid, OPERATOR_POST_HAULER_CHATTER,
                                            slot, message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_hauler_chatter\",\"slot\":%ld,\"event_id\":%llu}",
+                          "{\"ok\":true,\"action\":\"set_hauler_chatter\",\"slot\":%ld,\"audited\":true,\"event_id\":%llu}",
                           slot, (unsigned long long)event_id);
         } else {
             mg_http_reply(c, 400, api_headers,
@@ -2623,7 +2623,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (station_mutation_operator_text(sid, OPERATOR_POST_RATI_DELIVERY, 0,
                                            message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_rati_hail\",\"event_id\":%llu}",
+                          "{\"ok\":true,\"action\":\"set_rati_hail\",\"audited\":true,\"event_id\":%llu}",
                           (unsigned long long)event_id);
         } else {
             mg_http_reply(c, 400, api_headers,
@@ -2639,7 +2639,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
                           err ? err : "currency_name rejected");
         } else {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_currency_name\",\"value\":\"%s\"}", sanitized);
+                          "{\"ok\":true,\"action\":\"set_currency_name\",\"audited\":false,\"value\":\"%s\"}", sanitized);
         }
     } else if (strcmp(action, "set_price") == 0) {
         float clamped = 0.0f;
@@ -2651,7 +2651,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
                           err ? err : "price rejected");
         } else {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}",
+                          "{\"ok\":true,\"action\":\"set_price\",\"audited\":false,\"commodity\":%ld,\"price\":%.1f}",
                           commodity, clamped);
         }
     } else if (strcmp(action, "build_module") == 0) {
@@ -2662,7 +2662,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
                           err ? err : "module build rejected");
         } else {
             mg_http_reply(c, 200, api_headers,
-                          "{\"ok\":true,\"action\":\"build_module\",\"type\":%ld}", module_type);
+                          "{\"ok\":true,\"action\":\"build_module\",\"audited\":false,\"type\":%ld}", module_type);
         }
     } else {
         mg_http_reply(c, 400, api_headers,

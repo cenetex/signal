@@ -2053,12 +2053,11 @@ static void net_action_queue_update(float dt) {
 
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action) {
+    (void)input_seq;
     (void)status;
     (void)action;
-    if (input_seq != 0) {
-        g.net_last_server_ack = input_seq;
-        net_record_input_ack(input_seq);
-    }
+    /* ACTION_ACK is an immediate transport/dedupe receipt. Authoritative
+     * input age is measured from WORLD_PLAYERS input_seq_ack instead. */
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
 }

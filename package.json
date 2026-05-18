@@ -3,6 +3,7 @@
   "scripts": {
     "smoke": "playwright test",
     "smoke:headed": "playwright test --headed",
+    "test:latency-proxy": "node scripts/test-ws-latency-proxy.mjs",
     "test:relay-broker": "node scripts/test-relay-region-broker.mjs"
   },
   "devDependencies": {

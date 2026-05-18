@@ -1,13 +1,15 @@
 # Signal external asset pack.
 # Paths are relative to the local assets/ directory and the CDN base below.
 # Default CDN: https://signal-ratimics-assets.s3.amazonaws.com
+# Prefix optional entries with ?. Missing optional assets warn but do not fail
+# the sync; the client keeps its runtime fallback.
 
 stations/prospect/portrait.png
-stations/prospect/motd.json
+?stations/prospect/motd.json
 stations/kepler/portrait.png
-stations/kepler/motd.json
+?stations/kepler/motd.json
 stations/helios/portrait.png
-stations/helios/motd.json
+?stations/helios/motd.json
 
 music/nebula_drift_protocol.mp3
 music/nebula_drift_protocol_2.mp3

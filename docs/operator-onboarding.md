@@ -226,11 +226,21 @@ The station command API accepts:
   chatter slots `0..7`.
 - `{"action":"set_rati_hail","message":"..."}` for player-facing hail after
   RATi-grade ore delivery.
+- `{"action":"set_currency_name","currency_name":"..."}` for the local
+  station-currency label.
+- `{"action":"set_price","commodity":0,"price":125}` for a station-local
+  commodity price override. Server-side bounds reject non-finite, negative, or
+  extreme values.
+- `{"action":"build_module","module_type":2}` for admin/test construction of a
+  station module using the server's placement rules.
 
-Every accepted command returns the signed station-chain `event_id`. The
-lower-level `/internal/v1/operator-post` endpoint still exists for internal
-services that already choose an operator-post kind directly; known kinds are
-materialized into the same live station fields.
+Text/content commands return `audited:true` plus the signed station-chain
+`event_id`. Currency, price, and admin construction commands return
+`audited:false`; they mutate live/catalog station state, but they are not
+station-chain operator posts. The lower-level `/internal/v1/operator-post`
+endpoint still exists for internal services that already choose an
+operator-post kind directly; known kinds are materialized into the same live
+station fields.
 
 ### 6. Verify your chain log
 

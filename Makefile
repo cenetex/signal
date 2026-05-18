@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-flight-trace flight-trace assets test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-flight-trace flight-trace assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -72,6 +72,11 @@ flight-trace: build-flight-trace
 
 assets:
 	./scripts/sync-assets.sh
+
+PROTOCOL_CHECK_URL ?= http://127.0.0.1:9091/api/protocol
+
+protocol-check:
+	scripts/protocol-check.py --url "$(PROTOCOL_CHECK_URL)"
 
 # --- Tests ---
 # Always rebuild signal_test from current source before running, so a stale

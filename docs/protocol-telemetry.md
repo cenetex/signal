@@ -30,6 +30,15 @@ Use this as a compatibility check for live-brain, replay, and telemetry tools.
 If a stream's advertised `record_size`, `header_size`, or `version` differs
 from what the tool expects, fail fast and report the mismatch.
 
+For the repo's baseline compatibility check against a local relay:
+
+```sh
+make protocol-check
+```
+
+Override `PROTOCOL_CHECK_URL` when checking a non-default local relay or a
+staging endpoint.
+
 ## Stream Classes
 
 - `static`: identity/config snapshots such as `NET_MSG_STATION_IDENTITY`.
