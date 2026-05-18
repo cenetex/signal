@@ -54,8 +54,6 @@ void music_play(music_state_t *m, int track);
 void music_stop(music_state_t *m);
 void music_pause(music_state_t *m);
 void music_resume(music_state_t *m);
-void music_set_volume(music_state_t *m, float vol);
-void music_fade_to(music_state_t *m, float vol, float seconds);
 void music_update(music_state_t *m, float dt);
 void music_next_track(music_state_t *m);
 void music_prev_track(music_state_t *m);

@@ -292,15 +292,6 @@ void music_resume(music_state_t *m) {
     m->paused = false;
 }
 
-void music_set_volume(music_state_t *m, float vol) {
-    m->volume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
-}
-
-void music_fade_to(music_state_t *m, float vol, float seconds) {
-    m->fade_target = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
-    m->fade_speed = seconds > 0.0f ? 1.0f / seconds : 100.0f;
-}
-
 void music_update(music_state_t *m, float dt) {
     if (!m->playing || m->paused) return;
 

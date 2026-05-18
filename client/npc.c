@@ -1,14 +1,6 @@
 #include <math.h>
 #include "npc.h"
 
-float npc_total_cargo(const npc_ship_t* npc) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) {
-        total += npc->cargo[i];
-    }
-    return total;
-}
-
 bool npc_target_valid(const npc_ship_t* npc, const asteroid_t* asteroids, int count) {
     if (npc->target_asteroid < 0 || npc->target_asteroid >= count) return false;
     const asteroid_t* a = &asteroids[npc->target_asteroid];
