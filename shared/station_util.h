@@ -171,6 +171,7 @@ bool station_flow_summary(const station_t *st, bool mirrored_authoritative,
                           station_flow_summary_t *out);
 bool station_flow_summary_format(const station_flow_summary_t *summary,
                                  char *out, size_t cap);
+float station_clamp_operator_price(float requested, float baseline);
 
 /* ----- Demand: what is this station starving for, right now? -----
  *

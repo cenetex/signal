@@ -2174,6 +2174,11 @@ TEST(test_station_identity_reconcile_clears_stale_module_diag) {
     ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
     ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_OUTPUT_FULL);
 
+    incoming[1].build_progress = 0.5f;
+    station_reconcile_module_diag_for_identity(&st, incoming, 2);
+    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_OUTPUT_FULL);
+
     incoming[1].type = MODULE_TRACTOR_FAB;
     station_reconcile_module_diag_for_identity(&st, incoming, 2);
     ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);

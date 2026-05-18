@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "station_util.h"
 
 TEST(test_refined_form_mapping) {
     ASSERT_EQ_INT(commodity_refined_form(COMMODITY_FERRITE_ORE), COMMODITY_FERRITE_INGOT);
@@ -140,6 +141,15 @@ TEST(test_station_inventory_amount) {
     ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FERRITE_INGOT), 0.0f, 0.01f);
 }
 
+TEST(test_station_operator_price_clamp_uses_stable_baseline) {
+    float baseline = 10.0f;
+    ASSERT_EQ_FLOAT(station_clamp_operator_price(100.0f, baseline), 20.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_clamp_operator_price(100.0f, baseline), 20.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_clamp_operator_price(1.0f, baseline), 5.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_clamp_operator_price(7.5f, baseline), 7.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_clamp_operator_price(42.0f, 0.0f), 42.0f, 0.001f);
+}
+
 void register_commodity_tests(void) {
     TEST_SECTION("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -154,4 +164,5 @@ void register_commodity_tests(void) {
     RUN(test_ship_cargo_amount);
     RUN(test_station_buy_price);
     RUN(test_station_inventory_amount);
+    RUN(test_station_operator_price_clamp_uses_stable_baseline);
 }

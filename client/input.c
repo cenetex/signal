@@ -318,7 +318,12 @@ static void sample_ui_safety(void) {
 static void sample_targeting(const input_intent_t *intent) {
     if (intent->mine && !LOCAL_PLAYER.docked &&
         LOCAL_PLAYER.in_dock_range && LOCAL_PLAYER.nearby_station >= 0) {
-        const station_t *st = &g.world.stations[LOCAL_PLAYER.nearby_station];
+        const station_t *st = station_at(LOCAL_PLAYER.nearby_station);
+        if (!st) {
+            g.target_station = -1;
+            g.target_module = -1;
+            return;
+        }
         vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
         float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
         float tr_sq = tr * tr;
@@ -346,7 +351,12 @@ static void sample_targeting(const input_intent_t *intent) {
     /* Laser released: keep target briefly so E can fire it, but clear
      * if the player drifted out of 1.5× tractor range. */
     if (!intent->mine && g.target_station >= 0 && g.target_module >= 0) {
-        const station_t *tst = &g.world.stations[g.target_station];
+        const station_t *tst = station_at(g.target_station);
+        if (!tst || g.target_module >= tst->module_count) {
+            g.target_station = -1;
+            g.target_module = -1;
+            return;
+        }
         if (g.target_module < tst->module_count) {
             vec2 mp = module_world_pos_ring(tst, tst->modules[g.target_module].ring,
                                              tst->modules[g.target_module].slot);
@@ -366,7 +376,12 @@ static void sample_e_interact(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_E)) return;
     if (LOCAL_PLAYER.docked) { intent->interact = true; return; }
     if (g.target_station >= 0 && g.target_module >= 0) {
-        const station_t *tst = &g.world.stations[g.target_station];
+        const station_t *tst = station_at(g.target_station);
+        if (!tst) {
+            g.target_station = -1;
+            g.target_module = -1;
+            return;
+        }
         if (g.target_module < tst->module_count) {
             if (tst->modules[g.target_module].type == MODULE_DOCK) {
                 intent->interact = true;

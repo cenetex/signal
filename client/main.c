@@ -1007,12 +1007,12 @@ static void sim_step(float dt) {
 
     /* Reset the docked view to DOCK on each fresh dock. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
-        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
+        const station_t* st = current_station_ptr();
         g.station_view = STATION_VIEW_DOCK;
         g.selected_contract = -1; /* fresh dock — no carryover selection */
         reset_trade_session_rows(LOCAL_PLAYER.current_station);
         /* Clear blueprint pip if we docked at the blueprint station */
-        if (g.nav_pip_is_blueprint) {
+        if (st && g.nav_pip_is_blueprint) {
             float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
             if (d < 200.0f) {
                 g.nav_pip_is_blueprint = false;
@@ -1564,8 +1564,8 @@ static void render_world(void) {
 
     /* Module target highlight + info panel */
     if (g.target_station >= 0 && g.target_module >= 0) {
-        const station_t *tst = &g.world.stations[g.target_station];
-        if (g.target_module < tst->module_count) {
+        const station_t *tst = station_at(g.target_station);
+        if (tst && g.target_module < tst->module_count) {
             const station_module_t *tm = &tst->modules[g.target_module];
             vec2 mp = module_world_pos_ring(tst, tm->ring, tm->slot);
             /* Pulsing highlight ring around targeted module */

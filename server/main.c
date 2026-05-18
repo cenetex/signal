@@ -19,6 +19,7 @@
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
 #include "sha256.h"
 #include "station_authority.h"
+#include "station_util.h"
 #include <math.h>       /* lroundf */
 
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
+#include <float.h>
 #include <sys/stat.h>
 #include <time.h>       /* time() for fresh-boot belt_seed rotation */
 
@@ -114,6 +116,9 @@ static bool station_identity_dirty[MAX_STATIONS];
 static bool station_diag_valid[MAX_STATIONS];
 static uint64_t station_diag_last_sent_ms[MAX_STATIONS];
 static uint8_t station_diag_last[MAX_STATIONS][MAX_MODULES_PER_STATION];
+static bool station_price_anchor_valid[MAX_STATIONS][COMMODITY_COUNT];
+static uint32_t station_price_anchor_station_id[MAX_STATIONS];
+static float station_price_anchor[MAX_STATIONS][COMMODITY_COUNT];
 static bool station_econ_dirty = true;   /* station inventories changed */
 static bool contracts_dirty = true;       /* contract list changed */
 static highscore_table_t highscores;
@@ -1849,6 +1854,29 @@ static void station_mutation_mark_contracts(void) {
     contracts_dirty = true;
 }
 
+static float station_mutation_price_baseline(int station_idx, long commodity,
+                                             double requested) {
+    station_t *st = &world.stations[station_idx];
+    uint32_t station_id = st->id;
+    if (station_price_anchor_station_id[station_idx] != station_id) {
+        memset(station_price_anchor_valid[station_idx], 0,
+               sizeof(station_price_anchor_valid[station_idx]));
+        station_price_anchor_station_id[station_idx] = station_id;
+    }
+
+    int c = (int)commodity;
+    if (!station_price_anchor_valid[station_idx][c]) {
+        float baseline = st->base_price[c];
+        if (!(baseline > 0.0f))
+            baseline = (float)requested;
+        if (!(baseline > 0.0f))
+            baseline = 1.0f;
+        station_price_anchor[station_idx][c] = baseline;
+        station_price_anchor_valid[station_idx][c] = true;
+    }
+    return station_price_anchor[station_idx][c];
+}
+
 static size_t operator_post_field_cap(uint8_t kind) {
     switch ((operator_post_kind_t)kind) {
     case OPERATOR_POST_MINER_CHATTER:
@@ -2024,16 +2052,15 @@ static bool station_mutation_set_price(int station_idx, long commodity,
         if (out_error) *out_error = "invalid commodity";
         return false;
     }
-    if (!(price_val > 0.0)) {
+    if (!(price_val > 0.0) || !isfinite(price_val) || price_val > FLT_MAX) {
         if (out_error) *out_error = "invalid price";
         return false;
     }
 
     station_t *st = &world.stations[station_idx];
-    float default_price = st->base_price[commodity];
-    float clamped = (float)price_val;
-    if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
-    if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
+    float baseline = station_mutation_price_baseline(station_idx, commodity,
+                                                     price_val);
+    float clamped = station_clamp_operator_price((float)price_val, baseline);
     st->base_price[commodity] = clamped;
     station_mutation_mark_identity(station_idx);
     if (out_price) *out_price = clamped;

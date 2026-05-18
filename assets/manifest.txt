@@ -2,6 +2,13 @@
 # Paths are relative to the local assets/ directory and the CDN base below.
 # Default CDN: https://signal-ratimics-assets.s3.amazonaws.com
 
+stations/prospect/portrait.png
+stations/prospect/motd.json
+stations/kepler/portrait.png
+stations/kepler/motd.json
+stations/helios/portrait.png
+stations/helios/motd.json
+
 music/nebula_drift_protocol.mp3
 music/nebula_drift_protocol_2.mp3
 music/last_light_in_the_belt.mp3

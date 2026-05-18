@@ -814,8 +814,7 @@ static bool station_module_identity_equal(const station_module_t *a,
            a->ring == b->ring &&
            a->slot == b->slot &&
            a->scaffold == b->scaffold &&
-           a->commodity == b->commodity &&
-           a->build_progress == b->build_progress;
+           a->commodity == b->commodity;
 }
 
 void station_reconcile_module_diag_for_identity(station_t *st,
@@ -929,6 +928,17 @@ bool station_flow_summary_format(const station_flow_summary_t *summary,
     snprintf(out, cap, "FLOW %s: %s", module,
              station_flow_diag_label(summary->diag));
     return true;
+}
+
+float station_clamp_operator_price(float requested, float baseline)
+{
+    if (!(requested > 0.0f)) return 0.0f;
+    if (!(baseline > 0.0f)) return requested;
+    float lo = baseline * 0.5f;
+    float hi = baseline * 2.0f;
+    if (requested < lo) return lo;
+    if (requested > hi) return hi;
+    return requested;
 }
 
 const char *station_short_name(int station_idx) {

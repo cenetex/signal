@@ -482,13 +482,21 @@ static uint16_t candidate_action_mask(void)
 
 static void reset_trace_player(world_t *w, server_player_t *sp);
 
+static bool trace_reverse_allowed(const server_player_t *sp)
+{
+    const float reverse_start_speed = 2.0f;
+    vec2 forward = ship_forward(sp->ship.angle);
+    float forward_speed = v2_dot(sp->ship.vel, forward);
+    return forward_speed <= reverse_start_speed;
+}
+
 static void apply_trace_action(server_player_t *sp, int action)
 {
     const flight_trace_action_t *keys = &FLIGHT_TRACE_ACTIONS[action];
     memset(&sp->input, 0, sizeof(sp->input));
     sp->input.turn = (float)keys->turn;
     sp->input.thrust = (float)keys->thrust;
-    sp->input.reverse_thrust = false;
+    sp->input.reverse_thrust = keys->thrust < 0 && trace_reverse_allowed(sp);
 }
 
 static void scan_pain_events(const world_t *w, flight_trace_pain_t *pain)
@@ -1131,10 +1139,7 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
             row.control_x = control_target.x;
             row.control_y = control_target.y;
 
-            memset(&sp->input, 0, sizeof(sp->input));
-            sp->input.turn = (float)keys->turn;
-            sp->input.thrust = (float)keys->thrust;
-            sp->input.reverse_thrust = false;
+            apply_trace_action(sp, action);
             world_sim_step_player_only(&w, 0, SIM_DT);
 
             next_dist = sqrtf(v2_dist_sq(sp->ship.pos, goal));
