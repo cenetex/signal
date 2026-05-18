@@ -318,10 +318,6 @@ static void ensure_session_token(void) {
     net_state.session_token_ready = true;
 }
 
-const uint8_t* net_local_session_token(void) {
-    return net_state.session_token_ready ? net_state.session_token : NULL;
-}
-
 static void ensure_callsign(void) {
     if (net_state.callsign_ready) return;
     /* Callsign is now derived from the player's Ed25519 pubkey via
@@ -1825,14 +1821,6 @@ void net_poll(void) {
 
 #endif /* __EMSCRIPTEN__ */
 
-void net_send_session(const uint8_t token[8]) {
-    uint8_t buf[9];
-    buf[0] = NET_MSG_SESSION;
-    memcpy(&buf[1], token, 8);
-    ws_send_binary(buf, 9);
-    send_pubkey_proof_for_token(token);
-}
-
 void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
@@ -1858,28 +1846,6 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     ws_send_binary(buf, 18);
 }
 
-void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
-    if (net_send_signed_action(SIGNED_ACTION_BUY_INGOT,
-                               ingot_pubkey, 32)) {
-        return;
-    }
-    uint8_t buf[33];
-    buf[0] = NET_MSG_BUY_INGOT;
-    memcpy(&buf[1], ingot_pubkey, 32);
-    ws_send_binary(buf, 33);
-}
-
-void net_send_deliver_ingot(uint8_t hold_index) {
-    if (net_send_signed_action(SIGNED_ACTION_DELIVER,
-                               &hold_index, 1)) {
-        return;
-    }
-    uint8_t buf[2];
-    buf[0] = NET_MSG_DELIVER_INGOT;
-    buf[1] = hold_index;
-    ws_send_binary(buf, 2);
-}
-
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py) {
     uint8_t buf[NET_PLAN_MSG_SIZE];
@@ -1896,19 +1862,6 @@ void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
         return;
     }
     ws_send_binary(buf, NET_PLAN_MSG_SIZE);
-}
-
-void net_send_state(float x, float y, float vx, float vy, float angle) {
-    uint8_t buf[23];
-    buf[0] = NET_MSG_STATE;
-    buf[1] = net_state.local_id;
-    write_f32_le(&buf[2], x);
-    write_f32_le(&buf[6], y);
-    write_f32_le(&buf[10], vx);
-    write_f32_le(&buf[14], vy);
-    write_f32_le(&buf[18], angle);
-    buf[22] = 0;
-    ws_send_binary(buf, 23);
 }
 
 /* ---------- Common accessors --------------------------------------------- */
@@ -1928,16 +1881,6 @@ const char* net_local_callsign(void) {
 
 const NetPlayerState* net_get_players(void) {
     return net_state.players;
-}
-
-int net_remote_player_count(void) {
-    int count = 0;
-    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
-        if (net_state.players[i].active && i != (int)net_state.local_id) {
-            count++;
-        }
-    }
-    return count;
 }
 
 const char* net_server_hash(void) {

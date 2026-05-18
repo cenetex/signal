@@ -190,12 +190,6 @@ void audio_play_fracture(audio_state_t* a, asteroid_tier_t parent_tier) {
     audio_play_voice(a, AUDIO_WAVE_NOISE, base * 0.7f, -base * 0.45f, 0.05f, 0.12f, 0.0f, 1.0f);
 }
 
-void audio_play_pickup(audio_state_t* a, float ore, int fragments) {
-    float gain = clampf(0.04f + (ore * 0.0032f), 0.04f, 0.11f);
-    float pitch = 540.0f + clampf(ore * 14.0f, 0.0f, 220.0f) + (float)(fragments * 24);
-    audio_play_voice(a, AUDIO_WAVE_SINE, pitch, 920.0f, gain, 0.09f, audio_rand_bipolar(a) * 0.35f, 0.0f);
-}
-
 void audio_play_dock(audio_state_t* a) {
     audio_play_voice(a, AUDIO_WAVE_SINE, 310.0f, 580.0f, 0.08f, 0.16f, -0.12f, 0.0f);
     audio_play_voice(a, AUDIO_WAVE_SINE, 470.0f, 380.0f, 0.06f, 0.18f, 0.12f, 0.0f);

@@ -511,9 +511,9 @@ TEST(test_bug37_mine_inactive_asteroid) {
     w.asteroids[target].active = false;
     /* Next sim step: hover_asteroid still points to inactive asteroid.
      * step_mining_system accesses w->asteroids[hover_asteroid] without
-     * rechecking active flag — find_mining_target filters inactive,
+     * rechecking active flag — sim_find_mining_target filters inactive,
      * but hover_asteroid was set BEFORE the deactivation. */
-    /* This should be safe because find_mining_target runs first and
+    /* This should be safe because sim_find_mining_target runs first and
      * would set hover_asteroid = -1. Let's verify: */
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_INT(w.players[0].hover_asteroid, -1);
@@ -1167,7 +1167,7 @@ TEST(test_bug55_npc_deposits_at_non_refinery) {
 }
 
 TEST(test_bug56_asteroid_drag_constant) {
-    /* Asteroid drag is hardcoded as 0.42f inline in step_asteroid_dynamics.
+    /* Asteroid drag is hardcoded as 0.42f inline in sim_step_asteroid_dynamics.
      * It should be a named constant in game_sim.h or types.h so it can be
      * tuned alongside ship drag and dock dampening. */
     /* Can't test directly — this is a code quality issue.
@@ -1293,7 +1293,7 @@ TEST(test_bug60_cannot_mine_fragment) {
     w.players[0].ship.angle = 0.0f;
     w.players[0].input.mine = true;
     world_sim_step(&w, SIM_DT);
-    /* find_mining_target should skip TIER_S (collectible, not mineable).
+    /* sim_find_mining_target should skip TIER_S (collectible, not mineable).
      * Verify the mining beam doesn't target fragments. */
     ASSERT_EQ_INT(w.players[0].hover_asteroid, -1);
 }

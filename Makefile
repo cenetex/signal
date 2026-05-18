@@ -291,5 +291,5 @@ deploy:
 
 clean:
 	rm -rf build build-* _site test-results playwright-report coverage.json crap.json
-	rm -f compile_commands.json music_test
+	rm -f compile_commands.json
 	rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit

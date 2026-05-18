@@ -10,7 +10,6 @@ void audio_generate_stream(audio_state_t* audio);
 
 void audio_play_mining_tick(audio_state_t* audio);
 void audio_play_fracture(audio_state_t* audio, asteroid_tier_t parent_tier);
-void audio_play_pickup(audio_state_t* audio, float ore, int fragments);
 void audio_play_dock(audio_state_t* audio);
 void audio_play_launch(audio_state_t* audio);
 void audio_play_sale(audio_state_t* audio);

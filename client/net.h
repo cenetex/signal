@@ -336,10 +336,6 @@ bool net_reconnect(void);
 /* Shut down the connection and free resources. */
 void net_shutdown(void);
 
-/* Send an 8-byte session token to the server for save identification.
- * Called automatically on JOIN. */
-void net_send_session(const uint8_t token[8]);
-
 /* Layer A.2 of #479 — install the persistent Ed25519 pubkey to be
  * advertised to the server in NET_MSG_REGISTER_PUBKEY on every
  * (re)connect. Call this BEFORE net_init so the very first WS open
@@ -421,14 +417,6 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     int8_t place_ring, int8_t place_slot,
                     uint16_t action_id, uint32_t input_tick);
 
-/* RATi v2: purchase a specific named ingot from the docked station's
- * stockpile. Server will validate ledger balance + hold space. */
-void net_send_buy_ingot(const uint8_t ingot_pubkey[32]);
-
-/* RATi v2: deposit a hold ingot into the docked station's stockpile.
- * Pays a small delivery credit; LRU evicts on full. */
-void net_send_deliver_ingot(uint8_t hold_index);
-
 /* Present a carried cargo receipt chain to the current authority. The
  * multiplayer client sends these immediately before queued sell/deliver
  * actions for matching carried units; the future zone-handoff flow will
@@ -441,9 +429,6 @@ void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py);
 
-/* Send the local player's full state to the server for relay. */
-void net_send_state(float x, float y, float vx, float vy, float angle);
-
 /* Process incoming messages. Call once per frame. */
 void net_poll(void);
 
@@ -454,16 +439,8 @@ bool net_is_connected(void);
 uint8_t net_local_id(void);
 const char* net_local_callsign(void);
 
-/* Returns a pointer to the 8-byte session token used to identify this
- * client to the server. NULL until ensure_session_token has run.
- * Used by mining_client to derive the player's mining identity. */
-const uint8_t* net_local_session_token(void);
-
 /* Access remote player state array (NET_MAX_PLAYERS entries). */
 const NetPlayerState* net_get_players(void);
-
-/* Returns the number of currently active remote players. */
-int net_remote_player_count(void);
 
 /* Returns the server's git hash (empty string if not received). */
 const char* net_server_hash(void);

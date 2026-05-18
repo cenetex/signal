@@ -18,8 +18,4 @@ float asteroid_hp_max(asteroid_tier_t tier);
 void clear_asteroid(asteroid_t* asteroid);
 void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, uint32_t* rng);
 
-void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, float dt);
-
-int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2 forward, float range, int mining_level);
-
 #endif
