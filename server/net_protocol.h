@@ -9,6 +9,7 @@
 #define NET_PROTOCOL_H
 
 #include "game_sim.h"
+#include "cargo_receipt.h"
 #include "manifest.h"
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
@@ -104,6 +105,129 @@ static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
     write_u32_le(&buf[9], server_recv_ms);
     write_u32_le(&buf[13], server_send_ms);
     return NET_LATENCY_PONG_SIZE;
+}
+
+static inline void protocol_info_write_stream(uint8_t *p, uint8_t msg,
+                                              uint8_t stream_class,
+                                              uint16_t flags,
+                                              uint16_t header_size,
+                                              uint16_t record_size,
+                                              uint16_t max_records,
+                                              uint16_t cadence_ms) {
+    p[0] = msg;
+    p[1] = stream_class;
+    write_u16_le(&p[2], flags);
+    write_u16_le(&p[4], header_size);
+    write_u16_le(&p[6], record_size);
+    write_u16_le(&p[8], max_records);
+    write_u16_le(&p[10], cadence_ms);
+}
+
+static inline int serialize_protocol_info(uint8_t *buf,
+                                          uint16_t sim_tick_ms,
+                                          uint16_t state_tick_ms,
+                                          uint16_t world_tick_ms,
+                                          uint16_t ship_tick_ms,
+                                          uint16_t station_diag_min_ms,
+                                          uint16_t station_identity_fallback_ms) {
+    buf[0] = NET_MSG_PROTOCOL_INFO;
+    write_u16_le(&buf[1], SIGNAL_PROTOCOL_VERSION);
+    write_u32_le(&buf[3], SIGNAL_PROTOCOL_CAPABILITIES);
+    buf[7] = PROTOCOL_INFO_STREAM_COUNT;
+
+    int count = 0;
+#define ADD_PROTOCOL_STREAM(msg, klass, flags, header, record, max, cadence) do { \
+        protocol_info_write_stream(&buf[PROTOCOL_INFO_HEADER_SIZE + \
+                                   count * PROTOCOL_INFO_STREAM_RECORD_SIZE], \
+                                   (uint8_t)(msg), (uint8_t)(klass), \
+                                   (uint16_t)(flags), (uint16_t)(header), \
+                                   (uint16_t)(record), (uint16_t)(max), \
+                                   (uint16_t)(cadence)); \
+        count++; \
+    } while (0)
+
+    ADD_PROTOCOL_STREAM(NET_MSG_SERVER_INFO, PROTOCOL_STREAM_CLASS_STATIC,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        1, 1, 11, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_LATENCY_PING, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_LATENCY_PING_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_LATENCY_PONG, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_LATENCY_PONG_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_CLIENT_METRICS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_CLIENT_METRICS_SIZE, 0, 1, 1000);
+    ADD_PROTOCOL_STREAM(NET_MSG_INPUT, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_INPUT_MSG_SIZE, 0, 1, sim_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_STATION_IDENTITY, PROTOCOL_STREAM_CLASS_STATIC,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        STATION_IDENTITY_SIZE, 0, 1,
+                        station_identity_fallback_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_STATION_DIAG, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        3, 1, MAX_MODULES_PER_STATION, station_diag_min_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYERS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        2, PLAYER_RECORD_SIZE, MAX_PLAYERS, state_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        PLAYER_SHIP_SIZE, 0, 1, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_STATIONS, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        2, STATION_RECORD_SIZE, MAX_STATIONS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_STATION_MANIFEST, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        STATION_MANIFEST_HEADER, STATION_MANIFEST_ENTRY,
+                        COMMODITY_COUNT * MINING_GRADE_COUNT, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_MANIFEST, PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        PLAYER_MANIFEST_HEADER, PLAYER_MANIFEST_ENTRY,
+                        COMMODITY_COUNT * MINING_GRADE_COUNT, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_STATION_INGOTS, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        STATION_INGOTS_HEADER, NAMED_INGOT_RECORD_SIZE,
+                        255, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_HOLD_INGOTS, PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        HOLD_INGOTS_HEADER, NAMED_INGOT_RECORD_SIZE,
+                        255, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_CONTRACTS, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        2, CONTRACT_RECORD_SIZE, MAX_CONTRACTS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_INSPECT_SNAPSHOT, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        INSPECT_SNAPSHOT_HEADER, INSPECT_SNAPSHOT_ROW,
+                        INSPECT_SNAPSHOT_MAX_ROWS, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_CARGO_RECEIPT_BUNDLE, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        3, CARGO_RECEIPT_SIZE, CARGO_RECEIPT_CHAIN_MAX_LEN, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_PRESENT_RECEIPT_CHAIN, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER,
+                        35, CARGO_RECEIPT_SIZE, CARGO_RECEIPT_CHAIN_MAX_LEN, 0);
+
+#undef ADD_PROTOCOL_STREAM
+    return PROTOCOL_INFO_HEADER_SIZE + count * PROTOCOL_INFO_STREAM_RECORD_SIZE;
 }
 
 /*
@@ -907,8 +1031,6 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
  *   + quantity_needed(f32) + base_price(f32) + age(f32)
  *   + target.x(f32) + target.y(f32) + target_index(u32)
  * Bumped from 27 when required_grade was added. */
-#define CONTRACT_RECORD_SIZE 28
-
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
     for (int i = 0; i < MAX_CONTRACTS; i++) {

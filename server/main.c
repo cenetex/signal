@@ -2674,11 +2674,99 @@ static bool api_rate_check(void) {
     return true;
 }
 
+static const char *protocol_msg_name(uint8_t msg) {
+    switch (msg) {
+    case NET_MSG_SERVER_INFO: return "SERVER_INFO";
+    case NET_MSG_INPUT: return "INPUT";
+    case NET_MSG_LATENCY_PING: return "LATENCY_PING";
+    case NET_MSG_LATENCY_PONG: return "LATENCY_PONG";
+    case NET_MSG_CLIENT_METRICS: return "CLIENT_METRICS";
+    case NET_MSG_STATION_IDENTITY: return "STATION_IDENTITY";
+    case NET_MSG_STATION_DIAG: return "STATION_DIAG";
+    case NET_MSG_WORLD_PLAYERS: return "WORLD_PLAYERS";
+    case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
+    case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";
+    case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";
+    case NET_MSG_PLAYER_MANIFEST: return "PLAYER_MANIFEST";
+    case NET_MSG_STATION_INGOTS: return "STATION_INGOTS";
+    case NET_MSG_HOLD_INGOTS: return "HOLD_INGOTS";
+    case NET_MSG_CONTRACTS: return "CONTRACTS";
+    case NET_MSG_INSPECT_SNAPSHOT: return "INSPECT_SNAPSHOT";
+    case NET_MSG_CARGO_RECEIPT_BUNDLE: return "CARGO_RECEIPT_BUNDLE";
+    case NET_MSG_PRESENT_RECEIPT_CHAIN: return "PRESENT_RECEIPT_CHAIN";
+    default: return "UNKNOWN";
+    }
+}
+
+static const char *protocol_stream_class_name(uint8_t stream_class) {
+    switch (stream_class) {
+    case PROTOCOL_STREAM_CLASS_STATIC: return "static";
+    case PROTOCOL_STREAM_CLASS_LIVE: return "live";
+    case PROTOCOL_STREAM_CLASS_ECON: return "econ";
+    case PROTOCOL_STREAM_CLASS_PLAYER: return "player";
+    case PROTOCOL_STREAM_CLASS_EVENT: return "event";
+    case PROTOCOL_STREAM_CLASS_AUTH: return "auth";
+    default: return "unknown";
+    }
+}
+
+static void handle_protocol_info_http(struct mg_connection *c) {
+    uint8_t wire[PROTOCOL_INFO_SIZE];
+    int wire_len = serialize_protocol_info(
+        wire, SIM_TICK_MS, STATE_TICK_MS, WORLD_TICK_MS,
+        SHIP_TICK_MS, STATION_DIAG_MIN_MS,
+        STATION_IDENTITY_FALLBACK_MS);
+
+    enum { PROTOCOL_JSON_BUFSZ = 8192 };
+    char out[PROTOCOL_JSON_BUFSZ];
+    int pos = 0;
+    uint16_t version = read_u16_le(&wire[1]);
+    uint32_t caps = read_u32_le(&wire[3]);
+    int count = wire[7];
+    int max_by_len = (wire_len - PROTOCOL_INFO_HEADER_SIZE) /
+                     PROTOCOL_INFO_STREAM_RECORD_SIZE;
+    if (count > max_by_len) count = max_by_len;
+
+    BUF_APPEND(pos, out, PROTOCOL_JSON_BUFSZ,
+               "{\"version\":%u,\"capabilities\":%u,\"stream_count\":%d,"
+               "\"streams\":[",
+               (unsigned)version, (unsigned)caps, count);
+    for (int i = 0; i < count; i++) {
+        const uint8_t *p = &wire[PROTOCOL_INFO_HEADER_SIZE +
+                                 i * PROTOCOL_INFO_STREAM_RECORD_SIZE];
+        uint8_t msg = p[0];
+        uint8_t stream_class = p[1];
+        uint16_t flags = read_u16_le(&p[2]);
+        uint16_t header_size = read_u16_le(&p[4]);
+        uint16_t record_size = read_u16_le(&p[6]);
+        uint16_t max_records = read_u16_le(&p[8]);
+        uint16_t cadence_ms = read_u16_le(&p[10]);
+        if (i > 0) BUF_APPEND(pos, out, PROTOCOL_JSON_BUFSZ, ",");
+        BUF_APPEND(pos, out, PROTOCOL_JSON_BUFSZ,
+                   "{\"msg\":%u,\"name\":\"%s\",\"class\":\"%s\","
+                   "\"flags\":%u,\"header_size\":%u,\"record_size\":%u,"
+                   "\"max_records\":%u,\"cadence_ms\":%u}",
+                   (unsigned)msg, protocol_msg_name(msg),
+                   protocol_stream_class_name(stream_class),
+                   (unsigned)flags, (unsigned)header_size,
+                   (unsigned)record_size, (unsigned)max_records,
+                   (unsigned)cadence_ms);
+    }
+    BUF_APPEND(pos, out, PROTOCOL_JSON_BUFSZ, "]}");
+    mg_http_reply(c, 200, api_headers, "%s", out);
+}
+
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             mg_ws_upgrade(c, hm, NULL);
+        } else if (mg_match(hm->uri, mg_str("/api/protocol"), NULL)) {
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else {
+                handle_protocol_info_http(c);
+            }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/state"), NULL)) {
             if (!api_rate_check()) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
@@ -2995,6 +3083,17 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         /* Send JOIN to new player (their own ID). */
         uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
         ws_send(c, join_msg, 2);
+
+        /* Send protocol discovery before the large world snapshots so
+         * clients/tools can validate stream sizes and cadences up front. */
+        {
+            uint8_t proto_msg[PROTOCOL_INFO_SIZE];
+            int proto_len = serialize_protocol_info(
+                proto_msg, SIM_TICK_MS, STATE_TICK_MS, WORLD_TICK_MS,
+                SHIP_TICK_MS, STATION_DIAG_MIN_MS,
+                STATION_IDENTITY_FALLBACK_MS);
+            ws_send(c, proto_msg, (size_t)proto_len);
+        }
 
         /* Notify others and tell new player about existing players. */
         broadcast_except(pid, join_msg, 2);

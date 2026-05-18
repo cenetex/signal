@@ -84,6 +84,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   signed chain logs, cargo receipts, and the off-chain trust model.
 - [`docs/cargo-architecture.md`](docs/cargo-architecture.md): canonical cargo
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
+- [`docs/protocol-telemetry.md`](docs/protocol-telemetry.md): protocol
+  discovery, stream classes, record sizes, and telemetry split.
 - [`docs/anime-framework.md`](docs/anime-framework.md): milestone-video product
   scope and cut line.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current

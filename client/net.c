@@ -34,6 +34,8 @@ static struct {
     NetPlayerState players[NET_MAX_PLAYERS];
     NetCallbacks callbacks;
     char server_hash[12];
+    NetProtocolInfo protocol_info;
+    bool protocol_info_ready;
     uint8_t session_token[8];
     bool session_token_ready;
     char callsign[8];
@@ -1208,6 +1210,37 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_PROTOCOL_INFO:
+        if (len >= PROTOCOL_INFO_HEADER_SIZE) {
+            NetProtocolInfo info;
+            memset(&info, 0, sizeof(info));
+            info.version = read_u16_le(&data[1]);
+            info.capabilities = read_u32_le(&data[3]);
+            int count = data[7];
+            int max_by_len = (len - PROTOCOL_INFO_HEADER_SIZE) /
+                             PROTOCOL_INFO_STREAM_RECORD_SIZE;
+            if (count > max_by_len) count = max_by_len;
+            if (count > PROTOCOL_INFO_STREAM_COUNT)
+                count = PROTOCOL_INFO_STREAM_COUNT;
+            info.stream_count = count;
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PROTOCOL_INFO_HEADER_SIZE +
+                                         i * PROTOCOL_INFO_STREAM_RECORD_SIZE];
+                info.streams[i].msg_type = p[0];
+                info.streams[i].stream_class = p[1];
+                info.streams[i].flags = read_u16_le(&p[2]);
+                info.streams[i].header_size = read_u16_le(&p[4]);
+                info.streams[i].record_size = read_u16_le(&p[6]);
+                info.streams[i].max_records = read_u16_le(&p[8]);
+                info.streams[i].cadence_ms = read_u16_le(&p[10]);
+            }
+            net_state.protocol_info = info;
+            net_state.protocol_info_ready = true;
+            if (net_state.callbacks.on_protocol_info)
+                net_state.callbacks.on_protocol_info(&net_state.protocol_info);
+        }
+        break;
+
     case NET_MSG_DEATH:
         if (len >= 43 && net_state.callbacks.on_death) {
             uint8_t pid = data[1];
@@ -1281,12 +1314,12 @@ static void handle_message(const uint8_t* data, int len) {
     case NET_MSG_CONTRACTS:
         if (len >= 2 && net_state.callbacks.on_contracts) {
             uint8_t count = data[1];
-            if (len >= 2 + count * 28) {
+            if (len >= 2 + count * CONTRACT_RECORD_SIZE) {
                 contract_t contracts[MAX_CONTRACTS];
                 memset(contracts, 0, sizeof(contracts));
                 int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
                 for (int i = 0; i < n; i++) {
-                    const uint8_t *p = &data[2 + i * 28];
+                    const uint8_t *p = &data[2 + i * CONTRACT_RECORD_SIZE];
                     contracts[i].active = true;
                     contracts[i].action = (p[0] <= CONTRACT_FRACTURE) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
                     contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
@@ -1654,6 +1687,7 @@ bool net_reconnect(void) {
         net_state.connected = false;
         net_state.local_id = 0xFF;
         net_state.server_hash[0] = '\0';
+        net_state.protocol_info_ready = false;
         memset(net_state.players, 0, sizeof(net_state.players));
         printf("[net] reconnecting via WebRTC rendezvous %s\n", net_state.server_url);
         return signal_webrtc_connect_js(net_state.server_url) != 0;
@@ -1666,6 +1700,7 @@ bool net_reconnect(void) {
     net_state.connected = false;
     net_state.local_id = 0xFF;
     net_state.server_hash[0] = '\0';
+    net_state.protocol_info_ready = false;
     memset(net_state.players, 0, sizeof(net_state.players));
 
     EmscriptenWebSocketCreateAttributes attr;
@@ -1819,6 +1854,7 @@ bool net_reconnect(void) {
     net_state.connected = false;
     net_state.local_id = 0xFF;
     net_state.server_hash[0] = '\0';
+    net_state.protocol_info_ready = false;
     memset(net_state.players, 0, sizeof(net_state.players));
     ws_conn = mg_ws_connect(&net_mgr, net_state.server_url, net_ev_handler, NULL, NULL);
     printf("[net] reconnecting to %s\n", net_state.server_url);
@@ -1838,7 +1874,7 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot,
                     uint16_t action_id, uint32_t input_tick) {
-    uint8_t buf[18];
+    uint8_t buf[NET_INPUT_MSG_SIZE];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
@@ -1855,7 +1891,7 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[12] = (uint8_t)(action_id & 0xFFu);
     buf[13] = (uint8_t)(action_id >> 8);
     write_u32_le(&buf[14], input_tick);
-    ws_send_binary(buf, 18);
+    ws_send_binary(buf, NET_INPUT_MSG_SIZE);
 }
 
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
@@ -1897,4 +1933,8 @@ const NetPlayerState* net_get_players(void) {
 
 const char* net_server_hash(void) {
     return net_state.server_hash;
+}
+
+const NetProtocolInfo *net_protocol_info(void) {
+    return net_state.protocol_info_ready ? &net_state.protocol_info : NULL;
 }

@@ -10,6 +10,7 @@
  *   LEAVE (0x02): 1 type + 1 player_id
  *   STATE (0x03): 1 type + 1 player_id + 5 float32 (x, y, vx, vy, angle)
  *   INPUT (0x04): 18 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick
+ *   PROTOCOL_INFO (0x41): stream classes, record sizes, max counts, cadences
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
@@ -296,6 +297,25 @@ typedef void (*net_on_latency_sample_fn)(uint32_t seq, float rtt_ms,
                                          float server_turnaround_ms);
 
 typedef struct {
+    uint8_t msg_type;
+    uint8_t stream_class;
+    uint16_t flags;
+    uint16_t header_size;
+    uint16_t record_size;
+    uint16_t max_records;
+    uint16_t cadence_ms;
+} NetProtocolStreamInfo;
+
+typedef struct {
+    uint16_t version;
+    uint32_t capabilities;
+    int stream_count;
+    NetProtocolStreamInfo streams[PROTOCOL_INFO_STREAM_COUNT];
+} NetProtocolInfo;
+
+typedef void (*net_on_protocol_info_fn)(const NetProtocolInfo *info);
+
+typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
     net_on_player_state_fn on_state;
@@ -328,6 +348,7 @@ typedef struct {
     net_on_action_ack_fn       on_action_ack;
     net_on_action_result_fn    on_action_result;
     net_on_latency_sample_fn   on_latency_sample;
+    net_on_protocol_info_fn    on_protocol_info;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.
@@ -337,6 +358,10 @@ bool net_init(const char* url, const NetCallbacks* callbacks);
 
 /* Reconnect to the same server using stored URL + session token. */
 bool net_reconnect(void);
+
+/* Last protocol discovery packet received from the server, or NULL until a
+ * server sends NET_MSG_PROTOCOL_INFO. */
+const NetProtocolInfo *net_protocol_info(void);
 
 /* Shut down the connection and free resources. */
 void net_shutdown(void);

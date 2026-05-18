@@ -1050,6 +1050,65 @@ TEST(test_latency_pong_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[13]), (int)0xDDEEFF00u);
 }
 
+static const uint8_t *find_protocol_stream(const uint8_t *buf, uint8_t msg) {
+    int count = buf[7];
+    for (int i = 0; i < count; i++) {
+        const uint8_t *p = &buf[PROTOCOL_INFO_HEADER_SIZE +
+                                i * PROTOCOL_INFO_STREAM_RECORD_SIZE];
+        if (p[0] == msg) return p;
+    }
+    return NULL;
+}
+
+TEST(test_protocol_info_serializes_stream_map) {
+    uint8_t buf[PROTOCOL_INFO_SIZE];
+    int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
+
+    ASSERT_EQ_INT(len, PROTOCOL_INFO_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_PROTOCOL_INFO);
+    ASSERT_EQ_INT((int)read_u16_le(&buf[1]), (int)SIGNAL_PROTOCOL_VERSION);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_STATION_DIAG);
+    ASSERT_EQ_INT(buf[7], PROTOCOL_INFO_STREAM_COUNT);
+
+    const uint8_t *diag = find_protocol_stream(buf, NET_MSG_STATION_DIAG);
+    ASSERT(diag != NULL);
+    ASSERT_EQ_INT(diag[1], PROTOCOL_STREAM_CLASS_LIVE);
+    ASSERT(read_u16_le(&diag[2]) & PROTOCOL_STREAM_FLAG_DIRTY_ONLY);
+    ASSERT(read_u16_le(&diag[2]) & PROTOCOL_STREAM_FLAG_FIXED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&diag[4]), 3);
+    ASSERT_EQ_INT(read_u16_le(&diag[6]), 1);
+    ASSERT_EQ_INT(read_u16_le(&diag[8]), MAX_MODULES_PER_STATION);
+    ASSERT_EQ_INT(read_u16_le(&diag[10]), 300);
+
+    const uint8_t *identity = find_protocol_stream(buf, NET_MSG_STATION_IDENTITY);
+    ASSERT(identity != NULL);
+    ASSERT_EQ_INT(identity[1], PROTOCOL_STREAM_CLASS_STATIC);
+    ASSERT_EQ_INT(read_u16_le(&identity[4]), STATION_IDENTITY_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&identity[10]), 2000);
+
+    const uint8_t *players = find_protocol_stream(buf, NET_MSG_WORLD_PLAYERS);
+    ASSERT(players != NULL);
+    ASSERT_EQ_INT(read_u16_le(&players[6]), PLAYER_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&players[10]), 50);
+
+    const uint8_t *input = find_protocol_stream(buf, NET_MSG_INPUT);
+    ASSERT(input != NULL);
+    ASSERT_EQ_INT(read_u16_le(&input[4]), NET_INPUT_MSG_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&input[10]), 8);
+
+    const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
+    ASSERT(contracts != NULL);
+    ASSERT_EQ_INT(read_u16_le(&contracts[6]), CONTRACT_RECORD_SIZE);
+    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 28);
+
+    const uint8_t *player_manifest = find_protocol_stream(buf, NET_MSG_PLAYER_MANIFEST);
+    ASSERT(player_manifest != NULL);
+    ASSERT(read_u16_le(&player_manifest[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT_EQ_INT(read_u16_le(&player_manifest[4]), PLAYER_MANIFEST_HEADER);
+    ASSERT_EQ_INT(read_u16_le(&player_manifest[6]), PLAYER_MANIFEST_ENTRY);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -1112,6 +1171,7 @@ void register_protocol_main_tests(void) {
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
     RUN(test_latency_pong_roundtrip);
+    RUN(test_protocol_info_serializes_stream_map);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

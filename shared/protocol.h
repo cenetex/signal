@@ -17,6 +17,7 @@
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
+ *   PROTOCOL_INFO   (0x41): stream capability + record-size discovery
  *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed structural trailers
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
  *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
@@ -208,6 +209,19 @@ enum {
                                             * This is live telemetry, intentionally split from
                                             * NET_MSG_STATION_IDENTITY so flow changes do not
                                             * resend static text, prices, pubkeys, or layout. */
+    NET_MSG_PROTOCOL_INFO          = 0x41, /* server -> client/tool: protocol discovery.
+                                            *
+                                            *   [type:1=0x41][version:u16][capabilities:u32]
+                                            *   [stream_count:1]
+                                            *     stream_count ×
+                                            *       [msg:1][class:1][flags:u16]
+                                            *       [header_size:u16][record_size:u16]
+                                            *       [max_records:u16][cadence_ms:u16]
+                                            *
+                                            * This is sent on connect before the large world
+                                            * snapshots. External consumers should use it to
+                                            * validate stream sizes/cadences instead of
+                                            * hardcoding protocol constants. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -240,6 +254,56 @@ enum {
                                             * owner of the legacy session token — that data
                                             * predates Layer A.3's signed actions.
                                             * TODO(#479-A.5): make claims auditable on the chain log. */
+};
+
+/* Protocol discovery. Increment SIGNAL_PROTOCOL_VERSION only when a
+ * compatibility decision is needed by external consumers; adding a new stream
+ * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities. */
+#define SIGNAL_PROTOCOL_VERSION 1u
+
+enum {
+    SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO   = 1u << 0,
+    SIGNAL_PROTOCOL_CAP_STATION_DIAG    = 1u << 1,
+    SIGNAL_PROTOCOL_CAP_MANIFEST_STREAMS= 1u << 2,
+    SIGNAL_PROTOCOL_CAP_LATENCY_METRICS = 1u << 3,
+    SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS  = 1u << 4,
+    SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT= 1u << 5,
+};
+
+enum {
+    PROTOCOL_STREAM_CLASS_STATIC   = 1, /* identity/config snapshots */
+    PROTOCOL_STREAM_CLASS_LIVE     = 2, /* live diagnostics/pose telemetry */
+    PROTOCOL_STREAM_CLASS_ECON     = 3, /* inventory, manifest, contracts */
+    PROTOCOL_STREAM_CLASS_PLAYER   = 4, /* per-player private state */
+    PROTOCOL_STREAM_CLASS_EVENT    = 5, /* event/log append or snapshot */
+    PROTOCOL_STREAM_CLASS_AUTH     = 6, /* authority/provenance protocol */
+};
+
+enum {
+    PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT = 1u << 0,
+    PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER = 1u << 1,
+    PROTOCOL_STREAM_FLAG_DIRTY_ONLY       = 1u << 2,
+    PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER = 1u << 3,
+    PROTOCOL_STREAM_FLAG_PER_PLAYER       = 1u << 4,
+    PROTOCOL_STREAM_FLAG_FIXED_SIZE       = 1u << 5,
+};
+
+enum {
+    PROTOCOL_INFO_HEADER_SIZE        = 8,
+    PROTOCOL_INFO_STREAM_RECORD_SIZE = 12,
+    PROTOCOL_INFO_STREAM_COUNT       = 18,
+    PROTOCOL_INFO_SIZE = PROTOCOL_INFO_HEADER_SIZE +
+                         PROTOCOL_INFO_STREAM_COUNT * PROTOCOL_INFO_STREAM_RECORD_SIZE,
+};
+
+enum {
+    SIGNAL_PROTOCOL_CAPABILITIES =
+        SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO |
+        SIGNAL_PROTOCOL_CAP_STATION_DIAG |
+        SIGNAL_PROTOCOL_CAP_MANIFEST_STREAMS |
+        SIGNAL_PROTOCOL_CAP_LATENCY_METRICS |
+        SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS |
+        SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT,
 };
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
@@ -496,9 +560,15 @@ enum {
 
 #define NET_ACTION_RESULT_SIZE 11
 
+#define NET_INPUT_MSG_SIZE 18
 #define NET_LATENCY_PING_SIZE 9
 #define NET_LATENCY_PONG_SIZE 17
 #define NET_CLIENT_METRICS_SIZE 21
+
+/* NET_MSG_CONTRACTS record: action, station, commodity, grade, quantity,
+ * price, age, target position, target index. Kept shared so client decoders
+ * and external tools do not hardcode server-local constants. */
+#define CONTRACT_RECORD_SIZE 28
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */
