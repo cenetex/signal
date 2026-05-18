@@ -149,6 +149,9 @@ typedef enum {
 station_flow_diag_t station_module_flow_diag(const station_t *st,
                                              int module_index);
 const char *station_flow_diag_label(station_flow_diag_t diag);
+void station_reconcile_module_diag_for_identity(station_t *st,
+                                                const station_module_t *modules,
+                                                int module_count);
 
 typedef struct {
     station_flow_diag_t diag;

@@ -1220,8 +1220,8 @@ static void handle_message(const uint8_t* data, int len) {
             int max_by_len = (len - PROTOCOL_INFO_HEADER_SIZE) /
                              PROTOCOL_INFO_STREAM_RECORD_SIZE;
             if (count > max_by_len) count = max_by_len;
-            if (count > PROTOCOL_INFO_STREAM_COUNT)
-                count = PROTOCOL_INFO_STREAM_COUNT;
+            if (count > PROTOCOL_INFO_STREAM_CAPACITY)
+                count = PROTOCOL_INFO_STREAM_CAPACITY;
             info.stream_count = count;
             for (int i = 0; i < count; i++) {
                 const uint8_t *p = &data[PROTOCOL_INFO_HEADER_SIZE +

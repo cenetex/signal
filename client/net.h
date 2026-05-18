@@ -310,7 +310,7 @@ typedef struct {
     uint16_t version;
     uint32_t capabilities;
     int stream_count;
-    NetProtocolStreamInfo streams[PROTOCOL_INFO_STREAM_COUNT];
+    NetProtocolStreamInfo streams[PROTOCOL_INFO_STREAM_CAPACITY];
 } NetProtocolInfo;
 
 typedef void (*net_on_protocol_info_fn)(const NetProtocolInfo *info);

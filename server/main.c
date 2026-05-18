@@ -2716,6 +2716,10 @@ static void handle_protocol_info_http(struct mg_connection *c) {
         wire, SIM_TICK_MS, STATE_TICK_MS, WORLD_TICK_MS,
         SHIP_TICK_MS, STATION_DIAG_MIN_MS,
         STATION_IDENTITY_FALLBACK_MS);
+    if (wire_len < PROTOCOL_INFO_HEADER_SIZE) {
+        mg_http_reply(c, 500, api_headers, "{\"error\":\"protocol_info_overflow\"}");
+        return;
+    }
 
     enum { PROTOCOL_JSON_BUFSZ = 8192 };
     char out[PROTOCOL_JSON_BUFSZ];
@@ -3092,7 +3096,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 proto_msg, SIM_TICK_MS, STATE_TICK_MS, WORLD_TICK_MS,
                 SHIP_TICK_MS, STATION_DIAG_MIN_MS,
                 STATION_IDENTITY_FALLBACK_MS);
-            ws_send(c, proto_msg, (size_t)proto_len);
+            if (proto_len >= PROTOCOL_INFO_HEADER_SIZE)
+                ws_send(c, proto_msg, (size_t)proto_len);
         }
 
         /* Notify others and tell new player about existing players. */

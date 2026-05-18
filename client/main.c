@@ -1623,6 +1623,19 @@ static void render_world(void) {
                 default:
                     break;
             }
+
+            station_flow_diag_t flow = station_module_flow_diag_view(
+                tst, g.target_module, g.multiplayer_enabled && net_is_connected());
+            if (flow != STATION_FLOW_DIAG_NONE) {
+                if (flow == STATION_FLOW_DIAG_RUNNING)
+                    sdtx_color3b(120, 230, 180);
+                else if (flow == STATION_FLOW_DIAG_SLOW_FEED)
+                    sdtx_color3b(245, 210, 115);
+                else
+                    sdtx_color3b(255, 135, 120);
+                sdtx_pos((sx + 60.0f) / cell, (sy + 4.0f) / cell);
+                sdtx_printf("flow: %s", station_flow_diag_label(flow));
+            }
         }
     }
 

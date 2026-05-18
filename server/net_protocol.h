@@ -133,10 +133,11 @@ static inline int serialize_protocol_info(uint8_t *buf,
     buf[0] = NET_MSG_PROTOCOL_INFO;
     write_u16_le(&buf[1], SIGNAL_PROTOCOL_VERSION);
     write_u32_le(&buf[3], SIGNAL_PROTOCOL_CAPABILITIES);
-    buf[7] = PROTOCOL_INFO_STREAM_COUNT;
+    buf[7] = 0;
 
     int count = 0;
 #define ADD_PROTOCOL_STREAM(msg, klass, flags, header, record, max, cadence) do { \
+        if (count >= PROTOCOL_INFO_STREAM_CAPACITY) return 0; \
         protocol_info_write_stream(&buf[PROTOCOL_INFO_HEADER_SIZE + \
                                    count * PROTOCOL_INFO_STREAM_RECORD_SIZE], \
                                    (uint8_t)(msg), (uint8_t)(klass), \
@@ -227,6 +228,7 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         35, CARGO_RECEIPT_SIZE, CARGO_RECEIPT_CHAIN_MAX_LEN, 0);
 
 #undef ADD_PROTOCOL_STREAM
+    buf[7] = (uint8_t)count;
     return PROTOCOL_INFO_HEADER_SIZE + count * PROTOCOL_INFO_STREAM_RECORD_SIZE;
 }
 

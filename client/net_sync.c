@@ -783,6 +783,7 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     snprintf(st->name, sizeof(st->name), "%s", si->name);
     for (int c = 0; c < COMMODITY_COUNT; c++)
         st->base_price[c] = si->base_price[c];
+    station_reconcile_module_diag_for_identity(st, si->modules, si->module_count);
     st->module_count = si->module_count;
     for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
         st->modules[m] = si->modules[m];

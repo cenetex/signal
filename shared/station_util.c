@@ -788,14 +788,50 @@ station_flow_diag_t station_module_flow_diag(const station_t *st,
 const char *station_flow_diag_label(station_flow_diag_t diag) {
     switch (diag) {
     case STATION_FLOW_DIAG_RUNNING:         return "running";
-    case STATION_FLOW_DIAG_NO_INPUT:        return "no input";
+    case STATION_FLOW_DIAG_NO_INPUT:        return "missing input";
     case STATION_FLOW_DIAG_OUTPUT_FULL:     return "output full";
-    case STATION_FLOW_DIAG_NO_CONSUMER:     return "no consumer";
+    case STATION_FLOW_DIAG_NO_CONSUMER:     return "no route";
     case STATION_FLOW_DIAG_CONSUMER_FULL:   return "consumer full";
-    case STATION_FLOW_DIAG_SLOW_FEED:       return "slow feed";
-    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return "awaiting supply";
+    case STATION_FLOW_DIAG_SLOW_FEED:       return "slow route";
+    case STATION_FLOW_DIAG_AWAITING_SUPPLY: return "scaffold needs supply";
     case STATION_FLOW_DIAG_NONE:
     default:                                return "idle";
+    }
+}
+
+static int station_clamped_module_count(int module_count)
+{
+    if (module_count < 0) return 0;
+    if (module_count > MAX_MODULES_PER_STATION) return MAX_MODULES_PER_STATION;
+    return module_count;
+}
+
+static bool station_module_identity_equal(const station_module_t *a,
+                                          const station_module_t *b)
+{
+    if (!a || !b) return false;
+    return a->type == b->type &&
+           a->ring == b->ring &&
+           a->slot == b->slot &&
+           a->scaffold == b->scaffold &&
+           a->commodity == b->commodity &&
+           a->build_progress == b->build_progress;
+}
+
+void station_reconcile_module_diag_for_identity(station_t *st,
+                                                const station_module_t *modules,
+                                                int module_count)
+{
+    if (!st) return;
+    int old_count = station_clamped_module_count(st->module_count);
+    int new_count = station_clamped_module_count(module_count);
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        bool same_live_slot = modules &&
+            m < old_count &&
+            m < new_count &&
+            station_module_identity_equal(&st->modules[m], &modules[m]);
+        if (!same_live_slot)
+            st->module_diag[m] = STATION_FLOW_DIAG_NONE;
     }
 }
 

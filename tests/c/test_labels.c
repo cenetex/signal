@@ -38,6 +38,18 @@ TEST(test_commodity_short_label_all) {
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_LASER_MODULE), "units");
 }
 
+TEST(test_station_flow_diag_label_all) {
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NONE), "idle");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_RUNNING), "running");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NO_INPUT), "missing input");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_OUTPUT_FULL), "output full");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NO_CONSUMER), "no route");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_CONSUMER_FULL), "consumer full");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_SLOW_FEED), "slow route");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_AWAITING_SUPPLY),
+                  "scaffold needs supply");
+}
+
 /* Helper: build a station with a single module of type `mt` so the
  * dominant-module priority walk has a deterministic answer. */
 static void seed_single_module_station(station_t *st, module_type_t mt) {
@@ -171,6 +183,7 @@ void register_label_tests(void) {
     RUN(test_signal_band_name_thresholds);
     RUN(test_mining_grade_label_all);
     RUN(test_commodity_short_label_all);
+    RUN(test_station_flow_diag_label_all);
     RUN(test_station_dominant_module_priority);
     RUN(test_station_primary_buy_per_dominant_module);
     RUN(test_station_consumes_fab_inputs);

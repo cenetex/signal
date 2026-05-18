@@ -2154,6 +2154,37 @@ TEST(test_station_flow_summary_prioritizes_blocked_module) {
     ASSERT(strstr(line, "output full") != NULL);
 }
 
+TEST(test_station_identity_reconcile_clears_stale_module_diag) {
+    station_t st = {0};
+    station_module_t incoming[MAX_MODULES_PER_STATION] = {0};
+
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){ .type = MODULE_FRAME_PRESS, .ring = 1,
+                                         .slot = 0, .build_progress = 1.0f,
+                                         .commodity = COMMODITY_COUNT };
+    st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB, .ring = 2,
+                                         .slot = 1, .build_progress = 1.0f,
+                                         .commodity = COMMODITY_COUNT };
+    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
+    incoming[0] = st.modules[0];
+    incoming[1] = st.modules[1];
+
+    station_reconcile_module_diag_for_identity(&st, incoming, 2);
+    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_OUTPUT_FULL);
+
+    incoming[1].type = MODULE_TRACTOR_FAB;
+    station_reconcile_module_diag_for_identity(&st, incoming, 2);
+    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_NONE);
+
+    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    station_reconcile_module_diag_for_identity(&st, incoming, 1);
+    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_NONE);
+}
+
 TEST(test_station_flow_summary_mirrored_authoritative) {
     station_t st = {0};
     station_flow_summary_t summary;
@@ -2487,6 +2518,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_station_diag_serializes_module_flow_diag);
     RUN(test_station_flow_summary_formats_active_modules);
     RUN(test_station_flow_summary_prioritizes_blocked_module);
+    RUN(test_station_identity_reconcile_clears_stale_module_diag);
     RUN(test_station_flow_summary_mirrored_authoritative);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);

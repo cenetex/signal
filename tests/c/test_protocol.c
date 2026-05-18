@@ -1064,12 +1064,15 @@ TEST(test_protocol_info_serializes_stream_map) {
     uint8_t buf[PROTOCOL_INFO_SIZE];
     int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
 
-    ASSERT_EQ_INT(len, PROTOCOL_INFO_SIZE);
+    ASSERT(len >= PROTOCOL_INFO_HEADER_SIZE);
+    ASSERT(len <= PROTOCOL_INFO_SIZE);
     ASSERT_EQ_INT(buf[0], NET_MSG_PROTOCOL_INFO);
     ASSERT_EQ_INT((int)read_u16_le(&buf[1]), (int)SIGNAL_PROTOCOL_VERSION);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_STATION_DIAG);
-    ASSERT_EQ_INT(buf[7], PROTOCOL_INFO_STREAM_COUNT);
+    ASSERT_EQ_INT(buf[7], (len - PROTOCOL_INFO_HEADER_SIZE) /
+                          PROTOCOL_INFO_STREAM_RECORD_SIZE);
+    ASSERT(buf[7] <= PROTOCOL_INFO_STREAM_CAPACITY);
 
     const uint8_t *diag = find_protocol_stream(buf, NET_MSG_STATION_DIAG);
     ASSERT(diag != NULL);
