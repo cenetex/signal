@@ -1840,6 +1840,15 @@ static int parse_station_id(struct mg_http_message *hm) {
     return id;
 }
 
+static void station_mutation_mark_identity(int station_idx) {
+    if (station_idx >= 0 && station_idx < MAX_STATIONS)
+        station_identity_dirty[station_idx] = true;
+}
+
+static void station_mutation_mark_contracts(void) {
+    contracts_dirty = true;
+}
+
 static size_t operator_post_field_cap(uint8_t kind) {
     switch ((operator_post_kind_t)kind) {
     case OPERATOR_POST_MINER_CHATTER:
@@ -1936,8 +1945,128 @@ static bool emit_operator_post_for_station(int station_idx, uint8_t kind,
     }
 
     materialize_operator_post(st, kind, ref_id, text);
-    station_identity_dirty[station_idx] = true;
+    station_mutation_mark_identity(station_idx);
     if (out_event_id) *out_event_id = event_id;
+    return true;
+}
+
+static bool station_mutation_operator_text(int station_idx,
+                                           operator_post_kind_t kind,
+                                           long slot,
+                                           const char *text,
+                                           uint64_t *out_event_id,
+                                           const char **out_error) {
+    uint16_t ref_id = 0;
+    if (kind == OPERATOR_POST_MINER_CHATTER ||
+        kind == OPERATOR_POST_HAULER_CHATTER) {
+        if (slot < 0 || slot >= STATION_IDENTITY_CHATTER_LINES) {
+            if (out_event_id) *out_event_id = 0;
+            if (out_error) *out_error = "invalid chatter slot";
+            return false;
+        }
+        ref_id = (uint16_t)slot;
+    }
+    return emit_operator_post_for_station(station_idx, (uint8_t)kind, 0,
+                                          ref_id, text,
+                                          out_event_id, out_error);
+}
+
+static bool station_mutation_set_currency_name(int station_idx,
+                                               const char *currency,
+                                               char *out_value,
+                                               size_t out_cap,
+                                               const char **out_error) {
+    if (out_error) *out_error = NULL;
+    if (out_value && out_cap > 0) out_value[0] = '\0';
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&world.stations[station_idx])) {
+        if (out_error) *out_error = "station not found";
+        return false;
+    }
+    if (!currency || currency[0] == '\0') {
+        if (out_error) *out_error = "currency_name missing";
+        return false;
+    }
+
+    /* ASCII-ish trim; drop anything that would mess with the HUD
+     * renderer (control chars, quotes). 31 chars max so the wire
+     * serializer's null terminator survives. */
+    char sanitized[32] = {0};
+    int out = 0;
+    for (int i = 0; currency[i] && out < (int)sizeof(sanitized) - 1; i++) {
+        unsigned char ch = (unsigned char)currency[i];
+        if (ch < 0x20 || ch == 0x7F || ch == '"' || ch == '\\') continue;
+        sanitized[out++] = (char)ch;
+    }
+    if (out == 0) {
+        if (out_error) *out_error = "currency_name empty after sanitize";
+        return false;
+    }
+
+    memcpy(world.stations[station_idx].currency_name, sanitized, sizeof(sanitized));
+    station_mutation_mark_identity(station_idx);
+    if (out_value && out_cap > 0)
+        snprintf(out_value, out_cap, "%s", sanitized);
+    return true;
+}
+
+static bool station_mutation_set_price(int station_idx, long commodity,
+                                       double price_val, float *out_price,
+                                       const char **out_error) {
+    if (out_error) *out_error = NULL;
+    if (out_price) *out_price = 0.0f;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&world.stations[station_idx])) {
+        if (out_error) *out_error = "station not found";
+        return false;
+    }
+    if (commodity < 0 || commodity >= COMMODITY_COUNT) {
+        if (out_error) *out_error = "invalid commodity";
+        return false;
+    }
+    if (!(price_val > 0.0)) {
+        if (out_error) *out_error = "invalid price";
+        return false;
+    }
+
+    station_t *st = &world.stations[station_idx];
+    float default_price = st->base_price[commodity];
+    float clamped = (float)price_val;
+    if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
+    if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
+    st->base_price[commodity] = clamped;
+    station_mutation_mark_identity(station_idx);
+    if (out_price) *out_price = clamped;
+    return true;
+}
+
+static bool station_mutation_build_module(int station_idx, long module_type,
+                                          const char **out_error) {
+    if (out_error) *out_error = NULL;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&world.stations[station_idx])) {
+        if (out_error) *out_error = "station not found";
+        return false;
+    }
+    if (module_type < 0 || module_type >= MODULE_COUNT) {
+        if (out_error) *out_error = "invalid module_type";
+        return false;
+    }
+
+    station_t *st = &world.stations[station_idx];
+    if (st->module_count >= MAX_MODULES_PER_STATION) {
+        if (out_error) *out_error = "station full";
+        return false;
+    }
+
+    int before_count = st->module_count;
+    begin_module_construction(&world, st, station_idx, (module_type_t)module_type);
+    if (st->module_count <= before_count) {
+        if (out_error) *out_error = "no valid module slot";
+        return false;
+    }
+    station_mutation_mark_identity(station_idx);
+    station_mutation_mark_contracts();
     return true;
 }
 
@@ -2405,7 +2534,6 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
 }
 
 static void handle_station_command(struct mg_connection *c, struct mg_http_message *hm, int sid) {
-    station_t *st = &world.stations[sid];
     struct mg_str body = hm->body;
     char *action = mg_json_get_str(body, "$.action");
     long commodity = mg_json_get_long(body, "$.commodity", -1);
@@ -2426,10 +2554,10 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         return;
     }
 
-    if (strcmp(action, "set_hail") == 0 && hail && hail[0] != '\0') {
+    if (strcmp(action, "set_hail") == 0) {
         uint64_t event_id = 0;
         const char *err = NULL;
-        if (emit_operator_post_for_station(sid, OPERATOR_POST_HAIL_MOTD, 0, 0,
+        if (station_mutation_operator_text(sid, OPERATOR_POST_HAIL_MOTD, 0,
                                            hail, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"set_hail\",\"event_id\":%llu}",
@@ -2438,11 +2566,11 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
             mg_http_reply(c, 400, api_headers,
                           "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
         }
-    } else if (strcmp(action, "set_miner_chatter") == 0 && message && message[0] != '\0') {
+    } else if (strcmp(action, "set_miner_chatter") == 0) {
         uint64_t event_id = 0;
         const char *err = NULL;
-        if (emit_operator_post_for_station(sid, OPERATOR_POST_MINER_CHATTER, 0,
-                                           (uint16_t)slot, message, &event_id, &err)) {
+        if (station_mutation_operator_text(sid, OPERATOR_POST_MINER_CHATTER,
+                                           slot, message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"set_miner_chatter\",\"slot\":%ld,\"event_id\":%llu}",
                           slot, (unsigned long long)event_id);
@@ -2450,11 +2578,11 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
             mg_http_reply(c, 400, api_headers,
                           "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
         }
-    } else if (strcmp(action, "set_hauler_chatter") == 0 && message && message[0] != '\0') {
+    } else if (strcmp(action, "set_hauler_chatter") == 0) {
         uint64_t event_id = 0;
         const char *err = NULL;
-        if (emit_operator_post_for_station(sid, OPERATOR_POST_HAULER_CHATTER, 0,
-                                           (uint16_t)slot, message, &event_id, &err)) {
+        if (station_mutation_operator_text(sid, OPERATOR_POST_HAULER_CHATTER,
+                                           slot, message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"set_hauler_chatter\",\"slot\":%ld,\"event_id\":%llu}",
                           slot, (unsigned long long)event_id);
@@ -2462,10 +2590,10 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
             mg_http_reply(c, 400, api_headers,
                           "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
         }
-    } else if (strcmp(action, "set_rati_hail") == 0 && message && message[0] != '\0') {
+    } else if (strcmp(action, "set_rati_hail") == 0) {
         uint64_t event_id = 0;
         const char *err = NULL;
-        if (emit_operator_post_for_station(sid, OPERATOR_POST_RATI_DELIVERY, 0, 0,
+        if (station_mutation_operator_text(sid, OPERATOR_POST_RATI_DELIVERY, 0,
                                            message, &event_id, &err)) {
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"set_rati_hail\",\"event_id\":%llu}",
@@ -2474,44 +2602,38 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
             mg_http_reply(c, 400, api_headers,
                           "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
         }
-    } else if (strcmp(action, "set_currency_name") == 0 && currency && currency[0] != '\0') {
-        /* ASCII-ish trim; drop anything that would mess with the HUD
-         * renderer (control chars, quotes). 31 chars max so the wire
-         * serializer's null terminator survives. */
-        char sanitized[32] = {0};
-        int out = 0;
-        for (int i = 0; currency[i] && out < (int)sizeof(sanitized) - 1; i++) {
-            unsigned char ch = (unsigned char)currency[i];
-            if (ch < 0x20 || ch == 0x7F || ch == '"' || ch == '\\') continue;
-            sanitized[out++] = (char)ch;
-        }
-        if (out == 0) {
+    } else if (strcmp(action, "set_currency_name") == 0) {
+        char sanitized[32];
+        const char *err = NULL;
+        if (!station_mutation_set_currency_name(sid, currency, sanitized,
+                                                sizeof(sanitized), &err)) {
             mg_http_reply(c, 400, api_headers,
-                          "{\"ok\":false,\"error\":\"currency_name empty after sanitize\"}");
+                          "{\"ok\":false,\"error\":\"%s\"}",
+                          err ? err : "currency_name rejected");
         } else {
-            memcpy(st->currency_name, sanitized, sizeof(sanitized));
-            station_identity_dirty[sid] = true;
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"set_currency_name\",\"value\":\"%s\"}", sanitized);
         }
-    } else if (strcmp(action, "set_price") == 0 && commodity >= 0 && commodity < COMMODITY_COUNT && price_val > 0) {
-        /* Clamp to 0.5x-2.0x of default */
-        float default_price = st->base_price[commodity];
-        float clamped = (float)price_val;
-        if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
-        if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
-        st->base_price[commodity] = clamped;
-        station_identity_dirty[sid] = true;
-        mg_http_reply(c, 200, api_headers,
-                      "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}", commodity, clamped);
-    } else if (strcmp(action, "build_module") == 0 && module_type >= 0 && module_type < MODULE_COUNT) {
-        if (st->module_count >= MAX_MODULES_PER_STATION) {
+    } else if (strcmp(action, "set_price") == 0) {
+        float clamped = 0.0f;
+        const char *err = NULL;
+        if (!station_mutation_set_price(sid, commodity, price_val,
+                                        &clamped, &err)) {
             mg_http_reply(c, 400, api_headers,
-                          "{\"ok\":false,\"error\":\"station full\"}");
+                          "{\"ok\":false,\"error\":\"%s\"}",
+                          err ? err : "price rejected");
         } else {
-            begin_module_construction(&world, st, sid, (module_type_t)module_type);
-            station_identity_dirty[sid] = true;
-            contracts_dirty = true;
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}",
+                          commodity, clamped);
+        }
+    } else if (strcmp(action, "build_module") == 0) {
+        const char *err = NULL;
+        if (!station_mutation_build_module(sid, module_type, &err)) {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"%s\"}",
+                          err ? err : "module build rejected");
+        } else {
             mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"build_module\",\"type\":%ld}", module_type);
         }
