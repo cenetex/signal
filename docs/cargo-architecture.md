@@ -19,9 +19,10 @@ compatibility behavior is retired. Remote multiplayer now receives, caches, and
 actively presents full receipt chains before queued sell/deliver actions on
 matching named cargo transfers, and authorities can verify presented chains for
 carried cargo. Signed handoff tickets now bind ship snapshots to
-manifest/receipt roots. The remaining work is handoff ticket
-issue/present/accept wiring, chain compaction/backfill, and player-facing
-lineage display — not a cargo data-model rewrite.
+manifest/receipt roots, and the first issue/present/accept handoff protocol can
+hydrate a destination ship after verifying those roots. The remaining work is
+automatic boundary routing, persistent replay logs, chain compaction/backfill,
+and player-facing lineage display — not a cargo data-model rewrite.
 
 ## The conceptual model
 

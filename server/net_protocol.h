@@ -10,6 +10,7 @@
 
 #include "game_sim.h"
 #include "cargo_receipt.h"
+#include "handoff_ticket.h"
 #include "manifest.h"
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
@@ -105,6 +106,31 @@ static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
     write_u32_le(&buf[9], server_recv_ms);
     write_u32_le(&buf[13], server_send_ms);
     return NET_LATENCY_PONG_SIZE;
+}
+
+static inline int serialize_handoff_ticket(uint8_t *buf, uint8_t status,
+                                           uint8_t source_station,
+                                           uint8_t dest_station,
+                                           const handoff_ticket_t *ticket) {
+    buf[0] = NET_MSG_HANDOFF_TICKET;
+    buf[1] = status;
+    buf[2] = source_station;
+    buf[3] = dest_station;
+    handoff_ticket_pack(ticket, &buf[4]);
+    return 4 + HANDOFF_TICKET_SIZE;
+}
+
+static inline int serialize_handoff_result(uint8_t *buf, uint8_t status,
+                                           uint8_t reason,
+                                           uint8_t dest_station,
+                                           const uint8_t ticket_hash[32]) {
+    buf[0] = NET_MSG_HANDOFF_RESULT;
+    buf[1] = status;
+    buf[2] = reason;
+    buf[3] = dest_station;
+    if (ticket_hash) memcpy(&buf[4], ticket_hash, 32);
+    else memset(&buf[4], 0, 32);
+    return NET_HANDOFF_RESULT_SIZE;
 }
 
 static inline void protocol_info_write_stream(uint8_t *p, uint8_t msg,
@@ -226,6 +252,25 @@ static inline int serialize_protocol_info(uint8_t *buf,
     ADD_PROTOCOL_STREAM(NET_MSG_PRESENT_RECEIPT_CHAIN, PROTOCOL_STREAM_CLASS_AUTH,
                         PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER,
                         35, CARGO_RECEIPT_SIZE, CARGO_RECEIPT_CHAIN_MAX_LEN, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_HANDOFF_REQUEST, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_HANDOFF_REQUEST_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_HANDOFF_TICKET, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        4 + HANDOFF_TICKET_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_HANDOFF_PRESENT, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER,
+                        1 + HANDOFF_TICKET_SIZE + 4 +
+                        HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE,
+                        HANDOFF_CARGO_UNIT_WIRE_SIZE + 1 +
+                        CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE,
+                        HANDOFF_SHIP_SNAPSHOT_MAX_CARGO, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_HANDOFF_RESULT, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_HANDOFF_RESULT_SIZE, 0, 1, 0);
 
 #undef ADD_PROTOCOL_STREAM
     buf[7] = (uint8_t)count;

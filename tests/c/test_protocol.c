@@ -1070,6 +1070,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT((int)read_u16_le(&buf[1]), (int)SIGNAL_PROTOCOL_VERSION);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_STATION_DIAG);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS);
     ASSERT_EQ_INT(buf[7], (len - PROTOCOL_INFO_HEADER_SIZE) /
                           PROTOCOL_INFO_STREAM_RECORD_SIZE);
     ASSERT(buf[7] <= PROTOCOL_INFO_STREAM_CAPACITY);
@@ -1110,6 +1111,23 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u16_le(&player_manifest[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
     ASSERT_EQ_INT(read_u16_le(&player_manifest[4]), PLAYER_MANIFEST_HEADER);
     ASSERT_EQ_INT(read_u16_le(&player_manifest[6]), PLAYER_MANIFEST_ENTRY);
+
+    const uint8_t *handoff_request = find_protocol_stream(buf, NET_MSG_HANDOFF_REQUEST);
+    ASSERT(handoff_request != NULL);
+    ASSERT_EQ_INT(handoff_request[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT(read_u16_le(&handoff_request[2]) & PROTOCOL_STREAM_FLAG_FIXED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&handoff_request[4]), NET_HANDOFF_REQUEST_SIZE);
+
+    const uint8_t *handoff_present = find_protocol_stream(buf, NET_MSG_HANDOFF_PRESENT);
+    ASSERT(handoff_present != NULL);
+    ASSERT_EQ_INT(handoff_present[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT_EQ_INT(read_u16_le(&handoff_present[4]),
+                  1 + HANDOFF_TICKET_SIZE + 4 + HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&handoff_present[6]),
+                  HANDOFF_CARGO_UNIT_WIRE_SIZE + 1 +
+                  CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&handoff_present[8]),
+                  HANDOFF_SHIP_SNAPSHOT_MAX_CARGO);
 }
 
 TEST(test_parse_input_action_accumulates) {

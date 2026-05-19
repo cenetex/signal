@@ -18,6 +18,10 @@
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
  *   PROTOCOL_INFO   (0x41): stream capability + record-size discovery
+ *   HANDOFF_REQUEST (0x42): [type:1][source_station:1][dest_station:1][ttl_ticks:u32]
+ *   HANDOFF_TICKET  (0x43): [type:1][status:1][source_station:1][dest_station:1][handoff_ticket_t]
+ *   HANDOFF_PRESENT (0x44): [type:1][handoff_ticket_t][snapshot_len:u32][snapshot]
+ *   HANDOFF_RESULT  (0x45): [type:1][status:1][reason:1][dest_station:1][ticket_hash:32]
  *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed structural trailers
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
  *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
@@ -129,15 +133,15 @@ enum {
                                             *   [type:1=0x37][cargo_pub:32][chain_len:u16]
                                             *     chain_len × cargo_receipt_t
                                             *
-                                            * Sent before a sell/deliver/handoff action
+                                            * Sent before a sell/deliver action
                                             * for cargo carried by the peer. The
                                             * authority verifies signature/linkage,
                                             * verifies the chain head names the
                                             * player's pubkey, then attaches the
                                             * chain to the matching carried manifest
-                                            * unit. A later accept path removes that
-                                            * cargo, signs the destination receipt,
-                                            * and grows the chain by one. */
+                                            * unit. Handoff presentation carries
+                                            * receipt chains inside the signed ship
+                                            * snapshot. */
     NET_MSG_PLAYER_KNOWN_CONTRACTS = 0x39, /* server -> client. Per-player gossip-contract visibility
                                             * mask. Wire shape: [type:1][mask:u32].
                                             * Bit i set iff compact NET_MSG_CONTRACTS record i matches
@@ -222,6 +226,36 @@ enum {
                                             * snapshots. External consumers should use it to
                                             * validate stream sizes/cadences instead of
                                             * hardcoding protocol constants. */
+    NET_MSG_HANDOFF_REQUEST        = 0x42, /* client -> server. Ask the current/source
+                                            * authority to issue a signed zone handoff
+                                            * ticket for this player's current ship.
+                                            *
+                                            *   [type:1=0x42][source_station:1]
+                                            *   [dest_station:1][ttl_ticks:u32]
+                                            *
+                                            * source_station may be 0xFF to mean "the
+                                            * player's current docked station". */
+    NET_MSG_HANDOFF_TICKET         = 0x43, /* server -> client. Response to HANDOFF_REQUEST.
+                                            *
+                                            *   [type:1=0x43][status:1]
+                                            *   [source_station:1][dest_station:1]
+                                            *   [handoff_ticket_t:252]
+                                            *
+                                            * status is NET_HANDOFF_STATUS_*. The ticket is
+                                            * zero-filled on rejection. */
+    NET_MSG_HANDOFF_PRESENT        = 0x44, /* client -> server. Present a source-issued
+                                            * handoff ticket plus the ship snapshot it
+                                            * binds. The destination verifies the source
+                                            * signature, hashes, expiry, and replay cache
+                                            * before hydrating the ship.
+                                            *
+                                            *   [type:1=0x44][handoff_ticket_t:252]
+                                            *   [snapshot_len:u32][snapshot bytes] */
+    NET_MSG_HANDOFF_RESULT         = 0x45, /* server -> client. Semantic accept/reject for
+                                            * HANDOFF_PRESENT.
+                                            *
+                                            *   [type:1=0x45][status:1][reason:1]
+                                            *   [dest_station:1][ticket_hash:32] */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -268,6 +302,7 @@ enum {
     SIGNAL_PROTOCOL_CAP_LATENCY_METRICS = 1u << 3,
     SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS  = 1u << 4,
     SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT= 1u << 5,
+    SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS = 1u << 6,
 };
 
 enum {
@@ -303,7 +338,8 @@ enum {
         SIGNAL_PROTOCOL_CAP_MANIFEST_STREAMS |
         SIGNAL_PROTOCOL_CAP_LATENCY_METRICS |
         SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS |
-        SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT,
+        SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT |
+        SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS,
 };
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
@@ -566,6 +602,13 @@ enum {
 };
 
 #define NET_ACTION_RESULT_SIZE 11
+#define NET_HANDOFF_REQUEST_SIZE 7
+#define NET_HANDOFF_RESULT_SIZE 36
+
+enum {
+    NET_HANDOFF_STATUS_OK       = 1,
+    NET_HANDOFF_STATUS_REJECTED = 2,
+};
 
 #define NET_INPUT_MSG_SIZE 18
 #define NET_LATENCY_PING_SIZE 9

@@ -19,7 +19,9 @@
 #include "cargo_receipt.h"
 #include "cargo_receipt_issue.h"
 #include "chain_log.h"
+#include "handoff_flow.h"
 #include "handoff_ticket.h"
+#include "signal_crypto.h"
 #include "station_authority.h"
 
 #include <stdio.h>
@@ -762,6 +764,183 @@ TEST(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery) {
     crs_teardown();
 }
 
+/* ---------------- Test 18: handoff snapshot wire round-trip --------- */
+
+TEST(test_handoff_snapshot_roundtrip_preserves_bound_hashes) {
+    crs_setup("handoff_snapshot_roundtrip");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD012);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA8);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD8);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
+
+    server_player_t *sp = &w->players[0];
+    sp->ship.pos = (vec2){321.0f, -654.0f};
+    sp->ship.vel = (vec2){7.0f, -3.0f};
+    sp->ship.hull = 88.0f;
+    sp->ship.mining_level = 2;
+    sp->ship.hold_level = 3;
+    sp->ship.unlocked_modules = 0x15u;
+
+    uint8_t ship_hash_before[32], cargo_root_before[32];
+    handoff_ticket_ship_state_hash(&sp->ship, ship_hash_before);
+    handoff_ticket_cargo_root(&sp->ship, cargo_root_before);
+
+    size_t len = handoff_ship_snapshot_size(&sp->ship);
+    ASSERT(len > HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE);
+    uint8_t *buf = malloc(len); ASSERT(buf != NULL);
+    size_t packed = 0;
+    ASSERT(handoff_ship_snapshot_pack(&sp->ship, buf, len, &packed));
+    ASSERT_EQ_INT((int)packed, (int)len);
+
+    ship_t unpacked = {0};
+    size_t consumed = 0;
+    ASSERT(handoff_ship_snapshot_unpack(buf, len, &unpacked, &consumed));
+    ASSERT_EQ_INT((int)consumed, (int)len);
+
+    uint8_t ship_hash_after[32], cargo_root_after[32];
+    handoff_ticket_ship_state_hash(&unpacked, ship_hash_after);
+    handoff_ticket_cargo_root(&unpacked, cargo_root_after);
+    ASSERT(memcmp(ship_hash_before, ship_hash_after, 32) == 0);
+    ASSERT(memcmp(cargo_root_before, cargo_root_after, 32) == 0);
+    ASSERT_EQ_INT((int)unpacked.manifest.count, 1);
+
+    ship_cleanup(&unpacked);
+    free(buf);
+    crs_teardown();
+}
+
+/* ---------------- Test 19: handoff issue/present/accept ------------ */
+
+TEST(test_handoff_flow_accept_hydrates_destination_ship) {
+    crs_setup("handoff_flow_accept");
+    WORLD_HEAP src = calloc(1, sizeof(world_t)); ASSERT(src != NULL); crs_world_init(src, 0xD013);
+    WORLD_HEAP dst = calloc(1, sizeof(world_t)); ASSERT(dst != NULL); crs_world_init(dst, 0xD013);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA9);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xD9);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(src, &src->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(src, player_pk, cargo_pk, &chain));
+
+    server_player_t *source_sp = &src->players[0];
+    source_sp->ship.pos = (vec2){900.0f, 100.0f};
+    source_sp->ship.vel = (vec2){5.0f, 6.0f};
+    source_sp->ship.hull = 77.0f;
+    source_sp->ship.tractor_level = 2;
+
+    handoff_ticket_t ticket;
+    ASSERT(handoff_issue_ticket_to_station(src, 0, 2, 1, 240u, &ticket));
+
+    server_player_t *dest_sp = &dst->players[0];
+    player_init_ship(dest_sp, dst);
+    dest_sp->connected = true;
+    dest_sp->pubkey_set = true;
+    memcpy(dest_sp->pubkey, player_pk, 32);
+    ASSERT_EQ_INT((int)dest_sp->ship.manifest.count, 0);
+
+    int dest_station = -1;
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+                                         &dest_station) == HANDOFF_FLOW_OK);
+    ASSERT_EQ_INT(dest_station, 1);
+    ASSERT_EQ_INT((int)dest_sp->ship.manifest.count, 1);
+    ASSERT_EQ_FLOAT(dest_sp->ship.pos.x, source_sp->ship.pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(dest_sp->ship.hull, source_sp->ship.hull, 0.001f);
+    ASSERT(!dest_sp->docked);
+    ASSERT(dest_sp->force_authoritative_resync);
+
+    uint8_t dst_root[32], src_root[32];
+    handoff_ticket_cargo_root(&dest_sp->ship, dst_root);
+    handoff_ticket_cargo_root(&source_sp->ship, src_root);
+    ASSERT(memcmp(dst_root, src_root, 32) == 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 20: handoff replay/tamper rejection ---------- */
+
+TEST(test_handoff_flow_rejects_replay_and_tamper) {
+    crs_setup("handoff_flow_rejects");
+    WORLD_HEAP src = calloc(1, sizeof(world_t)); ASSERT(src != NULL); crs_world_init(src, 0xD014);
+    WORLD_HEAP dst = calloc(1, sizeof(world_t)); ASSERT(dst != NULL); crs_world_init(dst, 0xD014);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xAA);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xDA);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(src, &src->stations[2], player_pk, cargo_pk, &r1));
+    cargo_receipt_chain_t chain = {0};
+    chain.links[0] = r1;
+    chain.len = 1;
+    ASSERT(crs_prepare_player_carrier(src, player_pk, cargo_pk, &chain));
+
+    server_player_t *source_sp = &src->players[0];
+    handoff_ticket_t ticket;
+    ASSERT(handoff_issue_ticket_to_station(src, 0, 2, 1, 240u, &ticket));
+
+    server_player_t *dest_sp = &dst->players[0];
+    player_init_ship(dest_sp, dst);
+    dest_sp->connected = true;
+    dest_sp->pubkey_set = true;
+    memcpy(dest_sp->pubkey, player_pk, 32);
+
+    int dest_station = -1;
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+                                         &dest_station) == HANDOFF_FLOW_OK);
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+                                         &dest_station) == HANDOFF_FLOW_REJECT_REPLAY);
+
+    handoff_ticket_t fresh;
+    ASSERT(handoff_issue_ticket_to_station(src, 0, 2, 1, 240u, &fresh));
+    ship_t tampered = {0};
+    ASSERT(ship_copy(&tampered, &source_sp->ship));
+    tampered.hull -= 1.0f;
+    ASSERT(handoff_accept_presented_ship(dst, 0, &fresh, &tampered,
+                                         &dest_station) == HANDOFF_FLOW_REJECT_VERIFY);
+    ship_cleanup(&tampered);
+
+    crs_teardown();
+}
+
+TEST(test_handoff_flow_rejects_unknown_source_authority) {
+    crs_setup("handoff_flow_unknown_source");
+    WORLD_HEAP dst = calloc(1, sizeof(world_t)); ASSERT(dst != NULL); crs_world_init(dst, 0xD015);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xAB);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xDB);
+    uint8_t rogue_seed[32]; fill_test_pubkey(rogue_seed, 0x3C);
+    uint8_t rogue_pub[32];
+    uint8_t rogue_secret[64];
+    signal_crypto_keypair_from_seed(rogue_seed, rogue_pub, rogue_secret);
+
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(crs_prepare_player_carrier(dst, player_pk, cargo_pk, &chain));
+    server_player_t *sp = &dst->players[0];
+
+    handoff_ticket_t ticket;
+    ASSERT(handoff_ticket_issue_for_ship(
+        rogue_pub, rogue_secret,
+        dst->stations[1].station_pubkey,
+        player_pk,
+        777u, dst->stations[1].id,
+        (uint64_t)dst->tick,
+        (uint64_t)dst->tick + 240u,
+        &sp->ship, &ticket));
+
+    int dest_station = -1;
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &sp->ship,
+                                         &dest_station) == HANDOFF_FLOW_REJECT_SOURCE);
+
+    crs_teardown();
+}
+
 void register_cross_station_settlement_tests(void);
 void register_cross_station_settlement_tests(void) {
     TEST_SECTION("\n--- Cross-Station Settlement (#479 D) ---\n");
@@ -782,4 +961,8 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_handoff_ticket_rejects_tampered_ship_state);
     RUN(test_handoff_ticket_rejects_tampered_cargo_root);
     RUN(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery);
+    RUN(test_handoff_snapshot_roundtrip_preserves_bound_hashes);
+    RUN(test_handoff_flow_accept_hydrates_destination_ship);
+    RUN(test_handoff_flow_rejects_replay_and_tamper);
+    RUN(test_handoff_flow_rejects_unknown_source_authority);
 }

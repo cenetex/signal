@@ -108,11 +108,25 @@ static const char *net_action_result_status_name(uint8_t status) {
     }
 }
 
+static const char *net_handoff_status_name(uint8_t status) {
+    switch (status) {
+    case NET_HANDOFF_STATUS_OK: return "ok";
+    case NET_HANDOFF_STATUS_REJECTED: return "rejected";
+    default: return "unknown";
+    }
+}
+
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action);
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick);
+static void on_remote_handoff_ticket(uint8_t status, uint8_t source_station,
+                                     uint8_t dest_station,
+                                     const handoff_ticket_t *ticket);
+static void on_remote_handoff_result(uint8_t status, uint8_t reason,
+                                     uint8_t dest_station,
+                                     const uint8_t ticket_hash[32]);
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
                                      float server_turnaround_ms);
 
@@ -1290,6 +1304,8 @@ static void init(void) {
             cbs.on_action_ack = on_remote_action_ack;
             cbs.on_action_result = on_remote_action_result;
             cbs.on_latency_sample = on_remote_latency_sample;
+            cbs.on_handoff_ticket = on_remote_handoff_ticket;
+            cbs.on_handoff_result = on_remote_handoff_result;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already
              * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
@@ -2117,6 +2133,39 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
         }
     }
     g.action_predict_timer = 0.0f;
+}
+
+static void on_remote_handoff_ticket(uint8_t status, uint8_t source_station,
+                                     uint8_t dest_station,
+                                     const handoff_ticket_t *ticket) {
+    g.net_handoff_last_status = status;
+    g.net_handoff_source_station = source_station;
+    g.net_handoff_dest_station = dest_station;
+    g.net_handoff_ticket_valid = false;
+    memset(&g.net_handoff_ticket, 0, sizeof(g.net_handoff_ticket));
+    if (status == NET_HANDOFF_STATUS_OK && ticket) {
+        g.net_handoff_ticket = *ticket;
+        g.net_handoff_ticket_valid = true;
+    }
+    fprintf(stderr,
+            "[net-handoff] ticket source=%u dest=%u status=%s valid=%d\n",
+            (unsigned)source_station, (unsigned)dest_station,
+            net_handoff_status_name(status),
+            g.net_handoff_ticket_valid ? 1 : 0);
+}
+
+static void on_remote_handoff_result(uint8_t status, uint8_t reason,
+                                     uint8_t dest_station,
+                                     const uint8_t ticket_hash[32]) {
+    (void)ticket_hash;
+    g.net_handoff_last_status = status;
+    g.net_handoff_last_reason = reason;
+    fprintf(stderr,
+            "[net-handoff] result dest=%u status=%s reason=%u\n",
+            (unsigned)dest_station, net_handoff_status_name(status),
+            (unsigned)reason);
+    if (status == NET_HANDOFF_STATUS_OK)
+        g.net_handoff_ticket_valid = false;
 }
 
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,

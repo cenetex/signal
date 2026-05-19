@@ -338,11 +338,19 @@ pubkey, expiry, a canonical ship-state hash, and a cargo root that includes the
 manifest plus attached receipt chains. The destination can verify the envelope
 against the presented ship snapshot before accepting cross-zone state.
 
-The remaining Layer D work is the full cross-authority handoff product path:
-wire ticket issuance/consumption into zone traversal, make the handoff path
-present its receipt chains with the ticket, define destination hydration and
-replay policy, then harden chain compaction/backfill, operator policy,
-cross-operator replication, and UX around failed verification.
+The first handoff product path is now wired over the WebSocket protocol:
+`NET_MSG_HANDOFF_REQUEST` asks a source station to sign a ticket,
+`NET_MSG_HANDOFF_TICKET` returns it, `NET_MSG_HANDOFF_PRESENT` carries that
+ticket plus a field-packed ship/cargo snapshot, and `NET_MSG_HANDOFF_RESULT`
+reports destination accept/reject. The destination verifies the source is a
+known station authority, then checks source signature, destination authority,
+player pubkey, expiry, ship hash, cargo root, and a runtime consumed-ticket
+cache before hydrating the destination ship.
+
+The remaining Layer D work is boundary automation and federation hardening:
+persist consumed-ticket replay state across restarts, route tickets between
+separate operators/nodes, harden chain compaction/backfill, define operator
+policy, and build UX around failed verification.
 
 ## The verifier tool (Layer E — shipped)
 

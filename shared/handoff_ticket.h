@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cargo_receipt.h"
 #include "types.h"
 
 #ifdef __cplusplus
@@ -23,6 +24,15 @@ extern "C" {
 #define HANDOFF_TICKET_VERSION       1u
 #define HANDOFF_TICKET_UNSIGNED_SIZE 188u
 #define HANDOFF_TICKET_SIZE          252u
+#define HANDOFF_SHIP_WIRE_SIZE       (24u + COMMODITY_COUNT * 4u + 16u + 1u + 20u + 2u + 4u + 4u)
+#define HANDOFF_CARGO_UNIT_WIRE_SIZE 80u
+#define HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE (HANDOFF_SHIP_WIRE_SIZE + 2u)
+#define HANDOFF_SHIP_SNAPSHOT_MAX_CARGO SHIP_MANIFEST_DEFAULT_CAP
+#define HANDOFF_SHIP_SNAPSHOT_MAX_SIZE \
+    (HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE + \
+     HANDOFF_SHIP_SNAPSHOT_MAX_CARGO * \
+     (HANDOFF_CARGO_UNIT_WIRE_SIZE + 1u + \
+      CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE))
 
 typedef struct {
     uint8_t  source_authority[32];
@@ -63,6 +73,17 @@ bool handoff_ticket_unpack(const uint8_t in[HANDOFF_TICKET_SIZE],
 void handoff_ticket_ship_state_hash(const ship_t *ship, uint8_t out[32]);
 void handoff_ticket_cargo_root(const ship_t *ship, uint8_t out[32]);
 void handoff_ticket_hash(const handoff_ticket_t *ticket, uint8_t out[32]);
+
+/* Field-packed ship snapshot carried with NET_MSG_HANDOFF_PRESENT. The
+ * snapshot includes exactly the ship fields bound by handoff_ticket_*_hash,
+ * plus manifest cargo units and their receipt chains. `unpack` writes an owned
+ * ship_t into `out`; callers should pass a zeroed ship_t and later call
+ * ship_cleanup(out). */
+size_t handoff_ship_snapshot_size(const ship_t *ship);
+bool handoff_ship_snapshot_pack(const ship_t *ship, uint8_t *out, size_t cap,
+                                size_t *out_len);
+bool handoff_ship_snapshot_unpack(const uint8_t *data, size_t len,
+                                  ship_t *out, size_t *consumed);
 
 bool handoff_ticket_issue_for_ship(
     const uint8_t source_authority[32],

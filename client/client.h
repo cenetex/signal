@@ -391,6 +391,12 @@ typedef struct {
     uint8_t net_action_queue_start;
     uint8_t net_action_queue_count;
     net_action_queue_item_t net_action_queue[NET_ACTION_QUEUE_CAP];
+    bool net_handoff_ticket_valid;
+    handoff_ticket_t net_handoff_ticket;
+    uint8_t net_handoff_source_station;
+    uint8_t net_handoff_dest_station;
+    uint8_t net_handoff_last_status;
+    uint8_t net_handoff_last_reason;
     net_input_timing_t net_input_timing[NET_INPUT_TIMING_CAP];
     uint32_t net_prediction_tick;
     bool net_prediction_tick_valid;

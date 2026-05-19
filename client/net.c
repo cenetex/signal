@@ -194,6 +194,39 @@ void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
     ws_send_binary(buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
 }
 
+void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
+                              uint32_t ttl_ticks) {
+    if (!net_state.connected) return;
+    uint8_t buf[NET_HANDOFF_REQUEST_SIZE];
+    buf[0] = NET_MSG_HANDOFF_REQUEST;
+    buf[1] = source_station;
+    buf[2] = dest_station;
+    write_u32_le(&buf[3], ttl_ticks);
+    ws_send_binary(buf, NET_HANDOFF_REQUEST_SIZE);
+}
+
+void net_send_handoff_present(const handoff_ticket_t *ticket,
+                              const ship_t *ship) {
+    if (!net_state.connected || !ticket || !ship) return;
+    size_t snapshot_len = handoff_ship_snapshot_size(ship);
+    if (snapshot_len == 0 || snapshot_len > HANDOFF_SHIP_SNAPSHOT_MAX_SIZE)
+        return;
+    size_t len = 1u + HANDOFF_TICKET_SIZE + 4u + snapshot_len;
+    uint8_t *buf = (uint8_t *)malloc(len);
+    if (!buf) return;
+    buf[0] = NET_MSG_HANDOFF_PRESENT;
+    handoff_ticket_pack(ticket, &buf[1]);
+    write_u32_le(&buf[1 + HANDOFF_TICKET_SIZE], (uint32_t)snapshot_len);
+    if (!handoff_ship_snapshot_pack(ship,
+                                    &buf[1 + HANDOFF_TICKET_SIZE + 4],
+                                    snapshot_len, NULL)) {
+        free(buf);
+        return;
+    }
+    ws_send_binary(buf, (int)len);
+    free(buf);
+}
+
 void net_send_latency_ping(void) {
     if (!net_state.connected) return;
     uint8_t buf[NET_LATENCY_PING_SIZE];
@@ -570,6 +603,37 @@ static void handle_message(const uint8_t* data, int len) {
                 net_state.callbacks.on_action_result(action_id, input_seq,
                                                      status, action,
                                                      server_tick);
+            }
+        }
+        break;
+
+    case NET_MSG_HANDOFF_TICKET:
+        if ((size_t)len < 4u + HANDOFF_TICKET_SIZE) break;
+        {
+            uint8_t status = data[1];
+            uint8_t source_station = data[2];
+            uint8_t dest_station = data[3];
+            handoff_ticket_t ticket;
+            memset(&ticket, 0, sizeof(ticket));
+            (void)handoff_ticket_unpack(&data[4], &ticket);
+            if (net_state.callbacks.on_handoff_ticket) {
+                net_state.callbacks.on_handoff_ticket(
+                    status, source_station, dest_station,
+                    status == NET_HANDOFF_STATUS_OK ? &ticket : NULL);
+            }
+        }
+        break;
+
+    case NET_MSG_HANDOFF_RESULT:
+        if (len < NET_HANDOFF_RESULT_SIZE) break;
+        {
+            uint8_t status = data[1];
+            uint8_t reason = data[2];
+            uint8_t dest_station = data[3];
+            if (net_state.callbacks.on_handoff_result) {
+                net_state.callbacks.on_handoff_result(status, reason,
+                                                      dest_station,
+                                                      &data[4]);
             }
         }
         break;

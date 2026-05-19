@@ -17,6 +17,7 @@
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
+#include "handoff_flow.h"
 #include "sha256.h"
 #include "station_authority.h"
 #include "station_util.h"
@@ -143,6 +144,25 @@ static void send_cargo_receipt_chain(struct mg_connection *c,
     for (uint8_t i = 0; i < chain->len; i++)
         cargo_receipt_pack(&chain->links[i], &buf[3 + i * CARGO_RECEIPT_SIZE]);
     ws_send(c, buf, 3u + (size_t)chain->len * CARGO_RECEIPT_SIZE);
+}
+
+static void send_handoff_ticket_msg(struct mg_connection *c, uint8_t status,
+                                    uint8_t source_station,
+                                    uint8_t dest_station,
+                                    const handoff_ticket_t *ticket) {
+    uint8_t buf[4 + HANDOFF_TICKET_SIZE];
+    int len = serialize_handoff_ticket(buf, status, source_station,
+                                       dest_station, ticket);
+    ws_send(c, buf, (size_t)len);
+}
+
+static void send_handoff_result_msg(struct mg_connection *c, uint8_t status,
+                                    uint8_t reason, uint8_t dest_station,
+                                    const uint8_t ticket_hash[32]) {
+    uint8_t buf[NET_HANDOFF_RESULT_SIZE];
+    int len = serialize_handoff_result(buf, status, reason, dest_station,
+                                       ticket_hash);
+    ws_send(c, buf, (size_t)len);
 }
 
 static const char *cargo_receipt_present_result_name(
@@ -1442,6 +1462,72 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 printf("[server] receipt_present rejected player=%d reason=%s\n",
                        pid, cargo_receipt_present_result_name(pr));
             }
+        }
+        break;
+    case NET_MSG_HANDOFF_REQUEST:
+        if (len >= NET_HANDOFF_REQUEST_SIZE) {
+            uint8_t source_wire = data[1];
+            uint8_t dest_wire = data[2];
+            int source_station = (source_wire == 0xFFu)
+                ? world.players[pid].current_station
+                : (int)source_wire;
+            int dest_station = (int)dest_wire;
+            uint32_t ttl_ticks = read_u32_le(&data[3]);
+            handoff_ticket_t ticket;
+            memset(&ticket, 0, sizeof(ticket));
+            bool ok = handoff_issue_ticket_to_station(
+                &world, pid, source_station, dest_station, ttl_ticks, &ticket);
+            send_handoff_ticket_msg(c,
+                                    ok ? NET_HANDOFF_STATUS_OK
+                                       : NET_HANDOFF_STATUS_REJECTED,
+                                    (uint8_t)(source_station >= 0 &&
+                                              source_station < 256
+                                              ? source_station : 0xFF),
+                                    dest_wire,
+                                    ok ? &ticket : NULL);
+            printf("[server] handoff_issue player=%d source=%d dest=%d status=%s\n",
+                   pid, source_station, dest_station, ok ? "ok" : "rejected");
+        }
+        break;
+    case NET_MSG_HANDOFF_PRESENT:
+        if ((size_t)len >= 1u + HANDOFF_TICKET_SIZE + 4u) {
+            handoff_ticket_t ticket;
+            uint8_t ticket_hash[32];
+            ship_t presented;
+            size_t consumed = 0;
+            int dest_station = -1;
+            handoff_flow_result_t hr = HANDOFF_FLOW_REJECT_BAD_ARGS;
+            uint32_t snapshot_len =
+                read_u32_le(&data[1 + HANDOFF_TICKET_SIZE]);
+            size_t snapshot_off = 1u + HANDOFF_TICKET_SIZE + 4u;
+            memset(&ticket, 0, sizeof(ticket));
+            memset(&ticket_hash, 0, sizeof(ticket_hash));
+            memset(&presented, 0, sizeof(presented));
+
+            if (handoff_ticket_unpack(&data[1], &ticket))
+                handoff_ticket_hash(&ticket, ticket_hash);
+
+            if (snapshot_len <= HANDOFF_SHIP_SNAPSHOT_MAX_SIZE &&
+                (size_t)len >= snapshot_off + (size_t)snapshot_len &&
+                handoff_ship_snapshot_unpack(&data[snapshot_off],
+                                             (size_t)snapshot_len,
+                                             &presented, &consumed) &&
+                consumed == (size_t)snapshot_len) {
+                hr = handoff_accept_presented_ship(&world, pid, &ticket,
+                                                   &presented, &dest_station);
+            }
+
+            send_handoff_result_msg(
+                c,
+                hr == HANDOFF_FLOW_OK ? NET_HANDOFF_STATUS_OK
+                                      : NET_HANDOFF_STATUS_REJECTED,
+                (uint8_t)hr,
+                (uint8_t)(dest_station >= 0 && dest_station < 256
+                          ? dest_station : 0xFF),
+                ticket_hash);
+            printf("[server] handoff_present player=%d dest=%d status=%s\n",
+                   pid, dest_station, handoff_flow_result_name(hr));
+            ship_cleanup(&presented);
         }
         break;
     case NET_MSG_FRACTURE_CLAIM:
@@ -2801,6 +2887,10 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_INSPECT_SNAPSHOT: return "INSPECT_SNAPSHOT";
     case NET_MSG_CARGO_RECEIPT_BUNDLE: return "CARGO_RECEIPT_BUNDLE";
     case NET_MSG_PRESENT_RECEIPT_CHAIN: return "PRESENT_RECEIPT_CHAIN";
+    case NET_MSG_HANDOFF_REQUEST: return "HANDOFF_REQUEST";
+    case NET_MSG_HANDOFF_TICKET: return "HANDOFF_TICKET";
+    case NET_MSG_HANDOFF_PRESENT: return "HANDOFF_PRESENT";
+    case NET_MSG_HANDOFF_RESULT: return "HANDOFF_RESULT";
     default: return "UNKNOWN";
     }
 }

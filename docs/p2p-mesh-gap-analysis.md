@@ -54,13 +54,17 @@ and attaches it to the matching carried manifest unit without allowing a
 shorter or conflicting chain to overwrite local knowledge. Foreign station
 pubkeys are accepted by signature, not by local station registry membership.
 The multiplayer client now sends matching verified chains immediately before
-queued sell/deliver actions. Zone handoff still needs to reuse this ingress as
-part of a ticketed issue/present/accept flow.
+queued sell/deliver actions. The first ticketed handoff path also exists:
+clients can request a signed source-station ticket, present it with a
+field-packed ship/cargo snapshot, and receive an accept/reject result from the
+destination authority.
 
 ## Third Drop-In Slice
 
-Signed handoff ticket primitives now exist in `shared/handoff_ticket.h`. A
-source authority can issue an Ed25519-signed envelope binding:
+Signed handoff ticket primitives now exist in `shared/handoff_ticket.h`, with
+wire support in `NET_MSG_HANDOFF_REQUEST`, `NET_MSG_HANDOFF_TICKET`,
+`NET_MSG_HANDOFF_PRESENT`, and `NET_MSG_HANDOFF_RESULT`. A source authority can
+issue an Ed25519-signed envelope binding:
 
 ```text
 HANDOFF_TICKET {
@@ -78,8 +82,8 @@ HANDOFF_TICKET {
 
 `ship_state_hash` covers the physical ship snapshot and upgrades; `cargo_root`
 covers the ordered manifest plus attached receipt-chain bytes. Verification
-checks source/destination/player expectations, expiry, ship hash, cargo root,
-and the source authority signature.
+checks known source authority, source/destination/player expectations, expiry,
+ship hash, cargo root, and the source authority signature.
 
 ## What Is Still Missing
 
@@ -164,12 +168,14 @@ HANDOFF_OUT {
 }
 ```
 
-The destination verifies the source signature, cargo receipts, ship/cargo hashes,
-and expiry before emitting `HANDOFF_IN`.
+The destination verifies the source authority is known, then checks the source
+signature, cargo receipts, ship/cargo hashes, expiry, and a runtime
+consumed-ticket replay cache before hydrating the destination ship and returning
+a handoff result.
 
-The current gap is product wiring: the ticket format exists, but zone traversal
-still needs explicit issue/present/accept messages, destination ship hydration,
-and replay prevention around a consumed handoff ticket.
+The current gap is no longer the ticket product path itself; it is automatic
+boundary UX, persistent replay logs across restarts, and real peer/node routing
+around the same issue/present/accept protocol.
 
 ### Browser, Native, Mobile
 
@@ -187,6 +193,8 @@ and replay prevention around a consumed handoff ticket.
 2. Keep receipt bearer state attached to clients and use
    `NET_MSG_PRESENT_RECEIPT_CHAIN` on authority ingress.
 3. Use signed handoff tickets for explicit issue/present/accept zone traversal.
+   The WebSocket protocol path is now present; automatic boundary triggering and
+   peer routing remain.
 4. Add a `signal_node` core that can run the sim without HTTP/WebSocket coupling.
 5. Add node identity and `PEER_HELLO`.
 6. Add chain-tip/event gossip between nodes.

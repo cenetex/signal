@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "cargo_receipt.h"
+#include "handoff_ticket.h"
 #include "types.h"      /* COMMODITY_COUNT */
 #include "protocol.h"   /* shared protocol enums, message types, record sizes */
 
@@ -295,6 +296,13 @@ typedef void (*net_on_action_result_fn)(uint16_t action_id, uint16_t input_seq,
                                         uint32_t server_tick);
 typedef void (*net_on_latency_sample_fn)(uint32_t seq, float rtt_ms,
                                          float server_turnaround_ms);
+typedef void (*net_on_handoff_ticket_fn)(uint8_t status,
+                                         uint8_t source_station,
+                                         uint8_t dest_station,
+                                         const handoff_ticket_t *ticket);
+typedef void (*net_on_handoff_result_fn)(uint8_t status, uint8_t reason,
+                                         uint8_t dest_station,
+                                         const uint8_t ticket_hash[32]);
 
 typedef struct {
     uint8_t msg_type;
@@ -349,6 +357,8 @@ typedef struct {
     net_on_action_result_fn    on_action_result;
     net_on_latency_sample_fn   on_latency_sample;
     net_on_protocol_info_fn    on_protocol_info;
+    net_on_handoff_ticket_fn   on_handoff_ticket;
+    net_on_handoff_result_fn   on_handoff_result;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.
@@ -449,11 +459,16 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
 
 /* Present a carried cargo receipt chain to the current authority. The
  * multiplayer client sends these immediately before queued sell/deliver
- * actions for matching carried units; the future zone-handoff flow will
- * reuse the same message. The server attaches the chain to the matching
- * carried cargo unit if it verifies. */
+ * actions for matching carried units. Handoff presentation now carries the
+ * same receipt chains inside the signed ship snapshot. The server attaches the
+ * chain to the matching carried cargo unit if it verifies. */
 void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
                                     const cargo_receipt_chain_t *chain);
+
+void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
+                              uint32_t ttl_ticks);
+void net_send_handoff_present(const handoff_ticket_t *ticket,
+                              const ship_t *ship);
 
 /* Send a planning intent (outpost create / module slot / cancel). */
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,

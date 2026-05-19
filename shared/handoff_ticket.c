@@ -54,6 +54,12 @@ static void write_f32_le(uint8_t *p, float f) {
     write_u32_le(p, conv.u);
 }
 
+static float read_f32_le(const uint8_t *p) {
+    union { float f; uint32_t u; } conv;
+    conv.u = read_u32_le(p);
+    return conv.f;
+}
+
 static void sha_update_u16(sha256_ctx_t *c, uint16_t v) {
     uint8_t b[2];
     write_u16_le(b, v);
@@ -94,6 +100,21 @@ static void cargo_unit_pack_for_handoff(const cargo_unit_t *u, uint8_t out[80]) 
     write_u64_le(&out[8], u->mined_block);
     memcpy(&out[16], u->pub, 32);
     memcpy(&out[48], u->parent_merkle, 32);
+}
+
+static void cargo_unit_unpack_for_handoff(const uint8_t in[80], cargo_unit_t *out) {
+    if (!in || !out) return;
+    memset(out, 0, sizeof(*out));
+    out->kind = in[0];
+    out->commodity = in[1];
+    out->grade = in[2];
+    out->prefix_class = in[3];
+    out->recipe_id = read_u16_le(&in[4]);
+    out->origin_station = in[6];
+    out->quantity = in[7];
+    out->mined_block = read_u64_le(&in[8]);
+    memcpy(out->pub, &in[16], 32);
+    memcpy(out->parent_merkle, &in[48], 32);
 }
 
 void handoff_ticket_unsigned_pack(
@@ -208,6 +229,144 @@ void handoff_ticket_hash(const handoff_ticket_t *ticket, uint8_t out[32]) {
     uint8_t packed[HANDOFF_TICKET_SIZE];
     handoff_ticket_pack(ticket, packed);
     sha256_bytes(packed, sizeof(packed), out);
+}
+
+size_t handoff_ship_snapshot_size(const ship_t *ship) {
+    uint16_t count = 0;
+    size_t total = HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE;
+    const ship_receipts_t *receipts = NULL;
+    if (!ship) return 0;
+    if (ship->manifest.units) count = ship->manifest.count;
+    if (count > HANDOFF_SHIP_SNAPSHOT_MAX_CARGO) return 0;
+    receipts = ship_get_receipts_const(ship);
+    for (uint16_t i = 0; i < count; i++) {
+        uint8_t len = 0;
+        if (receipts && i < receipts->count) {
+            len = receipts->chains[i].len;
+            if (len > CARGO_RECEIPT_CHAIN_MAX_LEN) return 0;
+        }
+        total += HANDOFF_CARGO_UNIT_WIRE_SIZE + 1u +
+                 (size_t)len * CARGO_RECEIPT_SIZE;
+    }
+    return total;
+}
+
+bool handoff_ship_snapshot_pack(const ship_t *ship, uint8_t *out, size_t cap,
+                                size_t *out_len) {
+    size_t need = handoff_ship_snapshot_size(ship);
+    size_t off = 0;
+    uint16_t count = 0;
+    const ship_receipts_t *receipts = NULL;
+    if (out_len) *out_len = 0;
+    if (!ship || !out || need == 0 || cap < need) return false;
+
+    write_f32_le(&out[off], ship->pos.x); off += 4;
+    write_f32_le(&out[off], ship->pos.y); off += 4;
+    write_f32_le(&out[off], ship->vel.x); off += 4;
+    write_f32_le(&out[off], ship->vel.y); off += 4;
+    write_f32_le(&out[off], ship->angle); off += 4;
+    write_f32_le(&out[off], ship->hull); off += 4;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        write_f32_le(&out[off], ship->cargo[c]);
+        off += 4;
+    }
+    write_u32_le(&out[off], (uint32_t)ship->hull_class); off += 4;
+    write_u32_le(&out[off], (uint32_t)ship->mining_level); off += 4;
+    write_u32_le(&out[off], (uint32_t)ship->hold_level); off += 4;
+    write_u32_le(&out[off], (uint32_t)ship->tractor_level); off += 4;
+    out[off++] = ship->towed_count;
+    for (int i = 0; i < 10; i++) {
+        write_u16_le(&out[off], (uint16_t)ship->towed_fragments[i]);
+        off += 2;
+    }
+    write_u16_le(&out[off], (uint16_t)ship->towed_scaffold); off += 2;
+    write_f32_le(&out[off], ship->comm_range); off += 4;
+    write_u32_le(&out[off], ship->unlocked_modules); off += 4;
+
+    if (ship->manifest.units) count = ship->manifest.count;
+    write_u16_le(&out[off], count); off += 2;
+    receipts = ship_get_receipts_const(ship);
+    for (uint16_t i = 0; i < count; i++) {
+        uint8_t len = 0;
+        cargo_unit_pack_for_handoff(&ship->manifest.units[i], &out[off]);
+        off += HANDOFF_CARGO_UNIT_WIRE_SIZE;
+        if (receipts && i < receipts->count) len = receipts->chains[i].len;
+        out[off++] = len;
+        for (uint8_t j = 0; j < len; j++) {
+            cargo_receipt_pack(&receipts->chains[i].links[j], &out[off]);
+            off += CARGO_RECEIPT_SIZE;
+        }
+    }
+    if (out_len) *out_len = off;
+    return off == need;
+}
+
+bool handoff_ship_snapshot_unpack(const uint8_t *data, size_t len,
+                                  ship_t *out, size_t *consumed) {
+    ship_t tmp;
+    size_t off = 0;
+    uint16_t count = 0;
+    if (consumed) *consumed = 0;
+    if (!data || !out || len < HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE)
+        return false;
+    memset(&tmp, 0, sizeof(tmp));
+
+    tmp.pos.x = read_f32_le(&data[off]); off += 4;
+    tmp.pos.y = read_f32_le(&data[off]); off += 4;
+    tmp.vel.x = read_f32_le(&data[off]); off += 4;
+    tmp.vel.y = read_f32_le(&data[off]); off += 4;
+    tmp.angle = read_f32_le(&data[off]); off += 4;
+    tmp.hull = read_f32_le(&data[off]); off += 4;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        tmp.cargo[c] = read_f32_le(&data[off]);
+        off += 4;
+    }
+    tmp.hull_class = (hull_class_t)read_u32_le(&data[off]); off += 4;
+    tmp.mining_level = (int)read_u32_le(&data[off]); off += 4;
+    tmp.hold_level = (int)read_u32_le(&data[off]); off += 4;
+    tmp.tractor_level = (int)read_u32_le(&data[off]); off += 4;
+    tmp.towed_count = data[off++];
+    for (int i = 0; i < 10; i++) {
+        tmp.towed_fragments[i] = (int16_t)read_u16_le(&data[off]);
+        off += 2;
+    }
+    tmp.towed_scaffold = (int16_t)read_u16_le(&data[off]); off += 2;
+    tmp.comm_range = read_f32_le(&data[off]); off += 4;
+    tmp.unlocked_modules = read_u32_le(&data[off]); off += 4;
+
+    count = read_u16_le(&data[off]); off += 2;
+    if (count > HANDOFF_SHIP_SNAPSHOT_MAX_CARGO) return false;
+    if (!ship_manifest_bootstrap(&tmp)) goto fail;
+
+    for (uint16_t i = 0; i < count; i++) {
+        cargo_unit_t unit;
+        cargo_receipt_chain_t chain;
+        uint8_t chain_len = 0;
+        memset(&chain, 0, sizeof(chain));
+        if (len - off < HANDOFF_CARGO_UNIT_WIRE_SIZE + 1u) goto fail;
+        cargo_unit_unpack_for_handoff(&data[off], &unit);
+        off += HANDOFF_CARGO_UNIT_WIRE_SIZE;
+        chain_len = data[off++];
+        if (chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN) goto fail;
+        if (len - off < (size_t)chain_len * CARGO_RECEIPT_SIZE) goto fail;
+        chain.len = chain_len;
+        for (uint8_t j = 0; j < chain_len; j++) {
+            if (!cargo_receipt_unpack(&data[off], &chain.links[j]))
+                goto fail;
+            off += CARGO_RECEIPT_SIZE;
+        }
+        if (!ship_manifest_push_with_chain(&tmp, &unit,
+                                           chain_len > 0 ? &chain : NULL))
+            goto fail;
+    }
+
+    *out = tmp;
+    if (consumed) *consumed = off;
+    return true;
+
+fail:
+    ship_cleanup(&tmp);
+    return false;
 }
 
 bool handoff_ticket_issue_for_ship(

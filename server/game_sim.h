@@ -517,6 +517,12 @@ typedef struct {
         uint8_t session_token[8];
         bool    in_use;
     } pubkey_registry[MAX_PLAYERS];
+    /* Runtime replay guard for accepted handoff tickets. The ticket itself is
+     * source-signed and hash-bound; this cache prevents a valid ticket from
+     * hydrating the same destination ship twice in one authority run. */
+    uint8_t handoff_consumed_ticket_hashes[128][32];
+    uint16_t handoff_consumed_ticket_count;
+    uint16_t handoff_consumed_ticket_next;
 } world_t;
 
 /* ------------------------------------------------------------------ */
