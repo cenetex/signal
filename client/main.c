@@ -90,6 +90,24 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
+static const char *net_action_ack_status_name(uint8_t status) {
+    switch (status) {
+    case NET_ACTION_ACK_RECEIVED:  return "received";
+    case NET_ACTION_ACK_DUPLICATE: return "duplicate";
+    case NET_ACTION_ACK_REJECTED:  return "rejected";
+    default:                       return "unknown";
+    }
+}
+
+static const char *net_action_result_status_name(uint8_t status) {
+    switch (status) {
+    case NET_ACTION_RESULT_OK:       return "ok";
+    case NET_ACTION_RESULT_REJECTED: return "rejected";
+    case NET_ACTION_RESULT_NOOP:     return "noop";
+    default:                         return "unknown";
+    }
+}
+
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action);
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
@@ -2062,11 +2080,18 @@ static void net_action_queue_update(float dt) {
 
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action) {
-    (void)input_seq;
     /* ACTION_ACK is an immediate transport/dedupe receipt. Authoritative
      * input age is measured from WORLD_PLAYERS input_seq_ack instead. */
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
+    fprintf(stderr,
+            "[net-action] ack id=%u seq=%u action=%u status=%s q=%u predict=%.2f docked=%d balance=%.0f\n",
+            (unsigned)action_id, (unsigned)input_seq, (unsigned)action,
+            net_action_ack_status_name(status),
+            (unsigned)g.net_action_queue_count,
+            g.action_predict_timer,
+            LOCAL_PLAYER.docked ? 1 : 0,
+            g.station_balance);
     if (status == NET_ACTION_ACK_REJECTED && action != NET_ACTION_NONE)
         g.action_predict_timer = 0.0f;
 }
@@ -2074,10 +2099,16 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick) {
-    (void)action_id;
-    (void)input_seq;
-    (void)status;
-    (void)action;
+    fprintf(stderr,
+            "[net-action] result id=%u seq=%u action=%u status=%s server_tick=%u predict=%.2f docked=%d station=%d balance=%.0f q=%u\n",
+            (unsigned)action_id, (unsigned)input_seq, (unsigned)action,
+            net_action_result_status_name(status),
+            (unsigned)server_tick,
+            g.action_predict_timer,
+            LOCAL_PLAYER.docked ? 1 : 0,
+            LOCAL_PLAYER.docked ? LOCAL_PLAYER.current_station : LOCAL_PLAYER.nearby_station,
+            g.station_balance,
+            (unsigned)g.net_action_queue_count);
     if (server_tick != 0) {
         g.net_last_server_tick = server_tick;
         if (!g.net_prediction_tick_valid) {

@@ -18,6 +18,9 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # Fast gate: build once, run fast tests with -Werror.
   # On failure, cancels the whole run so siblings (native matrix,
@@ -28,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and run fast tests
         run: |
           cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
@@ -51,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and run soak tests
         run: |
           cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
@@ -77,7 +80,7 @@ jobs:
     env:
       ASAN_OPTIONS: halt_on_error=1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and run tests with AddressSanitizer (shard ${{ matrix.shard }}/4)
         run: |
           cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
@@ -101,7 +104,7 @@ jobs:
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
       ASAN_OPTIONS: halt_on_error=1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and run tests with UBSan + ASan
         run: |
           cmake -S . -B build-ubsan -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
@@ -122,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build signal_verify
         run: |
           cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Debug \
@@ -146,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install analysis tools
         run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tools clang-tidy
 
@@ -177,7 +180,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install lizard + gcovr
         run: pip install --quiet lizard gcovr
@@ -263,7 +266,7 @@ jobs:
 
       - name: Upload CRAP report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crap-report
           path: |
@@ -279,7 +282,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Emscripten
         uses: mymindstorm/setup-emsdk@v14
@@ -330,7 +333,7 @@ jobs:
           PY
 
       - name: Upload client artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: client-site
           path: _site/
@@ -346,7 +349,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.vars.outputs.short_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -355,7 +358,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
           aws-region: us-east-1
@@ -386,16 +389,16 @@ jobs:
     needs: [test-basic, test-soak, test-static, build-client, build-server, native]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
           aws-region: us-east-1
 
       - name: Download client artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: client-site
           path: _site/
@@ -612,7 +615,7 @@ jobs:
 
       # --- Smoke test staged server against the already-published pinned bundle ---
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -628,7 +631,7 @@ jobs:
 
       - name: Upload pre-promotion smoke results
         if: steps.smoke-pre-promote.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-pre-promote
           path: test-results/
@@ -678,7 +681,7 @@ jobs:
 
       - name: Upload post-promotion smoke results
         if: steps.smoke-post-promote.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-post-promote
           path: test-results/
@@ -713,13 +716,13 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux
-          - os: macos-latest
+          - os: macos-15
             name: macos
-          - os: windows-latest
+          - os: windows-2025-vs2026
             name: windows
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies (Linux)
         if: matrix.name == 'linux'
@@ -733,7 +736,7 @@ jobs:
           cmake --build build --config Release
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signal-${{ matrix.name }}
           path: build/

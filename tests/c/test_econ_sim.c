@@ -13,6 +13,17 @@ static bool first_manifest_pub_for_commodity(const station_t *st,
     return false;
 }
 
+static void apply_scripted_input(server_player_t *sp, uint8_t flags,
+                                 uint8_t action, uint8_t grade) {
+    memset(&sp->input, 0, sizeof(sp->input));
+    sp->input.mining_target_hint = -1;
+    sp->input.buy_grade = MINING_GRADE_COUNT;
+    sp->input.service_sell_only = COMMODITY_COUNT;
+    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+    uint8_t msg[5] = { NET_MSG_INPUT, flags, action, 0xFF, grade };
+    parse_input(msg, (int)sizeof(msg), &sp->input);
+}
+
 TEST(test_econ_sim_npc_only_5min) {
     /* Run the world for 5 minutes with NO players — just NPCs.
      * Report: station credit pools, inventories, NPC activity. */
@@ -200,6 +211,81 @@ TEST(test_econ_sim_credit_circulation) {
     /* Key invariant: total credits in the system should be conserved */
     float expected_total = initial_total;
     ASSERT_EQ_FLOAT(total_credits, expected_total, 1.0f);
+}
+
+TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+    memset(sp->pubkey, 0xA5, sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->current_station, 0);
+
+    vec2 start = sp->ship.pos;
+    float start_center_dist = v2_len(v2_sub(start, w.stations[0].pos));
+    apply_scripted_input(sp, 0, NET_ACTION_LAUNCH, MINING_GRADE_COUNT);
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT(!sp->docking_approach);
+
+    for (int i = 0; i < 180; i++) {
+        apply_scripted_input(sp, NET_INPUT_THRUST, NET_ACTION_NONE,
+                             MINING_GRADE_COUNT);
+        world_sim_step(&w, SIM_DT);
+        ASSERT(!sp->docked);
+        ASSERT(!sp->docking_approach);
+    }
+
+    float moved = v2_len(v2_sub(sp->ship.pos, start));
+    float end_center_dist = v2_len(v2_sub(sp->ship.pos, w.stations[0].pos));
+    ASSERT(moved > 80.0f);
+    ASSERT(end_center_dist > start_center_dist + 50.0f);
+
+    station_t *prospect = &w.stations[0];
+    ASSERT(test_set_station_finished_units(prospect,
+                                           COMMODITY_FERRITE_INGOT, 2));
+    ledger_earn_by_pubkey(prospect, sp->pubkey, 1000.0f);
+    ledger_earn(prospect, sp->session_token, 333.0f);
+
+    sp->ship.pos = w.stations[0].pos;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->docked = true;
+    sp->in_dock_range = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+
+    int ship_before = ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT);
+    int station_before = station_finished_count(prospect,
+                                                COMMODITY_FERRITE_INGOT);
+    float pubkey_before = ledger_balance_by_pubkey(prospect, sp->pubkey);
+    float session_before = ledger_balance(prospect, sp->session_token);
+    float expected_cost = station_sell_price(prospect,
+                                             COMMODITY_FERRITE_INGOT);
+
+    apply_scripted_input(sp, 0,
+                         (uint8_t)(NET_ACTION_BUY_PRODUCT +
+                                   COMMODITY_FERRITE_INGOT),
+                         MINING_GRADE_COMMON);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT),
+                  ship_before + 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
+                  station_before - 1);
+    ASSERT_EQ_FLOAT(pubkey_before -
+                    ledger_balance_by_pubkey(prospect, sp->pubkey),
+                    expected_cost, 0.01f);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    session_before, 0.001f);
 }
 
 TEST(test_bug312_1_docked_buy_honors_spend_failure) {
@@ -806,6 +892,7 @@ void register_econ_sim_sim_tests(void) {
     TEST_SECTION("\nEconomy simulations:\n");
     RUN_SOAK(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
+    RUN(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance);
     RUN_SOAK(test_grade_aware_sell_pays_per_unit_grade);
     RUN_SOAK(test_e2e_kit_chain_converges);
     RUN(test_e2e_npc_dock_auto_repair_drains_kits);

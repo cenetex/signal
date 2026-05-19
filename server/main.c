@@ -661,6 +661,15 @@ static uint8_t pending_action_result_status(const server_player_t *sp,
     return NET_ACTION_RESULT_NOOP;
 }
 
+static const char *action_result_status_name(uint8_t status) {
+    switch (status) {
+    case NET_ACTION_RESULT_OK:       return "ok";
+    case NET_ACTION_RESULT_REJECTED: return "rejected";
+    case NET_ACTION_RESULT_NOOP:     return "noop";
+    default:                         return "unknown";
+    }
+}
+
 static void send_pending_action_results(const sim_events_t *events) {
     uint32_t server_tick = world.tick;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -668,6 +677,13 @@ static void send_pending_action_results(const sim_events_t *events) {
         if (!sp->pending_action_result_valid) continue;
         uint8_t status = pending_action_result_status(sp, events);
         force_player_authoritative_resync(sp);
+        printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=%s tick=%u resync=authoritative\n",
+               sp->id,
+               (unsigned)sp->pending_action_result_id,
+               (unsigned)sp->pending_action_result_input_seq,
+               (unsigned)sp->pending_action_result_action,
+               action_result_status_name(status),
+               (unsigned)server_tick);
         if (sp->connected && sp->conn) {
             send_action_result(sp->conn,
                                sp->pending_action_result_id,
@@ -1128,6 +1144,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 if (ack_status == NET_ACTION_ACK_REJECTED &&
                     action_id != 0 && data[2] != NET_ACTION_NONE) {
                     force_player_authoritative_resync(sp);
+                    printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=rejected tick=%u resync=unsigned-reject\n",
+                           sp->id, (unsigned)action_id,
+                           (unsigned)input_seq, (unsigned)data[2],
+                           (unsigned)world.tick);
                     send_action_result(c, action_id, input_seq,
                                        NET_ACTION_RESULT_REJECTED,
                                        data[2], world.tick);
@@ -1166,6 +1186,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_BUY_INGOT:
         if (world.players[pid].pubkey_set) {
             unsigned_action_count++;
+            printf("[server] legacy unsigned BUY_INGOT rejected for pubkey player %d; signed action required\n",
+                   pid);
             break;
         }
         /* RATi v2: purchase a specific named ingot from the docked
@@ -1257,6 +1279,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_DELIVER_INGOT:
         if (world.players[pid].pubkey_set) {
             unsigned_action_count++;
+            printf("[server] legacy unsigned DELIVER_INGOT rejected for pubkey player %d; signed action required\n",
+                   pid);
             break;
         }
         /* RATi v2: deposit a specific hold ingot into the docked

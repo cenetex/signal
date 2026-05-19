@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-native:
     strategy:
@@ -17,17 +20,17 @@ jobs:
             name: linux-x64
             artifact: signal
             cmake_flags: ""
-          - os: macos-latest
+          - os: macos-15
             name: macos-arm64
             artifact: signal
             cmake_flags: ""
-          - os: windows-latest
+          - os: windows-2025-vs2026
             name: windows-x64
             artifact: signal.exe
             cmake_flags: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -55,7 +58,7 @@ jobs:
           cd dist && Compress-Archive -Path * -DestinationPath ..\signal-${{ matrix.name }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signal-${{ matrix.name }}
           path: signal-${{ matrix.name }}.*
@@ -63,7 +66,7 @@ jobs:
   build-server:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build server
         run: |
@@ -77,7 +80,7 @@ jobs:
           cd dist && tar czf ../signal_server-linux-x64.tar.gz *
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signal_server-linux-x64
           path: signal_server-linux-x64.tar.gz
@@ -87,7 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
