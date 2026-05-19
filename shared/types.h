@@ -1085,6 +1085,7 @@ typedef enum {
     SIM_EVENT_DOCK,
     SIM_EVENT_LAUNCH,
     SIM_EVENT_SELL,
+    SIM_EVENT_BUY,
     SIM_EVENT_REPAIR,
     SIM_EVENT_UPGRADE,
     SIM_EVENT_DAMAGE,
@@ -1137,6 +1138,8 @@ typedef struct {
          * floating "+$N" popup yellow instead of grade-tinted. */
         struct { int station; uint8_t grade; int base_cr; int bonus_cr;
                  uint8_t by_contract; } sell;
+        struct { int station; uint8_t commodity; uint8_t grade; int cost;
+                 uint16_t quantity; } buy;
         struct { int slot; } outpost_placed;
         struct { int station; float credits; int contract_index; } hail_response;
         struct { int slot; } outpost_activated;

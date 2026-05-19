@@ -369,6 +369,9 @@ construct a fresh world, walk the per-station chain logs, and apply each
 event in `(epoch, event_id)` order. The verifier and the chain-log walker
 are the building blocks; full replay is not yet a one-shot CLI but the
 primitives are present in [`server/chain_log.c`](../server/chain_log.c).
+For deterministic seed+prefix counterfactual rollouts, use
+[`signal_replay`](./replay-harness.md); it is a simulator harness, not a
+chain-log recovery tool.
 
 ### Time desync
 

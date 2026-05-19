@@ -497,6 +497,20 @@ static void sim_on_sell(const sim_event_t *ev) {
     }
 }
 
+static void sim_on_buy(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    if (ev->buy.commodity >= COMMODITY_COUNT) return;
+    const char *unit = "credits";
+    if (ev->buy.station >= 0 && ev->buy.station < MAX_STATIONS &&
+        g.world.stations[ev->buy.station].currency_name[0]) {
+        unit = g.world.stations[ev->buy.station].currency_name;
+    }
+    set_notice("Bought %u %s for %d %s.",
+               (unsigned)(ev->buy.quantity ? ev->buy.quantity : 1),
+               commodity_name((commodity_t)ev->buy.commodity),
+               ev->buy.cost, unit);
+}
+
 static void sim_on_repair(const sim_event_t *ev) {
     if (ev_is_local(ev)) audio_play_repair(&g.audio);
 }
@@ -854,6 +868,7 @@ static const sim_event_handler_fn k_sim_event_handlers[SIM_EVENT_COUNT] = {
     [SIM_EVENT_DOCK]               = sim_on_dock,
     [SIM_EVENT_LAUNCH]             = sim_on_launch,
     [SIM_EVENT_SELL]               = sim_on_sell,
+    [SIM_EVENT_BUY]                = sim_on_buy,
     [SIM_EVENT_REPAIR]             = sim_on_repair,
     [SIM_EVENT_UPGRADE]            = sim_on_upgrade,
     [SIM_EVENT_DAMAGE]             = sim_on_damage,

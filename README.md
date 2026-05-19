@@ -86,6 +86,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
 - [`docs/protocol-telemetry.md`](docs/protocol-telemetry.md): protocol
   discovery, stream classes, record sizes, and telemetry split.
+- [`docs/replay-harness.md`](docs/replay-harness.md): deterministic
+  seed+prefix counterfactual replay harness for agent experiments.
 - [`docs/anime-framework.md`](docs/anime-framework.md): milestone-video product
   scope and cut line.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current

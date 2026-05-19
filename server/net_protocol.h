@@ -1470,6 +1470,13 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
             p[12] = ev->sell.by_contract;
             break;
+        case SIM_EVENT_BUY:
+            p[2] = (uint8_t)ev->buy.station;
+            p[3] = ev->buy.commodity;
+            p[4] = ev->buy.grade;
+            write_u32_le(&p[5], (uint32_t)ev->buy.cost);
+            write_u16_le(&p[9], ev->buy.quantity);
+            break;
         case SIM_EVENT_ORDER_REJECTED:
             p[2] = ev->order_rejected.reason;
             break;

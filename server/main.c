@@ -656,8 +656,9 @@ static bool action_matches_event(uint8_t action, uint8_t event_type) {
     if (action == NET_ACTION_RESET) return event_type == SIM_EVENT_DEATH;
     if (action >= NET_ACTION_BUY_PRODUCT &&
         action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
-        return event_type == SIM_EVENT_SELL;
+        return event_type == SIM_EVENT_BUY;
     }
+    if (action == NET_ACTION_BUY_INGOT) return event_type == SIM_EVENT_BUY;
     return false;
 }
 
@@ -3802,6 +3803,7 @@ static void srv_mark_all_stations_identity_dirty(void) {
 static void srv_dispatch_sim_event(const sim_event_t *ev) {
     if (ev->type == SIM_EVENT_OUTPOST_PLACED) srv_on_outpost_placed(ev);
     if (ev->type == SIM_EVENT_SELL ||
+        ev->type == SIM_EVENT_BUY ||
         ev->type == SIM_EVENT_REPAIR ||
         ev->type == SIM_EVENT_UPGRADE ||
         ev->type == SIM_EVENT_DOCK ||

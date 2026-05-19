@@ -1130,6 +1130,39 @@ TEST(test_protocol_info_serializes_stream_map) {
                   HANDOFF_SHIP_SNAPSHOT_MAX_CARGO);
 }
 
+TEST(test_buy_event_serializes_cost_and_quantity) {
+    sim_events_t events;
+    memset(&events, 0, sizeof(events));
+    events.count = 1;
+    events.events[0] = (sim_event_t){
+        .type = SIM_EVENT_BUY,
+        .player_id = 3,
+        .buy = {
+            .station = 2,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .grade = MINING_GRADE_RARE,
+            .cost = 127,
+            .quantity = 4,
+        },
+    };
+
+    uint8_t buf[2 + NET_EVENT_RECORD_SIZE];
+    int len = serialize_events(buf, &events);
+
+    ASSERT_EQ_INT(len, 2 + NET_EVENT_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_EVENTS);
+    ASSERT_EQ_INT(buf[1], 1);
+
+    const uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], SIM_EVENT_BUY);
+    ASSERT_EQ_INT(p[1], 3);
+    ASSERT_EQ_INT(p[2], 2);
+    ASSERT_EQ_INT(p[3], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[4], MINING_GRADE_RARE);
+    ASSERT_EQ_INT((int)read_u32_le(&p[5]), 127);
+    ASSERT_EQ_INT((int)read_u16_le(&p[9]), 4);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -1193,6 +1226,7 @@ void register_protocol_main_tests(void) {
     RUN(test_action_result_roundtrip);
     RUN(test_latency_pong_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);
+    RUN(test_buy_event_serializes_cost_and_quantity);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

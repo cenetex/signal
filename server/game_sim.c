@@ -3220,6 +3220,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     moved = transfer_station_to_ship_by_commodity_ex(
                         docked_st, &sp->ship, c, intent->buy_grade, whole);
                 }
+                emit_event(w, (sim_event_t){
+                    .type = SIM_EVENT_BUY, .player_id = sp->id,
+                    .buy = { .station = sp->current_station,
+                             .commodity = (uint8_t)c,
+                             .grade = (uint8_t)intent->buy_grade,
+                             .cost = (int)lroundf(charge_cost),
+                             .quantity = (uint16_t)lroundf(charge_amount) }});
                 SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
                         sp->id, charge_amount, c, charge_cost, moved);
             } else if (charge_amount > 0.01f) {

@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-flight-trace flight-trace assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-flight-trace flight-trace build-signal-replay signal-replay assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -69,6 +69,26 @@ flight-trace: build-flight-trace
 		--shard $(FLIGHT_TRACE_SHARD) \
 		--format $(FLIGHT_TRACE_FORMAT) \
 		--out $(FLIGHT_TRACE_OUT)
+
+# --- Deterministic seed+prefix counterfactual replay harness ---
+SIGNAL_REPLAY_SEED ?= 2037
+SIGNAL_REPLAY_HISTORY ?= W,W,WA,D
+SIGNAL_REPLAY_HORIZON_TICKS ?= 36
+SIGNAL_REPLAY_CANDIDATES ?= NONE,W,A,D,S,WA,WD,SA,SD
+SIGNAL_REPLAY_OUT ?= /tmp/signal-replay.jsonl
+
+build-signal-replay:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	@ln -sf build/compile_commands.json compile_commands.json
+	cmake --build build --target signal_replay --parallel
+
+signal-replay: build-signal-replay
+	./build/signal_replay \
+		--seed $(SIGNAL_REPLAY_SEED) \
+		--history "$(SIGNAL_REPLAY_HISTORY)" \
+		--horizon-ticks $(SIGNAL_REPLAY_HORIZON_TICKS) \
+		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
+		--out $(SIGNAL_REPLAY_OUT)
 
 assets:
 	./scripts/sync-assets.sh
@@ -169,7 +189,7 @@ test-serial: build-test
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/flight_trace.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/flight_trace.c tools/signal_replay.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \

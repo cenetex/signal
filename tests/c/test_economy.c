@@ -765,6 +765,17 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
+    bool found_buy = false;
+    for (int i = 0; i < w.events.count; i++) {
+        const sim_event_t *ev = &w.events.events[i];
+        if (ev->type == SIM_EVENT_BUY) {
+            found_buy = true;
+            ASSERT_EQ_INT(ev->buy.station, 0);
+            ASSERT_EQ_INT(ev->buy.commodity, COMMODITY_FERRITE_INGOT);
+            ASSERT_EQ_INT(ev->buy.quantity, 1);
+        }
+    }
+    ASSERT(found_buy);
     ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
                   prospect_ingots_before - 1);
@@ -772,7 +783,36 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token), kepler_start, 0.001f);
     float prospect_after_buy = ledger_balance(prospect, sp->session_token);
 
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+    bool found_hail = false;
+    for (int i = 0; i < w.events.count; i++) {
+        const sim_event_t *ev = &w.events.events[i];
+        if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
+            found_hail = true;
+            ASSERT_EQ_INT(ev->hail_response.station, 0);
+            ASSERT_EQ_FLOAT(ev->hail_response.credits,
+                            prospect_after_buy, 0.001f);
+        }
+    }
+    ASSERT(found_hail);
+
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+    ASSERT(!sp->docked);
+    ASSERT(!sp->in_dock_range);
+    ASSERT_EQ_INT(sp->nearby_station, -1);
+    for (int i = 0; i < 20; i++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT(!sp->docked);
+    }
+
+    sp->docked = true;
     sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
     sp->input.service_sell = true;
     sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
     int kepler_ingots_before = station_finished_count(kepler,
@@ -833,6 +873,18 @@ TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(&w, SIM_DT);
 
+    bool found_buy = false;
+    for (int i = 0; i < w.events.count; i++) {
+        const sim_event_t *ev = &w.events.events[i];
+        if (ev->type == SIM_EVENT_BUY) {
+            found_buy = true;
+            ASSERT_EQ_INT(ev->buy.station, 0);
+            ASSERT_EQ_INT(ev->buy.commodity, COMMODITY_FERRITE_INGOT);
+            ASSERT_EQ_INT(ev->buy.cost, (int)lroundf(expected_cost));
+            ASSERT_EQ_INT(ev->buy.quantity, 1);
+        }
+    }
+    ASSERT(found_buy);
     ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
     ASSERT_EQ_FLOAT(pubkey_before - ledger_balance_by_pubkey(prospect, sp->pubkey),
                     expected_cost, 0.01f);
