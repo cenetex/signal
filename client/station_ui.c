@@ -14,6 +14,8 @@
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
+static const uint8_t COL_TRACKED_JOB[3] = { 255, 222, 51 };
+
 /* ------------------------------------------------------------------ */
 /* Station lookup helpers                                              */
 /* ------------------------------------------------------------------ */
@@ -1094,6 +1096,94 @@ void trade_page_range(const trade_row_t *rows, int row_count,
                                page, out_first, out_last, out_total);
 }
 
+static const contract_t *tracked_contract_for_station_ui(contract_objective_t *objective)
+{
+    contract_objective_t local;
+    if (!objective) objective = &local;
+    if (!contract_objective_for_tracked(objective)) return NULL;
+    int ci = objective->contract_index;
+    if (ci < 0 || ci >= MAX_CONTRACTS) return NULL;
+    const contract_t *ct = &g.world.contracts[ci];
+    return ct->active ? ct : NULL;
+}
+
+static bool contract_accepts_trade_row(const contract_t *ct,
+                                       const trade_row_t *row)
+{
+    if (!ct || !row || !ct->active) return false;
+    if (ct->action != CONTRACT_TRACTOR) return false;
+    if (ct->commodity < COMMODITY_RAW_ORE_COUNT) return false;
+    if (ct->commodity != row->commodity) return false;
+    return (mining_grade_t)row->grade >= (mining_grade_t)ct->required_grade;
+}
+
+static bool trade_row_tracked_note(const station_t *st,
+                                   const trade_row_t *row,
+                                   char *out,
+                                   size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    contract_objective_t objective;
+    const contract_t *ct = tracked_contract_for_station_ui(&objective);
+    if (!contract_accepts_trade_row(ct, row)) return false;
+
+    int here_idx = station_index_of(st);
+    bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+
+    if (row->kind == 0) {
+        if (at_dest) return false;
+        if (row->block_reason == TRADE_BLOCK_NO_FUNDS) {
+            snprintf(out, out_size, "need local balance");
+            return true;
+        }
+        if (row->station_stock > 0) {
+            snprintf(out, out_size, "needed for tracked job");
+            return true;
+        }
+        return false;
+    }
+
+    if (row->held <= 0) return false;
+    if (at_dest) {
+        snprintf(out, out_size, "ready to deliver");
+        return true;
+    }
+    snprintf(out, out_size, "wrong station");
+    return true;
+}
+
+static bool job_row_tracked_note(int here_idx,
+                                 int contract_index,
+                                 bool fulfillable_here,
+                                 char *out,
+                                 size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (contract_index < 0 || contract_index >= MAX_CONTRACTS) return false;
+    const contract_t *ct = &g.world.contracts[contract_index];
+    if (!ct->active) return false;
+
+    bool tracked = g.tracked_contract == contract_index;
+    if (fulfillable_here) {
+        snprintf(out, out_size, "ready to deliver");
+        return true;
+    }
+    if (!tracked) return false;
+
+    if (ct->action == CONTRACT_TRACTOR &&
+        ct->commodity >= COMMODITY_RAW_ORE_COUNT &&
+        contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0 &&
+        here_idx != (int)ct->station_index) {
+        snprintf(out, out_size, "wrong station");
+        return true;
+    }
+
+    snprintf(out, out_size, "needed for tracked job");
+    return true;
+}
+
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -1306,6 +1396,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
          * receipt seal count where the client has those bytes locally. */
         char lineage_buf[112];
         lineage_buf[0] = '\0';
+        char job_note[64];
+        (void)trade_row_tracked_note(st, r, job_note, sizeof(job_note));
         if (r->has_inspect) {
             cargo_unit_t inspect = {0};
             inspect.kind = r->inspect_kind;
@@ -1361,6 +1453,16 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_lr(cx + 32.0f, my, inner_right,
                         info_rgb, status_buf, row_rgb, total_buf);
             my += row_h;
+            if (job_note[0]) {
+                char note_fit[64];
+                int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
+                ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
+                cell_t note[] = {
+                    {  4, note_fit, COL_TRACKED_JOB },
+                };
+                draw_row_cells(cx, my, note, 1);
+                my += row_h;
+            }
             /* Optional third line — lineage flavor. Drawn dim so it
              * reads as background context, not actionable state. */
             if (lineage_buf[0]) {
@@ -1386,6 +1488,16 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_cells(cx, my, row, 4);
             draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, total_buf);
             my += row_h;
+            if (job_note[0]) {
+                char note_fit[64];
+                int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
+                ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
+                cell_t note[] = {
+                    {  4, note_fit, COL_TRACKED_JOB },
+                };
+                draw_row_cells(cx, my, note, 1);
+                my += row_h;
+            }
             /* Wide mode also gets a lineage line beneath the row.
              * Same dim styling, indented under the commodity label. */
             if (lineage_buf[0]) {
@@ -1803,6 +1915,16 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             };
             draw_row_cells(cx, my, bot, 1);
             my += row_h;
+            char job_note[64];
+            if (job_row_tracked_note(here_idx, slots[s],
+                                     slot_fulfillable[s],
+                                     job_note, sizeof(job_note))) {
+                cell_t note[] = {
+                    { 14, job_note, COL_TRACKED_JOB },
+                };
+                draw_row_cells(cx, my, note, 1);
+                my += row_h;
+            }
             /* Group separator between multi-line rows. Without it the
              * pay line of row N hugs the key line of row N+1 visually
              * because they share the same row_h spacing. */
@@ -1816,6 +1938,19 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             };
             draw_row_cells(cx, my, row, 4);
             my += row_h;
+            char job_note[64];
+            if (job_row_tracked_note(here_idx, slots[s],
+                                     slot_fulfillable[s],
+                                     job_note, sizeof(job_note))) {
+                char note_fit[64];
+                int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
+                ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
+                cell_t note[] = {
+                    {  4, note_fit, COL_TRACKED_JOB },
+                };
+                draw_row_cells(cx, my, note, 1);
+                my += row_h;
+            }
         }
     }
 }
