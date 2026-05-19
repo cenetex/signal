@@ -8,6 +8,7 @@
 #include "manifest.h"
 #include "onboarding.h"
 #include "episode.h"
+#include "contract_objective.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -976,8 +977,9 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
     /* Track station work when the hail response names a real board contract.
      * Hail itself is scan/contact; the server no longer mints ad hoc
      * nearest-rock fracture jobs just to have something to point at. */
-    if (contract_index >= 0 && contract_index < MAX_CONTRACTS)
-        g.tracked_contract = contract_index;
+    char step[192];
+    if (contract_objective_track_contract(contract_index, step, sizeof(step)))
+        set_notice("Tracking: %s", step);
     onboarding_mark_hailed();
 }
 

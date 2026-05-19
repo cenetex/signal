@@ -16,6 +16,7 @@
 #include "mining_client.h"
 #include "base58.h"
 #include "manifest.h"
+#include "contract_objective.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -789,6 +790,11 @@ static void sim_on_hail_response(const sim_event_t *ev) {
                    (int)lroundf(shown_credits), unit);
     } else {
         set_notice("%s: %s", g.hail_station, g.hail_message);
+    }
+    char step[192];
+    if (contract_objective_track_contract(ev->hail_response.contract_index,
+                                          step, sizeof(step))) {
+        set_notice("Tracking: %s", step);
     }
     onboarding_mark_hailed();
 

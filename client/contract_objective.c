@@ -512,6 +512,30 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
     return contract_objective_for_contract(best, out);
 }
 
+bool contract_objective_track_contract(int contract_index,
+                                       char *message,
+                                       size_t message_size) {
+    if (message && message_size > 0) message[0] = '\0';
+    if (contract_index < 0 || contract_index >= MAX_CONTRACTS) return false;
+
+    /* A hail response is authoritative station contact. Let the newly named
+     * contract resolve immediately, before the next known-contract mask lands. */
+    if (contract_index < 32)
+        g.player_known_contract_mask |= (1u << contract_index);
+
+    contract_objective_t objective;
+    if (!contract_objective_for_contract(contract_index, &objective))
+        return false;
+
+    g.tracked_contract = contract_index;
+    if (message && message_size > 0) {
+        const char *text = objective.body[0] ? objective.body : objective.message;
+        if (text && text[0])
+            snprintf(message, message_size, "%s", text);
+    }
+    return true;
+}
+
 bool contract_objective_ready_upgrade(contract_objective_t *out) {
     objective_reset(out);
     if (!out || !LOCAL_PLAYER.docked) return false;

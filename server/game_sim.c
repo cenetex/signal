@@ -2903,8 +2903,20 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int 
         }
     }
 
-    if (best_contract >= 0 && w->contracts[best_contract].claimed_by < 0)
-        w->contracts[best_contract].claimed_by = (int8_t)sp->id;
+    if (best_contract >= 0) {
+        contract_t *ct = &w->contracts[best_contract];
+        if (ct->claimed_by < 0)
+            ct->claimed_by = (int8_t)sp->id;
+        contract_summary_t summary = contract_summary_make(ct);
+        contract_pool_insert(sp->ship.known_contracts,
+                             &sp->ship.known_contract_count,
+                             SHIP_KNOWN_CONTRACT_CAP,
+                             &summary);
+        knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+        knowledge_item_t item;
+        if (knowledge_item_from_contract_summary(&summary, &item))
+            knowledge_view_insert(&sp->ship.knowledge, &item);
+    }
     return best_contract;
 }
 

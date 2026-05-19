@@ -9,6 +9,7 @@
 #define CONTRACT_OBJECTIVE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include "types.h"
 
 typedef enum {
@@ -54,5 +55,8 @@ bool contract_objective_for_contract(int contract_index,
 bool contract_objective_for_tracked(contract_objective_t *out);
 bool contract_objective_for_recommended(contract_objective_t *out);
 bool contract_objective_ready_upgrade(contract_objective_t *out);
+bool contract_objective_track_contract(int contract_index,
+                                       char *message,
+                                       size_t message_size);
 
 #endif /* CONTRACT_OBJECTIVE_H */

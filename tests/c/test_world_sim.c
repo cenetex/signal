@@ -130,6 +130,9 @@ TEST(test_hail_claims_existing_station_work) {
     ASSERT_EQ_INT(ev->hail_response.station, 2);
     ASSERT_EQ_INT(ev->hail_response.contract_index, 0);
     ASSERT_EQ_INT(w.contracts[0].claimed_by, 0);
+    ASSERT_EQ_INT(sp->ship.known_contract_count, 1);
+    ASSERT_EQ_INT(sp->ship.known_contracts[0].station_index, 2);
+    ASSERT_EQ_INT(sp->ship.known_contracts[0].commodity, COMMODITY_FRAME);
 }
 
 TEST(test_hail_responds_to_station_signal_outside_ship_comm_range) {
