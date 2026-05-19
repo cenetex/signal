@@ -513,6 +513,19 @@ static void ws_send_if_changed(struct mg_connection *c,
     cache->hash = hash;
 }
 
+static void invalidate_player_authoritative_caches(server_player_t *sp) {
+    if (!sp) return;
+    sp->player_ship_cache.valid = false;
+    sp->hold_ingots_cache.valid = false;
+    sp->player_manifest_cache.valid = false;
+    sp->inspect_snapshot_cache.valid = false;
+    sp->known_contracts_cache.valid = false;
+}
+
+static void force_player_authoritative_resync(server_player_t *sp) {
+    if (sp) sp->force_authoritative_resync = true;
+}
+
 static void send_action_ack(struct mg_connection *c, uint16_t action_id,
                             uint16_t input_seq, uint8_t status,
                             uint8_t action) {
@@ -654,6 +667,7 @@ static void send_pending_action_results(const sim_events_t *events) {
         server_player_t *sp = &world.players[i];
         if (!sp->pending_action_result_valid) continue;
         uint8_t status = pending_action_result_status(sp, events);
+        force_player_authoritative_resync(sp);
         if (sp->connected && sp->conn) {
             send_action_result(sp->conn,
                                sp->pending_action_result_id,
@@ -782,6 +796,13 @@ static void broadcast_fracture_updates(void) {
 static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
 #define WS_RATE_WINDOW_MS 1000
 #define WS_RATE_LIMIT 140 /* 60Hz input + signed/plan bursts without drops */
+
+static uint16_t signed_action_payload_id(const uint8_t *payload,
+                                         uint16_t payload_len,
+                                         uint16_t fixed_len) {
+    if (!payload || payload_len < (uint16_t)(fixed_len + 2u)) return 0;
+    return read_u16_le(&payload[fixed_len]);
+}
 
 static void apply_signed_input_action(int pid, const uint8_t *payload,
                                       uint16_t payload_len) {
@@ -1104,6 +1125,13 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         if (c) {
             if (ack_status != 0) {
                 send_action_ack(c, action_id, input_seq, ack_status, data[2]);
+                if (ack_status == NET_ACTION_ACK_REJECTED &&
+                    action_id != 0 && data[2] != NET_ACTION_NONE) {
+                    force_player_authoritative_resync(sp);
+                    send_action_result(c, action_id, input_seq,
+                                       NET_ACTION_RESULT_REJECTED,
+                                       data[2], world.tick);
+                }
             } else if (input_seq != 0) {
                 send_action_ack(c, 0, input_seq, NET_ACTION_ACK_RECEIVED,
                                 NET_ACTION_NONE);
@@ -1442,6 +1470,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (payload_len >= 2) {
                 uint8_t commodity = payload[0];
                 uint8_t grade     = payload[1];
+                uint16_t action_id = signed_action_payload_id(payload,
+                                                              payload_len, 2);
+                uint8_t action = (commodity < COMMODITY_COUNT)
+                    ? (uint8_t)(NET_ACTION_BUY_PRODUCT + commodity)
+                    : NET_ACTION_BUY_PRODUCT;
+                begin_pending_action_result(sp, action_id, 0, action);
                 if (commodity < COMMODITY_COUNT) {
                     sp->input.buy_product = true;
                     sp->input.buy_commodity = (commodity_t)commodity;
@@ -1455,7 +1489,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         case SIGNED_ACTION_BUY_INGOT:
             /* Payload: [pubkey:32]. Mirrors the legacy NET_MSG_BUY_INGOT
              * transfer path for identity-backed clients. */
-            if (payload_len >= 32 && sp->docked) {
+            if (payload_len >= 32) {
+                uint16_t action_id = signed_action_payload_id(payload,
+                                                              payload_len, 32);
+                begin_pending_action_result(sp, action_id, 0,
+                                            NET_ACTION_BUY_INGOT);
+                if (!sp->docked) break;
                 int sidx = sp->current_station;
                 if (sidx >= 0 && sidx < MAX_STATIONS) {
                     station_t *st = &world.stations[sidx];
@@ -1528,6 +1567,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (payload_len >= 2) {
                 uint8_t commodity = payload[0];
                 uint8_t grade     = payload[1];
+                uint16_t action_id = signed_action_payload_id(payload,
+                                                              payload_len, 2);
+                uint8_t action = (commodity < COMMODITY_COUNT)
+                    ? (uint8_t)(NET_ACTION_DELIVER_COMMODITY + commodity)
+                    : NET_ACTION_SELL_CARGO;
+                begin_pending_action_result(sp, action_id, 0, action);
                 sp->input.service_sell = true;
                 sp->input.service_sell_only =
                     (commodity < COMMODITY_COUNT)
@@ -1543,6 +1588,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             break;
         case SIGNED_ACTION_PLACE_OUTPOST:
             if (payload_len >= 3) {
+                uint16_t action_id = signed_action_payload_id(payload,
+                                                              payload_len, 3);
+                begin_pending_action_result(sp, action_id, 0,
+                                            NET_ACTION_PLACE_OUTPOST);
                 sp->input.place_outpost = true;
                 sp->input.place_target_station = (int8_t)payload[0];
                 sp->input.place_target_ring    = (int8_t)payload[1];
@@ -1566,6 +1615,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             break;
         case SIGNED_ACTION_DELIVER:
             if (payload_len >= 1) {
+                uint16_t action_id = signed_action_payload_id(payload,
+                                                              payload_len, 1);
+                begin_pending_action_result(sp, action_id, 0,
+                                            NET_ACTION_SELL_CARGO);
                 handle_deliver_ingot_index(c, pid, payload[0]);
             }
             break;
@@ -3397,6 +3450,8 @@ static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
         if (!sp->connected || !sp->session_ready || !sp->conn) continue;
+        if (sp->force_authoritative_resync)
+            invalidate_player_authoritative_caches(sp);
         uint8_t buf[PLAYER_SHIP_SIZE + 4]; /* +4 headroom */
         int len = send_player_ship(buf, (uint8_t)i, sp);
         /* Full ship state sent only to the owning player. */
@@ -3432,6 +3487,7 @@ static void broadcast_ship_states(void) {
         int klen = serialize_player_known_contracts(kbuf, world.contracts,
                                                     &sp->ship);
         ws_send_if_changed(sp->conn, &sp->known_contracts_cache, kbuf, (size_t)klen);
+        sp->force_authoritative_resync = false;
     }
 
     if (station_econ_dirty) {

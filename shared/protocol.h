@@ -332,13 +332,19 @@ enum {
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    SIGNED_ACTION_BUY_PRODUCT     = 1, /* payload: [commodity:1][grade:1] */
-    SIGNED_ACTION_BUY_INGOT       = 2, /* payload: [pubkey:32]            */
+    SIGNED_ACTION_BUY_PRODUCT     = 1, /* payload: [commodity:1][grade:1]
+                                        *          [action_id:u16 optional] */
+    SIGNED_ACTION_BUY_INGOT       = 2, /* payload: [pubkey:32]
+                                        *          [action_id:u16 optional] */
     SIGNED_ACTION_SELL_CARGO      = 3, /* payload: [commodity:1][grade:1]
                                         *   commodity=COMMODITY_COUNT, grade=MINING_GRADE_COUNT
-                                        *   means "sell all" (legacy bulk). */
-    SIGNED_ACTION_DELIVER         = 4, /* payload: [hold_index:1] (matches NET_MSG_DELIVER_INGOT) */
-    SIGNED_ACTION_PLACE_OUTPOST   = 5, /* payload: [station:1][ring:1][slot:1] */
+                                        *   means "sell all" (legacy bulk),
+                                        *   then [action_id:u16 optional]. */
+    SIGNED_ACTION_DELIVER         = 4, /* payload: [hold_index:1]
+                                        *          [action_id:u16 optional]
+                                        * matches NET_MSG_DELIVER_INGOT. */
+    SIGNED_ACTION_PLACE_OUTPOST   = 5, /* payload: [station:1][ring:1][slot:1]
+                                        *          [action_id:u16 optional] */
     SIGNED_ACTION_FRACTURE_CLAIM  = 6, /* payload: [fracture_id:4][burst_nonce:4][grade:1] */
     SIGNED_ACTION_CLAIM_CONTRACT  = 7, /* payload: [contract_id:1] */
     SIGNED_ACTION_CANCEL_CONTRACT = 8, /* payload: [contract_id:1] */
@@ -537,6 +543,7 @@ enum {
     NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
     NET_ACTION_RELEASE_TOW    = 27,  /* tap R: release towed fragments (no longer toggles) */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
+    NET_ACTION_BUY_INGOT      = 29,  /* direct named-ingot purchase; result/telemetry only */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
     NET_ACTION_PLACE_MODULE   = 49, /* DEPRECATED #259 — legacy placement, no-op on server (range sentinel) */
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */

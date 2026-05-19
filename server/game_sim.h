@@ -248,6 +248,10 @@ typedef struct {
     net_payload_cache_t player_manifest_cache;
     net_payload_cache_t inspect_snapshot_cache;
     net_payload_cache_t known_contracts_cache;
+    /* Set when an action result is sent. The next player payload broadcast
+     * bypasses hash suppression so rejected/no-op actions also reconcile
+     * any optimistic client state. */
+    bool force_authoritative_resync;
     movement_input_cmd_t movement_queue[PLAYER_MOVEMENT_QUEUE_CAP];
     uint8_t movement_queue_count;
     /* Last movement/control input sequence accepted from this client. Mirrored

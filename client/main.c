@@ -2063,12 +2063,12 @@ static void net_action_queue_update(float dt) {
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action) {
     (void)input_seq;
-    (void)status;
-    (void)action;
     /* ACTION_ACK is an immediate transport/dedupe receipt. Authoritative
      * input age is measured from WORLD_PLAYERS input_seq_ack instead. */
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
+    if (status == NET_ACTION_ACK_REJECTED && action != NET_ACTION_NONE)
+        g.action_predict_timer = 0.0f;
 }
 
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
