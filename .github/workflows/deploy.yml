@@ -285,7 +285,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: mymindstorm/setup-emsdk@v16
         with:
           version: 4.0.8
 
