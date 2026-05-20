@@ -2392,7 +2392,8 @@ static void append_callsign_json(char *buf, int *pos, int bufsz,
     char cs[9];
     memcpy(cs, callsign, 8);
     cs[8] = '\0';
-    for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+    for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--)
+        cs[k] = '\0';
     json_escape_append(buf, pos, bufsz, cs);
 }
 
@@ -2434,7 +2435,8 @@ static void reply_bot_trace_weights(struct mg_connection *c) {
         char cs[9];
         memcpy(cs, sp->callsign, 8);
         cs[8] = '\0';
-        for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+        for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--)
+            cs[k] = '\0';
 
         int rank = highscore_find_rank(&highscores, cs);
         float highscore_credits = rank >= 0 ? highscores.entries[rank].credits_earned : 0.0f;

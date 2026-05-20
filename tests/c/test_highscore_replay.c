@@ -276,6 +276,32 @@ TEST(test_killer_callsign_resolved) {
     hs_test_teardown();
 }
 
+TEST(test_highscore_trace_weight_prefers_better_runs) {
+    highscore_table_t t = {0};
+    ASSERT_EQ_FLOAT(highscore_trace_weight_floor(), 0.25f, 0.001f);
+    ASSERT_EQ_FLOAT(highscore_trace_weight_ceiling(), 2.0f, 0.001f);
+    ASSERT_EQ_FLOAT(highscore_trace_weight_for_callsign(&t, "BOT001"),
+                    highscore_trace_weight_floor(), 0.001f);
+
+    ASSERT(highscore_submit(&t, "BOT001", 100.0f,
+                            1u, 1u, 0u, 10u, NULL));
+    ASSERT(highscore_submit(&t, "BOT002", 25.0f,
+                            1u, 1u, 0u, 20u, NULL));
+
+    ASSERT_EQ_FLOAT(highscore_trace_reference_score(&t), 100.0f, 0.001f);
+    ASSERT_EQ_INT(highscore_find_rank(&t, "BOT001"), 0);
+    ASSERT_EQ_INT(highscore_find_rank(&t, "BOT002"), 1);
+    ASSERT_EQ_INT(highscore_find_rank(&t, "BOT999"), -1);
+
+    float top = highscore_trace_weight_for_callsign(&t, "BOT001");
+    float second = highscore_trace_weight_for_callsign(&t, "BOT002");
+    float unknown = highscore_trace_weight_for_callsign(&t, "BOT999");
+    ASSERT(top > second);
+    ASSERT(second > unknown);
+    ASSERT_EQ_FLOAT(top, highscore_trace_weight_ceiling(), 0.001f);
+    ASSERT_EQ_FLOAT(unknown, highscore_trace_weight_floor(), 0.001f);
+}
+
 TEST(test_build_info_tagged) {
     hs_test_setup("build_info");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -461,6 +487,7 @@ void register_highscore_replay_tests(void) {
     RUN(test_highscore_replay_from_chain);
     RUN(test_highscores_survive_world_reset);
     RUN(test_killer_callsign_resolved);
+    RUN(test_highscore_trace_weight_prefers_better_runs);
     RUN(test_killer_resolved_at_emit);
     RUN(test_most_recent_world_wins);
     RUN(test_world_seed_persists_across_restart);
