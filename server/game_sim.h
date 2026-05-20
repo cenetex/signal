@@ -179,6 +179,11 @@ typedef struct {
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
 
+enum {
+    SERVER_BRAIN_MODE_NONE = 0,
+    SERVER_BRAIN_MODE_NEURAL_FLIGHT = 1,
+};
+
 /* input_intent_t lives in shared/types.h since slice 2 of #294 — both
  * server_player_t and npc_ship_t carry one and feed the same
  * step_player / sim_ship pipeline. */
@@ -237,10 +242,13 @@ typedef struct {
     bool actual_thrusting;      /* true if the ship thrusted this tick (survives input restore) */
     uint8_t autopilot_mode;
     int autopilot_target;       /* asteroid idx or -1 */
+    int autopilot_station_target; /* logistics destination station or -1 */
+    commodity_t autopilot_cargo;  /* logistics commodity, COMMODITY_COUNT when idle */
     int autopilot_state;        /* internal state machine cursor */
     float autopilot_timer;
     vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
     float autopilot_stuck_timer;/* seconds since meaningful movement */
+    uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
     net_payload_cache_t player_ship_cache;

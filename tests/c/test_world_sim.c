@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "signal_contract_brain.h"
 #include "sim_mining.h"
 #include "sim_ship.h"
 
@@ -2025,6 +2026,109 @@ static bool test_station_smelt_endpoint_for_ore(const station_t *st,
     return found;
 }
 
+static void test_prepare_autopilot_player(world_t *w, server_player_t *sp) {
+    memset(sp, 0, sizeof(*sp));
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    uint8_t token[8] = {0xB0, 0x7A, 0x51, 0x9A, 0x01, 0x02, 0x03, 0x04};
+    memcpy(sp->session_token, token, sizeof(token));
+    player_init_ship(sp, w);
+    memcpy(sp->session_token, token, sizeof(token));
+    sp->autopilot_mode = 1;
+    sp->autopilot_target = -1;
+    sp->autopilot_last_pos = sp->ship.pos;
+    sp->autopilot_stuck_timer = 0.0f;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+}
+
+static int test_attach_towed_fragment(world_t *w,
+                                      server_player_t *sp,
+                                      commodity_t ore,
+                                      vec2 pos) {
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) {
+            frag = i;
+            break;
+        }
+    }
+    if (frag < 0) return -1;
+    asteroid_t *a = &w->asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = ore;
+    a->radius = 12.0f;
+    a->ore = 1.0f;
+    a->max_ore = 1.0f;
+    a->pos = pos;
+    a->last_towed_by = (int8_t)sp->id;
+    memcpy(a->last_towed_token, sp->session_token, sizeof(a->last_towed_token));
+    sp->ship.towed_fragments[0] = (int16_t)frag;
+    sp->ship.towed_count = 1;
+    return frag;
+}
+
+TEST(test_autopilot_routes_towed_fragment_to_smelt_even_near_station) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    station_t *prospect = &w.stations[0];
+    vec2 smelt_target = prospect->pos;
+    ASSERT(test_station_smelt_endpoint_for_ore(prospect, COMMODITY_FERRITE_ORE,
+                                               &smelt_target));
+
+    server_player_t *sp = &w.players[0];
+    test_prepare_autopilot_player(&w, sp);
+    sp->docked = false;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->ship.pos = v2_add(prospect->pos, v2(80.0f, 0.0f));
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+    ASSERT(test_attach_towed_fragment(&w, sp, COMMODITY_FERRITE_ORE,
+                                      v2_add(sp->ship.pos, v2(35.0f, 0.0f))) >= 0);
+
+    step_autopilot(&w, sp, SIM_DT);
+
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_RETURN_TO_REFINERY);
+
+    step_autopilot(&w, sp, SIM_DT);
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_RETURN_TO_REFINERY);
+    ASSERT(sp->input.tractor_hold);
+}
+
+TEST(test_autopilot_smelt_delivery_preempts_repair_dock) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    station_t *prospect = &w.stations[0];
+    vec2 smelt_target = prospect->pos;
+    ASSERT(test_station_smelt_endpoint_for_ore(prospect, COMMODITY_FERRITE_ORE,
+                                               &smelt_target));
+
+    server_player_t *sp = &w.players[0];
+    test_prepare_autopilot_player(&w, sp);
+    sp->docked = false;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->ship.pos = smelt_target;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.hull = ship_max_hull(&sp->ship) * 0.45f;
+    sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+    ASSERT(test_attach_towed_fragment(&w, sp, COMMODITY_FERRITE_ORE,
+                                      v2_add(smelt_target, v2(35.0f, 0.0f))) >= 0);
+
+    step_autopilot(&w, sp, SIM_DT);
+
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_RETURN_TO_REFINERY);
+    ASSERT(sp->input.tractor_hold);
+    ASSERT(!sp->input.interact);
+}
+
 TEST(test_fragment_smelt_vents_overflow_instead_of_stranding) {
     WORLD_DECL;
     world_reset(&w);
@@ -2117,6 +2221,97 @@ TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
                   initial_count);
     ASSERT_EQ_FLOAT(prospect->_inventory_cache[COMMODITY_FERRITE_INGOT],
                     MAX_PRODUCT_STOCK, 0.001f);
+}
+
+TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    station_t *prospect = &w.stations[0];
+    station_t *kepler = &w.stations[1];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 4));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FERRITE_INGOT, 0));
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 25.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    uint8_t token[8] = {0xB0, 0x7A, 0xC0, 0x01, 0x02, 0x03, 0x04, 0x05};
+    memcpy(sp->session_token, token, sizeof(token));
+    player_init_ship(sp, &w);
+    memcpy(sp->session_token, token, sizeof(token));
+    ledger_earn(prospect, sp->session_token, 100.0f);
+
+    sp->server_brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    sp->autopilot_mode = 1;
+    sp->autopilot_state = AUTOPILOT_STEP_SELL;
+    sp->autopilot_target = -1;
+    sp->autopilot_timer = 1.0f;
+    sp->autopilot_last_pos = sp->ship.pos;
+    sp->autopilot_stuck_timer = 0.0f;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    anchor_ship_in_station(sp, &w);
+
+    uint64_t contract_decisions_before = signal_contract_brain_decision_count();
+    uint64_t contract_teacher_before = signal_contract_brain_teacher_decision_count();
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(signal_contract_brain_decision_count() > contract_decisions_before);
+    ASSERT(signal_contract_brain_teacher_decision_count() > contract_teacher_before);
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_BUY);
+    ASSERT_EQ_INT(sp->autopilot_station_target, 1);
+    ASSERT_EQ_INT(sp->autopilot_cargo, COMMODITY_FERRITE_INGOT);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 3);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_TRAVEL);
+    ASSERT_EQ_INT(sp->autopilot_station_target, 1);
+
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+    sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;
+    sp->autopilot_timer = 0.0f;
+    anchor_ship_in_station(sp, &w);
+
+    int kepler_before = station_finished_count(kepler, COMMODITY_FERRITE_INGOT);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FERRITE_INGOT),
+                  kepler_before + 1);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.001f);
+
+    bool sold_at_kepler = false;
+    for (int i = 0; i < w.events.count; i++) {
+        if (w.events.events[i].type == SIM_EVENT_SELL &&
+            w.events.events[i].sell.station == 1 &&
+            w.events.events[i].sell.by_contract) {
+            sold_at_kepler = true;
+            break;
+        }
+    }
+    ASSERT(sold_at_kepler);
 }
 
 TEST(test_miner_routes_crystal_to_crystal_smelt_endpoint) {
@@ -2927,6 +3122,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_refinery_deposits_named_ingot);
     RUN(test_furnace_smelting_accepts_beam_corridor_delivery);
     RUN(test_crystal_requires_two_distinct_furnace_passes);
+    RUN(test_neural_bot_contract_logistics_buys_and_delivers_ingot);
     RUN(test_station_production_dual_writes_frame_manifest);
     RUN(test_station_production_dual_writes_laser_manifest);
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
@@ -2954,6 +3150,8 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_hauler_distress_requires_sustained_stall);
     RUN(test_miner_enters_station_before_smelt_delivery);
     RUN(test_kepler_frame_hauler_reaches_helios_dock);
+    RUN(test_autopilot_routes_towed_fragment_to_smelt_even_near_station);
+    RUN(test_autopilot_smelt_delivery_preempts_repair_dock);
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);

@@ -9,7 +9,11 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_model.h"
+#include "signal_contract_brain.h"
+#include "commodity.h"
 #include "manifest.h"
+#include "ship.h"
+#include "station_util.h"
 
 /* ================================================================== */
 /* Player autopilot — server-side AI driving the player's own ship    */
@@ -158,9 +162,22 @@ static bool autopilot_clear_mining_approach(const world_t *w, const server_playe
     return nav_segment_clear(w, sp->ship.pos, approach, hull->ship_radius + 30.0f);
 }
 
+static bool autopilot_station_prefers_asteroid(const world_t *w,
+                                               const server_player_t *sp,
+                                               const asteroid_t *a) {
+    if (!w || !sp || !a) return false;
+    int s = sp->current_station;
+    if (s < 0 || s >= MAX_STATIONS) return false;
+    const station_t *st = &w->stations[s];
+    if (!station_is_active(st)) return false;
+    if (!station_has_module(st, MODULE_DOCK)) return false;
+    return station_can_smelt_ore_for_autopilot(st, a->commodity);
+}
+
 /* Pick the most autopilot-friendly mining target.
  *
  * Priority order:
+ *   0. Nearest mineable rock that the player's current/home station can smelt
  *   1. Nearest mineable rock with a clear direct approach
  *   2. Nearest mineable rock even if the final approach is cluttered
  * Fragments are NOT targeted — the tractor auto-collects nearby ones
@@ -174,6 +191,21 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
      * auto-collects nearby fragments during flight. Targeting fragments
      * caused the ship to orbit them endlessly near stations when the
      * tractor couldn't grab them (chase → timeout → re-target loop). */
+
+    /* Pass 0: when launched from a station with matching smelters, prefer
+     * ore that can come back to that station. This keeps bot traffic from
+     * collapsing into the ferrite-only refinery when other stations can
+     * process higher-tier ores. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (!autopilot_station_prefers_asteroid(w, sp, a)) continue;
+        if (signal_strength_at(w, a->pos) < 0.5f) continue;
+        if (!autopilot_clear_mining_approach(w, sp, a)) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
 
     /* Pass 1: nearest mineable rock with a clear final approach. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -205,16 +237,6 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
  * The autopilot's mining loop is bounded by THIS, not by cargo capacity:
  * mined fragments live in the tow chain, not ship.cargo, and only
  * become credits when smelted at a station's furnace. */
-/* True if the ship is near enough to any station that towed fragments
- * will auto-release and get smelted. Don't bail to RETURN in this case. */
-static bool near_station_hopper(const world_t *w, vec2 pos) {
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!station_is_active(&w->stations[i])) continue;
-        if (v2_dist_sq(pos, w->stations[i].pos) < 700.0f * 700.0f) return true;
-    }
-    return false;
-}
-
 /* True if the ship is damaged enough that the autopilot should bail
  * out of mining and return for repair. Also returns true any time
  * we've ALREADY started returning (so the threshold doesn't oscillate
@@ -231,6 +253,259 @@ static bool autopilot_hull_full(const ship_t *s) {
     return s->hull >= max - 0.5f;
 }
 
+static bool autopilot_logistics_enabled(const server_player_t *sp) {
+    return sp && sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+}
+
+static void autopilot_clear_logistics(server_player_t *sp) {
+    sp->autopilot_station_target = -1;
+    sp->autopilot_cargo = COMMODITY_COUNT;
+}
+
+static bool autopilot_valid_dock_station(const world_t *w, int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *st = &w->stations[station_idx];
+    return station_is_active(st) && station_has_module(st, MODULE_DOCK);
+}
+
+static bool autopilot_finished_good(commodity_t c) {
+    return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
+}
+
+static bool autopilot_ship_has_finished(const server_player_t *sp, commodity_t c) {
+    return sp && autopilot_finished_good(c) &&
+           ship_finished_count(&sp->ship, c) > 0;
+}
+
+static bool autopilot_first_ship_finished(const server_player_t *sp,
+                                          commodity_t *out) {
+    if (!sp) return false;
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+        commodity_t c = (commodity_t)i;
+        if (ship_finished_count(&sp->ship, c) > 0) {
+            if (out) *out = c;
+            return true;
+        }
+    }
+    return false;
+}
+
+static float autopilot_ledger_balance(const station_t *st,
+                                      const server_player_t *sp) {
+    if (!st || !sp) return 0.0f;
+    return server_player_can_use_pubkey_persistence(sp)
+        ? ledger_balance_by_pubkey(st, sp->pubkey)
+        : ledger_balance(st, sp->session_token);
+}
+
+static float autopilot_hull_ratio(const ship_t *s) {
+    float max = ship_max_hull(s);
+    if (max <= 0.0f) return 1.0f;
+    float ratio = s->hull / max;
+    if (ratio < 0.0f) return 0.0f;
+    if (ratio > 1.0f) return 1.0f;
+    return ratio;
+}
+
+static bool autopilot_has_delivery_demand(const world_t *w,
+                                          int station_idx,
+                                          commodity_t c) {
+    if (!autopilot_valid_dock_station(w, station_idx) ||
+        !autopilot_finished_good(c)) {
+        return false;
+    }
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index != station_idx) continue;
+        if (ct->commodity != c) continue;
+        if (ct->quantity_needed <= 0.01f) continue;
+        return true;
+    }
+    return station_consumes(&w->stations[station_idx], c);
+}
+
+static float autopilot_contract_score(const world_t *w,
+                                      const server_player_t *sp,
+                                      const contract_t *ct) {
+    if (!w || !sp || !ct) return -1.0f;
+    if (!ct->active || ct->action != CONTRACT_TRACTOR) return -1.0f;
+    if (!autopilot_finished_good(ct->commodity)) return -1.0f;
+    if (!autopilot_valid_dock_station(w, ct->station_index)) return -1.0f;
+    if (ct->quantity_needed <= 0.01f) return -1.0f;
+    float dist = sqrtf(v2_dist_sq(sp->ship.pos,
+                                  w->stations[ct->station_index].pos));
+    return contract_price(ct) / fmaxf(1.0f, dist / 1000.0f);
+}
+
+static bool autopilot_source_can_sell_to_bot(const world_t *w,
+                                             const server_player_t *sp,
+                                             int source_station,
+                                             commodity_t c) {
+    if (!autopilot_valid_dock_station(w, source_station) ||
+        !autopilot_finished_good(c)) {
+        return false;
+    }
+    const station_t *src = &w->stations[source_station];
+    if (!station_produces(src, c)) return false;
+    if (station_finished_count(src, c) <= 0) return false;
+    float free_volume = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
+    if (free_volume + 0.0001f < commodity_volume(c)) return false;
+    float price = station_sell_price(src, c);
+    if (price <= 0.01f) return false;
+    return autopilot_ledger_balance(src, sp) + 0.01f >= price;
+}
+
+static void autopilot_make_contract_candidate(
+    const world_t *w,
+    const server_player_t *sp,
+    signal_contract_action_t action,
+    int source_station,
+    int dest_station,
+    commodity_t cargo,
+    const contract_t *ct,
+    float teacher_score,
+    signal_contract_candidate_t *out) {
+    memset(out, 0, sizeof(*out));
+    const station_t *src = (source_station >= 0 && source_station < MAX_STATIONS)
+        ? &w->stations[source_station]
+        : NULL;
+    const station_t *dst = (dest_station >= 0 && dest_station < MAX_STATIONS)
+        ? &w->stations[dest_station]
+        : NULL;
+    out->action = action;
+    out->source_station = source_station;
+    out->dest_station = dest_station;
+    out->commodity = cargo;
+    out->quantity_needed = ct ? ct->quantity_needed : 0.0f;
+    out->contract_price = ct ? contract_price(ct) : (dst ? station_buy_price(dst, cargo) : 0.0f);
+    out->source_price = src ? station_sell_price(src, cargo) : 0.0f;
+    out->source_stock = src ? (float)station_finished_count(src, cargo) : 0.0f;
+    out->dest_stock = dst ? (float)station_finished_count(dst, cargo) : 0.0f;
+    out->ledger_balance = src ? autopilot_ledger_balance(src, sp) : 0.0f;
+    out->free_cargo = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
+    out->distance = (dst && source_station != dest_station)
+        ? sqrtf(v2_dist_sq(sp->ship.pos, dst->pos))
+        : 0.0f;
+    out->age = ct ? ct->age : 0.0f;
+    out->hull_ratio = autopilot_hull_ratio(&sp->ship);
+    out->teacher_score = teacher_score;
+}
+
+static int autopilot_append_contract_candidates(
+    const world_t *w,
+    const server_player_t *sp,
+    int source_station,
+    signal_contract_candidate_t *candidates,
+    int cap) {
+    if (!autopilot_logistics_enabled(sp) ||
+        !autopilot_valid_dock_station(w, source_station) ||
+        sp->ship.towed_count > 0 ||
+        cap <= 0) {
+        return 0;
+    }
+
+    int count = 0;
+    commodity_t held = COMMODITY_COUNT;
+    if (autopilot_first_ship_finished(sp, &held) &&
+        autopilot_has_delivery_demand(w, source_station, held)) {
+        const contract_t *best_ct = NULL;
+        float best_price = 0.0f;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            const contract_t *ct = &w->contracts[k];
+            if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+            if (ct->station_index != source_station || ct->commodity != held) continue;
+            if (ct->quantity_needed <= 0.01f) continue;
+            float price = contract_price(ct);
+            if (!best_ct || price > best_price) {
+                best_ct = ct;
+                best_price = price;
+            }
+        }
+        autopilot_make_contract_candidate(
+            w, sp, SIGNAL_CONTRACT_ACTION_DELIVER_LOCAL,
+            source_station, source_station, held, best_ct,
+            10000.0f + best_price,
+            &candidates[count++]);
+    }
+
+    const station_t *src = &w->stations[source_station];
+    for (int k = 0; k < MAX_CONTRACTS && count < cap; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index == source_station) continue;
+        if (!autopilot_finished_good(ct->commodity)) continue;
+        if (!station_produces(src, ct->commodity)) continue;
+
+        float score = autopilot_contract_score(w, sp, ct);
+        if (score < 0.0f) continue;
+        if (station_finished_count(src, ct->commodity) > 0) {
+            if (!autopilot_source_can_sell_to_bot(w, sp, source_station, ct->commodity)) {
+                continue;
+            }
+            autopilot_make_contract_candidate(
+                w, sp, SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER,
+                source_station, ct->station_index, ct->commodity, ct,
+                score,
+                &candidates[count++]);
+        } else {
+            autopilot_make_contract_candidate(
+                w, sp, SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK,
+                source_station, ct->station_index, ct->commodity, ct,
+                score * 0.55f,
+                &candidates[count++]);
+        }
+    }
+
+    return count;
+}
+
+static bool autopilot_plan_docked_logistics(world_t *w, server_player_t *sp) {
+    if (!autopilot_logistics_enabled(sp) ||
+        !sp->docked ||
+        !autopilot_valid_dock_station(w, sp->current_station)) {
+        return false;
+    }
+
+    signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
+    int count = autopilot_append_contract_candidates(
+        w, sp, sp->current_station, candidates, MAX_CONTRACTS + 1);
+    int choice = signal_contract_brain_choose(w, sp, candidates, count);
+    if (choice < 0 || choice >= count) {
+        autopilot_clear_logistics(sp);
+        return false;
+    }
+
+    const signal_contract_candidate_t *picked = &candidates[choice];
+    commodity_t cargo = picked->commodity;
+    switch (picked->action) {
+    case SIGNAL_CONTRACT_ACTION_DELIVER_LOCAL:
+        sp->autopilot_station_target = sp->current_station;
+        sp->autopilot_cargo = cargo;
+        sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;
+        sp->autopilot_timer = 0.0f;
+        return true;
+    case SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER:
+        sp->autopilot_station_target = picked->dest_station;
+        sp->autopilot_cargo = cargo;
+        sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_BUY;
+        sp->autopilot_timer = 0.0f;
+        return true;
+    case SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK:
+        sp->autopilot_station_target = picked->dest_station;
+        sp->autopilot_cargo = cargo;
+        sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_WAIT;
+        sp->autopilot_timer = 0.0f;
+        return true;
+    case SIGNAL_CONTRACT_ACTION_NONE:
+    default:
+        break;
+    }
+
+    autopilot_clear_logistics(sp);
+    return false;
+}
+
 /* Drive the player's ship via simulated input. The autopilot writes
  * sp->input each tick, and the existing physics/mining/dock systems
  * consume those intents like they would for a human player. */
@@ -243,7 +518,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
      * while in a transit state, pick a new target. This breaks
      * deadlocks where avoidance oscillates against station walls. */
     if (sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
-        sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
+        sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY ||
+        sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_TRAVEL) {
         float moved = v2_dist_sq(sp->ship.pos, sp->autopilot_last_pos);
         if (moved > 50.0f * 50.0f) {
             sp->autopilot_last_pos = sp->ship.pos;
@@ -252,6 +528,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_stuck_timer += dt;
             if (sp->autopilot_stuck_timer > 8.0f) {
                 SIM_LOG("[autopilot] player %d stuck for 8s, re-planning\n", sp->id);
+                bool keep_target = false;
                 /* If carrying fragments, stay in RETURN_TO_REFINERY but
                  * force a path recompute (clear path age). Don't abandon
                  * the delivery — that causes the ship to tow rocks away
@@ -259,10 +536,19 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
                 if (sp->ship.towed_count > 0 &&
                     sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
                     nav_force_replan(nav_player_path(sp->id));
+                    keep_target = true;
+                } else if (sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_TRAVEL &&
+                           sp->autopilot_station_target >= 0 &&
+                           sp->autopilot_cargo < COMMODITY_COUNT) {
+                    nav_force_replan(nav_player_path(sp->id));
+                    keep_target = true;
                 } else {
                     sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
                 }
-                sp->autopilot_target = -1;
+                if (!keep_target) {
+                    sp->autopilot_target = -1;
+                    autopilot_clear_logistics(sp);
+                }
                 sp->autopilot_timer = 0.0f;
                 sp->autopilot_stuck_timer = 0.0f;
                 sp->autopilot_last_pos = sp->ship.pos;
@@ -281,9 +567,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->autopilot_state != AUTOPILOT_STEP_RETURN_TO_REFINERY &&
         sp->autopilot_state != AUTOPILOT_STEP_DOCK &&
         sp->autopilot_state != AUTOPILOT_STEP_SELL &&
-        sp->autopilot_state != AUTOPILOT_STEP_LAUNCH) {
+        sp->autopilot_state != AUTOPILOT_STEP_LAUNCH &&
+        sp->autopilot_state != AUTOPILOT_STEP_LOGISTICS_BUY &&
+        sp->autopilot_state != AUTOPILOT_STEP_LOGISTICS_TRAVEL &&
+        sp->autopilot_state != AUTOPILOT_STEP_LOGISTICS_DOCK &&
+        sp->autopilot_state != AUTOPILOT_STEP_LOGISTICS_DELIVER &&
+        sp->autopilot_state != AUTOPILOT_STEP_LOGISTICS_WAIT) {
         sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
         sp->autopilot_target = -1;
+        autopilot_clear_logistics(sp);
         sp->autopilot_timer = 0.0f;
     }
 
@@ -303,14 +595,16 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
     switch (sp->autopilot_state) {
     case AUTOPILOT_STEP_FIND_TARGET: {
         if (sp->docked) {
+            if (autopilot_plan_docked_logistics(w, sp)) {
+                break;
+            }
             sp->input.interact = true; /* launch */
             sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
             break;
         }
-        /* Carrying fragments and NOT near a station = go deliver.
-         * Near a station, fragments auto-release to the hopper so
-         * don't bail (prevents pickup-release-bail oscillation). */
-        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
+        /* Carrying fragments means the next objective is a furnace/hopper
+         * beam corridor, not another mining target or the station dock. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -347,8 +641,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Bail to delivery if carrying fragments away from a station. */
-        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
+        /* Bail to delivery if carrying fragments. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -413,8 +707,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Don't mine while carrying fragments away from a station. */
-        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
+        /* Don't mine while carrying fragments. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
@@ -479,8 +773,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_timer = 0.0f;
             break;
         }
-        /* Carrying fragments away from station = go deliver. */
-        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
+        /* Carrying fragments = go deliver. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
@@ -544,9 +838,12 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * st->pos is wrong: with a station whose furnace+silo are off
          * to one side, the spring tow keeps fragments at center and
          * the silo never reaches them. */
-        bool need_repair = autopilot_needs_repair(&sp->ship);
         commodity_t towed_ore = autopilot_towed_commodity(w, sp);
         const asteroid_t *towed_fragment = autopilot_first_towed_fragment(w, sp);
+        bool hauling_fragment = sp->ship.towed_count > 0 &&
+                                towed_ore < COMMODITY_COUNT &&
+                                towed_fragment != NULL;
+        bool need_repair = autopilot_needs_repair(&sp->ship) && !hauling_fragment;
         vec2 smelt_pt = station_smelt_drop_point(st, s, towed_ore, towed_fragment);
 
         vec2 fly_target = need_repair
@@ -619,10 +916,202 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
              * then station inventory. */
             break;
         }
+        if (autopilot_plan_docked_logistics(w, sp)) {
+            break;
+        }
         /* Hull repaired (or unrepairable) AND cargo sold — launch. */
         sp->input.interact = true;
         sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
         sp->autopilot_timer = 0.0f;
+        break;
+    }
+    case AUTOPILOT_STEP_LOGISTICS_BUY: {
+        int source = sp->current_station;
+        commodity_t cargo = sp->autopilot_cargo;
+        if (!sp->docked ||
+            !autopilot_valid_dock_station(w, source) ||
+            !autopilot_valid_dock_station(w, sp->autopilot_station_target) ||
+            !autopilot_finished_good(cargo)) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        sp->input.service_repair = true;
+        if (autopilot_ship_has_finished(sp, cargo)) {
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (!autopilot_source_can_sell_to_bot(w, sp, source, cargo)) {
+            signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
+            int count = autopilot_append_contract_candidates(
+                w, sp, source, candidates, MAX_CONTRACTS + 1);
+            int choice = signal_contract_brain_choose(w, sp, candidates, count);
+            if (choice >= 0 && choice < count &&
+                candidates[choice].action == SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK) {
+                sp->autopilot_station_target = candidates[choice].dest_station;
+                sp->autopilot_cargo = candidates[choice].commodity;
+                sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_WAIT;
+            } else {
+                autopilot_clear_logistics(sp);
+                sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            }
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->autopilot_timer < 0.08f) {
+            sp->input.buy_product = true;
+            sp->input.buy_commodity = cargo;
+            sp->input.buy_grade = MINING_GRADE_COUNT;
+        } else if (sp->autopilot_timer > 0.8f) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_LOGISTICS_TRAVEL: {
+        int dest = sp->autopilot_station_target;
+        commodity_t cargo = sp->autopilot_cargo;
+        if (!autopilot_valid_dock_station(w, dest) ||
+            !autopilot_finished_good(cargo) ||
+            !autopilot_ship_has_finished(sp, cargo)) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->docked) {
+            if (sp->current_station == dest) {
+                sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;
+                sp->autopilot_timer = 0.0f;
+            } else {
+                sp->input.interact = true; /* launch */
+            }
+            break;
+        }
+        const station_t *st = &w->stations[dest];
+        vec2 dock_target = station_approach_target(st, sp->ship.pos);
+        if (sp->autopilot_timer < 0.08f) {
+            nav_find_path(w, sp->ship.pos, dock_target,
+                          ship_hull_def(&sp->ship)->ship_radius + 30.0f,
+                          nav_player_path(sp->id));
+        }
+        nav_path_t *path = nav_player_path(sp->id);
+        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, dock_target,
+                                            0.0f, 145.0f, dt);
+        sp->input.turn = cmd.turn;
+        sp->input.thrust = cmd.thrust;
+        sp->input.mine = false;
+        if (sp->in_dock_range && sp->nearby_station == dest) {
+            sp->input.interact = true;
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DOCK;
+            sp->autopilot_timer = 0.0f;
+        } else if (sp->autopilot_timer > 75.0f) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_LOGISTICS_DOCK: {
+        int dest = sp->autopilot_station_target;
+        commodity_t cargo = sp->autopilot_cargo;
+        if (!autopilot_valid_dock_station(w, dest) ||
+            !autopilot_finished_good(cargo) ||
+            !autopilot_ship_has_finished(sp, cargo)) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->docked) {
+            if (sp->current_station == dest) {
+                sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;
+            } else {
+                sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+            }
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->autopilot_timer > 6.0f) {
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_LOGISTICS_DELIVER: {
+        int dest = sp->autopilot_station_target;
+        commodity_t cargo = sp->autopilot_cargo;
+        if (!autopilot_finished_good(cargo) ||
+            !autopilot_ship_has_finished(sp, cargo)) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (!sp->docked) {
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (dest >= 0 && sp->current_station != dest &&
+            !autopilot_has_delivery_demand(w, sp->current_station, cargo)) {
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = cargo;
+        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        sp->input.service_repair = true;
+        if (sp->autopilot_timer > 1.25f) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_LOGISTICS_WAIT: {
+        int source = sp->current_station;
+        commodity_t cargo = sp->autopilot_cargo;
+        if (!sp->docked ||
+            !autopilot_valid_dock_station(w, source) ||
+            !autopilot_finished_good(cargo)) {
+            autopilot_clear_logistics(sp);
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        sp->input.service_repair = true;
+        if (autopilot_ship_has_finished(sp, cargo) &&
+            autopilot_has_delivery_demand(w, source, cargo)) {
+            sp->autopilot_station_target = source;
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
+        int count = autopilot_append_contract_candidates(
+            w, sp, source, candidates, MAX_CONTRACTS + 1);
+        int choice = signal_contract_brain_choose(w, sp, candidates, count);
+        if (choice >= 0 && choice < count &&
+            candidates[choice].action == SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER) {
+            sp->autopilot_station_target = candidates[choice].dest_station;
+            sp->autopilot_cargo = candidates[choice].commodity;
+            sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_BUY;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->autopilot_timer > 18.0f ||
+            choice < 0 || choice >= count ||
+            candidates[choice].action != SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK) {
+            autopilot_clear_logistics(sp);
+            sp->input.interact = true; /* leave idle dock instead of spinning forever */
+            sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
+            sp->autopilot_timer = 0.0f;
+        }
         break;
     }
     case AUTOPILOT_STEP_LAUNCH: {

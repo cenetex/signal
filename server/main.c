@@ -14,6 +14,9 @@
 #include "signal_crypto.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
+#include "sim_autopilot.h"
+#include "signal_brain.h"
+#include "signal_contract_brain.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
@@ -65,6 +68,12 @@ static const char *persistence_state_uri = "";
 static uint64_t idle_shutdown_after_ms = 0;
 static uint64_t idle_shutdown_empty_since_ms = 0;
 static bool idle_shutdown_armed = false;
+static int server_bot_player_target = 0;
+static int server_bot_players_spawned = 0;
+static int server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
+static const char *server_bot_brain_mode_name = "autopilot";
+static const char *server_bot_brain_checkpoint = NULL;
+static const char *server_bot_contract_brain_checkpoint = NULL;
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -491,6 +500,82 @@ static int alloc_player(void) {
         if (!world.players[i].connected) return i;
     }
     return -1;
+}
+
+static int server_bot_home_station_for(int bot_index) {
+    int active[MAX_STATIONS];
+    int n = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &world.stations[s];
+        if (!station_is_active(st)) continue;
+        if (!station_has_module(st, MODULE_DOCK)) continue;
+        active[n++] = s;
+    }
+    if (n == 0) return 0;
+    return active[bot_index % n];
+}
+
+static void spawn_server_bots(void) {
+    server_bot_players_spawned = 0;
+    if (server_bot_player_target <= 0) return;
+
+    for (int i = 0; i < MAX_PLAYERS &&
+         server_bot_players_spawned < server_bot_player_target; i++) {
+        if (world.players[i].connected) continue;
+
+        server_player_t *sp = &world.players[i];
+        ship_cleanup(&sp->ship);
+        memset(sp, 0, sizeof(*sp));
+
+        sp->connected = true;
+        sp->id = (uint8_t)i;
+        sp->conn = NULL;
+        sp->session_ready = true;
+        sp->grace_period = false;
+        sp->grace_timer = 0.0f;
+
+        player_init_ship(sp, &world);
+        snprintf(sp->callsign, sizeof(sp->callsign), "BOT%03d",
+                 server_bot_players_spawned + 1);
+
+        sp->session_token[0] = 0xB0u;
+        sp->session_token[1] = 0x7Au;
+        sp->session_token[2] = (uint8_t)server_bot_players_spawned;
+        sp->session_token[3] = (uint8_t)i;
+        sp->session_token[4] = (uint8_t)(world.world_seq & 0xffu);
+        sp->session_token[5] = (uint8_t)((world.world_seq >> 8) & 0xffu);
+        sp->session_token[6] = (uint8_t)(world.belt_seed & 0xffu);
+        sp->session_token[7] = (uint8_t)((world.belt_seed >> 8) & 0xffu);
+
+        int home_station = server_bot_home_station_for(server_bot_players_spawned);
+        if (home_station >= 0 && home_station < MAX_STATIONS &&
+            station_is_active(&world.stations[home_station])) {
+            sp->current_station = home_station;
+            sp->nearby_station = home_station;
+            sp->docked = true;
+            sp->in_dock_range = true;
+            anchor_ship_in_station(sp, &world);
+        }
+
+        player_seed_credits(sp, &world);
+        sp->autopilot_mode = 1;
+        sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        sp->autopilot_target = -1;
+        sp->autopilot_timer = 0.0f;
+        sp->autopilot_last_pos = sp->ship.pos;
+        sp->autopilot_stuck_timer = 0.0f;
+        sp->server_brain_mode = (uint8_t)server_bot_brain_mode;
+
+        printf("[server] bot player %d spawned as %s brain=%s home=%d\n",
+               i, sp->callsign, server_bot_brain_mode_name, sp->current_station);
+        server_bot_players_spawned++;
+    }
+
+    if (server_bot_players_spawned < server_bot_player_target) {
+        fprintf(stderr, "[WARN] SIGNAL_BOT_PLAYERS requested %d bot(s), "
+                "but only %d player slot(s) were available\n",
+                server_bot_player_target, server_bot_players_spawned);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2302,6 +2387,85 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
     } \
 } while (0)
 
+static void append_callsign_json(char *buf, int *pos, int bufsz,
+                                 const char callsign[8]) {
+    char cs[9];
+    memcpy(cs, callsign, 8);
+    cs[8] = '\0';
+    for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+    json_escape_append(buf, pos, bufsz, cs);
+}
+
+static void reply_bot_trace_weights(struct mg_connection *c) {
+    enum { BUFSZ = 16384 };
+    char *buf = (char *)malloc(BUFSZ);
+    if (!buf) {
+        mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+        return;
+    }
+
+    float reference = highscore_trace_reference_score(&highscores);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        const server_player_t *sp = &world.players[i];
+        if (!sp->connected) continue;
+        if (sp->server_brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) continue;
+        if (isfinite(sp->ship.stat_credits_earned) &&
+            sp->ship.stat_credits_earned > reference) {
+            reference = sp->ship.stat_credits_earned;
+        }
+    }
+    if (reference < 1.0f) reference = 1.0f;
+
+    int pos = 0;
+    BUF_APPEND(pos, buf, BUFSZ,
+               "{\"schema\":\"signal.bot_trace_weights.v1\","
+               "\"basis\":\"max(highscore,active_run_credits)\","
+               "\"floor\":%.3f,\"ceiling\":%.3f,"
+               "\"reference_credits\":%.3f,\"entries\":[",
+               highscore_trace_weight_floor(),
+               highscore_trace_weight_ceiling(),
+               reference);
+    bool first = true;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        const server_player_t *sp = &world.players[i];
+        if (!sp->connected) continue;
+        if (sp->server_brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) continue;
+
+        char cs[9];
+        memcpy(cs, sp->callsign, 8);
+        cs[8] = '\0';
+        for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+
+        int rank = highscore_find_rank(&highscores, cs);
+        float highscore_credits = rank >= 0 ? highscores.entries[rank].credits_earned : 0.0f;
+        float highscore_weight = rank >= 0
+            ? highscore_trace_weight_from_score(highscore_credits, reference)
+            : highscore_trace_weight_floor();
+        float active_credits = sp->ship.stat_credits_earned;
+        float active_weight = highscore_trace_weight_from_score(active_credits, reference);
+        float trace_weight = active_weight > highscore_weight
+            ? active_weight
+            : highscore_weight;
+        const char *source = active_weight > highscore_weight ? "active_run" :
+            (rank >= 0 ? "highscore" : "floor");
+
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
+        first = false;
+        BUF_APPEND(pos, buf, BUFSZ,
+                   "{\"player_id\":%d,\"callsign\":\"", i);
+        append_callsign_json(buf, &pos, BUFSZ, sp->callsign);
+        BUF_APPEND(pos, buf, BUFSZ,
+                   "\",\"trace_weight\":%.3f,\"source\":\"%s\","
+                   "\"highscore_rank\":%d,\"highscore_credits\":%.3f,"
+                   "\"active_credits\":%.3f}",
+                   trace_weight, source, rank >= 0 ? rank + 1 : 0,
+                   highscore_credits, active_credits);
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "]}");
+    mg_http_reply(c, 200, api_headers, "%s", buf);
+    free(buf);
+}
+
 typedef struct {
     uint64_t event_id;
     uint8_t kind;
@@ -3089,6 +3253,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     free(out);
                 }
             }
+        } else if (mg_match(hm->uri, mg_str("/training/v1/bot-trace-weights"), NULL)) {
+            reply_bot_trace_weights(c);
         } else if (mg_match(hm->uri, mg_str("/health"), NULL)) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
@@ -3135,12 +3301,28 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int pos = 0;
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "{\"status\":\"ok\",\"players\":%d,\"live_connections\":%d,"
+                       "\"server_bot_players\":%d,"
+                       "\"server_bot_brain_mode\":\"%s\","
+                       "\"server_brain_loaded\":%s,"
+                       "\"server_brain_inferences\":%llu,"
+                       "\"server_contract_brain_loaded\":%s,"
+                       "\"server_contract_brain_inferences\":%llu,"
+                       "\"server_contract_brain_decisions\":%llu,"
+                       "\"server_contract_brain_teacher_decisions\":%llu,"
                        "\"version\":\"%s\","
                        "\"persistence\":{\"mode\":\"%s\","
                        "\"load_enabled\":%s,\"save_enabled\":%s,"
                        "\"externalized\":%s,\"external_store\":\"%s\","
                        "\"state_uri\":\"",
-                       count, live_connections, version,
+                       count, live_connections, server_bot_players_spawned,
+                       server_bot_brain_mode_name,
+                       signal_brain_loaded() ? "true" : "false",
+                       (unsigned long long)signal_brain_inference_count(),
+                       signal_contract_brain_loaded() ? "true" : "false",
+                       (unsigned long long)signal_contract_brain_inference_count(),
+                       (unsigned long long)signal_contract_brain_decision_count(),
+                       (unsigned long long)signal_contract_brain_teacher_decision_count(),
+                       version,
                        persistence_mode_name(),
                        persistence_load_enabled() ? "true" : "false",
                        persistence_save_enabled() ? "true" : "false",
@@ -3887,6 +4069,60 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
                    (unsigned long long)(idle_shutdown_after_ms / 1000ull));
         }
     }
+    {
+        const char *bots = getenv("SIGNAL_BOT_PLAYERS");
+        if (bots && bots[0] != '\0') {
+            char *end = NULL;
+            errno = 0;
+            unsigned long count = strtoul(bots, &end, 10);
+            if (errno != 0 || end == bots || *end != '\0' ||
+                count > (unsigned long)MAX_PLAYERS) {
+                fprintf(stderr, "[FATAL] invalid SIGNAL_BOT_PLAYERS=%s "
+                                "(use 0..%d)\n",
+                        bots, MAX_PLAYERS);
+                return false;
+            }
+            server_bot_player_target = (int)count;
+        }
+        if (server_bot_player_target > 0) {
+            printf("[server] Server bot players: requested %d/%d slot(s)\n",
+                   server_bot_player_target, MAX_PLAYERS);
+        }
+    }
+    {
+        const char *mode_name = getenv("SIGNAL_BOT_BRAIN_MODE");
+        if (!mode_name || mode_name[0] == '\0') mode_name = "autopilot";
+        if (strcmp(mode_name, "autopilot") == 0) {
+            server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
+            server_bot_brain_mode_name = "autopilot";
+        } else if (strcmp(mode_name, "neural") == 0) {
+            server_bot_brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+            server_bot_brain_mode_name = "neural";
+        } else {
+            fprintf(stderr, "[FATAL] invalid SIGNAL_BOT_BRAIN_MODE=%s "
+                            "(use autopilot or neural)\n",
+                    mode_name);
+            return false;
+        }
+        server_bot_brain_checkpoint = getenv("SIGNAL_BOT_BRAIN_CHECKPOINT");
+        server_bot_contract_brain_checkpoint = getenv("SIGNAL_BOT_CONTRACT_BRAIN_CHECKPOINT");
+        if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
+            (!server_bot_brain_checkpoint || server_bot_brain_checkpoint[0] == '\0')) {
+            fprintf(stderr, "[FATAL] SIGNAL_BOT_BRAIN_MODE=neural requires "
+                            "SIGNAL_BOT_BRAIN_CHECKPOINT\n");
+            return false;
+        }
+        if (server_bot_player_target > 0) {
+            printf("[server] Server bot brain mode: %s\n", server_bot_brain_mode_name);
+            if (server_bot_contract_brain_checkpoint &&
+                server_bot_contract_brain_checkpoint[0] != '\0') {
+                printf("[server] Server bot contract brain checkpoint: %s\n",
+                       server_bot_contract_brain_checkpoint);
+            } else if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
+                printf("[server] Server bot contract brain: teacher fallback\n");
+            }
+        }
+    }
     api_token = getenv("SIGNAL_API_TOKEN");
     if (api_token && api_token[0] != '\0') {
         printf("[server] Station API enabled (token set)\n");
@@ -4330,6 +4566,31 @@ int main(void) {
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     load_world_state();
+    if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
+        char err[256];
+        if (!signal_brain_load_checkpoint(server_bot_brain_checkpoint, err, sizeof(err))) {
+            fprintf(stderr, "[FATAL] failed to load SIGNAL_BOT_BRAIN_CHECKPOINT=%s: %s\n",
+                    server_bot_brain_checkpoint, err);
+            return 1;
+        }
+        printf("[server] loaded neural bot brain checkpoint: %s\n",
+               server_bot_brain_checkpoint);
+        if (server_bot_contract_brain_checkpoint &&
+            server_bot_contract_brain_checkpoint[0] != '\0') {
+            char contract_err[256];
+            if (!signal_contract_brain_load_checkpoint(server_bot_contract_brain_checkpoint,
+                                                       contract_err,
+                                                       sizeof(contract_err))) {
+                fprintf(stderr, "[FATAL] failed to load "
+                                "SIGNAL_BOT_CONTRACT_BRAIN_CHECKPOINT=%s: %s\n",
+                        server_bot_contract_brain_checkpoint, contract_err);
+                return 1;
+            }
+            printf("[server] loaded neural contract brain checkpoint: %s\n",
+                   server_bot_contract_brain_checkpoint);
+        }
+    }
+    spawn_server_bots();
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
