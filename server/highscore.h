@@ -58,4 +58,17 @@ void highscore_replay_from_chain(highscore_table_t *t, const char *chain_dir);
  * buf must be at least HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE. */
 int highscore_serialize(uint8_t *buf, const highscore_table_t *t);
 
+/* Training helper: convert leaderboard performance into a bounded sample
+ * weight. This is intentionally derived, not persisted: trace collectors can
+ * bias toward strong pilots without changing chain-log or multiplayer wire
+ * formats. Unknown pilots should use highscore_trace_weight_floor(). */
+float highscore_trace_weight_floor(void);
+float highscore_trace_weight_ceiling(void);
+float highscore_trace_reference_score(const highscore_table_t *t);
+float highscore_trace_weight_from_score(float credits_earned,
+                                        float reference_score);
+int highscore_find_rank(const highscore_table_t *t, const char *callsign);
+float highscore_trace_weight_for_callsign(const highscore_table_t *t,
+                                          const char *callsign);
+
 #endif /* SIGNAL_HIGHSCORE_H */

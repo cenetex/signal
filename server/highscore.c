@@ -16,6 +16,9 @@ static size_t cs_len(const char *s, size_t cap) {
     return n;
 }
 
+#define TRACE_WEIGHT_FLOOR   0.25f
+#define TRACE_WEIGHT_CEILING 2.00f
+
 #if defined(_WIN32)
 #  include <windows.h>
 #else
@@ -110,6 +113,57 @@ int highscore_serialize(uint8_t *buf, const highscore_table_t *t) {
         memcpy(&p[32], t->entries[i].killed_by, 8);
     }
     return HIGHSCORE_HEADER + t->count * HIGHSCORE_ENTRY_SIZE;
+}
+
+float highscore_trace_weight_floor(void) {
+    return TRACE_WEIGHT_FLOOR;
+}
+
+float highscore_trace_weight_ceiling(void) {
+    return TRACE_WEIGHT_CEILING;
+}
+
+float highscore_trace_reference_score(const highscore_table_t *t) {
+    float best = 0.0f;
+    if (!t) return 1.0f;
+    for (int i = 0; i < t->count; i++) {
+        float score = t->entries[i].credits_earned;
+        if (isfinite(score) && score > best) best = score;
+    }
+    return best > 1.0f ? best : 1.0f;
+}
+
+float highscore_trace_weight_from_score(float credits_earned,
+                                        float reference_score) {
+    if (!isfinite(credits_earned) || credits_earned <= 0.0f)
+        return TRACE_WEIGHT_FLOOR;
+    if (!isfinite(reference_score) || reference_score < 1.0f)
+        reference_score = 1.0f;
+    float ratio = credits_earned / reference_score;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    return TRACE_WEIGHT_FLOOR +
+           (TRACE_WEIGHT_CEILING - TRACE_WEIGHT_FLOOR) * sqrtf(ratio);
+}
+
+int highscore_find_rank(const highscore_table_t *t, const char *callsign) {
+    if (!t || !callsign || callsign[0] == '\0') return -1;
+    size_t cn = cs_len(callsign, sizeof(t->entries[0].callsign));
+    for (int i = 0; i < t->count; i++) {
+        size_t en = cs_len(t->entries[i].callsign,
+                           sizeof(t->entries[i].callsign));
+        if (en == cn && memcmp(t->entries[i].callsign, callsign, cn) == 0)
+            return i;
+    }
+    return -1;
+}
+
+float highscore_trace_weight_for_callsign(const highscore_table_t *t,
+                                          const char *callsign) {
+    int rank = highscore_find_rank(t, callsign);
+    if (rank < 0) return TRACE_WEIGHT_FLOOR;
+    return highscore_trace_weight_from_score(t->entries[rank].credits_earned,
+                                             highscore_trace_reference_score(t));
 }
 
 /* ------------------------------------------------------------------ */

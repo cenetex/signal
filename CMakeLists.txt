@@ -88,6 +88,8 @@ set(SIGNAL_SIM_SOURCES
     server/sim_ai.c
     server/gossip.c
     server/sim_autopilot.c
+    server/signal_brain.c
+    server/signal_contract_brain.c
     server/sim_flight.c
     server/sim_nav.c
     server/sim_save.c

@@ -29,6 +29,7 @@
 #include "ship.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
+#include "signal_brain.h"
 #include "sim_nav.h"
 #include "sim_asteroid.h"
 #include "sim_physics.h"
@@ -3367,6 +3368,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_target = -1;
         } else {
             step_autopilot(w, sp, dt);
+            signal_brain_drive(w, sp, dt);
         }
     }
 
@@ -5936,6 +5938,8 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->autopilot_mode = 0;
     sp->autopilot_state = 0;
     sp->autopilot_target = -1;
+    sp->autopilot_station_target = -1;
+    sp->autopilot_cargo = COMMODITY_COUNT;
     sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, w);
     /* The player spawns docked but doesn't go through dock_ship() —
