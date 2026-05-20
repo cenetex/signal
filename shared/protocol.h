@@ -472,7 +472,9 @@ enum {
  *
  * target_type mirrors server_player_t.scan_target_type:
  *   0 none, 1 station/module, 2 NPC, 3 player.
- * target_index/module_index/home_station/dest_station use 0xFF as
+ * For NPC targets, role/state are npc_role_t/npc_state_t. For player
+ * targets, role is hull_class_t and state is rounded hull, clamped to
+ * one byte. target_index/module_index/home_station/dest_station use 0xFF as
  * unknown/none. flags bit0 = row has at least one receipt link;
  * bit1 = row is a grouped bulk/finished-good row with no individual cargo identity. */
 enum {

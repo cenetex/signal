@@ -3556,6 +3556,15 @@ static int send_inspect_snapshot(uint8_t *buf, const server_player_t *sp) {
                                               npc, ship);
     }
 
+    if (sp->scan_target_type == INSPECT_TARGET_PLAYER &&
+        sp->scan_target_index >= 0 &&
+        sp->scan_target_index < MAX_PLAYERS) {
+        const server_player_t *target = &world.players[sp->scan_target_index];
+        return serialize_inspect_snapshot_player(buf,
+                                                 (uint8_t)sp->scan_target_index,
+                                                 target);
+    }
+
     return serialize_inspect_snapshot_target(buf, sp->scan_target_type,
                                              sp->scan_target_index,
                                              sp->scan_module_index);
