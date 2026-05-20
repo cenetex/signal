@@ -654,21 +654,24 @@ static inline void write_inspect_snapshot_row(uint8_t *p,
     }
 }
 
-static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
-                                                  uint8_t target_index,
-                                                  const npc_ship_t *npc,
-                                                  const ship_t *ship) {
-    if (!npc || !npc->active || !ship)
+static inline int serialize_inspect_snapshot_ship_manifest(uint8_t *buf,
+                                                           int target_type,
+                                                           uint8_t target_index,
+                                                           int module_index,
+                                                           uint8_t role,
+                                                           uint8_t state,
+                                                           uint8_t home_station,
+                                                           uint8_t dest_station,
+                                                           const ship_t *ship) {
+    if (!ship)
         return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
 
-    (void)serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NPC,
-                                            (int)target_index, -1);
-    buf[4] = (uint8_t)npc->role;
-    buf[5] = (uint8_t)npc->state;
-    buf[6] = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
-        ? (uint8_t)npc->home_station : 0xFFu;
-    buf[7] = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
-        ? (uint8_t)npc->dest_station : 0xFFu;
+    (void)serialize_inspect_snapshot_target(buf, target_type,
+                                            (int)target_index, module_index);
+    buf[4] = role;
+    buf[5] = state;
+    buf[6] = home_station;
+    buf[7] = dest_station;
 
     uint16_t manifest_count = ship->manifest.units ? ship->manifest.count : 0;
     write_u16_le(&buf[9], manifest_count);
@@ -712,6 +715,44 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
 
     buf[8] = (uint8_t)row_count;
     return INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW;
+}
+
+static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
+                                                  uint8_t target_index,
+                                                  const npc_ship_t *npc,
+                                                  const ship_t *ship) {
+    if (!npc || !npc->active || !ship)
+        return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
+
+    uint8_t home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
+        ? (uint8_t)npc->home_station : 0xFFu;
+    uint8_t dest = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
+        ? (uint8_t)npc->dest_station : 0xFFu;
+    return serialize_inspect_snapshot_ship_manifest(
+        buf, INSPECT_TARGET_NPC, target_index, -1,
+        (uint8_t)npc->role, (uint8_t)npc->state, home, dest, ship);
+}
+
+static inline int serialize_inspect_snapshot_player(uint8_t *buf,
+                                                     uint8_t target_index,
+                                                     const server_player_t *player) {
+    if (!player || !player->connected)
+        return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
+
+    uint8_t near_station =
+        (player->nearby_station >= 0 && player->nearby_station < MAX_STATIONS)
+        ? (uint8_t)player->nearby_station : 0xFFu;
+    uint8_t current_station =
+        (player->current_station >= 0 && player->current_station < MAX_STATIONS)
+        ? (uint8_t)player->current_station : near_station;
+    float rounded_hull = player->ship.hull + 0.5f;
+    if (rounded_hull < 0.0f) rounded_hull = 0.0f;
+    if (rounded_hull > 255.0f) rounded_hull = 255.0f;
+
+    return serialize_inspect_snapshot_ship_manifest(
+        buf, INSPECT_TARGET_PLAYER, target_index, -1,
+        (uint8_t)player->ship.hull_class, (uint8_t)rounded_hull,
+        current_station, near_station, &player->ship);
 }
 
 /* Signal channel (#316) snapshot — the client dedupes by id so this

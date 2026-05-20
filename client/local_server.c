@@ -281,6 +281,46 @@ static void local_server_copy_inspect_group(NetInspectSnapshotRow *row,
     row->flags |= INSPECT_ROW_GROUPED;
 }
 
+static void local_server_fill_inspect_manifest(NetInspectSnapshot *snap,
+                                               const ship_t *ship) {
+    if (!snap || !ship) return;
+
+    snap->manifest_count = ship->manifest.units ? ship->manifest.count : 0;
+    const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+    uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
+    memset(bulk, 0, sizeof(bulk));
+    for (uint16_t i = 0; i < snap->manifest_count; i++) {
+        const cargo_unit_t *unit = &ship->manifest.units[i];
+        if (inspect_snapshot_unit_is_groupable(unit)) {
+            if (bulk[unit->commodity][unit->grade] < 0xFFFF)
+                bulk[unit->commodity][unit->grade]++;
+        }
+    }
+    snap->row_count = 0;
+    for (int gr = 0; gr < MINING_GRADE_COUNT && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; gr++) {
+        for (int c = 0; c < COMMODITY_COUNT && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; c++) {
+            if (bulk[c][gr] > 0) {
+                local_server_copy_inspect_group(&snap->rows[snap->row_count],
+                                                (uint8_t)c, (uint8_t)gr,
+                                                bulk[c][gr],
+                                                (uint8_t)INGOT_PREFIX_ANONYMOUS);
+                snap->row_count++;
+            }
+            for (uint16_t i = 0; i < snap->manifest_count &&
+                 snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+                const cargo_unit_t *unit = &ship->manifest.units[i];
+                if (unit->commodity != c || unit->grade != gr) continue;
+                if (inspect_snapshot_unit_is_groupable(unit)) continue;
+                const cargo_receipt_chain_t *chain =
+                    (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
+                local_server_copy_inspect_row(&snap->rows[snap->row_count],
+                                              unit, chain);
+                snap->row_count++;
+            }
+        }
+    }
+}
+
 static void local_server_sync_inspect_snapshot(const local_server_t *ls,
                                                const server_player_t *src) {
     NetInspectSnapshot snap;
@@ -309,6 +349,7 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
     snap.module_index = (src->scan_module_index >= 0)
         ? (uint8_t)src->scan_module_index : 0xFFu;
 
+    const ship_t *inspect_ship = NULL;
     if (src->scan_target_type == INSPECT_TARGET_NPC &&
         src->scan_target_index >= 0 &&
         src->scan_target_index < MAX_NPC_SHIPS) {
@@ -321,42 +362,29 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
                 ? (uint8_t)npc->home_station : 0xFFu;
             snap.dest_station = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
                 ? (uint8_t)npc->dest_station : 0xFFu;
-            snap.manifest_count = ship->manifest.units ? ship->manifest.count : 0;
-            const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
-            uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
-            memset(bulk, 0, sizeof(bulk));
-            for (uint16_t i = 0; i < snap.manifest_count; i++) {
-                const cargo_unit_t *unit = &ship->manifest.units[i];
-                if (inspect_snapshot_unit_is_groupable(unit)) {
-                    if (bulk[unit->commodity][unit->grade] < 0xFFFF)
-                        bulk[unit->commodity][unit->grade]++;
-                }
-            }
-            snap.row_count = 0;
-            for (int gr = 0; gr < MINING_GRADE_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; gr++) {
-                for (int c = 0; c < COMMODITY_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; c++) {
-                    if (bulk[c][gr] > 0) {
-                        local_server_copy_inspect_group(&snap.rows[snap.row_count],
-                                                        (uint8_t)c, (uint8_t)gr,
-                                                        bulk[c][gr],
-                                                        (uint8_t)INGOT_PREFIX_ANONYMOUS);
-                        snap.row_count++;
-                    }
-                    for (uint16_t i = 0; i < snap.manifest_count &&
-                         snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
-                        const cargo_unit_t *unit = &ship->manifest.units[i];
-                        if (unit->commodity != c || unit->grade != gr) continue;
-                        if (inspect_snapshot_unit_is_groupable(unit)) continue;
-                        const cargo_receipt_chain_t *chain =
-                            (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
-                        local_server_copy_inspect_row(&snap.rows[snap.row_count],
-                                                      unit, chain);
-                        snap.row_count++;
-                    }
-                }
-            }
+            inspect_ship = ship;
+        }
+    } else if (src->scan_target_type == INSPECT_TARGET_PLAYER &&
+               src->scan_target_index >= 0 &&
+               src->scan_target_index < MAX_PLAYERS) {
+        const server_player_t *target = &ls->world.players[src->scan_target_index];
+        if (target->connected) {
+            snap.role = (uint8_t)target->ship.hull_class;
+            float rounded_hull = target->ship.hull + 0.5f;
+            if (rounded_hull < 0.0f) rounded_hull = 0.0f;
+            if (rounded_hull > 255.0f) rounded_hull = 255.0f;
+            snap.state = (uint8_t)rounded_hull;
+            snap.home_station =
+                (target->current_station >= 0 && target->current_station < MAX_STATIONS)
+                ? (uint8_t)target->current_station : 0xFFu;
+            snap.dest_station =
+                (target->nearby_station >= 0 && target->nearby_station < MAX_STATIONS)
+                ? (uint8_t)target->nearby_station : snap.home_station;
+            inspect_ship = &target->ship;
         }
     }
+    if (inspect_ship)
+        local_server_fill_inspect_manifest(&snap, inspect_ship);
 
     g.inspect_snapshot = snap;
     g.inspect_snapshot_timer = 0.60f;

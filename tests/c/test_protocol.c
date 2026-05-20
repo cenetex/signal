@@ -303,6 +303,58 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     ship_cleanup(&ship);
 }
 
+TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
+    server_player_t player;
+    memset(&player, 0, sizeof(player));
+    player.connected = true;
+    player.current_station = 2;
+    player.nearby_station = 1;
+    player.ship.hull_class = HULL_CLASS_HAULER;
+    player.ship.hull = 149.6f;
+    ASSERT(ship_manifest_bootstrap(&player.ship));
+
+    cargo_unit_t unit;
+    memset(&unit, 0, sizeof(unit));
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[0] = 0x9A;
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RATI,
+                      fragment_pub, 11, &unit));
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_M;
+
+    cargo_receipt_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.len = 1;
+    memcpy(chain.links[0].cargo_pub, unit.pub, 32);
+    memset(chain.links[0].authoring_station, 0xC3, 32);
+    chain.links[0].event_id = 8001;
+    ASSERT(ship_manifest_push_with_chain(&player.ship, &unit, &chain));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_player(buf, 5, &player);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_PLAYER);
+    ASSERT_EQ_INT(buf[2], 5);
+    ASSERT_EQ_INT(buf[3], 0xFF);
+    ASSERT_EQ_INT(buf[4], HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(buf[5], 150);
+    ASSERT_EQ_INT(buf[6], 2);
+    ASSERT_EQ_INT(buf[7], 1);
+    ASSERT_EQ_INT(buf[8], 1);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 1);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(p[0], COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(p[1], MINING_GRADE_RATI);
+    ASSERT_EQ_INT(p[2], 1);
+    ASSERT(p[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 1);
+    ASSERT(memcmp(&p[14], unit.pub, 32) == 0);
+
+    ship_cleanup(&player.ship);
+}
+
 TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
     npc_ship_t npc;
     memset(&npc, 0, sizeof(npc));
@@ -1202,6 +1254,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
+    RUN(test_roundtrip_inspect_snapshot_player_manifest_chain);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
     RUN(test_inspect_snapshot_groups_finished_goods_by_grade);
     RUN(test_inspect_snapshot_keeps_named_ingots_individual);

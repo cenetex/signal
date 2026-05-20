@@ -146,7 +146,7 @@ typedef enum {
     HUD_ACTION_TARGET_ASTEROID,
     HUD_ACTION_SCAN_MODULE,        /* str_a = station name, str_b = module name (or NULL = core hub) */
     HUD_ACTION_SCAN_NPC,           /* str_a = "miner"/"hauler", int_a = total cargo */
-    HUD_ACTION_SCAN_PILOT,         /* int_a = pilot id, int_b = hull */
+    HUD_ACTION_SCAN_PILOT,         /* int_a = pilot id, int_b = hull, str_a = callsign when known */
     HUD_ACTION_MINING,             /* claim window after fracture */
     HUD_ACTION_TOWING,             /* int_a = towed_count, int_b = tractor_active (1/0) */
     HUD_ACTION_TRACTOR_LOCK,       /* int_a = tractor_fragments, int_b = nearby_fragments */
@@ -204,6 +204,26 @@ static void hud_set_grade_color(uint8_t grade) {
     sdtx_color3b(r, g0, b);
 }
 
+static const NetPlayerState *hud_net_player_state(int idx) {
+    if (!g.multiplayer_enabled || idx < 0 || idx >= NET_MAX_PLAYERS)
+        return NULL;
+    const NetPlayerState *players = net_get_interpolated_players();
+    if (players && players[idx].active) return &players[idx];
+    players = net_get_players();
+    if (players && players[idx].active) return &players[idx];
+    return NULL;
+}
+
+static void hud_player_scan_label(int idx, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    const NetPlayerState *np = hud_net_player_state(idx);
+    if (np && np->callsign[0]) {
+        snprintf(out, cap, "%s", np->callsign);
+    } else {
+        snprintf(out, cap, "ID %d", idx);
+    }
+}
+
 static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, float sig_quality) {
     hud_action_t out = {0};
     out.kind = HUD_ACTION_IDLE;
@@ -240,9 +260,14 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         return out;
     }
     if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
+        const NetPlayerState *np = hud_net_player_state(LOCAL_PLAYER.scan_target_index);
         out.kind = HUD_ACTION_SCAN_PILOT;
         out.int_a = LOCAL_PLAYER.scan_target_index;
-        out.int_b = (int)lroundf(g.world.players[LOCAL_PLAYER.scan_target_index].ship.hull);
+        out.str_a = (np && np->callsign[0]) ? np->callsign : NULL;
+        if (LOCAL_PLAYER.scan_target_index >= 0 &&
+            LOCAL_PLAYER.scan_target_index < MAX_PLAYERS &&
+            g.world.players[LOCAL_PLAYER.scan_target_index].ship.hull > 0.0f)
+            out.int_b = (int)lroundf(g.world.players[LOCAL_PLAYER.scan_target_index].ship.hull);
         return out;
     }
     if (mining_client_get()->fracture_search_timer > 0.0f) {
@@ -318,7 +343,8 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
                  (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
         return;
     case HUD_ACTION_SCAN_PILOT:
-        snprintf(out, out_size, "SCAN PILOT // ID %d", a->int_a);
+        if (a->str_a) snprintf(out, out_size, "SCAN PILOT // %s", a->str_a);
+        else          snprintf(out, out_size, "SCAN PILOT // ID %d", a->int_a);
         return;
     case HUD_ACTION_MINING:
         snprintf(out, out_size, "MINING... // CLAIM WINDOW");
@@ -376,7 +402,12 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         snprintf(out, out_size, "Scan NPC %s // cargo %d", a->str_a, a->int_a);
         return;
     case HUD_ACTION_SCAN_PILOT:
-        snprintf(out, out_size, "Scan pilot %d // hull %d", a->int_a, a->int_b);
+        if (a->str_a && a->int_b > 0)
+            snprintf(out, out_size, "Scan pilot %s // hull %d", a->str_a, a->int_b);
+        else if (a->str_a)
+            snprintf(out, out_size, "Scan pilot %s", a->str_a);
+        else
+            snprintf(out, out_size, "Scan pilot %d", a->int_a);
         return;
     case HUD_ACTION_MINING:
         snprintf(out, out_size, "Mining... // claim window");
@@ -740,6 +771,12 @@ static const char *hud_npc_state_label(uint8_t state) {
     }
 }
 
+static const char *hud_hull_class_label(uint8_t hull_class) {
+    if (hull_class < (uint8_t)HULL_CLASS_COUNT)
+        return HULL_DEFS[hull_class].name;
+    return "ship";
+}
+
 static const char *hud_grade_short_label(uint8_t grade) {
     if (grade == (uint8_t)MINING_GRADE_COMMISSIONED) return "comm";
     return mining_grade_label((mining_grade_t)grade);
@@ -879,9 +916,18 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
      * seconds after scan release so the player can read what they
      * just locked onto. */
     const NetInspectSnapshot *snap = &g.inspect_snapshot;
-    if (snap->target_type != INSPECT_TARGET_NPC) return;
-    if (snap->target_index < MAX_NPC_SHIPS
-        && !g.world.npc_ships[snap->target_index].active) return;
+    bool target_is_npc = snap->target_type == INSPECT_TARGET_NPC;
+    bool target_is_player = snap->target_type == INSPECT_TARGET_PLAYER;
+    if (!target_is_npc && !target_is_player) return;
+    int target_idx = (snap->target_index == 0xFFu) ? -1 : (int)snap->target_index;
+    if (target_is_npc) {
+        if (target_idx < 0 || target_idx >= MAX_NPC_SHIPS) return;
+        if (!g.world.npc_ships[target_idx].active) return;
+    } else {
+        if (target_idx < 0 || target_idx >= MAX_PLAYERS) return;
+        const NetPlayerState *np = hud_net_player_state(target_idx);
+        if (!np && !g.world.players[target_idx].connected) return;
+    }
 
     float px = fmaxf(16.0f, screen_w - 360.0f);
     float py = (screen_h < 520.0f) ? 76.0f : 92.0f;
@@ -913,10 +959,15 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         hud_draw_alpha_rect(bg_x, bg_y, 3.0f, bg_h, 0.18f, 0.55f, 0.75f, 0.34f);
     }
 
-    int target_idx = (snap->target_index == 0xFFu) ? -1 : (int)snap->target_index;
     sdtx_pos(px / cell, py / cell);
     sdtx_color3b(PAL_ORE_AMBER);
-    sdtx_printf("[ %s CHAIN %02d ]", hud_npc_role_label(snap->role), target_idx);
+    if (target_is_npc) {
+        sdtx_printf("[ %s CHAIN %02d ]", hud_npc_role_label(snap->role), target_idx);
+    } else {
+        char pilot[16];
+        hud_player_scan_label(target_idx, pilot, sizeof(pilot));
+        sdtx_printf("[ PILOT %s ]", pilot);
+    }
 
     sdtx_pos(px / cell, (py + 14.0f) / cell);
     sdtx_color3b(PAL_INSPECT_STATION);
@@ -924,8 +975,14 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         ? g.world.stations[snap->home_station].name : "?";
     const char *dest = (snap->dest_station < MAX_STATIONS)
         ? g.world.stations[snap->dest_station].name : "?";
-    sdtx_printf("%s  %.12s > %.12s",
-                hud_npc_state_label(snap->state), home, dest);
+    if (target_is_npc) {
+        sdtx_printf("%s  %.12s > %.12s",
+                    hud_npc_state_label(snap->state), home, dest);
+    } else {
+        sdtx_printf("%s  hull %u  near %.12s",
+                    hud_hull_class_label(snap->role),
+                    (unsigned)snap->state, dest);
+    }
 
     sdtx_pos(px / cell, (py + 28.0f) / cell);
     sdtx_color3b(PAL_TEXT_GREY);
@@ -936,7 +993,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (snap->manifest_count == 0) {
         sdtx_pos(px / cell, (py + 44.0f) / cell);
         sdtx_color3b(PAL_TEXT_GREY);
-        sdtx_puts("no cargo in custody");
+        sdtx_puts(target_is_player ? "no cargo aboard" : "no cargo in custody");
         return;
     }
 
