@@ -25,6 +25,7 @@
 #include "laser.h"
 #include "manifest.h"
 #include "contract_fit.h"
+#include "station_policy.h"
 #include "gossip.h"
 #include "ship.h"
 #include "sim_ai.h"
@@ -3877,27 +3878,6 @@ static void contract_require_recipe_provenance(contract_t *c, recipe_id_t recipe
     c->required_recipe_id = (uint16_t)recipe;
 }
 
-static uint64_t station_enemy_origin_mask(int station_idx) {
-    switch (station_idx) {
-        case 0: return 1ULL << 2; /* Prospect refuses Helios-origin cargo. */
-        case 2: return 1ULL << 0; /* Helios refuses Prospect-origin cargo. */
-        default: return 0;
-    }
-}
-
-static void contract_forbid_enemy_origins(contract_t *c, int station_idx) {
-    if (!c || c->action != CONTRACT_TRACTOR) return;
-    if (c->commodity < COMMODITY_RAW_ORE_COUNT ||
-        c->commodity >= COMMODITY_COUNT) return;
-    uint64_t mask = station_enemy_origin_mask(station_idx);
-    if (station_idx >= 0 && station_idx < 64)
-        mask &= ~(1ULL << station_idx);
-    if (mask == 0) return;
-    c->proof_flags |= (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
-                                CONTRACT_PROOF_FORBID_ORIGIN);
-    c->forbidden_origin_mask |= mask;
-}
-
 static void step_contracts(world_t *w, float dt) {
     /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -4233,7 +4213,7 @@ static void step_contracts(world_t *w, float dt) {
         if (need.active)     to_post[post_count++] = &need;
         if (kit_need.active) to_post[post_count++] = &kit_need;
         for (int p = 0; p < post_count; p++) {
-            contract_forbid_enemy_origins(to_post[p], s);
+            station_policy_apply_contract_origin_rules(st, to_post[p]);
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) {
                     w->contracts[k] = *to_post[p];

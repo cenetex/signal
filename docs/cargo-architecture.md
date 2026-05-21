@@ -317,11 +317,14 @@ named or receipt-bearing units stay individually addressable. This keeps
 inspection readable as station and hauler manifests grow.
 
 **3. Deeper heritage contract templates.** Heritage contracts now cover
-recipe provenance and station-origin bans: generated demand can require
-proof-bearing cargo from the right source recipe and refuse cargo minted at
-hostile stations. The next useful layer is filtering on `parent_merkle` chains
-and real chain-log history. The player-facing payoff: the universe's history
-becomes the quest content.
+recipe provenance and contract-level station-origin bans. The seeded baseline
+does not define founding-station enemies because the starter supply loop depends
+on Prospect → Kepler → Helios → Prospect. Station policy is now shaped as a
+small card library with trade, construction, and finance budgets; future neural
+scorers can rank those cards while the deterministic baseline still works. The
+next useful layer is filtering on `parent_merkle` chains and real chain-log
+history. The player-facing payoff: the universe's history becomes the quest
+content.
 
 What's *not* on this list:
 

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "contract_fit.h"
+#include "station_policy.h"
 #include "chain_log.h"
 
 static void economy_chain_test_setup(const char *suffix) {
@@ -534,13 +535,45 @@ TEST(test_generated_heritage_contracts_require_source_recipe) {
             found_fabbed_frame = true;
             ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF);
             ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE);
-            ASSERT(c->proof_flags & CONTRACT_PROOF_FORBID_ORIGIN);
             ASSERT_EQ_INT(c->required_recipe_id, RECIPE_FRAME_BASIC);
-            ASSERT(c->forbidden_origin_mask & (1ULL << 0));
         }
     }
     ASSERT(found_smelted_ingot);
     ASSERT(found_fabbed_frame);
+}
+
+TEST(test_station_policy_preserves_seeded_supply_loop) {
+    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
+                      0, COMMODITY_REPAIR_KIT), 0);
+    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
+                      1, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
+                      2, COMMODITY_FRAME), 0);
+}
+
+TEST(test_station_policy_cards_rank_under_domain_budgets) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *prospect = &w.stations[0];
+    prospect->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+
+    station_policy_selection_t selection;
+    station_policy_select_cards(prospect, 0, &selection);
+
+    ASSERT(station_policy_selection_has(
+        &selection, STATION_POLICY_CARD_REPAIR_STOCK_RESERVE));
+    ASSERT(station_policy_selection_has(
+        &selection, STATION_POLICY_CARD_STRATEGIC_IMPORTS));
+    ASSERT(!station_policy_selection_has(
+        &selection, STATION_POLICY_CARD_HOSTILE_ORIGIN_EMBARGO));
+
+    int spent[STATION_POLICY_DOMAIN_COUNT] = {0};
+    for (int i = 0; i < selection.count; i++)
+        spent[selection.cards[i].domain] += selection.cards[i].budget_cost;
+    ASSERT(spent[STATION_POLICY_DOMAIN_TRADE] <= selection.budget.trade);
+    ASSERT(spent[STATION_POLICY_DOMAIN_CONSTRUCTION] <=
+           selection.budget.construction);
+    ASSERT(spent[STATION_POLICY_DOMAIN_FINANCE] <= selection.budget.finance);
 }
 
 TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
@@ -1979,6 +2012,8 @@ void register_economy_contracts_tests(void) {
     RUN(test_raw_ore_contract_retires_when_refined_output_full);
     RUN(test_kit_input_contract_closes_at_kit_target);
     RUN(test_generated_heritage_contracts_require_source_recipe);
+    RUN(test_station_policy_preserves_seeded_supply_loop);
+    RUN(test_station_policy_cards_rank_under_domain_budgets);
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
