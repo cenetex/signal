@@ -8,6 +8,8 @@
 #ifndef NET_PROTOCOL_H
 #define NET_PROTOCOL_H
 
+#include <string.h>
+
 #include "game_sim.h"
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
@@ -1114,11 +1116,13 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
  * [type:1][count:1] + count * [action:1][station:1][commodity:1][quantity:f32][base_price:f32][age:f32][target_x:f32][target_y:f32][target_index:i32]
  * = 2 + count * 25 bytes
  */
-/* Wire layout per contract record (28 bytes total):
+/* Wire layout per contract record (64 bytes total):
  *   action(1) + station(1) + commodity(1) + required_grade(1)
+ *   + proof_flags(1) + required_prefix_class(1) + required_recipe_id(u16)
  *   + quantity_needed(f32) + base_price(f32) + age(f32)
  *   + target.x(f32) + target.y(f32) + target_index(u32)
- * Bumped from 27 when required_grade was added. */
+ *   + required_parent(32)
+ * Bumped from 28 when heritage contract requirements were added. */
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -1128,12 +1132,16 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
         p[1] = contracts[i].station_index;
         p[2] = (uint8_t)contracts[i].commodity;
         p[3] = contracts[i].required_grade;
-        write_f32_le(&p[4],  contracts[i].quantity_needed);
-        write_f32_le(&p[8],  contracts[i].base_price);
-        write_f32_le(&p[12], contracts[i].age);
-        write_f32_le(&p[16], contracts[i].target_pos.x);
-        write_f32_le(&p[20], contracts[i].target_pos.y);
-        write_u32_le(&p[24], (uint32_t)contracts[i].target_index);
+        p[4] = contracts[i].proof_flags;
+        p[5] = contracts[i].required_prefix_class;
+        write_u16_le(&p[6], contracts[i].required_recipe_id);
+        write_f32_le(&p[8],  contracts[i].quantity_needed);
+        write_f32_le(&p[12], contracts[i].base_price);
+        write_f32_le(&p[16], contracts[i].age);
+        write_f32_le(&p[20], contracts[i].target_pos.x);
+        write_f32_le(&p[24], contracts[i].target_pos.y);
+        write_u32_le(&p[28], (uint32_t)contracts[i].target_index);
+        memcpy(&p[32], contracts[i].required_parent, 32);
         /* Note: claimed_by not sent — server-only field */
         count++;
     }
@@ -1158,7 +1166,7 @@ static inline int contract_compact_index_for_slot(const contract_t *contracts,
 /* Per-player gossip-contract visibility mask. Bit i set iff compact
  * contract record i from NET_MSG_CONTRACTS matches a summary in the
  * player's ship known_contracts pool (by action + station_index +
- * commodity). The client stores NET_MSG_CONTRACTS compactly too, so
+ * commodity + provenance terms). The client stores NET_MSG_CONTRACTS compactly too, so
  * the mask must use the same ordinal space, not raw w->contracts[]
  * slots. Wire: [type:1][mask:u32]. */
 static inline int serialize_player_known_contracts(uint8_t *buf,
@@ -1174,7 +1182,12 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
                 if (!cs->active) continue;
                 if (cs->action == (uint8_t)contracts[k].action &&
                     cs->station_index == contracts[k].station_index &&
-                    cs->commodity == (uint8_t)contracts[k].commodity) {
+                    cs->commodity == (uint8_t)contracts[k].commodity &&
+                    cs->required_grade == contracts[k].required_grade &&
+                    cs->proof_flags == contracts[k].proof_flags &&
+                    cs->required_prefix_class == contracts[k].required_prefix_class &&
+                    cs->required_recipe_id == contracts[k].required_recipe_id &&
+                    memcmp(cs->required_parent, contracts[k].required_parent, 32) == 0) {
                     mask |= (1u << ordinal);
                     break;
                 }

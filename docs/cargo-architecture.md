@@ -316,11 +316,11 @@ anonymous stock should compress into commodity/grade buckets, while
 named or receipt-bearing units stay individually addressable. This keeps
 inspection readable as station and hauler manifests grow.
 
-**3. Heritage contract templates.** Fragment-tow smelts emit
-`CHAIN_EVT_SMELT`, and fragment tow/release transitions are logged. Contracts
-can now start filtering on `parent_merkle` chains and real chain-log
-history. The player-facing payoff: the universe's history becomes the
-quest content.
+**3. Deeper heritage contract templates.** The first heritage-contract
+slice is now live: generated ingot-import, component-input, and repair-kit
+jobs can require proof-bearing cargo with a specific source recipe. The next
+useful layer is filtering on `parent_merkle` chains and real chain-log history.
+The player-facing payoff: the universe's history becomes the quest content.
 
 What's *not* on this list:
 
@@ -393,7 +393,7 @@ roadmap is now:
 1. Player-visible lineage display for cargo and inspected haulers.
 2. Group common manifest rows while keeping named/receipt-bearing units
    individually visible.
-3. Heritage contract templates that filter on `parent_merkle` chains.
+3. Deeper heritage contract templates that filter on `parent_merkle` chains.
 4. Use `quantity > 1` only for future grouped anonymous crates where
    individual identity adds no gameplay value.
 

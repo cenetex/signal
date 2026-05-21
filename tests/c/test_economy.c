@@ -227,6 +227,60 @@ TEST(test_contract_fit_requires_material_grade_and_fragment_tier) {
                   (int)CONTRACT_FIT_WRONG_TIER);
 }
 
+TEST(test_contract_fit_enforces_heritage_recipe_prefix_and_parent) {
+    cargo_unit_t unit = {
+        .kind = CARGO_KIND_INGOT,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .grade = (uint8_t)MINING_GRADE_COMMON,
+        .quantity = 1,
+        .prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS,
+        .recipe_id = (uint16_t)RECIPE_LEGACY_MIGRATE,
+    };
+    for (int i = 0; i < 32; i++) {
+        unit.pub[i] = (uint8_t)(0x20 + i);
+        unit.parent_merkle[i] = (uint8_t)(0x80 + i);
+    }
+
+    contract_t recipe_contract = {
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .proof_flags = (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
+                                 CONTRACT_PROOF_REQUIRE_RECIPE),
+        .required_recipe_id = (uint16_t)RECIPE_SMELT,
+    };
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&recipe_contract, &unit),
+                  (int)CONTRACT_FIT_WRONG_RECIPE);
+    unit.recipe_id = (uint16_t)RECIPE_SMELT;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&recipe_contract, &unit),
+                  (int)CONTRACT_FIT_OK);
+
+    contract_t prefix_contract = recipe_contract;
+    prefix_contract.proof_flags |= (uint8_t)CONTRACT_PROOF_REQUIRE_PREFIX;
+    prefix_contract.required_prefix_class = (uint8_t)INGOT_PREFIX_M;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&prefix_contract, &unit),
+                  (int)CONTRACT_FIT_WRONG_PREFIX);
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_M;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&prefix_contract, &unit),
+                  (int)CONTRACT_FIT_OK);
+
+    contract_t parent_contract = recipe_contract;
+    parent_contract.proof_flags |= (uint8_t)CONTRACT_PROOF_REQUIRE_PARENT;
+    memset(parent_contract.required_parent, 0xAA, sizeof(parent_contract.required_parent));
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&parent_contract, &unit),
+                  (int)CONTRACT_FIT_WRONG_PARENT);
+    memcpy(parent_contract.required_parent, unit.parent_merkle,
+           sizeof(parent_contract.required_parent));
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&parent_contract, &unit),
+                  (int)CONTRACT_FIT_OK);
+
+    memset(unit.pub, 0, sizeof(unit.pub));
+    memset(unit.parent_merkle, 0, sizeof(unit.parent_merkle));
+    unit.mined_block = 0;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&recipe_contract, &unit),
+                  (int)CONTRACT_FIT_MISSING_PROOF);
+}
+
 TEST(test_contract_delivery_requires_required_grade) {
     WORLD_DECL;
     world_reset(&w);
@@ -262,6 +316,47 @@ TEST(test_contract_delivery_requires_required_grade) {
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0],
                                    w.players[0].session_token),
                     credits_before, 0.01f);
+}
+
+TEST(test_contract_delivery_requires_heritage_recipe) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x02, 8);
+
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FRAME, 1,
+                                        MINING_GRADE_COMMON));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_FRAME,
+        .proof_flags = (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
+                                 CONTRACT_PROOF_REQUIRE_RECIPE),
+        .required_recipe_id = (uint16_t)RECIPE_FRAME_BASIC,
+        .quantity_needed = 1.0f,
+        .base_price = 100.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&w.players[0].ship, COMMODITY_FRAME), 1);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.01f);
+
+    w.players[0].ship.manifest.units[0].recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&w.players[0].ship, COMMODITY_FRAME), 0);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 0.0f, 0.01f);
 }
 
 TEST(test_contract_closes_when_deficit_filled) {
@@ -346,6 +441,44 @@ TEST(test_kit_input_contract_closes_at_kit_target) {
                  w.contracts[k].station_index == 2 &&
                  w.contracts[k].commodity == COMMODITY_FRAME));
     }
+}
+
+TEST(test_generated_heritage_contracts_require_source_recipe) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    station_t *kepler = &w.stations[1];
+    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    kepler->_inventory_cache[COMMODITY_FRAME] = 0.0f;
+
+    station_t *helios = &w.stations[2];
+    helios->_inventory_cache[COMMODITY_FRAME] = 0.0f;
+    helios->_inventory_cache[COMMODITY_LASER_MODULE] = 100.0f;
+    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 100.0f;
+
+    world_sim_step(&w, SIM_DT);
+
+    bool found_smelted_ingot = false;
+    bool found_fabbed_frame = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *c = &w.contracts[k];
+        if (!c->active || c->action != CONTRACT_TRACTOR) continue;
+        if (c->station_index == 1 && c->commodity == COMMODITY_FERRITE_INGOT) {
+            found_smelted_ingot = true;
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF);
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE);
+            ASSERT_EQ_INT(c->required_recipe_id, RECIPE_SMELT);
+        }
+        if (c->station_index == 2 && c->commodity == COMMODITY_FRAME) {
+            found_fabbed_frame = true;
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF);
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE);
+            ASSERT_EQ_INT(c->required_recipe_id, RECIPE_FRAME_BASIC);
+        }
+    }
+    ASSERT(found_smelted_ingot);
+    ASSERT(found_fabbed_frame);
 }
 
 TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
@@ -1209,6 +1342,9 @@ TEST(test_kit_import_contract_at_consumer_station) {
             found = true;
             ASSERT(c->base_price > 0.0f);
             ASSERT(c->quantity_needed > 0.0f);
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF);
+            ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE);
+            ASSERT_EQ_INT(c->required_recipe_id, RECIPE_REPAIR_KIT_FAB);
             break;
         }
     }
@@ -1773,10 +1909,13 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_generated_from_hopper_deficit);
     RUN(test_contract_price_escalates_with_age);
     RUN(test_contract_fit_requires_material_grade_and_fragment_tier);
+    RUN(test_contract_fit_enforces_heritage_recipe_prefix_and_parent);
     RUN(test_contract_delivery_requires_required_grade);
+    RUN(test_contract_delivery_requires_heritage_recipe);
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_raw_ore_contract_retires_when_refined_output_full);
     RUN(test_kit_input_contract_closes_at_kit_target);
+    RUN(test_generated_heritage_contracts_require_source_recipe);
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);

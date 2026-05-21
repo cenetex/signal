@@ -17,6 +17,9 @@ typedef enum {
     CONTRACT_FIT_NO_CARGO,
     CONTRACT_FIT_NOT_DELIVERABLE,
     CONTRACT_FIT_MISSING_PROOF,
+    CONTRACT_FIT_WRONG_RECIPE,
+    CONTRACT_FIT_WRONG_PREFIX,
+    CONTRACT_FIT_WRONG_PARENT,
 } contract_fit_reason_t;
 
 static inline const char *contract_fit_reason_label(contract_fit_reason_t reason) {
@@ -30,6 +33,9 @@ static inline const char *contract_fit_reason_label(contract_fit_reason_t reason
     case CONTRACT_FIT_NO_CARGO:        return "no cargo";
     case CONTRACT_FIT_NOT_DELIVERABLE: return "not deliverable";
     case CONTRACT_FIT_MISSING_PROOF:   return "proof missing";
+    case CONTRACT_FIT_WRONG_RECIPE:    return "wrong recipe";
+    case CONTRACT_FIT_WRONG_PREFIX:    return "wrong class";
+    case CONTRACT_FIT_WRONG_PARENT:    return "wrong lineage";
     default:                           return "unknown";
     }
 }
@@ -50,7 +56,6 @@ static inline contract_fit_reason_t contract_fit_cargo_fields(
     uint16_t quantity,
     bool has_proof)
 {
-    (void)has_proof;
     if (!contract || !contract->active) return CONTRACT_FIT_INACTIVE;
     if (contract->action != CONTRACT_TRACTOR) return CONTRACT_FIT_WRONG_ACTION;
     if (quantity == 0) return CONTRACT_FIT_NO_CARGO;
@@ -62,6 +67,8 @@ static inline contract_fit_reason_t contract_fit_cargo_fields(
         grade < (mining_grade_t)contract->required_grade) {
         return CONTRACT_FIT_GRADE_TOO_LOW;
     }
+    if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF) && !has_proof)
+        return CONTRACT_FIT_MISSING_PROOF;
     return CONTRACT_FIT_OK;
 }
 
@@ -74,11 +81,27 @@ static inline contract_fit_reason_t contract_fit_cargo_unit(
     bool has_proof = contract_fit_has_bytes(unit->pub) ||
                      contract_fit_has_bytes(unit->parent_merkle) ||
                      unit->mined_block != 0;
-    return contract_fit_cargo_fields(contract,
-                                     (commodity_t)unit->commodity,
-                                     (mining_grade_t)unit->grade,
-                                     quantity,
-                                     has_proof);
+    contract_fit_reason_t base = contract_fit_cargo_fields(
+        contract,
+        (commodity_t)unit->commodity,
+        (mining_grade_t)unit->grade,
+        quantity,
+        has_proof);
+    if (!contract_fit_is_ok(base)) return base;
+
+    if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE) &&
+        unit->recipe_id != contract->required_recipe_id) {
+        return CONTRACT_FIT_WRONG_RECIPE;
+    }
+    if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_PREFIX) &&
+        unit->prefix_class != contract->required_prefix_class) {
+        return CONTRACT_FIT_WRONG_PREFIX;
+    }
+    if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_PARENT) &&
+        memcmp(unit->parent_merkle, contract->required_parent, 32) != 0) {
+        return CONTRACT_FIT_WRONG_PARENT;
+    }
+    return CONTRACT_FIT_OK;
 }
 
 static inline contract_fit_reason_t contract_fit_fragment(

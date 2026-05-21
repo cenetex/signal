@@ -1114,7 +1114,25 @@ static bool contract_accepts_trade_row(const contract_t *ct,
     if (ct->action != CONTRACT_TRACTOR) return false;
     if (ct->commodity < COMMODITY_RAW_ORE_COUNT) return false;
     if (ct->commodity != row->commodity) return false;
-    return (mining_grade_t)row->grade >= (mining_grade_t)ct->required_grade;
+    if (row->has_inspect) {
+        cargo_unit_t unit = {0};
+        unit.kind = row->inspect_kind;
+        unit.commodity = (uint8_t)row->commodity;
+        unit.grade = (uint8_t)row->grade;
+        unit.prefix_class = row->prefix_class;
+        unit.origin_station = row->origin_station_idx;
+        unit.quantity = row->quantity > 0
+            ? (uint8_t)(row->quantity > 255 ? 255 : row->quantity)
+            : 1;
+        unit.recipe_id = row->inspect_recipe_id;
+        unit.mined_block = row->mined_block;
+        memcpy(unit.pub, row->inspect_pub, sizeof(unit.pub));
+        memcpy(unit.parent_merkle, row->inspect_parent,
+               sizeof(unit.parent_merkle));
+        return contract_fit_is_ok(contract_fit_cargo_unit(ct, &unit));
+    }
+    return contract_fit_is_ok(contract_fit_cargo_fields(
+        ct, row->commodity, row->grade, (uint16_t)row->quantity, false));
 }
 
 static bool trade_row_tracked_note(const station_t *st,
@@ -1865,7 +1883,8 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             /* Drop the grade word — color encodes rarity for the whole
              * row (see the grade-tint override below). Keeps the cargo
              * cell short so payout doesn't collide with it. */
-            snprintf(cargo_buf, sizeof(cargo_buf), "%s x%d",
+            snprintf(cargo_buf, sizeof(cargo_buf), "%s%s x%d",
+                     ct->proof_flags ? "trace " : "",
                      commodity_short_name(ct->commodity), qty);
         }
 

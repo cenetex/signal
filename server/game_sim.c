@@ -3845,6 +3845,38 @@ float contract_price(const contract_t *c) {
     return c->base_price * escalation;
 }
 
+static bool heritage_recipe_for_commodity(commodity_t c, recipe_id_t *out) {
+    if (!out) return false;
+    switch (c) {
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
+            *out = RECIPE_SMELT;
+            return true;
+        case COMMODITY_FRAME:
+            *out = RECIPE_FRAME_BASIC;
+            return true;
+        case COMMODITY_LASER_MODULE:
+            *out = RECIPE_LASER_BASIC;
+            return true;
+        case COMMODITY_TRACTOR_MODULE:
+            *out = RECIPE_TRACTOR_COIL;
+            return true;
+        case COMMODITY_REPAIR_KIT:
+            *out = RECIPE_REPAIR_KIT_FAB;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void contract_require_recipe_provenance(contract_t *c, recipe_id_t recipe) {
+    if (!c) return;
+    c->proof_flags |= (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
+                                CONTRACT_PROOF_REQUIRE_RECIPE);
+    c->required_recipe_id = (uint16_t)recipe;
+}
+
 static void step_contracts(world_t *w, float dt) {
     /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -4099,6 +4131,7 @@ static void step_contracts(world_t *w, float dt) {
                     .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
+                contract_require_recipe_provenance(&need, RECIPE_SMELT);
             }
         }
 
@@ -4136,6 +4169,9 @@ static void step_contracts(world_t *w, float dt) {
                                   : 28.0f * pool_factor) * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
+                recipe_id_t recipe;
+                if (heritage_recipe_for_commodity(mat, &recipe))
+                    contract_require_recipe_provenance(&kit_need, recipe);
             }
         }
 
@@ -4164,6 +4200,7 @@ static void step_contracts(world_t *w, float dt) {
                     .base_price = seed * 1.5f * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
+                contract_require_recipe_provenance(&need, RECIPE_REPAIR_KIT_FAB);
             }
         }
 

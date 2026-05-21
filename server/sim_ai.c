@@ -89,13 +89,6 @@ static bool append_station_transfer_receipt(world_t *w, station_t *author,
     return true;
 }
 
-static int station_finished_available_for_hauler(const station_t *st,
-                                                 commodity_t c) {
-    int stock = station_finished_count(st, c);
-    int reserve = hauler_reserve_units();
-    return stock > reserve ? stock - reserve : 0;
-}
-
 static bool station_accepts_hauler_commodity(const station_t *st,
                                              commodity_t c) {
     if (!st || !station_is_active(st)) return false;
@@ -218,7 +211,8 @@ static contract_t *hauler_delivery_contract(world_t *w, int station_idx,
         saw_active_contract = true;
         if (manifest) {
             if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
-        } else if (ct->required_grade > (uint8_t)MINING_GRADE_COMMON) {
+        } else if (ct->required_grade > (uint8_t)MINING_GRADE_COMMON ||
+                   ct->proof_flags != 0) {
             continue;
         }
         float price = contract_price(ct);
@@ -229,6 +223,45 @@ static contract_t *hauler_delivery_contract(world_t *w, int station_idx,
     }
     if (!saw_active_contract)
         forget_known_delivery_contracts(w, station_idx, c);
+    return best;
+}
+
+static bool hauler_contract_matches_summary(const contract_t *ct,
+                                            const contract_summary_t *cs) {
+    if (!ct || !cs) return false;
+    if (!ct->active || !cs->active) return false;
+    if ((uint8_t)ct->action != cs->action) return false;
+    if (ct->station_index != cs->station_index) return false;
+    if ((uint8_t)ct->commodity != cs->commodity) return false;
+    if (ct->required_grade != cs->required_grade) return false;
+    if (ct->proof_flags != cs->proof_flags) return false;
+    if (ct->required_prefix_class != cs->required_prefix_class) return false;
+    if (ct->required_recipe_id != cs->required_recipe_id) return false;
+    return memcmp(ct->required_parent, cs->required_parent,
+                  sizeof(ct->required_parent)) == 0;
+}
+
+static contract_t *hauler_pickup_contract_from_summary(
+    world_t *w, const contract_summary_t *cs, const manifest_t *manifest) {
+    if (!w || !cs || !manifest || !cs->active) return NULL;
+    if (cs->action != (uint8_t)CONTRACT_TRACTOR) return NULL;
+    if (cs->station_index < 0 || cs->station_index >= MAX_STATIONS) return NULL;
+    if (cs->commodity < COMMODITY_RAW_ORE_COUNT ||
+        cs->commodity >= COMMODITY_COUNT) return NULL;
+
+    contract_t *best = NULL;
+    float best_price = 0.0f;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!hauler_contract_matches_summary(ct, cs)) continue;
+        if (ct->quantity_needed <= 0.01f) continue;
+        if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
+        float price = contract_price(ct);
+        if (price > best_price) {
+            best_price = price;
+            best = ct;
+        }
+    }
     return best;
 }
 
@@ -273,14 +306,6 @@ static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
     return pushed;
 }
 
-static int manifest_find_first_commodity(const manifest_t *manifest, commodity_t c) {
-    if (!manifest || !manifest->units) return -1;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        if (manifest->units[i].commodity == (uint8_t)c) return (int)i;
-    }
-    return -1;
-}
-
 static void hauler_sync_cargo_from_manifest(npc_ship_t *npc, const ship_t *ship) {
     if (!npc || !ship) return;
     memset(npc->cargo, 0, sizeof(npc->cargo));
@@ -291,12 +316,16 @@ static void hauler_sync_cargo_from_manifest(npc_ship_t *npc, const ship_t *ship)
     }
 }
 
-static int hauler_load_station_units(world_t *w, int npc_slot, station_t *src,
-                                     ship_t *dst, commodity_t c, int n) {
-    if (!w || !src || !dst || n <= 0) return 0;
-    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return 0;
+static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
+                                                  station_t *src, ship_t *dst,
+                                                  const contract_t *contract,
+                                                  int n) {
+    if (!w || !src || !dst || !contract || n <= 0) return 0;
+    if (contract->commodity < COMMODITY_RAW_ORE_COUNT ||
+        contract->commodity >= COMMODITY_COUNT) return 0;
     if (src->manifest.cap == 0 && !station_manifest_bootstrap(src)) return 0;
     if (!ship_manifest_bootstrap(dst)) return 0;
+    if (dst->manifest.count >= dst->manifest.cap) return 0;
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
 
     npc_ship_t *npc = &w->npc_ships[npc_slot];
@@ -306,7 +335,14 @@ static int hauler_load_station_units(world_t *w, int npc_slot, station_t *src,
     int moved = 0;
     while (moved < n) {
         if (dst->manifest.count >= dst->manifest.cap) break;
-        int idx = manifest_find_first_commodity(&src->manifest, c);
+        int idx = -1;
+        for (uint16_t i = 0; i < src->manifest.count; i++) {
+            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
+                                                           &src->manifest.units[i]))) {
+                idx = (int)i;
+                break;
+            }
+        }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
         cargo_receipt_chain_t chain = {0};
@@ -315,9 +351,6 @@ static int hauler_load_station_units(world_t *w, int npc_slot, station_t *src,
             break;
         }
         cargo_receipt_chain_t outgoing = chain;
-        /* Receipt extension is best-effort. Chain health policy may block
-         * appends after a bad reload; cargo custody still moves, and scan
-         * UI surfaces the missing receipt instead of forging continuity. */
         (void)append_station_transfer_receipt(w, src, src->station_pubkey,
                                               npc_pubkey, &unit, &outgoing);
         if (!ship_manifest_push_with_chain(dst, &unit, &outgoing)) {
@@ -1534,6 +1567,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * "delivered" it back to Prospect, never carrying ferrite
              * ingots out to Kepler. */
             int best_known = -1;
+            contract_t *best_contract = NULL;
             float best_score = 0.0f;
             for (int k = 0; k < npc->known_contract_count; k++) {
                 const contract_summary_t *cs = &npc->known_contracts[k];
@@ -1543,36 +1577,40 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (cs->station_index == npc->home_station) continue;
                 commodity_t c = (commodity_t)cs->commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* raw ore moves as fragments */
-                if (station_finished_available_for_hauler(home, c) <= 0)
+                contract_t *ct = hauler_pickup_contract_from_summary(
+                    w, cs, &home->manifest);
+                if (!ct) continue;
+                int fit_stock = contract_fit_manifest_count(ct, &home->manifest);
+                int takeable = fit_stock - hauler_reserve_units();
+                if (takeable <= 0)
                     continue; /* no manifest-backed stock at home to fill */
                 /* Stations are physical landmarks visible via the signal
                  * grid — position lookup is the legal infrastructure
                  * gossip channel, not radio. */
                 float dist = fmaxf(1.0f,
                     v2_len(v2_sub(w->stations[cs->station_index].pos, home->pos)));
-                /* Use snapshot's age-at-copy for escalation; matches
-                 * contract_price() formula. Stale snapshot eats the
-                 * difference at settlement. */
-                float esc = 1.0f + fminf(cs->age_at_copy / 300.0f, 1.0f) * 0.2f;
-                float score = (cs->base_price * esc) / dist;
+                float score = contract_price(ct) / dist;
                 if (score > best_score) {
                     best_score = score;
                     best_known = k;
+                    best_contract = ct;
                 }
             }
 
-            if (best_known >= 0) {
+            if (best_known >= 0 && best_contract) {
                 /* Load the commodity for this contract (leave reserve for players) */
-                commodity_t ingot = (commodity_t)npc->known_contracts[best_known].commodity;
-                npc->dest_station = npc->known_contracts[best_known].station_index;
-                int take_units = station_finished_available_for_hauler(home, ingot);
+                commodity_t ingot = best_contract->commodity;
+                npc->dest_station = best_contract->station_index;
+                int take_units = contract_fit_manifest_count(best_contract,
+                                                             &home->manifest);
+                take_units -= hauler_reserve_units();
+                if (take_units < 0) take_units = 0;
                 int space_units = (int)floorf(space + 0.0001f);
                 if (take_units > space_units) take_units = space_units;
                 if (take_units > 0) {
                     if (hauler_ship) {
-                        int moved = hauler_load_station_units(w, n, home,
-                                                              hauler_ship,
-                                                              ingot, take_units);
+                        int moved = hauler_load_station_units_for_contract(
+                            w, n, home, hauler_ship, best_contract, take_units);
                         if (moved > 0) {
                             station_finished_sync(home, ingot);
                             ship_finished_sync(hauler_ship, ingot);

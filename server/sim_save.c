@@ -81,7 +81,12 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 55  /* v55: crystal fragments gained a two-stage
+#define SAVE_VERSION 56  /* v56: contracts gained optional provenance
+                          * requirements (proof flags, recipe, prefix
+                          * class, and parent_merkle) for heritage jobs.
+                          * Older contracts migrate with zero flags, so
+                          * they remain commodity/grade-only.
+                          * v55: crystal fragments gained a two-stage
                           * furnace process. Active fracture-child
                           * sidecars persist crystal_stage plus source
                           * station/module so a staged crystal must still
@@ -1103,6 +1108,10 @@ static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->station_index);
     WRITE_FIELD(f, c->commodity);
     WRITE_FIELD(f, c->required_grade);
+    WRITE_FIELD(f, c->proof_flags);
+    WRITE_FIELD(f, c->required_prefix_class);
+    WRITE_FIELD(f, c->required_recipe_id);
+    if (fwrite(c->required_parent, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, c->quantity_needed);
     WRITE_FIELD(f, c->base_price);
     WRITE_FIELD(f, c->age);
@@ -1122,6 +1131,17 @@ static bool read_contract(FILE *f, contract_t *c) {
         READ_FIELD(f, c->required_grade);
     } else {
         c->required_grade = (uint8_t)MINING_GRADE_COMMON;
+    }
+    if (g_loaded_save_version >= 56) {
+        READ_FIELD(f, c->proof_flags);
+        READ_FIELD(f, c->required_prefix_class);
+        READ_FIELD(f, c->required_recipe_id);
+        if (fread(c->required_parent, 32, 1, f) != 1) return false;
+    } else {
+        c->proof_flags = 0;
+        c->required_prefix_class = 0;
+        c->required_recipe_id = 0;
+        memset(c->required_parent, 0, sizeof(c->required_parent));
     }
     READ_FIELD(f, c->quantity_needed);
     READ_FIELD(f, c->base_price);

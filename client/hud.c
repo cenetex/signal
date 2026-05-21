@@ -1074,7 +1074,8 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         bool drew_contract_fit = false;
         if (tracked_contract) {
             bool has_proof = !grouped &&
-                ((row->flags & INSPECT_ROW_HAS_RECEIPT) != 0);
+                (((row->flags & INSPECT_ROW_HAS_RECEIPT) != 0) ||
+                 contract_fit_has_bytes(row->cargo_pub));
             contract_fit_reason_t fit = contract_fit_cargo_fields(
                 tracked_contract,
                 (commodity_t)row->commodity,

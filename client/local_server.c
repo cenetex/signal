@@ -40,6 +40,8 @@
 #include "sim_ai.h"
 #include "sim_asteroid.h"
 
+#include <string.h>
+
 static void local_server_process_fracture_updates(local_server_t *ls, int player_slot);
 
 void local_server_init(local_server_t *ls, uint32_t seed) {
@@ -185,7 +187,12 @@ static void mirror_whole_world(const world_t *src) {
                 if (!cs->active) continue;
                 if (cs->action == (uint8_t)src->contracts[k].action &&
                     cs->station_index == src->contracts[k].station_index &&
-                    cs->commodity == (uint8_t)src->contracts[k].commodity) {
+                    cs->commodity == (uint8_t)src->contracts[k].commodity &&
+                    cs->required_grade == src->contracts[k].required_grade &&
+                    cs->proof_flags == src->contracts[k].proof_flags &&
+                    cs->required_prefix_class == src->contracts[k].required_prefix_class &&
+                    cs->required_recipe_id == src->contracts[k].required_recipe_id &&
+                    memcmp(cs->required_parent, src->contracts[k].required_parent, 32) == 0) {
                     mask |= (1u << k);
                     break;
                 }

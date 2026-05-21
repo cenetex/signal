@@ -12,6 +12,10 @@ contract_summary_t contract_summary_make(const contract_t *ct) {
     s.station_index = ct->station_index;
     s.commodity = (uint8_t)ct->commodity;
     s.required_grade = ct->required_grade;
+    s.proof_flags = ct->proof_flags;
+    s.required_prefix_class = ct->required_prefix_class;
+    s.required_recipe_id = ct->required_recipe_id;
+    memcpy(s.required_parent, ct->required_parent, sizeof(s.required_parent));
     s.quantity_needed = ct->quantity_needed;
     s.base_price = ct->base_price;
     s.age_at_copy = ct->age;
@@ -22,17 +26,30 @@ static bool contract_summary_matches(const contract_summary_t *a,
                                      const contract_summary_t *b) {
     return a->action == b->action &&
            a->station_index == b->station_index &&
-           a->commodity == b->commodity;
+           a->commodity == b->commodity &&
+           a->required_grade == b->required_grade &&
+           a->proof_flags == b->proof_flags &&
+           a->required_prefix_class == b->required_prefix_class &&
+           a->required_recipe_id == b->required_recipe_id &&
+           memcmp(a->required_parent, b->required_parent,
+                  sizeof(a->required_parent)) == 0;
 }
 
-static void knowledge_contract_subject_hash(uint8_t action, uint8_t station_index,
-                                            uint8_t commodity, uint8_t out[32]) {
-    uint8_t key[4] = {
+static void knowledge_contract_subject_hash(const contract_summary_t *s,
+                                            uint8_t out[32]) {
+    if (!s || !out) return;
+    uint8_t key[41] = {
         (uint8_t)KNOW_CONTRACT,
-        action,
-        station_index,
-        commodity,
+        s->action,
+        s->station_index,
+        s->commodity,
+        s->required_grade,
+        s->proof_flags,
+        s->required_prefix_class,
     };
+    key[7] = (uint8_t)(s->required_recipe_id & 0xffu);
+    key[8] = (uint8_t)((s->required_recipe_id >> 8) & 0xffu);
+    memcpy(&key[9], s->required_parent, 32);
     sha256_bytes(key, sizeof(key), out);
 }
 
@@ -44,8 +61,7 @@ bool knowledge_item_from_contract_summary(const contract_summary_t *s,
     out->confidence = 255;
     out->salience = 160;
     out->payload_kind = (uint8_t)KNOW_PAYLOAD_CONTRACT_SUMMARY;
-    knowledge_contract_subject_hash(s->action, s->station_index,
-                                    s->commodity, out->subject_hash);
+    knowledge_contract_subject_hash(s, out->subject_hash);
     memcpy(out->payload, s, sizeof(*s));
     return true;
 }
@@ -168,16 +184,17 @@ static void knowledge_seed_contract_pool(knowledge_view_t *view,
 void knowledge_view_forget_contract(knowledge_view_t *view, uint8_t action,
                                     int station_idx, commodity_t commodity) {
     if (!view || station_idx < 0 || station_idx > 255) return;
-    uint8_t subject[32];
-    knowledge_contract_subject_hash(action, (uint8_t)station_idx,
-                                    (uint8_t)commodity, subject);
     int out = 0;
     uint8_t cap = knowledge_view_capacity(view);
     for (int i = 0; i < view->count && i < cap; i++) {
         const knowledge_item_t *item = &view->items[i];
-        bool drop = item->kind == (uint8_t)KNOW_CONTRACT &&
-                    item->payload_kind == (uint8_t)KNOW_PAYLOAD_CONTRACT_SUMMARY &&
-                    memcmp(item->subject_hash, subject, 32) == 0;
+        bool drop = false;
+        contract_summary_t s;
+        if (contract_summary_from_knowledge_item(item, &s)) {
+            drop = s.action == action &&
+                   s.station_index == (uint8_t)station_idx &&
+                   s.commodity == (uint8_t)commodity;
+        }
         if (!drop) {
             if (out != i) view->items[out] = view->items[i];
             out++;

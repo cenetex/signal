@@ -108,10 +108,8 @@ static int station_market_stock_for_contract(const station_t *st,
     int count = 0;
     for (uint16_t i = 0; i < st->manifest.count; i++) {
         const cargo_unit_t *unit = &st->manifest.units[i];
-        if (unit->commodity != (uint8_t)ct->commodity) continue;
-        if ((mining_grade_t)unit->grade < (mining_grade_t)ct->required_grade)
-            continue;
-        if (cargo_unit_is_named_ingot(unit)) continue;
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit))) continue;
+        if (ct->proof_flags == 0 && cargo_unit_is_named_ingot(unit)) continue;
         count++;
     }
     return count;

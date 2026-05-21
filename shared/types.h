@@ -216,6 +216,10 @@ typedef struct {
     uint8_t station_index;   /* destination/issuer */
     uint8_t commodity;       /* commodity_t */
     uint8_t required_grade;  /* mining_grade_t */
+    uint8_t proof_flags;     /* contract_proof_flags_t */
+    uint8_t required_prefix_class; /* ingot_prefix_t, iff REQUIRE_PREFIX */
+    uint16_t required_recipe_id;   /* recipe_id_t, iff REQUIRE_RECIPE */
+    uint8_t required_parent[32];   /* cargo parent_merkle, iff REQUIRE_PARENT */
     float quantity_needed;
     float base_price;
     float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
@@ -1076,6 +1080,13 @@ typedef enum {
     CONTRACT_FRACTURE = 1,
 } contract_action_t;
 
+typedef enum {
+    CONTRACT_PROOF_REQUIRE_PROOF  = 1u << 0, /* cargo carries identity/provenance bytes */
+    CONTRACT_PROOF_REQUIRE_RECIPE = 1u << 1, /* required_recipe_id must match */
+    CONTRACT_PROOF_REQUIRE_PREFIX = 1u << 2, /* required_prefix_class must match */
+    CONTRACT_PROOF_REQUIRE_PARENT = 1u << 3, /* required_parent must match parent_merkle */
+} contract_proof_flags_t;
+
 
 enum { SIM_MAX_EVENTS = 64 };
 
@@ -1217,6 +1228,13 @@ typedef struct {
      * and pay correspondingly (via contract_price × multiplier). Older
      * saves default to COMMON on load because the field is zero-init. */
     uint8_t required_grade;
+    /* Optional provenance restrictions. Zero means legacy behavior:
+     * commodity + minimum grade only. Heritage contracts set one or more
+     * proof_flags so cargo history can become part of the job. */
+    uint8_t proof_flags;
+    uint8_t required_prefix_class;
+    uint16_t required_recipe_id;
+    uint8_t required_parent[32];
     float quantity_needed;  /* amount (SUPPLY) or radius (SCAN) */
     float base_price;
     float age;

@@ -1396,12 +1396,19 @@ static void handle_message(const uint8_t* data, int len) {
                     contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
                     contracts[i].commodity = (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] : COMMODITY_FERRITE_ORE;
                     contracts[i].required_grade = (p[3] < MINING_GRADE_COUNT) ? p[3] : (uint8_t)MINING_GRADE_COMMON;
-                    contracts[i].quantity_needed = read_f32_le(&p[4]);
-                    contracts[i].base_price = read_f32_le(&p[8]);
-                    contracts[i].age = read_f32_le(&p[12]);
-                    contracts[i].target_pos.x = read_f32_le(&p[16]);
-                    contracts[i].target_pos.y = read_f32_le(&p[20]);
-                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[24]);
+                    contracts[i].proof_flags = p[4] & 0x0fu;
+                    contracts[i].required_prefix_class =
+                        (p[5] < INGOT_PREFIX_COUNT) ? p[5] : (uint8_t)INGOT_PREFIX_ANONYMOUS;
+                    contracts[i].required_recipe_id = read_u16_le(&p[6]);
+                    if (contracts[i].required_recipe_id >= RECIPE_COUNT)
+                        contracts[i].proof_flags &= (uint8_t)~CONTRACT_PROOF_REQUIRE_RECIPE;
+                    contracts[i].quantity_needed = read_f32_le(&p[8]);
+                    contracts[i].base_price = read_f32_le(&p[12]);
+                    contracts[i].age = read_f32_le(&p[16]);
+                    contracts[i].target_pos.x = read_f32_le(&p[20]);
+                    contracts[i].target_pos.y = read_f32_le(&p[24]);
+                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[28]);
+                    memcpy(contracts[i].required_parent, &p[32], 32);
                     contracts[i].claimed_by = -1;
                 }
                 net_state.callbacks.on_contracts(contracts, n);
