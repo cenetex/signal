@@ -81,7 +81,8 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 56  /* v56: contracts gained optional provenance
+#define SAVE_VERSION 57  /* v57: contracts gained forbidden origin masks.
+                          * v56: contracts gained optional provenance
                           * requirements (proof flags, recipe, prefix
                           * class, and parent_merkle) for heritage jobs.
                           * Older contracts migrate with zero flags, so
@@ -1112,6 +1113,7 @@ static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->required_prefix_class);
     WRITE_FIELD(f, c->required_recipe_id);
     if (fwrite(c->required_parent, 32, 1, f) != 1) return false;
+    WRITE_FIELD(f, c->forbidden_origin_mask);
     WRITE_FIELD(f, c->quantity_needed);
     WRITE_FIELD(f, c->base_price);
     WRITE_FIELD(f, c->age);
@@ -1142,6 +1144,12 @@ static bool read_contract(FILE *f, contract_t *c) {
         c->required_prefix_class = 0;
         c->required_recipe_id = 0;
         memset(c->required_parent, 0, sizeof(c->required_parent));
+    }
+    if (g_loaded_save_version >= 57) {
+        READ_FIELD(f, c->forbidden_origin_mask);
+    } else {
+        c->forbidden_origin_mask = 0;
+        c->proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
     }
     READ_FIELD(f, c->quantity_needed);
     READ_FIELD(f, c->base_price);

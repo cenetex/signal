@@ -237,6 +237,7 @@ static bool hauler_contract_matches_summary(const contract_t *ct,
     if (ct->proof_flags != cs->proof_flags) return false;
     if (ct->required_prefix_class != cs->required_prefix_class) return false;
     if (ct->required_recipe_id != cs->required_recipe_id) return false;
+    if (ct->forbidden_origin_mask != cs->forbidden_origin_mask) return false;
     return memcmp(ct->required_parent, cs->required_parent,
                   sizeof(ct->required_parent)) == 0;
 }

@@ -709,8 +709,10 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
         .station_index = 2,
         .commodity = COMMODITY_CUPRITE_INGOT,
         .proof_flags = (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
-                                 CONTRACT_PROOF_REQUIRE_RECIPE),
+                                 CONTRACT_PROOF_REQUIRE_RECIPE |
+                                 CONTRACT_PROOF_FORBID_ORIGIN),
         .required_recipe_id = (uint16_t)RECIPE_SMELT,
+        .forbidden_origin_mask = 1ULL << 0,
         .quantity_needed = 8.0f,
         .base_price = 20.0f,
         .target_index = -1,
@@ -723,8 +725,11 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
     ASSERT_EQ_INT(cbuf[2 + CONTRACT_RECORD_SIZE + 1], 2);
     ASSERT_EQ_INT(cbuf[2 + CONTRACT_RECORD_SIZE + 2], COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(cbuf[2 + CONTRACT_RECORD_SIZE + 4],
-                  CONTRACT_PROOF_REQUIRE_PROOF | CONTRACT_PROOF_REQUIRE_RECIPE);
+                  CONTRACT_PROOF_REQUIRE_PROOF |
+                  CONTRACT_PROOF_REQUIRE_RECIPE |
+                  CONTRACT_PROOF_FORBID_ORIGIN);
     ASSERT_EQ_INT(read_u16_le(&cbuf[2 + CONTRACT_RECORD_SIZE + 6]), RECIPE_SMELT);
+    ASSERT_EQ_INT((int)read_u64_le(&cbuf[2 + CONTRACT_RECORD_SIZE + 64]), 1);
 
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
@@ -735,8 +740,10 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
         .station_index = 2,
         .commodity = (uint8_t)COMMODITY_CUPRITE_INGOT,
         .proof_flags = (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
-                                 CONTRACT_PROOF_REQUIRE_RECIPE),
+                                 CONTRACT_PROOF_REQUIRE_RECIPE |
+                                 CONTRACT_PROOF_FORBID_ORIGIN),
         .required_recipe_id = (uint16_t)RECIPE_SMELT,
+        .forbidden_origin_mask = 1ULL << 0,
         .quantity_needed = 8.0f,
         .base_price = 20.0f,
     };
@@ -1165,7 +1172,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
     ASSERT(contracts != NULL);
     ASSERT_EQ_INT(read_u16_le(&contracts[6]), CONTRACT_RECORD_SIZE);
-    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 64);
+    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 72);
 
     const uint8_t *player_manifest = find_protocol_stream(buf, NET_MSG_PLAYER_MANIFEST);
     ASSERT(player_manifest != NULL);

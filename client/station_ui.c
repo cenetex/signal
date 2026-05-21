@@ -1135,6 +1135,24 @@ static bool contract_accepts_trade_row(const contract_t *ct,
         ct, row->commodity, row->grade, (uint16_t)row->quantity, false));
 }
 
+static bool contract_origin_ban_label(const contract_t *ct,
+                                      char *out,
+                                      size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!ct || !(ct->proof_flags & CONTRACT_PROOF_FORBID_ORIGIN) ||
+        ct->forbidden_origin_mask == 0) {
+        return false;
+    }
+    for (int i = 0; i < MAX_STATIONS && i < 64; i++) {
+        if ((ct->forbidden_origin_mask & (1ULL << i)) == 0) continue;
+        snprintf(out, out_size, "no %s ", station_short_name(i));
+        return true;
+    }
+    return false;
+}
+
 static bool trade_row_tracked_note(const station_t *st,
                                    const trade_row_t *row,
                                    char *out,
@@ -1883,8 +1901,12 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             /* Drop the grade word — color encodes rarity for the whole
              * row (see the grade-tint override below). Keeps the cargo
              * cell short so payout doesn't collide with it. */
+            char req_prefix[32];
+            if (!contract_origin_ban_label(ct, req_prefix, sizeof(req_prefix)))
+                snprintf(req_prefix, sizeof(req_prefix), "%s",
+                         ct->proof_flags ? "trace " : "");
             snprintf(cargo_buf, sizeof(cargo_buf), "%s%s x%d",
-                     ct->proof_flags ? "trace " : "",
+                     req_prefix,
                      commodity_short_name(ct->commodity), qty);
         }
 

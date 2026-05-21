@@ -20,6 +20,7 @@ typedef enum {
     CONTRACT_FIT_WRONG_RECIPE,
     CONTRACT_FIT_WRONG_PREFIX,
     CONTRACT_FIT_WRONG_PARENT,
+    CONTRACT_FIT_FORBIDDEN_ORIGIN,
 } contract_fit_reason_t;
 
 static inline const char *contract_fit_reason_label(contract_fit_reason_t reason) {
@@ -36,6 +37,7 @@ static inline const char *contract_fit_reason_label(contract_fit_reason_t reason
     case CONTRACT_FIT_WRONG_RECIPE:    return "wrong recipe";
     case CONTRACT_FIT_WRONG_PREFIX:    return "wrong class";
     case CONTRACT_FIT_WRONG_PARENT:    return "wrong lineage";
+    case CONTRACT_FIT_FORBIDDEN_ORIGIN: return "enemy origin";
     default:                           return "unknown";
     }
 }
@@ -69,6 +71,8 @@ static inline contract_fit_reason_t contract_fit_cargo_fields(
     }
     if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF) && !has_proof)
         return CONTRACT_FIT_MISSING_PROOF;
+    if ((contract->proof_flags & CONTRACT_PROOF_FORBID_ORIGIN) && !has_proof)
+        return CONTRACT_FIT_MISSING_PROOF;
     return CONTRACT_FIT_OK;
 }
 
@@ -100,6 +104,11 @@ static inline contract_fit_reason_t contract_fit_cargo_unit(
     if ((contract->proof_flags & CONTRACT_PROOF_REQUIRE_PARENT) &&
         memcmp(unit->parent_merkle, contract->required_parent, 32) != 0) {
         return CONTRACT_FIT_WRONG_PARENT;
+    }
+    if ((contract->proof_flags & CONTRACT_PROOF_FORBID_ORIGIN) &&
+        unit->origin_station < 64 &&
+        (contract->forbidden_origin_mask & (1ULL << unit->origin_station)) != 0) {
+        return CONTRACT_FIT_FORBIDDEN_ORIGIN;
     }
     return CONTRACT_FIT_OK;
 }

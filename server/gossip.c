@@ -16,6 +16,7 @@ contract_summary_t contract_summary_make(const contract_t *ct) {
     s.required_prefix_class = ct->required_prefix_class;
     s.required_recipe_id = ct->required_recipe_id;
     memcpy(s.required_parent, ct->required_parent, sizeof(s.required_parent));
+    s.forbidden_origin_mask = ct->forbidden_origin_mask;
     s.quantity_needed = ct->quantity_needed;
     s.base_price = ct->base_price;
     s.age_at_copy = ct->age;
@@ -32,13 +33,14 @@ static bool contract_summary_matches(const contract_summary_t *a,
            a->required_prefix_class == b->required_prefix_class &&
            a->required_recipe_id == b->required_recipe_id &&
            memcmp(a->required_parent, b->required_parent,
-                  sizeof(a->required_parent)) == 0;
+                  sizeof(a->required_parent)) == 0 &&
+           a->forbidden_origin_mask == b->forbidden_origin_mask;
 }
 
 static void knowledge_contract_subject_hash(const contract_summary_t *s,
                                             uint8_t out[32]) {
     if (!s || !out) return;
-    uint8_t key[41] = {
+    uint8_t key[49] = {
         (uint8_t)KNOW_CONTRACT,
         s->action,
         s->station_index,
@@ -50,6 +52,8 @@ static void knowledge_contract_subject_hash(const contract_summary_t *s,
     key[7] = (uint8_t)(s->required_recipe_id & 0xffu);
     key[8] = (uint8_t)((s->required_recipe_id >> 8) & 0xffu);
     memcpy(&key[9], s->required_parent, 32);
+    for (int i = 0; i < 8; i++)
+        key[41 + i] = (uint8_t)((s->forbidden_origin_mask >> (8 * i)) & 0xffu);
     sha256_bytes(key, sizeof(key), out);
 }
 

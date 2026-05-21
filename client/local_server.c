@@ -192,7 +192,8 @@ static void mirror_whole_world(const world_t *src) {
                     cs->proof_flags == src->contracts[k].proof_flags &&
                     cs->required_prefix_class == src->contracts[k].required_prefix_class &&
                     cs->required_recipe_id == src->contracts[k].required_recipe_id &&
-                    memcmp(cs->required_parent, src->contracts[k].required_parent, 32) == 0) {
+                    memcmp(cs->required_parent, src->contracts[k].required_parent, 32) == 0 &&
+                    cs->forbidden_origin_mask == src->contracts[k].forbidden_origin_mask) {
                     mask |= (1u << k);
                     break;
                 }

@@ -1110,8 +1110,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
  * v54: +4B world_seq added immediately after belt_seed in the world tail.
  * world.sav has zero fracture children so EXPECTED_SAVE_SIZE is unchanged.
  * v56: +36B per contract for heritage provenance requirements
- * (proof_flags + prefix + recipe + parent hash), × MAX_CONTRACTS=24. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2 + 4 + 24 * 36)
+ * (proof_flags + prefix + recipe + parent hash), × MAX_CONTRACTS=24.
+ * v57: +8B per contract for forbidden origin masks. */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2 + 4 + 24 * 44)
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1148,7 +1149,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 56);
+    ASSERT_EQ_INT((int)version, 57);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

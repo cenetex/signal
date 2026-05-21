@@ -274,10 +274,22 @@ TEST(test_contract_fit_enforces_heritage_recipe_prefix_and_parent) {
     ASSERT_EQ_INT((int)contract_fit_cargo_unit(&parent_contract, &unit),
                   (int)CONTRACT_FIT_OK);
 
+    contract_t origin_contract = recipe_contract;
+    origin_contract.proof_flags |= (uint8_t)CONTRACT_PROOF_FORBID_ORIGIN;
+    origin_contract.forbidden_origin_mask = 1ULL << 2;
+    unit.origin_station = 2;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&origin_contract, &unit),
+                  (int)CONTRACT_FIT_FORBIDDEN_ORIGIN);
+    unit.origin_station = 1;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&origin_contract, &unit),
+                  (int)CONTRACT_FIT_OK);
+
     memset(unit.pub, 0, sizeof(unit.pub));
     memset(unit.parent_merkle, 0, sizeof(unit.parent_merkle));
     unit.mined_block = 0;
     ASSERT_EQ_INT((int)contract_fit_cargo_unit(&recipe_contract, &unit),
+                  (int)CONTRACT_FIT_MISSING_PROOF);
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&origin_contract, &unit),
                   (int)CONTRACT_FIT_MISSING_PROOF);
 }
 
@@ -352,6 +364,54 @@ TEST(test_contract_delivery_requires_heritage_recipe) {
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.01f);
 
     w.players[0].ship.manifest.units[0].recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&w.players[0].ship, COMMODITY_FRAME), 0);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 0.0f, 0.01f);
+}
+
+TEST(test_contract_delivery_bans_enemy_origin_station) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x03, 8);
+
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FRAME, 1,
+                                        MINING_GRADE_COMMON));
+    cargo_unit_t *unit = &w.players[0].ship.manifest.units[0];
+    unit->recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    unit->origin_station = 2;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_FRAME,
+        .proof_flags = (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
+                                 CONTRACT_PROOF_REQUIRE_RECIPE |
+                                 CONTRACT_PROOF_FORBID_ORIGIN),
+        .required_recipe_id = (uint16_t)RECIPE_FRAME_BASIC,
+        .forbidden_origin_mask = 1ULL << 2,
+        .quantity_needed = 1.0f,
+        .base_price = 100.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship_finished_count(&w.players[0].ship, COMMODITY_FRAME), 1);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.01f);
+
+    unit = &w.players[0].ship.manifest.units[0];
+    unit->origin_station = 1;
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
 
@@ -474,7 +534,9 @@ TEST(test_generated_heritage_contracts_require_source_recipe) {
             found_fabbed_frame = true;
             ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_PROOF);
             ASSERT(c->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE);
+            ASSERT(c->proof_flags & CONTRACT_PROOF_FORBID_ORIGIN);
             ASSERT_EQ_INT(c->required_recipe_id, RECIPE_FRAME_BASIC);
+            ASSERT(c->forbidden_origin_mask & (1ULL << 0));
         }
     }
     ASSERT(found_smelted_ingot);
@@ -1912,6 +1974,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_fit_enforces_heritage_recipe_prefix_and_parent);
     RUN(test_contract_delivery_requires_required_grade);
     RUN(test_contract_delivery_requires_heritage_recipe);
+    RUN(test_contract_delivery_bans_enemy_origin_station);
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_raw_ore_contract_retires_when_refined_output_full);
     RUN(test_kit_input_contract_closes_at_kit_target);

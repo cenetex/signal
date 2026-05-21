@@ -417,7 +417,7 @@ rewriting or repairing the log.
 | Cross-station verification | Cargo receipts (Layer D, shipped off-chain) |
 | Standalone verifier | `signal_verify` (Layer E, shipped) |
 | Asset inventory export | `signal_chain_assets` (Layer E, shipped) |
-| Provenance-aware demand | Heritage contract recipe requirements (off-chain) |
+| Provenance-aware demand | Heritage recipe and hostile-origin contract requirements (off-chain) |
 | Cross-operator anchor | On-chain state-root commitment (#480, future) |
 | Asset extraction | On-chain wrap contract (#480, future) |
 | Bounty payouts | On-chain bounty program (#480, future) |

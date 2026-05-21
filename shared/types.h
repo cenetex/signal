@@ -223,6 +223,7 @@ typedef struct {
     float quantity_needed;
     float base_price;
     float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
+    uint64_t forbidden_origin_mask; /* station-origin bitmask, iff FORBID_ORIGIN */
 } contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
 
 typedef enum {
@@ -1085,6 +1086,7 @@ typedef enum {
     CONTRACT_PROOF_REQUIRE_RECIPE = 1u << 1, /* required_recipe_id must match */
     CONTRACT_PROOF_REQUIRE_PREFIX = 1u << 2, /* required_prefix_class must match */
     CONTRACT_PROOF_REQUIRE_PARENT = 1u << 3, /* required_parent must match parent_merkle */
+    CONTRACT_PROOF_FORBID_ORIGIN  = 1u << 4, /* origin_station bit must not be in forbidden_origin_mask */
 } contract_proof_flags_t;
 
 
@@ -1235,6 +1237,7 @@ typedef struct {
     uint8_t required_prefix_class;
     uint16_t required_recipe_id;
     uint8_t required_parent[32];
+    uint64_t forbidden_origin_mask;
     float quantity_needed;  /* amount (SUPPLY) or radius (SCAN) */
     float base_price;
     float age;

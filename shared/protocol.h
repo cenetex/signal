@@ -618,10 +618,10 @@ enum {
 #define NET_CLIENT_METRICS_SIZE 21
 
 /* NET_MSG_CONTRACTS record: action, station, commodity, grade, provenance
- * requirements, quantity, price, age, target position, target index. Kept
- * shared so client decoders and external tools do not hardcode server-local
- * constants. */
-#define CONTRACT_RECORD_SIZE 64
+ * requirements, origin bans, quantity, price, age, target position, and
+ * target index. Kept shared so client decoders and external tools do not
+ * hardcode server-local constants. */
+#define CONTRACT_RECORD_SIZE 72
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

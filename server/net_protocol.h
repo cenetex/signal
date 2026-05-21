@@ -61,6 +61,13 @@ static inline void write_u64_le(uint8_t *buf, uint64_t v) {
         buf[i] = (uint8_t)(v >> (8 * i));
 }
 
+static inline uint64_t read_u64_le(const uint8_t *buf) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= ((uint64_t)buf[i]) << (8 * i);
+    return v;
+}
+
 static inline float read_f32_le(const uint8_t *buf) {
     union { float f; uint32_t u; } conv;
     conv.u = (uint32_t)buf[0]
@@ -1122,7 +1129,8 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
  *   + quantity_needed(f32) + base_price(f32) + age(f32)
  *   + target.x(f32) + target.y(f32) + target_index(u32)
  *   + required_parent(32)
- * Bumped from 28 when heritage contract requirements were added. */
+ *   + forbidden_origin_mask(u64)
+ * Bumped from 64 when origin-ban contract requirements were added. */
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -1142,6 +1150,7 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
         write_f32_le(&p[24], contracts[i].target_pos.y);
         write_u32_le(&p[28], (uint32_t)contracts[i].target_index);
         memcpy(&p[32], contracts[i].required_parent, 32);
+        write_u64_le(&p[64], contracts[i].forbidden_origin_mask);
         /* Note: claimed_by not sent — server-only field */
         count++;
     }
@@ -1187,7 +1196,8 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
                     cs->proof_flags == contracts[k].proof_flags &&
                     cs->required_prefix_class == contracts[k].required_prefix_class &&
                     cs->required_recipe_id == contracts[k].required_recipe_id &&
-                    memcmp(cs->required_parent, contracts[k].required_parent, 32) == 0) {
+                    memcmp(cs->required_parent, contracts[k].required_parent, 32) == 0 &&
+                    cs->forbidden_origin_mask == contracts[k].forbidden_origin_mask) {
                     mask |= (1u << ordinal);
                     break;
                 }
