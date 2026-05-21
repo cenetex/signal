@@ -504,6 +504,14 @@ typedef struct {
      * recover so PvP harassment has weight, but the chain isn't a
      * permanent loss. */
     float npc_respawn_timer;
+    /* Runtime-only aggregate pilot pressure for frontier expansion.
+     * Physical player/NPC/entity counts stay capped by the v1 protocol;
+     * these fields let hundreds or thousands of simulated strategic
+     * pilots rank expansion work without occupying network slots. */
+    int frontier_virtual_pilots;
+    float frontier_plan_timer;
+    uint32_t frontier_plans_created;
+    uint32_t frontier_scaffold_orders;
     /* Monotonic counter for npc_ship_t.session_token. Incremented in
      * spawn_npc; the low/high bytes get stamped into the token so each
      * spawn (including respawns of the same role at the same station)

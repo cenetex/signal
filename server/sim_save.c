@@ -81,7 +81,11 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 57  /* v57: contracts gained forbidden origin masks.
+#define SAVE_STATION_SLOTS_V25 64
+#define SAVE_VERSION 58  /* v58: station session section expanded from
+                          * 64 to MAX_STATIONS=128 slots. v25-v57 saves
+                          * still read exactly their historical 64 slots.
+                          * v57: contracts gained forbidden origin masks.
                           * v56: contracts gained optional provenance
                           * requirements (proof flags, recipe, prefix
                           * class, and parent_merkle) for heritage jobs.
@@ -1317,7 +1321,9 @@ bool world_load(world_t *w, const char *path) {
         READ_FIELD(f, w->next_station_id);
         if (version >= 27) READ_FIELD(f, w->next_fracture_id);
         else w->next_fracture_id = 0;
-        save_station_slots = MAX_STATIONS; /* v25 writes all 64 slots */
+        save_station_slots = (version >= 58)
+            ? MAX_STATIONS
+            : SAVE_STATION_SLOTS_V25;
     } else {
         w->next_fracture_id = 0;
     }

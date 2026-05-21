@@ -291,13 +291,15 @@ TEST(test_bug24_ingot_buffer_no_cap) {
 TEST(test_bug25_rng_deterministic_every_reset) {
     /* Deterministic RNG is intentional — same seed produces identical
      * worlds for reproducibility and testing.  Verify that property. */
-    WORLD_DECL_NAME(w1);
-    WORLD_DECL_NAME(w2);
-    world_reset(&w1);
-    world_reset(&w2);
+    WORLD_HEAP w1 = calloc(1, sizeof(world_t));
+    WORLD_HEAP w2 = calloc(1, sizeof(world_t));
+    ASSERT(w1 != NULL);
+    ASSERT(w2 != NULL);
+    world_reset(w1);
+    world_reset(w2);
     bool all_same = true;
     for (int i = 0; i < 5; i++) {
-        if (w1.asteroids[i].pos.x != w2.asteroids[i].pos.x) all_same = false;
+        if (w1->asteroids[i].pos.x != w2->asteroids[i].pos.x) all_same = false;
     }
     ASSERT(all_same);
 }
@@ -1023,7 +1025,7 @@ TEST(test_bug67_dock_station_bounds) {
     /* dock_ship: if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station
      * No upper bound check. If nearby_station is somehow >= MAX_STATIONS,
      * current_station becomes invalid → all station accesses OOB. */
-    ASSERT(MAX_STATIONS == 64);
+    ASSERT(MAX_STATIONS == 128);
     /* After fix: dock_ship should check nearby_station < MAX_STATIONS.
      * Currently it only checks >= 0. */
     WORLD_DECL;
@@ -1326,64 +1328,68 @@ TEST(test_bug60_cannot_mine_fragment) {
 TEST(test_bug88_interference_seed_no_world_time) {
     /* Two worlds with same player state but different w->time should
      * produce the same interference jitter. */
-    WORLD_DECL_NAME(w1);
-    WORLD_DECL_NAME(w2);
-    world_reset(&w1); world_reset(&w2);
-    player_init_ship(&w1.players[0], &w1);
-    player_init_ship(&w2.players[0], &w2);
-    w1.players[0].connected = true; w2.players[0].connected = true;
-    w1.players[0].docked = false; w2.players[0].docked = false;
-    w1.players[0].ship.pos = v2(500.0f, 0.0f);
-    w2.players[0].ship.pos = v2(500.0f, 0.0f);
-    w1.players[0].ship.angle = 0.0f; w2.players[0].ship.angle = 0.0f;
-    w1.players[0].ship.vel = v2(0.0f, 0.0f);
-    w2.players[0].ship.vel = v2(0.0f, 0.0f);
-    w1.players[0].input.turn = 1.0f; w2.players[0].input.turn = 1.0f;
+    WORLD_HEAP w1 = calloc(1, sizeof(world_t));
+    WORLD_HEAP w2 = calloc(1, sizeof(world_t));
+    ASSERT(w1 != NULL);
+    ASSERT(w2 != NULL);
+    world_reset(w1); world_reset(w2);
+    player_init_ship(&w1->players[0], w1);
+    player_init_ship(&w2->players[0], w2);
+    w1->players[0].connected = true; w2->players[0].connected = true;
+    w1->players[0].docked = false; w2->players[0].docked = false;
+    w1->players[0].ship.pos = v2(500.0f, 0.0f);
+    w2->players[0].ship.pos = v2(500.0f, 0.0f);
+    w1->players[0].ship.angle = 0.0f; w2->players[0].ship.angle = 0.0f;
+    w1->players[0].ship.vel = v2(0.0f, 0.0f);
+    w2->players[0].ship.vel = v2(0.0f, 0.0f);
+    w1->players[0].input.turn = 1.0f; w2->players[0].input.turn = 1.0f;
     /* Place a large asteroid nearby to trigger interference */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
-    w1.asteroids[0].active = true; w1.asteroids[0].tier = ASTEROID_TIER_XL;
-    w1.asteroids[0].radius = 70.0f; w1.asteroids[0].pos = v2(550.0f, 0.0f);
-    w2.asteroids[0] = w1.asteroids[0];
+    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1->asteroids[i].active = false; w2->asteroids[i].active = false; }
+    w1->asteroids[0].active = true; w1->asteroids[0].tier = ASTEROID_TIER_XL;
+    w1->asteroids[0].radius = 70.0f; w1->asteroids[0].pos = v2(550.0f, 0.0f);
+    w2->asteroids[0] = w1->asteroids[0];
     /* Set different world times */
-    w1.time = 10.0f;
-    w2.time = 999.0f;
-    world_sim_step_player_only(&w1, 0, SIM_DT);
-    world_sim_step_player_only(&w2, 0, SIM_DT);
+    w1->time = 10.0f;
+    w2->time = 999.0f;
+    world_sim_step_player_only(w1, 0, SIM_DT);
+    world_sim_step_player_only(w2, 0, SIM_DT);
     /* Ship angles should be identical despite different w->time */
-    ASSERT_EQ_FLOAT(w1.players[0].ship.angle, w2.players[0].ship.angle, 0.0001f);
+    ASSERT_EQ_FLOAT(w1->players[0].ship.angle, w2->players[0].ship.angle, 0.0001f);
 }
 
 TEST(test_bug89_gravity_symmetric) {
     /* Use a Titan/small-body pair close enough to hit the gravity clamp.
      * Swapping indices must not change the resulting accelerations. */
-    WORLD_DECL_NAME(w1);
-    WORLD_DECL_NAME(w2);
-    world_reset(&w1); world_reset(&w2);
-    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
+    WORLD_HEAP w1 = calloc(1, sizeof(world_t));
+    WORLD_HEAP w2 = calloc(1, sizeof(world_t));
+    ASSERT(w1 != NULL);
+    ASSERT(w2 != NULL);
+    world_reset(w1); world_reset(w2);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1->asteroids[i].active = false; w2->asteroids[i].active = false; }
     for (int s = 0; s < MAX_STATIONS; s++) {
-        w1.stations[s].pos = v2(10000.0f, 10000.0f);
-        w2.stations[s].pos = v2(10000.0f, 10000.0f);
+        w1->stations[s].pos = v2(10000.0f, 10000.0f);
+        w2->stations[s].pos = v2(10000.0f, 10000.0f);
     }
     /* World 1: small at slot 0, Titan at slot 1 */
-    w1.asteroids[0].active = true; w1.asteroids[0].tier = ASTEROID_TIER_M;
-    w1.asteroids[0].radius = 12.0f; w1.asteroids[0].pos = v2(1200.0f, 1200.0f);
-    w1.asteroids[0].vel = v2(0.0f, 0.0f); w1.asteroids[0].hp = 40.0f;
-    w1.asteroids[1].active = true; w1.asteroids[1].tier = ASTEROID_TIER_XXL;
-    w1.asteroids[1].radius = 200.0f; w1.asteroids[1].pos = v2(1225.0f, 1200.0f);
-    w1.asteroids[1].vel = v2(0.0f, 0.0f); w1.asteroids[1].hp = 1000.0f;
+    w1->asteroids[0].active = true; w1->asteroids[0].tier = ASTEROID_TIER_M;
+    w1->asteroids[0].radius = 12.0f; w1->asteroids[0].pos = v2(1200.0f, 1200.0f);
+    w1->asteroids[0].vel = v2(0.0f, 0.0f); w1->asteroids[0].hp = 40.0f;
+    w1->asteroids[1].active = true; w1->asteroids[1].tier = ASTEROID_TIER_XXL;
+    w1->asteroids[1].radius = 200.0f; w1->asteroids[1].pos = v2(1225.0f, 1200.0f);
+    w1->asteroids[1].vel = v2(0.0f, 0.0f); w1->asteroids[1].hp = 1000.0f;
     /* World 2: Titan at slot 0, small at slot 1 (swapped) */
-    w2.asteroids[0] = w1.asteroids[1]; w2.asteroids[0].pos = v2(200.0f, 0.0f);
-    w2.asteroids[1] = w1.asteroids[0]; w2.asteroids[1].pos = v2(0.0f, 0.0f);
-    w2.asteroids[0].pos = v2(1225.0f, 1200.0f);
-    w2.asteroids[1].pos = v2(1200.0f, 1200.0f);
-    world_sim_step(&w1, SIM_DT);
-    world_sim_step(&w2, SIM_DT);
+    w2->asteroids[0] = w1->asteroids[1]; w2->asteroids[0].pos = v2(200.0f, 0.0f);
+    w2->asteroids[1] = w1->asteroids[0]; w2->asteroids[1].pos = v2(0.0f, 0.0f);
+    w2->asteroids[0].pos = v2(1225.0f, 1200.0f);
+    w2->asteroids[1].pos = v2(1200.0f, 1200.0f);
+    world_sim_step(w1, SIM_DT);
+    world_sim_step(w2, SIM_DT);
     /* Velocity of the small body should be the same magnitude in both worlds */
-    float v1_small = v2_len(w1.asteroids[0].vel);
-    float v2_small = v2_len(w2.asteroids[1].vel);
+    float v1_small = v2_len(w1->asteroids[0].vel);
+    float v2_small = v2_len(w2->asteroids[1].vel);
     ASSERT_EQ_FLOAT(v1_small, v2_small, 0.001f);
-    float v1_big = v2_len(w1.asteroids[1].vel);
-    float v2_big = v2_len(w2.asteroids[0].vel);
+    float v1_big = v2_len(w1->asteroids[1].vel);
+    float v2_big = v2_len(w2->asteroids[0].vel);
     ASSERT_EQ_FLOAT(v1_big, v2_big, 0.001f);
 }
 

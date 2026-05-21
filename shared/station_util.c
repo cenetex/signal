@@ -950,7 +950,7 @@ const char *station_short_name(int station_idx) {
      * Helper is shared/station_util so both the docked trade UI and any
      * test or server-side code that wants to render lineage can use the
      * same names. The 16-byte static buffer for outposts caps at
-     * MAX_STATIONS = 64, so "Outpost 63" still fits. */
+     * MAX_STATIONS = 128, so "Outpost 127" still fits. */
     static char outpost_buf[16];
     switch (station_idx) {
     case 0: return "Prospect";

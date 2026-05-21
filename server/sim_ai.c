@@ -10,6 +10,7 @@
 #include "sim_flight.h"
 #include "sim_ship.h"
 #include "sim_mining.h"
+#include "sim_construction.h"
 #include "signal_model.h"
 #include "manifest.h"
 #include "commodity.h"
@@ -18,8 +19,11 @@
 #include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
 #include "cargo_receipt_issue.h"
 #include "gossip.h"
+#include "chain_log.h"
 #include "sha256.h"
+#include "station_authority.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Remove up to `n` cargo units of `c` from a station's manifest.
@@ -30,6 +34,220 @@
  * hauler already carried away. */
 static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n) {
     return station_manifest_consume_by_commodity(st, c, n);
+}
+
+#define FRONTIER_DIRECTOR_BASE_INTERVAL 30.0f
+#define FRONTIER_DIRECTOR_MIN_INTERVAL 1.0f
+#define FRONTIER_DIRECTOR_MAX_PLANNED 8
+
+static int frontier_planned_limit(int virtual_pilots) {
+    if (virtual_pilots <= 0) return 0;
+    int limit = 1 + virtual_pilots / 250;
+    if (limit > FRONTIER_DIRECTOR_MAX_PLANNED)
+        limit = FRONTIER_DIRECTOR_MAX_PLANNED;
+    return limit;
+}
+
+static float frontier_director_interval(int virtual_pilots) {
+    if (virtual_pilots <= 0) return FRONTIER_DIRECTOR_BASE_INTERVAL;
+    float n = sqrtf((float)virtual_pilots);
+    if (n < 1.0f) n = 1.0f;
+    float interval = FRONTIER_DIRECTOR_BASE_INTERVAL / n;
+    if (interval < FRONTIER_DIRECTOR_MIN_INTERVAL)
+        interval = FRONTIER_DIRECTOR_MIN_INTERVAL;
+    return interval;
+}
+
+void frontier_virtual_pilots_set(world_t *w, int count) {
+    if (!w) return;
+    if (count < 0) count = 0;
+    if (count > SIGNAL_FRONTIER_VIRTUAL_PILOTS_MAX)
+        count = SIGNAL_FRONTIER_VIRTUAL_PILOTS_MAX;
+    w->frontier_virtual_pilots = count;
+    if (count > 0 && w->frontier_plan_timer <= 0.0f)
+        w->frontier_plan_timer = 0.1f;
+}
+
+static int frontier_count_planned_outposts(const world_t *w) {
+    int count = 0;
+    if (!w) return 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (w->stations[s].planned) count++;
+    }
+    return count;
+}
+
+static int frontier_count_relay_work(const world_t *w) {
+    int count = 0;
+    if (!w) return 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int i = 0; i < st->pending_scaffold_count; i++) {
+            if (st->pending_scaffolds[i].type == MODULE_SIGNAL_RELAY)
+                count++;
+        }
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active || sc->module_type != MODULE_SIGNAL_RELAY) continue;
+        if (sc->state == SCAFFOLD_NASCENT ||
+            sc->state == SCAFFOLD_LOOSE ||
+            sc->state == SCAFFOLD_TOWING)
+            count++;
+    }
+    return count;
+}
+
+static int frontier_find_free_station_slot(const world_t *w) {
+    if (!w) return -1;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (!station_exists(&w->stations[s])) return s;
+    }
+    return -1;
+}
+
+static void frontier_hash_u32(sha256_ctx_t *ctx, uint32_t v) {
+    uint8_t le[4] = {
+        (uint8_t)(v & 0xFFu),
+        (uint8_t)((v >> 8) & 0xFFu),
+        (uint8_t)((v >> 16) & 0xFFu),
+        (uint8_t)((v >> 24) & 0xFFu),
+    };
+    sha256_update(ctx, le, sizeof(le));
+}
+
+static void frontier_founder_pubkey(const world_t *w, int slot, vec2 pos,
+                                    uint8_t out[32]) {
+    static const uint8_t domain[] = {
+        'S','I','G','N','A','L','-','F','R','O','N','T','I','E','R',
+        '-','P','I','L','O','T','-','v','1'
+    };
+    sha256_ctx_t ctx;
+    uint32_t x_bits = 0;
+    uint32_t y_bits = 0;
+    memcpy(&x_bits, &pos.x, sizeof(x_bits));
+    memcpy(&y_bits, &pos.y, sizeof(y_bits));
+    sha256_init(&ctx);
+    sha256_update(&ctx, domain, sizeof(domain));
+    frontier_hash_u32(&ctx, w ? w->belt_seed : 0);
+    frontier_hash_u32(&ctx, (uint32_t)slot);
+    frontier_hash_u32(&ctx, w ? w->frontier_plans_created : 0);
+    frontier_hash_u32(&ctx, x_bits);
+    frontier_hash_u32(&ctx, y_bits);
+    sha256_final(&ctx, out);
+}
+
+static bool frontier_queue_relay_order(world_t *w) {
+    if (!w) return false;
+    commodity_t mat = module_build_material_lookup(MODULE_SIGNAL_RELAY);
+    int best_station = -1;
+    int best_pending = 999;
+    float best_stock = -1.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_sells_scaffold(st, MODULE_SIGNAL_RELAY)) continue;
+        if (st->pending_scaffold_count >= 4) continue;
+        float stock = (mat < COMMODITY_COUNT) ? st->_inventory_cache[mat] : 0.0f;
+        if (best_station < 0 ||
+            st->pending_scaffold_count < best_pending ||
+            (st->pending_scaffold_count == best_pending && stock > best_stock)) {
+            best_station = s;
+            best_pending = st->pending_scaffold_count;
+            best_stock = stock;
+        }
+    }
+    if (best_station < 0) return false;
+    station_t *st = &w->stations[best_station];
+    int idx = st->pending_scaffold_count++;
+    st->pending_scaffolds[idx].type = MODULE_SIGNAL_RELAY;
+    st->pending_scaffolds[idx].owner = -1;
+    w->frontier_scaffold_orders++;
+    SIM_LOG("[frontier] queued signal relay scaffold at station %d\n", best_station);
+    return true;
+}
+
+static bool frontier_plan_outpost(world_t *w) {
+    if (!w) return false;
+    int slot = frontier_find_free_station_slot(w);
+    if (slot < 0) return false;
+
+    const float golden_angle = 2.39996323f;
+    uint32_t seed = w->frontier_plans_created * 17u + w->tick * 3u + 11u;
+    for (int pass = 0; pass < MAX_STATIONS; pass++) {
+        int parent_idx = (int)((seed + (uint32_t)pass) % (uint32_t)MAX_STATIONS);
+        const station_t *parent = &w->stations[parent_idx];
+        if (!station_is_active(parent)) continue;
+        if (!station_provides_signal(parent)) continue;
+        if (parent->signal_range <= OUTPOST_MIN_DISTANCE * 2.0f) continue;
+
+        for (int a = 0; a < 24; a++) {
+            uint32_t k = seed + (uint32_t)pass * 24u + (uint32_t)a;
+            float angle = (float)k * golden_angle;
+            float band = 0.55f + 0.30f * (float)(k % 7u) / 6.0f;
+            float dist = parent->signal_range * band;
+            if (dist < OUTPOST_MIN_DISTANCE * 1.25f)
+                dist = OUTPOST_MIN_DISTANCE * 1.25f;
+            vec2 pos = v2_add(parent->pos,
+                              v2(cosf(angle) * dist, sinf(angle) * dist));
+            if (!can_place_outpost(w, pos)) continue;
+
+            if (slot >= w->station_count) w->station_count = slot + 1;
+            station_t *st = &w->stations[slot];
+            station_cleanup(st);
+            memset(st, 0, sizeof(*st));
+            (void)station_manifest_bootstrap(st);
+            if (w->next_station_id == 0) w->next_station_id = 1;
+            st->id = w->next_station_id++;
+            snprintf(st->name, sizeof(st->name), "Frontier %02d", slot);
+            st->pos = pos;
+            st->planned = true;
+            st->planned_owner = -1;
+
+            uint8_t founder[32];
+            frontier_founder_pubkey(w, slot, pos, founder);
+            station_authority_init_outpost(st, founder,
+                                           (uint64_t)(w->time * 128.0f));
+            chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
+                                 "virtual frontier pilot planned outpost");
+            st->radius = 0.0f;
+            st->dock_radius = 0.0f;
+            st->signal_range = 0.0f;
+            st->arm_count = 0;
+            for (int r = 0; r < MAX_ARMS; r++) {
+                st->arm_rotation[r] = 0.0f;
+                st->ring_offset[r] = 0.0f;
+                st->arm_speed[r] = 0.0f;
+            }
+
+            w->frontier_plans_created++;
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_OUTPOST_PLACED,
+                .player_id = -1,
+                .outpost_placed = { .slot = slot },
+            });
+            SIM_LOG("[frontier] virtual pilots planned outpost at slot %d\n", slot);
+            return true;
+        }
+    }
+    return false;
+}
+
+void step_frontier_director(world_t *w, float dt) {
+    if (!w || w->frontier_virtual_pilots <= 0 || dt <= 0.0f) return;
+    w->frontier_plan_timer -= dt;
+    if (w->frontier_plan_timer > 0.0f) return;
+
+    int planned = frontier_count_planned_outposts(w);
+    int plan_limit = frontier_planned_limit(w->frontier_virtual_pilots);
+    if (planned < plan_limit && frontier_plan_outpost(w))
+        planned++;
+
+    int relay_work = frontier_count_relay_work(w);
+    if (relay_work < planned)
+        (void)frontier_queue_relay_order(w);
+
+    w->frontier_plan_timer = frontier_director_interval(w->frontier_virtual_pilots);
 }
 
 static int hauler_reserve_units(void) {
@@ -781,10 +999,11 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
     }
 }
 
-/* Target NPC roster per starter station — must match the world_reset
- * seed (see game_sim.c: spawn_npc calls). Outposts (>=3) are player-
- * built and don't get auto-replenished here; they can scaffold their
- * own NPCs via gameplay later. */
+/* Target NPC roster per station. Starter station targets must match the
+ * world_reset seed (see game_sim.c: spawn_npc calls). Active outposts get
+ * a small local roster only when their modules expose useful work, so
+ * frontier expansion can become self-supporting without inflating the
+ * physical NPC pool beyond MAX_NPC_SHIPS. */
 static void station_target_npc_counts(int station_idx, const station_t *st,
                                       int *miners, int *haulers, int *tows) {
     *miners = 0;
@@ -803,7 +1022,11 @@ static void station_target_npc_counts(int station_idx, const station_t *st,
         *haulers = 1;
         *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
         return;
-    default: return;                            /* outposts: no auto */
+    default:
+        *miners = station_has_module(st, MODULE_FURNACE) ? 1 : 0;
+        *haulers = station_has_module(st, MODULE_DOCK) ? 1 : 0;
+        *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
+        return;
     }
 }
 

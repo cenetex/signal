@@ -24,14 +24,14 @@
  *
  * Do NOT raise MAX_NPC_SHIPS or MAX_SCAFFOLDS without a paired
  * wire-protocol bump and a deserializer change in client/net.c.
- * MAX_STATIONS lifted to 64 (#285 Phase 1). MAX_ASTEROIDS lifted
+ * MAX_STATIONS lifted to 128 (#285 Phase 4a). MAX_ASTEROIDS lifted
  * to 2048 (#285 Phase 3) with uint16 wire indices.
  */
 enum {
     KEY_COUNT = 512,
     MAX_ASTEROIDS = 2048, /* uint16 wire index; lifted from 255 in #285 Phase 3 */
     MAX_STARS = 120,
-    MAX_STATIONS = 64,   /* lifted from 8 in #285 Phase 1; uint8 wire index supports 255 */
+    MAX_STATIONS = 128,  /* lifted from 64 in #285 Phase 4a; uint8 wire index supports 255 */
     MAX_NPC_SHIPS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     AUDIO_VOICE_COUNT = 24,

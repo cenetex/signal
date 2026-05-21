@@ -2288,19 +2288,21 @@ TEST(test_top_demand_severity_clamped_zero_to_one) {
  * to 50% more. */
 TEST(test_contract_price_scales_with_demand) {
     /* Helper to grab Kepler's frame_press ingot import contract. */
-    WORLD_DECL_NAME(stocked);
-    world_reset(&stocked);
+    WORLD_HEAP stocked = calloc(1, sizeof(world_t));
+    WORLD_HEAP starved = calloc(1, sizeof(world_t));
+    ASSERT(stocked != NULL);
+    ASSERT(starved != NULL);
+    world_reset(stocked);
     /* Top up Kepler's ferrite ingot inventory to its target so demand
      * mult is 1.0 — i.e. the existing pricing path. */
-    stocked.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    stocked->stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
     /* Run a few seconds for contract step to fire. */
-    for (int i = 0; i < 240; i++) world_sim_step(&stocked, SIM_DT);
+    for (int i = 0; i < 240; i++) world_sim_step(stocked, SIM_DT);
 
-    WORLD_DECL_NAME(starved);
-    world_reset(&starved);
+    world_reset(starved);
     /* Starve Kepler completely for ferrite ingots — demand mult ~1.5. */
-    starved.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
-    for (int i = 0; i < 240; i++) world_sim_step(&starved, SIM_DT);
+    starved->stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    for (int i = 0; i < 240; i++) world_sim_step(starved, SIM_DT);
 
     /* Find the (Kepler, FERRITE_INGOT) contract in each world. The
      * stocked world may not generate one at all if supply is at
@@ -2310,18 +2312,18 @@ TEST(test_contract_price_scales_with_demand) {
      * post one. */
     contract_t *c_stocked = NULL;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (stocked.contracts[k].active
-            && stocked.contracts[k].station_index == 1
-            && stocked.contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
-            c_stocked = &stocked.contracts[k]; break;
+        if (stocked->contracts[k].active
+            && stocked->contracts[k].station_index == 1
+            && stocked->contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
+            c_stocked = &stocked->contracts[k]; break;
         }
     }
     contract_t *c_starved = NULL;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (starved.contracts[k].active
-            && starved.contracts[k].station_index == 1
-            && starved.contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
-            c_starved = &starved.contracts[k]; break;
+        if (starved->contracts[k].active
+            && starved->contracts[k].station_index == 1
+            && starved->contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
+            c_starved = &starved->contracts[k]; break;
         }
     }
     ASSERT(c_starved != NULL); /* starvation MUST produce a contract */

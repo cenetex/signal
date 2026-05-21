@@ -1211,6 +1211,64 @@ TEST(test_scaffold_ship_drag) {
     ASSERT(free_spd > spd * 1.5f);
 }
 
+static int test_count_planned_frontier_outposts(const world_t *w) {
+    int count = 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (w->stations[s].planned) count++;
+    }
+    return count;
+}
+
+static int test_count_pending_relay_orders(const world_t *w) {
+    int count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int i = 0; i < st->pending_scaffold_count; i++) {
+            if (st->pending_scaffolds[i].type == MODULE_SIGNAL_RELAY)
+                count++;
+        }
+    }
+    return count;
+}
+
+TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    frontier_virtual_pilots_set(&w, 1000);
+    step_frontier_director(&w, 1.0f);
+
+    ASSERT_EQ_INT(w.frontier_virtual_pilots, 1000);
+    ASSERT_EQ_INT((int)w.frontier_plans_created, 1);
+    ASSERT_EQ_INT((int)w.frontier_scaffold_orders, 1);
+    ASSERT_EQ_INT(test_count_planned_frontier_outposts(&w), 1);
+    ASSERT_EQ_INT(test_count_pending_relay_orders(&w), 1);
+
+    int plan_slot = -1;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (w.stations[s].planned) { plan_slot = s; break; }
+    }
+    ASSERT(plan_slot >= 3);
+    ASSERT(can_place_outpost(&w, v2_add(w.stations[plan_slot].pos,
+                                        v2(OUTPOST_MIN_DISTANCE * 0.5f, 0.0f))) == false);
+}
+
+TEST(test_frontier_virtual_pilots_scale_planned_queue) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    frontier_virtual_pilots_set(&w, 1000);
+    for (int i = 0; i < 5; i++) {
+        step_frontier_director(&w, 2.0f);
+    }
+
+    ASSERT(test_count_planned_frontier_outposts(&w) >= 2);
+    ASSERT(test_count_planned_frontier_outposts(&w) <= 5);
+    ASSERT(test_count_pending_relay_orders(&w) >= 2);
+    ASSERT(w.frontier_scaffold_orders >= 2);
+}
+
 TEST(test_tow_drone_delivers_to_planned_outpost) {
     WORLD_DECL;
     world_reset(&w);
@@ -2259,6 +2317,8 @@ void register_construction_scaffold_tests(void) {
     RUN(test_scaffold_full_pipeline);
     RUN(test_build_outpost_full_economy);
     RUN(test_scaffold_ship_drag);
+    RUN(test_frontier_virtual_pilots_plan_and_order_relay);
+    RUN(test_frontier_virtual_pilots_scale_planned_queue);
     RUN(test_tow_drone_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
 }

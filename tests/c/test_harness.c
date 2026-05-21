@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "chain_log.h"
 
 #ifdef _WIN32
 #include <process.h>  /* _getpid */
@@ -235,6 +236,28 @@ const char *test_tmp_path(const char *name) {
     next = (next + 1) % TMP_RING;
     snprintf(buf, TMP_BUFLEN, "%s/%s", g_tmp_dir, name);
     return buf;
+}
+
+void test_prepare_case(const char *name) {
+    char clean[80];
+    char path[192];
+    size_t j = 0;
+    if (!name) name = "unnamed";
+    for (size_t i = 0; name[i] != '\0' && j + 1 < sizeof(clean); i++) {
+        char c = name[i];
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9')) {
+            clean[j++] = c;
+        } else {
+            clean[j++] = '_';
+        }
+    }
+    clean[j] = '\0';
+    snprintf(path, sizeof(path), "%s/chain_%03d_%s",
+             test_tmp_dir(), tests_run, clean);
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(path);
 }
 
 double econ_total_credits(const world_t *w) {

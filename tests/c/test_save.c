@@ -475,10 +475,11 @@ TEST(test_world_save_round_trips_station_manifest) {
      * Slice A of #339 lifted that guard and added real serialization;
      * this test asserts the round trip now works. */
     WORLD_DECL;
-    WORLD_DECL_NAME(loaded);
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
     cargo_unit_t unit = {0};
     world_reset(&w);
-    world_reset(&loaded);
+    world_reset(loaded);
     unit.kind = (uint8_t)CARGO_KIND_INGOT;
     unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
     unit.grade = (uint8_t)MINING_GRADE_RARE;
@@ -493,14 +494,14 @@ TEST(test_world_save_round_trips_station_manifest) {
     ASSERT(station_manifest_push_with_chain(&w.stations[0], &unit, &chain));
     ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
     ASSERT(world_save(&w, TMP("test_manifest_roundtrip.sav")));
-    ASSERT(world_load(&loaded, TMP("test_manifest_roundtrip.sav")));
-    ASSERT_EQ_INT(loaded.stations[0].manifest.count, 1);
-    ASSERT(loaded.stations[0].manifest.units != NULL);
-    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].kind, CARGO_KIND_INGOT);
-    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].commodity, COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].grade, MINING_GRADE_RARE);
-    ASSERT(memcmp(loaded.stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
-    ship_receipts_t *loaded_receipts = station_get_receipts(&loaded.stations[0]);
+    ASSERT(world_load(loaded, TMP("test_manifest_roundtrip.sav")));
+    ASSERT_EQ_INT(loaded->stations[0].manifest.count, 1);
+    ASSERT(loaded->stations[0].manifest.units != NULL);
+    ASSERT_EQ_INT(loaded->stations[0].manifest.units[0].kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(loaded->stations[0].manifest.units[0].commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(loaded->stations[0].manifest.units[0].grade, MINING_GRADE_RARE);
+    ASSERT(memcmp(loaded->stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
+    ship_receipts_t *loaded_receipts = station_get_receipts(&loaded->stations[0]);
     ASSERT(loaded_receipts != NULL);
     ASSERT_EQ_INT((int)loaded_receipts->count, 1);
     ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 1);
@@ -512,9 +513,10 @@ TEST(test_world_save_round_trips_station_manifest) {
 
 TEST(test_world_load_repairs_cache_only_station_finished_goods) {
     WORLD_DECL;
-    WORLD_DECL_NAME(loaded);
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
     world_reset(&w);
-    world_reset(&loaded);
+    world_reset(loaded);
 
     station_t *helios = &w.stations[2];
     ASSERT(test_set_station_finished_units(helios, COMMODITY_TRACTOR_MODULE, 10));
@@ -530,11 +532,11 @@ TEST(test_world_load_repairs_cache_only_station_finished_goods) {
                     10.0f, 0.001f);
 
     ASSERT(world_save(&w, TMP("test_manifest_repair.sav")));
-    ASSERT(world_load(&loaded, TMP("test_manifest_repair.sav")));
+    ASSERT(world_load(loaded, TMP("test_manifest_repair.sav")));
 
-    ASSERT_EQ_INT(station_finished_count(&loaded.stations[2],
+    ASSERT_EQ_INT(station_finished_count(&loaded->stations[2],
                                          COMMODITY_TRACTOR_MODULE), 10);
-    ASSERT_EQ_FLOAT(loaded.stations[2]._inventory_cache[COMMODITY_TRACTOR_MODULE],
+    ASSERT_EQ_FLOAT(loaded->stations[2]._inventory_cache[COMMODITY_TRACTOR_MODULE],
                     10.0f, 0.001f);
     remove(TMP("test_manifest_repair.sav"));
 }
@@ -1111,8 +1113,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
  * world.sav has zero fracture children so EXPECTED_SAVE_SIZE is unchanged.
  * v56: +36B per contract for heritage provenance requirements
  * (proof_flags + prefix + recipe + parent hash), × MAX_CONTRACTS=24.
- * v57: +8B per contract for forbidden origin masks. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2 + 4 + 24 * 44)
+ * v57: +8B per contract for forbidden origin masks.
+ * v58: station session section expanded from 64 to 128 slots. */
+#define EXPECTED_SAVE_SIZE 220538
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1149,7 +1152,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 57);
+    ASSERT_EQ_INT((int)version, 58);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

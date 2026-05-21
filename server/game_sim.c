@@ -5322,6 +5322,7 @@ void world_sim_step(world_t *w, float dt) {
         }
     }
     step_module_activation(w, dt);
+    step_frontier_director(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);

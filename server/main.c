@@ -75,6 +75,7 @@ static int server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
 static const char *server_bot_brain_mode_name = "autopilot";
 static const char *server_bot_brain_checkpoint = NULL;
 static const char *server_bot_contract_brain_checkpoint = NULL;
+static int frontier_virtual_pilot_target = 0;
 static uint32_t fresh_world_seed_override = 0;
 static uint32_t fresh_world_seq_override = 0;
 
@@ -3461,6 +3462,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "{\"status\":\"ok\",\"players\":%d,\"live_connections\":%d,"
                        "\"server_bot_players\":%d,"
+                       "\"frontier_virtual_pilots\":%d,"
+                       "\"frontier_plans_created\":%u,"
+                       "\"frontier_scaffold_orders\":%u,"
                        "\"server_bot_brain_mode\":\"%s\","
                        "\"server_brain_loaded\":%s,"
                        "\"server_brain_inferences\":%llu,"
@@ -3474,6 +3478,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"externalized\":%s,\"external_store\":\"%s\","
                        "\"state_uri\":\"",
                        count, live_connections, server_bot_players_spawned,
+                       world.frontier_virtual_pilots,
+                       world.frontier_plans_created,
+                       world.frontier_scaffold_orders,
                        server_bot_brain_mode_name,
                        signal_brain_loaded() ? "true" : "false",
                        (unsigned long long)signal_brain_inference_count(),
@@ -4261,6 +4268,26 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         }
     }
     {
+        const char *frontier = getenv("SIGNAL_FRONTIER_VIRTUAL_PILOTS");
+        if (frontier && frontier[0] != '\0') {
+            char *end = NULL;
+            errno = 0;
+            unsigned long count = strtoul(frontier, &end, 10);
+            if (errno != 0 || end == frontier || *end != '\0' ||
+                count > (unsigned long)SIGNAL_FRONTIER_VIRTUAL_PILOTS_MAX) {
+                fprintf(stderr, "[FATAL] invalid SIGNAL_FRONTIER_VIRTUAL_PILOTS=%s "
+                                "(use 0..%d)\n",
+                        frontier, SIGNAL_FRONTIER_VIRTUAL_PILOTS_MAX);
+                return false;
+            }
+            frontier_virtual_pilot_target = (int)count;
+        }
+        if (frontier_virtual_pilot_target > 0) {
+            printf("[server] Frontier virtual pilots: %d aggregate pilot(s)\n",
+                   frontier_virtual_pilot_target);
+        }
+    }
+    {
         const char *mode_name = getenv("SIGNAL_BOT_BRAIN_MODE");
         if (!mode_name || mode_name[0] == '\0') mode_name = "autopilot";
         if (strcmp(mode_name, "autopilot") == 0) {
@@ -4751,6 +4778,7 @@ int main(void) {
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     load_world_state();
+    frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
         char err[256];
         if (!signal_brain_load_checkpoint(server_bot_brain_checkpoint, err, sizeof(err))) {

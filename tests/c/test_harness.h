@@ -57,6 +57,8 @@ extern int g_warnings;
  * slice of matching tests, not the Nth slice of the full suite. */
 extern const char *g_filter;
 
+void test_prepare_case(const char *name);
+
 /* Soak gate. Tests that run multi-second sim scenarios (multi-player
  * autopilot, e2e contract lifecycle, multi-thousand-tick conservation
  * runs) account for ~75% of the suite's wall-clock and are tagged with
@@ -121,6 +123,7 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
     int _failed_before = tests_failed; \
     tests_run++; \
     if (!g_quiet) printf("  %s ... ", #name); \
+    test_prepare_case(#name); \
     name(); \
     if (tests_failed == _failed_before) { \
         tests_passed++; \
@@ -142,6 +145,7 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
     int _failed_before = tests_failed; \
     tests_run++; \
     if (!g_quiet) printf("  %s ... ", #name); \
+    test_prepare_case(#name); \
     name(); \
     if (tests_failed == _failed_before) { \
         tests_passed++; \

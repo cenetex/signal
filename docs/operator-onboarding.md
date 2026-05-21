@@ -182,6 +182,9 @@ Relevant environment variables (read in [`server/main.c`](../server/main.c)):
   Without it, that internal endpoint rejects all requests. The public
   station-command workflow below uses `SIGNAL_API_TOKEN` instead.
 - `SIGNAL_ALLOWED_ORIGIN` — CORS allowlist for the websocket upgrade.
+- `SIGNAL_FRONTIER_VIRTUAL_PILOTS` — aggregate strategic pilot count for
+  frontier expansion. This does not consume `MAX_PLAYERS` or `MAX_NPC_SHIPS`;
+  it lets large simulated populations plan outposts and order relay scaffolds.
 
 The server creates `chain/` on its first emit and writes per-station log
 files into it. It creates `saves/pubkey/` and `saves/legacy/` lazily
