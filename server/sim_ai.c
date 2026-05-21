@@ -1132,7 +1132,7 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
     float desired = atan2f(delta.y, delta.x);
     float diff = wrap_angle(desired - npc->ship.angle);
     float max_turn = hull->turn_speed * dt;
-    flight_cmd_t cmd = {0.0f, 1.0f};
+    flight_cmd_t cmd = {0.0f, 1.0f, false};
     if (max_turn > 0.0f) {
         float t = diff / max_turn;
         if (t > 1.0f) t = 1.0f;

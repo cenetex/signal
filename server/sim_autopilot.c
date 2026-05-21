@@ -72,6 +72,96 @@ static bool autopilot_furnace_allowed_for_fragment(const asteroid_t *fragment,
              fragment->crystal_stage_module == (uint8_t)module_idx);
 }
 
+static float autopilot_station_outer_nav_radius(const station_t *st) {
+    if (!st) return 0.0f;
+    float r = fmaxf(st->radius, st->dock_radius);
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->scaffold) continue;
+        if (m->ring >= 1 && m->ring <= STATION_NUM_RINGS)
+            r = fmaxf(r, STATION_RING_RADIUS[m->ring]);
+    }
+    return r;
+}
+
+static bool autopilot_asteroid_clear_of_station_traffic(const world_t *w,
+                                                        const asteroid_t *a) {
+    if (!w || !a) return false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float guard = fmaxf(autopilot_station_outer_nav_radius(st) + 900.0f,
+                            1350.0f) + a->radius;
+        if (v2_dist_sq(a->pos, st->pos) < guard * guard)
+            return false;
+    }
+    return true;
+}
+
+static bool autopilot_asteroid_claimed_by_peer(const world_t *w,
+                                               const server_player_t *self,
+                                               int asteroid_idx) {
+    if (!w || !self || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return false;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        const server_player_t *other = &w->players[p];
+        if (other == self) continue;
+        if (!other->connected || other->docked || other->autopilot_mode == 0)
+            continue;
+        if (other->ship.towed_count > 0)
+            continue;
+        if (other->autopilot_target != asteroid_idx)
+            continue;
+        if (other->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
+            other->autopilot_state == AUTOPILOT_STEP_MINE ||
+            other->autopilot_state == AUTOPILOT_STEP_COLLECT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void autopilot_low_speed_unstick_nudge(const world_t *w,
+                                              server_player_t *sp) {
+    if (!w || !sp || v2_len(sp->ship.vel) > 8.0f)
+        return;
+
+    vec2 away = v2(0.0f, 0.0f);
+    float best_d = 1e30f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float d = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d < best_d && d < 3000.0f * 3000.0f) {
+            best_d = d;
+            away = v2_sub(sp->ship.pos, st->pos);
+        }
+    }
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        float guard = a->radius + ship_hull_def(&sp->ship)->ship_radius + 180.0f;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d && d < guard * guard) {
+            best_d = d;
+            away = v2_sub(sp->ship.pos, a->pos);
+        }
+    }
+
+    if (v2_len_sq(away) < 1.0f && sp->autopilot_target >= 0 &&
+        sp->autopilot_target < MAX_ASTEROIDS &&
+        w->asteroids[sp->autopilot_target].active) {
+        away = v2_sub(sp->ship.pos, w->asteroids[sp->autopilot_target].pos);
+    }
+    if (v2_len_sq(away) < 1.0f)
+        away = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+
+    vec2 dir = v2_norm(away);
+    sp->ship.angle = atan2f(dir.y, dir.x);
+    sp->ship.vel = v2_scale(dir, 70.0f);
+}
+
 /* Compute the smelt-beam drop point for `ore` at `st`: the midpoint of a
  * matching furnace and its nearest adjacent-ring ore hopper. Mirrors the
  * pairing logic in step_furnace_smelting so the autopilot parks where
@@ -153,6 +243,8 @@ static bool autopilot_can_mine_asteroid(const server_player_t *sp, const asteroi
 
 static bool autopilot_clear_mining_approach(const world_t *w, const server_player_t *sp,
                                             const asteroid_t *a) {
+    if (!autopilot_asteroid_clear_of_station_traffic(w, a))
+        return false;
     const hull_def_t *hull = ship_hull_def(&sp->ship);
     vec2 from_rock = v2_sub(sp->ship.pos, a->pos);
     float from_len = v2_len(from_rock);
@@ -174,6 +266,69 @@ static bool autopilot_station_prefers_asteroid(const world_t *w,
     return station_can_smelt_ore_for_autopilot(st, a->commodity);
 }
 
+static float autopilot_station_ore_contract_boost(const world_t *w,
+                                                  int station_idx,
+                                                  commodity_t ore) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return 0.0f;
+    if (ore >= COMMODITY_RAW_ORE_COUNT)
+        return 0.0f;
+
+    float best = 0.0f;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index != station_idx) continue;
+        if (ct->commodity != ore) continue;
+        float age = ct->age / 300.0f;
+        if (age > 1.0f) age = 1.0f;
+        float boost = 0.45f + 0.25f * age;
+        if (boost > best) best = boost;
+    }
+    return best;
+}
+
+static float autopilot_station_ore_priority(const world_t *w,
+                                            int station_idx,
+                                            commodity_t ore) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return 0.0f;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st) || !station_has_module(st, MODULE_DOCK))
+        return 0.0f;
+    if (!station_can_smelt_ore_for_autopilot(st, ore))
+        return 0.0f;
+    float need = station_raw_ore_need_score(st, ore);
+    if (need <= 0.0f)
+        return 0.0f;
+    return need + autopilot_station_ore_contract_boost(w, station_idx, ore);
+}
+
+static float autopilot_best_global_ore_priority(const world_t *w,
+                                                const asteroid_t *a,
+                                                int *out_station) {
+    if (!w || !a || a->commodity >= COMMODITY_RAW_ORE_COUNT)
+        return 0.0f;
+
+    float best = 0.0f;
+    int best_station = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        float priority = autopilot_station_ore_priority(w, s, a->commodity);
+        if (priority <= 0.0f) continue;
+        float station_dist = sqrtf(v2_dist_sq(a->pos, w->stations[s].pos));
+        float reach_penalty = fminf(station_dist / 18000.0f, 0.35f);
+        priority -= reach_penalty;
+        if (priority > best) {
+            best = priority;
+            best_station = s;
+        }
+    }
+
+    if (best_station >= 0 && out_station)
+        *out_station = best_station;
+    return best;
+}
+
 /* Pick the most autopilot-friendly mining target.
  *
  * Priority order:
@@ -193,17 +348,51 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
      * tractor couldn't grab them (chase → timeout → re-target loop). */
 
     /* Pass 0: when launched from a station with matching smelters, prefer
-     * ore that can come back to that station. This keeps bot traffic from
-     * collapsing into the ferrite-only refinery when other stations can
-     * process higher-tier ores. */
+     * the ore that station is actually asking for. Raw-ore TRACTOR
+     * contracts add urgency, so Helios' cuprite request beats nearer
+     * crystal while the laser line is empty. */
+    float best_priority = 0.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (autopilot_asteroid_claimed_by_peer(w, sp, i)) continue;
         if (!autopilot_station_prefers_asteroid(w, sp, a)) continue;
         if (signal_strength_at(w, a->pos) < 0.5f) continue;
         if (!autopilot_clear_mining_approach(w, sp, a)) continue;
+        float priority = autopilot_station_ore_priority(w, sp->current_station,
+                                                        a->commodity);
+        if (priority <= 0.0f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
+        if (priority > best_priority + 0.02f ||
+            (fabsf(priority - best_priority) <= 0.02f && d < best_d)) {
+            best_priority = priority;
+            best_d = d;
+            best = i;
+        }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 1: if the current dock has no local smelter demand, mine for
+     * the strongest visible raw-ore need anywhere in the network. This
+     * keeps Kepler-launched bots from defaulting to random ferrite when
+     * Helios is advertising cuprite/crystal starvation. */
+    best_d = 1e18f;
+    best_priority = 0.0f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (autopilot_asteroid_claimed_by_peer(w, sp, i)) continue;
+        if (signal_strength_at(w, a->pos) < 0.5f) continue;
+        if (!autopilot_clear_mining_approach(w, sp, a)) continue;
+        float priority = autopilot_best_global_ore_priority(w, a, NULL);
+        if (priority <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (priority > best_priority + 0.02f ||
+            (fabsf(priority - best_priority) <= 0.02f && d < best_d)) {
+            best_priority = priority;
+            best_d = d;
+            best = i;
+        }
     }
     if (best >= 0) return best;
 
@@ -211,6 +400,7 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (autopilot_asteroid_claimed_by_peer(w, sp, i)) continue;
         if (signal_strength_at(w, a->pos) < 0.5f) continue;
         if (!autopilot_clear_mining_approach(w, sp, a)) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
@@ -226,6 +416,8 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (autopilot_asteroid_claimed_by_peer(w, sp, i)) continue;
+        if (!autopilot_asteroid_clear_of_station_traffic(w, a)) continue;
         if (signal_strength_at(w, a->pos) < 0.5f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
@@ -254,7 +446,28 @@ static bool autopilot_hull_full(const ship_t *s) {
 }
 
 static bool autopilot_logistics_enabled(const server_player_t *sp) {
-    return sp && sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    return sp && (sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
+                  sp->server_brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS);
+}
+
+const char *autopilot_state_name(int state) {
+    switch (state) {
+    case AUTOPILOT_STEP_FIND_TARGET: return "FIND_TARGET";
+    case AUTOPILOT_STEP_FLY_TO_TARGET: return "FLY_TO_TARGET";
+    case AUTOPILOT_STEP_MINE: return "MINE";
+    case AUTOPILOT_STEP_COLLECT: return "COLLECT";
+    case AUTOPILOT_STEP_RETURN_TO_REFINERY: return "RETURN_TO_REFINERY";
+    case AUTOPILOT_STEP_DOCK: return "DOCK";
+    case AUTOPILOT_STEP_SELL: return "SELL";
+    case AUTOPILOT_STEP_LAUNCH: return "LAUNCH";
+    case AUTOPILOT_STEP_LOGISTICS_BUY: return "LOGISTICS_BUY";
+    case AUTOPILOT_STEP_LOGISTICS_TRAVEL: return "LOGISTICS_TRAVEL";
+    case AUTOPILOT_STEP_LOGISTICS_DOCK: return "LOGISTICS_DOCK";
+    case AUTOPILOT_STEP_LOGISTICS_DELIVER: return "LOGISTICS_DELIVER";
+    case AUTOPILOT_STEP_LOGISTICS_WAIT: return "LOGISTICS_WAIT";
+    case AUTOPILOT_STEP_EXIT_STATION: return "EXIT_STATION";
+    default: return "UNKNOWN";
+    }
 }
 
 static void autopilot_clear_logistics(server_player_t *sp) {
@@ -275,6 +488,107 @@ static bool autopilot_finished_good(commodity_t c) {
 static bool autopilot_ship_has_finished(const server_player_t *sp, commodity_t c) {
     return sp && autopilot_finished_good(c) &&
            ship_finished_count(&sp->ship, c) > 0;
+}
+
+static float autopilot_station_exit_radius(const station_t *st) {
+    if (!st) return 0.0f;
+    float r = autopilot_station_outer_nav_radius(st) + 900.0f;
+    return fmaxf(r, 1350.0f);
+}
+
+static vec2 autopilot_station_exit_target(const station_t *st, vec2 from) {
+    vec2 lane = station_exit_target(st, from);
+    vec2 rel = v2_sub(lane, st->pos);
+    float lane_r = v2_len(rel);
+    float outer_r = fmaxf(st->radius, st->dock_radius);
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->scaffold) continue;
+        if (m->ring >= 1 && m->ring <= STATION_NUM_RINGS)
+            outer_r = fmaxf(outer_r, STATION_RING_RADIUS[m->ring]);
+    }
+
+    if (lane_r < outer_r + 140.0f)
+        return lane;
+    if (lane_r < 1.0f)
+        rel = v2(cosf(0.0f), sinf(0.0f));
+    else
+        rel = v2_scale(rel, 1.0f / lane_r);
+    return v2_add(st->pos, v2_scale(rel, autopilot_station_exit_radius(st) + 80.0f));
+}
+
+static vec2 autopilot_station_dock_target(const world_t *w,
+                                          const ship_t *ship,
+                                          const station_t *st) {
+    vec2 approach = station_approach_target(st, ship->pos);
+    const hull_def_t *hull = ship_hull_def(ship);
+    float clearance = (hull ? hull->ship_radius : 16.0f) + 30.0f;
+    if (nav_segment_clear(w, ship->pos, approach, clearance))
+        return approach;
+
+    vec2 entry = station_entry_target(st, ship->pos);
+    if (v2_dist_sq(ship->pos, entry) > 140.0f * 140.0f)
+        return entry;
+
+    return approach;
+}
+
+static bool autopilot_should_exit_station(const world_t *w,
+                                          const server_player_t *sp,
+                                          int station_idx) {
+    if (!w || !sp || sp->docked ||
+        station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st)) return false;
+    float r = autopilot_station_exit_radius(st);
+    return v2_dist_sq(sp->ship.pos, st->pos) < r * r;
+}
+
+static int autopilot_exit_station_index(const world_t *w,
+                                        const server_player_t *sp) {
+    if (!w || !sp || sp->docked) return -1;
+    if (autopilot_should_exit_station(w, sp, sp->current_station))
+        return sp->current_station;
+    if (autopilot_should_exit_station(w, sp, sp->nearby_station))
+        return sp->nearby_station;
+
+    int best = -1;
+    float best_d = 1e30f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!autopilot_should_exit_station(w, sp, s)) continue;
+        float d = v2_dist_sq(sp->ship.pos, w->stations[s].pos);
+        if (d < best_d) {
+            best_d = d;
+            best = s;
+        }
+    }
+    return best;
+}
+
+static void autopilot_resume_after_station_exit(world_t *w,
+                                                server_player_t *sp) {
+    sp->autopilot_timer = 0.0f;
+    sp->autopilot_stuck_timer = 0.0f;
+    sp->autopilot_last_pos = sp->ship.pos;
+    nav_force_replan(nav_player_path(sp->id));
+
+    if (sp->autopilot_station_target >= 0 &&
+        sp->autopilot_station_target < MAX_STATIONS &&
+        sp->autopilot_cargo < COMMODITY_COUNT &&
+        autopilot_ship_has_finished(sp, sp->autopilot_cargo)) {
+        sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+        return;
+    }
+
+    if (sp->autopilot_target >= 0 &&
+        sp->autopilot_target < MAX_ASTEROIDS &&
+        w->asteroids[sp->autopilot_target].active) {
+        sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+        return;
+    }
+
+    sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
 }
 
 static bool autopilot_first_ship_finished(const server_player_t *sp,
@@ -353,6 +667,9 @@ static bool autopilot_source_can_sell_to_bot(const world_t *w,
     if (free_volume + 0.0001f < commodity_volume(c)) return false;
     float price = station_sell_price(src, c);
     if (price <= 0.01f) return false;
+    if (autopilot_logistics_enabled(sp) && sp->autopilot_mode != 0) {
+        return true;
+    }
     return autopilot_ledger_balance(src, sp) + 0.01f >= price;
 }
 
@@ -513,13 +830,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
     if (sp->autopilot_mode == 0) return;
 
     sp->autopilot_timer += dt;
+    sp->input.reverse_thrust = false;
 
     /* Stuck detection: if the ship hasn't moved >50u in 8 seconds
      * while in a transit state, pick a new target. This breaks
      * deadlocks where avoidance oscillates against station walls. */
     if (sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
         sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY ||
-        sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_TRAVEL) {
+        sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_TRAVEL ||
+        sp->autopilot_state == AUTOPILOT_STEP_EXIT_STATION) {
         float moved = v2_dist_sq(sp->ship.pos, sp->autopilot_last_pos);
         if (moved > 50.0f * 50.0f) {
             sp->autopilot_last_pos = sp->ship.pos;
@@ -527,7 +846,14 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         } else {
             sp->autopilot_stuck_timer += dt;
             if (sp->autopilot_stuck_timer > 8.0f) {
-                SIM_LOG("[autopilot] player %d stuck for 8s, re-planning\n", sp->id);
+                SIM_LOG("[autopilot] player %d stuck in %s for 8s, re-planning "
+                        "pos=(%.0f,%.0f) speed=%.1f target=%d station_target=%d "
+                        "current=%d nearby=%d\n",
+                        sp->id, autopilot_state_name(sp->autopilot_state),
+                        sp->ship.pos.x, sp->ship.pos.y, v2_len(sp->ship.vel),
+                        sp->autopilot_target, sp->autopilot_station_target,
+                        sp->current_station, sp->nearby_station);
+                autopilot_low_speed_unstick_nudge(w, sp);
                 bool keep_target = false;
                 /* If carrying fragments, stay in RETURN_TO_REFINERY but
                  * force a path recompute (clear path age). Don't abandon
@@ -540,6 +866,9 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
                 } else if (sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_TRAVEL &&
                            sp->autopilot_station_target >= 0 &&
                            sp->autopilot_cargo < COMMODITY_COUNT) {
+                    nav_force_replan(nav_player_path(sp->id));
+                    keep_target = true;
+                } else if (sp->autopilot_state == AUTOPILOT_STEP_EXIT_STATION) {
                     nav_force_replan(nav_player_path(sp->id));
                     keep_target = true;
                 } else {
@@ -632,6 +961,13 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         break;
     }
     case AUTOPILOT_STEP_FLY_TO_TARGET: {
+        int exit_station = autopilot_exit_station_index(w, sp);
+        if (exit_station >= 0) {
+            sp->autopilot_state = AUTOPILOT_STEP_EXIT_STATION;
+            sp->autopilot_timer = 0.0f;
+            sp->autopilot_stuck_timer = 0.0f;
+            break;
+        }
         if (sp->autopilot_target < 0 || sp->autopilot_target >= MAX_ASTEROIDS) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
@@ -691,8 +1027,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         nav_path_t *path = nav_player_path(sp->id);
         flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, a->pos,
                                             standoff, 150.0f, dt);
+        flight_avoid_station_wall(w, &sp->ship, &cmd);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
+        sp->input.reverse_thrust = cmd.reverse_thrust;
         sp->input.mine = false;
 
         /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
@@ -844,32 +1182,37 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
                                 towed_ore < COMMODITY_COUNT &&
                                 towed_fragment != NULL;
         bool need_repair = autopilot_needs_repair(&sp->ship) && !hauling_fragment;
+        bool need_dock = need_repair || !hauling_fragment;
         vec2 smelt_pt = station_smelt_drop_point(st, s, towed_ore, towed_fragment);
 
-        vec2 fly_target = need_repair
-            ? station_approach_target(st, sp->ship.pos)
+        vec2 fly_target = need_dock
+            ? autopilot_station_dock_target(w, &sp->ship, st)
             : smelt_pt;
         nav_path_t *path = nav_player_path(sp->id);
         flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, fly_target,
-                                            need_repair ? 0.0f : 80.0f, 120.0f, dt);
+                                            need_dock ? 0.0f : 80.0f, 120.0f, dt);
+        if (!need_dock)
+            flight_avoid_station_wall(w, &sp->ship, &cmd);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
+        sp->input.reverse_thrust = cmd.reverse_thrust;
         sp->input.mine = false;
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, smelt_pt));
+        float fly_dist = sqrtf(v2_dist_sq(sp->ship.pos, fly_target));
 
         /* Drop-and-leave path (no damage): once the smelter has consumed
          * everything we towed in, head back out for another load. The
          * furnace pulls fragments in while we hold position at the
          * smelt point above. */
-        if (!need_repair && sp->ship.towed_count == 0 && dist < 500.0f) {
+        if (!need_dock && sp->ship.towed_count == 0 && dist < 500.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
             break;
         }
 
-        /* Damage path: dock for passive heal once close enough. */
-        if (need_repair && dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
+        /* Damage or no-cargo path: dock once close enough. */
+        if (need_dock && fly_dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
             sp->input.interact = true;
             sp->autopilot_state = AUTOPILOT_STEP_DOCK;
             sp->autopilot_timer = 0.0f;
@@ -991,8 +1334,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             }
             break;
         }
+        int exit_station = autopilot_exit_station_index(w, sp);
+        if (exit_station >= 0 && exit_station != dest) {
+            sp->autopilot_state = AUTOPILOT_STEP_EXIT_STATION;
+            sp->autopilot_timer = 0.0f;
+            sp->autopilot_stuck_timer = 0.0f;
+            break;
+        }
         const station_t *st = &w->stations[dest];
-        vec2 dock_target = station_approach_target(st, sp->ship.pos);
+        vec2 dock_target = autopilot_station_dock_target(w, &sp->ship, st);
         if (sp->autopilot_timer < 0.08f) {
             nav_find_path(w, sp->ship.pos, dock_target,
                           ship_hull_def(&sp->ship)->ship_radius + 30.0f,
@@ -1001,8 +1351,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         nav_path_t *path = nav_player_path(sp->id);
         flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, dock_target,
                                             0.0f, 145.0f, dt);
+        flight_avoid_station_wall(w, &sp->ship, &cmd);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
+        sp->input.reverse_thrust = cmd.reverse_thrust;
         sp->input.mine = false;
         if (sp->in_dock_range && sp->nearby_station == dest) {
             sp->input.interact = true;
@@ -1012,6 +1364,44 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             autopilot_clear_logistics(sp);
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_EXIT_STATION: {
+        int station_idx = autopilot_exit_station_index(w, sp);
+        if (station_idx < 0 || sp->autopilot_timer > 18.0f) {
+            autopilot_resume_after_station_exit(w, sp);
+            break;
+        }
+
+        const station_t *st = &w->stations[station_idx];
+        vec2 exit_target = autopilot_station_exit_target(st, sp->ship.pos);
+        if (sp->autopilot_timer < 0.08f) {
+            nav_find_path(w, sp->ship.pos, exit_target,
+                          ship_hull_def(&sp->ship)->ship_radius + 30.0f,
+                          nav_player_path(sp->id));
+        }
+
+        nav_path_t *path = nav_player_path(sp->id);
+        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, exit_target,
+                                            70.0f, 135.0f, dt);
+        if (sp->autopilot_timer > 1.0f && v2_len(sp->ship.vel) < 5.0f) {
+            vec2 away = v2_sub(sp->ship.pos, st->pos);
+            if (v2_len_sq(away) > 1.0f) {
+                float away_heading = atan2f(away.y, away.x);
+                float diff = wrap_angle(away_heading - sp->ship.angle);
+                cmd.turn = flight_face_heading(&sp->ship, away_heading);
+                cmd.thrust = cosf(diff) > 0.25f ? 0.7f : 0.0f;
+                cmd.reverse_thrust = false;
+            }
+        }
+        sp->input.turn = cmd.turn;
+        sp->input.thrust = cmd.thrust;
+        sp->input.reverse_thrust = cmd.reverse_thrust;
+        sp->input.mine = false;
+
+        if (!autopilot_should_exit_station(w, sp, station_idx)) {
+            autopilot_resume_after_station_exit(w, sp);
         }
         break;
     }

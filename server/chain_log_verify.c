@@ -12,9 +12,14 @@
  * Verifies, per event, in order:
  *   1. authority field equals expected pubkey
  *   2. prev_hash links to SHA-256 of the previous event's full header
- *   3. event_id is monotonic from 1
+ *      inside the current segment
+ *   3. event_id is monotonic from 1 inside the current segment
  *   4. payload_hash equals SHA-256(payload bytes)
  *   5. Ed25519 signature over the 120-byte unsigned-header span
+ *
+ * A later record with event_id==1 and prev_hash==0 is a clean segment
+ * reset. This preserves append-only logs across fresh-world starts
+ * without letting arbitrary mid-log splices pass as valid history.
  */
 #include "chain_log.h"
 
@@ -25,6 +30,13 @@
 #include <string.h>
 
 #define CHAIN_UNSIGNED_HEADER_SIZE 120
+
+static bool hash_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
 
 /* Local copy of the on-disk header packer/unpacker. Kept in sync with
  * chain_log.c by the _Static_assert there on header size; if anyone
@@ -154,6 +166,9 @@ bool chain_log_verify_with_pubkey(FILE *f,
         }
 
         r->total_events++;
+        if (r->total_events == 1) {
+            r->segment_count = 1;
+        }
 
         if (memcmp(hdr.authority, station_pubkey, 32) != 0) {
             r->bad_authority++;
@@ -166,7 +181,17 @@ bool chain_log_verify_with_pubkey(FILE *f,
             }
             break;
         }
-        if (memcmp(hdr.prev_hash, prev_hash, 32) != 0) {
+        bool segment_reset = r->valid_events > 0 &&
+                             hdr.event_id == 1 &&
+                             hash_is_zero(hdr.prev_hash);
+        uint8_t expected_prev_hash[32];
+        if (segment_reset) {
+            memset(expected_prev_hash, 0, sizeof(expected_prev_hash));
+        } else {
+            memcpy(expected_prev_hash, prev_hash, sizeof(expected_prev_hash));
+        }
+        uint64_t expected_id = segment_reset ? 1 : expected_event_id;
+        if (memcmp(hdr.prev_hash, expected_prev_hash, 32) != 0) {
             r->bad_linkage++;
             ok = false;
             if (r->first_fail_event_id == 0) {
@@ -177,7 +202,7 @@ bool chain_log_verify_with_pubkey(FILE *f,
             }
             break;
         }
-        if (hdr.event_id != expected_event_id) {
+        if (hdr.event_id != expected_id) {
             r->monotonic_violations++;
             ok = false;
             if (r->first_fail_event_id == 0) {
@@ -185,7 +210,7 @@ bool chain_log_verify_with_pubkey(FILE *f,
                 snprintf(r->first_fail_reason, sizeof(r->first_fail_reason),
                          "event_id non-monotonic: got %llu, expected %llu",
                          (unsigned long long)hdr.event_id,
-                         (unsigned long long)expected_event_id);
+                         (unsigned long long)expected_id);
             }
             break;
         }
@@ -222,8 +247,17 @@ bool chain_log_verify_with_pubkey(FILE *f,
         if (hdr.type < CHAIN_EVT_TYPE_COUNT)
             r->event_type_counts[hdr.type]++;
 
+        if (segment_reset) {
+            r->segment_count++;
+            r->segment_resets++;
+            r->tail_event_id = 0;
+            r->tail_valid_events = 0;
+            expected_event_id = 1;
+        }
         verify_hash_full(&hdr, prev_hash);
         r->valid_events++;
+        r->tail_valid_events++;
+        r->tail_event_id = hdr.event_id;
         expected_event_id++;
     }
 

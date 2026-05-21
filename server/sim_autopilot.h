@@ -22,6 +22,7 @@ enum {
     AUTOPILOT_STEP_LOGISTICS_DOCK,
     AUTOPILOT_STEP_LOGISTICS_DELIVER,
     AUTOPILOT_STEP_LOGISTICS_WAIT,
+    AUTOPILOT_STEP_EXIT_STATION,
 };
 
 /* Drive the player's ship via simulated input. The autopilot writes

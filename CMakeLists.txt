@@ -57,7 +57,7 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 # Layer E of #479: standalone CLI tool for verifying station chain
 # logs post-mortem. Default ON so dev builds get it; the
 # server-only Docker image flips it off.
-option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_replay)" ON)
+option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_replay)" ON)
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
@@ -268,9 +268,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
 endif()
 
 # ------------------------------------------------------------------
-# signal_verify — standalone post-mortem chain-log watchdog
-# (Layer E of #479). Pure C, no sim / world_t / sokol deps. Can run
-# on archived logs, by anyone, without a live server.
+# signal_verify / signal_chain_assets — standalone post-mortem chain-log
+# tools. Pure C, no sim / world_t / sokol deps. Can run on archived logs,
+# by anyone, without a live server.
 # ------------------------------------------------------------------
 if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     add_executable(signal_verify
@@ -288,6 +288,22 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_options(signal_verify PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_executable(signal_chain_assets
+        tools/signal_chain_assets.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_chain_assets PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_chain_assets PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    else()
+        target_compile_options(signal_chain_assets PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_chain_assets PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
     add_executable(flight_trace

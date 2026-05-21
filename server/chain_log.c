@@ -373,7 +373,7 @@ bool chain_log_verify_station(const station_t *s,
     }
 
     fclose(f);
-    if (out_event_count) *out_event_count = report.valid_events;
+    if (out_event_count) *out_event_count = report.tail_event_id;
     return ok;
 }
 

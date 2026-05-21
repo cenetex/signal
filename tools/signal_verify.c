@@ -248,6 +248,14 @@ static void pub_set_add(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]
     (*count)++;
 }
 
+static void inv_state_reset_segment(inv_state_t *st) {
+    if (!st) return;
+    st->cargo_output_count = 0;
+    st->consumed_fragment_count = 0;
+    st->destroyed_rock_count = 0;
+    st->pending_tow_count = 0;
+}
+
 /* Remove pub from set if present. Returns true if removed (i.e., was
  * in the set). Order-preservation isn't important — we tail-swap. */
 static bool pub_set_remove(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]) {
@@ -323,6 +331,7 @@ static bool apply_invariants(const char *path,
     FILE *f = fopen(path, "rb");
     if (!f) return true;
     bool ok = true;
+    uint64_t events_seen = 0;
 
     for (;;) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
@@ -338,7 +347,13 @@ static bool apply_invariants(const char *path,
          * type at offset 16. We don't need the full unpack here. */
         uint64_t epoch = 0;
         for (int i = 0; i < 8; i++) epoch |= (uint64_t)hdr_bytes[i] << (i * 8);
+        uint64_t event_id = 0;
+        for (int i = 0; i < 8; i++) event_id |= (uint64_t)hdr_bytes[8 + i] << (i * 8);
         uint8_t type = hdr_bytes[16];
+        if (events_seen > 0 && event_id == 1 && pub_is_zero(&hdr_bytes[88])) {
+            inv_state_reset_segment(st);
+        }
+        events_seen++;
 
         if (opts->since_set && epoch < opts->since) continue;
         if (opts->until_set && epoch > opts->until) continue;
@@ -390,9 +405,13 @@ static bool apply_invariants(const char *path,
             break;
         }
         case CHAIN_EVT_CRAFT:
-            /* payload begins with output ingot_pub[32]. */
-            if (plen >= 32)
-                pub_set_add(st->cargo_outputs, &st->cargo_output_count, payload);
+            /* Modern CRAFT payloads start with recipe metadata, then
+             * output_pub. Older malformed/prototype logs may be shorter;
+             * those still pass byte-level verification but cannot
+             * contribute to transfer-balance provenance checks. */
+            if (plen >= offsetof(chain_payload_craft_t, output_pub) + 32)
+                pub_set_add(st->cargo_outputs, &st->cargo_output_count,
+                            payload + offsetof(chain_payload_craft_t, output_pub));
             break;
         case CHAIN_EVT_TRANSFER: {
             /* payload: from_pubkey[32], to_pubkey[32], cargo_pub[32], kind, pad. */
@@ -497,6 +516,9 @@ static void print_text(const char *path,
     }
     printf("events:           %llu\n", (unsigned long long)r->total_events);
     printf("valid:            %llu\n", (unsigned long long)r->valid_events);
+    printf("segments:         %llu\n", (unsigned long long)r->segment_count);
+    printf("segment resets:   %llu\n", (unsigned long long)r->segment_resets);
+    printf("tail event id:    %llu\n", (unsigned long long)r->tail_event_id);
     printf("bad signatures:   %llu\n", (unsigned long long)r->bad_signatures);
     printf("bad linkage:      %llu\n", (unsigned long long)r->bad_linkage);
     printf("bad payload_hash: %llu\n", (unsigned long long)r->bad_payload_hash);
@@ -537,6 +559,10 @@ static void print_json(const char *path,
     printf("\"station_name\":\"%s\",", station_name ? station_name : "");
     printf("\"total_events\":%llu,", (unsigned long long)r->total_events);
     printf("\"valid_events\":%llu,", (unsigned long long)r->valid_events);
+    printf("\"segments\":%llu,", (unsigned long long)r->segment_count);
+    printf("\"segment_resets\":%llu,", (unsigned long long)r->segment_resets);
+    printf("\"tail_event_id\":%llu,", (unsigned long long)r->tail_event_id);
+    printf("\"tail_valid_events\":%llu,", (unsigned long long)r->tail_valid_events);
     printf("\"bad_signatures\":%llu,", (unsigned long long)r->bad_signatures);
     printf("\"bad_linkage\":%llu,", (unsigned long long)r->bad_linkage);
     printf("\"bad_payload_hash\":%llu,", (unsigned long long)r->bad_payload_hash);
@@ -599,8 +625,11 @@ static int verify_one(const char *path, const cli_opts_t *opts) {
 
     inv_state_t inv = {0};
     char inv_fail[128] = {0};
-    bool inv_ok = apply_invariants(path, opts->invariants, opts, &inv,
-                                   inv_fail, sizeof(inv_fail));
+    bool inv_ok = true;
+    if (ok) {
+        inv_ok = apply_invariants(path, opts->invariants, opts, &inv,
+                                  inv_fail, sizeof(inv_fail));
+    }
     if (!inv_ok && opts->strict) ok = false;
 
     if (opts->dump_text) {

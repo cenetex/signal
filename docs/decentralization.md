@@ -149,7 +149,7 @@ Event types currently emitted (from `chain_event_type_t` in
 | Event | Meaning |
 | --- | --- |
 | `CHAIN_EVT_SMELT` | Physical fragment smelted into an ingot at this station |
-| `CHAIN_EVT_CRAFT` | Ingots fabricated into a finished product |
+| `CHAIN_EVT_CRAFT` | Input cargo units fabricated into a finished product |
 | `CHAIN_EVT_TRANSFER` | Cargo unit moved between holders |
 | `CHAIN_EVT_TRADE` | Transfer + ledger delta, atomic |
 | `CHAIN_EVT_LEDGER` | Station-side credit balance mutation |
@@ -276,10 +276,18 @@ health in `station_t`; `failed` or `mismatch` stations block future
 In-memory state: `station_t.chain_last_hash` is the SHA-256 of the most
 recently authored event header. The next event's `prev_hash` is set to this
 value, linking the log into a hash chain. `chain_event_count` is the
-monotonic per-station counter, stamped into `event_id` on every emit. Both
-fields are persisted by the world save (v41+), so the chain survives a server
-restart cleanly. The actual event records live in the side files under
-`chain/` — they are not part of `world.sav`.
+monotonic per-station counter within the current segment, stamped into
+`event_id` on every emit. Both fields are persisted by the world save (v41+),
+so the chain survives a server restart cleanly. The actual event records live
+in the side files under `chain/` — they are not part of `world.sav`.
+
+Segment semantics: a later event with `event_id == 1` and `prev_hash == 0`
+starts a fresh append-only segment in the same file. This covers fresh-world
+or intentionally reset sessions without rewriting older bytes. Verifiers still
+check every segment strictly; arbitrary broken linkage, non-zero reset hashes,
+or missing middle events remain failures. Startup continuation uses the final
+segment's tail event id and tail hash, not the total event count across all
+segments.
 
 Startup policy: the on-disk log is authoritative when it verifies. If the disk
 tail is ahead of `world.sav` because the previous process appended events and
@@ -295,15 +303,18 @@ Verification semantics (`chain_log_verify`,
 2. For each entry: verify the Ed25519 signature against the asserted authority
    pubkey, which must equal the station's `station_pubkey`. Verify
    `payload_hash` matches the SHA-256 of the stored payload bytes. Verify
-   `prev_hash` matches the SHA-256 of the previous entry's full header
-   (or zero for the first entry).
-3. If `out_event_count` is non-NULL, write the number of successfully walked
-   events through, regardless of whether the walk eventually failed. If
+   `prev_hash` matches the SHA-256 of the previous entry's full header inside
+   the segment (or zero for a segment's first entry).
+3. If a later entry starts with `event_id == 1` and zero `prev_hash`, start a
+   new segment and continue verification from a zero hash. Report total
+   events, segment count, segment resets, and final-segment tail counters.
+4. If `out_event_count` is non-NULL, write the final segment's tail event id
+   through, regardless of whether the walk eventually failed. If
    `out_last_hash` is non-NULL, write the SHA-256 of the last successfully
    walked header through.
-4. Returns `true` iff every event verifies. A missing log file returns `true`
+5. Returns `true` iff every event verifies. A missing log file returns `true`
    with zero events walked — the empty chain is trivially valid.
-5. The server's startup wrapper stores this result as chain health and exposes it
+6. The server's startup wrapper stores this result as chain health and exposes it
    through `/health` and `/api/station/<id>/state`.
 
 ## Cross-station settlement (Layer D — shipped off-chain)
@@ -360,6 +371,7 @@ chain log files. By default it derives each station pubkey from the
 with `--station-pubkey=<base58>`. It reports:
 
 - Total events walked and total bytes consumed.
+- Segment count, accepted segment resets, and final-segment tail event id.
 - First failed event (if any), with a short reason: `bad signature`,
   `bad prev-hash linkage`, `payload hash mismatch`, `truncated tail`.
 - The final `chain_last_hash`, suitable for cross-checking against the
@@ -370,6 +382,26 @@ with `--station-pubkey=<base58>`. It reports:
 The verifier wraps the same `chain_log_verify` walker that runs at server
 startup; the only difference is the CLI surface and a non-zero exit code on
 failure for CI integration.
+
+## The asset inventory tool (Layer E — shipped)
+
+Layer E also ships `signal_chain_assets`, a read-only chain-log analyzer that
+exports one row per unique `cargo_unit_t.pub`. It accepts the same station log
+files, or a directory containing `*.log` files, and emits JSON by default:
+
+```sh
+cmake --build build --target signal_chain_assets
+./build/signal_chain_assets chain --out /tmp/signal-assets.json
+./build/signal_chain_assets --format=csv chain --out /tmp/signal-assets.csv
+```
+
+The JSON schema is `signal.chain_assets.v1`. Each asset row includes the cargo
+pubkey, source event, source station, world cursor if present, segment id,
+strict verification status, commodity/recipe/prefix metadata, mined block,
+parent fragment, craft input pubs, mint count, and transfer count. The tool
+recognizes clean verifier segment resets separately from unexpected linkage
+or monotonic breaks, reporting all of them as file diagnostics instead of
+rewriting or repairing the log.
 
 ## Off-chain vs on-chain
 
@@ -384,6 +416,7 @@ failure for CI integration.
 | Per-station event history | Signed chain log (PR #497) |
 | Cross-station verification | Cargo receipts (Layer D, shipped off-chain) |
 | Standalone verifier | `signal_verify` (Layer E, shipped) |
+| Asset inventory export | `signal_chain_assets` (Layer E, shipped) |
 | Cross-operator anchor | On-chain state-root commitment (#480, future) |
 | Asset extraction | On-chain wrap contract (#480, future) |
 | Bounty payouts | On-chain bounty program (#480, future) |

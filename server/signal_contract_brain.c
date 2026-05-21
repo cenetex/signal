@@ -321,9 +321,9 @@ static void fill_features(const world_t *w,
 }
 
 static double forward_model(const double input[SCB_FEATURE_COUNT]) {
-    double hidden0[SCB_HIDDEN0];
-    double hidden1[SCB_HIDDEN1];
-    double output[1];
+    double hidden0[SCB_HIDDEN0] = {0.0};
+    double hidden1[SCB_HIDDEN1] = {0.0};
+    double output[1] = {0.0};
     const double *src = input;
     double *dsts[SCB_LAYER_COUNT - 1] = {hidden0, hidden1, output};
 

@@ -202,7 +202,7 @@ not a thing you can put your hand on.
 | Storage | `manifest_t` (`shared/types.h`) — held by `ship_t.manifest` and `station_t.manifest`. |
 | Creation | Three hash helpers in `shared/manifest.c`: `hash_ingot`, `hash_product`, `hash_legacy_migrate_unit`. Current live producers set `quantity = 1`. |
 | Mutation | `manifest_push`, `manifest_remove`, `manifest_consume_by_commodity` in `shared/manifest.c`. |
-| Chain witnessing | `CHAIN_EVT_SMELT` from `server/sim_production.c`, `CHAIN_EVT_CRAFT` from fab/craft production, and `CHAIN_EVT_TRANSFER` from `server/cargo_receipt_issue.c` for inter-holder moves. |
+| Chain witnessing | `CHAIN_EVT_SMELT` from `server/sim_production.c`, `CHAIN_EVT_CRAFT` from fab/craft production including shipyard repair-kit batches, and `CHAIN_EVT_TRANSFER` from `server/cargo_receipt_issue.c` for inter-holder moves. |
 | Wire | `NET_MSG_PLAYER_MANIFEST` and `NET_MSG_STATION_MANIFEST` send `(commodity, grade) → count` summaries derived from manifests. They do *not* send the bulk float. The hopper float is server-side only. |
 
 ## What slice 0 actually bought us

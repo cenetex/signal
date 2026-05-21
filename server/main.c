@@ -74,6 +74,8 @@ static int server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
 static const char *server_bot_brain_mode_name = "autopilot";
 static const char *server_bot_brain_checkpoint = NULL;
 static const char *server_bot_contract_brain_checkpoint = NULL;
+static uint32_t fresh_world_seed_override = 0;
+static uint32_t fresh_world_seq_override = 0;
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -111,6 +113,22 @@ static bool persistence_save_enabled(void) {
 
 static bool persistence_externalized(void) {
     return persistence_mode == PERSISTENCE_EXTERNAL_S3;
+}
+
+static bool read_u32_env(const char *name, uint32_t *out) {
+    const char *text = getenv(name);
+    if (!text || text[0] == '\0') return true;
+    char *end = NULL;
+    errno = 0;
+    unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' ||
+        value == 0ul || value > 4294967295ul) {
+        fprintf(stderr, "[FATAL] invalid %s=%s (use 1..4294967295)\n",
+                name, text);
+        return false;
+    }
+    *out = (uint32_t)value;
+    return true;
 }
 
 static int live_player_connection_count(void) {
@@ -2553,6 +2571,29 @@ static int read_operator_post_tail(const station_t *st,
  * always fit and the JSON closes cleanly. */
 #define STATION_API_TAIL_MARGIN   2048
 
+typedef struct {
+    int index;
+    float dist_sq;
+    const asteroid_t *asteroid;
+} station_api_ore_target_t;
+
+static void station_api_offer_ore_target(station_api_ore_target_t *targets,
+                                         int cap,
+                                         int index,
+                                         const asteroid_t *asteroid,
+                                         float dist_sq) {
+    if (!targets || cap <= 0 || !asteroid) return;
+    for (int i = 0; i < cap; i++) {
+        if (targets[i].index >= 0 && dist_sq >= targets[i].dist_sq) continue;
+        for (int j = cap - 1; j > i; j--)
+            targets[j] = targets[j - 1];
+        targets[i].index = index;
+        targets[i].dist_sq = dist_sq;
+        targets[i].asteroid = asteroid;
+        return;
+    }
+}
+
 static void handle_station_state(struct mg_connection *c, int sid, struct mg_http_message *hm) {
     const station_t *st = &world.stations[sid];
 
@@ -2631,14 +2672,28 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     float sr_sq = st->signal_range * st->signal_range;
     int asteroid_commodity_counts[COMMODITY_RAW_ORE_COUNT] = {0};
     int asteroid_fragment_counts[COMMODITY_RAW_ORE_COUNT] = {0};
+    enum { ORE_TARGETS_PER_COMMODITY = 3 };
+    station_api_ore_target_t ore_targets[COMMODITY_RAW_ORE_COUNT][ORE_TARGETS_PER_COMMODITY];
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+        for (int j = 0; j < ORE_TARGETS_PER_COMMODITY; j++) {
+            ore_targets[c][j].index = -1;
+            ore_targets[c][j].dist_sq = FLT_MAX;
+            ore_targets[c][j].asteroid = NULL;
+        }
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &world.asteroids[i];
         if (!a->active) continue;
-        if (v2_dist_sq(a->pos, st->pos) > sr_sq) continue;
+        float d_sq = v2_dist_sq(a->pos, st->pos);
+        if (d_sq > sr_sq) continue;
         if (a->commodity < COMMODITY_RAW_ORE_COUNT) {
             asteroid_commodity_counts[a->commodity]++;
             if (a->tier == ASTEROID_TIER_S)
                 asteroid_fragment_counts[a->commodity]++;
+            else
+                station_api_offer_ore_target(ore_targets[a->commodity],
+                                             ORE_TARGETS_PER_COMMODITY,
+                                             i, a, d_sq);
         }
     }
     BUF_APPEND(pos, buf, BUFSZ,
@@ -2650,6 +2705,29 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         asteroid_fragment_counts[COMMODITY_FERRITE_ORE],
         asteroid_fragment_counts[COMMODITY_CUPRITE_ORE],
         asteroid_fragment_counts[COMMODITY_CRYSTAL_ORE]);
+
+    BUF_APPEND(pos, buf, BUFSZ, "\"ore_targets\":[");
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+        if (c > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        BUF_APPEND(pos, buf, BUFSZ,
+            "{\"commodity\":%d,\"need\":%.3f,\"visible\":%d,\"fragments\":%d,\"nearest\":[",
+            c, station_raw_ore_need_score(st, (commodity_t)c),
+            asteroid_commodity_counts[c],
+            asteroid_fragment_counts[c]);
+        for (int j = 0; j < ORE_TARGETS_PER_COMMODITY; j++) {
+            const station_api_ore_target_t *target = &ore_targets[c][j];
+            const asteroid_t *a = target->asteroid;
+            if (target->index < 0 || !a) break;
+            if (j > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ,
+                "{\"index\":%d,\"tier\":%d,\"x\":%.0f,\"y\":%.0f,"
+                "\"distance\":%.0f,\"hp\":%.0f}",
+                target->index, a->tier, a->pos.x, a->pos.y,
+                sqrtf(target->dist_sq), a->hp);
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "]}");
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "],");
 
     /* Visible asteroids within signal range. Capped at
      * STATION_API_MAX_ASTEROIDS — agents don't need 1000+ rocks and
@@ -4054,6 +4132,18 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
     if (persistence_mode == PERSISTENCE_EPHEMERAL) {
         printf("[server] Ephemeral persistence: local save/catalog/player files are ignored and not written\n");
     }
+    if (!read_u32_env("SIGNAL_WORLD_SEED", &fresh_world_seed_override) ||
+        !read_u32_env("SIGNAL_WORLD_SEQ", &fresh_world_seq_override)) {
+        return false;
+    }
+    if (fresh_world_seed_override) {
+        printf("[server] Fresh world seed override: %u\n",
+               fresh_world_seed_override);
+    }
+    if (fresh_world_seq_override) {
+        printf("[server] Fresh world sequence override: %u\n",
+               fresh_world_seq_override);
+    }
     {
         const char *idle = getenv("SIGNAL_IDLE_SHUTDOWN_AFTER_SEC");
         if (idle && idle[0] != '\0') {
@@ -4097,12 +4187,15 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         if (strcmp(mode_name, "autopilot") == 0) {
             server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
             server_bot_brain_mode_name = "autopilot";
+        } else if (strcmp(mode_name, "heuristic") == 0) {
+            server_bot_brain_mode = SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS;
+            server_bot_brain_mode_name = "heuristic";
         } else if (strcmp(mode_name, "neural") == 0) {
             server_bot_brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
             server_bot_brain_mode_name = "neural";
         } else {
             fprintf(stderr, "[FATAL] invalid SIGNAL_BOT_BRAIN_MODE=%s "
-                            "(use autopilot or neural)\n",
+                            "(use autopilot, heuristic, or neural)\n",
                     mode_name);
             return false;
         }
@@ -4236,7 +4329,9 @@ static void load_world_state(void) {
                persistence_mode_name());
     }
     if (fresh_world) {
-        world.rng = (uint32_t)time(NULL);
+        world.rng = fresh_world_seed_override
+            ? fresh_world_seed_override
+            : (uint32_t)time(NULL);
         if (!world.rng) world.rng = 2037u;
     }
     world_reset(&world);
@@ -4254,7 +4349,9 @@ static void load_world_state(void) {
     } else {
         /* fresh_world above already rotated rng; stamp world_seq from the
          * wall clock so cross-wipe ordering is monotonic too. */
-        world.world_seq = (uint32_t)time(NULL);
+        world.world_seq = fresh_world_seq_override
+            ? fresh_world_seq_override
+            : (uint32_t)time(NULL);
         if (!world.world_seq) world.world_seq = 1u;
         printf("[server] no session save -- fresh economy (belt_seed=%u world_seq=%u)\n",
                world.belt_seed, world.world_seq);
@@ -4314,19 +4411,20 @@ static void load_world_state(void) {
                    highscores.count);
     }
 
-    /* Anchor the current world's identity in station 0's chain. The
-     * BUILD_INFO + WORLD_INFO operator posts let the replay walker
-     * tag every subsequent DEATH event with this world's belt_seed
-     * and build SHA. emit_world_identity_anchor is below. */
+    /* Anchor the current world's identity in every station chain. The
+     * BUILD_INFO + WORLD_INFO operator posts let replay/analyzer walks
+     * tag subsequent events with this world's belt_seed, world_seq, and
+     * build SHA. emit_world_identity_anchor is below. */
     emit_world_identity_anchor();
 }
 
 /* Forward-declared above load_world_state but defined here so it can
  * use chain_log_emit + the static GIT_HASH constant. Idempotent: emits
- * one BUILD_INFO and one WORLD_INFO every server start (the chain log
- * grows by 2 events per restart, which is fine). */
-static void emit_world_identity_anchor(void) {
-    if (!station_exists(&world.stations[0])) return;
+ * one BUILD_INFO and one WORLD_INFO per station every server start
+ * (the chain log grows by 2 events per station per restart, which is
+ * fine and gives every station log its own world cursor). */
+static void emit_world_identity_anchor_for_station(station_t *st) {
+    if (!st || !station_exists(st)) return;
 #ifdef GIT_HASH
     const char *hash = GIT_HASH;
 #else
@@ -4344,7 +4442,7 @@ static void emit_world_identity_anchor(void) {
         payload[36] = (uint8_t)(hash_len & 0xFF);
         payload[37] = (uint8_t)((hash_len >> 8) & 0xFF);
         memcpy(&payload[38], hash, hash_len);
-        (void)chain_log_emit(&world, &world.stations[0],
+        (void)chain_log_emit(&world, st,
                              CHAIN_EVT_OPERATOR_POST,
                              payload, (uint16_t)(38 + hash_len));
     }
@@ -4371,9 +4469,15 @@ static void emit_world_identity_anchor(void) {
         payload[36] = (uint8_t)(text_len & 0xFF);
         payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
         memcpy(&payload[38], text, text_len);
-        (void)chain_log_emit(&world, &world.stations[0],
+        (void)chain_log_emit(&world, st,
                              CHAIN_EVT_OPERATOR_POST,
                              payload, (uint16_t)(38 + text_len));
+    }
+}
+
+static void emit_world_identity_anchor(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        emit_world_identity_anchor_for_station(&world.stations[s]);
     }
 }
 

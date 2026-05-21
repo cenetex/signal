@@ -1,5 +1,42 @@
 #include "test_harness.h"
 #include "contract_fit.h"
+#include "chain_log.h"
+
+static void economy_chain_test_setup(const char *suffix) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s_chain_%s", TMP("econ"), suffix);
+    chain_log_set_dir(path);
+    chain_log_set_disk_enabled(true);
+}
+
+static void economy_chain_test_teardown(void) {
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(NULL);
+}
+
+static void economy_chain_test_wipe_logs(world_t *w) {
+    if (!w) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        chain_log_reset(&w->stations[s]);
+        w->stations[s].chain_event_count = 0;
+        memset(w->stations[s].chain_last_hash, 0,
+               sizeof(w->stations[s].chain_last_hash));
+    }
+}
+
+static const cargo_unit_t *test_station_first_unit(const station_t *st,
+                                                   commodity_t c,
+                                                   recipe_id_t recipe_id) {
+    if (!st || !st->manifest.units) return NULL;
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        const cargo_unit_t *u = &st->manifest.units[i];
+        if ((commodity_t)u->commodity == c &&
+            (recipe_id_t)u->recipe_id == recipe_id) {
+            return u;
+        }
+    }
+    return NULL;
+}
 
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
@@ -1387,6 +1424,85 @@ TEST(test_repair_kit_fab_requires_manifest_inputs) {
     ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.001f);
 }
 
+TEST(test_repair_kit_fab_emits_craft_chain_event) {
+    economy_chain_test_setup("repair_kit_craft");
+    WORLD_DECL;
+    world_reset(&w);
+    economy_chain_test_wipe_logs(&w);
+
+    int shipyard = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w.stations[s], MODULE_SHIPYARD)) {
+            shipyard = s;
+            break;
+        }
+    }
+    ASSERT(shipyard >= 0);
+    station_t *st = &w.stations[shipyard];
+
+    ASSERT(test_set_station_finished_units(st, COMMODITY_REPAIR_KIT,
+                                           (int)REPAIR_KIT_STOCK_CAP - 1));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 1));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 1));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 1));
+
+    const cargo_unit_t *frame = test_station_first_unit(st, COMMODITY_FRAME,
+                                                       RECIPE_LEGACY_MIGRATE);
+    const cargo_unit_t *laser = test_station_first_unit(st, COMMODITY_LASER_MODULE,
+                                                       RECIPE_LEGACY_MIGRATE);
+    const cargo_unit_t *tractor = test_station_first_unit(st, COMMODITY_TRACTOR_MODULE,
+                                                         RECIPE_LEGACY_MIGRATE);
+    ASSERT(frame != NULL);
+    ASSERT(laser != NULL);
+    ASSERT(tractor != NULL);
+    uint8_t expected_inputs[RECIPE_INPUT_MAX][32] = {{0}};
+    memcpy(expected_inputs[0], frame->pub, 32);
+    memcpy(expected_inputs[1], laser->pub, 32);
+    memcpy(expected_inputs[2], tractor->pub, 32);
+
+    st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
+    step_dock_repair_kit_fab(&w, SIM_DT);
+
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_REPAIR_KIT),
+                  (int)REPAIR_KIT_STOCK_CAP);
+    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+
+    const cargo_unit_t *kit = test_station_first_unit(st, COMMODITY_REPAIR_KIT,
+                                                     RECIPE_REPAIR_KIT_FAB);
+    ASSERT(kit != NULL);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 1);
+
+    char path[256];
+    ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f != NULL);
+    uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+    ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
+    ASSERT_EQ_INT(header[16], CHAIN_EVT_CRAFT);
+    uint8_t len_bytes[2];
+    ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
+    uint16_t payload_len = (uint16_t)len_bytes[0] |
+                           (uint16_t)((uint16_t)len_bytes[1] << 8);
+    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_craft_t));
+    uint8_t payload[sizeof(chain_payload_craft_t)];
+    ASSERT(fread(payload, 1, sizeof(payload), f) == sizeof(payload));
+    fclose(f);
+
+    uint16_t recipe_id = (uint16_t)payload[0] |
+                         (uint16_t)((uint16_t)payload[1] << 8);
+    ASSERT_EQ_INT(recipe_id, RECIPE_REPAIR_KIT_FAB);
+    ASSERT_EQ_INT(payload[2], RECIPE_INPUT_MAX);
+    ASSERT(memcmp(&payload[8], kit->pub, 32) == 0);
+    ASSERT(memcmp(&payload[40], expected_inputs[0], 32) == 0);
+    ASSERT(memcmp(&payload[72], expected_inputs[1], 32) == 0);
+    ASSERT(memcmp(&payload[104], expected_inputs[2], 32) == 0);
+
+    economy_chain_test_teardown();
+}
+
 TEST(test_furnace_without_hopper_does_not_smelt) {
     /* Furnace capability is pair/tag based: a tagged furnace still
      * requires an adjacent matching ore hopper before it'll fire. */
@@ -1675,6 +1791,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_repair_partial_when_kits_short);
     RUN(test_repair_rejects_float_only_kits);
     RUN(test_repair_kit_fab_requires_manifest_inputs);
+    RUN(test_repair_kit_fab_emits_craft_chain_event);
 }
 
 void register_economy_contract3_tests(void) {

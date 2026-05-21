@@ -65,7 +65,7 @@ extern "C" {
 typedef enum {
     CHAIN_EVT_NONE         = 0,
     CHAIN_EVT_SMELT        = 1,  /* fragment -> ingot at this station */
-    CHAIN_EVT_CRAFT        = 2,  /* ingot(s) -> finished product */
+    CHAIN_EVT_CRAFT        = 2,  /* cargo input(s) -> finished product */
     CHAIN_EVT_TRANSFER     = 3,  /* cargo unit moved between holders */
     CHAIN_EVT_TRADE        = 4,  /* transfer + ledger delta, atomic */
     CHAIN_EVT_LEDGER       = 5,  /* station-side credit balance mutation */
@@ -108,7 +108,7 @@ typedef struct {
     uint8_t  input_count;
     uint8_t  _pad[5];
     uint8_t  output_pub[32];
-    uint8_t  input_pubs[2][32];
+    uint8_t  input_pubs[RECIPE_INPUT_MAX][32];
 } SIGNAL_PACKED chain_payload_craft_t;
 SIGNAL_PACK_POP
 
@@ -238,7 +238,7 @@ SIGNAL_PACK_POP
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
 _Static_assert(sizeof(chain_payload_smelt_t)            == 80,  "smelt payload size");
-_Static_assert(sizeof(chain_payload_craft_t)            == 104, "craft payload size");
+_Static_assert(sizeof(chain_payload_craft_t)            == 136, "craft payload size");
 _Static_assert(sizeof(chain_payload_transfer_t)         == 104, "transfer payload size");
 _Static_assert(sizeof(chain_payload_trade_t)            == 48,  "trade payload size");
 _Static_assert(sizeof(chain_payload_rock_destroy_t)     == 96,  "rock_destroy payload size");
@@ -310,10 +310,11 @@ void chain_log_health_set(station_t *s, chain_health_status_t status,
  * s->station_pubkey), prev_hash linkage to the previous entry, and
  * payload_hash matches the stored payload bytes.
  *
- * If out_event_count is non-NULL, the number of events successfully
- * walked is written through (regardless of success). If out_last_hash
- * is non-NULL, the SHA-256 of the last successfully-walked header is
- * written through.
+ * If out_event_count is non-NULL, the last valid event_id in the final
+ * segment is written through (regardless of success). On single-segment
+ * logs this is the number of events successfully walked. If
+ * out_last_hash is non-NULL, the SHA-256 of the last successfully-
+ * walked header is written through.
  *
  * On a missing log file, returns true with zero events walked — an
  * empty chain is trivially valid. */
@@ -332,7 +333,10 @@ bool chain_log_verify(const station_t *s,
  *
  * Behaviorally identical to chain_log_verify for the signature +
  * linkage + payload-hash + monotonic-event_id + authority-pubkey
- * checks. Operates on an open FILE* so tests can verify in-memory or
+ * checks. A later event with event_id==1 and prev_hash==0 is treated
+ * as a fresh segment boundary: each segment is verified strictly on
+ * its own chain, while the report keeps total and tail counters
+ * separate. Operates on an open FILE* so tests can verify in-memory or
  * partial logs without going through the chain dir. The caller owns
  * the FILE* and is responsible for fclose. The file pointer is read
  * from its current offset to EOF.
@@ -344,6 +348,10 @@ bool chain_log_verify(const station_t *s,
 typedef struct {
     uint64_t total_events;
     uint64_t valid_events;
+    uint64_t segment_count;
+    uint64_t segment_resets;      /* accepted clean event_id=1/prev_hash=0 restarts */
+    uint64_t tail_event_id;       /* last valid event_id in the final segment */
+    uint64_t tail_valid_events;   /* valid events in the final segment */
     uint64_t bad_signatures;
     uint64_t bad_linkage;        /* prev_hash mismatch */
     uint64_t bad_payload_hash;   /* payload bytes don't match header */

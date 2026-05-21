@@ -182,6 +182,7 @@ typedef struct {
 enum {
     SERVER_BRAIN_MODE_NONE = 0,
     SERVER_BRAIN_MODE_NEURAL_FLIGHT = 1,
+    SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS = 2,
 };
 
 /* input_intent_t lives in shared/types.h since slice 2 of #294 — both

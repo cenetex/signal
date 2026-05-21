@@ -79,6 +79,27 @@ static bool station_manifest_push_finished(station_t *st, const cargo_unit_t *un
     return false;
 }
 
+static void station_emit_craft_event(world_t *w, station_t *st,
+                                     recipe_id_t recipe_id,
+                                     const cargo_unit_t *inputs,
+                                     size_t input_count,
+                                     const cargo_unit_t *product) {
+    if (!w || !st || !inputs || !product ||
+        input_count == 0 || input_count > RECIPE_INPUT_MAX) {
+        return;
+    }
+
+    chain_payload_craft_t payload = {0};
+    payload.recipe_id = (uint16_t)recipe_id;
+    payload.input_count = (uint8_t)input_count;
+    memcpy(payload.output_pub, product->pub, sizeof(payload.output_pub));
+    for (size_t i = 0; i < input_count; i++)
+        memcpy(payload.input_pubs[i], inputs[i].pub, sizeof(payload.input_pubs[i]));
+
+    (void)chain_log_emit(w, st, CHAIN_EVT_CRAFT,
+                         &payload, (uint16_t)sizeof(payload));
+}
+
 static bool manifest_unit_matches_recipe_input(const cargo_unit_t *unit,
                                                commodity_t commodity) {
     cargo_kind_t kind;
@@ -181,14 +202,8 @@ static int station_manifest_craft_product_batch(world_t *w, station_t *st,
         if (!station_manifest_push_finished(st, &product)) break;
         crafted++;
 
-        chain_payload_craft_t payload = {0};
-        payload.recipe_id = (uint16_t)recipe_id;
-        payload.input_count = (uint8_t)recipe->input_count;
-        memcpy(payload.output_pub, product.pub, 32);
-        for (size_t i = 0; i < recipe->input_count && i < 2; i++)
-            memcpy(payload.input_pubs[i], inputs[i].pub, 32);
-        (void)chain_log_emit(w, st, CHAIN_EVT_CRAFT,
-                             &payload, (uint16_t)sizeof(payload));
+        station_emit_craft_event(w, st, recipe_id, inputs,
+                                 recipe->input_count, &product);
     }
     return crafted;
 }
@@ -1183,6 +1198,8 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
             unit.origin_station = (uint8_t)s;
             unit.mined_block = (uint64_t)(w->time * 120.0);
             if (!station_manifest_push_finished(st, &unit)) break;
+            station_emit_craft_event(w, st, RECIPE_REPAIR_KIT_FAB, inputs,
+                                     recipe->input_count, &unit);
             actual_minted++;
         }
         if (actual_minted > 0)

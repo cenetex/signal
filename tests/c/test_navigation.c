@@ -31,6 +31,25 @@ static void seed_test_asteroid(asteroid_t *a, asteroid_tier_t tier, vec2 pos, fl
     a->pos = pos;
 }
 
+static bool test_asteroid_clear_of_station_traffic(const world_t *w,
+                                                   const asteroid_t *a) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float outer = fmaxf(st->radius, st->dock_radius);
+        for (int i = 0; i < st->module_count; i++) {
+            const station_module_t *m = &st->modules[i];
+            if (m->scaffold) continue;
+            if (m->ring >= 1 && m->ring <= STATION_NUM_RINGS)
+                outer = fmaxf(outer, STATION_RING_RADIUS[m->ring]);
+        }
+        float guard = fmaxf(outer + 900.0f, 1350.0f) + a->radius;
+        if (v2_dist_sq(a->pos, st->pos) < guard * guard)
+            return false;
+    }
+    return true;
+}
+
 TEST(test_autopilot_prefers_nearest_mineable_asteroid) {
     WORLD_DECL;
     setup_autopilot_world(&w);
@@ -130,6 +149,106 @@ static void test_flight_steer_to_brakes_for_intermediate_waypoint(void) {
     ASSERT(cmd.thrust < 0.0f);
 }
 
+static void test_flight_steer_to_reverses_from_low_speed_obstacle(void) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 60.0f;
+    w.asteroids[0].pos = v2(20.0f, 0.0f);
+    spatial_grid_build(&w);
+
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(0.0f, 0.0f);
+    ship.angle = 0.0f;
+
+    nav_path_t path = {0};
+    path.count = 1;
+    path.current = 0;
+    path.age = 0.0f;
+    path.goal = v2(1000.0f, 0.0f);
+    path.waypoints[0] = path.goal;
+
+    flight_cmd_t cmd = flight_steer_to(&w, &ship, &path, path.goal,
+                                       0.0f, 150.0f, SIM_DT);
+    ASSERT(cmd.thrust < 0.0f);
+    ASSERT(cmd.reverse_thrust);
+}
+
+static void test_flight_steer_to_escapes_station_ring_wall(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    spatial_grid_build(w);
+
+    const station_t *kepler = &w->stations[1];
+    float ring_r = STATION_RING_RADIUS[2];
+    float start_r = ring_r + 90.0f;
+    float slot_arc = TWO_PI_F / (float)STATION_RING_SLOTS[2];
+    float wall_ang = module_angle_ring(kepler, 2, 4) + slot_arc * 0.5f;
+    float inward = wrap_angle(wall_ang + PI_F);
+    vec2 fwd = v2(cosf(inward), sinf(inward));
+
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2_add(kepler->pos, v2(cosf(wall_ang) * start_r,
+                                      sinf(wall_ang) * start_r));
+    ship.vel = v2(0.0f, 0.0f);
+    ship.angle = inward;
+
+    nav_path_t path = {0};
+    path.goal = v2_add(ship.pos, v2_scale(fwd, 500.0f));
+
+    flight_cmd_t cmd = flight_steer_to(w, &ship, &path, path.goal,
+                                       0.0f, 150.0f, SIM_DT);
+    flight_avoid_station_wall(w, &ship, &cmd);
+    ASSERT(cmd.thrust < 0.0f);
+    ASSERT(cmd.reverse_thrust);
+    ASSERT(fabsf(cmd.turn) > 0.1f);
+    /* w auto-freed by WORLD_HEAP cleanup */
+}
+
+static void test_autopilot_exits_station_before_mining_route(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    spatial_grid_build(w);
+
+    server_player_t *sp = &w->players[0];
+    sp->connected = true;
+    sp->id = 0;
+    player_init_ship(sp, w);
+    sp->docked = false;
+    sp->current_station = 1;
+    sp->nearby_station = -1;
+    sp->autopilot_mode = 1;
+    sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+    sp->autopilot_target = 0;
+    sp->ship.pos = station_approach_target(&w->stations[1], w->stations[0].pos);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    w->asteroids[0].active = true;
+    w->asteroids[0].tier = ASTEROID_TIER_L;
+    w->asteroids[0].radius = 70.0f;
+    w->asteroids[0].hp = 100.0f;
+    w->asteroids[0].max_hp = 100.0f;
+    w->asteroids[0].ore = 100.0f;
+    w->asteroids[0].max_ore = 100.0f;
+    w->asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w->asteroids[0].pos = v2_add(w->stations[1].pos, v2(2000.0f, 0.0f));
+
+    step_autopilot(w, sp, SIM_DT);
+    ASSERT(sp->autopilot_state == AUTOPILOT_STEP_EXIT_STATION);
+    ASSERT(sp->autopilot_target == 0);
+    /* w auto-freed by WORLD_HEAP cleanup */
+}
+
 static void test_nav_forward_clearance_empty(void) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -155,6 +274,38 @@ static void test_nav_forward_clearance_blocked(void) {
      * Speed 200 → lookahead = min(300, 500) = 300u, well past the rock. */
     float c = nav_forward_clearance(w, v2(5000, 5000), v2(200, 0), 16.0f, 0.0f);
     ASSERT(c < 0.8f); /* should be significantly reduced */
+    /* w auto-freed by WORLD_HEAP cleanup */
+}
+
+static void test_nav_segment_clear_blocks_station_ring_wall(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    spatial_grid_build(w);
+
+    const station_t *kepler = &w->stations[1];
+    float ring_r = STATION_RING_RADIUS[2];
+    float start_r = ring_r + 90.0f;
+    float speed = 120.0f;
+    float slot_arc = TWO_PI_F / (float)STATION_RING_SLOTS[2];
+
+    float wall_ang = module_angle_ring(kepler, 2, 4) + slot_arc * 0.5f;
+    vec2 wall_pos = v2_add(kepler->pos, v2(cosf(wall_ang) * start_r,
+                                           sinf(wall_ang) * start_r));
+    float inward = wrap_angle(wall_ang + PI_F);
+    vec2 wall_vel = v2(cosf(inward) * speed, sinf(inward) * speed);
+
+    vec2 wall_goal = v2_add(wall_pos, v2_scale(wall_vel, 100.0f / speed));
+    ASSERT(!nav_segment_clear(w, wall_pos, wall_goal, 46.0f));
+
+    float open_ang = station_ring_open_gap_angle(kepler, 2);
+    vec2 open_pos = v2_add(kepler->pos, v2(cosf(open_ang) * start_r,
+                                           sinf(open_ang) * start_r));
+    inward = wrap_angle(open_ang + PI_F);
+    vec2 open_vel = v2(cosf(inward) * speed, sinf(inward) * speed);
+
+    vec2 open_goal = v2_add(open_pos, v2_scale(open_vel, 100.0f / speed));
+    ASSERT(nav_segment_clear(w, open_pos, open_goal, 46.0f));
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -592,6 +743,7 @@ TEST(test_autopilot_path_matches_preview) {
             const asteroid_t *a = &w->asteroids[i];
             if (!a->active || a->tier == ASTEROID_TIER_S) continue;
             if ((int)a->tier < (int)min_tier) continue;
+            if (!test_asteroid_clear_of_station_traffic(w, a)) continue;
             if (signal_strength_at(w, a->pos) <= 0.0f) continue;
             float d = v2_dist_sq(a->pos, w->players[0].ship.pos);
             if (d < best_d) { best_d = d; client_target = i; }
@@ -626,8 +778,12 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_approach_speed_basic);
     RUN(test_nav_speed_control_deadband);
     RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
+    RUN(test_flight_steer_to_reverses_from_low_speed_obstacle);
+    RUN(test_flight_steer_to_escapes_station_ring_wall);
+    RUN(test_autopilot_exits_station_before_mining_route);
     RUN(test_nav_forward_clearance_empty);
     RUN(test_nav_forward_clearance_blocked);
+    RUN(test_nav_segment_clear_blocks_station_ring_wall);
     RUN(test_nav_find_path_direct);
     RUN(test_nav_find_path_around_asteroid);
     RUN(test_nav_follow_path_replans_on_stale);

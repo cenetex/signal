@@ -91,6 +91,56 @@ TEST(test_chain_log_chain_linkage) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_verify_accepts_clean_segment_reset) {
+    chain_test_setup("segment_reset");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9020u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t pl[] = "seg";
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 2);
+
+    /* Simulate a fresh-world/session branch appended to the same
+     * station file: the new segment starts from event_id=1 and
+     * prev_hash=0, but the old bytes remain append-only on disk. */
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                          pl, sizeof(pl)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                          pl, sizeof(pl)) == 2);
+
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f != NULL);
+    chain_log_verify_report_t r;
+    ASSERT(chain_log_verify_with_pubkey(f, w->stations[0].station_pubkey, &r));
+    fclose(f);
+    ASSERT_EQ_INT((int)r.total_events, 4);
+    ASSERT_EQ_INT((int)r.valid_events, 4);
+    ASSERT_EQ_INT((int)r.segment_count, 2);
+    ASSERT_EQ_INT((int)r.segment_resets, 1);
+    ASSERT_EQ_INT((int)r.tail_event_id, 2);
+    ASSERT_EQ_INT((int)r.tail_valid_events, 2);
+    ASSERT_EQ_INT((int)r.bad_linkage, 0);
+    ASSERT_EQ_INT((int)r.monotonic_violations, 0);
+
+    uint64_t walked = 0;
+    uint8_t last_hash[32];
+    ASSERT(chain_log_verify(&w->stations[0], &walked, last_hash));
+    ASSERT_EQ_INT((int)walked, 2);
+    ASSERT(memcmp(last_hash, w->stations[0].chain_last_hash, 32) == 0);
+    chain_test_teardown();
+}
+
 TEST(test_chain_log_tampered_event_detected) {
     chain_test_setup("tamper");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1015,6 +1065,7 @@ void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
     RUN(test_chain_log_emit_and_verify);
     RUN(test_chain_log_chain_linkage);
+    RUN(test_chain_log_verify_accepts_clean_segment_reset);
     RUN(test_chain_log_tampered_event_detected);
     RUN(test_chain_log_wrong_station_signature_rejected);
     RUN(test_chain_log_save_load_continuity);

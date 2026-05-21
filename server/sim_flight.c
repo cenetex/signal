@@ -18,6 +18,63 @@ float flight_face_heading(const ship_t *ship, float desired_angle) {
     return 0.0f;
 }
 
+static bool flight_heading_blocked(const world_t *w, const ship_t *ship,
+                                   float clearance, float heading) {
+    vec2 fwd = v2(cosf(heading), sinf(heading));
+    float speed = v2_len(ship->vel);
+    float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
+    vec2 probe_end = v2_add(ship->pos, v2_scale(fwd, lookahead));
+    return !nav_segment_clear(w, ship->pos, probe_end, clearance);
+}
+
+void flight_avoid_station_wall(const world_t *w, const ship_t *ship,
+                               flight_cmd_t *cmd) {
+    if (!w || !ship || !cmd) return;
+
+    float clearance = ship_hull_def(ship)->ship_radius + 30.0f;
+    if (!flight_heading_blocked(w, ship, clearance, ship->angle)) return;
+
+    bool left_blocked = flight_heading_blocked(w, ship, clearance,
+                                               ship->angle + 0.7f);
+    bool right_blocked = flight_heading_blocked(w, ship, clearance,
+                                                ship->angle - 0.7f);
+    bool back_blocked = flight_heading_blocked(w, ship, clearance,
+                                               wrap_angle(ship->angle + PI_F));
+
+    const station_t *nearest = NULL;
+    float best_d = 1e30f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float d = v2_dist_sq(ship->pos, st->pos);
+        if (d < best_d) {
+            best_d = d;
+            nearest = st;
+        }
+    }
+
+    if (nearest) {
+        vec2 away = v2_sub(ship->pos, nearest->pos);
+        if (v2_len_sq(away) > 1.0f)
+            cmd->turn = flight_face_heading(ship, atan2f(away.y, away.x));
+    } else if (left_blocked != right_blocked) {
+        cmd->turn = left_blocked ? -1.0f : 1.0f;
+    } else {
+        cmd->turn = cmd->turn >= 0.0f ? 1.0f : -1.0f;
+    }
+
+    float speed = v2_len(ship->vel);
+    cmd->reverse_thrust = false;
+    if (speed < 35.0f && !back_blocked) {
+        cmd->thrust = -0.6f;
+        cmd->reverse_thrust = true;
+    } else if (speed > 20.0f) {
+        cmd->thrust = -1.0f;
+    } else if (cmd->thrust > 0.0f) {
+        cmd->thrust = 0.0f;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* flight_steer_to                                                     */
 /* ------------------------------------------------------------------ */
@@ -25,7 +82,7 @@ float flight_face_heading(const ship_t *ship, float desired_angle) {
 flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
                               nav_path_t *path, vec2 target,
                               float standoff, float max_speed, float dt) {
-    flight_cmd_t cmd = {0.0f, 0.0f};
+    flight_cmd_t cmd = {0.0f, 0.0f, false};
     const hull_def_t *hull = ship_hull_def(ship);
     float clearance = hull->ship_radius + 30.0f;
 
@@ -72,15 +129,25 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
      * laterally to deflect around it. */
     float fwd_clear = nav_forward_clearance(w, ship->pos, ship->vel,
                                              hull->ship_radius, ship->angle);
-    float vel_angle = atan2f(ship->vel.y, ship->vel.x);
-    float vel_clear = nav_forward_clearance(w, ship->pos, ship->vel,
-                                             hull->ship_radius, vel_angle);
+    float speed = v2_len(ship->vel);
+    float vel_clear = fwd_clear;
+    if (speed > 0.5f) {
+        float vel_angle = atan2f(ship->vel.y, ship->vel.x);
+        vel_clear = nav_forward_clearance(w, ship->pos, ship->vel,
+                                          hull->ship_radius, vel_angle);
+    }
     float worst_clear = fminf(fwd_clear, vel_clear);
     if (worst_clear < 1.0f) {
-        if (worst_clear < 0.3f)
-            thrust_cmd = -1.0f;
-        else if (thrust_cmd > 0.0f)
+        if (worst_clear < 0.3f) {
+            if (speed < 35.0f) {
+                thrust_cmd = -0.6f;
+                cmd.reverse_thrust = true;
+            } else {
+                thrust_cmd = -1.0f;
+            }
+        } else if (thrust_cmd > 0.0f) {
             thrust_cmd *= worst_clear;
+        }
 
         /* Lateral deflection: check clearance 45 degrees to each side,
          * steer toward the clearer side. This prevents the ship from
@@ -110,7 +177,7 @@ flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
                                 vec2 target, float standoff) {
     (void)w;
 
-    flight_cmd_t cmd = {0.0f, 0.0f};
+    flight_cmd_t cmd = {0.0f, 0.0f, false};
     float dist = sqrtf(v2_dist_sq(ship->pos, target));
     float speed = sqrtf(v2_len_sq(ship->vel));
     float sweet_min = standoff - 15.0f;
@@ -165,7 +232,7 @@ flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
 /* ------------------------------------------------------------------ */
 
 flight_cmd_t flight_brake(const ship_t *ship) {
-    flight_cmd_t cmd = {0.0f, 0.0f};
+    flight_cmd_t cmd = {0.0f, 0.0f, false};
     float speed = sqrtf(v2_len_sq(ship->vel));
     if (speed < 5.0f) return cmd;
 

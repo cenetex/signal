@@ -1964,6 +1964,33 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
     return false;
 }
 
+static commodity_t autopilot_tow_collection_filter(const world_t *w,
+                                                   const server_player_t *sp) {
+    if (!w || !sp || sp->autopilot_mode == 0)
+        return COMMODITY_COUNT;
+
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &w->asteroids[idx];
+        if (!a->active || a->commodity >= COMMODITY_RAW_ORE_COUNT) continue;
+        return a->commodity;
+    }
+
+    if (sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
+        sp->autopilot_state == AUTOPILOT_STEP_MINE ||
+        sp->autopilot_state == AUTOPILOT_STEP_COLLECT) {
+        int idx = sp->autopilot_target;
+        if (idx >= 0 && idx < MAX_ASTEROIDS) {
+            const asteroid_t *a = &w->asteroids[idx];
+            if (a->active && a->commodity < COMMODITY_RAW_ORE_COUNT)
+                return a->commodity;
+        }
+    }
+
+    return COMMODITY_COUNT;
+}
+
 /* ---- Unified rubber-band physics ----
  *
  * One model for all towed rocks regardless of whether the player is
@@ -2114,11 +2141,13 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 
     int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
+    commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
     /* Use nearby range (the larger of the two) for the broad check */
     float broad_sq = (nearby_sq > tr_sq) ? nearby_sq : tr_sq;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        if (tow_filter != COMMODITY_COUNT && a->commodity != tow_filter) continue;
         /* Cheap axis-aligned pre-check before expensive distance calc */
         float dx = sp->ship.pos.x - a->pos.x;
         float dy = sp->ship.pos.y - a->pos.y;
@@ -3167,6 +3196,14 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float bal = pubkey_ledger
                 ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
                 : ledger_balance(docked_st, sp->session_token);
+            bool neural_bot_credit =
+                (sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
+                 sp->server_brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) &&
+                sp->autopilot_mode != 0 &&
+                sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_BUY &&
+                sp->autopilot_cargo == c &&
+                sp->autopilot_station_target >= 0 &&
+                sp->autopilot_station_target < MAX_STATIONS;
             SIM_LOG("[buy-bal] player %d at station %d: pubkey_ledger=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
                     sp->id, sp->current_station, pubkey_ledger ? 1 : 0,
                     sp->pubkey[0], sp->pubkey[1], sp->pubkey[2], sp->pubkey[3],
@@ -3186,6 +3223,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             int per_press_cap = (vol > FLOAT_EPSILON)
                 ? (int)lroundf(1.0f / vol) : 1;
             if (per_press_cap < 1) per_press_cap = 1;
+            if (neural_bot_credit)
+                afford = (float)per_press_cap;
             float amount = fminf(fminf(fminf(available, space), afford), (float)per_press_cap);
             float total_cost = amount * price_per;
             SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
@@ -3216,9 +3255,20 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             }
             bool spent = false;
             if (charge_amount > 0.01f) {
-                spent = pubkey_ledger
-                    ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
-                    : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
+                if (neural_bot_credit) {
+                    if (pubkey_ledger) {
+                        ledger_force_debit_by_pubkey(docked_st, sp->pubkey,
+                                                     charge_cost, &sp->ship);
+                    } else {
+                        ledger_force_debit(docked_st, sp->session_token,
+                                           charge_cost, &sp->ship);
+                    }
+                    spent = true;
+                } else {
+                    spent = pubkey_ledger
+                        ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
+                        : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
+                }
             }
             if (spent) {
                 if (finished) {

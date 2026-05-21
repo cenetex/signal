@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-flight-trace flight-trace build-signal-replay signal-replay assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -90,6 +90,36 @@ signal-replay: build-signal-replay
 		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
 		--out $(SIGNAL_REPLAY_OUT)
 
+# --- Chain asset inventory export ---
+CHAIN_ASSETS_FORMAT ?= json
+CHAIN_ASSETS_INPUT ?= chain
+CHAIN_ASSETS_OUT ?=
+
+build-chain-assets:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	@ln -sf build/compile_commands.json compile_commands.json
+	cmake --build build --target signal_chain_assets --parallel
+
+chain-assets: build-chain-assets
+	./build/signal_chain_assets \
+		--format=$(CHAIN_ASSETS_FORMAT) \
+		$(if $(CHAIN_ASSETS_OUT),--out=$(CHAIN_ASSETS_OUT),) \
+		$(CHAIN_ASSETS_INPUT)
+
+# --- Live bot behavior A/B gap harness ---
+NEURAL_GAP_DURATION ?= 120
+NEURAL_GAP_BOTS ?= 31
+NEURAL_GAP_SEED ?= 2037
+NEURAL_GAP_OUT ?= /tmp/signal-neural-gap
+
+neural-gap-ab:
+	python3 scripts/neural-gap-ab.py \
+		--duration $(NEURAL_GAP_DURATION) \
+		--bots $(NEURAL_GAP_BOTS) \
+		--seed $(NEURAL_GAP_SEED) \
+		--world-seq $(NEURAL_GAP_SEED) \
+		--out-dir "$(NEURAL_GAP_OUT)"
+
 assets:
 	./scripts/sync-assets.sh
 
@@ -116,6 +146,7 @@ build-test:
 	# invariant coverage, so rebuild it here too; otherwise a stale
 	# tool binary can make the sharded suite fail or pass incorrectly.
 	cmake --build build --target signal_verify --parallel
+	cmake --build build --target signal_chain_assets --parallel
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
@@ -189,7 +220,7 @@ test-serial: build-test
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/flight_trace.c tools/signal_replay.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/flight_trace.c tools/signal_replay.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \

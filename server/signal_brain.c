@@ -68,6 +68,9 @@ typedef struct {
     double path_count;
     double path_current;
     double heading_error;
+    double fwd_path_blocked;
+    double left_path_blocked;
+    double right_path_blocked;
 } signal_brain_state_t;
 
 static signal_brain_model_t g_brain;
@@ -298,7 +301,8 @@ static int autopilot_station_phase(int state) {
            state == AUTOPILOT_STEP_LOGISTICS_TRAVEL ||
            state == AUTOPILOT_STEP_LOGISTICS_DOCK ||
            state == AUTOPILOT_STEP_LOGISTICS_DELIVER ||
-           state == AUTOPILOT_STEP_LOGISTICS_WAIT;
+           state == AUTOPILOT_STEP_LOGISTICS_WAIT ||
+           state == AUTOPILOT_STEP_EXIT_STATION;
 }
 
 static double signed_scale(double x, double denom) {
@@ -306,9 +310,9 @@ static double signed_scale(double x, double denom) {
 }
 
 static double forward_model(const double input[SB_FEATURE_COUNT]) {
-    double hidden0[SB_HIDDEN0];
-    double hidden1[SB_HIDDEN1];
-    double output[1];
+    double hidden0[SB_HIDDEN0] = {0.0};
+    double hidden1[SB_HIDDEN1] = {0.0};
+    double output[1] = {0.0};
     const double *src = input;
     double *dsts[SB_LAYER_COUNT - 1] = {hidden0, hidden1, output};
 
@@ -384,6 +388,7 @@ static int brain_target_for(const world_t *w,
     case AUTOPILOT_STEP_LOGISTICS_TRAVEL:
     case AUTOPILOT_STEP_LOGISTICS_DOCK:
     case AUTOPILOT_STEP_LOGISTICS_DELIVER:
+    case AUTOPILOT_STEP_EXIT_STATION:
         if (target < 0 || target >= MAX_STATIONS) target = sp->nearby_station;
         if (target < 0 || target >= MAX_STATIONS) target = sp->current_station;
         if (target >= 0 && target < MAX_STATIONS &&
@@ -443,6 +448,18 @@ static double clearance_at(const world_t *w,
     return asteroids < stations ? asteroids : stations;
 }
 
+static double path_blocked_at(const world_t *w,
+                              const server_player_t *sp,
+                              float ship_radius,
+                              float heading) {
+    vec2 fwd = v2(cosf(heading), sinf(heading));
+    float speed = v2_len(sp->ship.vel);
+    float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
+    vec2 probe_end = v2_add(sp->ship.pos, v2_scale(fwd, lookahead));
+    return nav_segment_clear(w, sp->ship.pos, probe_end, ship_radius + 30.0f)
+        ? 0.0 : 1.0;
+}
+
 static signal_brain_state_t brain_state_for(const world_t *w,
                                             const server_player_t *sp,
                                             vec2 target) {
@@ -476,6 +493,9 @@ static signal_brain_state_t brain_state_for(const world_t *w,
     s.fwd_clear = clearance_at(w, sp, ship_radius, sp->ship.angle);
     s.left_clear = clearance_at(w, sp, ship_radius, sp->ship.angle + 0.7f);
     s.right_clear = clearance_at(w, sp, ship_radius, sp->ship.angle - 0.7f);
+    s.fwd_path_blocked = path_blocked_at(w, sp, ship_radius, sp->ship.angle);
+    s.left_path_blocked = path_blocked_at(w, sp, ship_radius, sp->ship.angle + 0.7f);
+    s.right_path_blocked = path_blocked_at(w, sp, ship_radius, sp->ship.angle - 0.7f);
     s.vel_clear = speed > 0.5f
         ? clearance_at(w, sp, ship_radius, atan2f(sp->ship.vel.y, sp->ship.vel.x))
         : s.fwd_clear;
@@ -572,6 +592,8 @@ static void fill_features(const signal_brain_state_t *s,
 static int action_allowed(const signal_brain_state_t *s,
                           const signal_brain_action_t *a,
                           size_t action_index) {
+    if (a->thrust > 0 && s->fwd_path_blocked > 0.5)
+        return 0;
     if (s->dist <= 450.0 || s->speed >= 20.0) return 1;
     if (action_index == 0 || a->thrust < 0) return 0;
     if (fabs(s->heading_error) > 0.35 && a->thrust > 0 && a->turn == 0)
@@ -595,6 +617,14 @@ void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
     if (!brain_target_for(w, sp, &target)) return;
 
     signal_brain_state_t state = brain_state_for(w, sp, target.pos);
+    if (state.fwd_path_blocked > 0.5) {
+        sp->input.turn = 0.0f;
+        sp->input.thrust = -1.0f;
+        sp->input.reverse_thrust = true;
+        sp->input.mine = false;
+        return;
+    }
+
     double row[SB_FEATURE_COUNT];
     double best_score = -INFINITY;
     int best = 0;
