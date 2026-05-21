@@ -551,6 +551,24 @@ typedef struct {
      * whole batches so identity can consume one input set and mint every
      * output unit from that same parent set. Not persisted in saves. */
     float module_craft_progress[MAX_MODULES_PER_STATION];
+    /* Runtime-only station policy cache. The deterministic policy scorer
+     * refreshes this once per sim tick; future neural scorers should write
+     * the same card ids/scores so downstream contract logic stays auditable.
+     * Not persisted and not included in station wire identity/econ records. */
+    uint64_t policy_tick;
+    uint32_t policy_generation;
+    uint8_t policy_budget_trade;
+    uint8_t policy_budget_construction;
+    uint8_t policy_budget_finance;
+    uint8_t policy_card_count;
+    uint8_t policy_card_ids[8];
+    uint8_t policy_card_domains[8];
+    uint8_t policy_card_costs[8];
+    float policy_card_scores[8];
+    uint8_t policy_top_demand_commodity;
+    uint8_t policy_pad[3];
+    float policy_top_demand_severity;
+    float policy_top_demand_price_mult;
     /* (credit_pool field removed — derived from -Σ(ledger.balance) via
      *  station_credit_pool() in server/game_sim.h. Conservation is
      *  structural now; there is no separate stored aggregate.) */

@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "types.h"
 
@@ -112,6 +113,24 @@ static inline const station_policy_card_t *station_policy_card_library(int *coun
     return cards;
 }
 
+static inline const char *station_policy_domain_name(station_policy_domain_t domain)
+{
+    switch (domain) {
+        case STATION_POLICY_DOMAIN_TRADE:        return "trade";
+        case STATION_POLICY_DOMAIN_CONSTRUCTION: return "construction";
+        case STATION_POLICY_DOMAIN_FINANCE:      return "finance";
+        default:                                 return "unknown";
+    }
+}
+
+static inline const char *station_policy_card_name(station_policy_card_id_t id)
+{
+    int count = 0;
+    const station_policy_card_t *cards = station_policy_card_library(&count);
+    if ((int)id < 0 || (int)id >= count) return "unknown";
+    return cards[id].name;
+}
+
 static inline station_policy_budget_t station_policy_default_budget(int station_idx)
 {
     switch (station_idx) {
@@ -198,6 +217,16 @@ static inline bool station_policy_selection_has(
     return false;
 }
 
+static inline bool station_policy_cached_has(const station_t *st,
+                                             station_policy_card_id_t id)
+{
+    if (!st) return false;
+    for (int i = 0; i < st->policy_card_count && i < STATION_POLICY_MAX_ACTIVE_CARDS; i++) {
+        if (st->policy_card_ids[i] == (uint8_t)id) return true;
+    }
+    return false;
+}
+
 static inline void station_policy_select_cards(const station_t *st,
                                                int station_idx,
                                                station_policy_selection_t *out)
@@ -242,6 +271,111 @@ static inline void station_policy_select_cards(const station_t *st,
     }
 }
 
+static inline bool station_policy_cache_differs(
+    const station_t *st,
+    const station_policy_selection_t *selection,
+    station_demand_t top_demand)
+{
+    if (!st || !selection) return true;
+    if (st->policy_generation == 0) return true;
+    if (st->policy_budget_trade != selection->budget.trade ||
+        st->policy_budget_construction != selection->budget.construction ||
+        st->policy_budget_finance != selection->budget.finance ||
+        st->policy_card_count != selection->count) {
+        return true;
+    }
+    for (int i = 0; i < selection->count && i < STATION_POLICY_MAX_ACTIVE_CARDS; i++) {
+        const station_policy_card_rank_t *card = &selection->cards[i];
+        if (st->policy_card_ids[i] != (uint8_t)card->id ||
+            st->policy_card_domains[i] != (uint8_t)card->domain ||
+            st->policy_card_costs[i] != card->budget_cost ||
+            fabsf(st->policy_card_scores[i] - card->score) > 0.0001f) {
+            return true;
+        }
+    }
+    if (st->policy_top_demand_commodity != (uint8_t)top_demand.commodity)
+        return true;
+    if (fabsf(st->policy_top_demand_severity - top_demand.severity) > 0.0001f)
+        return true;
+    if (fabsf(st->policy_top_demand_price_mult - top_demand.price_mult) > 0.0001f)
+        return true;
+    return false;
+}
+
+static inline void station_policy_store_selection(
+    station_t *st,
+    const station_policy_selection_t *selection,
+    station_demand_t top_demand)
+{
+    if (!st || !selection) return;
+    st->policy_budget_trade = selection->budget.trade;
+    st->policy_budget_construction = selection->budget.construction;
+    st->policy_budget_finance = selection->budget.finance;
+    st->policy_card_count = selection->count;
+    for (int i = 0; i < STATION_POLICY_MAX_ACTIVE_CARDS; i++) {
+        if (i < selection->count) {
+            const station_policy_card_rank_t *card = &selection->cards[i];
+            st->policy_card_ids[i] = (uint8_t)card->id;
+            st->policy_card_domains[i] = (uint8_t)card->domain;
+            st->policy_card_costs[i] = card->budget_cost;
+            st->policy_card_scores[i] = card->score;
+        } else {
+            st->policy_card_ids[i] = 0;
+            st->policy_card_domains[i] = 0;
+            st->policy_card_costs[i] = 0;
+            st->policy_card_scores[i] = 0.0f;
+        }
+    }
+    st->policy_top_demand_commodity = (uint8_t)top_demand.commodity;
+    st->policy_top_demand_severity = top_demand.severity;
+    st->policy_top_demand_price_mult = top_demand.price_mult;
+}
+
+static inline void station_policy_refresh(station_t *st,
+                                          int station_idx,
+                                          uint64_t tick)
+{
+    if (!st) return;
+    if (st->policy_tick == tick && st->policy_generation > 0) return;
+
+    station_policy_selection_t selection;
+    station_policy_select_cards(st, station_idx, &selection);
+    station_demand_t top_demand = station_top_demand(st);
+    bool changed = station_policy_cache_differs(st, &selection, top_demand);
+
+    station_policy_store_selection(st, &selection, top_demand);
+    st->policy_tick = tick;
+    if (changed || st->policy_generation == 0)
+        st->policy_generation++;
+}
+
+static inline float station_policy_trade_price_multiplier(const station_t *st,
+                                                          commodity_t c)
+{
+    if (!st || c >= COMMODITY_COUNT) return 1.0f;
+    float mult = 1.0f;
+    station_demand_t demand = station_demand_for(st, c);
+
+    if (station_policy_cached_has(st, STATION_POLICY_CARD_OPEN_MARKET) &&
+        station_consumes(st, c)) {
+        mult *= 1.05f;
+    }
+    if (station_policy_cached_has(st, STATION_POLICY_CARD_STRATEGIC_IMPORTS) &&
+        demand.severity > 0.0f) {
+        mult *= 1.0f + 0.25f * demand.severity;
+    }
+    if (station_policy_cached_has(st, STATION_POLICY_CARD_REPAIR_STOCK_RESERVE) &&
+        c == COMMODITY_REPAIR_KIT) {
+        mult *= 1.0f + 0.20f * station_policy_repair_kit_pressure(st);
+    }
+    if (station_policy_cached_has(st, STATION_POLICY_CARD_RESERVE_TREASURY))
+        mult *= 0.90f;
+
+    if (mult < 0.50f) mult = 0.50f;
+    if (mult > 1.75f) mult = 1.75f;
+    return mult;
+}
+
 /* Baseline deterministic station policy.
  *
  * Keep this as the single table for station-level political/trade rules.
@@ -267,12 +401,15 @@ static inline void station_policy_apply_contract_origin_rules(const station_t *s
     if (!c || !c->active || c->action != CONTRACT_TRACTOR) return;
     if (c->commodity < COMMODITY_RAW_ORE_COUNT ||
         c->commodity >= COMMODITY_COUNT) return;
-    station_policy_selection_t selection;
-    station_policy_select_cards(st, (int)c->station_index, &selection);
-    if (!station_policy_selection_has(&selection,
-                                      STATION_POLICY_CARD_HOSTILE_ORIGIN_EMBARGO)) {
-        return;
+    bool embargo = station_policy_cached_has(
+        st, STATION_POLICY_CARD_HOSTILE_ORIGIN_EMBARGO);
+    if (!embargo) {
+        station_policy_selection_t selection;
+        station_policy_select_cards(st, (int)c->station_index, &selection);
+        embargo = station_policy_selection_has(
+            &selection, STATION_POLICY_CARD_HOSTILE_ORIGIN_EMBARGO);
     }
+    if (!embargo) return;
 
     uint64_t mask = station_policy_forbidden_origin_mask(
         (int)c->station_index, c->commodity);

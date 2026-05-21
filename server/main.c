@@ -23,6 +23,7 @@
 #include "handoff_flow.h"
 #include "sha256.h"
 #include "station_authority.h"
+#include "station_policy.h"
 #include "station_util.h"
 #include <math.h>       /* lroundf */
 
@@ -2486,6 +2487,82 @@ static void reply_bot_trace_weights(struct mg_connection *c) {
     free(buf);
 }
 
+static void reply_station_policy_trace(struct mg_connection *c) {
+    enum { BUFSZ = 131072 };
+    char *buf = (char *)malloc(BUFSZ);
+    if (!buf) {
+        mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+        return;
+    }
+
+    int pos = 0;
+    BUF_APPEND(pos, buf, BUFSZ,
+               "{\"schema\":\"signal.station_policy_trace.v1\","
+               "\"tick\":%u,\"stations\":[",
+               world.tick);
+    bool first_station = true;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &world.stations[s];
+        if (!station_exists(st)) continue;
+        station_policy_refresh(st, s, world.tick);
+
+        if (!first_station) BUF_APPEND(pos, buf, BUFSZ, ",");
+        first_station = false;
+        BUF_APPEND(pos, buf, BUFSZ,
+                   "{\"station\":%d,\"name\":\"", s);
+        json_escape_append(buf, &pos, BUFSZ, st->name);
+        commodity_t top = (commodity_t)st->policy_top_demand_commodity;
+        BUF_APPEND(pos, buf, BUFSZ,
+                   "\",\"generation\":%u,\"policy_tick\":%llu,"
+                   "\"budget\":{\"trade\":%u,\"construction\":%u,\"finance\":%u},"
+                   "\"top_demand\":{\"commodity\":%u,\"code\":\"%s\","
+                   "\"severity\":%.3f,\"price_mult\":%.3f},"
+                   "\"cards\":[",
+                   st->policy_generation,
+                   (unsigned long long)st->policy_tick,
+                   st->policy_budget_trade,
+                   st->policy_budget_construction,
+                   st->policy_budget_finance,
+                   (unsigned)top,
+                   commodity_code(top),
+                   st->policy_top_demand_severity,
+                   st->policy_top_demand_price_mult);
+        for (int i = 0; i < st->policy_card_count &&
+                        i < STATION_POLICY_MAX_ACTIVE_CARDS; i++) {
+            station_policy_card_id_t id =
+                (station_policy_card_id_t)st->policy_card_ids[i];
+            station_policy_domain_t domain =
+                (station_policy_domain_t)st->policy_card_domains[i];
+            if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ,
+                       "{\"id\":%u,\"name\":\"",
+                       (unsigned)id);
+            json_escape_append(buf, &pos, BUFSZ, station_policy_card_name(id));
+            BUF_APPEND(pos, buf, BUFSZ,
+                       "\",\"domain\":\"%s\",\"score\":%.3f,\"budget_cost\":%u}",
+                       station_policy_domain_name(domain),
+                       st->policy_card_scores[i],
+                       st->policy_card_costs[i]);
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "],\"price_modifiers\":[");
+        bool first_mod = true;
+        for (int cidx = 0; cidx < COMMODITY_COUNT; cidx++) {
+            commodity_t cmod = (commodity_t)cidx;
+            float mult = station_policy_trade_price_multiplier(st, cmod);
+            if (fabsf(mult - 1.0f) <= 0.001f) continue;
+            if (!first_mod) BUF_APPEND(pos, buf, BUFSZ, ",");
+            first_mod = false;
+            BUF_APPEND(pos, buf, BUFSZ,
+                       "{\"commodity\":%d,\"code\":\"%s\",\"mult\":%.3f}",
+                       cidx, commodity_code(cmod), mult);
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "]}");
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "]}");
+    mg_http_reply(c, 200, api_headers, "%s", buf);
+    free(buf);
+}
+
 typedef struct {
     uint64_t event_id;
     uint8_t kind;
@@ -3333,6 +3410,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     free(out);
                 }
             }
+        } else if (mg_match(hm->uri, mg_str("/training/v1/station-policy-trace"), NULL)) {
+            reply_station_policy_trace(c);
         } else if (mg_match(hm->uri, mg_str("/training/v1/bot-trace-weights"), NULL)) {
             reply_bot_trace_weights(c);
         } else if (mg_match(hm->uri, mg_str("/health"), NULL)) {

@@ -576,6 +576,32 @@ TEST(test_station_policy_cards_rank_under_domain_budgets) {
     ASSERT(spent[STATION_POLICY_DOMAIN_FINANCE] <= selection.budget.finance);
 }
 
+TEST(test_station_policy_cache_drives_trade_price_modifier) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *prospect = &w.stations[0];
+    prospect->_inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    prospect->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+
+    station_policy_refresh(prospect, 0, 7);
+
+    ASSERT_EQ_INT((int)prospect->policy_tick, 7);
+    ASSERT(prospect->policy_generation > 0);
+    ASSERT(station_policy_cached_has(
+        prospect, STATION_POLICY_CARD_REPAIR_STOCK_RESERVE));
+    ASSERT(station_policy_cached_has(
+        prospect, STATION_POLICY_CARD_STRATEGIC_IMPORTS));
+    ASSERT_EQ_INT((int)prospect->policy_top_demand_commodity,
+                  COMMODITY_REPAIR_KIT);
+    ASSERT(prospect->policy_top_demand_severity > 0.9f);
+    ASSERT(station_policy_trade_price_multiplier(
+        prospect, COMMODITY_REPAIR_KIT) > 1.4f);
+
+    uint32_t generation = prospect->policy_generation;
+    station_policy_refresh(prospect, 0, 7);
+    ASSERT_EQ_INT((int)prospect->policy_generation, (int)generation);
+}
+
 TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
     WORLD_DECL;
     world_reset(&w);
@@ -2014,6 +2040,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_generated_heritage_contracts_require_source_recipe);
     RUN(test_station_policy_preserves_seeded_supply_loop);
     RUN(test_station_policy_cards_rank_under_domain_budgets);
+    RUN(test_station_policy_cache_drives_trade_price_modifier);
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);

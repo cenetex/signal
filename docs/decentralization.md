@@ -417,7 +417,7 @@ rewriting or repairing the log.
 | Cross-station verification | Cargo receipts (Layer D, shipped off-chain) |
 | Standalone verifier | `signal_verify` (Layer E, shipped) |
 | Asset inventory export | `signal_chain_assets` (Layer E, shipped) |
-| Station policy | Budgeted trade/construction/finance cards, deterministic baseline |
+| Station policy | Cached trade/construction/finance card rankings, deterministic teacher, JSON training trace |
 | Provenance-aware demand | Heritage recipe plus contract-level origin filters (off-chain) |
 | Cross-operator anchor | On-chain state-root commitment (#480, future) |
 | Asset extraction | On-chain wrap contract (#480, future) |

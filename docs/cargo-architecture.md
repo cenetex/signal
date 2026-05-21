@@ -320,11 +320,14 @@ inspection readable as station and hauler manifests grow.
 recipe provenance and contract-level station-origin bans. The seeded baseline
 does not define founding-station enemies because the starter supply loop depends
 on Prospect → Kepler → Helios → Prospect. Station policy is now shaped as a
-small card library with trade, construction, and finance budgets; future neural
-scorers can rank those cards while the deterministic baseline still works. The
-next useful layer is filtering on `parent_merkle` chains and real chain-log
-history. The player-facing payoff: the universe's history becomes the quest
-content.
+small card library with trade, construction, and finance budgets. Each station
+caches its ranked cards once per sim tick, contract pricing reads those cached
+cards, and `/training/v1/station-policy-trace` exports the selected cards,
+scores, top demand, and per-commodity policy price modifiers. Future neural
+scorers can rank the same cards while the deterministic baseline remains the
+auditable teacher/fallback. The next useful layer is filtering on
+`parent_merkle` chains and real chain-log history. The player-facing payoff:
+the universe's history becomes the quest content.
 
 What's *not* on this list:
 

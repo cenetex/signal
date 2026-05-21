@@ -3985,6 +3985,7 @@ static void step_contracts(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
+        station_policy_refresh(st, s, w->tick);
 
         /* Check which contract types this station already has. The
          * kit-input slot tracks shipyard imports of frame / laser /
@@ -4035,12 +4036,14 @@ static void step_contracts(world_t *w, float dt) {
                 float cost = module_build_cost(st->modules[m].type);
                 float remaining = cost * (1.0f - module_supply_fraction(&st->modules[m]));
                 if (remaining > 0.5f) {
+                    commodity_t mat = module_build_material(st->modules[m].type);
+                    float policy_mult = station_policy_trade_price_multiplier(st, mat);
                     need = (contract_t){
                         .active = true, .action = CONTRACT_TRACTOR,
                         .station_index = (uint8_t)s,
-                        .commodity = module_build_material(st->modules[m].type),
+                        .commodity = mat,
                         .quantity_needed = remaining,
-                        .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f * pool_factor,
+                        .base_price = st->base_price[mat] * 1.15f * pool_factor * policy_mult,
                         .target_index = -1, .claimed_by = -1,
                     };
                     break;
@@ -4052,12 +4055,13 @@ static void step_contracts(world_t *w, float dt) {
         if (!need.active && !has_production_contract && st->scaffold) {
             float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
             if (remaining > 0.5f) {
+                float policy_mult = station_policy_trade_price_multiplier(st, COMMODITY_FRAME);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = COMMODITY_FRAME,
                     .quantity_needed = remaining,
-                    .base_price = 23.0f * pool_factor,
+                    .base_price = 23.0f * pool_factor * policy_mult,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -4080,7 +4084,9 @@ static void step_contracts(world_t *w, float dt) {
                  * total starvation. Layered on top of pool_factor so a
                  * starved-but-broke station still posts a sensible
                  * price. */
-                float dmult = 1.0f + 0.5f * worst_deficit;
+                float dmult = (1.0f + 0.5f * worst_deficit) *
+                              station_policy_trade_price_multiplier(
+                                  st, (commodity_t)worst_ore);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
@@ -4123,13 +4129,15 @@ static void step_contracts(world_t *w, float dt) {
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
-                float dmult = station_demand_for(st, checks[worst_idx].ingot).price_mult;
+                commodity_t ingot = checks[worst_idx].ingot;
+                float dmult = station_demand_for(st, ingot).price_mult *
+                              station_policy_trade_price_multiplier(st, ingot);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
-                    .commodity = checks[worst_idx].ingot,
+                    .commodity = ingot,
                     .quantity_needed = worst_deficit,
-                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor * dmult,
+                    .base_price = st->base_price[ingot] * 1.15f * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
                 contract_require_recipe_provenance(&need, RECIPE_SMELT);
@@ -4159,7 +4167,8 @@ static void step_contracts(world_t *w, float dt) {
             }
             if (worst_idx >= 0) {
                 commodity_t mat = kit_inputs[worst_idx].c;
-                float dmult = station_demand_for(st, mat).price_mult;
+                float dmult = station_demand_for(st, mat).price_mult *
+                              station_policy_trade_price_multiplier(st, mat);
                 kit_need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
@@ -4192,7 +4201,9 @@ static void step_contracts(world_t *w, float dt) {
                 float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
                              ? st->base_price[COMMODITY_REPAIR_KIT]
                              : 6.0f;
-                float dmult = station_demand_for(st, COMMODITY_REPAIR_KIT).price_mult;
+                float dmult = station_demand_for(st, COMMODITY_REPAIR_KIT).price_mult *
+                              station_policy_trade_price_multiplier(
+                                  st, COMMODITY_REPAIR_KIT);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
