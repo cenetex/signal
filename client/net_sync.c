@@ -916,7 +916,9 @@ void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count) {
         if (tn > SIGNAL_CHANNEL_TEXT_MAX - 1) tn = SIGNAL_CHANNEL_TEXT_MAX - 1;
         memcpy(dst->text, msgs[i].text, tn);
         dst->text_len = (uint8_t)tn;
+        memcpy(dst->entry_hash, msgs[i].entry_hash, sizeof(dst->entry_hash));
         if (msgs[i].id > ch->next_id) ch->next_id = msgs[i].id;
+        memcpy(ch->last_hash, dst->entry_hash, sizeof(ch->last_hash));
     }
     ch->count = n;
     ch->head = n % SIGNAL_CHANNEL_CAPACITY;

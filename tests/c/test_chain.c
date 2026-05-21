@@ -8,18 +8,52 @@
 #define _BSD_SOURCE
 #include "test_harness.h"
 #include "game_sim.h"
+#include "sha256.h"
 
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void write_msg_file(const char *path, const signal_channel_msg_t *msgs, int n) {
     FILE *f = fopen(path, "wb");
     if (!f) { tests_failed++; printf("FAIL: cannot open %s\n", path); return; }
     fwrite(msgs, sizeof(*msgs), (size_t)n, f);
     fclose(f);
+}
+
+static void fill_msg(signal_channel_msg_t *m, uint64_t id, uint32_t ts,
+                     int16_t sender, const char *text, uint8_t hash_byte) {
+    memset(m, 0, sizeof(*m));
+    m->id = id;
+    m->timestamp_ms = ts;
+    m->sender_station = sender;
+    size_t n = strlen(text);
+    if (n > SIGNAL_CHANNEL_TEXT_MAX - 1u) n = SIGNAL_CHANNEL_TEXT_MAX - 1u;
+    memcpy(m->text, text, n);
+    m->text[n] = '\0';
+    m->text_len = (uint8_t)n;
+    memset(m->entry_hash, hash_byte, sizeof(m->entry_hash));
+}
+
+static void test_signal_chain_hash_block(const uint8_t prev_hash[32],
+                                         const signal_channel_msg_t *m,
+                                         uint8_t out[32]) {
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, prev_hash, 32);
+    uint8_t header[15];
+    for (int k = 0; k < 8; k++) header[k] = (uint8_t)(m->id >> (8 * k));
+    for (int k = 0; k < 4; k++)
+        header[8 + k] = (uint8_t)(m->timestamp_ms >> (8 * k));
+    header[12] = (uint8_t)(m->sender_station & 0xFF);
+    header[13] = (uint8_t)((uint16_t)m->sender_station >> 8);
+    header[14] = m->text_len;
+    sha256_update(&ctx, header, sizeof(header));
+    sha256_update(&ctx, m->text, m->text_len);
+    sha256_final(&ctx, out);
 }
 
 /* Move into a freshly-created scratch dir, returning the previous cwd
@@ -148,6 +182,63 @@ TEST(test_signal_chain_load_skips_non_chain_files) {
     leave_scratch_dir(prev);
 }
 
+TEST(test_signal_chain_load_dedupes_duplicate_ids) {
+    char *prev = enter_scratch_dir("dedupe");
+    if (!prev) return;
+
+    signal_channel_msg_t msgs[4];
+    fill_msg(&msgs[0], 1, 100, 0, "old one", 0x11);
+    fill_msg(&msgs[1], 1, 110, 0, "new one", 0x22);
+    fill_msg(&msgs[2], 2, 200, 0, "old two", 0x33);
+    fill_msg(&msgs[3], 2, 210, 0, "new two", 0x44);
+    write_msg_file("chain/dup.chain", msgs, 4);
+
+    WORLD_DECL;
+    signal_chain_load(&w);
+
+    ASSERT_EQ_INT(w.signal_channel.count, 2);
+    ASSERT(w.signal_channel.next_id == 2);
+    const signal_channel_msg_t *first = signal_channel_at(&w, 0);
+    const signal_channel_msg_t *last = signal_channel_at(&w, 1);
+    ASSERT(first && first->id == 1);
+    ASSERT(last && last->id == 2);
+    ASSERT(strcmp(first->text, "new one") == 0);
+    ASSERT(strcmp(last->text, "new two") == 0);
+    ASSERT(memcmp(w.signal_channel.last_hash, last->entry_hash, 32) == 0);
+
+    leave_scratch_dir(prev);
+}
+
+TEST(test_signal_channel_post_continues_from_loaded_tail_hash) {
+    char *prev = enter_scratch_dir("tail_hash");
+    if (!prev) return;
+
+    signal_channel_msg_t loaded;
+    fill_msg(&loaded, 7, 700, 0, "loaded", 0xAB);
+    write_msg_file("chain/0.chain", &loaded, 1);
+
+    WORLD_DECL;
+    w.time = 2.5f;
+    signal_chain_load(&w);
+    ASSERT_EQ_INT(w.signal_channel.count, 1);
+    ASSERT(w.signal_channel.next_id == 7);
+    ASSERT(memcmp(w.signal_channel.last_hash, loaded.entry_hash, 32) == 0);
+
+    uint64_t id = signal_channel_post(&w, 0, "next", "");
+    ASSERT(id == 8);
+    ASSERT_EQ_INT(w.signal_channel.count, 2);
+    const signal_channel_msg_t *posted = signal_channel_at(&w, 1);
+    ASSERT(posted != NULL);
+    ASSERT(posted->id == 8);
+
+    uint8_t expected[32];
+    test_signal_chain_hash_block(loaded.entry_hash, posted, expected);
+    ASSERT(memcmp(posted->entry_hash, expected, 32) == 0);
+    ASSERT(memcmp(w.signal_channel.last_hash, expected, 32) == 0);
+
+    leave_scratch_dir(prev);
+}
+
 #endif /* !_WIN32 */
 
 void register_signal_chain_tests(void) {
@@ -158,5 +249,7 @@ void register_signal_chain_tests(void) {
     RUN(test_signal_chain_load_orders_messages_by_id);
     RUN(test_signal_chain_load_truncates_to_capacity);
     RUN(test_signal_chain_load_skips_non_chain_files);
+    RUN(test_signal_chain_load_dedupes_duplicate_ids);
+    RUN(test_signal_channel_post_continues_from_loaded_tail_hash);
 #endif
 }

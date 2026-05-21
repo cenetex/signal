@@ -4722,6 +4722,13 @@ static void signal_chain_hash_block(const uint8_t prev_hash[32],
     sha256_final(&ctx, out);
 }
 
+static bool signal_chain_hash_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
+
 /* Append a sealed block to the per-station chain log on disk. The log
  * is the durable source of truth — the in-memory ring is just a cache.
  * Format: each record is a fixed-size signal_channel_msg_t blob (no
@@ -4753,9 +4760,12 @@ uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, c
     if (!w || !text || text[0] == '\0') return 0;
     signal_channel_t *ch = &w->signal_channel;
 
-    /* Prev hash = the most recent block's entry_hash, or genesis (zeroes). */
+    /* Prev hash = the durable replay tail, or genesis (zeroes). Fall back
+     * to the ring tail for older in-memory test fixtures that predate
+     * signal_channel_t::last_hash. */
     uint8_t prev_hash[32] = {0};
-    if (ch->count > 0) {
+    memcpy(prev_hash, ch->last_hash, sizeof(prev_hash));
+    if (signal_chain_hash_is_zero(prev_hash) && ch->count > 0) {
         int prev_slot = (ch->head - 1 + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
         memcpy(prev_hash, ch->msgs[prev_slot].entry_hash, 32);
     }
@@ -4782,6 +4792,7 @@ uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, c
 
     /* Seal the block: hash content + prev → entry_hash, then persist. */
     signal_chain_hash_block(prev_hash, m, m->entry_hash);
+    memcpy(ch->last_hash, m->entry_hash, sizeof(ch->last_hash));
     signal_chain_persist(sender_station, m);
 
     ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
@@ -4797,19 +4808,21 @@ void signal_chain_load(world_t *w) {
     if (!w) return;
     signal_channel_t *ch = &w->signal_channel;
     /* Two-pass: first pass collects all blocks across all stations into
-     * a sortable buffer; second sorts by id and inserts the latest
-     * SIGNAL_CHANNEL_CAPACITY into the ring. The chain spans the whole
-     * world (single feed across stations), so a single ordering matters. */
-    enum { SCRATCH_CAP = 4096 };
-    static signal_channel_msg_t scratch[SCRATCH_CAP];
-    int collected = 0;
+     * a sortable buffer; second sorts by id, de-duplicates replayed ids,
+     * and inserts the latest SIGNAL_CHANNEL_CAPACITY into the ring. The
+     * chain spans the whole world (single feed across stations), so a
+     * single ordering and one durable tail hash matter. */
+    signal_channel_msg_t *scratch = NULL;
+    size_t collected = 0;
+    size_t scratch_cap = 0;
 #ifndef _WIN32
     /* POSIX directory walk. Windows server is build-only (no production
      * deploy), so we no-op there to keep the cross-compile clean. */
     DIR *dir = opendir("chain");
     if (!dir) return;
+    bool oom = false;
     struct dirent *de;
-    while ((de = readdir(dir)) != NULL && collected < SCRATCH_CAP) {
+    while ((de = readdir(dir)) != NULL && !oom) {
         const char *name = de->d_name;
         size_t n = strlen(name);
         if (n < 7 || strcmp(name + n - 6, ".chain") != 0) continue;
@@ -4820,36 +4833,74 @@ void signal_chain_load(world_t *w) {
         snprintf(path, sizeof(path), "chain/%.73s", name);
         FILE *f = fopen(path, "rb");
         if (!f) continue;
-        while (collected < SCRATCH_CAP &&
-               fread(&scratch[collected], sizeof(signal_channel_msg_t), 1, f) == 1) {
-            collected++;
+        for (;;) {
+            signal_channel_msg_t msg;
+            if (fread(&msg, sizeof(msg), 1, f) != 1) break;
+            if (msg.id == 0) continue;
+            if (collected >= scratch_cap) {
+                size_t next_cap = scratch_cap ? scratch_cap * 2u : 256u;
+                signal_channel_msg_t *next =
+                    (signal_channel_msg_t *)realloc(scratch,
+                                                    next_cap * sizeof(*scratch));
+                if (!next) {
+                    oom = true;
+                    break;
+                }
+                scratch = next;
+                scratch_cap = next_cap;
+            }
+            scratch[collected++] = msg;
         }
         fclose(f);
     }
     closedir(dir);
+    if (oom) {
+        free(scratch);
+        return;
+    }
 #endif
 
     /* Sort by id (insertion sort — collected is small in practice). */
-    for (int i = 1; i < collected; i++) {
+    for (size_t i = 1; i < collected; i++) {
         signal_channel_msg_t key = scratch[i];
-        int j = i - 1;
-        while (j >= 0 && scratch[j].id > key.id) {
-            scratch[j + 1] = scratch[j]; j--;
+        size_t j = i;
+        while (j > 0 && scratch[j - 1u].id > key.id) {
+            scratch[j] = scratch[j - 1u];
+            j--;
         }
-        scratch[j + 1] = key;
+        scratch[j] = key;
     }
 
-    /* Take the most recent SIGNAL_CHANNEL_CAPACITY into the ring. */
-    int start = (collected > SIGNAL_CHANNEL_CAPACITY)
-        ? collected - SIGNAL_CHANNEL_CAPACITY : 0;
+    /* Collapse duplicate ids caused by old fresh-world restarts reusing
+     * ids 1..N. Stable sort order means the later disk occurrence wins. */
+    size_t unique = 0;
+    for (size_t i = 0; i < collected; i++) {
+        if (unique > 0 && scratch[unique - 1u].id == scratch[i].id) {
+            scratch[unique - 1u] = scratch[i];
+        } else {
+            scratch[unique++] = scratch[i];
+        }
+    }
+
+    /* Take the most recent SIGNAL_CHANNEL_CAPACITY unique ids into the ring,
+     * but keep next_id and last_hash from the full unique replay tail. */
+    size_t start = (unique > SIGNAL_CHANNEL_CAPACITY)
+        ? unique - SIGNAL_CHANNEL_CAPACITY : 0;
     ch->head = 0;
     ch->count = 0;
-    for (int i = start; i < collected; i++) {
+    ch->next_id = 0;
+    memset(ch->last_hash, 0, sizeof(ch->last_hash));
+    if (unique > 0) {
+        ch->next_id = scratch[unique - 1u].id;
+        memcpy(ch->last_hash, scratch[unique - 1u].entry_hash,
+               sizeof(ch->last_hash));
+    }
+    for (size_t i = start; i < unique; i++) {
         ch->msgs[ch->head] = scratch[i];
         ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
         if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
-        if (scratch[i].id > ch->next_id) ch->next_id = scratch[i].id;
     }
+    free(scratch);
 }
 
 /* Iterate messages in post order (oldest first) via callback-free index

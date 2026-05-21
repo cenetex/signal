@@ -1060,6 +1060,7 @@ typedef struct {
     int      head;      /* next write slot (0..CAPACITY-1) */
     int      count;     /* active slots (0..CAPACITY) */
     uint64_t next_id;   /* next id to assign (monotonic, survives wrap) */
+    uint8_t  last_hash[32]; /* latest durable entry_hash, even if ring truncated */
 } signal_channel_t;
 
 typedef enum {
