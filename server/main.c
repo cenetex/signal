@@ -1268,7 +1268,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (ack_status != 0) {
                 send_action_ack(c, action_id, input_seq, ack_status, data[2]);
                 if (ack_status == NET_ACTION_ACK_REJECTED &&
-                    action_id != 0 && data[2] != NET_ACTION_NONE) {
+                    data[2] != NET_ACTION_NONE &&
+                    (action_id != 0 || sp->pubkey_set)) {
                     force_player_authoritative_resync(sp);
                     printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=rejected tick=%u resync=unsigned-reject\n",
                            sp->id, (unsigned)action_id,
@@ -1299,6 +1300,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_PLAN:
         if (world.players[pid].pubkey_set) {
             unsigned_action_count++;
+            printf("[server] legacy unsigned PLAN rejected for pubkey player %d; signed action required\n",
+                   pid);
             break;
         }
         parse_plan(data, len, &world.players[pid].input);

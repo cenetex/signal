@@ -2303,7 +2303,15 @@ static void net_queue_pending_action_if_any(void) {
     g.pending_net_place_ring = -1;
     g.pending_net_place_slot = -1;
 
-    if (net_has_identity_secret()) {
+    if (net_has_identity_pubkey()) {
+        if (!net_has_identity_secret()) {
+            fprintf(stderr,
+                    "[net-action] blocked action=%u: identity-backed client missing signing secret\n",
+                    (unsigned)action);
+            set_notice("Signed action unavailable. Secret key missing.");
+            return;
+        }
+
         uint16_t action_id = net_next_action_id_alloc();
         uint8_t payload[7] = {
             action,
@@ -2319,6 +2327,13 @@ static void net_queue_pending_action_if_any(void) {
                                    payload, sizeof(payload))) {
             return;
         }
+
+        fprintf(stderr,
+                "[net-action] blocked action=%u: signed action path rejected for id=%u\n",
+                (unsigned)action,
+                (unsigned)action_id);
+        set_notice("Unable to submit signed action. Action blocked for security.");
+        return;
     }
 
     net_action_queue_push(action, buy_grade, place_station, place_ring,

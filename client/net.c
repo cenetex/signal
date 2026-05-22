@@ -439,6 +439,10 @@ bool net_has_identity_secret(void) {
     return net_state.identity_secret_ready;
 }
 
+bool net_has_identity_pubkey(void) {
+    return net_state.identity_pubkey_ready;
+}
+
 /* Allocate a strictly-increasing nonce. Seeded on first call to the
  * current wall-clock in microseconds so a process restart still beats
  * any nonce we used last run (the server's persisted last_signed_nonce
@@ -1975,7 +1979,7 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     ws_send_binary(buf, NET_INPUT_MSG_SIZE);
 }
 
-void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
+bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py) {
     uint8_t buf[NET_PLAN_MSG_SIZE];
     buf[0] = NET_MSG_PLAN;
@@ -1986,11 +1990,24 @@ void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
     buf[5] = module_type;
     write_f32_le(&buf[6], px);
     write_f32_le(&buf[10], py);
+    if (net_has_identity_pubkey() && !net_has_identity_secret()) {
+        fprintf(stderr,
+                "[net-plan] blocked op=%u: identity-backed client missing signing secret\n",
+                (unsigned)op);
+        return false;
+    }
     if (net_send_signed_action(SIGNED_ACTION_PLAN,
                                &buf[1], NET_PLAN_MSG_SIZE - 1)) {
-        return;
+        return true;
+    }
+    if (net_has_identity_pubkey()) {
+        fprintf(stderr,
+                "[net-plan] blocked op=%u: signed plan path rejected\n",
+                (unsigned)op);
+        return false;
     }
     ws_send_binary(buf, NET_PLAN_MSG_SIZE);
+    return true;
 }
 
 /* ---------- Common accessors --------------------------------------------- */

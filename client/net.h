@@ -382,6 +382,9 @@ void net_shutdown(void);
  * fires the registration message. Pass NULL to clear. */
 void net_set_identity_pubkey(const uint8_t pubkey[32]);
 
+/* Returns true if a local identity pubkey is available for registration. */
+bool net_has_identity_pubkey(void);
+
 /* Layer A.3 of #479 — install the player's Ed25519 secret key so the
  * client can sign state-changing actions before sending them on the
  * NET_MSG_SIGNED_ACTION channel. Pass NULL to clear (e.g. ephemeral
@@ -394,8 +397,8 @@ void net_set_identity_secret(const uint8_t secret[64]);
 /* Send a signed state-changing action.
  *
  * Returns true if the message was queued onto the wire; false if the
- * client lacks an installed secret (fall back to the unsigned channel)
- * or the payload exceeds SIGNED_ACTION_MAX_PAYLOAD.
+ * client lacks an installed secret or the payload exceeds
+ * SIGNED_ACTION_MAX_PAYLOAD.
  *
  * Nonce is chosen internally — monotonic across the process lifetime.
  * The first signed action after process start uses the wall clock time
@@ -470,8 +473,10 @@ void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
 void net_send_handoff_present(const handoff_ticket_t *ticket,
                               const ship_t *ship);
 
-/* Send a planning intent (outpost create / module slot / cancel). */
-void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
+/* Send a planning intent (outpost create / module slot / cancel).
+ * Returns false when an identity-backed client cannot use the signed
+ * planning channel and the request is blocked instead of downgraded. */
+bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py);
 
 /* Process incoming messages. Call once per frame. */

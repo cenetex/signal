@@ -1028,44 +1028,53 @@ void submit_input(const input_intent_t *intent, float dt) {
      * richer payloads (target station/ring/slot/type or world position)
      * that don't fit in the 1-byte action slot. Send them directly. */
     if (g.multiplayer_enabled && net_is_connected()) {
+        bool plan_send_failed = false;
         if (intent->create_planned_outpost && intent->add_plan &&
             intent->plan_station == -2) {
             /* Atomic create + first plan — single message. */
-            net_send_plan(NET_PLAN_OP_CREATE_AND_ADD,
-                          -1,
-                          intent->plan_ring,
-                          intent->plan_slot,
-                          (uint8_t)intent->plan_type,
-                          intent->planned_outpost_pos.x,
-                          intent->planned_outpost_pos.y);
+            if (!net_send_plan(NET_PLAN_OP_CREATE_AND_ADD,
+                               -1,
+                               intent->plan_ring,
+                               intent->plan_slot,
+                               (uint8_t)intent->plan_type,
+                               intent->planned_outpost_pos.x,
+                               intent->planned_outpost_pos.y))
+                plan_send_failed = true;
         } else {
             if (intent->create_planned_outpost) {
-                net_send_plan(NET_PLAN_OP_CREATE_OUTPOST,
-                              -1, -1, -1, 0,
-                              intent->planned_outpost_pos.x,
-                              intent->planned_outpost_pos.y);
+                if (!net_send_plan(NET_PLAN_OP_CREATE_OUTPOST,
+                                   -1, -1, -1, 0,
+                                   intent->planned_outpost_pos.x,
+                                   intent->planned_outpost_pos.y))
+                    plan_send_failed = true;
             }
             if (intent->add_plan) {
-                net_send_plan(NET_PLAN_OP_ADD_SLOT,
-                              intent->plan_station,
-                              intent->plan_ring,
-                              intent->plan_slot,
-                              (uint8_t)intent->plan_type,
-                              0.0f, 0.0f);
+                if (!net_send_plan(NET_PLAN_OP_ADD_SLOT,
+                                   intent->plan_station,
+                                   intent->plan_ring,
+                                   intent->plan_slot,
+                                   (uint8_t)intent->plan_type,
+                                   0.0f, 0.0f))
+                    plan_send_failed = true;
             }
         }
         if (intent->cancel_planned_outpost) {
-            net_send_plan(NET_PLAN_OP_CANCEL_OUTPOST,
-                          intent->cancel_planned_station,
-                          -1, -1, 0,
-                          0.0f, 0.0f);
+            if (!net_send_plan(NET_PLAN_OP_CANCEL_OUTPOST,
+                               intent->cancel_planned_station,
+                               -1, -1, 0,
+                               0.0f, 0.0f))
+                plan_send_failed = true;
         }
         if (intent->cancel_plan_slot) {
-            net_send_plan(NET_PLAN_OP_CANCEL_PLAN_SLOT,
-                          intent->cancel_plan_st,
-                          intent->cancel_plan_ring,
-                          intent->cancel_plan_sl,
-                          0, 0.0f, 0.0f);
+            if (!net_send_plan(NET_PLAN_OP_CANCEL_PLAN_SLOT,
+                               intent->cancel_plan_st,
+                               intent->cancel_plan_ring,
+                               intent->cancel_plan_sl,
+                               0, 0.0f, 0.0f))
+                plan_send_failed = true;
+        }
+        if (plan_send_failed) {
+            set_notice("Unable to submit signed planning action.");
         }
     }
 
