@@ -5177,8 +5177,8 @@ void signal_chain_load(world_t *w) {
      * single ordering and one durable tail hash matter. */
     signal_channel_msg_t *scratch = NULL;
     size_t collected = 0;
-    size_t scratch_cap = 0;
 #ifndef _WIN32
+    size_t scratch_cap = 0;
     /* POSIX directory walk. Windows server is build-only (no production
      * deploy), so we no-op there to keep the cross-compile clean. */
     DIR *dir = opendir("chain");

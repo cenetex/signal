@@ -349,9 +349,9 @@ static bool parse_pubkey_from_filename(const char *path, uint8_t out[32],
         n++;
     }
     stem[n] = '\0';
-    if (n == 0 || base58_decode(stem, out, 32) != 32) return false;
+    if (n == 0 || n >= 64 || base58_decode(stem, out, 32) != 32) return false;
     if (out_b58) {
-        snprintf(out_b58, 64, "%s", stem);
+        memcpy(out_b58, stem, n + 1u);
     }
     return true;
 }

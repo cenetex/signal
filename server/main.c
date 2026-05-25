@@ -2754,11 +2754,11 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     int asteroid_fragment_counts[COMMODITY_RAW_ORE_COUNT] = {0};
     enum { ORE_TARGETS_PER_COMMODITY = 3 };
     station_api_ore_target_t ore_targets[COMMODITY_RAW_ORE_COUNT][ORE_TARGETS_PER_COMMODITY];
-    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+    for (int commodity_index = 0; commodity_index < COMMODITY_RAW_ORE_COUNT; commodity_index++) {
         for (int j = 0; j < ORE_TARGETS_PER_COMMODITY; j++) {
-            ore_targets[c][j].index = -1;
-            ore_targets[c][j].dist_sq = FLT_MAX;
-            ore_targets[c][j].asteroid = NULL;
+            ore_targets[commodity_index][j].index = -1;
+            ore_targets[commodity_index][j].dist_sq = FLT_MAX;
+            ore_targets[commodity_index][j].asteroid = NULL;
         }
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2787,15 +2787,15 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         asteroid_fragment_counts[COMMODITY_CRYSTAL_ORE]);
 
     BUF_APPEND(pos, buf, BUFSZ, "\"ore_targets\":[");
-    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-        if (c > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+    for (int commodity_index = 0; commodity_index < COMMODITY_RAW_ORE_COUNT; commodity_index++) {
+        if (commodity_index > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
         BUF_APPEND(pos, buf, BUFSZ,
             "{\"commodity\":%d,\"need\":%.3f,\"visible\":%d,\"fragments\":%d,\"nearest\":[",
-            c, station_raw_ore_need_score(st, (commodity_t)c),
-            asteroid_commodity_counts[c],
-            asteroid_fragment_counts[c]);
+            commodity_index, station_raw_ore_need_score(st, (commodity_t)commodity_index),
+            asteroid_commodity_counts[commodity_index],
+            asteroid_fragment_counts[commodity_index]);
         for (int j = 0; j < ORE_TARGETS_PER_COMMODITY; j++) {
-            const station_api_ore_target_t *target = &ore_targets[c][j];
+            const station_api_ore_target_t *target = &ore_targets[commodity_index][j];
             const asteroid_t *a = target->asteroid;
             if (target->index < 0 || !a) break;
             if (j > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
