@@ -778,7 +778,7 @@ static contract_t *hauler_pickup_contract_from_summary(
     world_t *w, const contract_summary_t *cs, const manifest_t *manifest) {
     if (!w || !cs || !manifest || !cs->active) return NULL;
     if (cs->action != (uint8_t)CONTRACT_TRACTOR) return NULL;
-    if (cs->station_index < 0 || cs->station_index >= MAX_STATIONS) return NULL;
+    if (cs->station_index >= MAX_STATIONS) return NULL;
     if (cs->commodity < COMMODITY_RAW_ORE_COUNT ||
         cs->commodity >= COMMODITY_COUNT) return NULL;
 
