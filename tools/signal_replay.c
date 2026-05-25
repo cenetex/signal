@@ -523,7 +523,7 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         sr_hash_u8(ctx, ev->death.cause);
         sha256_update(ctx, ev->death.killer_token, sizeof(ev->death.killer_token));
         sr_hash_i32(ctx, ev->death.respawn_station);
-        sr_hash_i32(ctx, ev->death.respawn_fee);
+        sr_hash_i32(ctx, (int32_t)ev->death.respawn_fee);
         break;
     case SIM_EVENT_BUY:
         sr_hash_i32(ctx, ev->buy.station);
