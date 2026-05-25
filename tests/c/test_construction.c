@@ -1232,6 +1232,74 @@ static int test_count_pending_relay_orders(const world_t *w) {
     return count;
 }
 
+static int test_count_pending_scaffold_orders(const world_t *w,
+                                              module_type_t type) {
+    int count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int i = 0; i < st->pending_scaffold_count; i++) {
+            if (st->pending_scaffolds[i].type == type)
+                count++;
+        }
+    }
+    return count;
+}
+
+static int test_count_frontier_scaffold_work(const world_t *w,
+                                             module_type_t type) {
+    int count = test_count_pending_scaffold_orders(w, type);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active || sc->module_type != type) continue;
+        if (sc->state == SCAFFOLD_NASCENT ||
+            sc->state == SCAFFOLD_LOOSE ||
+            sc->state == SCAFFOLD_TOWING ||
+            sc->state == SCAFFOLD_SNAPPING)
+            count++;
+    }
+    return count;
+}
+
+static int test_count_frontier_placement_plans(const world_t *w,
+                                               module_type_t type) {
+    int count = 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int p = 0; p < st->placement_plan_count; p++) {
+            if (st->placement_plans[p].type == type)
+                count++;
+        }
+    }
+    return count;
+}
+
+static int test_count_active_frontier_outposts(const world_t *w) {
+    int count = 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (station_is_active(&w->stations[s])) count++;
+    }
+    return count;
+}
+
+static bool test_station_has_duplicate_slots(const station_t *st) {
+    if (!st) return false;
+    for (int a = 0; a < st->module_count; a++) {
+        if (st->modules[a].ring == 0 || st->modules[a].slot == 0xFF)
+            continue;
+        for (int b = a + 1; b < st->module_count; b++) {
+            if (st->modules[b].ring == 0 || st->modules[b].slot == 0xFF)
+                continue;
+            if (st->modules[a].ring == st->modules[b].ring &&
+                st->modules[a].slot == st->modules[b].slot) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
     WORLD_DECL;
     world_reset(&w);
@@ -1244,12 +1312,32 @@ TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
     ASSERT_EQ_INT((int)w.frontier_scaffold_orders, 1);
     ASSERT_EQ_INT(test_count_planned_frontier_outposts(&w), 1);
     ASSERT_EQ_INT(test_count_pending_relay_orders(&w), 1);
+    ASSERT_EQ_INT(test_count_frontier_placement_plans(&w, MODULE_HOPPER), 1);
+    ASSERT_EQ_INT(test_count_frontier_placement_plans(&w, MODULE_FURNACE), 1);
+    ASSERT_EQ_INT(test_count_pending_scaffold_orders(&w, MODULE_HOPPER), 1);
+    ASSERT_EQ_INT(test_count_pending_scaffold_orders(&w, MODULE_FURNACE), 1);
+    ASSERT_EQ_INT((int)w.frontier_module_plans_created, 2);
+    ASSERT_EQ_INT((int)w.frontier_module_scaffold_orders, 2);
 
     int plan_slot = -1;
     for (int s = 3; s < MAX_STATIONS; s++) {
         if (w.stations[s].planned) { plan_slot = s; break; }
     }
     ASSERT(plan_slot >= 3);
+
+    int hopper_ring = -1, furnace_ring = -1;
+    for (int p = 0; p < w.stations[plan_slot].placement_plan_count; p++) {
+        if (w.stations[plan_slot].placement_plans[p].type == MODULE_HOPPER)
+            hopper_ring = w.stations[plan_slot].placement_plans[p].ring;
+        if (w.stations[plan_slot].placement_plans[p].type == MODULE_FURNACE)
+            furnace_ring = w.stations[plan_slot].placement_plans[p].ring;
+    }
+    ASSERT(hopper_ring >= 1);
+    ASSERT(furnace_ring >= 1);
+    int ring_delta = furnace_ring - hopper_ring;
+    if (ring_delta < 0) ring_delta = -ring_delta;
+    ASSERT_EQ_INT(ring_delta, 1);
+
     ASSERT(can_place_outpost(&w, v2_add(w.stations[plan_slot].pos,
                                         v2(OUTPOST_MIN_DISTANCE * 0.5f, 0.0f))) == false);
 }
@@ -1265,8 +1353,42 @@ TEST(test_frontier_virtual_pilots_scale_planned_queue) {
 
     ASSERT(test_count_planned_frontier_outposts(&w) >= 2);
     ASSERT(test_count_planned_frontier_outposts(&w) <= 5);
-    ASSERT(test_count_pending_relay_orders(&w) >= 2);
+    ASSERT(test_count_frontier_scaffold_work(&w, MODULE_SIGNAL_RELAY) >= 2);
     ASSERT(w.frontier_scaffold_orders >= 2);
+    ASSERT(w.frontier_virtual_scaffold_deliveries <=
+           w.frontier_virtual_scaffolds_manufactured);
+}
+
+TEST(test_frontier_virtual_pilots_execute_growth_loop) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.field_spawn_timer = -9999.0f;
+
+    frontier_virtual_pilots_set(&w, 1000);
+    for (int i = 0; i < 120 * 25; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+
+    ASSERT(w.frontier_virtual_scaffolds_manufactured >= 3);
+    ASSERT(w.frontier_virtual_scaffold_deliveries >= 3);
+    ASSERT(w.frontier_virtual_scaffold_deliveries <=
+           w.frontier_virtual_scaffolds_manufactured);
+    ASSERT(w.frontier_virtual_supply_deliveries >= 3);
+    ASSERT(test_count_active_frontier_outposts(&w) >= 1);
+
+    bool found_bootstrapped_outpost = false;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        station_t *st = &w.stations[s];
+        if (!station_is_active(st)) continue;
+        ASSERT(!test_station_has_duplicate_slots(st));
+        if (station_has_module(st, MODULE_HOPPER) &&
+            station_has_module(st, MODULE_FURNACE)) {
+            ASSERT(station_can_smelt(st, COMMODITY_FERRITE_ORE));
+            found_bootstrapped_outpost = true;
+            break;
+        }
+    }
+    ASSERT(found_bootstrapped_outpost);
 }
 
 TEST(test_tow_drone_delivers_to_planned_outpost) {
@@ -2319,6 +2441,7 @@ void register_construction_scaffold_tests(void) {
     RUN(test_scaffold_ship_drag);
     RUN(test_frontier_virtual_pilots_plan_and_order_relay);
     RUN(test_frontier_virtual_pilots_scale_planned_queue);
+    RUN(test_frontier_virtual_pilots_execute_growth_loop);
     RUN(test_tow_drone_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
 }
@@ -2401,12 +2524,15 @@ TEST(test_pair_satisfied_cross_ring) {
     add_hopper_for(st, 3, 5, COMMODITY_FRAME);
     ASSERT(station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
-    /* FURNACE accepts ANY ore — one ferrite-ore hopper is enough. */
+    /* FURNACE accepts ANY ore, but the hopper has to sit on an adjacent ring. */
     station_t *st2 = &w->stations[6];
     station_cleanup(st2);
     memset(st2, 0, sizeof(*st2));
     st2->signal_range = 1.0f;
     ASSERT(!station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
+    add_hopper_for(st2, 2, 1, COMMODITY_FERRITE_ORE);
+    ASSERT(!station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
+    st2->module_count = 0;
     add_hopper_for(st2, 3, 0, COMMODITY_FERRITE_ORE);
     ASSERT(station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
 
@@ -2415,11 +2541,25 @@ TEST(test_pair_satisfied_cross_ring) {
     ASSERT(station_pair_satisfied(st, 1, 0, MODULE_SIGNAL_RELAY));
 }
 
-TEST(test_helios_ring2_rotates_under_dynamics) {
-    /* Ring 2 of Helios carries the seeded drift bias (arm_speed[1]
-     * = STATION_RING_SPEED = 0.04 rad/s) and must rotate continuously
-     * under the all-passive dynamics (Slice 1.5a). After 2 sim seconds
-     * at the bootstrapped omega, expect ~0.08 rad of rotation. */
+TEST(test_helios_rings_rotate_under_dynamics) {
+    /* All three Helios rings carry seeded drift bias so the station reads
+     * as continuously alive even before production spokes are hot. After
+     * 2 sim seconds, every populated ring should visibly advance. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    station_t *st = &w->stations[2];
+    for (int ring = 0; ring < 3; ring++)
+        ASSERT(st->arm_speed[ring] > 0.0f);
+    float r0[3] = { st->arm_rotation[0], st->arm_rotation[1], st->arm_rotation[2] };
+    for (int i = 0; i < 240; i++) world_sim_step(w, 1.0f / 120.0f);
+    for (int ring = 0; ring < 3; ring++) {
+        float delta = st->arm_rotation[ring] - r0[ring];
+        ASSERT(delta > 0.03f);
+    }
+}
+
+TEST(test_helios_ring2_keeps_legacy_rotation_rate) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -2589,7 +2729,8 @@ void register_construction_module_schema_tests(void) {
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seeded_kepler_shipyard_inner_ring_layout);
     RUN(test_seed_stations_pair_complete);
-    RUN(test_helios_ring2_rotates_under_dynamics);
+    RUN(test_helios_rings_rotate_under_dynamics);
+    RUN(test_helios_ring2_keeps_legacy_rotation_rate);
     RUN(test_targeted_spokes_drive_only_loaded_rings);
     RUN(test_output_hopper_spoke_contributes_torque);
 }

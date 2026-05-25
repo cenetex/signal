@@ -156,8 +156,9 @@ enum {
                                             *   [type:1=0x3A][action_id:u16][input_seq:u16]
                                             *   [status:1][action:1]
                                             *
-                                            * Movement-only input uses action_id=0/action=NET_ACTION_NONE.
-                                            * This is a transport/dedupe ack, not a semantic success response.
+                                            * Movement-only input is acknowledged by WORLD_PLAYERS input_ack.
+                                            * This is a transport/dedupe ack for one-shot actions, not a
+                                            * semantic success response.
                                             * The normal authoritative snapshots still decide whether an action
                                             * visibly succeeded. */
     NET_MSG_ACTION_RESULT          = 0x3B, /* server -> client. Semantic result for an accepted
@@ -256,6 +257,7 @@ enum {
                                             *
                                             *   [type:1=0x45][status:1][reason:1]
                                             *   [dest_station:1][ticket_hash:32] */
+    NET_MSG_WORLD_CARGO_PODS       = 0x46, /* server -> client: active towable cargo pods */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -617,6 +619,14 @@ enum {
 #define NET_LATENCY_PONG_SIZE 17
 #define NET_CLIENT_METRICS_SIZE 21
 
+/* Input prediction horizon, in fixed SIM_DT ticks. The server only accepts
+ * future-dated movement this far ahead; the client should rebase before replay
+ * history grows into visible rollback territory. */
+#define NET_INPUT_LEAD_MIN_TICKS 2u
+#define NET_INPUT_LEAD_MAX_TICKS 12u
+#define NET_INPUT_APPLY_FUTURE_MAX_TICKS 12u
+#define NET_REPLAY_REBASE_SKEW_TICKS (NET_INPUT_APPLY_FUTURE_MAX_TICKS * 2u)
+
 /* NET_MSG_CONTRACTS record: action, station, commodity, grade, provenance
  * requirements, origin bans, quantity, price, age, target position, and
  * target index. Kept shared so client decoders and external tools do not
@@ -665,8 +675,13 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * where that input was actually applied. */
 #define PLAYER_RECORD_SIZE 77  /* 51 + 16 beam coords + 2 ack + 4 pose tick + 4 input tick */
 
-/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8][crystal_stage:u8] */
-#define ASTEROID_RECORD_SIZE 34  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 */
+/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32]
+ * [smelt:u8][grade:u8][crystal_stage:u8][phase:u8] */
+#define ASTEROID_RECORD_SIZE 35  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 + phase:u8 */
+
+/* Cargo pod record: [index:1][kind:1][commodity:1][towed_by:1][pos:2xf32]
+ * [vel:2xf32][radius:f32][rotation:f32][quantity:u16] */
+#define CARGO_POD_RECORD_SIZE 30
 
 /* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
  * [target:u16][towed_fragment:u16][rarity_tint:3], 0xFFFF = none */

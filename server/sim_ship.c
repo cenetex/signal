@@ -25,8 +25,8 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
     return steady + (peak - steady) * kick;
 }
 
-void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
-    if (!ship || !fragment) return;
+void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt) {
+    if (!ship || !body || !body->pos || !body->vel) return;
     static const tractor_beam_t SHIP_FRAGMENT_TOW_BAND = {
         .rest_length     = SHIP_TOW_BAND_REST_LEN,
         .pull_strength   = SHIP_TOW_BAND_SPRING_K,
@@ -43,11 +43,21 @@ void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
         .inv_mass = 1.0f / SHIP_TOW_BAND_SHIP_MASS,
     };
     tractor_anchor_t tgt = {
-        .pos      = fragment->pos,
-        .vel      = &fragment->vel,
-        .inv_mass = 1.0f,
+        .pos      = *body->pos,
+        .vel      = body->vel,
+        .inv_mass = body->inv_mass,
     };
     (void)tractor_apply(&src, &tgt, &SHIP_FRAGMENT_TOW_BAND, dt);
+}
+
+void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
+    if (!fragment) return;
+    towable_body_t body = {
+        .pos = &fragment->pos,
+        .vel = &fragment->vel,
+        .inv_mass = 1.0f,
+    };
+    ship_apply_body_tow(ship, &body, dt);
 }
 
 void step_ship_thrust(ship_t *s, float dt, float thrust_input,

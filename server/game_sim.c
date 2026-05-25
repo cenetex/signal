@@ -318,12 +318,54 @@ static void spatial_grid_clear(spatial_grid_t *g) {
     g->occupied = 0;
 }
 
+static bool spatial_grid_grow(spatial_grid_t *g) {
+    if (!g || !g->entries || g->capacity == 0) return false;
+    if (g->capacity > UINT32_MAX / 2u) return false;
+
+    uint32_t old_capacity = g->capacity;
+    sparse_cell_entry_t *old_entries = g->entries;
+    uint32_t new_capacity = old_capacity * 2u;
+    sparse_cell_entry_t *new_entries =
+        (sparse_cell_entry_t *)calloc(new_capacity, sizeof(sparse_cell_entry_t));
+    if (!new_entries) return false;
+
+    for (uint32_t i = 0; i < new_capacity; i++)
+        new_entries[i].key_x = INT32_MIN;
+
+    g->entries = new_entries;
+    g->capacity = new_capacity;
+    g->mask = new_capacity - 1u;
+    g->occupied = 0;
+
+    for (uint32_t i = 0; i < old_capacity; i++) {
+        const sparse_cell_entry_t *old = &old_entries[i];
+        if (old->key_x == INT32_MIN) continue;
+        uint32_t h = ((uint32_t)old->key_x * 73856093u) ^
+                     ((uint32_t)old->key_y * 19349663u);
+        for (uint32_t probes = 0, slot = h & g->mask; probes < g->capacity;
+             probes++, slot = (slot + 1u) & g->mask) {
+            sparse_cell_entry_t *dst = &g->entries[slot];
+            if (dst->key_x != INT32_MIN) continue;
+            *dst = *old;
+            g->occupied++;
+            break;
+        }
+    }
+
+    free(old_entries);
+    return true;
+}
+
 static spatial_cell_t *spatial_grid_get_or_create(spatial_grid_t *g, int cx, int cy) {
     spatial_grid_ensure(g);
     if (!g->entries) return NULL; /* OOM — degrade gracefully */
+    if ((g->occupied + 1u) * 4u >= g->capacity * 3u) {
+        (void)spatial_grid_grow(g);
+    }
     /* Mul in unsigned space — signed * 73856093 overflows for |cx| > 29 (UB). */
     uint32_t h = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cy * 19349663u);
-    for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
+    for (uint32_t probes = 0, i = h & g->mask; probes < g->capacity;
+         probes++, i = (i + 1) & g->mask) {
         sparse_cell_entry_t *e = &g->entries[i];
         if (e->key_x == INT32_MIN) {
             e->key_x = cx;
@@ -334,6 +376,7 @@ static spatial_cell_t *spatial_grid_get_or_create(spatial_grid_t *g, int cx, int
         }
         if (e->key_x == cx && e->key_y == cy) return &e->cell;
     }
+    return NULL;
 }
 
 static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
@@ -773,6 +816,9 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
 
+static bool is_finished_good(commodity_t c);
+static void sync_station_finished_inventory(station_t *st, commodity_t c);
+
 static void launch_ship(world_t *w, server_player_t *sp) {
     sp->docked = false;
     sp->in_dock_range = false;
@@ -795,6 +841,124 @@ static void launch_ship(world_t *w, server_player_t *sp) {
         sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
     SIM_LOG("[sim] player %d launched\n", sp->id);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
+}
+
+static void remove_towed_pod_slot(ship_t *ship, int tow_slot) {
+    if (!ship || tow_slot < 0 || tow_slot >= ship->towed_pod_count) return;
+    ship->towed_pod_count--;
+    ship->towed_pods[tow_slot] = ship->towed_pods[ship->towed_pod_count];
+    ship->towed_pods[ship->towed_pod_count] = -1;
+}
+
+int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
+                    uint16_t quantity, cargo_pod_kind_t kind) {
+    if (!w || commodity >= COMMODITY_COUNT || quantity == 0 ||
+        kind == CARGO_POD_NONE) {
+        return -1;
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (pod->active) continue;
+        memset(pod, 0, sizeof(*pod));
+        pod->active = true;
+        pod->kind = kind;
+        pod->commodity = commodity;
+        pod->quantity = quantity;
+        pod->pos = pos;
+        pod->vel = vel;
+        pod->radius = (kind == CARGO_POD_GAS) ? 15.0f : 18.0f;
+        pod->rotation = rand_range(&w->rng, 0.0f, TWO_PI_F);
+        pod->spin = rand_range(&w->rng, -1.4f, 1.4f);
+        pod->age = 0.0f;
+        pod->towed_by = -1;
+        return i;
+    }
+    return -1;
+}
+
+static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
+    if (!w || !sp) return;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        int units = (int)floorf(sp->ship.cargo[c] + 0.0001f);
+        while (units > 0) {
+            int q = units > 20 ? 20 : units;
+            float angle = ((float)c * 1.618f) + (float)units * 0.37f;
+            float dist = ship_hull_def(&sp->ship)->ship_radius + 32.0f +
+                         (float)(units % 5) * 7.0f;
+            vec2 pos = v2_add(sp->ship.pos, v2(cosf(angle) * dist, sinf(angle) * dist));
+            vec2 vel = v2_add(sp->ship.vel, v2(cosf(angle) * 35.0f, sinf(angle) * 35.0f));
+            (void)spawn_cargo_pod(w, pos, vel, (commodity_t)c, (uint16_t)q,
+                                  CARGO_POD_CARGO);
+            units -= q;
+        }
+    }
+}
+
+static float try_sell_towed_pods(world_t *w, server_player_t *sp,
+                                 station_t *st, int station_idx,
+                                 commodity_t filter) {
+    if (!w || !sp || !st) return 0.0f;
+    float payout = 0.0f;
+
+    for (int t = sp->ship.towed_pod_count - 1; t >= 0; t--) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
+            remove_towed_pod_slot(&sp->ship, t);
+            continue;
+        }
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        commodity_t c = pod->commodity;
+        if (c >= COMMODITY_COUNT) continue;
+        if (filter != COMMODITY_COUNT && filter != c) continue;
+
+        int units = (int)pod->quantity;
+        if (units <= 0) {
+            memset(pod, 0, sizeof(*pod));
+            pod->towed_by = -1;
+            remove_towed_pod_slot(&sp->ship, t);
+            continue;
+        }
+
+        float price = station_buy_price(st, c);
+        if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+            price = st->base_price[c];
+        if (price <= FLOAT_EPSILON) continue;
+
+        if (is_finished_good(c)) {
+            uint8_t origin[8] = { 'C','R','A','T','E','v','1',' ' };
+            int minted = station_finished_mint(st, c, units, origin);
+            if (minted <= 0) continue;
+            units = minted;
+            sync_station_finished_inventory(st, c);
+        } else {
+            st->_inventory_cache[c] += (float)units;
+        }
+
+        float value = price * (float)units;
+        if (server_player_can_use_pubkey_persistence(sp)) {
+            ledger_earn_by_pubkey(st, sp->pubkey, value);
+            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)units, (uint8_t)c);
+        } else {
+            ledger_earn(st, sp->session_token, value);
+        }
+        sp->ship.stat_credits_earned += value;
+        payout += value;
+
+        SIM_LOG("[sim] player %d sold towed %s pod (%d units) for %.0f cr at %s\n",
+                sp->id, commodity_short_name(c), units, value, st->name);
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL, .player_id = sp->id,
+            .sell = { .station = station_idx,
+                      .grade = MINING_GRADE_COMMON,
+                      .base_cr = (int)lroundf(value),
+                      .bonus_cr = 0,
+                      .by_contract = 0 }});
+        memset(pod, 0, sizeof(*pod));
+        pod->towed_by = -1;
+        remove_towed_pod_slot(&sp->ship, t);
+    }
+
+    return payout;
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
@@ -842,6 +1006,7 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     };
     memcpy(death_ev.death.killer_token, sp->last_damage_killer_token, 8);
     emit_event(w, death_ev);
+    drop_ship_cargo_pods(w, sp);
     /* Reset attribution for next life. */
     memset(sp->last_damage_killer_token, 0, 8);
     sp->last_damage_cause = DEATH_CAUSE_UNKNOWN;
@@ -849,6 +1014,13 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     /* Release towed fragments */
     sp->ship.towed_count = 0;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx >= 0 && idx < MAX_CARGO_PODS && w->cargo_pods[idx].active)
+            w->cargo_pods[idx].towed_by = -1;
+    }
+    sp->ship.towed_pod_count = 0;
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
     sp->ship.hull = ship_max_hull(&sp->ship);
     sp->ship.angle = PI_F * 0.5f;
     sp->ship.stat_ore_mined = 0.0f;
@@ -2016,6 +2188,29 @@ static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
     ship_apply_fragment_tow(&sp->ship, a, dt);
 }
 
+static void resolve_towed_body_ship_overlap(const ship_t *ship, vec2 *pos,
+                                            vec2 *vel, float body_radius,
+                                            float clearance) {
+    if (!ship || !pos || !vel) return;
+    float ship_r = ship_hull_def(ship)->ship_radius;
+    float min_d = body_radius + ship_r + clearance;
+    vec2 ship_to_body = v2_sub(*pos, ship->pos);
+    float ds = v2_len_sq(ship_to_body);
+    if (ds >= min_d * min_d) return;
+
+    float dd = 0.0f;
+    vec2 n = ship_forward(ship->angle);
+    if (ds > 0.1f) {
+        dd = sqrtf(ds);
+        n = v2_scale(ship_to_body, 1.0f / dd);
+    }
+    *pos = v2_add(*pos, v2_scale(n, min_d - dd));
+
+    float closing = v2_dot(v2_sub(*vel, ship->vel), n);
+    if (closing < 0.0f)
+        *vel = v2_sub(*vel, v2_scale(n, closing));
+}
+
 /* Pick the closest signal-providing station to a position, or -1 if no
  * station's signal range covers that point. Used to attribute
  * fragment-lifecycle chain events to a witnessing station — the chain
@@ -2109,17 +2304,8 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         apply_band_force(sp, a, dt);
         sp->tractor_fragments++;
 
-        /* Hard separation: fragment never overlaps ship (band can't
-         * push hard enough to overshoot at high stretch otherwise). */
-        float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-        float min_d = a->radius + ship_r + 4.0f;
-        vec2 frag_to_ship = v2_sub(sp->ship.pos, a->pos);
-        float ds = v2_len_sq(frag_to_ship);
-        if (ds < min_d * min_d && ds > 0.1f) {
-            float dd = sqrtf(ds);
-            vec2 push = v2_scale(frag_to_ship, -((min_d - dd) / dd));
-            a->pos = v2_add(a->pos, push);
-        }
+        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+                                        a->radius, 4.0f);
 
         /* Fragment-fragment separation: towed rocks push apart so they
          * settle into a constellation around the ship instead of
@@ -2137,6 +2323,12 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
                 vec2 n = v2_scale(ab, overlap / abd);
                 a->pos = v2_sub(a->pos, n);
                 b->pos = v2_add(b->pos, n);
+                float closing = v2_dot(v2_sub(b->vel, a->vel), n);
+                if (closing < 0.0f) {
+                    vec2 impulse = v2_scale(n, -closing * 0.5f);
+                    a->vel = v2_sub(a->vel, impulse);
+                    b->vel = v2_add(b->vel, impulse);
+                }
             }
         }
     }
@@ -2215,6 +2407,8 @@ static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
             continue;
         }
         apply_band_force(sp, a, dt);
+        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+                                        a->radius, 4.0f);
     }
 }
 
@@ -2302,6 +2496,118 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
     }
     sp->ship.towed_count = 0;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+}
+
+static void apply_pod_band_force(server_player_t *sp, cargo_pod_t *pod, float dt) {
+    towable_body_t body = {
+        .pos = &pod->pos,
+        .vel = &pod->vel,
+        .inv_mass = (pod->kind == CARGO_POD_GAS) ? 1.2f : 0.8f,
+    };
+    ship_apply_body_tow(&sp->ship, &body, dt);
+}
+
+static bool ship_is_towing_pod(const ship_t *ship, int pod_idx) {
+    if (!ship) return false;
+    for (int i = 0; i < ship->towed_pod_count; i++)
+        if (ship->towed_pods[i] == pod_idx) return true;
+    return false;
+}
+
+static void step_towed_pod_forces(world_t *w, server_player_t *sp, float dt) {
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
+            remove_towed_pod_slot(&sp->ship, t);
+            t--;
+            continue;
+        }
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        pod->towed_by = (int8_t)sp->id;
+        apply_pod_band_force(sp, pod, dt);
+
+        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+                                        pod->radius, 5.0f);
+    }
+}
+
+static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt) {
+    step_towed_pod_forces(w, sp, dt);
+
+    int max_tow = 2 + sp->ship.tractor_level * 2;
+    if (!sp->ship.tractor_active || sp->ship.towed_pod_count >= max_tow) return;
+
+    float tr = ship_tractor_range(&sp->ship);
+    float tr_sq = tr * tr;
+    commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
+    for (int i = 0; i < MAX_CARGO_PODS && sp->ship.towed_pod_count < max_tow; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
+        if (tow_filter != COMMODITY_COUNT && pod->commodity != tow_filter) continue;
+        if (ship_is_towing_pod(&sp->ship, i)) continue;
+        if (v2_dist_sq(sp->ship.pos, pod->pos) > tr_sq) continue;
+        sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)i;
+        pod->towed_by = (int8_t)sp->id;
+        emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
+                                    .pickup = {.ore = (float)pod->quantity, .fragments = 1}});
+    }
+}
+
+static void step_leashed_cargo_pods(world_t *w, server_player_t *sp, float dt) {
+    float tractor_r = ship_tractor_range(&sp->ship);
+    for (int t = sp->ship.towed_pod_count - 1; t >= 0; t--) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
+            remove_towed_pod_slot(&sp->ship, t);
+            continue;
+        }
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        float dist = v2_len(v2_sub(sp->ship.pos, pod->pos));
+        if (dist > tractor_r * 1.5f) {
+            pod->towed_by = -1;
+            remove_towed_pod_slot(&sp->ship, t);
+            continue;
+        }
+        apply_pod_band_force(sp, pod, dt);
+        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+                                        pod->radius, 5.0f);
+    }
+}
+
+static void release_towed_pods(world_t *w, server_player_t *sp) {
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        vec2 to_ship = v2_sub(sp->ship.pos, pod->pos);
+        float dist = v2_len(to_ship);
+        if (dist > 0.01f) {
+            vec2 dir = v2_scale(to_ship, 1.0f / dist);
+            float stretch = fmaxf(0.0f, dist - SHIP_TOW_BAND_REST_LEN);
+            float fling = ROCK_THROW_BASE_SPEED + sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
+            pod->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
+        }
+        pod->towed_by = -1;
+    }
+    sp->ship.towed_pod_count = 0;
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+}
+
+static void step_cargo_pods(world_t *w, float dt) {
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        pod->pos = v2_add(pod->pos, v2_scale(pod->vel, dt));
+        pod->vel = v2_scale(pod->vel, 1.0f / (1.0f + 0.35f * dt));
+        pod->rotation += pod->spin * dt;
+        pod->age += dt;
+        if (pod->quantity == 0 ||
+            (pod->age > 30.0f && signal_strength_at(w, pod->pos) <= 0.001f)) {
+            memset(pod, 0, sizeof(*pod));
+            pod->towed_by = -1;
+        }
+    }
 }
 
 /* ---- Scaffold tow physics ---- */
@@ -3144,6 +3450,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             SIM_LOG("[sim] player %d delivered build materials for %.0f cr at %s\n",
                     sp->id, build_payout, docked_st->name);
         }
+        (void)try_sell_towed_pods(w, sp, docked_st, sp->current_station, filter);
         try_sell_station_cargo(w, sp);
     }
     else if (intent->service_repair) try_repair_ship(w, sp);
@@ -3497,6 +3804,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             float tow_drag = 0.15f * (float)sp->ship.towed_count;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
+        if (sp->ship.towed_pod_count > 0) {
+            float tow_drag = 0.22f * (float)sp->ship.towed_pod_count;
+            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
+        }
         /* Scaffold tow drag: heavy — ship feels the mass. Speed cap
          * scales with engine accel (so the ship and the scaffold are
          * limited by the same engine-coupled cap). */
@@ -3572,12 +3883,18 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 sp->ship.tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
                     release_towed_fragments(w, sp);
+                    release_towed_pods(w, sp);
                     release_towed_scaffold(w, sp);
                 }
                 step_towed_cleanup(w, sp);
-                if (sp->ship.tractor_active)
+                if (sp->ship.tractor_active) {
                     step_fragment_collection(w, sp, dt);
-                else if (sp->ship.towed_count > 0)
+                    step_cargo_pod_collection(w, sp, dt);
+                } else {
+                    if (sp->ship.towed_pod_count > 0)
+                        step_leashed_cargo_pods(w, sp, dt);
+                }
+                if (!sp->ship.tractor_active && sp->ship.towed_count > 0)
                     step_leashed_fragments(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
 
@@ -4583,18 +4900,14 @@ static void step_scaffolds(world_t *w, float dt) {
                 sc->vel = v2_add(sc->vel, v2_scale(norm, pull * dt));
             }
 
-            /* Planned station tractor: blueprints pull matching scaffolds
+            /* Planned station tractor: blueprints pull founding relays
              * straight toward center. No orbit — ghosts aren't rotating.
-             * On arrival, materialize the ghost into a real station. */
+             * On arrival, materialize the ghost into a real station.
+             * Non-relay module scaffolds wait until the outpost is active. */
             for (int s = 3; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
                 if (!st->planned) continue;
-                bool type_matches = (sc->module_type == MODULE_SIGNAL_RELAY);
-                if (!type_matches) {
-                    for (int p = 0; p < st->placement_plan_count; p++)
-                        if (st->placement_plans[p].type == sc->module_type) { type_matches = true; break; }
-                }
-                if (!type_matches) continue;
+                if (sc->module_type != MODULE_SIGNAL_RELAY) continue;
                 vec2 delta = v2_sub(st->pos, sc->pos);
                 float dist_sq = v2_len_sq(delta);
                 const float PLAN_PULL_RANGE = 800.0f;
@@ -5272,6 +5585,7 @@ void world_sim_step(world_t *w, float dt) {
     step_station_ring_dynamics(w, dt);
     step_station_jostle(w, dt);
     sim_step_asteroid_dynamics(w, dt);
+    step_cargo_pods(w, dt);
     maintain_asteroid_field(w, dt);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
     w->gravity_accumulator += dt;
@@ -5833,7 +6147,9 @@ void world_reset(world_t *w) {
     add_furnace_for(&w->stations[2],   3, 6, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output + shipyard input */
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
+    w->stations[2].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[2].arm_speed[1] = STATION_RING_SPEED;
+    w->stations[2].arm_speed[2] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[2]);
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
@@ -6072,6 +6388,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.hull       = hull_max_for_class(HULL_CLASS_MINER);
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
     sp->ship.towed_scaffold = -1;
     sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
     sp->ship.comm_range     = 1500.0f; /* H-ping reach — roughly one screen */

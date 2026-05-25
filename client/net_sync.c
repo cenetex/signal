@@ -19,7 +19,6 @@
 #define LOCAL_PLAYER_STALE_ACK_DEFER_DIST 200.0f
 #define NET_REPLAY_LATENCY_BLEND_MIN_RTT_SEC 0.075f
 #define NET_REPLAY_LATENCY_BLEND_MAX_SEC 0.45f
-#define NET_REPLAY_REBASE_SKEW_TICKS 96
 #define ASTEROID_RENDER_CORRECTION_SEC 0.18f
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
@@ -335,6 +334,7 @@ void reset_remote_dynamic_sync(void) {
     g.npc_interp.interval = 0.1f;
 
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
+    memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
     LOCAL_PLAYER.hover_asteroid = -1;
 }
 
@@ -375,6 +375,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         a->smelt_progress = asteroids[i].smelt_progress;
         a->grade = asteroids[i].grade;
         a->crystal_stage = asteroids[i].crystal_stage;
+        a->phase = asteroids[i].phase;
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }
@@ -886,6 +887,28 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     }
 }
 
+void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
+    bool seen[MAX_CARGO_PODS] = { false };
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = received[i].index;
+        if (idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &g.world.cargo_pods[idx];
+        pod->active = true;
+        pod->kind = (cargo_pod_kind_t)received[i].kind;
+        pod->commodity = (commodity_t)received[i].commodity;
+        pod->towed_by = received[i].towed_by;
+        pod->pos = v2(received[i].pos_x, received[i].pos_y);
+        pod->vel = v2(received[i].vel_x, received[i].vel_y);
+        pod->radius = received[i].radius;
+        pod->rotation = received[i].rotation;
+        pod->quantity = received[i].quantity;
+        seen[idx] = true;
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!seen[i]) g.world.cargo_pods[i].active = false;
+    }
+}
+
 /* Defined in main.c — process events for audio + UI */
 extern void process_sim_events(const sim_events_t *events);
 
@@ -1117,7 +1140,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
             g.net_motion.tick_skew = skew;
             if (abs_skew > g.net_motion.max_tick_skew_abs)
                 g.net_motion.max_tick_skew_abs = abs_skew;
-            force_rebase = skew > NET_REPLAY_REBASE_SKEW_TICKS;
+            force_rebase = skew > (int32_t)NET_REPLAY_REBASE_SKEW_TICKS;
         }
         bool has_input_ack = state->input_seq_ack != 0;
         bool has_unacked_input =

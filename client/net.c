@@ -777,6 +777,7 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].smelt_progress = (float)p[31] / 255.0f;
                     arr[i].grade = p[32];
                     arr[i].crystal_stage = p[33];
+                    arr[i].phase = p[34];
                 }
                 net_state.callbacks.on_asteroids(arr, decoded);
             }
@@ -1012,6 +1013,31 @@ static void handle_message(const uint8_t* data, int len) {
                 scaffolds[i].build_amount= read_f32_le(&p[24]);
             }
             net_state.callbacks.on_scaffolds(scaffolds, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_PODS:
+        if (len >= 2 && net_state.callbacks.on_cargo_pods) {
+            int count = data[1];
+            int expected = 2 + count * CARGO_POD_RECORD_SIZE;
+            if (len < expected) break;
+            NetCargoPodState pods[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p = &data[2 + i * CARGO_POD_RECORD_SIZE];
+                pods[i].index = p[0];
+                pods[i].kind = p[1];
+                pods[i].commodity = p[2];
+                pods[i].towed_by = (p[3] == 0xFF) ? -1 : (int8_t)p[3];
+                pods[i].pos_x = read_f32_le(&p[4]);
+                pods[i].pos_y = read_f32_le(&p[8]);
+                pods[i].vel_x = read_f32_le(&p[12]);
+                pods[i].vel_y = read_f32_le(&p[16]);
+                pods[i].radius = read_f32_le(&p[20]);
+                pods[i].rotation = read_f32_le(&p[24]);
+                pods[i].quantity = (uint16_t)p[28] | ((uint16_t)p[29] << 8);
+            }
+            net_state.callbacks.on_cargo_pods(pods, max);
         }
         break;
 

@@ -36,6 +36,7 @@ void grade_tint(uint8_t grade, float *r, float *g, float *b);
 void world_draw_begin_frame(void);
 void draw_background(vec2 camera);
 void draw_asteroids(void);
+void draw_cargo_pods(void);
 void draw_station(const station_t* station, bool is_current, bool is_nearby);
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby);
 void draw_ship_tractor_field(void);

@@ -40,6 +40,17 @@ static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n)
 #define FRONTIER_DIRECTOR_MIN_INTERVAL 1.0f
 #define FRONTIER_DIRECTOR_MAX_PLANNED 8
 
+typedef struct {
+    module_type_t type;
+    uint8_t ring;
+    uint8_t slot;
+} frontier_starter_plan_t;
+
+static const frontier_starter_plan_t FRONTIER_STARTER_PLANS[] = {
+    { MODULE_HOPPER,  1, 1 },
+    { MODULE_FURNACE, 2, 2 },
+};
+
 static int frontier_planned_limit(int virtual_pilots) {
     if (virtual_pilots <= 0) return 0;
     int limit = 1 + virtual_pilots / 250;
@@ -56,6 +67,13 @@ static float frontier_director_interval(int virtual_pilots) {
     if (interval < FRONTIER_DIRECTOR_MIN_INTERVAL)
         interval = FRONTIER_DIRECTOR_MIN_INTERVAL;
     return interval;
+}
+
+static int frontier_virtual_logistics_budget(int virtual_pilots) {
+    if (virtual_pilots <= 0) return 0;
+    int budget = 1 + virtual_pilots / 250;
+    if (budget > 8) budget = 8;
+    return budget;
 }
 
 void frontier_virtual_pilots_set(world_t *w, int count) {
@@ -77,24 +95,38 @@ static int frontier_count_planned_outposts(const world_t *w) {
     return count;
 }
 
-static int frontier_count_relay_work(const world_t *w) {
+static int frontier_count_scaffold_work(const world_t *w, module_type_t type) {
     int count = 0;
     if (!w) return 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         for (int i = 0; i < st->pending_scaffold_count; i++) {
-            if (st->pending_scaffolds[i].type == MODULE_SIGNAL_RELAY)
+            if (st->pending_scaffolds[i].type == type)
                 count++;
         }
     }
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         const scaffold_t *sc = &w->scaffolds[i];
-        if (!sc->active || sc->module_type != MODULE_SIGNAL_RELAY) continue;
+        if (!sc->active || sc->module_type != type) continue;
         if (sc->state == SCAFFOLD_NASCENT ||
             sc->state == SCAFFOLD_LOOSE ||
-            sc->state == SCAFFOLD_TOWING)
+            sc->state == SCAFFOLD_TOWING ||
+            sc->state == SCAFFOLD_SNAPPING)
             count++;
+    }
+    return count;
+}
+
+static int frontier_count_module_plans(const world_t *w, module_type_t type) {
+    int count = 0;
+    if (!w) return 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        if (st->planned_owner != -1) continue;
+        for (int p = 0; p < st->placement_plan_count; p++)
+            if (st->placement_plans[p].type == type) count++;
     }
     return count;
 }
@@ -138,15 +170,15 @@ static void frontier_founder_pubkey(const world_t *w, int slot, vec2 pos,
     sha256_final(&ctx, out);
 }
 
-static bool frontier_queue_relay_order(world_t *w) {
+static bool frontier_queue_scaffold_order(world_t *w, module_type_t type) {
     if (!w) return false;
-    commodity_t mat = module_build_material_lookup(MODULE_SIGNAL_RELAY);
+    commodity_t mat = module_build_material_lookup(type);
     int best_station = -1;
     int best_pending = 999;
     float best_stock = -1.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (!station_sells_scaffold(st, MODULE_SIGNAL_RELAY)) continue;
+        if (!station_sells_scaffold(st, type)) continue;
         if (st->pending_scaffold_count >= 4) continue;
         float stock = (mat < COMMODITY_COUNT) ? st->_inventory_cache[mat] : 0.0f;
         if (best_station < 0 ||
@@ -160,11 +192,206 @@ static bool frontier_queue_relay_order(world_t *w) {
     if (best_station < 0) return false;
     station_t *st = &w->stations[best_station];
     int idx = st->pending_scaffold_count++;
-    st->pending_scaffolds[idx].type = MODULE_SIGNAL_RELAY;
+    st->pending_scaffolds[idx].type = type;
     st->pending_scaffolds[idx].owner = -1;
-    w->frontier_scaffold_orders++;
-    SIM_LOG("[frontier] queued signal relay scaffold at station %d\n", best_station);
+    if (type == MODULE_SIGNAL_RELAY)
+        w->frontier_scaffold_orders++;
+    else
+        w->frontier_module_scaffold_orders++;
+    SIM_LOG("[frontier] queued %s scaffold at station %d\n",
+            module_type_name(type), best_station);
     return true;
+}
+
+static void frontier_remove_pending_scaffold(station_t *st, int idx) {
+    if (!st || idx < 0 || idx >= st->pending_scaffold_count) return;
+    for (int i = idx; i < st->pending_scaffold_count - 1; i++)
+        st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];
+    st->pending_scaffold_count--;
+}
+
+static bool frontier_virtual_manufacture_type(world_t *w, module_type_t type) {
+    if (!w) return false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int p = 0; p < st->pending_scaffold_count; p++) {
+            if (st->pending_scaffolds[p].type != type) continue;
+            int owner = st->pending_scaffolds[p].owner;
+            int idx = spawn_scaffold(w, type, st->pos, owner);
+            if (idx < 0) return false;
+            scaffold_t *sc = &w->scaffolds[idx];
+            sc->state = SCAFFOLD_LOOSE;
+            sc->owner = owner;
+            sc->built_at_station = -1;
+            float angle = (float)((w->frontier_virtual_scaffolds_manufactured % 16u)
+                                  * 0.3926990817f);
+            sc->pos = v2_add(st->pos, v2(cosf(angle) * 180.0f,
+                                         sinf(angle) * 180.0f));
+            sc->vel = v2(0.0f, 0.0f);
+            frontier_remove_pending_scaffold(st, p);
+            w->frontier_virtual_scaffolds_manufactured++;
+            SIM_LOG("[frontier] virtual pilots manufactured %s scaffold at station %d\n",
+                    module_type_name(type), s);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool frontier_virtual_manufacture_one(world_t *w) {
+    static const module_type_t PRIORITY[] = {
+        MODULE_SIGNAL_RELAY,
+        MODULE_HOPPER,
+        MODULE_FURNACE,
+    };
+    for (int i = 0; i < (int)(sizeof(PRIORITY) / sizeof(PRIORITY[0])); i++)
+        if (frontier_virtual_manufacture_type(w, PRIORITY[i])) return true;
+    return false;
+}
+
+static int frontier_find_planned_relay_destination(const world_t *w) {
+    if (!w) return -1;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (st->planned) return s;
+    }
+    return -1;
+}
+
+static bool frontier_slot_occupied_or_inflight(const world_t *w,
+                                               int station_idx,
+                                               int ring,
+                                               int slot) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return true;
+    const station_t *st = &w->stations[station_idx];
+    for (int m = 0; m < st->module_count; m++) {
+        if ((int)st->modules[m].ring != ring) continue;
+        if ((int)st->modules[m].slot != slot) continue;
+        return true;
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active) continue;
+        if (sc->state != SCAFFOLD_SNAPPING) continue;
+        if (sc->placed_station != station_idx) continue;
+        if (sc->placed_ring != ring || sc->placed_slot != slot) continue;
+        return true;
+    }
+    return false;
+}
+
+static int frontier_find_active_module_destination(const world_t *w,
+                                                  module_type_t type,
+                                                  int *out_ring,
+                                                  int *out_slot) {
+    if (!w) return -1;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int p = 0; p < st->placement_plan_count; p++) {
+            if (st->placement_plans[p].type != type) continue;
+            int ring = st->placement_plans[p].ring;
+            int slot = st->placement_plans[p].slot;
+            if (frontier_slot_occupied_or_inflight(w, s, ring, slot))
+                continue;
+            if (out_ring) *out_ring = ring;
+            if (out_slot) *out_slot = slot;
+            return s;
+        }
+    }
+    return -1;
+}
+
+static bool frontier_virtual_deliver_one(world_t *w) {
+    if (!w) return false;
+    static const module_type_t PRIORITY[] = {
+        MODULE_SIGNAL_RELAY,
+        MODULE_HOPPER,
+        MODULE_FURNACE,
+    };
+    for (int pi = 0; pi < (int)(sizeof(PRIORITY) / sizeof(PRIORITY[0])); pi++) {
+        module_type_t type = PRIORITY[pi];
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            scaffold_t *sc = &w->scaffolds[i];
+            if (!sc->active) continue;
+            if (sc->state != SCAFFOLD_LOOSE) continue;
+            if (sc->owner >= 0 || sc->towed_by >= 0) continue;
+            if (sc->module_type != type) continue;
+            if (type == MODULE_SIGNAL_RELAY && sc->placed_station >= 0)
+                continue;
+
+            if (type == MODULE_SIGNAL_RELAY) {
+                int dest = frontier_find_planned_relay_destination(w);
+                if (dest < 0) continue;
+                station_t *st = &w->stations[dest];
+                sc->pos = st->pos;
+                sc->vel = v2(0.0f, 0.0f);
+                sc->placed_station = dest;
+                w->frontier_virtual_scaffold_deliveries++;
+                SIM_LOG("[frontier] virtual pilots delivered signal relay scaffold to station %d\n",
+                        dest);
+                return true;
+            }
+
+            int ring = -1, slot = -1;
+            int dest = frontier_find_active_module_destination(w, type,
+                                                               &ring, &slot);
+            if (dest < 0) continue;
+            station_t *st = &w->stations[dest];
+            sc->state = SCAFFOLD_SNAPPING;
+            sc->placed_station = dest;
+            sc->placed_ring = ring;
+            sc->placed_slot = slot;
+            sc->pos = module_world_pos_ring(st, ring, slot);
+            sc->vel = v2(0.0f, 0.0f);
+            w->frontier_virtual_scaffold_deliveries++;
+            SIM_LOG("[frontier] virtual pilots delivered %s scaffold to station %d ring %d slot %d\n",
+                    module_type_name(type), dest, ring, slot);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool frontier_virtual_supply_one(world_t *w) {
+    if (!w) return false;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st) || st->planned) continue;
+        if (st->scaffold && st->scaffold_progress < 1.0f) {
+            st->scaffold_progress = 1.0f;
+            activate_outpost(w, s);
+            w->frontier_virtual_supply_deliveries++;
+            SIM_LOG("[frontier] virtual pilots supplied station scaffold at station %d\n", s);
+            return true;
+        }
+    }
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st) || st->scaffold) continue;
+        for (int m = 0; m < st->module_count; m++) {
+            station_module_t *mod = &st->modules[m];
+            if (!mod->scaffold) continue;
+            if (mod->build_progress >= 1.0f) continue;
+            mod->build_progress = 1.0f;
+            w->frontier_virtual_supply_deliveries++;
+            SIM_LOG("[frontier] virtual pilots supplied %s at station %d\n",
+                    module_type_name(mod->type), s);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void frontier_run_virtual_logistics(world_t *w) {
+    int budget = frontier_virtual_logistics_budget(w ? w->frontier_virtual_pilots : 0);
+    for (int i = 0; i < budget; i++) {
+        if (frontier_virtual_supply_one(w)) continue;
+        if (frontier_virtual_deliver_one(w)) continue;
+        if (frontier_virtual_manufacture_one(w)) continue;
+        break;
+    }
 }
 
 static bool frontier_plan_outpost(world_t *w) {
@@ -233,19 +460,106 @@ static bool frontier_plan_outpost(world_t *w) {
     return false;
 }
 
+static bool frontier_station_has_module_or_plan(const station_t *st,
+                                                module_type_t type) {
+    if (!st) return false;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == type) return true;
+    }
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        if (st->placement_plans[p].type == type) return true;
+    }
+    return false;
+}
+
+static bool frontier_slot_reserved(const station_t *st, int ring, int slot) {
+    if (!st) return true;
+    for (int m = 0; m < st->module_count; m++) {
+        if ((int)st->modules[m].ring == ring &&
+            (int)st->modules[m].slot == slot) {
+            return true;
+        }
+    }
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        if ((int)st->placement_plans[p].ring == ring &&
+            (int)st->placement_plans[p].slot == slot) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool frontier_add_module_plan(world_t *w, int station_idx,
+                                     const frontier_starter_plan_t *plan) {
+    if (!w || !plan) return false;
+    if (station_idx < 3 || station_idx >= MAX_STATIONS) return false;
+    station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return false;
+    if (st->planned_owner != -1) return false;
+    if (st->placement_plan_count >= 8) return false;
+    if (frontier_station_has_module_or_plan(st, plan->type)) return false;
+    if (frontier_slot_reserved(st, plan->ring, plan->slot)) return false;
+    int idx = st->placement_plan_count++;
+    st->placement_plans[idx].type = plan->type;
+    st->placement_plans[idx].ring = plan->ring;
+    st->placement_plans[idx].slot = plan->slot;
+    st->placement_plans[idx].owner = -1;
+    w->frontier_module_plans_created++;
+    SIM_LOG("[frontier] planned %s at station %d ring %u slot %u\n",
+            module_type_name(plan->type), station_idx,
+            (unsigned)plan->ring, (unsigned)plan->slot);
+    return true;
+}
+
+static int frontier_ensure_starter_module_plans(world_t *w) {
+    int created = 0;
+    if (!w) return 0;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        if (!st->planned && !station_is_active(st)) continue;
+        if (st->planned_owner != -1) continue;
+        for (int i = 0; i < (int)(sizeof(FRONTIER_STARTER_PLANS) /
+                                  sizeof(FRONTIER_STARTER_PLANS[0])); i++) {
+            if (frontier_add_module_plan(w, s, &FRONTIER_STARTER_PLANS[i]))
+                created++;
+        }
+    }
+    return created;
+}
+
+static void frontier_queue_scaffolds_for_module_plans(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < (int)(sizeof(FRONTIER_STARTER_PLANS) /
+                              sizeof(FRONTIER_STARTER_PLANS[0])); i++) {
+        module_type_t type = FRONTIER_STARTER_PLANS[i].type;
+        int needed = frontier_count_module_plans(w, type);
+        int work = frontier_count_scaffold_work(w, type);
+        while (work < needed) {
+            if (!frontier_queue_scaffold_order(w, type)) break;
+            work++;
+        }
+    }
+}
+
 void step_frontier_director(world_t *w, float dt) {
     if (!w || w->frontier_virtual_pilots <= 0 || dt <= 0.0f) return;
     w->frontier_plan_timer -= dt;
     if (w->frontier_plan_timer > 0.0f) return;
+
+    frontier_run_virtual_logistics(w);
 
     int planned = frontier_count_planned_outposts(w);
     int plan_limit = frontier_planned_limit(w->frontier_virtual_pilots);
     if (planned < plan_limit && frontier_plan_outpost(w))
         planned++;
 
-    int relay_work = frontier_count_relay_work(w);
+    int relay_work = frontier_count_scaffold_work(w, MODULE_SIGNAL_RELAY);
     if (relay_work < planned)
-        (void)frontier_queue_relay_order(w);
+        (void)frontier_queue_scaffold_order(w, MODULE_SIGNAL_RELAY);
+
+    (void)frontier_ensure_starter_module_plans(w);
+    frontier_queue_scaffolds_for_module_plans(w);
 
     w->frontier_plan_timer = frontier_director_interval(w->frontier_virtual_pilots);
 }
@@ -2108,15 +2422,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
  * destination for a loose scaffold. Returns -1 if none. */
 static int find_destination_for_scaffold(const world_t *w, module_type_t type,
                                         int exclude_station) {
-    /* Pass 1: outposts (active OR planned) with a placement plan for
-     * this type — those are slots the player explicitly reserved. A
-     * planned outpost is a valid destination too: when the scaffold
-     * arrives the planned ghost can be promoted via the existing
-     * snap-to-slot logic, with the relay as its founding module. */
+    /* Pass 1: active outposts with a placement plan for this type.
+     * Planned outposts are only valid for SIGNAL_RELAY below; otherwise
+     * a hopper/furnace can accidentally become the founding scaffold. */
     for (int s = 3; s < MAX_STATIONS; s++) {
         if (s == exclude_station) continue;
         const station_t *st = &w->stations[s];
-        if (!station_exists(st)) continue;
+        if (!station_is_active(st)) continue;
         for (int p = 0; p < st->placement_plan_count; p++) {
             if (st->placement_plans[p].type == type) return s;
         }

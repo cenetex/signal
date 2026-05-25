@@ -98,10 +98,10 @@ int           station_pair_neighbors(int ring, int slot,
 module_type_t station_module_at(const station_t *st, int ring, int slot);
 
 /* True when `type` has no pairing requirement, or all its required
- * input commodities (per module_required_inputs) have a hopper
- * tagged with that commodity somewhere on the station. With
- * commodity-tagged hoppers, the station-wide check replaces the
- * earlier slot-specific cross-ring lookup. */
+ * input commodities (per module_required_inputs) have a compatible
+ * tagged hopper. Furnaces are stricter than other producers: the
+ * matching ore hopper must be on an adjacent ring, because physical
+ * smelting uses the furnace/hopper cross-ring beam. */
 bool          station_pair_satisfied(const station_t *st, int ring, int slot,
                                      module_type_t type);
 

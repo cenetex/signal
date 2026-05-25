@@ -164,17 +164,12 @@ void activate_outpost(world_t *w, int station_idx) {
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
-/* Pair-based placement validator (#XYZ).
+/* Pair-based placement validator.
  *
- * A producer (FURNACE / FRAME_PRESS / LASER_FAB / TRACTOR_FAB / SHIPYARD)
- * is rejected unless its pair-intake module — typically a HOPPER — is
- * already installed at the canonical opposite slot on the same ring.
- *
- * Producers are also banned on ring 1 (3 slots, no canonical pair),
- * which the schema's `valid_rings` already enforces but we recheck
- * here to keep the failure path local and loggable.
- *
- * Returns true and emits no log if the placement is valid. */
+ * Furnaces are rejected unless a matching ore hopper is already installed
+ * on an adjacent ring. Other producers use the station-wide tagged hopper
+ * coverage check because their finished-good flow is not a physical smelt
+ * beam. Returns true and emits no log if the placement is valid. */
 static bool construction_check_placement(const station_t *st,
                                          module_type_t type,
                                          int ring, int slot,
@@ -186,7 +181,7 @@ static bool construction_check_placement(const station_t *st,
         return false;
     }
     if (module_requires_pair(type) && !station_pair_satisfied(st, ring, slot, type)) {
-        SIM_LOG("[sim] refused %s on station %d ring %d slot %d — no %s on adjacent-ring pair slot\n",
+        SIM_LOG("[sim] refused %s on station %d ring %d slot %d — no compatible %s\n",
                 module_type_name(type), station_idx, ring, slot,
                 module_type_name(module_pair_intake(type)));
         return false;

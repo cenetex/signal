@@ -34,6 +34,7 @@ enum {
     MAX_STATIONS = 128,  /* lifted from 64 in #285 Phase 4a; uint8 wire index supports 255 */
     MAX_NPC_SHIPS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
+    MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -303,6 +304,8 @@ typedef struct {
     /* Towed physical fragments (indices into asteroid array, -1 = empty) */
     int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;
+    int16_t towed_pods[10];       /* indices into cargo_pods, -1 = empty */
+    uint8_t towed_pod_count;
     int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
     bool tractor_active;          /* true while R held — drives fragment collection */
     float comm_range;             /* local hail scan visual/tag range. 0 = use default. */
@@ -722,6 +725,31 @@ typedef enum {
 } asteroid_tier_t;
 
 typedef enum {
+    ASTEROID_PHASE_SOLID = 0,
+    ASTEROID_PHASE_GAS_RICH = 1,
+} asteroid_phase_t;
+
+typedef enum {
+    CARGO_POD_NONE = 0,
+    CARGO_POD_GAS = 1,
+    CARGO_POD_CARGO = 2,
+} cargo_pod_kind_t;
+
+typedef struct {
+    bool active;
+    cargo_pod_kind_t kind;
+    commodity_t commodity;
+    uint16_t quantity;
+    vec2 pos;
+    vec2 vel;
+    float radius;
+    float rotation;
+    float spin;
+    float age;
+    int8_t towed_by; /* player id, -1 = loose */
+} cargo_pod_t;
+
+typedef enum {
     CRYSTAL_STAGE_RAW = 0,
     CRYSTAL_STAGE_INTERMEDIATE = 1,
 } crystal_stage_t;
@@ -765,7 +793,8 @@ typedef struct {
     uint8_t crystal_stage;             /* crystal_stage_t */
     uint8_t crystal_stage_station;     /* source station, 0xFF = unset */
     uint8_t crystal_stage_module;      /* source module index, 0xFF = unset */
-    uint8_t _crystal_stage_pad;
+    uint8_t phase;                     /* asteroid_phase_t */
+    float gas_emit_timer;              /* gas-rich terrain rocks emit towable gas pods */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
     /* Fragment provenance: fracture_seed is fixed at birth. fragment_pub
      * and grade stay zero/common until the fracture claim window resolves,

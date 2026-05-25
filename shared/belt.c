@@ -131,3 +131,19 @@ commodity_t belt_ore_at(const belt_field_t *bf, float x, float y) {
     if (cr >= cu) return COMMODITY_CRYSTAL_ORE;
     return COMMODITY_CUPRITE_ORE;
 }
+
+float belt_heat_at(const belt_field_t *bf, float x, float y) {
+    float nx = x / bf->world_scale;
+    float ny = y / bf->world_scale;
+
+    float pocket = noise2d_eval(&bf->n5, nx * 1.6f + 19.0f, ny * 1.6f - 7.0f);
+    float filament = 1.0f - fabsf(noise2d_eval(&bf->n4, nx * 3.8f - 11.0f, ny * 3.8f + 5.0f));
+    float density = belt_density_at(bf, x, y);
+    float heat = ((pocket + 1.0f) * 0.5f) * 0.65f + filament * 0.35f;
+
+    /* Hot nebula pockets should happen inside the belt, not in empty lanes. */
+    heat *= 0.25f + density * 0.75f;
+    if (heat < 0.0f) heat = 0.0f;
+    if (heat > 1.0f) heat = 1.0f;
+    return heat;
+}

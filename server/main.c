@@ -214,7 +214,7 @@ static bool tick_after_u32(uint32_t a, uint32_t b) {
 }
 
 static uint32_t server_input_apply_tick(uint32_t client_tick) {
-    const uint32_t max_future_ticks = 12; /* 100ms at 120Hz */
+    const uint32_t max_future_ticks = NET_INPUT_APPLY_FUTURE_MAX_TICKS;
     uint32_t next_tick = world.tick + 1u;
     if (client_tick == 0 || !tick_after_u32(client_tick, world.tick))
         return next_tick;
@@ -1264,6 +1264,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 sp, &parsed, input_seq, server_input_apply_tick(client_tick));
             merge_one_shot_input(&sp->input, &parsed);
         }
+        /* Movement-only input acks ride the authoritative WORLD_PLAYERS
+         * stream. ACTION_ACK is only for one-shot actions or rejections. */
         if (c) {
             if (ack_status != 0) {
                 send_action_ack(c, action_id, input_seq, ack_status, data[2]);
@@ -1279,9 +1281,6 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                        NET_ACTION_RESULT_REJECTED,
                                        data[2], world.tick);
                 }
-            } else if (input_seq != 0) {
-                send_action_ack(c, 0, input_seq, NET_ACTION_ACK_RECEIVED,
-                                NET_ACTION_NONE);
             }
         }
         /* If the player just queued a shipyard order, refresh that station's
@@ -3203,6 +3202,7 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_STATION_IDENTITY: return "STATION_IDENTITY";
     case NET_MSG_STATION_DIAG: return "STATION_DIAG";
     case NET_MSG_WORLD_PLAYERS: return "WORLD_PLAYERS";
+    case NET_MSG_WORLD_CARGO_PODS: return "WORLD_CARGO_PODS";
     case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
     case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";
     case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";
@@ -3468,6 +3468,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"frontier_virtual_pilots\":%d,"
                        "\"frontier_plans_created\":%u,"
                        "\"frontier_scaffold_orders\":%u,"
+                       "\"frontier_module_plans_created\":%u,"
+                       "\"frontier_module_scaffold_orders\":%u,"
+                       "\"frontier_virtual_scaffolds_manufactured\":%u,"
+                       "\"frontier_virtual_scaffold_deliveries\":%u,"
+                       "\"frontier_virtual_supply_deliveries\":%u,"
                        "\"server_bot_brain_mode\":\"%s\","
                        "\"server_brain_loaded\":%s,"
                        "\"server_brain_inferences\":%llu,"
@@ -3484,6 +3489,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        world.frontier_virtual_pilots,
                        world.frontier_plans_created,
                        world.frontier_scaffold_orders,
+                       world.frontier_module_plans_created,
+                       world.frontier_module_scaffold_orders,
+                       world.frontier_virtual_scaffolds_manufactured,
+                       world.frontier_virtual_scaffold_deliveries,
+                       world.frontier_virtual_supply_deliveries,
                        server_bot_brain_mode_name,
                        signal_brain_loaded() ? "true" : "false",
                        (unsigned long long)signal_brain_inference_count(),
@@ -3865,6 +3875,27 @@ static void broadcast_world(void) {
             scbuf[1] = (uint8_t)count;
             if (count > 0)
                 ws_send(sp->conn, scbuf, (size_t)(2 + count * SCAFFOLD_RECORD_SIZE));
+        }
+    }
+
+    /* Cargo pods: per-player view filtering. */
+    {
+        uint8_t cpbuf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &world.players[p];
+            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
+            int count = 0;
+            for (int i = 0; i < MAX_CARGO_PODS; i++) {
+                if (!world.cargo_pods[i].active) continue;
+                if (v2_dist_sq(world.cargo_pods[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
+                    continue;
+                serialize_one_cargo_pod(&cpbuf[2 + count * CARGO_POD_RECORD_SIZE],
+                                        i, &world.cargo_pods[i]);
+                count++;
+            }
+            cpbuf[0] = NET_MSG_WORLD_CARGO_PODS;
+            cpbuf[1] = (uint8_t)count;
+            ws_send(sp->conn, cpbuf, (size_t)(2 + count * CARGO_POD_RECORD_SIZE));
         }
     }
 
@@ -4810,7 +4841,13 @@ int main(void) {
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
-    mg_http_listen(&mgr, listen_url, ev_handler, NULL);
+    struct mg_connection *listener =
+        mg_http_listen(&mgr, listen_url, ev_handler, NULL);
+    if (!listener) {
+        fprintf(stderr, "[FATAL] failed to listen on %s\n", listen_url);
+        mg_mgr_free(&mgr);
+        return 1;
+    }
 #ifdef GIT_HASH
     printf("[server] SIGNAL alpha %s on %s\n", GIT_HASH, listen_url);
 #else

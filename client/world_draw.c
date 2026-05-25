@@ -374,6 +374,11 @@ static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
             item->body_g = item->body_g + (0.6f - item->body_g) * sp * 0.6f;
             item->body_b = item->body_b + (0.2f - item->body_b) * sp * 0.3f;
         }
+        if (a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
+            item->body_r = lerpf(item->body_r, 0.18f, 0.22f);
+            item->body_g = lerpf(item->body_g, 0.68f, 0.28f);
+            item->body_b = lerpf(item->body_b, 0.72f, 0.28f);
+        }
 
         float base_r, base_g, base_b;
         asteroid_body_color(a->tier, a->commodity, item->progress_ratio,
@@ -382,7 +387,6 @@ static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
         item->rim_g = item->target ? (item->ineffective ? 0.15f : 0.94f) : (base_g * 0.95f);
         item->rim_b = item->target ? (item->ineffective ? 0.10f : 1.0f) : fminf(1.0f, base_b * 1.2f);
         item->rim_a = item->target ? 1.0f : 0.8f;
-
         asteroid_draw_item_build_boundary(item, a);
     }
 
@@ -419,6 +423,12 @@ void draw_asteroids(void) {
     for (int i = 0; i < frame->count; i++) {
         const asteroid_draw_item_t *item = &frame->items[i];
         const asteroid_t *a = &g.world.asteroids[item->index];
+
+        if (a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
+            float pulse = 1.0f + 0.06f * sinf(g.world.time * 2.0f + a->seed);
+            draw_circle_filled(a->pos, a->radius * 1.55f * pulse, 24,
+                               0.10f, 0.52f, 0.58f, 0.09f);
+        }
 
         if (item->crystal) {
             sgl_c4f(item->rim_r, item->rim_g, item->rim_b, item->rim_a);
@@ -3023,6 +3033,55 @@ void draw_damage_flash(float screen_w, float screen_h) {
 /* ================================================================== */
 /* Scaffold world objects                                             */
 /* ================================================================== */
+
+void draw_cargo_pods(void) {
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        if (!pod->active) continue;
+        if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 24.0f)) continue;
+
+        float r = pod->kind == CARGO_POD_GAS ? 0.20f : 0.78f;
+        float g0 = pod->kind == CARGO_POD_GAS ? 0.86f : 0.60f;
+        float b = pod->kind == CARGO_POD_GAS ? 0.78f : 0.30f;
+        float pulse = 1.0f + 0.08f * sinf(g.world.time * 4.0f + pod->rotation);
+
+        if (pod->kind == CARGO_POD_GAS) {
+            draw_circle_filled(pod->pos, pod->radius * 1.8f * pulse, 18,
+                               0.12f, 0.72f, 0.68f, 0.16f);
+        }
+
+        sgl_push_matrix();
+        sgl_translate(pod->pos.x, pod->pos.y, 0.0f);
+        sgl_rotate(pod->rotation, 0.0f, 0.0f, 1.0f);
+
+        float half = pod->radius * 0.72f;
+        sgl_begin_quads();
+        sgl_c4f(r * 0.72f, g0 * 0.72f, b * 0.72f, 0.86f);
+        sgl_v2f(-half, -half);
+        sgl_v2f( half, -half);
+        sgl_v2f( half,  half);
+        sgl_v2f(-half,  half);
+        sgl_end();
+
+        sgl_begin_lines();
+        sgl_c4f(fminf(1.0f, r * 1.45f), fminf(1.0f, g0 * 1.35f),
+                fminf(1.0f, b * 1.35f), 0.95f);
+        sgl_v2f(-half, -half); sgl_v2f( half, -half);
+        sgl_v2f( half, -half); sgl_v2f( half,  half);
+        sgl_v2f( half,  half); sgl_v2f(-half,  half);
+        sgl_v2f(-half,  half); sgl_v2f(-half, -half);
+        sgl_v2f(-half, 0.0f);  sgl_v2f( half, 0.0f);
+        sgl_v2f(0.0f, -half);  sgl_v2f(0.0f,  half);
+        sgl_end();
+
+        sgl_pop_matrix();
+
+        if (pod->towed_by >= 0 && pod->towed_by < MAX_PLAYERS) {
+            const ship_t *ship = &g.world.players[pod->towed_by].ship;
+            draw_segment(ship->pos, pod->pos, r, g0, b, 0.42f);
+        }
+    }
+}
 
 void draw_scaffolds(void) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {

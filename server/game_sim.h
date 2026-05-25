@@ -111,11 +111,13 @@ static inline const spatial_cell_t *spatial_grid_lookup(const spatial_grid_t *g,
     if (!g->entries) return NULL;
     /* Mul in unsigned space — signed * 73856093 overflows for |cx| > 29 (UB). */
     uint32_t h = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cy * 19349663u);
-    for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
+    for (uint32_t probes = 0, i = h & g->mask; probes < g->capacity;
+         probes++, i = (i + 1) & g->mask) {
         const sparse_cell_entry_t *e = &g->entries[i];
         if (e->key_x == INT32_MIN) return NULL;      /* empty slot */
         if (e->key_x == cx && e->key_y == cy) return &e->cell;
     }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -474,6 +476,7 @@ typedef struct {
      * NPC + player union so later slices don't need a flag-day resize. */
     character_t characters[MAX_PLAYERS + MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];
+    cargo_pod_t cargo_pods[MAX_CARGO_PODS];
     server_player_t players[MAX_PLAYERS];
     uint32_t rng;
     /* belt_seed: the rng value at world_reset time — the deterministic
@@ -512,6 +515,11 @@ typedef struct {
     float frontier_plan_timer;
     uint32_t frontier_plans_created;
     uint32_t frontier_scaffold_orders;
+    uint32_t frontier_module_plans_created;
+    uint32_t frontier_module_scaffold_orders;
+    uint32_t frontier_virtual_scaffolds_manufactured;
+    uint32_t frontier_virtual_scaffold_deliveries;
+    uint32_t frontier_virtual_supply_deliveries;
     /* Monotonic counter for npc_ship_t.session_token. Incremented in
      * spawn_npc; the low/high bytes get stamped into the token so each
      * spawn (including respawns of the same role at the same station)
@@ -636,10 +644,10 @@ bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance)
 void station_rebuild_all_nav(const world_t *w);
 void rebuild_signal_chain(world_t *w);
 
-/* Ring rotation dynamics: ring 2 is driven at arm_speed[1]; rings 1
- * and 3 are passive, pulled by the cross-ring spokes (each spoke is
- * an angular spring) and slowed by viscous drag. The station's
- * silhouette is therefore an emergent property of its spoke graph —
+/* Ring rotation dynamics: each populated ring can carry a small ambient
+ * drift bias via arm_speed[], while cross-ring spokes add equal-and-opposite
+ * angular spring torque and viscous drag. The station's silhouette is
+ * therefore an emergent property of its spoke graph plus seeded drift:
  * adding/removing a producer or hopper visibly retorques the rings. */
 void step_station_ring_dynamics(world_t *w, float dt);
 
@@ -674,6 +682,8 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
  * picker surfaces the seed stock. */
 void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
+int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
+                    uint16_t quantity, cargo_pod_kind_t kind);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 /* v51 cargo-in-space schema migration: tag untagged furnaces by

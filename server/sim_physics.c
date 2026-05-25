@@ -96,7 +96,10 @@ void step_asteroid_gravity(world_t *w, float dt) {
         }
     }
 
-    /* Weak-signal current keeps isolated field rocks drifting inward. */
+    /* Signal pressure: strong relay coverage pushes isolated field rocks
+     * down the signal gradient. That makes mined-out/high-signal cores
+     * shed terrain toward the frontier/fringe instead of pulling the
+     * frontier empty. */
 
     /* Prebuild connected player positions once — avoids scanning all
      * MAX_PLAYERS (32) for every asteroid in the weak-signal loop. */
@@ -141,29 +144,23 @@ void step_asteroid_gravity(world_t *w, float dt) {
         }
         if (near_asteroid) continue;
 
-        float best_signal = 0.0f;
-        int best_station = -1;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!station_provides_signal(&w->stations[s])) continue;
-            float dist = sqrtf(v2_dist_sq(a->pos, w->stations[s].pos));
-            float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
-            if (strength > best_signal) {
-                best_signal = strength;
-                best_station = s;
-            }
-        }
-        if (best_station < 0 || best_signal <= 0.0f || best_signal >= 0.75f) continue;
+        float sig_here = signal_strength_at(w, a->pos);
+        if (sig_here <= SIGNAL_BAND_FRONTIER) continue;
 
-        vec2 delta = v2_sub(w->stations[best_station].pos, a->pos);
-        float dist_sq = v2_len_sq(delta);
-        if (dist_sq < 1.0f) continue;
-        float dist = sqrtf(dist_sq);
-        float min_dist = a->radius + w->stations[best_station].radius;
-        if (dist < min_dist + 10.0f) continue;
+        const float step = 300.0f;
+        float sxp = signal_strength_at(w, v2_add(a->pos, v2(step, 0.0f)));
+        float sxm = signal_strength_at(w, v2_add(a->pos, v2(-step, 0.0f)));
+        float syp = signal_strength_at(w, v2_add(a->pos, v2(0.0f, step)));
+        float sym = signal_strength_at(w, v2_add(a->pos, v2(0.0f, -step)));
+        vec2 uphill = v2(sxp - sxm, syp - sym);
+        float glen_sq = v2_len_sq(uphill);
+        if (glen_sq < 0.000001f) continue;
 
-        vec2 normal = v2_scale(delta, 1.0f / dist);
-        float current = (0.75f - best_signal) / 0.75f;
-        a->vel = v2_add(a->vel, v2_scale(normal, 3.0f * current * dt));
+        vec2 downhill = v2_scale(uphill, -1.0f / sqrtf(glen_sq));
+        float pressure = (sig_here - SIGNAL_BAND_FRONTIER) /
+                         (SIGNAL_BAND_OPERATIONAL - SIGNAL_BAND_FRONTIER);
+        if (pressure > 1.0f) pressure = 1.0f;
+        a->vel = v2_add(a->vel, v2_scale(downhill, 3.0f * pressure * dt));
     }
 }
 

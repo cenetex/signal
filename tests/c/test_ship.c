@@ -110,6 +110,28 @@ TEST(test_ship_fragment_tow_applies_ship_reaction) {
     ASSERT(ship.vel.x > 0.0f);
 }
 
+TEST(test_ship_tow_applies_to_ship_like_body) {
+    ship_t tractor = {0};
+    tractor.hull_class = HULL_CLASS_MINER;
+    tractor.pos = v2(0.0f, 0.0f);
+    tractor.vel = v2(0.0f, 0.0f);
+
+    ship_t pod = {0};
+    pod.hull_class = HULL_CLASS_MINER;
+    pod.pos = v2(220.0f, 0.0f);
+    pod.vel = v2(0.0f, 0.0f);
+
+    towable_body_t body = {
+        .pos = &pod.pos,
+        .vel = &pod.vel,
+        .inv_mass = 1.0f,
+    };
+    ship_apply_body_tow(&tractor, &body, 1.0f / 60.0f);
+
+    ASSERT(pod.vel.x < 0.0f);
+    ASSERT(tractor.vel.x > 0.0f);
+}
+
 TEST(test_product_name) {
     ASSERT_STR_EQ(product_name(PRODUCT_FRAME), "Frames");
     ASSERT_STR_EQ(product_name(PRODUCT_LASER_MODULE), "Laser Modules");
@@ -129,5 +151,6 @@ void register_ship_tests(void) {
     RUN(test_upgrade_product_cost_scales_with_level);
     RUN(test_npc_hull_def);
     RUN(test_ship_fragment_tow_applies_ship_reaction);
+    RUN(test_ship_tow_applies_to_ship_like_body);
     RUN(test_product_name);
 }

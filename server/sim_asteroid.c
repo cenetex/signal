@@ -24,6 +24,27 @@ static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]);
 static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]);
 static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
                               uint16_t slot, uint8_t out[32]);
+static int find_free_slot(const world_t *w);
+
+static float unit_from_seed(float seed) {
+    float x = sinf(seed * 12.9898f) * 43758.5453f;
+    return x - floorf(x);
+}
+
+static void configure_terrain_volatiles(world_t *w, asteroid_t *a) {
+    if (!w || !a || !a->active || a->fracture_child || a->tier == ASTEROID_TIER_S)
+        return;
+    float heat = belt_heat_at(&w->belt, a->pos.x, a->pos.y);
+    float chance = (heat - 0.55f) * 1.8f;
+    if (chance < 0.0f) chance = 0.0f;
+    if (chance > 0.75f) chance = 0.75f;
+    a->phase = (unit_from_seed(a->seed) < chance)
+        ? ASTEROID_PHASE_GAS_RICH
+        : ASTEROID_PHASE_SOLID;
+    a->gas_emit_timer = (a->phase == ASTEROID_PHASE_GAS_RICH)
+        ? 2.0f + unit_from_seed(a->seed + 3.17f) * 8.0f
+        : 0.0f;
+}
 
 /* ------------------------------------------------------------------ */
 /* Signal helpers (local to this file)                                  */
@@ -282,6 +303,8 @@ static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t ti
     a->spin     = w_rand_range(w, -sl, sl);
     a->seed     = w_rand_range(w, 0.0f, 100.0f);
     a->age      = 0.0f;
+    a->phase = ASTEROID_PHASE_SOLID;
+    a->gas_emit_timer = 0.0f;
     a->net_dirty = true;
 }
 
@@ -389,6 +412,7 @@ int seed_asteroid_clump(world_t *w, int first_slot) {
 
         a->pos = v2_add(center, v2(fx, fy));
         a->vel = v2_add(drift, v2(w_rand_range(w, -2.0f, 2.0f), w_rand_range(w, -2.0f, 2.0f)));
+        configure_terrain_volatiles(w, a);
         placed++;
     }
     return placed;
@@ -404,6 +428,7 @@ void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier
     a->fracture_child = false;
     a->pos = pos;
     a->vel = v2(w_rand_range(w, -4.0f, 4.0f), w_rand_range(w, -4.0f, 4.0f));
+    configure_terrain_volatiles(w, a);
 }
 
 void seed_random_field_asteroid(world_t *w, asteroid_t *a) {
@@ -667,6 +692,25 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
             a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
         a->age += dt;
 
+        if (!a->fracture_child &&
+            a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
+            a->gas_emit_timer -= dt;
+            if (a->gas_emit_timer <= 0.0f) {
+                float heat = belt_heat_at(&w->belt, a->pos.x, a->pos.y);
+                uint16_t qty = (uint16_t)(2u + (uint16_t)floorf(heat * 8.0f));
+                if (qty < 2u) qty = 2u;
+                if (qty > 10u) qty = 10u;
+                float angle = w_rand_range(w, 0.0f, TWO_PI_F);
+                float dist = a->radius + w_rand_range(w, 20.0f, 70.0f);
+                vec2 pos = v2_add(a->pos, v2(cosf(angle) * dist, sinf(angle) * dist));
+                vec2 vel = v2_add(a->vel, v2(cosf(angle) * 12.0f, sinf(angle) * 12.0f));
+                (void)spawn_cargo_pod(w, pos, vel, a->commodity, qty,
+                                      CARGO_POD_GAS);
+                a->gas_emit_timer = 8.0f + (1.0f - heat) * 12.0f +
+                                    unit_from_seed(a->seed + a->age) * 6.0f;
+            }
+        }
+
         /* Despawn asteroids that leave station-supported space. */
         if (!point_within_signal_margin(w, a->pos, a->radius + 260.0f)) {
             clear_asteroid_slot(w, i);
@@ -871,6 +915,7 @@ void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
     w->asteroid_origin[slot].chunk_x = cx;
     w->asteroid_origin[slot].chunk_y = cy;
     w->asteroid_origin[slot].from_chunk = true;
+    configure_terrain_volatiles(w, a);
 }
 
 /* Check if a chunk is already materialized (has at least one active terrain

@@ -125,6 +125,36 @@ static void test_nav_speed_control_deadband(void) {
     ASSERT_EQ_FLOAT(nav_speed_control(105.0f, 100.0f), 0.0f, 0.01f);
 }
 
+static void test_spatial_grid_grows_past_initial_hash_capacity(void) {
+    WORLD_DECL;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    const int target_count = (int)SPATIAL_HASH_INITIAL_CAP + 64;
+    for (int i = 0; i < target_count; i++) {
+        seed_test_asteroid(&w.asteroids[i], ASTEROID_TIER_M,
+                           v2((float)i * SPATIAL_CELL_SIZE * 2.0f, 0.0f),
+                           40.0f);
+    }
+
+    spatial_grid_build(&w);
+
+    ASSERT(w.asteroid_grid.capacity > SPATIAL_HASH_INITIAL_CAP);
+    ASSERT_EQ_INT((int)w.asteroid_grid.occupied, target_count);
+
+    int cx, cy;
+    spatial_grid_cell(&w.asteroid_grid, w.asteroids[target_count - 1].pos, &cx, &cy);
+    const spatial_cell_t *cell = spatial_grid_lookup(&w.asteroid_grid, cx, cy);
+    ASSERT(cell != NULL);
+    bool found = false;
+    for (int i = 0; i < cell->count; i++) {
+        if (cell->indices[i] == target_count - 1) {
+            found = true;
+            break;
+        }
+    }
+    ASSERT(found);
+}
+
 static void test_flight_steer_to_brakes_for_intermediate_waypoint(void) {
     WORLD_DECL;
     world_reset(&w);
@@ -777,6 +807,7 @@ void register_navigation_nav_tests(void) {
     TEST_SECTION("\nNavigation (sim_nav):\n");
     RUN(test_nav_approach_speed_basic);
     RUN(test_nav_speed_control_deadband);
+    RUN(test_spatial_grid_grows_past_initial_hash_capacity);
     RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
     RUN(test_flight_steer_to_reverses_from_low_speed_obstacle);
     RUN(test_flight_steer_to_escapes_station_ring_wall);

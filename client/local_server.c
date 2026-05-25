@@ -170,6 +170,7 @@ static void mirror_whole_world(const world_t *src) {
     }
     memcpy(g.world.contracts, src->contracts, sizeof(g.world.contracts));
     memcpy(g.world.scaffolds, src->scaffolds, sizeof(g.world.scaffolds));
+    memcpy(g.world.cargo_pods, src->cargo_pods, sizeof(g.world.cargo_pods));
     g.world.events = src->events;
     g.world.time   = src->time;
 
@@ -242,6 +243,8 @@ static void mirror_player_always(server_player_t *dst, const server_player_t *sr
     /* Tow state (for tether rendering) */
     dst->ship.towed_count    = src->ship.towed_count;
     memcpy(dst->ship.towed_fragments, src->ship.towed_fragments, sizeof(dst->ship.towed_fragments));
+    dst->ship.towed_pod_count = src->ship.towed_pod_count;
+    memcpy(dst->ship.towed_pods, src->ship.towed_pods, sizeof(dst->ship.towed_pods));
     dst->ship.towed_scaffold = src->ship.towed_scaffold;
 }
 

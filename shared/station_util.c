@@ -71,6 +71,9 @@ int station_furnace_count(const station_t *st) {
 static bool station_has_adjacent_hopper_for(const station_t *st,
                                             const station_module_t *m,
                                             commodity_t commodity);
+static bool station_has_adjacent_hopper_on_ring(const station_t *st,
+                                                int ring,
+                                                commodity_t commodity);
 
 bool station_can_smelt(const station_t *st, commodity_t ore) {
     if (!st) return false;
@@ -373,12 +376,17 @@ module_type_t station_module_at(const station_t *st, int ring, int slot) {
 
 bool station_pair_satisfied(const station_t *st, int ring, int slot,
                             module_type_t type) {
-    (void)ring; (void)slot;
+    (void)slot;
     module_inputs_t req = module_required_inputs(type);
     if (req.count == 0) return true;
     if (req.any_satisfies) {
         for (int i = 0; i < req.count; i++) {
-            if (station_find_hopper_for(st, req.commodities[i]) >= 0) return true;
+            if (type == MODULE_FURNACE) {
+                if (station_has_adjacent_hopper_on_ring(st, ring, req.commodities[i]))
+                    return true;
+            } else if (station_find_hopper_for(st, req.commodities[i]) >= 0) {
+                return true;
+            }
         }
         return false;
     }
@@ -551,13 +559,20 @@ station_demand_t station_top_demand(const station_t *st) {
 static bool station_has_adjacent_hopper_for(const station_t *st,
                                             const station_module_t *m,
                                             commodity_t commodity) {
-    if (!st || !m || commodity == COMMODITY_COUNT) return false;
+    if (!m) return false;
+    return station_has_adjacent_hopper_on_ring(st, (int)m->ring, commodity);
+}
+
+static bool station_has_adjacent_hopper_on_ring(const station_t *st,
+                                                int ring,
+                                                commodity_t commodity) {
+    if (!st || commodity == COMMODITY_COUNT) return false;
     for (int i = 0; i < st->module_count; i++) {
         const station_module_t *h = &st->modules[i];
         if (h->scaffold) continue;
         if (h->type != MODULE_HOPPER) continue;
         if ((commodity_t)h->commodity != commodity) continue;
-        int dr = (int)h->ring - (int)m->ring;
+        int dr = (int)h->ring - ring;
         if (dr == 1 || dr == -1) return true;
     }
     return false;

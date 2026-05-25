@@ -116,6 +116,7 @@ TEST(test_roundtrip_asteroids) {
     asteroids[5].ore = 10.5f;
     asteroids[5].radius = 14.0f;
     asteroids[5].crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
+    asteroids[5].phase = ASTEROID_PHASE_GAS_RICH;
 
     uint8_t buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     bool sent[MAX_ASTEROIDS] = {0};
@@ -146,6 +147,7 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_FLOAT(read_f32_le(&p1[23]), 10.5f, 0.1f);  /* ore */
     ASSERT_EQ_FLOAT(read_f32_le(&p1[27]), 14.0f, 0.1f);  /* radius */
     ASSERT_EQ_INT(p1[33], CRYSTAL_STAGE_INTERMEDIATE);
+    ASSERT_EQ_INT(p1[34], ASTEROID_PHASE_GAS_RICH);
 }
 
 TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
@@ -169,6 +171,7 @@ TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     asteroids[5].ore = 11.0f;
     asteroids[5].radius = 21.0f;
     asteroids[5].crystal_stage = CRYSTAL_STAGE_INTERMEDIATE;
+    asteroids[5].phase = ASTEROID_PHASE_GAS_RICH;
 
     uint8_t *buf = calloc(1, ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE);
     int len = serialize_asteroids_full(buf, asteroids);
@@ -196,7 +199,39 @@ TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     ASSERT_EQ_FLOAT(read_f32_le(&p5[23]), 11.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p5[27]), 21.0f, 0.1f);
     ASSERT_EQ_INT(p5[33], CRYSTAL_STAGE_INTERMEDIATE);
+    ASSERT_EQ_INT(p5[34], ASTEROID_PHASE_GAS_RICH);
     free(buf);
+}
+
+TEST(test_roundtrip_cargo_pods) {
+    cargo_pod_t pods[MAX_CARGO_PODS];
+    memset(pods, 0, sizeof(pods));
+    pods[3].active = true;
+    pods[3].kind = CARGO_POD_CARGO;
+    pods[3].commodity = COMMODITY_REPAIR_KIT;
+    pods[3].quantity = 20;
+    pods[3].pos = v2(123.0f, -45.0f);
+    pods[3].vel = v2(1.5f, -2.0f);
+    pods[3].radius = 18.0f;
+    pods[3].rotation = 0.75f;
+    pods[3].towed_by = 2;
+
+    uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+    int len = serialize_cargo_pods(buf, pods);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, 2 + CARGO_POD_RECORD_SIZE);
+    uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], 3);
+    ASSERT_EQ_INT(p[1], CARGO_POD_CARGO);
+    ASSERT_EQ_INT(p[2], COMMODITY_REPAIR_KIT);
+    ASSERT_EQ_INT(p[3], 2);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[4]), 123.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[8]), -45.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[20]), 18.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[24]), 0.75f, 0.01f);
+    ASSERT_EQ_INT(read_u16_le(&p[28]), 20);
 }
 
 TEST(test_roundtrip_npcs) {
@@ -1268,6 +1303,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_batched_player_states);
     RUN(test_roundtrip_asteroids);
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
+    RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_roundtrip_inspect_snapshot_player_manifest_chain);

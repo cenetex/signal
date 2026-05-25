@@ -30,6 +30,7 @@ void apply_remote_station_identity(const NetStationIdentity* si);
 void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
                                int module_count);
 void apply_remote_scaffolds(const NetScaffoldState* scaffolds, int count);
+void apply_remote_cargo_pods(const NetCargoPodState* pods, int count);
 void apply_remote_hail_response(uint8_t station, float credits, int contract_index);
 void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count);
 /* Phase 2 — station manifest summary (per-{commodity, grade} counts). */

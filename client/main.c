@@ -81,13 +81,11 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* station_dock_anchor, ship_cargo_space: see game_sim.c */
 
-#define NET_INPUT_HEARTBEAT_SEC (1.0f / 10.0f)
-#define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 20.0f)
+#define NET_INPUT_HEARTBEAT_SEC (1.0f / 6.0f)
+#define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 12.0f)
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
 #define NET_CLIENT_METRICS_SEC 15.0f
-#define NET_INPUT_LEAD_MIN_TICKS 2u
-#define NET_INPUT_LEAD_MAX_TICKS 12u
 #define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
@@ -1307,6 +1305,7 @@ static void init(void) {
             cbs.on_station_identity = apply_remote_station_identity;
             cbs.on_station_diag = apply_remote_station_diag;
             cbs.on_scaffolds = apply_remote_scaffolds;
+            cbs.on_cargo_pods = apply_remote_cargo_pods;
             cbs.on_hail_response = apply_remote_hail_response;
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
@@ -1588,6 +1587,7 @@ static void render_world(void) {
     }
 
     draw_asteroids();
+    draw_cargo_pods();
     draw_scaffolds();
     draw_shipyard_intake_beams();
     draw_placement_reticle();

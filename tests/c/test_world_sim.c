@@ -2,6 +2,7 @@
 #include "signal_contract_brain.h"
 #include "sim_mining.h"
 #include "sim_ship.h"
+#include "sim_asteroid.h"
 
 TEST(test_world_reset_creates_stations) {
     WORLD_DECL;
@@ -47,6 +48,102 @@ TEST(test_world_reset_spawns_npcs) {
     ASSERT_EQ_INT(tows, 2);
     ASSERT_EQ_INT(kepler_tows, 1);
     ASSERT_EQ_INT(helios_tows, 1);
+}
+
+TEST(test_ship_death_drops_cargo_pods) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->docked = false;
+    sp->ship.pos = v2_add(w.stations[0].pos, v2(120.0f, 0.0f));
+    sp->ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
+    sp->input.reset = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    int pods = 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w.cargo_pods[i];
+        if (!pod->active) continue;
+        ASSERT_EQ_INT(pod->kind, CARGO_POD_CARGO);
+        ASSERT_EQ_INT(pod->commodity, COMMODITY_FERRITE_ORE);
+        pods++;
+        total += pod->quantity;
+    }
+    ASSERT_EQ_INT(pods, 3);
+    ASSERT_EQ_INT(total, 45);
+}
+
+TEST(test_towed_cargo_pod_sells_at_dock) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x55, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+
+    int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
+                                  COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_COUNT;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    before + 7.0f, 0.01f);
+    ASSERT(sp->ship.stat_credits_earned >= 70.0f);
+}
+
+TEST(test_gas_rich_asteroid_emits_gas_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_L;
+    a->commodity = COMMODITY_CUPRITE_ORE;
+    a->pos = v2_add(w.stations[0].pos, v2(240.0f, 0.0f));
+    a->vel = v2(0.0f, 0.0f);
+    a->radius = 42.0f;
+    a->phase = ASTEROID_PHASE_GAS_RICH;
+    a->gas_emit_timer = 0.0f;
+
+    sim_step_asteroid_dynamics(&w, SIM_DT);
+
+    bool found = false;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w.cargo_pods[i];
+        if (!pod->active) continue;
+        if (pod->kind == CARGO_POD_GAS &&
+            pod->commodity == COMMODITY_CUPRITE_ORE &&
+            pod->quantity >= 2) {
+            found = true;
+        }
+    }
+    ASSERT(found);
 }
 
 static const sim_event_t *find_hail_response_event(const world_t *w) {
@@ -2956,11 +3053,12 @@ TEST(test_field_respawn_starts_beyond_signal_edge) {
     ASSERT(w.asteroids[spawned].active);
 }
 
-TEST(test_asteroids_drift_toward_stronger_signal) {
+TEST(test_asteroids_drift_toward_lower_signal_band) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     for (int s = 1; s < MAX_STATIONS; s++) w.stations[s].signal_range = 0.0f;
+    rebuild_signal_chain(&w);
 
     asteroid_t *a = &w.asteroids[0];
     a->active = true;
@@ -2968,14 +3066,17 @@ TEST(test_asteroids_drift_toward_stronger_signal) {
     a->radius = 60.0f;
     a->hp = 150.0f;
     a->max_hp = 150.0f;
-    a->pos = v2_add(w.stations[0].pos, v2(15000.0f, 0.0f));
+    a->pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     a->vel = v2(0.0f, 0.0f);
 
     float start_x = a->pos.x;
+    float start_signal = signal_strength_at(&w, a->pos);
     for (int i = 0; i < 1200; i++) world_sim_step(&w, SIM_DT);
 
-    ASSERT(a->pos.x < start_x - 30.0f);
-    ASSERT(a->vel.x < -1.0f);
+    ASSERT(a->active);
+    ASSERT(a->pos.x > start_x + 30.0f);
+    ASSERT(a->vel.x > 1.0f);
+    ASSERT(signal_strength_at(&w, a->pos) < start_signal);
 }
 
 TEST(test_belt_density_varies) {
@@ -3265,6 +3366,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
+    RUN(test_ship_death_drops_cargo_pods);
+    RUN(test_towed_cargo_pod_sells_at_dock);
+    RUN(test_gas_rich_asteroid_emits_gas_pod);
     RUN(test_hail_responds_while_docked);
     RUN(test_hail_does_not_spawn_nearest_rock_contract);
     RUN(test_hail_claims_existing_station_work);
@@ -3345,7 +3449,7 @@ void register_world_sim_signal_tests(void) {
     RUN(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock);
     RUN(test_npc_miner_idles_when_refined_output_is_full);
     RUN(test_field_respawn_starts_beyond_signal_edge);
-    RUN(test_asteroids_drift_toward_stronger_signal);
+    RUN(test_asteroids_drift_toward_lower_signal_band);
 }
 
 void register_world_sim_belt_tests(void) {

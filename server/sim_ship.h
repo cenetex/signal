@@ -48,9 +48,19 @@ float ship_boost_thrust_mult(bool boost, float hold_t);
  * this helper applies the per-tick tether force and ship reaction. */
 #define SHIP_TOW_BAND_REST_LEN      80.0f
 #define SHIP_TOW_BAND_SPRING_K       4.0f
-#define SHIP_TOW_BAND_DAMPING        0.6f
-#define SHIP_TOW_BAND_TANGENT_DRAG   0.4f
+#define SHIP_TOW_BAND_DAMPING        1.8f
+#define SHIP_TOW_BAND_TANGENT_DRAG   1.1f
 #define SHIP_TOW_BAND_SHIP_MASS      8.0f
+
+/* Common physical tow endpoint. Cargo pods and disabled ships should
+ * use this same shape; asteroid fragments are just the first adapter. */
+typedef struct {
+    vec2 *pos;
+    vec2 *vel;
+    float inv_mass;
+} towable_body_t;
+
+void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt);
 void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt);
 
 /* Integrate velocity onto position with hull drag, plus apply the

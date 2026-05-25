@@ -70,6 +70,7 @@ typedef struct {
     float smelt_progress; /* 0.0-1.0, decoded from uint8 trailer */
     uint8_t grade;        /* mining_grade_t — 0 = common, set on tractor */
     uint8_t crystal_stage; /* crystal_stage_t */
+    uint8_t phase;         /* asteroid_phase_t */
 } NetAsteroidState;
 
 /* Packed NPC state for world sync. */
@@ -187,6 +188,20 @@ typedef struct {
 typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
 /* Scaffold pool snapshot callback. */
 typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count);
+
+typedef struct {
+    uint8_t index;
+    uint8_t kind;       /* cargo_pod_kind_t */
+    uint8_t commodity;  /* commodity_t */
+    int8_t towed_by;    /* -1 loose */
+    float pos_x, pos_y;
+    float vel_x, vel_y;
+    float radius;
+    float rotation;
+    uint16_t quantity;
+} NetCargoPodState;
+typedef void (*net_on_cargo_pods_fn)(const NetCargoPodState* pods, int count);
+
 /* Hail response callback: server confirmed payout from a hail attempt. */
 typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
 
@@ -334,6 +349,7 @@ typedef struct {
     net_on_station_identity_fn on_station_identity;
     net_on_station_diag_fn on_station_diag;
     net_on_scaffolds_fn on_scaffolds;
+    net_on_cargo_pods_fn on_cargo_pods;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;

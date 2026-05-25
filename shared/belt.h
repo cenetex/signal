@@ -46,4 +46,8 @@ float       belt_density_at(const belt_field_t *bf, float x, float y);
 /* Returns the dominant ore commodity at world position (x, y). */
 commodity_t belt_ore_at(const belt_field_t *bf, float x, float y);
 
+/* Returns volatile heat at world position (x, y).
+ * 0.0 = cold solid belt, 1.0 = hot volatile pocket / nebula source. */
+float       belt_heat_at(const belt_field_t *bf, float x, float y);
+
 #endif /* BELT_H */

@@ -216,6 +216,10 @@ static inline int serialize_protocol_info(uint8_t *buf,
     ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYERS, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
                         2, PLAYER_RECORD_SIZE, MAX_PLAYERS, state_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_PODS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        2, CARGO_POD_RECORD_SIZE, MAX_CARGO_PODS, world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -386,7 +390,7 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
  * WORLD_ASTEROIDS message (v2 — uint16 indices):
  * [type:1][count:2] + count * ASTEROID_RECORD_SIZE-byte records
  * Record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32]
- * [radius:f32][smelt:u8][grade:u8][crystal_stage:u8]
+ * [radius:f32][smelt:u8][grade:u8][crystal_stage:u8][phase:u8]
  */
 #define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
 
@@ -424,6 +428,7 @@ static inline int serialize_asteroids_for_player(
             }
             p[32] = a->grade;
             p[33] = a->crystal_stage;
+            p[34] = a->phase;
             sent[i] = true;
             count++;
         } else if (sent[i] && !in_view) {
@@ -471,6 +476,7 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
         }
         p[32] = a->grade;
         p[33] = a->crystal_stage;
+        p[34] = a->phase;
         count++;
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
@@ -839,8 +845,12 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
-    2 + 1 + 7 * 4 + 1 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 */
+    2 + 1 + 7 * 4 + 1 + 1 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 + phase:u8 */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
+);
+_Static_assert(
+    4 + 6 * 4 + 2 == CARGO_POD_RECORD_SIZE,
+    "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
 _Static_assert(
     2 + 5 * 4 + 2 + 2 + 3 == NPC_RECORD_SIZE,
@@ -1066,6 +1076,36 @@ static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds)
     buf[0] = NET_MSG_WORLD_SCAFFOLDS;
     buf[1] = (uint8_t)count;
     return 2 + count * SCAFFOLD_RECORD_SIZE;
+}
+
+/*
+ * WORLD_CARGO_PODS message: active engine-less towable cargo bodies.
+ * [type:1][count:1] + count * CARGO_POD_RECORD_SIZE
+ */
+static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_pod_t *pod) {
+    p[0] = (uint8_t)index;
+    p[1] = (uint8_t)pod->kind;
+    p[2] = (uint8_t)pod->commodity;
+    p[3] = (pod->towed_by < 0) ? 0xFFu : (uint8_t)pod->towed_by;
+    write_f32_le(&p[4],  pod->pos.x);
+    write_f32_le(&p[8],  pod->pos.y);
+    write_f32_le(&p[12], pod->vel.x);
+    write_f32_le(&p[16], pod->vel.y);
+    write_f32_le(&p[20], pod->radius);
+    write_f32_le(&p[24], pod->rotation);
+    write_u16_le(&p[28], pod->quantity);
+}
+
+static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        serialize_one_cargo_pod(&buf[2 + count * CARGO_POD_RECORD_SIZE], i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_PODS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * CARGO_POD_RECORD_SIZE;
 }
 
 /*
