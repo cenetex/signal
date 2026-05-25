@@ -555,8 +555,8 @@ static void spawn_server_bots(void) {
         sp->grace_timer = 0.0f;
 
         player_init_ship(sp, &world);
-        snprintf(sp->callsign, sizeof(sp->callsign), "BOT%03d",
-                 server_bot_players_spawned + 1);
+        unsigned bot_no = (unsigned)(server_bot_players_spawned % 900) + 1u;
+        snprintf(sp->callsign, sizeof(sp->callsign), "BOT%03u", bot_no);
 
         sp->session_token[0] = 0xB0u;
         sp->session_token[1] = 0x7Au;
