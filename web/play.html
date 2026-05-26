@@ -154,7 +154,7 @@
         if (preferredRegion) url.searchParams.set('region', preferredRegion);
         if (tz) url.searchParams.set('tz', tz);
 
-        setLoading('Starting regional relay...');
+        setLoading('Finding a nearby game server...');
         setRelayDebug({
           brokered: true,
           region: preferredRegion || 'selecting',
@@ -249,7 +249,7 @@
             })
             .catch(function(err) {
               if (Date.now() - started >= timeoutMs) throw err;
-              if (brokered) setLoading('Waiting for regional relay...');
+              if (brokered) setLoading('Waking game server...');
               return delay(1500).then(attempt);
             });
         }
