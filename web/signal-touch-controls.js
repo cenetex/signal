@@ -125,6 +125,10 @@
   }
 
   function clearHeld() {
+    Object.keys(controls).forEach(function (name) {
+      var el = controls[name];
+      if (el && el.signalTouchRelease) el.signalTouchRelease();
+    });
     var m = gameModule();
     if (m && typeof m.ccall === "function") {
       m.ccall("signal_mobile_clear", null, [], []);
@@ -224,10 +228,12 @@
     var mode = el.dataset.mode;
     var pointerId = null;
     var held = false;
+    var toggled = false;
 
     function releaseHeld() {
       if (held) send(action, false);
       held = false;
+      toggled = false;
       pointerId = null;
       el.classList.remove("is-held");
     }
@@ -245,6 +251,15 @@
         held = true;
         el.classList.add("is-held");
         send(action, true);
+      } else if (mode === "toggle") {
+        toggled = !toggled;
+        if (toggled) {
+          held = true;
+          el.classList.add("is-held");
+          send(action, true);
+        } else {
+          releaseHeld();
+        }
       } else {
         tap(action);
       }
@@ -254,12 +269,22 @@
       if (pointerId !== null && ev.pointerId !== pointerId) return;
       ev.preventDefault();
       ev.stopPropagation();
-      releaseHeld();
+      if (mode === "hold") {
+        releaseHeld();
+      } else {
+        pointerId = null;
+      }
     }
 
     el.addEventListener("pointerup", release);
     el.addEventListener("pointercancel", release);
-    el.addEventListener("lostpointercapture", releaseHeld);
+    el.addEventListener("lostpointercapture", function () {
+      if (mode === "hold") {
+        releaseHeld();
+      } else {
+        pointerId = null;
+      }
+    });
   }
 
   function setButton(name, visible, label) {
@@ -315,9 +340,13 @@
     setButton("thrust", flight, "Accel");
     setButton("brake", flight, "Brake");
 
+    var tractorActive = controls.tractor && controls.tractor.classList.contains("is-held");
+    var tractorLabel = has(flags, FLAG.towingScaffold) ? "Release" :
+      (tractorActive ? "Tow On" : "Tow");
+
     setButton("use", has(flags, FLAG.canUse), useLabel(flags));
     setButton("fire", has(flags, FLAG.canMine), "Mine");
-    setButton("tractor", has(flags, FLAG.canTractor), has(flags, FLAG.towingScaffold) ? "Release" : "Tow");
+    setButton("tractor", has(flags, FLAG.canTractor), tractorLabel);
     setButton("scan", has(flags, FLAG.canScan), "Scan");
     setButton("auto", has(flags, FLAG.autopilotReady), has(flags, FLAG.autopilotOn) ? "Auto Off" : "Auto");
     setButton("plan", has(flags, FLAG.canPlan), planActive ? "Exit" : "Plan");
@@ -360,7 +389,7 @@
     addButton(right, "use", "Use", ACTION.use, "tap", "use");
     addButton(right, "fire", "Mine", ACTION.fire, "hold", "fire");
     addButton(right, "thrust", "Accel", ACTION.thrust, "hold", "thrust");
-    addButton(right, "tractor", "Tow", ACTION.tractor, "hold", "tractor");
+    addButton(right, "tractor", "Tow", ACTION.tractor, "toggle", "tractor");
     addButton(right, "brake", "Brake", ACTION.brake, "hold", "brake");
     addButton(right, "scan", "Scan", ACTION.hail, "tap", "scan");
     addButton(right, "auto", "Auto", ACTION.auto, "tap", "auto");
