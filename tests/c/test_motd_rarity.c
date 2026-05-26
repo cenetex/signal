@@ -21,19 +21,19 @@ TEST(test_motd_tier_for_signal) {
 
     av.tiers[0].band_min = 0.80f;
     av.tiers[0].band_max = 1.00f;
-    strcpy(av.tiers[0].text, "COMMON");
+    memcpy(av.tiers[0].text, "COMMON", sizeof("COMMON"));
 
     av.tiers[1].band_min = 0.50f;
     av.tiers[1].band_max = 0.80f;
-    strcpy(av.tiers[1].text, "UNCOMMON");
+    memcpy(av.tiers[1].text, "UNCOMMON", sizeof("UNCOMMON"));
 
     av.tiers[2].band_min = 0.20f;
     av.tiers[2].band_max = 0.50f;
-    strcpy(av.tiers[2].text, "RARE");
+    memcpy(av.tiers[2].text, "RARE", sizeof("RARE"));
 
     av.tiers[3].band_min = 0.00f;
     av.tiers[3].band_max = 0.20f;
-    strcpy(av.tiers[3].text, "ULTRA_RARE");
+    memcpy(av.tiers[3].text, "ULTRA_RARE", sizeof("ULTRA_RARE"));
 
     /* Test boundary conditions for each tier. */
     ASSERT_EQ_INT(avatar_motd_tier_for_signal(&av, 1.00f), 0);  /* CORE lower bound */

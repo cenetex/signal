@@ -653,7 +653,11 @@ static void death_cinematic_spawn(const sim_event_t *ev) {
     float impact_speed = sqrtf(ev->death.vel_x * ev->death.vel_x +
                                ev->death.vel_y * ev->death.vel_y);
     float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
-    float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
+    uint32_t spin_seed = ((uint32_t)ev->death.respawn_station << 24) ^
+                         ((uint32_t)ev->death.cause << 16) ^
+                         ((uint32_t)ev->death.killer_token[0] << 8) ^
+                         client_death_spin_float_bits(impact_speed);
+    float spin_dir = client_death_spin_dir(spin_seed);
     g.death_cinematic.active = true;
     g.death_cinematic.phase = 0;
     g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);

@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "safe_types.h"
 
 TEST(test_v2_add) {
     vec2 a = v2(1.0f, 2.0f);
@@ -52,6 +53,18 @@ TEST(test_ingot_idx) {
     ASSERT_EQ_INT(INGOT_COUNT, 7);
 }
 
+TEST(test_signal_checked_size_arithmetic) {
+    size_t out = 0;
+    ASSERT(signal_checked_add_size(40u, 2u, &out));
+    ASSERT_EQ_INT((int)out, 42);
+    ASSERT(!signal_checked_add_size((size_t)-1, 1u, &out));
+
+    ASSERT(signal_checked_mul_size(6u, 7u, &out));
+    ASSERT_EQ_INT((int)out, 42);
+    ASSERT(!signal_checked_mul_size(((size_t)-1 / 2u) + 1u, 2u, &out));
+    ASSERT(!signal_checked_mul_size(2u, 2u, NULL));
+}
+
 void register_math_tests(void) {
     TEST_SECTION("\nMath tests:\n");
     RUN(test_v2_add);
@@ -64,4 +77,5 @@ void register_math_tests(void) {
 
     TEST_SECTION("\nType tests:\n");
     RUN(test_ingot_idx);
+    RUN(test_signal_checked_size_arithmetic);
 }

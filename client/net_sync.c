@@ -2,7 +2,6 @@
  * net_sync.c -- Multiplayer network state synchronization for the
  * Signal Space Miner client.
  */
-#include <stdlib.h>  /* rand, RAND_MAX */
 #include "net_sync.h"
 #include "input.h"   /* set_notice() */
 #include "manifest.h"
@@ -1400,7 +1399,11 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     net_replay_reset();
     float impact_speed = sqrtf(vel_x * vel_x + vel_y * vel_y);
     float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
-    float spin_dir = ((rand() & 1) != 0) ? 1.0f : -1.0f;
+    uint32_t spin_seed = ((uint32_t)player_id << 24) ^
+                         ((uint32_t)respawn_station << 16) ^
+                         ((uint32_t)asteroids_fractured << 1) ^
+                         client_death_spin_float_bits(impact_speed);
+    float spin_dir = client_death_spin_dir(spin_seed);
     g.death_ore_mined = ore_mined;
     g.death_credits_earned = credits_earned;
     g.death_credits_spent = credits_spent;

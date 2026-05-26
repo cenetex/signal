@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -215,6 +215,36 @@ test-all: build-test
 
 test-serial: build-test
 	./build/signal_test --no-soak $(TEST_QUIET)
+
+SANITIZER ?= address,undefined
+SAN_BUILD_DIR ?= build-san
+SAN_TEST_FLAGS ?= --quiet --no-soak
+
+build-san:
+	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=$(SANITIZER) -fno-omit-frame-pointer" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$(SANITIZER)"
+	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(SAN_BUILD_DIR) --parallel
+
+test-san: build-san
+	ulimit -s 16384 && ASAN_OPTIONS=halt_on_error=1 \
+		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+		./$(SAN_BUILD_DIR)/signal_test $(SAN_TEST_FLAGS)
+
+test-tsan:
+	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+	@ln -sf build-tsan/compile_commands.json compile_commands.json
+	cmake --build build-tsan --parallel
+	ulimit -s 16384 && TSAN_OPTIONS=halt_on_error=1 \
+		./build-tsan/signal_test $(SAN_TEST_FLAGS)
+
+banned-apis:
+	python3 scripts/check_banned_apis.py
 
 # Static analysis for owned C sources. Avoid --project=compile_commands.json
 # here: it pulls in test fixtures and single-header vendor libraries whose

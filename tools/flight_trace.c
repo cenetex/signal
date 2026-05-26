@@ -237,7 +237,7 @@ static int parse_shard_arg(const char *text, int *out_index, int *out_total)
     if (strlen(slash + 1) == 0 || strlen(slash + 1) >= sizeof(right)) return 0;
     memcpy(left, text, left_len);
     left[left_len] = '\0';
-    strcpy(right, slash + 1);
+    memcpy(right, slash + 1, strlen(slash + 1) + 1u);
     if (!parse_int_arg(left, 0, &index) || !parse_int_arg(right, 1, &total)) return 0;
     if (index >= total) return 0;
     *out_index = index;
