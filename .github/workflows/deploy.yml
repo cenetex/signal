@@ -338,6 +338,38 @@ jobs:
           name: client-site
           path: _site/
 
+  # Multiplayer latency smoke: exercises the browser client through the local
+  # websocket latency proxy in both high-latency and low-ping/high-ack modes.
+  # The regular browser smoke intentionally skips these cases unless a proxy is
+  # already running; this job owns that orchestration so PRs cannot regress the
+  # correction/ack telemetry path silently.
+  test-latency-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: 4.0.8
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl-dev libx11-dev libxi-dev libxcursor-dev libasound2-dev
+
+      - name: Install test dependencies
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+
+      - name: Run latency smoke suite
+        run: PATH="/usr/local/bin:/usr/bin:$PATH" make smoke-latency-suite
+
   # Server Docker build — gated on test-basic so we don't push a
   # broken image to ECR (real cost: ECR storage + ECS rollover risk).
   # Multi-arch QEMU build is the longest pole at ~5 min on its own.
@@ -386,7 +418,7 @@ jobs:
   # diagnostics such as CRAP and sanitizers run after promotion on main.
   deploy:
     runs-on: ubuntu-latest
-    needs: [test-basic, test-soak, test-static, build-client, build-server, native]
+    needs: [test-basic, test-soak, test-static, build-client, test-latency-smoke, build-server, native]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
