@@ -153,6 +153,9 @@ jobs:
       - name: Install analysis tools
         run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tools clang-tidy
 
+      - name: banned APIs
+        run: make banned-apis
+
       - name: cppcheck
         run: make cppcheck
 

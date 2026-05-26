@@ -30,6 +30,21 @@ static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t 
     if (token) memcpy(out, token, 8);
 }
 
+static inline float client_death_spin_dir(uint32_t seed) {
+    seed ^= seed >> 16;
+    seed *= 0x7FEB352Du;
+    seed ^= seed >> 15;
+    seed *= 0x846CA68Bu;
+    seed ^= seed >> 16;
+    return (seed & 1u) ? 1.0f : -1.0f;
+}
+
+static inline uint32_t client_death_spin_float_bits(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
 #include "sokol_gfx.h"

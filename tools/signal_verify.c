@@ -25,6 +25,7 @@
 #include "sha256.h"
 #include "signal_crypto.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -155,7 +156,19 @@ static void registry_load(const char *path) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char b58[80] = {0};
         char name[64] = {0};
-        if (sscanf(line, "%79s %63[^\n]", b58, name) >= 1) {
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) cursor++;
+        char *b58_start = cursor;
+        while (*cursor && !isspace((unsigned char)*cursor)) cursor++;
+        size_t b58_len = (size_t)(cursor - b58_start);
+        if (b58_len > 0 && b58_len < sizeof(b58)) {
+            memcpy(b58, b58_start, b58_len);
+            b58[b58_len] = '\0';
+            while (*cursor && isspace((unsigned char)*cursor)) cursor++;
+            size_t name_len = strcspn(cursor, "\r\n");
+            if (name_len >= sizeof(name)) name_len = sizeof(name) - 1u;
+            memcpy(name, cursor, name_len);
+            name[name_len] = '\0';
             uint8_t pub[32];
             if (base58_decode(b58, pub, 32) == 32) {
                 memcpy(g_registry[g_registry_count].pubkey, pub, 32);

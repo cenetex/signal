@@ -2312,6 +2312,16 @@ static bool station_mutation_set_currency_name(int station_idx,
     return true;
 }
 
+static bool parse_query_long(const char *text, long *out) {
+    char *tail = NULL;
+    if (!text || !out) return false;
+    errno = 0;
+    long v = strtol(text, &tail, 10);
+    if (errno != 0 || tail == text || *tail != '\0') return false;
+    *out = v;
+    return true;
+}
+
 static bool station_mutation_set_price(int station_idx, long commodity,
                                        double price_val, float *out_price,
                                        const char **out_error) {
@@ -3376,8 +3386,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                  * since mongoose gives us hm->query as a raw string. */
                 long since = 0, limit = 50;
                 char tmp[32];
-                if (mg_http_get_var(&hm->query, "since", tmp, sizeof(tmp)) > 0) since = atol(tmp);
-                if (mg_http_get_var(&hm->query, "limit", tmp, sizeof(tmp)) > 0) limit = atol(tmp);
+                if (mg_http_get_var(&hm->query, "since", tmp, sizeof(tmp)) > 0)
+                    (void)parse_query_long(tmp, &since);
+                if (mg_http_get_var(&hm->query, "limit", tmp, sizeof(tmp)) > 0)
+                    (void)parse_query_long(tmp, &limit);
                 if (limit < 1) limit = 1;
                 if (limit > 100) limit = 100;
 

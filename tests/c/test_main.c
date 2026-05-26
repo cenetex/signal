@@ -1,5 +1,8 @@
 #include "test_harness.h"
 
+#include <errno.h>
+#include <limits.h>
+
 /* Already-extracted subsystem registries */
 void register_commodity_tests(void);
 void register_math_tests(void);
@@ -72,6 +75,22 @@ void register_laser_tests(void);
 void register_inspect_anim_tests(void);
 void register_gossip_tests(void);
 
+static int parse_shard_arg(const char *arg, int *out_index, int *out_total) {
+    char *slash = NULL;
+    char *tail = NULL;
+    errno = 0;
+    long k = strtol(arg, &slash, 10);
+    if (errno != 0 || slash == arg || *slash != '/') return 0;
+    errno = 0;
+    long n = strtol(slash + 1, &tail, 10);
+    if (errno != 0 || tail == slash + 1 || *tail != '\0') return 0;
+    if (n <= 0 || k < 0 || k >= n) return 0;
+    if (k > INT_MAX || n > INT_MAX) return 0;
+    *out_index = (int)k;
+    *out_total = (int)n;
+    return 1;
+}
+
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
 
@@ -85,7 +104,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--shard=", 8) == 0) {
             int k = 0, n = 1;
-            if (sscanf(argv[i] + 8, "%d/%d", &k, &n) == 2 && n > 0 && k >= 0 && k < n) {
+            if (parse_shard_arg(argv[i] + 8, &k, &n)) {
                 g_shard_index = k;
                 g_shard_total = n;
                 printf("[shard %d/%d] ", k, n);

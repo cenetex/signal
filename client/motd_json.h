@@ -39,10 +39,13 @@
 
 #include "avatar.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Default band layout if the JSON omits the "bands" object or fails to
@@ -242,6 +245,57 @@ static inline bool motd_json_find_key(const char **p, const char *end,
     return false;
 }
 
+static inline bool motd_json_copy_number(const char **p, const char *end,
+                                         char *buf, size_t cap) {
+    const char *q = motd_json_skip_ws(*p, end);
+    const char *start = q;
+    if (q < end && (*q == '-' || *q == '+')) q++;
+    while (q < end && *q >= '0' && *q <= '9') q++;
+    if (q < end && *q == '.') {
+        q++;
+        while (q < end && *q >= '0' && *q <= '9') q++;
+    }
+    if (q < end && (*q == 'e' || *q == 'E')) {
+        const char *exp = q++;
+        if (q < end && (*q == '-' || *q == '+')) q++;
+        const char *digits = q;
+        while (q < end && *q >= '0' && *q <= '9') q++;
+        if (digits == q) q = exp;
+    }
+    size_t len = (size_t)(q - start);
+    if (len == 0 || len >= cap) return false;
+    memcpy(buf, start, len);
+    buf[len] = '\0';
+    *p = q;
+    return true;
+}
+
+static inline bool motd_json_parse_float(const char **p, const char *end,
+                                         float *out) {
+    char buf[48];
+    char *tail = NULL;
+    if (!motd_json_copy_number(p, end, buf, sizeof(buf))) return false;
+    errno = 0;
+    float v = strtof(buf, &tail);
+    if (errno != 0 || tail == buf || *tail != '\0') return false;
+    *out = v;
+    return true;
+}
+
+static inline bool motd_json_parse_uint(const char **p, const char *end,
+                                        unsigned *out) {
+    char buf[32];
+    char *tail = NULL;
+    if (!motd_json_copy_number(p, end, buf, sizeof(buf))) return false;
+    if (buf[0] == '-' || buf[0] == '+') return false;
+    errno = 0;
+    unsigned long v = strtoul(buf, &tail, 10);
+    if (errno != 0 || tail == buf || *tail != '\0') return false;
+    if (v > UINT_MAX) return false;
+    *out = (unsigned)v;
+    return true;
+}
+
 /* Parse the MOTD JSON document into the avatar cache entry. Returns
  * true on success (all 4 tier strings extracted). On failure,
  * tier text is left zeroed and bands are set to MOTD_DEFAULT_BANDS.
@@ -284,13 +338,20 @@ static inline bool motd_parse(avatar_cache_t *entry, const char *json,
                 const char *tier = bands;
                 if (!motd_json_find_key(&tier, end, MOTD_TIER_NAMES[i])) continue;
                 if (tier >= end || *tier != '[') continue;
-                /* Two floats inside [ ... ]. sscanf handles whitespace
-                 * and signed/decimal forms; we don't care about
-                 * trailing junk beyond the second number. */
+                /* Two floats inside [ ... ]. Keep parsing length-bounded;
+                 * this header is used on fetched network data. */
                 float lo = 0.0f, hi = 0.0f;
-                if (sscanf(tier + 1, " %f , %f", &lo, &hi) == 2) {
-                    entry->tiers[i].band_min = lo;
-                    entry->tiers[i].band_max = hi;
+                const char *num = tier + 1;
+                if (motd_json_parse_float(&num, end, &lo)) {
+                    num = motd_json_skip_ws(num, end);
+                    if (num < end && *num == ',') {
+                        const char *after_comma = num + 1;
+                        if (!motd_json_parse_float(&after_comma, end, &hi)) continue;
+                        after_comma = motd_json_skip_ws(after_comma, end);
+                        if (after_comma >= end || *after_comma != ']') continue;
+                        entry->tiers[i].band_min = lo;
+                        entry->tiers[i].band_max = hi;
+                    }
                 }
             }
         }
@@ -301,12 +362,12 @@ static inline bool motd_parse(avatar_cache_t *entry, const char *json,
         const char *gen = p;
         if (motd_json_find_key(&gen, end, "generated_at")) {
             unsigned u = 0;
-            if (sscanf(gen, "%u", &u) == 1) entry->generated_at = u;
+            if (motd_json_parse_uint(&gen, end, &u)) entry->generated_at = u;
         }
         const char *seed = p;
         if (motd_json_find_key(&seed, end, "seed")) {
             unsigned u = 0;
-            if (sscanf(seed, "%u", &u) == 1) entry->seed = u;
+            if (motd_json_parse_uint(&seed, end, &u)) entry->seed = u;
         }
     }
 
