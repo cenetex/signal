@@ -591,10 +591,10 @@ test.describe('Browser smoke tests', () => {
     expect(await hudHintText(page)).toContain('PLAN SLOT :: Hopper at Prospect ring 1 slot 0');
 
     await setSmokeLoopState(page, smokeLoopState.scaffoldSnap);
-    expect(await hudHintText(page)).toContain('SCAFFOLD SNAP :: Furnace snapping to Outpost 3 ring 2 slot 3');
+    expect(await hudHintText(page)).toContain('SCAFFOLD SNAP :: Furnace snapping to Outpost 4 ring 2 slot 3');
 
     await setSmokeLoopState(page, smokeLoopState.supplyNeed);
-    expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 30 frames at Outpost 3.');
+    expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 30 frames at Outpost 4.');
 
     expectNoFatalErrors(logs);
   });

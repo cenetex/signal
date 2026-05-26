@@ -1062,10 +1062,10 @@ static void sim_step(float dt) {
 
     input_intent_t intent = sample_input_intent();
 
-    /* Reset the docked view to DOCK on each fresh dock. */
+    /* Reset the docked view to the first visible station panel. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
         const station_t* st = current_station_ptr();
-        g.station_view = STATION_VIEW_DOCK;
+        g.station_view = station_panel_first_visible(st);
         g.selected_contract = -1; /* fresh dock — no carryover selection */
         reset_trade_session_rows(LOCAL_PLAYER.current_station);
         /* Clear blueprint pip if we docked at the blueprint station */

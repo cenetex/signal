@@ -1999,6 +1999,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 #ifdef __EMSCRIPTEN__
 static int smoke_loop_state_override = 0;
 static int smoke_apply_loop_state(int state);
+enum { SMOKE_OUTPOST_INDEX = SIGNAL_FIRST_OUTPOST_INDEX };
 
 static bool smoke_hooks_enabled(void) {
     return emscripten_run_script_int(
@@ -2100,8 +2101,8 @@ static void smoke_clear_loop_state(void) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         g.world.scaffolds[i].active = false;
     }
-    if (MAX_STATIONS > 3) {
-        station_t *ghost = &g.world.stations[3];
+    if (MAX_STATIONS > SMOKE_OUTPOST_INDEX) {
+        station_t *ghost = &g.world.stations[SMOKE_OUTPOST_INDEX];
         ghost->scaffold = false;
         ghost->planned = false;
         ghost->scaffold_progress = 1.0f;
@@ -2169,22 +2170,22 @@ static int smoke_apply_loop_state(int state) {
         g.plan_type = MODULE_HOPPER;
         return 1;
     case SMOKE_LOOP_STATE_SCAFFOLD_SNAP:
-        if (MAX_STATIONS <= 3) return 0;
+        if (MAX_STATIONS <= SMOKE_OUTPOST_INDEX) return 0;
         g.world.scaffolds[0].active = true;
         g.world.scaffolds[0].state = SCAFFOLD_SNAPPING;
         g.world.scaffolds[0].module_type = MODULE_FURNACE;
-        g.world.scaffolds[0].placed_station = 3;
+        g.world.scaffolds[0].placed_station = SMOKE_OUTPOST_INDEX;
         g.world.scaffolds[0].placed_ring = 2;
         g.world.scaffolds[0].placed_slot = 3;
         g.world.scaffolds[0].pos = sp->ship.pos;
         return 1;
     case SMOKE_LOOP_STATE_SUPPLY_NEED:
-        if (MAX_STATIONS <= 3) return 0;
-        g.world.stations[3].pos = sp->ship.pos;
-        g.world.stations[3].scaffold = true;
-        g.world.stations[3].planned = false;
-        g.world.stations[3].scaffold_progress = 0.5f;
-        g.world.stations[3].dock_radius = OUTPOST_DOCK_RADIUS;
+        if (MAX_STATIONS <= SMOKE_OUTPOST_INDEX) return 0;
+        g.world.stations[SMOKE_OUTPOST_INDEX].pos = sp->ship.pos;
+        g.world.stations[SMOKE_OUTPOST_INDEX].scaffold = true;
+        g.world.stations[SMOKE_OUTPOST_INDEX].planned = false;
+        g.world.stations[SMOKE_OUTPOST_INDEX].scaffold_progress = 0.5f;
+        g.world.stations[SMOKE_OUTPOST_INDEX].dock_radius = OUTPOST_DOCK_RADIUS;
         return 1;
     default:
         return 0;

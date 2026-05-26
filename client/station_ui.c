@@ -622,6 +622,10 @@ static float draw_section_header(float cx, float my, float inner_right,
 /* Forward decl — yard view lives below (own tab). */
 static void draw_yard_view(const station_ui_state_t *ui,
                            float cx, float cy, float inner_w, bool compact);
+void station_panel_input_dock(input_intent_t *intent);
+void station_panel_input_trade(input_intent_t *intent);
+void station_panel_input_work(input_intent_t *intent);
+void station_panel_input_yard(input_intent_t *intent);
 
 /* ------------------------------------------------------------------ */
 /* Row grammar — every tab uses this shape:                            */
@@ -2223,6 +2227,131 @@ static void draw_yard_view(const station_ui_state_t *ui,
     }
 }
 
+static bool station_panel_visible_always(const station_t *station)
+{
+    (void)station;
+    return true;
+}
+
+static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
+    [STATION_VIEW_DOCK] = {
+        .view = STATION_VIEW_DOCK,
+        .label = "DOCK",
+        .visible_fn = station_panel_visible_always,
+        .draw_fn = draw_verbs_view,
+        .input_fn = station_panel_input_dock,
+    },
+    [STATION_VIEW_TRADE] = {
+        .view = STATION_VIEW_TRADE,
+        .label = "TRADE",
+        .visible_fn = station_panel_visible_always,
+        .draw_fn = draw_trade_view,
+        .input_fn = station_panel_input_trade,
+    },
+    [STATION_VIEW_WORK] = {
+        .view = STATION_VIEW_WORK,
+        .label = "WORK",
+        .visible_fn = station_panel_visible_always,
+        .draw_fn = draw_jobs_view,
+        .input_fn = station_panel_input_work,
+    },
+    [STATION_VIEW_YARD] = {
+        .view = STATION_VIEW_YARD,
+        .label = "YARD",
+        .visible_fn = station_panel_visible_always,
+        .draw_fn = draw_yard_view,
+        .input_fn = station_panel_input_yard,
+    },
+};
+
+const station_panel_descriptor_t *station_panel_descriptor(station_view_t view)
+{
+    int index = (int)view;
+    if (index < 0 || index >= (int)STATION_VIEW_COUNT) return NULL;
+    const station_panel_descriptor_t *panel = &STATION_PANELS[index];
+    return panel->label ? panel : NULL;
+}
+
+bool station_panel_visible(const station_panel_descriptor_t *panel,
+                           const station_t *station)
+{
+    if (!panel) return false;
+    return !panel->visible_fn || panel->visible_fn(station);
+}
+
+int station_panel_visible_count(const station_t *station)
+{
+    int count = 0;
+    for (int i = 0; i < (int)STATION_VIEW_COUNT; i++) {
+        const station_panel_descriptor_t *panel =
+            station_panel_descriptor((station_view_t)i);
+        if (station_panel_visible(panel, station)) count++;
+    }
+    return count;
+}
+
+const station_panel_descriptor_t *station_panel_visible_at(
+    const station_t *station, int visible_index)
+{
+    if (visible_index < 0) return NULL;
+    int count = 0;
+    for (int i = 0; i < (int)STATION_VIEW_COUNT; i++) {
+        const station_panel_descriptor_t *panel =
+            station_panel_descriptor((station_view_t)i);
+        if (!station_panel_visible(panel, station)) continue;
+        if (count == visible_index) return panel;
+        count++;
+    }
+    return NULL;
+}
+
+station_view_t station_panel_first_visible(const station_t *station)
+{
+    const station_panel_descriptor_t *panel =
+        station_panel_visible_at(station, 0);
+    return panel ? panel->view : STATION_VIEW_DOCK;
+}
+
+station_view_t station_panel_next_visible(station_view_t current,
+                                          const station_t *station,
+                                          int direction)
+{
+    int count = station_panel_visible_count(station);
+    if (count <= 0) return STATION_VIEW_DOCK;
+
+    int current_visible = -1;
+    for (int i = 0; i < count; i++) {
+        const station_panel_descriptor_t *panel =
+            station_panel_visible_at(station, i);
+        if (panel && panel->view == current) {
+            current_visible = i;
+            break;
+        }
+    }
+
+    if (current_visible < 0)
+        return station_panel_first_visible(station);
+
+    int delta = direction < 0 ? -1 : 1;
+    int next = (current_visible + delta + count) % count;
+    const station_panel_descriptor_t *panel =
+        station_panel_visible_at(station, next);
+    return panel ? panel->view : STATION_VIEW_DOCK;
+}
+
+void station_panel_sample_current(input_intent_t *intent)
+{
+    if (!LOCAL_PLAYER.docked) return;
+    const station_t *station = current_station_ptr();
+    const station_panel_descriptor_t *panel =
+        station_panel_descriptor(g.station_view);
+    if (!station_panel_visible(panel, station)) {
+        g.station_view = station_panel_first_visible(station);
+        panel = station_panel_descriptor(g.station_view);
+    }
+    if (panel && panel->input_fn) panel->input_fn(intent);
+}
+
 /* ------------------------------------------------------------------ */
 /* draw_station_services -- header band + view dispatch                */
 /* ------------------------------------------------------------------ */
@@ -2248,6 +2377,12 @@ void draw_station_services(const station_ui_state_t* ui) {
      * elsewhere. Not washed across the whole panel. */
     float rr = 1, rg = 1, rb = 1;
     station_role_color(ui->station, &rr, &rg, &rb);
+    const station_panel_descriptor_t *active_panel =
+        station_panel_descriptor(g.station_view);
+    if (!station_panel_visible(active_panel, ui->station)) {
+        g.station_view = station_panel_first_visible(ui->station);
+        active_panel = station_panel_descriptor(g.station_view);
+    }
 
     /* Tab strip, LEFT-aligned on the first content line.
      *   DOCK  — ship bay (repair / refit / current ship state)
@@ -2257,7 +2392,6 @@ void draw_station_services(const station_ui_state_t* ui) {
      * Active tab: station-role tint + a short underline latch. Inactive:
      * muted. The nav legend sits flush against the panel right edge. */
     {
-        const char *labels[STATION_VIEW_COUNT] = { "DOCK", "TRADE", "WORK", "YARD" };
         const float cell_w = 8.0f;
         float ty = content_top + 2.0f;
         float tx = cx;
@@ -2265,10 +2399,15 @@ void draw_station_services(const station_ui_state_t* ui) {
          * text pass (so the quad doesn't clobber glyphs). */
         float active_x0 = 0.0f, active_x1 = 0.0f;
         bool active_seen = false;
-        for (int i = 0; i < (int)STATION_VIEW_COUNT; i++) {
-            bool active = ((int)g.station_view == i);
+        int panel_count = station_panel_visible_count(ui->station);
+        for (int i = 0; i < panel_count; i++) {
+            const station_panel_descriptor_t *panel =
+                station_panel_visible_at(ui->station, i);
+            if (!panel) continue;
+            bool active = (panel->view == g.station_view);
             char cell[20];
-            snprintf(cell, sizeof(cell), active ? "[%s]" : " %s ", labels[i]);
+            snprintf(cell, sizeof(cell), active ? "[%s]" : " %s ",
+                     panel->label);
             float w = (float)strlen(cell) * cell_w;
             if (active) {
                 sdtx_color3b((uint8_t)(rr * 255.0f),
@@ -2308,22 +2447,8 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
     float cy = content_top + 34.0f;
 
-    switch (g.station_view) {
-    case STATION_VIEW_DOCK:
-        draw_verbs_view(ui, cx, cy, inner_w, compact);
-        break;
-    case STATION_VIEW_TRADE:
-        draw_trade_view(ui, cx, cy, inner_w, compact);
-        break;
-    case STATION_VIEW_WORK:
-        draw_jobs_view(ui, cx, cy, inner_w, compact);
-        break;
-    case STATION_VIEW_YARD:
-        draw_yard_view(ui, cx, cy, inner_w, compact);
-        break;
-    case STATION_VIEW_COUNT:
-        break; /* unreachable — enum terminator */
-    }
+    if (active_panel && active_panel->draw_fn)
+        active_panel->draw_fn(ui, cx, cy, inner_w, compact);
 
     (void)panel_h;
 }

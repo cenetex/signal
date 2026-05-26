@@ -42,8 +42,8 @@
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
  *               (NOT bound in docked UI — use [Tab] to switch views.)
- *   [Tab]       Docked → cycle station tabs (VERBS / JOBS / BUILD).
- *               Shift+Tab reverses. BUILD skipped at docks with no shipyard.
+ *   [Tab]       Docked → cycle station panels (DOCK / TRADE / WORK / YARD).
+ *               Shift+Tab reverses. Visibility comes from station panels.
  *
  * If adding a new overloaded key, update this table FIRST so the
  * precedence is visible before the code diverges.
@@ -418,9 +418,8 @@ static void sample_station_tab(void) {
     if (!LOCAL_PLAYER.docked || !is_key_pressed(SAPP_KEYCODE_TAB)) return;
     bool shift = is_key_down(SAPP_KEYCODE_LEFT_SHIFT) ||
                  is_key_down(SAPP_KEYCODE_RIGHT_SHIFT);
-    int n = (int)STATION_VIEW_COUNT;
-    g.station_view = (station_view_t)(((int)g.station_view +
-                                       (shift ? n - 1 : 1)) % n);
+    g.station_view = station_panel_next_visible(
+        g.station_view, current_station_ptr(), shift ? -1 : 1);
     g.selected_contract = -1;
 }
 
@@ -428,7 +427,7 @@ static void sample_station_tab(void) {
  * module type this yard can fabricate. (Plans are still useful for
  * slot reservation, but no longer required to *order* a kit — the
  * chicken-and-egg for the very first SIGNAL_RELAY would be unsolvable.) */
-static void sample_yard_keys(input_intent_t *intent) {
+void station_panel_input_yard(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_YARD) return;
     const station_t *st = current_station_ptr();
     int shown = 0;
@@ -459,7 +458,7 @@ static void sample_yard_keys(input_intent_t *intent) {
  *   [S]     deliver — selective if a slot is selected, else all
  * The display in station_ui.c sorts deliverable contracts first so [1]
  * usually picks "the contract you can fulfill right now". */
-static void sample_work_keys(input_intent_t *intent) {
+void station_panel_input_work(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_WORK) return;
 
     const station_t *here_st = current_station_ptr();
@@ -542,7 +541,7 @@ static void sample_work_keys(input_intent_t *intent) {
  *   [M] upgrade mining laser
  *   [C] upgrade cargo hold capacity
  *   [T] upgrade tractor */
-static void sample_dock_keys(input_intent_t *intent) {
+void station_panel_input_dock(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_DOCK) return;
     if (is_key_pressed(SAPP_KEYCODE_R)) {
         const station_t *st = current_station_ptr();
@@ -670,6 +669,12 @@ static void sample_trade_picker(input_intent_t *intent) {
                    mining_grade_label(row->grade),
                    commodity_short_name(row->commodity));
     }
+}
+
+void station_panel_input_trade(input_intent_t *intent) {
+    if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_TRADE) return;
+    sample_trade_sell_all(intent);
+    sample_trade_picker(intent);
 }
 
 /* Tow mode: server snaps to the closest slot on E. */
@@ -1014,11 +1019,7 @@ input_intent_t sample_input_intent(void) {
     sample_targeting(&intent);
     sample_e_interact(&intent);
     sample_station_tab();
-    sample_yard_keys(&intent);
-    sample_work_keys(&intent);
-    sample_dock_keys(&intent);
-    sample_trade_sell_all(&intent);
-    sample_trade_picker(&intent);
+    station_panel_sample_current(&intent);
     sample_placement(&intent);
     sample_music();
     sample_hail(&intent);

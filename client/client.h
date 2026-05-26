@@ -104,6 +104,32 @@ typedef struct {
     int kits_short_by;
 } station_ui_state_t;
 
+typedef bool (*station_panel_visible_fn)(const station_t *station);
+typedef void (*station_panel_draw_fn)(const station_ui_state_t *ui,
+                                      float cx, float cy, float inner_w,
+                                      bool compact);
+typedef void (*station_panel_input_fn)(input_intent_t *intent);
+
+typedef struct {
+    station_view_t           view;
+    const char              *label;
+    station_panel_visible_fn visible_fn;
+    station_panel_draw_fn    draw_fn;
+    station_panel_input_fn   input_fn;
+} station_panel_descriptor_t;
+
+const station_panel_descriptor_t *station_panel_descriptor(station_view_t view);
+bool station_panel_visible(const station_panel_descriptor_t *panel,
+                           const station_t *station);
+int station_panel_visible_count(const station_t *station);
+const station_panel_descriptor_t *station_panel_visible_at(
+    const station_t *station, int visible_index);
+station_view_t station_panel_first_visible(const station_t *station);
+station_view_t station_panel_next_visible(station_view_t current,
+                                          const station_t *station,
+                                          int direction);
+void station_panel_sample_current(input_intent_t *intent);
+
 /* TRADE picker row — single source of truth shared by the picker
  * renderer (station_ui.c) and the input handler (input.c). Both walk
  * the SAME row list so a [1] keypress can never hit a different row
