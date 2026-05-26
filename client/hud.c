@@ -1701,6 +1701,12 @@ typedef struct {
     module_type_t type;
 } hud_snapping_scaffold_t;
 
+typedef struct {
+    int station_idx;
+    int blocker_idx;
+    module_type_t type;
+} hud_shipyard_blocked_t;
+
 static const char *hud_station_short_name(int station_idx) {
     const char *name = station_short_name(station_idx);
     return (name && name[0] != '?') ? name : "station";
@@ -1790,6 +1796,57 @@ static bool hud_find_construction_need(hud_construction_need_t *out) {
         if (d2 >= best_d2) continue;
         hud_construction_need_t candidate;
         if (!hud_station_construction_need(st, s, &candidate)) continue;
+        best = candidate;
+        best_d2 = d2;
+        found = true;
+    }
+    if (found) *out = best;
+    return found;
+}
+
+static bool hud_station_shipyard_blocked(const station_t *st, int station_idx,
+                                         hud_shipyard_blocked_t *out) {
+    if (!st || !out) return false;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    if (st->pending_scaffold_count <= 0) return false;
+    if (!station_has_module(st, MODULE_SHIPYARD)) return false;
+    if (station_nascent_scaffold_index(g.world.scaffolds, MAX_SCAFFOLDS,
+                                       station_idx) >= 0) {
+        return false;
+    }
+    int blocker = station_construction_blocker_index(st, g.world.scaffolds,
+                                                     MAX_SCAFFOLDS);
+    if (blocker < 0) return false;
+
+    *out = (hud_shipyard_blocked_t){
+        .station_idx = station_idx,
+        .blocker_idx = blocker,
+        .type = st->pending_scaffolds[0].type,
+    };
+    return true;
+}
+
+static bool hud_find_shipyard_blocked(hud_shipyard_blocked_t *out) {
+    if (!out) return false;
+    int focus = -1;
+    if (LOCAL_PLAYER.docked) focus = LOCAL_PLAYER.current_station;
+    else if (LOCAL_PLAYER.in_dock_range) focus = LOCAL_PLAYER.nearby_station;
+    if (focus >= 0 && focus < MAX_STATIONS &&
+        hud_station_shipyard_blocked(&g.world.stations[focus], focus, out)) {
+        return true;
+    }
+
+    const float max_range = 1400.0f;
+    float best_d2 = max_range * max_range;
+    bool found = false;
+    hud_shipyard_blocked_t best = {0};
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st)) continue;
+        float d2 = v2_dist_sq(st->pos, LOCAL_PLAYER.ship.pos);
+        if (d2 >= best_d2) continue;
+        hud_shipyard_blocked_t candidate;
+        if (!hud_station_shipyard_blocked(st, s, &candidate)) continue;
         best = candidate;
         best_d2 = d2;
         found = true;
@@ -1928,6 +1985,17 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
+    hud_shipyard_blocked_t blocked;
+    if (hud_find_shipyard_blocked(&blocked)) {
+        snprintf(label, label_size, "YARD BLOCKED");
+        snprintf(message, message_size,
+                 "%s yard blocked by loose scaffold. Tow it clear to start %s.",
+                 hud_station_short_name(blocked.station_idx),
+                 module_type_name(blocked.type));
+        *r = 255; *g0 = 140; *b = 60;
+        return true;
+    }
+
     hud_construction_need_t need;
     if (hud_find_construction_need(&need)) {
         snprintf(label, label_size, "SUPPLY NEED");
@@ -2062,6 +2130,7 @@ enum {
     SMOKE_LOOP_STATE_PLAN_SLOT = 8,
     SMOKE_LOOP_STATE_SCAFFOLD_SNAP = 9,
     SMOKE_LOOP_STATE_SUPPLY_NEED = 10,
+    SMOKE_LOOP_STATE_YARD_BLOCKED = 11,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -2107,6 +2176,8 @@ static void smoke_clear_loop_state(void) {
         ghost->planned = false;
         ghost->scaffold_progress = 1.0f;
         ghost->name[0] = '\0';
+        ghost->module_count = 0;
+        ghost->pending_scaffold_count = 0;
     }
 
     if (g.world.station_count > 0 && station_exists(&g.world.stations[0]))
@@ -2186,6 +2257,32 @@ static int smoke_apply_loop_state(int state) {
         g.world.stations[SMOKE_OUTPOST_INDEX].planned = false;
         g.world.stations[SMOKE_OUTPOST_INDEX].scaffold_progress = 0.5f;
         g.world.stations[SMOKE_OUTPOST_INDEX].dock_radius = OUTPOST_DOCK_RADIUS;
+        return 1;
+    case SMOKE_LOOP_STATE_YARD_BLOCKED:
+        if (MAX_STATIONS <= SMOKE_OUTPOST_INDEX) return 0;
+        g.world.stations[SMOKE_OUTPOST_INDEX].pos = sp->ship.pos;
+        g.world.stations[SMOKE_OUTPOST_INDEX].scaffold = false;
+        g.world.stations[SMOKE_OUTPOST_INDEX].planned = false;
+        g.world.stations[SMOKE_OUTPOST_INDEX].scaffold_progress = 1.0f;
+        g.world.stations[SMOKE_OUTPOST_INDEX].signal_range = 6000.0f;
+        g.world.stations[SMOKE_OUTPOST_INDEX].dock_radius = OUTPOST_DOCK_RADIUS;
+        g.world.stations[SMOKE_OUTPOST_INDEX].module_count = 1;
+        g.world.stations[SMOKE_OUTPOST_INDEX].modules[0] = (station_module_t){
+            .type = MODULE_SHIPYARD,
+            .ring = 2,
+            .slot = 0,
+            .scaffold = false,
+            .build_progress = 1.0f,
+        };
+        g.world.stations[SMOKE_OUTPOST_INDEX].pending_scaffold_count = 1;
+        g.world.stations[SMOKE_OUTPOST_INDEX].pending_scaffolds[0].type = MODULE_FURNACE;
+        g.world.stations[SMOKE_OUTPOST_INDEX].pending_scaffolds[0].owner = 0;
+        g.world.scaffolds[0].active = true;
+        g.world.scaffolds[0].state = SCAFFOLD_LOOSE;
+        g.world.scaffolds[0].module_type = MODULE_DOCK;
+        g.world.scaffolds[0].pos = sp->ship.pos;
+        g.world.scaffolds[0].built_at_station = -1;
+        g.world.scaffolds[0].towed_by = -1;
         return 1;
     default:
         return 0;

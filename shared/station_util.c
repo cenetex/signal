@@ -37,6 +37,40 @@ bool station_has_module(const station_t *st, module_type_t type) {
     return false;
 }
 
+int station_nascent_scaffold_index(const scaffold_t *scaffolds,
+                                   int scaffold_count,
+                                   int station_idx) {
+    if (!scaffolds || scaffold_count <= 0 || station_idx < 0) return -1;
+    for (int i = 0; i < scaffold_count; i++) {
+        if (!scaffolds[i].active) continue;
+        if (scaffolds[i].state != SCAFFOLD_NASCENT) continue;
+        if (scaffolds[i].built_at_station != station_idx) continue;
+        return i;
+    }
+    return -1;
+}
+
+int station_construction_blocker_index(const station_t *st,
+                                       const scaffold_t *scaffolds,
+                                       int scaffold_count) {
+    if (!st || !scaffolds || scaffold_count <= 0) return -1;
+    float clear_r = STATION_RING_RADIUS[1] * 0.6f;
+    float clear_r_sq = clear_r * clear_r;
+    for (int i = 0; i < scaffold_count; i++) {
+        if (!scaffolds[i].active) continue;
+        if (scaffolds[i].state != SCAFFOLD_LOOSE) continue;
+        if (v2_dist_sq(scaffolds[i].pos, st->pos) < clear_r_sq)
+            return i;
+    }
+    return -1;
+}
+
+bool station_construction_area_blocked(const station_t *st,
+                                       const scaffold_t *scaffolds,
+                                       int scaffold_count) {
+    return station_construction_blocker_index(st, scaffolds, scaffold_count) >= 0;
+}
+
 int station_max_ring(const station_t *st) {
     int max = 1;
     for (int i = 0; i < st->module_count; i++) {

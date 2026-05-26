@@ -5276,27 +5276,16 @@ static float shipyard_intake_rate(const station_t *st, int shipyard_idx, commodi
 
 /* Find an existing nascent scaffold being built at this station, if any. */
 static int find_nascent_scaffold(const world_t *w, int station_idx) {
-    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-        if (!w->scaffolds[i].active) continue;
-        if (w->scaffolds[i].state != SCAFFOLD_NASCENT) continue;
-        if (w->scaffolds[i].built_at_station != station_idx) continue;
-        return i;
-    }
-    return -1;
+    return station_nascent_scaffold_index(w->scaffolds, MAX_SCAFFOLDS,
+                                          station_idx);
 }
 
 /* Is there a LOOSE scaffold still occupying the construction area near
  * this station's center? Used to gate spawning the next nascent. */
 static bool construction_area_blocked(const world_t *w, int station_idx) {
-    const station_t *st = &w->stations[station_idx];
-    float clear_r = STATION_RING_RADIUS[1] * 0.6f; /* roughly inside ring 1 */
-    float clear_r_sq = clear_r * clear_r;
-    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-        if (!w->scaffolds[i].active) continue;
-        if (w->scaffolds[i].state != SCAFFOLD_LOOSE) continue;
-        if (v2_dist_sq(w->scaffolds[i].pos, st->pos) < clear_r_sq) return true;
-    }
-    return false;
+    return station_construction_area_blocked(&w->stations[station_idx],
+                                             w->scaffolds,
+                                             MAX_SCAFFOLDS);
 }
 
 /* Production layer v1: a nascent scaffold appears at the station center

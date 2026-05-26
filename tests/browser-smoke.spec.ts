@@ -386,6 +386,7 @@ const smokeLoopState = {
   planSlot: 8,
   scaffoldSnap: 9,
   supplyNeed: 10,
+  yardBlocked: 11,
 } as const;
 
 const mobileFlag = {
@@ -595,6 +596,11 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.supplyNeed);
     expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 30 frames at Outpost 4.');
+
+    await setSmokeLoopState(page, smokeLoopState.yardBlocked);
+    expect(await hudHintText(page)).toContain(
+      'YARD BLOCKED :: Outpost 4 yard blocked by loose scaffold. Tow it clear to start Furnace.',
+    );
 
     expectNoFatalErrors(logs);
   });

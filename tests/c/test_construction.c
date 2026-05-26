@@ -1504,6 +1504,45 @@ TEST(test_save_preserves_pending_scaffolds) {
     remove(TMP("test_pending.sav"));
 }
 
+TEST(test_shipyard_queue_waits_for_loose_scaffold_to_clear) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w.npc_ships[i].active = false;
+
+    station_t *st = &w.stations[1]; /* Kepler has a shipyard. */
+    st->pending_scaffolds[0].type = MODULE_FURNACE;
+    st->pending_scaffolds[0].owner = 0;
+    st->pending_scaffold_count = 1;
+
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    st->_inventory_cache[mat] = module_build_cost_lookup(MODULE_FURNACE);
+
+    int blocker = spawn_scaffold(&w, MODULE_DOCK, st->pos, 0);
+    ASSERT(blocker >= 0);
+    w.scaffolds[blocker].state = SCAFFOLD_LOOSE;
+    w.scaffolds[blocker].vel = v2(0.0f, 0.0f);
+
+    ASSERT(station_construction_area_blocked(st, w.scaffolds, MAX_SCAFFOLDS));
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(st->pending_scaffold_count, 1);
+    ASSERT_EQ_INT(station_nascent_scaffold_index(w.scaffolds,
+                                                 MAX_SCAFFOLDS, 1), -1);
+
+    w.scaffolds[blocker].pos = v2_add(st->pos,
+                                      v2(STATION_RING_RADIUS[1] * 2.0f, 0.0f));
+    ASSERT(!station_construction_area_blocked(st, w.scaffolds, MAX_SCAFFOLDS));
+    world_sim_step(&w, SIM_DT);
+
+    int nascent = station_nascent_scaffold_index(w.scaffolds, MAX_SCAFFOLDS, 1);
+    ASSERT(nascent >= 0);
+    ASSERT_EQ_INT(w.scaffolds[nascent].state, SCAFFOLD_NASCENT);
+    ASSERT_EQ_INT(w.scaffolds[nascent].module_type, MODULE_FURNACE);
+    ASSERT_EQ_INT(w.scaffolds[nascent].built_at_station, 1);
+}
+
 TEST(test_placed_scaffold_supply_phase) {
     /* After snap, module starts at build_progress=0. Delivering material
      * advances it to 1.0, then the 10s build timer runs 1.0 → 2.0. */
@@ -2519,6 +2558,7 @@ void register_construction_scaffold_tests(void) {
     RUN(test_frontier_virtual_pilots_execute_growth_loop);
     RUN(test_tow_drone_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
+    RUN(test_shipyard_queue_waits_for_loose_scaffold_to_clear);
 }
 
 void register_construction_placed_scaffold_tests(void) {

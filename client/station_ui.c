@@ -2252,18 +2252,18 @@ static void draw_yard_view(const station_ui_state_t *ui,
         ly += 10.0f;
         ly += draw_section_header(cx, ly, inner_right, "QUEUE", HDR_YARD);
         const scaffold_t *nascent = NULL;
-        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-            if (g.world.scaffolds[i].active &&
-                g.world.scaffolds[i].state == SCAFFOLD_NASCENT) {
-                for (int s = 0; s < MAX_STATIONS; s++) {
-                    if (&g.world.stations[s] == ui->station &&
-                        g.world.scaffolds[i].built_at_station == s) {
-                        nascent = &g.world.scaffolds[i];
-                        break;
-                    }
-                }
-                if (nascent) break;
-            }
+        int station_idx = station_index_of(ui->station);
+        int nascent_idx = (station_idx >= 0 && station_idx < MAX_STATIONS)
+            ? station_nascent_scaffold_index(g.world.scaffolds,
+                                             MAX_SCAFFOLDS,
+                                             station_idx)
+            : -1;
+        if (nascent_idx >= 0) nascent = &g.world.scaffolds[nascent_idx];
+        int blocker_idx = -1;
+        if (!nascent && station_idx >= 0 && station_idx < MAX_STATIONS) {
+            blocker_idx = station_construction_blocker_index(ui->station,
+                                                             g.world.scaffolds,
+                                                             MAX_SCAFFOLDS);
         }
         for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
             module_type_t t = ui->station->pending_scaffolds[p].type;
@@ -2276,7 +2276,11 @@ static void draw_yard_view(const station_ui_state_t *ui,
             int got = (int)lroundf(have);
             int total = (int)lroundf(need);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            if (p == 0) {
+            if (p == 0 && blocker_idx >= 0) {
+                sdtx_color3b(PAL_WARNING);
+                sdtx_printf("  %d. %s  yard blocked (stock: %d)",
+                    p + 1, module_type_name(t), (int)lroundf(station_have));
+            } else if (p == 0) {
                 sdtx_color3b(PAL_DELIVERY_BLUE);
                 sdtx_printf("  %d. %s  intake %d/%d  (stock: %d)",
                     p + 1, module_type_name(t), got, total, (int)lroundf(station_have));
@@ -2284,6 +2288,12 @@ static void draw_yard_view(const station_ui_state_t *ui,
                 sdtx_color3b(PAL_SUPPLY_DIM);
                 sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
             }
+            ly += 14.0f;
+        }
+        if (blocker_idx >= 0) {
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(PAL_SHIPYARD_HINT);
+            sdtx_puts("  Tow loose scaffold clear to start the next build.");
             ly += 14.0f;
         }
     }

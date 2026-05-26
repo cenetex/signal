@@ -30,6 +30,17 @@ bool          station_consumes(const station_t *st, commodity_t c);
 bool          station_produces(const station_t *st, commodity_t c);
 void          rebuild_station_services(station_t *st);
 
+/* ----- Construction yard state ----- */
+int           station_nascent_scaffold_index(const scaffold_t *scaffolds,
+                                             int scaffold_count,
+                                             int station_idx);
+int           station_construction_blocker_index(const station_t *st,
+                                                 const scaffold_t *scaffolds,
+                                                 int scaffold_count);
+bool          station_construction_area_blocked(const station_t *st,
+                                                const scaffold_t *scaffolds,
+                                                int scaffold_count);
+
 /* Count active (non-scaffold) MODULE_FURNACE modules. Kept for labels,
  * tests, and migration diagnostics; smelt capability itself is
  * tag/pair-based. */
