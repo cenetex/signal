@@ -578,6 +578,35 @@ static bool station_has_adjacent_hopper_on_ring(const station_t *st,
     return false;
 }
 
+commodity_t station_default_module_commodity(const station_t *st,
+                                             module_type_t type) {
+    if (type == MODULE_FURNACE)
+        return module_furnace_default_output();
+    if (type != MODULE_HOPPER)
+        return COMMODITY_COUNT;
+
+    if (st) {
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].scaffold) continue;
+            module_inputs_t req = module_instance_required_inputs(&st->modules[m]);
+            for (int i = 0; i < req.count; i++) {
+                commodity_t c = req.commodities[i];
+                bool covered = false;
+                for (int n = 0; n < st->module_count; n++) {
+                    if (st->modules[n].scaffold) continue;
+                    if (st->modules[n].type != MODULE_HOPPER) continue;
+                    if ((commodity_t)st->modules[n].commodity == c) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered) return c;
+            }
+        }
+    }
+    return COMMODITY_FERRITE_ORE;
+}
+
 station_layout_status_t station_module_layout_status(const station_t *st,
                                                      const station_module_t *m) {
     if (!st || !m) return STATION_LAYOUT_OK;
@@ -650,11 +679,8 @@ static int station_flow_ring_slot_distance(int slot_a, int slot_b,
 
 /* Keep this in sync with server/sim_production.c::module_flow_rate:
  * diagnostics should describe the same flow graph the sim actually runs. */
-static float station_flow_rate_between(const station_t *st,
-                                       int producer_idx,
-                                       int consumer_idx) {
-    const station_module_t *p = &st->modules[producer_idx];
-    const station_module_t *c = &st->modules[consumer_idx];
+static float station_flow_rate_between_modules(const station_module_t *p,
+                                               const station_module_t *c) {
     if (p->ring == c->ring && p->ring >= 1 && p->ring <= STATION_NUM_RINGS) {
         int slots = STATION_RING_SLOTS[p->ring];
         int d = station_flow_ring_slot_distance((int)p->slot, (int)c->slot, slots);
@@ -670,6 +696,13 @@ static float station_flow_rate_between(const station_t *st,
         return 3.0f - t * 2.5f;
     }
     return 0.5f;
+}
+
+static float station_flow_rate_between(const station_t *st,
+                                       int producer_idx,
+                                       int consumer_idx) {
+    return station_flow_rate_between_modules(&st->modules[producer_idx],
+                                             &st->modules[consumer_idx]);
 }
 
 static bool station_flow_accepts_input(const station_module_t *consumer,
@@ -943,6 +976,284 @@ bool station_flow_summary_format(const station_flow_summary_t *summary,
     snprintf(out, cap, "FLOW %s: %s", module,
              station_flow_diag_label(summary->diag));
     return true;
+}
+
+#define STATION_PLAN_CANDIDATE_CAP (MAX_MODULES_PER_STATION + 8)
+
+static station_module_t station_plan_make_module(const station_t *st,
+                                                 module_type_t type,
+                                                 int ring,
+                                                 int slot)
+{
+    station_module_t m = {0};
+    m.type = type;
+    m.ring = (uint8_t)ring;
+    m.slot = (uint8_t)slot;
+    m.build_progress = 1.0f;
+    m.last_smelt_commodity = LAST_SMELT_NONE;
+    m.commodity = (uint8_t)station_default_module_commodity(st, type);
+    return m;
+}
+
+static bool station_plan_same_slot(const station_module_t *m, int ring, int slot)
+{
+    return m && (int)m->ring == ring && (int)m->slot == slot;
+}
+
+static int station_plan_collect_candidates(const station_t *st,
+                                           int skip_ring,
+                                           int skip_slot,
+                                           station_module_t *out,
+                                           int cap)
+{
+    int count = 0;
+    if (!st || !out || cap <= 0) return 0;
+    for (int i = 0; i < st->module_count && count < cap; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->scaffold) continue;
+        if (station_plan_same_slot(m, skip_ring, skip_slot)) continue;
+        out[count++] = *m;
+    }
+    for (int p = 0; p < st->placement_plan_count && count < cap; p++) {
+        int ring = (int)st->placement_plans[p].ring;
+        int slot = (int)st->placement_plans[p].slot;
+        if (ring == skip_ring && slot == skip_slot) continue;
+        out[count++] = station_plan_make_module(
+            st, st->placement_plans[p].type, ring, slot);
+    }
+    return count;
+}
+
+static commodity_t station_plan_module_output(const station_module_t *m)
+{
+    if (!m) return COMMODITY_COUNT;
+    if (module_kind(m->type) == MODULE_KIND_STORAGE) {
+        commodity_t tag = (commodity_t)m->commodity;
+        return tag < COMMODITY_COUNT ? tag : COMMODITY_COUNT;
+    }
+    return module_instance_output(m);
+}
+
+static bool station_plan_best_output_peer(const station_module_t *producer,
+                                          commodity_t commodity,
+                                          const station_module_t *mods,
+                                          int mod_count,
+                                          const station_module_t **out_peer,
+                                          float *out_rate)
+{
+    const station_module_t *best = NULL;
+    float best_rate = 0.0f;
+    if (!producer || commodity == COMMODITY_COUNT) return false;
+    for (int i = 0; i < mod_count; i++) {
+        const station_module_t *peer = &mods[i];
+        if (!station_flow_accepts_input(peer, commodity)) continue;
+        if (module_buffer_capacity(peer->type) <= 0.0f) continue;
+        float rate = station_flow_rate_between_modules(producer, peer);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best = peer;
+        }
+    }
+    if (!best) return false;
+    if (out_peer) *out_peer = best;
+    if (out_rate) *out_rate = best_rate;
+    return true;
+}
+
+static bool station_plan_best_input_peer(const station_module_t *consumer,
+                                         commodity_t commodity,
+                                         const station_module_t *mods,
+                                         int mod_count,
+                                         const station_module_t **out_peer,
+                                         float *out_rate)
+{
+    const station_module_t *best = NULL;
+    float best_rate = 0.0f;
+    if (!consumer || commodity == COMMODITY_COUNT) return false;
+    for (int i = 0; i < mod_count; i++) {
+        const station_module_t *peer = &mods[i];
+        if (station_plan_module_output(peer) != commodity) continue;
+        if (module_buffer_capacity(peer->type) <= 0.0f) continue;
+        float rate = station_flow_rate_between_modules(peer, consumer);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best = peer;
+        }
+    }
+    if (!best) return false;
+    if (out_peer) *out_peer = best;
+    if (out_rate) *out_rate = best_rate;
+    return true;
+}
+
+static void station_plan_consider_hint(station_plan_flow_hint_t *out,
+                                       station_flow_diag_t diag,
+                                       station_plan_flow_role_t role,
+                                       const station_module_t *peer,
+                                       commodity_t commodity,
+                                       float rate)
+{
+    int rank = station_flow_diag_rank(diag);
+    int old_rank = station_flow_diag_rank(out->diag);
+    if (rank < old_rank) return;
+    if (rank == old_rank &&
+        !(out->role == STATION_PLAN_FLOW_ROLE_INPUT &&
+          role == STATION_PLAN_FLOW_ROLE_OUTPUT))
+        return;
+    out->diag = diag;
+    out->role = role;
+    out->peer_type = peer ? peer->type : MODULE_COUNT;
+    out->commodity = commodity;
+    out->rate = rate;
+}
+
+bool station_plan_flow_hint(const station_t *st, module_type_t type,
+                            int ring, int slot,
+                            station_plan_flow_hint_t *out)
+{
+    station_module_t planned;
+    station_module_t candidates[STATION_PLAN_CANDIDATE_CAP];
+    int candidate_count;
+    module_kind_t kind;
+
+    if (!out) return false;
+    *out = (station_plan_flow_hint_t){
+        .diag = STATION_FLOW_DIAG_NONE,
+        .role = STATION_PLAN_FLOW_ROLE_NONE,
+        .peer_type = MODULE_COUNT,
+        .commodity = COMMODITY_COUNT,
+        .rate = 0.0f,
+    };
+    if (!st || !station_exists(st) || ring < 1 || ring > STATION_NUM_RINGS)
+        return false;
+
+    planned = station_plan_make_module(st, type, ring, slot);
+    kind = module_kind(type);
+    if (kind == MODULE_KIND_NONE || kind == MODULE_KIND_SERVICE)
+        return false;
+
+    candidate_count = station_plan_collect_candidates(
+        st, ring, slot, candidates, STATION_PLAN_CANDIDATE_CAP);
+
+    if (kind == MODULE_KIND_STORAGE) {
+        const station_module_t *peer = NULL;
+        float rate = 0.0f;
+        commodity_t tag = station_plan_module_output(&planned);
+        if (tag == COMMODITY_COUNT) return false;
+        if (!station_plan_best_output_peer(&planned, tag, candidates,
+                                           candidate_count, &peer, &rate)) {
+            station_plan_consider_hint(out, STATION_FLOW_DIAG_NO_CONSUMER,
+                                       STATION_PLAN_FLOW_ROLE_OUTPUT, NULL,
+                                       tag, 0.0f);
+        } else if (rate <= STATION_FLOW_DIAG_SLOW_RATE) {
+            station_plan_consider_hint(out, STATION_FLOW_DIAG_SLOW_FEED,
+                                       STATION_PLAN_FLOW_ROLE_OUTPUT, peer,
+                                       tag, rate);
+        } else {
+            station_plan_consider_hint(out, STATION_FLOW_DIAG_RUNNING,
+                                       STATION_PLAN_FLOW_ROLE_OUTPUT, peer,
+                                       tag, rate);
+        }
+        return out->diag != STATION_FLOW_DIAG_NONE;
+    }
+
+    if (kind == MODULE_KIND_PRODUCER || kind == MODULE_KIND_SHIPYARD) {
+        module_inputs_t req = module_instance_required_inputs(&planned);
+        bool any_input_source = false;
+        for (int i = 0; i < req.count; i++) {
+            const station_module_t *peer = NULL;
+            float rate = 0.0f;
+            commodity_t input = req.commodities[i];
+            if (station_plan_best_input_peer(&planned, input, candidates,
+                                             candidate_count, &peer, &rate)) {
+                any_input_source = true;
+                station_plan_consider_hint(
+                    out,
+                    rate <= STATION_FLOW_DIAG_SLOW_RATE
+                        ? STATION_FLOW_DIAG_SLOW_FEED
+                        : STATION_FLOW_DIAG_RUNNING,
+                    STATION_PLAN_FLOW_ROLE_INPUT, peer, input, rate);
+            } else if (!req.any_satisfies) {
+                station_plan_consider_hint(out, STATION_FLOW_DIAG_NO_INPUT,
+                                           STATION_PLAN_FLOW_ROLE_INPUT, NULL,
+                                           input, 0.0f);
+                break;
+            }
+        }
+        if (req.any_satisfies && req.count > 0 && !any_input_source) {
+            station_plan_consider_hint(out, STATION_FLOW_DIAG_NO_INPUT,
+                                       STATION_PLAN_FLOW_ROLE_INPUT, NULL,
+                                       req.commodities[0], 0.0f);
+        }
+
+        commodity_t output = module_instance_output(&planned);
+        if (output != COMMODITY_COUNT) {
+            const station_module_t *peer = NULL;
+            float rate = 0.0f;
+            if (!station_plan_best_output_peer(&planned, output, candidates,
+                                               candidate_count, &peer, &rate)) {
+                station_plan_consider_hint(out, STATION_FLOW_DIAG_NO_CONSUMER,
+                                           STATION_PLAN_FLOW_ROLE_OUTPUT,
+                                           NULL, output, 0.0f);
+            } else if (rate <= STATION_FLOW_DIAG_SLOW_RATE) {
+                station_plan_consider_hint(out, STATION_FLOW_DIAG_SLOW_FEED,
+                                           STATION_PLAN_FLOW_ROLE_OUTPUT,
+                                           peer, output, rate);
+            } else {
+                station_plan_consider_hint(out, STATION_FLOW_DIAG_RUNNING,
+                                           STATION_PLAN_FLOW_ROLE_OUTPUT,
+                                           peer, output, rate);
+            }
+        }
+    }
+
+    return out->diag != STATION_FLOW_DIAG_NONE;
+}
+
+bool station_plan_flow_hint_format(const station_plan_flow_hint_t *hint,
+                                   char *out, size_t cap)
+{
+    const char *peer = "module";
+    const char *commodity = NULL;
+    if (!hint || !out || cap == 0) return false;
+    out[0] = '\0';
+    if (hint->diag == STATION_FLOW_DIAG_NONE) return false;
+    if ((int)hint->peer_type >= 0 && hint->peer_type < MODULE_COUNT)
+        peer = module_type_name(hint->peer_type);
+    if (hint->commodity >= 0 && hint->commodity < COMMODITY_COUNT)
+        commodity = commodity_name(hint->commodity);
+
+    switch (hint->diag) {
+    case STATION_FLOW_DIAG_RUNNING:
+        if (hint->role == STATION_PLAN_FLOW_ROLE_INPUT)
+            snprintf(out, cap, "flow: input from %s", peer);
+        else if (hint->role == STATION_PLAN_FLOW_ROLE_OUTPUT)
+            snprintf(out, cap, "flow: output to %s", peer);
+        else
+            snprintf(out, cap, "flow: connected");
+        return true;
+    case STATION_FLOW_DIAG_SLOW_FEED:
+        if (hint->role == STATION_PLAN_FLOW_ROLE_INPUT)
+            snprintf(out, cap, "flow: slow input from %s", peer);
+        else
+            snprintf(out, cap, "flow: slow route to %s", peer);
+        return true;
+    case STATION_FLOW_DIAG_NO_INPUT:
+        if (commodity)
+            snprintf(out, cap, "flow: missing %s input", commodity);
+        else
+            snprintf(out, cap, "flow: missing input");
+        return true;
+    case STATION_FLOW_DIAG_NO_CONSUMER:
+        if (commodity)
+            snprintf(out, cap, "flow: no consumer for %s", commodity);
+        else
+            snprintf(out, cap, "flow: no local consumer");
+        return true;
+    default:
+        snprintf(out, cap, "flow: %s", station_flow_diag_label(hint->diag));
+        return true;
+    }
 }
 
 float station_clamp_operator_price(float requested, float baseline)

@@ -2728,12 +2728,17 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
                 chosen_slot = 0;
             }
             if (st->module_count < MAX_MODULES_PER_STATION) {
+                commodity_t commodity = station_default_module_commodity(
+                    st, sc->module_type);
                 station_module_t *m = &st->modules[st->module_count++];
                 m->type = sc->module_type;
                 m->ring = (uint8_t)chosen_ring;
                 m->slot = (uint8_t)chosen_slot;
                 m->scaffold = true;
                 m->build_progress = 0.0f; /* needs supply after outpost activates */
+                m->last_smelt_commodity = LAST_SMELT_NONE;
+                m->commodity = (uint8_t)commodity;
+                m->_pad[0] = 0; m->_pad[1] = 0;
             }
             sc->active = false;
             sp->ship.towed_scaffold = -1;
@@ -2818,12 +2823,17 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             /* Queue the player's module scaffold — needs material delivery
              * after the outpost activates before the build timer starts. */
             if (st->module_count < MAX_MODULES_PER_STATION) {
+                commodity_t commodity = station_default_module_commodity(
+                    st, sc->module_type);
                 station_module_t *m = &st->modules[st->module_count++];
                 m->type = sc->module_type;
                 m->ring = 1;
                 m->slot = 0;
                 m->scaffold = true;
                 m->build_progress = 0.0f; /* needs supply after outpost activates */
+                m->last_smelt_commodity = LAST_SMELT_NONE;
+                m->commodity = (uint8_t)commodity;
+                m->_pad[0] = 0; m->_pad[1] = 0;
             }
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_OUTPOST_PLACED,
@@ -4823,12 +4833,16 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
         sc->active = false;
         return;
     }
+    commodity_t commodity = station_default_module_commodity(st, sc->module_type);
     station_module_t *m = &st->modules[st->module_count++];
     m->type = sc->module_type;
     m->ring = (uint8_t)sc->placed_ring;
     m->slot = (uint8_t)sc->placed_slot;
     m->scaffold = true;
     m->build_progress = 0.0f; /* enter post-placement supply phase */
+    m->last_smelt_commodity = LAST_SMELT_NONE;
+    m->commodity = (uint8_t)commodity;
+    m->_pad[0] = 0; m->_pad[1] = 0;
     /* If this slot was planned, fulfill the plan (remove it). */
     for (int p = 0; p < st->placement_plan_count; p++) {
         if (st->placement_plans[p].ring == sc->placed_ring &&
@@ -4963,12 +4977,17 @@ static void step_scaffolds(world_t *w, float dt) {
                         }
                     }
                     if (st->module_count < MAX_MODULES_PER_STATION) {
+                        commodity_t commodity = station_default_module_commodity(
+                            st, sc->module_type);
                         station_module_t *m = &st->modules[st->module_count++];
                         m->type = sc->module_type;
                         m->ring = (uint8_t)chosen_ring;
                         m->slot = (uint8_t)chosen_slot;
                         m->scaffold = true;
                         m->build_progress = 0.0f;
+                        m->last_smelt_commodity = LAST_SMELT_NONE;
+                        m->commodity = (uint8_t)commodity;
+                        m->_pad[0] = 0; m->_pad[1] = 0;
                     }
                     sc->active = false;
                     emit_event(w, (sim_event_t){

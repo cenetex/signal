@@ -2181,6 +2181,81 @@ TEST(test_module_flow_storage_feeds_consumer) {
     ASSERT(flowed);
 }
 
+TEST(test_station_default_module_commodity_picks_uncovered_input) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
+        .build_progress = 1.0f,
+    };
+
+    ASSERT_EQ_INT(station_default_module_commodity(&st, MODULE_HOPPER),
+                  COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(station_default_module_commodity(&st, MODULE_FURNACE),
+                  COMMODITY_FERRITE_INGOT);
+}
+
+TEST(test_station_plan_flow_hint_connected_output) {
+    station_t st = {0};
+    station_plan_flow_hint_t hint;
+    char line[96];
+
+    st.signal_range = 1.0f;
+    st.module_count = 2;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 1,
+        .build_progress = 1.0f,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_HOPPER, .ring = 2, .slot = 2,
+        .build_progress = 1.0f,
+        .commodity = (uint8_t)COMMODITY_FRAME,
+    };
+
+    ASSERT(station_plan_flow_hint(&st, MODULE_FRAME_PRESS, 2, 0, &hint));
+    ASSERT_EQ_INT(hint.diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(hint.role, STATION_PLAN_FLOW_ROLE_OUTPUT);
+    ASSERT_EQ_INT(hint.peer_type, MODULE_HOPPER);
+    ASSERT(station_plan_flow_hint_format(&hint, line, sizeof(line)));
+    ASSERT(strstr(line, "output to Hopper") != NULL);
+}
+
+TEST(test_station_plan_flow_hint_slow_hopper_feed) {
+    station_t st = {0};
+    station_plan_flow_hint_t hint;
+    char line[96];
+
+    st.signal_range = 1.0f;
+    st.module_count = 1;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_FRAME_PRESS, .ring = 3,
+        .slot = (uint8_t)(STATION_RING_SLOTS[3] / 2),
+        .build_progress = 1.0f,
+    };
+
+    ASSERT(station_plan_flow_hint(&st, MODULE_HOPPER, 2, 0, &hint));
+    ASSERT_EQ_INT(hint.diag, STATION_FLOW_DIAG_SLOW_FEED);
+    ASSERT_EQ_INT(hint.role, STATION_PLAN_FLOW_ROLE_OUTPUT);
+    ASSERT_EQ_INT(hint.peer_type, MODULE_FRAME_PRESS);
+    ASSERT(station_plan_flow_hint_format(&hint, line, sizeof(line)));
+    ASSERT(strstr(line, "slow route") != NULL);
+}
+
+TEST(test_station_plan_flow_hint_no_consumer) {
+    station_t st = {0};
+    station_plan_flow_hint_t hint;
+    char line[96];
+
+    st.signal_range = 1.0f;
+
+    ASSERT(station_plan_flow_hint(&st, MODULE_FRAME_PRESS, 2, 0, &hint));
+    ASSERT_EQ_INT(hint.diag, STATION_FLOW_DIAG_NO_CONSUMER);
+    ASSERT(station_plan_flow_hint_format(&hint, line, sizeof(line)));
+    ASSERT(strstr(line, "no consumer") != NULL);
+}
+
 TEST(test_module_flow_diag_no_input) {
     station_t st = {0};
     st.signal_range = 1.0f;
@@ -2714,6 +2789,10 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);
     RUN(test_module_flow_storage_feeds_consumer);
+    RUN(test_station_default_module_commodity_picks_uncovered_input);
+    RUN(test_station_plan_flow_hint_connected_output);
+    RUN(test_station_plan_flow_hint_slow_hopper_feed);
+    RUN(test_station_plan_flow_hint_no_consumer);
     RUN(test_module_flow_diag_no_input);
     RUN(test_module_flow_diag_output_full);
     RUN(test_module_flow_diag_no_consumer);

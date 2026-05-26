@@ -712,9 +712,12 @@ static void hud_draw_module_inspect_pane(float screen_w) {
         return;
     }
     const station_module_t *im = &ist->modules[g.inspect_module];
+    station_flow_diag_t flow = station_module_flow_diag_view(
+        ist, g.inspect_module, g.multiplayer_enabled && net_is_connected());
     float px = fmaxf(16.0f, screen_w - 260.0f);
     float py = 60.0f;
     float cell = 8.0f;
+    float next_y = 60.0f;
 
     sdtx_pos(px / cell, py / cell);
     sdtx_color3b(PAL_ORE_AMBER);
@@ -744,7 +747,18 @@ static void hud_draw_module_inspect_pane(float screen_w) {
         sdtx_color3b(PAL_ACTIVE);
         sdtx_puts("ONLINE");
     }
-    sdtx_pos(px / cell, (py + 60.0f) / cell);
+    if (flow != STATION_FLOW_DIAG_NONE) {
+        sdtx_pos(px / cell, (py + next_y) / cell);
+        if (flow == STATION_FLOW_DIAG_RUNNING)
+            sdtx_color3b(120, 230, 180);
+        else if (flow == STATION_FLOW_DIAG_SLOW_FEED)
+            sdtx_color3b(245, 210, 115);
+        else
+            sdtx_color3b(255, 135, 120);
+        sdtx_printf("FLOW: %s", station_flow_diag_label(flow));
+        next_y += 14.0f;
+    }
+    sdtx_pos(px / cell, (py + next_y) / cell);
     sdtx_color3b(PAL_TEXT_GREY);
     sdtx_puts("[E] close");
 }
@@ -1857,6 +1871,23 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
                          hud_station_short_name(g.placement_target_station),
                          g.placement_target_ring,
                          g.placement_target_slot);
+                if (g.placement_target_station >= 0 &&
+                    g.placement_target_station < MAX_STATIONS) {
+                    const station_t *st = &g.world.stations[g.placement_target_station];
+                    station_plan_flow_hint_t hint;
+                    char flow_hint[96];
+                    if (station_plan_flow_hint(st, (module_type_t)g.plan_type,
+                                               g.placement_target_ring,
+                                               g.placement_target_slot,
+                                               &hint) &&
+                        station_plan_flow_hint_format(&hint, flow_hint,
+                                                      sizeof(flow_hint))) {
+                        size_t used = strlen(message);
+                        if (used + 1 < message_size)
+                            snprintf(message + used, message_size - used,
+                                     " %s.", flow_hint);
+                    }
+                }
             }
         } else {
             snprintf(message, message_size,

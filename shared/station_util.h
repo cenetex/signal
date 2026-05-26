@@ -130,6 +130,11 @@ typedef enum {
 
 station_layout_status_t station_module_layout_status(const station_t *st,
                                                      const station_module_t *m);
+/* Commodity tag assigned when a module is first seeded or enters scaffold
+ * construction. Hoppers auto-pick the first uncovered producer input;
+ * furnaces are explicitly tagged to their default ingot output. */
+commodity_t station_default_module_commodity(const station_t *st,
+                                             module_type_t type);
 
 /* Flow diagnostics for a single module. This is intentionally compact
  * because it is mirrored over STATION_DIAG as one byte per module:
@@ -160,6 +165,20 @@ typedef struct {
     int                 active_count;
 } station_flow_summary_t;
 
+typedef enum {
+    STATION_PLAN_FLOW_ROLE_NONE = 0,
+    STATION_PLAN_FLOW_ROLE_INPUT,
+    STATION_PLAN_FLOW_ROLE_OUTPUT,
+} station_plan_flow_role_t;
+
+typedef struct {
+    station_flow_diag_t      diag;
+    station_plan_flow_role_t role;
+    module_type_t            peer_type;
+    commodity_t              commodity;
+    float                    rate;
+} station_plan_flow_hint_t;
+
 /* Display-facing flow summary. `mirrored_authoritative` means callers
  * should trust station_t.module_diag exactly, as multiplayer clients do.
  * Otherwise the helper uses any mirrored non-idle byte when present and
@@ -171,6 +190,11 @@ bool station_flow_summary(const station_t *st, bool mirrored_authoritative,
                           station_flow_summary_t *out);
 bool station_flow_summary_format(const station_flow_summary_t *summary,
                                  char *out, size_t cap);
+bool station_plan_flow_hint(const station_t *st, module_type_t type,
+                            int ring, int slot,
+                            station_plan_flow_hint_t *out);
+bool station_plan_flow_hint_format(const station_plan_flow_hint_t *hint,
+                                   char *out, size_t cap);
 float station_clamp_operator_price(float requested, float baseline);
 
 /* ----- Demand: what is this station starving for, right now? -----

@@ -804,6 +804,13 @@ TEST(test_v51_migration_furnace_count_heuristic) {
     add_module_at(st3, MODULE_FURNACE, 1, 1);
     add_module_at(st3, MODULE_FURNACE, 1, 2);
 
+    for (int s = 3; s <= 5; s++) {
+        for (int m = 0; m < w->stations[s].module_count; m++) {
+            if (w->stations[s].modules[m].type == MODULE_FURNACE)
+                w->stations[s].modules[m].commodity = (uint8_t)COMMODITY_COUNT;
+        }
+    }
+
     world_apply_cargo_schema_migration(w);
 
     ASSERT_EQ_INT((int)st1->modules[0].commodity, (int)COMMODITY_FERRITE_INGOT);
