@@ -774,6 +774,8 @@ int build_work_slots(int here_idx, vec2 here_pos,
                      int out_contracts[3],
                      bool out_fulfillable[3],
                      int out_held[3]);
+int station_contract_source_stock_count(const station_t *st,
+                                        const contract_t *ct);
 
 /* Station label/color helpers */
 const char* station_role_hub_label(const station_t* station);

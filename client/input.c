@@ -28,11 +28,11 @@
  *   [S]   TRADE tab → sell accepted cargo; JOBS tab → deliver selected
  *         contract or all matching contract cargo.
  *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
- *   [R]   DOCK tab → repair; plan mode → cycle module type.
- *   [M]   DOCK tab → upgrade mining laser; undocked → mining laser.
- *   [C]   DOCK tab → upgrade cargo hold.
+ *   [R]   SHIP panel → repair; plan mode → cycle module type.
+ *   [M]   SHIP panel → upgrade mining laser; undocked → mining laser.
+ *   [C]   SHIP panel → upgrade cargo hold.
  *   [H]   Hail ping + collect pending credits.
- *   [T]   DOCK tab → upgrade tractor.
+ *   [T]   SHIP panel → upgrade tractor.
  *
  *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
  *         triggers).
@@ -42,7 +42,7 @@
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
  *               (NOT bound in docked UI — use [Tab] to switch views.)
- *   [Tab]       Docked → cycle station panels (DOCK / TRADE / WORK / YARD).
+ *   [Tab]       Docked → cycle station panels (SHIP / TRADE / WORK / YARD).
  *               Shift+Tab reverses. Visibility comes from station panels.
  *
  * If adding a new overloaded key, update this table FIRST so the
@@ -138,6 +138,13 @@ static int input_station_manifest_count_c(const station_t *st, commodity_t commo
     for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
         total += (int)g.station_manifest_summary[s][commodity][gi];
     return total;
+}
+
+static int input_contract_quantity_goal(const contract_t *ct) {
+    int qty = (ct && ct->quantity_needed > 0.5f)
+            ? (int)ceilf(ct->quantity_needed)
+            : 1;
+    return qty > 0 ? qty : 1;
 }
 
 static float input_ship_manifest_backed_cargo_volume(const ship_t *ship) {
@@ -501,11 +508,24 @@ void station_panel_input_work(input_intent_t *intent) {
                 bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
                 int held = contract_fit_manifest_count(ct,
                                                        &LOCAL_PLAYER.ship.manifest);
-                if (at_origin && (!ledger ||
-                    ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
+                if (at_origin && ledger &&
+                    ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
                     intent->hail = true;
-                    set_notice("Taking %s on credit...",
-                               commodity_short_name(ct->commodity));
+                    set_notice("Returning delivery proof...");
+                } else if (at_origin && !ledger) {
+                    int source_stock =
+                        station_contract_source_stock_count(here_st, ct);
+                    if (source_stock <= 0) {
+                        set_notice("%s has no %s ready.",
+                                   here_st ? here_st->name : "Origin",
+                                   commodity_short_name(ct->commodity));
+                        return;
+                    }
+                    intent->hail = true;
+                    int qty = input_contract_quantity_goal(ct);
+                    if (qty > source_stock) qty = source_stock;
+                    set_notice("Taking %s x%d on credit...",
+                               commodity_short_name(ct->commodity), qty);
                 } else if (at_dest && ledger &&
                            ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
                            held > 0) {

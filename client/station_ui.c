@@ -138,6 +138,9 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
 /* ------------------------------------------------------------------ */
 
 static int station_manifest_count_c(const station_t *st, commodity_t commodity);
+static int station_manifest_count_cg(const station_t *st,
+                                     commodity_t commodity,
+                                     mining_grade_t grade);
 static int ship_manifest_count_c(const ship_t *ship, commodity_t commodity);
 static float ship_manifest_backed_cargo_volume(const ship_t *ship);
 static bool can_afford_upgrade_manifest_ui(const station_t *station,
@@ -154,6 +157,53 @@ static const NetDeliveryLedgerEntry *ui_delivery_ledger_for_contract(
             return entry;
     }
     return NULL;
+}
+
+static int ui_contract_quantity_goal(const contract_t *ct)
+{
+    int qty = (ct && ct->quantity_needed > 0.5f)
+            ? (int)ceilf(ct->quantity_needed)
+            : 1;
+    return qty > 0 ? qty : 1;
+}
+
+static bool ui_cargo_unit_is_named_ingot(const cargo_unit_t *unit)
+{
+    return unit && (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+           (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS;
+}
+
+int station_contract_source_stock_count(const station_t *st,
+                                        const contract_t *ct)
+{
+    if (!st || !ct ||
+        ct->commodity < 0 || ct->commodity >= COMMODITY_COUNT) {
+        return 0;
+    }
+
+    if (st->manifest.units && st->manifest.count > 0) {
+        int count = 0;
+        for (uint16_t i = 0; i < st->manifest.count; i++) {
+            const cargo_unit_t *unit = &st->manifest.units[i];
+            if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit)))
+                continue;
+            if (ct->proof_flags == 0 && ui_cargo_unit_is_named_ingot(unit))
+                continue;
+            count++;
+        }
+        return count;
+    }
+
+    if (ct->proof_flags != 0) return 0;
+    if (ct->required_grade < 0 || ct->required_grade >= MINING_GRADE_COUNT)
+        return 0;
+
+    int count = 0;
+    for (int gi = (int)ct->required_grade; gi < MINING_GRADE_COUNT; gi++) {
+        count += station_manifest_count_cg(st, ct->commodity,
+                                           (mining_grade_t)gi);
+    }
+    return count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -191,13 +241,20 @@ int build_work_slots(int here_idx, vec2 here_pos,
             bool at_dest = here_idx >= 0 && ct->station_index == here_idx;
             held_int = contract_fit_manifest_count(ct,
                                                    &LOCAL_PLAYER.ship.manifest);
-            if (at_origin && (!ledger ||
-                              ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
+            if (at_origin && ledger &&
+                ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
                 actionable_here = true;
-                if (held_int <= 0) {
-                    held_int = ledger && ledger->quantity_total > 0
-                        ? (int)ledger->quantity_total
-                        : (int)ceilf(ct->quantity_needed);
+                held_int = ledger->quantity_total > 0
+                    ? (int)ledger->quantity_total
+                    : ui_contract_quantity_goal(ct);
+            } else if (at_origin && !ledger) {
+                int source_stock = station_contract_source_stock_count(
+                    &g.world.stations[here_idx], ct);
+                if (source_stock > 0) {
+                    actionable_here = true;
+                    held_int = source_stock;
+                    int goal = ui_contract_quantity_goal(ct);
+                    if (held_int > goal) held_int = goal;
                 }
             } else if (at_dest && ledger &&
                        ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
@@ -475,7 +532,7 @@ static void draw_header_band(const station_ui_state_t *ui,
      *   Line 1: station name (left)   ·   [E] LAUNCH (right)
      *   Line 2: station role (left)   ·   ledger N cur · sig X.XX (right)
      *   Line 3: ticker (full width)
-     * Ship hull/cargo/modules live in the footer + the DOCK tab. */
+     * Ship hull/cargo/modules live in the footer + the SHIP panel. */
     const float HEADER_L1 = 26.0f;
     const float HEADER_L2 = 42.0f;
     const float HEADER_L3 = 58.0f;
@@ -524,7 +581,7 @@ static void draw_header_band(const station_ui_state_t *ui,
      * Role labels are long ("BEAMWORKS // field bench"), and the right
      * side can run to ~35 chars. Measure both and skip the right-side
      * data if they'd overlap — compact panels land there. The ledger
-     * remains visible in the DOCK tab's SHIP BAY section. */
+     * remains visible in the SHIP panel's SHIP BAY section. */
     const char *role_label = station_role_hub_label(st);
     float right_limit = panel_x + panel_w - right_margin;
     int role_chars = (int)floorf((right_limit - left_x) / cell_w);
@@ -1293,7 +1350,12 @@ static bool job_row_tracked_note(int here_idx,
             return true;
         }
         if (at_origin && !ledger) {
-            snprintf(out, out_size, "hail to take shipment");
+            int source_stock = station_contract_source_stock_count(
+                &g.world.stations[here_idx], ct);
+            if (source_stock > 0)
+                snprintf(out, out_size, "shipment ready");
+            else
+                snprintf(out, out_size, "origin out of stock");
             return true;
         }
         if (at_dest && ledger &&

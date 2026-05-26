@@ -410,7 +410,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
 
 static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                       contract_objective_t *out) {
-    if (!ct || ct->station_index >= MAX_STATIONS ||
+    if (!ct || ct->station_index < 0 || ct->station_index >= MAX_STATIONS ||
         ct->target_index < 0 || ct->target_index >= MAX_STATIONS) {
         return false;
     }
@@ -464,6 +464,19 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                      CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
         objective_set_copy(out, "SIGNAL // CONTRACT",
                            "RECOVER %s SHIPMENT OR RETURN TO %s",
+                           commodity_short_name(ct->commodity), origin);
+        return true;
+    }
+
+    int source_stock = station_contract_source_stock_count(
+        &g.world.stations[ct->target_index], ct);
+    if (source_stock <= 0) {
+        out->kind = CONTRACT_OBJECTIVE_PICKUP;
+        objective_set_job(out, "wait");
+        objective_set_station_target(out, ct->target_index,
+                                     CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "WAIT FOR %s AT %s",
                            commodity_short_name(ct->commodity), origin);
         return true;
     }
