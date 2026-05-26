@@ -255,12 +255,17 @@ void gossip_dock_handshake(world_t *w, int station_index,
     }
 
     /* 1. Merge this station's locally-issued contracts into its own
-     *    known pool. Only filter for active and station_index == self,
-     *    so we read this station's own state — local operation. */
+     *    known pool. Tractor/fracture contracts are local by station_index.
+     *    Delivery contracts are visible at both ends: station_index is the
+     *    destination, target_index is the recourse origin. */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         const contract_t *ct = &w->contracts[k];
         if (!ct->active) continue;
-        if (ct->station_index != station_index) continue;
+        if (ct->station_index != station_index &&
+            !(ct->action == CONTRACT_DELIVERY &&
+              ct->target_index == station_index)) {
+            continue;
+        }
         contract_summary_t s = contract_summary_make(ct);
         contract_pool_insert(st->known_contracts, &st->known_contract_count,
                              STATION_KNOWN_CONTRACT_CAP, &s);

@@ -211,15 +211,16 @@ TEST(test_station_authority_outpost_save_load) {
     ASSERT(w);
     w->rng = 8181u;
     world_reset(w);
-    /* Outposts live at slot >= 3. Slot 3 is unused after world_reset. */
-    station_t *out = &w->stations[3];
+    /* Outposts live after the seeded relay roots plus Freeport. */
+    station_t *out = &w->stations[SIGNAL_FIRST_OUTPOST_INDEX];
     snprintf(out->name, sizeof(out->name), "Outpost Beta");
     out->pos = v2(10000.0f, 0.0f);
     out->radius = 30.0f;
     out->dock_radius = 200.0f;
     out->signal_range = 8000.0f;
     out->id = w->next_station_id++;
-    if (w->station_count <= 3) w->station_count = 4;
+    if (w->station_count <= SIGNAL_FIRST_OUTPOST_INDEX)
+        w->station_count = SIGNAL_FIRST_OUTPOST_INDEX + 1;
     uint8_t founder[32];
     for (int i = 0; i < 32; i++) founder[i] = (uint8_t)(0xA0 + i);
     station_authority_init_outpost(out, founder, 9999ULL);
@@ -232,7 +233,7 @@ TEST(test_station_authority_outpost_save_load) {
     ASSERT(loaded);
     ASSERT(world_load(loaded, TMP("test_outpost_auth.sav")));
 
-    station_t *out_loaded = &loaded->stations[3];
+    station_t *out_loaded = &loaded->stations[SIGNAL_FIRST_OUTPOST_INDEX];
     ASSERT(memcmp(out_loaded->station_pubkey, out_pub_before, 32) == 0);
     ASSERT(memcmp(out_loaded->outpost_founder_pubkey, founder, 32) == 0);
     ASSERT_EQ_INT((int)out_loaded->outpost_planted_tick, 9999);

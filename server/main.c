@@ -645,6 +645,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->player_manifest_cache.valid = false;
     sp->inspect_snapshot_cache.valid = false;
     sp->known_contracts_cache.valid = false;
+    sp->delivery_ledger_cache.valid = false;
 }
 
 static void force_player_authoritative_resync(server_player_t *sp) {
@@ -3311,9 +3312,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
                     mg_http_reply(c, 404, api_headers, "{\"error\":\"station not found\"}");
-                } else if (sid >= 3 && !api_auth_ok(hm)) {
-                    /* Seeded stations (0-2) are read-only without auth;
-                     * player-built outposts (3+) require auth. */
+                } else if (sid >= SIGNAL_FIRST_OUTPOST_INDEX && !api_auth_ok(hm)) {
+                    /* Seeded stations are read-only without auth;
+                     * player-built outposts require auth. */
                     mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
                 } else {
                     handle_station_state(c, sid, hm);
@@ -4005,6 +4006,13 @@ static void broadcast_ship_states(void) {
         int klen = serialize_player_known_contracts(kbuf, world.contracts,
                                                     &sp->ship);
         ws_send_if_changed(sp->conn, &sp->known_contracts_cache, kbuf, (size_t)klen);
+        {
+            uint8_t dbuf[DELIVERY_LEDGER_HEADER +
+                         DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE];
+            int dlen = serialize_delivery_ledger(dbuf, &world, (uint8_t)i);
+            ws_send_if_changed(sp->conn, &sp->delivery_ledger_cache,
+                               dbuf, (size_t)dlen);
+        }
         sp->force_authoritative_resync = false;
     }
 
@@ -4525,12 +4533,12 @@ static void load_world_state(void) {
 
     /* The station catalog format doesn't persist currency_name (yet)
      * and the catalog loader memsets the whole struct, so the defaults
-     * set by world_reset() get wiped. Re-stamp the names for the three
-     * starter stations whenever they come back empty. */
-    static const char *defaults[3] = {
-        "prospect vouchers", "kepler bonds", "helios credits",
+     * set by world_reset() get wiped. Re-stamp the names for the seeded
+     * stations whenever they come back empty. */
+    static const char *defaults[SIGNAL_SEEDED_STATION_COUNT] = {
+        "prospect vouchers", "kepler bonds", "helios credits", "freeport scrip",
     };
-    for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
+    for (int i = 0; i < SIGNAL_SEEDED_STATION_COUNT && i < MAX_STATIONS; i++) {
         if (!station_exists(&world.stations[i])) continue;
         if (world.stations[i].currency_name[0] == '\0') {
             snprintf(world.stations[i].currency_name,

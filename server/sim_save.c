@@ -82,7 +82,10 @@ static uint32_t crc32_file(FILE *f) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 58  /* v58: station session section expanded from
+#define SAVE_VERSION 59  /* v59: delivery credit shipment sidecar table
+                          * persists outstanding origin debt, delivery
+                          * proof, default, and black-market states.
+                          * v58: station session section expanded from
                           * 64 to MAX_STATIONS=128 slots. v25-v57 saves
                           * still read exactly their historical 64 slots.
                           * v57: contracts gained forbidden origin masks.
@@ -1164,6 +1167,51 @@ static bool read_contract(FILE *f, contract_t *c) {
     return true;
 }
 
+static bool write_delivery_shipment(FILE *f, const delivery_shipment_t *s) {
+    WRITE_FIELD(f, s->active);
+    WRITE_FIELD(f, s->shipment_id);
+    WRITE_FIELD(f, s->origin_station);
+    WRITE_FIELD(f, s->destination_station);
+    WRITE_FIELD(f, s->contract_index);
+    WRITE_FIELD(f, s->debtor_player);
+    WRITE_FIELD(f, s->commodity);
+    WRITE_FIELD(f, s->quantity_total);
+    WRITE_FIELD(f, s->quantity_bound);
+    WRITE_FIELD(f, s->quantity_delivered);
+    WRITE_FIELD(f, s->quantity_black_market_sold);
+    WRITE_FIELD(f, s->debt_principal);
+    WRITE_FIELD(f, s->destination_payout);
+    WRITE_FIELD(f, s->origin_completion_credit);
+    WRITE_FIELD(f, s->due_tick);
+    WRITE_FIELD(f, s->status);
+    if (fwrite(s->cargo_pub, sizeof(s->cargo_pub), 1, f) != 1) return false;
+    return true;
+}
+
+static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s) {
+    memset(s, 0, sizeof(*s));
+    READ_FIELD(f, s->active);
+    READ_FIELD(f, s->shipment_id);
+    READ_FIELD(f, s->origin_station);
+    READ_FIELD(f, s->destination_station);
+    READ_FIELD(f, s->contract_index);
+    READ_FIELD(f, s->debtor_player);
+    READ_FIELD(f, s->commodity);
+    READ_FIELD(f, s->quantity_total);
+    READ_FIELD(f, s->quantity_bound);
+    READ_FIELD(f, s->quantity_delivered);
+    READ_FIELD(f, s->quantity_black_market_sold);
+    READ_FIELD(f, s->debt_principal);
+    READ_FIELD(f, s->destination_payout);
+    READ_FIELD(f, s->origin_completion_credit);
+    READ_FIELD(f, s->due_tick);
+    READ_FIELD(f, s->status);
+    if (fread(s->cargo_pub, sizeof(s->cargo_pub), 1, f) != 1) return false;
+    if (s->quantity_bound > MAX_DELIVERY_BOUND_CARGO) return false;
+    if (s->status > DELIVERY_SHIPMENT_DEFAULTED) return false;
+    return true;
+}
+
 bool world_save(const world_t *w, const char *path) {
     /* Write to a temp file first, then rename atomically to avoid
      * truncated saves if the process is interrupted mid-write. */
@@ -1235,6 +1283,14 @@ bool world_save(const world_t *w, const char *path) {
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
+    }
+    WRITE_FIELD(f, w->next_delivery_shipment_id);
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        if (!write_delivery_shipment(f, &w->delivery_shipments[i])) {
+            fclose(f);
+            remove(tmp_path);
+            return false;
+        }
     }
 
     /* v36: pubkey registry tail (#479 A.2). Variable-length: count + N
@@ -1335,7 +1391,7 @@ bool world_load(world_t *w, const char *path) {
         }
         /* v24→v25 migration: scan for active stations to set station_count */
         if (version < 25) {
-            w->station_count = 3;
+            w->station_count = SIGNAL_ROOT_STATION_COUNT;
             for (int i = 3; i < save_station_slots; i++)
                 if (station_exists(&w->stations[i]) && i >= w->station_count)
                     w->station_count = i + 1;
@@ -1413,6 +1469,19 @@ bool world_load(world_t *w, const char *path) {
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!read_contract(f, &w->contracts[i])) return false;
+    }
+    memset(w->delivery_shipments, 0, sizeof(w->delivery_shipments));
+    w->next_delivery_shipment_id = 1;
+    if (version >= 59) {
+        READ_FIELD(f, w->next_delivery_shipment_id);
+        if (w->next_delivery_shipment_id == 0)
+            w->next_delivery_shipment_id = 1;
+        for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+            if (!read_delivery_shipment(f, &w->delivery_shipments[i])) {
+                fclose(f);
+                return false;
+            }
+        }
     }
     /* v23 migration: read scaffolds so v22 module-remap can process them,
      * then they'll be zeroed after migrations complete */
@@ -1731,15 +1800,15 @@ bool world_load(world_t *w, const char *path) {
      * the pubkey itself (seeded indices 0/1/2 from world seed; outposts
      * from a zero-founder placeholder, accepted v39 provenance gap).
      *
-     * We rederive seeded slots 0/1/2 unconditionally — they always
-     * exist in any reachable world state — and also any outpost slot
+     * We rederive seeded slots unconditionally — they always exist in
+     * any reachable world state — and also any outpost slot
      * whose pubkey is non-zero (i.e. the slot was occupied at save
      * time). station_exists() depends on geometry fields that may
      * legitimately be zeroed in catalog-less test scenarios, so it's
      * not the right gate here. */
     static const uint8_t zero_pub[32] = {0};
     for (int i = 0; i < MAX_STATIONS; i++) {
-        if (i < 3 ||
+        if (i < SIGNAL_SEEDED_STATION_COUNT ||
             memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
             bool rekeyed = station_authority_rederive_secret(&w->stations[i],
                                                              w->belt_seed, i);
@@ -1756,6 +1825,8 @@ bool world_load(world_t *w, const char *path) {
             }
         }
     }
+    world_ensure_seeded_freeport(w);
+    rebuild_signal_chain(w);
     /* Layer C of #479: walk every station's chain log on disk and
      * verify it against its station_pubkey. A corrupt chain (bad
      * signature, broken prev_hash linkage, or last_hash mismatch

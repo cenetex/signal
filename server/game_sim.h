@@ -28,6 +28,8 @@ enum {
     /* #294 Slice 8: unified NPC ship_t pool. Sized for NPCs only today;
      * widening to include players is a later slice. */
     MAX_SHIPS = MAX_NPC_SHIPS,
+    MAX_DELIVERY_SHIPMENTS = 24,
+    MAX_DELIVERY_BOUND_CARGO = 16,
 };
 
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
@@ -259,6 +261,7 @@ typedef struct {
     net_payload_cache_t player_manifest_cache;
     net_payload_cache_t inspect_snapshot_cache;
     net_payload_cache_t known_contracts_cache;
+    net_payload_cache_t delivery_ledger_cache;
     /* Set when an action result is sent. The next player payload broadcast
      * bypasses hash suppression so rejected/no-op actions also reconcile
      * any optimistic client state. */
@@ -331,8 +334,28 @@ typedef struct {
 } server_player_t;
 
 typedef struct {
+    bool active;
+    uint16_t shipment_id;
+    uint8_t origin_station;
+    uint8_t destination_station;
+    uint8_t contract_index;
+    uint8_t debtor_player;
+    uint8_t commodity;
+    uint16_t quantity_total;
+    uint16_t quantity_bound;
+    uint16_t quantity_delivered;
+    uint16_t quantity_black_market_sold;
+    float debt_principal;
+    float destination_payout;
+    float origin_completion_credit;
+    uint32_t due_tick;
+    uint8_t status;
+    uint8_t cargo_pub[MAX_DELIVERY_BOUND_CARGO][32];
+} delivery_shipment_t;
+
+typedef struct {
     station_t stations[MAX_STATIONS];
-    int station_count;              /* highest active slot + 1 (3 at reset, grows with outposts) */
+    int station_count;              /* highest existing slot + 1 (seeded stations, then outposts) */
     uint32_t next_station_id;      /* monotonic counter for stable station IDs */
     asteroid_t asteroids[MAX_ASTEROIDS];
     fracture_claim_state_t fracture_claims[MAX_ASTEROIDS];
@@ -527,6 +550,8 @@ typedef struct {
     uint16_t next_npc_token;
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
+    delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
+    uint16_t next_delivery_shipment_id;
     bool player_only_mode;
     uint32_t next_fracture_id;
     belt_field_t belt;
@@ -570,6 +595,7 @@ typedef struct {
 
 float contract_price(const contract_t *c);
 void world_reset(world_t *w);
+void world_ensure_seeded_freeport(world_t *w);
 /* Genesis MOTD/tier chain events for the seeded stations. Caller must
  * invoke this only on a fresh-world boot (no save loaded), AFTER
  * world_reset. See seed_station_motd_chain_events in game_sim.c. */

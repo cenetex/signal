@@ -133,8 +133,8 @@ int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos) {
     sp->input.place_target_ring = -1;
     sp->input.place_target_slot = -1;
     world_sim_step(w, SIM_DT);
-    /* Find the new outpost (slot >= 3) */
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    /* Find the new outpost (slot >= SIGNAL_FIRST_OUTPOST_INDEX) */
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (station_exists(&w->stations[s])
             && fabsf(w->stations[s].pos.x - pos.x) < 5.0f
             && fabsf(w->stations[s].pos.y - pos.y) < 5.0f) {
@@ -165,7 +165,7 @@ int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
     /* credits are station-local (ledger) — no ship.credits field */
     vec2 outpost_pos = v2_add(w->stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(w, &w->players[0], outpost_pos);
-    if (outpost < 3) return -1;
+    if (outpost < SIGNAL_FIRST_OUTPOST_INDEX) return -1;
     w->stations[outpost].scaffold = false;
     w->stations[outpost].scaffold_progress = 1.0f;
     w->stations[outpost].signal_range = 6000.0f;

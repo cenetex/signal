@@ -94,6 +94,17 @@ static int contract_quantity_goal(const contract_t *ct) {
     return qty > 0 ? qty : 1;
 }
 
+static const NetDeliveryLedgerEntry *delivery_ledger_for_contract(
+    int contract_index)
+{
+    for (int i = 0; i < g.delivery_ledger_count; i++) {
+        const NetDeliveryLedgerEntry *entry = &g.delivery_ledger[i];
+        if (entry->contract_index == (uint8_t)contract_index)
+            return entry;
+    }
+    return NULL;
+}
+
 static bool cargo_unit_is_named_ingot(const cargo_unit_t *unit) {
     return unit && (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
            (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS;
@@ -397,6 +408,76 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
     return true;
 }
 
+static bool objective_credit_delivery(int contract_index, const contract_t *ct,
+                                      contract_objective_t *out) {
+    if (!ct || ct->station_index >= MAX_STATIONS ||
+        ct->target_index < 0 || ct->target_index >= MAX_STATIONS) {
+        return false;
+    }
+
+    char origin[32], dest[32];
+    station_name(ct->target_index, origin, sizeof(origin));
+    station_name(ct->station_index, dest, sizeof(dest));
+
+    out->active = true;
+    out->contract_index = contract_index;
+    out->source_station = ct->target_index;
+    out->target_station = ct->station_index;
+    out->commodity = ct->commodity;
+
+    const NetDeliveryLedgerEntry *ledger =
+        delivery_ledger_for_contract(contract_index);
+    int qty = contract_quantity_goal(ct);
+    if (ledger && ledger->quantity_total > 0)
+        qty = (int)ledger->quantity_total;
+    out->quantity = qty;
+
+    if (ledger && ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
+        out->kind = CONTRACT_OBJECTIVE_PICKUP;
+        objective_set_job(out, "clear");
+        objective_set_station_target(out, ct->target_index,
+                                     CONTRACT_OBJECTIVE_TARGET_DESTINATION);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "RETURN %s PROOF TO %s",
+                           dest, origin);
+        return true;
+    }
+
+    if (ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
+        int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+        if (held > 0) {
+            int deliver = held < qty ? held : qty;
+            out->kind = CONTRACT_OBJECTIVE_DELIVER;
+            out->quantity = deliver;
+            objective_set_job(out, "deliver");
+            objective_set_station_target(out, ct->station_index,
+                                         CONTRACT_OBJECTIVE_TARGET_DESTINATION);
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "DELIVER CREDIT %s x%d TO %s",
+                               commodity_short_name(ct->commodity),
+                               deliver, dest);
+            return true;
+        }
+        out->kind = CONTRACT_OBJECTIVE_PICKUP;
+        objective_set_job(out, "recover");
+        objective_set_station_target(out, ct->target_index,
+                                     CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "RECOVER %s SHIPMENT OR RETURN TO %s",
+                           commodity_short_name(ct->commodity), origin);
+        return true;
+    }
+
+    out->kind = CONTRACT_OBJECTIVE_PICKUP;
+    objective_set_job(out, "credit");
+    objective_set_station_target(out, ct->target_index,
+                                 CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
+    objective_set_copy(out, "SIGNAL // CONTRACT",
+                       "TAKE %s x%d ON CREDIT AT %s, DELIVER TO %s",
+                       commodity_short_name(ct->commodity), qty, origin, dest);
+    return true;
+}
+
 static int commodity_spine_priority(commodity_t commodity) {
     switch (commodity) {
     case COMMODITY_FERRITE_ORE:      return 0;
@@ -420,6 +501,17 @@ static bool contract_is_claimed_by_other_player(const contract_t *ct) {
 
 static bool player_can_fulfill_contract_now(const contract_t *ct) {
     if (!ct || !ct->active) return false;
+    if (ct->action == CONTRACT_DELIVERY) {
+        const NetDeliveryLedgerEntry *ledger =
+            delivery_ledger_for_contract((int)(ct - g.world.contracts));
+        if (ledger && ledger->status == DELIVERY_SHIPMENT_DELIVERED &&
+            LOCAL_PLAYER.docked &&
+            LOCAL_PLAYER.current_station == ct->target_index) {
+            return true;
+        }
+        return ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+               contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0;
+    }
     if (ct->action != CONTRACT_TRACTOR) return false;
     if (ct->commodity < COMMODITY_RAW_ORE_COUNT)
         return towed_matching_ore(ct) > 0.0f;
@@ -445,6 +537,9 @@ bool contract_objective_for_contract(int contract_index,
 
     if (ct->action == CONTRACT_FRACTURE)
         return objective_fracture(contract_index, ct, out);
+
+    if (ct->action == CONTRACT_DELIVERY)
+        return objective_credit_delivery(contract_index, ct, out);
 
     if (ct->action == CONTRACT_TRACTOR) {
         if (ct->commodity < COMMODITY_RAW_ORE_COUNT)
@@ -487,7 +582,9 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
         if (ct->claimed_by == (int8_t)LOCAL_PLAYER.id) score += 5000.0f;
         if (player_can_fulfill_contract_now(ct)) score += 6000.0f;
         if (LOCAL_PLAYER.docked &&
-            LOCAL_PLAYER.current_station == (int)ct->station_index) {
+            (LOCAL_PLAYER.current_station == (int)ct->station_index ||
+             (ct->action == CONTRACT_DELIVERY &&
+              LOCAL_PLAYER.current_station == ct->target_index))) {
             score += 900.0f;
         }
 
@@ -495,6 +592,15 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
         if (ct->action == CONTRACT_FRACTURE &&
             ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS) {
             target = g.world.asteroids[ct->target_index].pos;
+        } else if (ct->action == CONTRACT_DELIVERY) {
+            const NetDeliveryLedgerEntry *ledger = delivery_ledger_for_contract(i);
+            int station_idx = ct->target_index;
+            if (ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP)
+                station_idx = ct->station_index;
+            if (ledger && ledger->status == DELIVERY_SHIPMENT_DELIVERED)
+                station_idx = ct->target_index;
+            if (station_idx >= 0 && station_idx < MAX_STATIONS)
+                target = g.world.stations[station_idx].pos;
         } else if (ct->station_index < MAX_STATIONS) {
             target = g.world.stations[ct->station_index].pos;
         }

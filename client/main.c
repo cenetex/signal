@@ -400,9 +400,9 @@ static void sim_on_dock(const sim_event_t *ev) {
     g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
     g.dock_settle_timer = 1.0f; /* show ship settling before panel */
     int ds = LOCAL_PLAYER.current_station;
-    if (ds < 3) {
+    if (ds < SIGNAL_ROOT_STATION_COUNT) {
         g.episode.stations_visited |= (1 << ds);
-        if (g.episode.stations_visited == 7) /* all 3 */
+        if (g.episode.stations_visited == ((1u << SIGNAL_ROOT_STATION_COUNT) - 1u)) /* all relay roots */
             episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
     }
 }
@@ -627,6 +627,8 @@ static void sim_on_contract_complete(const sim_event_t *ev) {
         episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
     } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
         set_notice("Fracture contract complete.");
+    } else if (ev->contract_complete.action == CONTRACT_DELIVERY) {
+        set_notice("Delivery contract complete.");
     }
 }
 
@@ -827,7 +829,7 @@ static void sim_on_npc_spawned(const sim_event_t *ev) {
     /* Ep 5: Drones — first miner at a player outpost */
     if (!g.episode.watched[5] &&
         ev->npc_spawned.role == NPC_ROLE_MINER &&
-        ev->npc_spawned.home_station >= 3)
+        ev->npc_spawned.home_station >= SIGNAL_FIRST_OUTPOST_INDEX)
         episode_trigger(&g.episode, 5);
 }
 
@@ -1140,9 +1142,9 @@ static void sim_step(float dt) {
     if (!g.was_docked && LOCAL_PLAYER.docked) {
         /* Just docked */
         int ds = LOCAL_PLAYER.current_station;
-        if (ds < 3) {
+        if (ds < SIGNAL_ROOT_STATION_COUNT) {
             g.episode.stations_visited |= (1 << ds);
-            if (g.episode.stations_visited == 7)
+            if (g.episode.stations_visited == ((1u << SIGNAL_ROOT_STATION_COUNT) - 1u))
                 episode_trigger(&g.episode, 1);
         }
     }
@@ -1314,6 +1316,7 @@ static void init(void) {
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
             cbs.on_player_known_contracts = apply_remote_player_known_contracts;
+            cbs.on_delivery_ledger = apply_remote_delivery_ledger;
             cbs.on_death = on_remote_death;
             cbs.on_world_time = on_remote_world_time;
             cbs.on_events = apply_remote_events;

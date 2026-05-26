@@ -24,16 +24,16 @@ TEST(test_station_short_name_founders) {
 }
 
 TEST(test_station_short_name_outposts) {
-    /* Indices >= 3 are player-built outposts. They get a generic
+    /* Indices >= SIGNAL_FIRST_OUTPOST_INDEX are player-built outposts. They get a generic
      * "Outpost N" tag — distinct enough that two outposts in the
      * lineage display don't read as the same place. */
-    const char *o3 = station_short_name(3);
-    const char *o63 = station_short_name(63);
+    const char *o4 = station_short_name(SIGNAL_FIRST_OUTPOST_INDEX);
+    ASSERT(o4 != NULL);
+    ASSERT(strstr(o4, "Outpost") != NULL);
+    ASSERT(strstr(o4, "4") != NULL);
 
-    ASSERT(o3 != NULL && o63 != NULL);
-    /* Each should contain "Outpost" and the index. */
-    ASSERT(strstr(o3, "Outpost") != NULL);
-    ASSERT(strstr(o3, "3") != NULL);
+    const char *o63 = station_short_name(63);
+    ASSERT(o63 != NULL);
     ASSERT(strstr(o63, "Outpost") != NULL);
     ASSERT(strstr(o63, "63") != NULL);
 }

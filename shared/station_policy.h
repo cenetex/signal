@@ -23,6 +23,7 @@ typedef enum {
     STATION_POLICY_CARD_EXPAND_PRODUCTION,
     STATION_POLICY_CARD_RESERVE_TREASURY,
     STATION_POLICY_CARD_AGGRESSIVE_BOUNTIES,
+    STATION_POLICY_CARD_BLACK_MARKET,
     STATION_POLICY_CARD_COUNT
 } station_policy_card_id_t;
 
@@ -108,6 +109,12 @@ static inline const station_policy_card_t *station_policy_card_library(int *coun
             "aggressive bounties",
             30,
         },
+        [STATION_POLICY_CARD_BLACK_MARKET] = {
+            STATION_POLICY_CARD_BLACK_MARKET,
+            STATION_POLICY_DOMAIN_TRADE,
+            "black market",
+            20,
+        },
     };
     if (count) *count = STATION_POLICY_CARD_COUNT;
     return cards;
@@ -164,6 +171,13 @@ static inline bool station_policy_has_module(const station_t *st,
     return false;
 }
 
+static inline bool station_policy_is_off_relay(const station_t *st)
+{
+    if (!st) return false;
+    return st->signal_range <= 0.0f ||
+           !station_policy_has_module(st, MODULE_SIGNAL_RELAY);
+}
+
 static inline float station_policy_repair_kit_pressure(const station_t *st)
 {
     if (!st) return 0.0f;
@@ -194,6 +208,8 @@ static inline float station_policy_card_score(const station_t *st,
                                                         COMMODITY_REPAIR_KIT) != 0
                 ? 0.70f
                 : 0.0f;
+        case STATION_POLICY_CARD_BLACK_MARKET:
+            return station_policy_is_off_relay(st) ? 0.85f : 0.0f;
         case STATION_POLICY_CARD_REPAIR_STOCK_RESERVE:
             return has_dock ? (0.20f + kit_pressure * 0.70f) : 0.0f;
         case STATION_POLICY_CARD_EXPAND_PRODUCTION:
@@ -374,6 +390,12 @@ static inline float station_policy_trade_price_multiplier(const station_t *st,
     if (mult < 0.50f) mult = 0.50f;
     if (mult > 1.75f) mult = 1.75f;
     return mult;
+}
+
+static inline bool station_policy_accepts_contract_bound_cargo(
+    const station_t *st)
+{
+    return station_policy_cached_has(st, STATION_POLICY_CARD_BLACK_MARKET);
 }
 
 /* Baseline deterministic station policy.

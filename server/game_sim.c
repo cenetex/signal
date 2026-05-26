@@ -407,7 +407,7 @@ static void signal_grid_build(world_t *w); /* forward decl */
 
 /*
  * Recompute signal_connected for all stations via flood-fill.
- * Root stations (indices 0-2, the built-in ones) are always connected.
+ * Root stations (indices 0-2, the relay-root ones) are always connected.
  * An outpost is connected if its signal_range overlaps a connected station.
  */
 void rebuild_signal_chain(world_t *w) {
@@ -415,8 +415,9 @@ void rebuild_signal_chain(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++)
         w->stations[s].signal_connected = false;
 
-    /* Root stations (first 3) are always connected if active */
-    for (int s = 0; s < 3 && s < MAX_STATIONS; s++) {
+    /* Root stations are always connected if active. Freeport is seeded,
+     * but has no relay and therefore is not a signal-chain root. */
+    for (int s = 0; s < SIGNAL_ROOT_STATION_COUNT && s < MAX_STATIONS; s++) {
         if (station_is_active(&w->stations[s]))
             w->stations[s].signal_connected = true;
     }
@@ -1287,7 +1288,11 @@ static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t 
     return true;
 }
 
-static int transfer_ship_to_station_by_commodity_ex(ship_t *src, station_t *dst,
+static bool delivery_cargo_bound_to_player(world_t *w, int player_id,
+                                           const cargo_unit_t *unit);
+
+static int transfer_ship_to_station_by_commodity_ex(world_t *w, int player_id,
+                                                    ship_t *src, station_t *dst,
                                                     commodity_t commodity,
                                                     mining_grade_t preferred_grade,
                                                     int n) {
@@ -1302,6 +1307,10 @@ static int transfer_ship_to_station_by_commodity_ex(ship_t *src, station_t *dst,
         if (idx < 0) {
             for (uint16_t i = 0; i < src->manifest.count; i++) {
                 if (src->manifest.units[i].commodity == (uint8_t)commodity) {
+                    if (delivery_cargo_bound_to_player(w, player_id,
+                                                       &src->manifest.units[i])) {
+                        continue;
+                    }
                     idx = (int)i;
                     break;
                 }
@@ -1314,13 +1323,15 @@ static int transfer_ship_to_station_by_commodity_ex(ship_t *src, station_t *dst,
     return moved;
 }
 
-static int transfer_ship_to_station_by_commodity(ship_t *src, station_t *dst,
+static int transfer_ship_to_station_by_commodity(world_t *w, int player_id,
+                                                 ship_t *src, station_t *dst,
                                                  commodity_t commodity, int n) {
-    return transfer_ship_to_station_by_commodity_ex(src, dst, commodity,
+    return transfer_ship_to_station_by_commodity_ex(w, player_id, src, dst, commodity,
                                                     MINING_GRADE_COUNT, n);
 }
 
-static int transfer_ship_to_station_by_contract(ship_t *src, station_t *dst,
+static int transfer_ship_to_station_by_contract(world_t *w, int player_id,
+                                                ship_t *src, station_t *dst,
                                                 const contract_t *contract,
                                                 int n) {
     if (!src || !dst || !contract || n <= 0) return 0;
@@ -1329,6 +1340,10 @@ static int transfer_ship_to_station_by_contract(ship_t *src, station_t *dst,
     while (moved < n) {
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
+            if (delivery_cargo_bound_to_player(w, player_id,
+                                               &src->manifest.units[i])) {
+                continue;
+            }
             if (!contract_fit_is_ok(contract_fit_cargo_unit(contract,
                                                             &src->manifest.units[i]))) {
                 continue;
@@ -1399,9 +1414,11 @@ static int transfer_ship_tail_to_station(ship_t *src, station_t *dst, int n) {
     return moved;
 }
 
-static int manifest_find_top_sell_unit(const manifest_t *manifest,
+static int manifest_find_top_sell_unit(world_t *w, int player_id,
+                                       const manifest_t *manifest,
                                        commodity_t commodity,
-                                       mining_grade_t grade) {
+                                       mining_grade_t grade,
+                                       bool allow_bound) {
     if (!manifest || !manifest->units) return -1;
     int top_idx = -1;
     float top_mult = 1.0f;
@@ -1409,6 +1426,8 @@ static int manifest_find_top_sell_unit(const manifest_t *manifest,
         const cargo_unit_t *u = &manifest->units[i];
         if (u->commodity != (uint8_t)commodity) continue;
         if (grade < MINING_GRADE_COUNT && u->grade != (uint8_t)grade) continue;
+        if (!allow_bound && delivery_cargo_bound_to_player(w, player_id, u))
+            continue;
         float mult = prefix_class_price_multiplier((int)u->prefix_class);
         if (top_idx < 0 || mult > top_mult) {
             top_idx = (int)i;
@@ -1451,6 +1470,483 @@ static void sync_station_finished_inventory(station_t *st, commodity_t c) {
     st->manifest_dirty = true;
 }
 
+/* ================================================================== */
+/* Delivery credit shipments                                          */
+/* ================================================================== */
+
+static const float DELIVERY_ORIGIN_CREDIT_RATE = 0.10f;
+static const float DELIVERY_BLACK_MARKET_MARKDOWN = 0.35f;
+static const uint32_t DELIVERY_DUE_TICKS = 120u * 60u * 8u; /* 8 minutes */
+
+static void player_ledger_earn_at(server_player_t *sp, station_t *st,
+                                  float amount) {
+    if (!sp || !st || amount <= 0.0f) return;
+    if (server_player_can_use_pubkey_persistence(sp))
+        ledger_earn_by_pubkey(st, sp->pubkey, amount);
+    else
+        ledger_earn(st, sp->session_token, amount);
+    sp->ship.stat_credits_earned += amount;
+}
+
+static void player_ledger_force_debit_at(server_player_t *sp, station_t *st,
+                                         float amount) {
+    if (!sp || !st || amount <= 0.0f) return;
+    if (server_player_can_use_pubkey_persistence(sp))
+        ledger_force_debit_by_pubkey(st, sp->pubkey, amount, &sp->ship);
+    else
+        ledger_force_debit(st, sp->session_token, amount, &sp->ship);
+}
+
+static bool delivery_status_cargo_still_bound(uint8_t status) {
+    return status == DELIVERY_SHIPMENT_PICKED_UP ||
+           status == DELIVERY_SHIPMENT_BLACK_MARKET_SOLD ||
+           status == DELIVERY_SHIPMENT_DEFAULTED;
+}
+
+static bool delivery_shipment_has_pub(const delivery_shipment_t *shipment,
+                                      const uint8_t pub[32]) {
+    if (!shipment || !pub) return false;
+    for (uint16_t i = 0; i < shipment->quantity_bound &&
+                         i < MAX_DELIVERY_BOUND_CARGO; i++) {
+        if (memcmp(shipment->cargo_pub[i], pub, 32) == 0)
+            return true;
+    }
+    return false;
+}
+
+static delivery_shipment_t *delivery_shipment_for_cargo(
+    world_t *w, int player_id, const uint8_t pub[32])
+{
+    if (!w || player_id < 0 || !pub) return NULL;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active) continue;
+        if (shipment->debtor_player != (uint8_t)player_id) continue;
+        if (!delivery_status_cargo_still_bound(shipment->status)) continue;
+        if (delivery_shipment_has_pub(shipment, pub))
+            return shipment;
+    }
+    return NULL;
+}
+
+static bool delivery_cargo_bound_to_player(world_t *w, int player_id,
+                                           const cargo_unit_t *unit) {
+    return unit && delivery_shipment_for_cargo(w, player_id, unit->pub) != NULL;
+}
+
+static delivery_shipment_t *delivery_active_for_contract(world_t *w,
+                                                         int player_id,
+                                                         int contract_index) {
+    if (!w || player_id < 0 || contract_index < 0) return NULL;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active) continue;
+        if (shipment->debtor_player != (uint8_t)player_id) continue;
+        if (shipment->contract_index != (uint8_t)contract_index) continue;
+        if (shipment->status == DELIVERY_SHIPMENT_CLEARED) continue;
+        return shipment;
+    }
+    return NULL;
+}
+
+static delivery_shipment_t *delivery_alloc_shipment(world_t *w) {
+    if (!w) return NULL;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (shipment->active &&
+            shipment->status != DELIVERY_SHIPMENT_CLEARED &&
+            shipment->status != DELIVERY_SHIPMENT_DEFAULTED) {
+            continue;
+        }
+        memset(shipment, 0, sizeof(*shipment));
+        shipment->active = true;
+        if (w->next_delivery_shipment_id == 0)
+            w->next_delivery_shipment_id = 1;
+        shipment->shipment_id = w->next_delivery_shipment_id++;
+        if (w->next_delivery_shipment_id == 0)
+            w->next_delivery_shipment_id = 1;
+        return shipment;
+    }
+    return NULL;
+}
+
+static bool delivery_contract_has_source(const contract_t *ct) {
+    return ct && ct->action == CONTRACT_DELIVERY &&
+           ct->target_index >= 0 &&
+           ct->target_index < MAX_STATIONS;
+}
+
+static int delivery_find_source_stock_unit(const station_t *origin,
+                                           const contract_t *ct) {
+    if (!origin || !ct || !origin->manifest.units) return -1;
+    for (uint16_t i = 0; i < origin->manifest.count; i++) {
+        const cargo_unit_t *unit = &origin->manifest.units[i];
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit))) continue;
+        if (ct->proof_flags == 0 &&
+            (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+            (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+            continue;
+        }
+        return (int)i;
+    }
+    return -1;
+}
+
+static int delivery_source_stock_count(const station_t *origin,
+                                       const contract_t *ct) {
+    if (!origin || !ct || !origin->manifest.units) return 0;
+    int count = 0;
+    for (uint16_t i = 0; i < origin->manifest.count; i++) {
+        const cargo_unit_t *unit = &origin->manifest.units[i];
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit))) continue;
+        if (ct->proof_flags == 0 &&
+            (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+            (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+            continue;
+        }
+        count++;
+    }
+    return count;
+}
+
+static bool delivery_move_station_unit_to_ship(station_t *origin,
+                                               ship_t *ship,
+                                               uint16_t idx,
+                                               cargo_unit_t *out_unit) {
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+    if (!origin || !ship || !out_unit) return false;
+    if (!station_manifest_remove_with_chain(origin, idx, &unit, &chain))
+        return false;
+    if (!ship_manifest_push_with_chain(ship, &unit, &chain)) {
+        (void)station_manifest_push_with_chain(origin, &unit, &chain);
+        return false;
+    }
+    *out_unit = unit;
+    return true;
+}
+
+static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
+                                       contract_t *ct,
+                                       int contract_index) {
+    if (!w || !sp || !ct || !delivery_contract_has_source(ct)) return 0;
+    int origin_idx = ct->target_index;
+    if (sp->current_station != origin_idx) return 0;
+    if (delivery_active_for_contract(w, sp->id, contract_index)) return 0;
+    station_t *origin = &w->stations[origin_idx];
+    if (!station_exists(origin)) return 0;
+    if (!station_manifest_bootstrap(origin) ||
+        !ship_manifest_bootstrap(&sp->ship)) {
+        return 0;
+    }
+    int stock = delivery_source_stock_count(origin, ct);
+    if (stock <= 0) return 0;
+    float free_volume = ship_cargo_capacity(&sp->ship) -
+                        ship_total_cargo(&sp->ship);
+    float vol = commodity_volume(ct->commodity);
+    int room = (vol > FLOAT_EPSILON) ? (int)floorf(free_volume / vol)
+                                     : (int)floorf(free_volume);
+    if (room <= 0) return 0;
+    int needed = (int)ceilf(ct->quantity_needed);
+    if (needed <= 0) needed = 1;
+    int take = needed;
+    if (take > stock) take = stock;
+    if (take > room) take = room;
+    if (take > MAX_DELIVERY_BOUND_CARGO) take = MAX_DELIVERY_BOUND_CARGO;
+    if (take <= 0) return 0;
+
+    delivery_shipment_t scratch = {0};
+    scratch.active = true;
+    scratch.origin_station = (uint8_t)origin_idx;
+    scratch.destination_station = ct->station_index;
+    scratch.contract_index = (uint8_t)contract_index;
+    scratch.debtor_player = (uint8_t)sp->id;
+    scratch.commodity = (uint8_t)ct->commodity;
+    scratch.status = DELIVERY_SHIPMENT_PICKED_UP;
+    scratch.due_tick = w->tick + DELIVERY_DUE_TICKS;
+
+    int moved = 0;
+    float debt = 0.0f;
+    while (moved < take) {
+        int idx = delivery_find_source_stock_unit(origin, ct);
+        if (idx < 0) break;
+        cargo_unit_t unit = {0};
+        if (!delivery_move_station_unit_to_ship(origin, &sp->ship,
+                                                (uint16_t)idx, &unit)) {
+            break;
+        }
+        memcpy(scratch.cargo_pub[moved], unit.pub, 32);
+        moved++;
+        float unit_debt = station_sell_price(origin, ct->commodity);
+        if (unit_debt <= 0.0f)
+            unit_debt = station_buy_price(origin, ct->commodity);
+        debt += unit_debt;
+    }
+    if (moved <= 0) return 0;
+
+    delivery_shipment_t *shipment = delivery_alloc_shipment(w);
+    if (!shipment) {
+        (void)transfer_ship_tail_to_station(&sp->ship, origin, moved);
+        sync_ship_finished_cargo(&sp->ship, ct->commodity);
+        sync_station_finished_inventory(origin, ct->commodity);
+        return 0;
+    }
+    uint16_t id = shipment->shipment_id;
+    *shipment = scratch;
+    shipment->active = true;
+    shipment->shipment_id = id;
+    shipment->quantity_total = (uint16_t)moved;
+    shipment->quantity_bound = (uint16_t)moved;
+    shipment->debt_principal = debt;
+    shipment->destination_payout = contract_price(ct) * (float)moved;
+    shipment->origin_completion_credit = debt * DELIVERY_ORIGIN_CREDIT_RATE;
+    player_ledger_force_debit_at(sp, origin, debt);
+    ct->claimed_by = (int8_t)sp->id;
+    sync_ship_finished_cargo(&sp->ship, ct->commodity);
+    sync_station_finished_inventory(origin, ct->commodity);
+    SIM_LOG("[delivery] player %d took shipment %u: %d %s %s -> %s debt %.0f\n",
+            sp->id, shipment->shipment_id, moved,
+            commodity_short_name(ct->commodity),
+            origin->name, w->stations[ct->station_index].name, debt);
+    return moved;
+}
+
+static bool delivery_transfer_ship_idx_to_station(ship_t *ship, station_t *st,
+                                                  uint16_t idx,
+                                                  cargo_unit_t *out_unit) {
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+    if (!ship || !st || !out_unit) return false;
+    if (!ship_manifest_remove_with_chain(ship, idx, &unit, &chain))
+        return false;
+    if (!station_manifest_push_with_chain(st, &unit, &chain)) {
+        (void)ship_manifest_push_with_chain(ship, &unit, &chain);
+        return false;
+    }
+    *out_unit = unit;
+    return true;
+}
+
+static int delivery_find_bound_ship_unit(world_t *w, server_player_t *sp,
+                                         delivery_shipment_t *shipment,
+                                         commodity_t filter,
+                                         mining_grade_t grade) {
+    if (!w || !sp || !shipment || !sp->ship.manifest.units) return -1;
+    for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
+        const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+        if (filter < COMMODITY_COUNT &&
+            unit->commodity != (uint8_t)filter) {
+            continue;
+        }
+        if (grade < MINING_GRADE_COUNT && unit->grade != (uint8_t)grade)
+            continue;
+        if (unit->commodity != shipment->commodity) continue;
+        if (delivery_shipment_has_pub(shipment, unit->pub))
+            return (int)i;
+    }
+    return -1;
+}
+
+static float delivery_try_deliver_bound_cargo(world_t *w,
+                                              server_player_t *sp,
+                                              station_t *st,
+                                              commodity_t filter) {
+    if (!w || !sp || !st) return 0.0f;
+    float payout = 0.0f;
+    int station_idx = sp->current_station;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active) continue;
+        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (shipment->destination_station != (uint8_t)station_idx) continue;
+        if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        commodity_t c = (commodity_t)shipment->commodity;
+        if (filter < COMMODITY_COUNT && filter != c) continue;
+
+        uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
+            ? (uint16_t)(shipment->quantity_total - shipment->quantity_delivered)
+            : 0;
+        while (remaining > 0) {
+            int idx = delivery_find_bound_ship_unit(w, sp, shipment, c,
+                                                    MINING_GRADE_COUNT);
+            if (idx < 0) break;
+            cargo_unit_t unit = {0};
+            if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
+                                                       (uint16_t)idx,
+                                                       &unit)) {
+                break;
+            }
+            shipment->quantity_delivered++;
+            remaining--;
+            float unit_pay = shipment->quantity_total > 0
+                ? shipment->destination_payout / (float)shipment->quantity_total
+                : 0.0f;
+            payout += unit_pay;
+            sync_ship_finished_cargo(&sp->ship, c);
+            sync_station_finished_inventory(st, c);
+        }
+        if (shipment->quantity_delivered >= shipment->quantity_total) {
+            shipment->status = DELIVERY_SHIPMENT_DELIVERED;
+            int ci = shipment->contract_index;
+            if (ci >= 0 && ci < MAX_CONTRACTS &&
+                w->contracts[ci].active &&
+                w->contracts[ci].action == CONTRACT_DELIVERY) {
+                w->contracts[ci].quantity_needed = 0.0f;
+            }
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                .player_id = sp->id,
+                .contract_complete.action = CONTRACT_DELIVERY});
+        }
+    }
+    if (payout > 0.01f) {
+        player_ledger_earn_at(sp, st, payout);
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL, .player_id = sp->id,
+            .sell = { .station = sp->current_station,
+                      .grade = (uint8_t)MINING_GRADE_COMMON,
+                      .base_cr = (int)lroundf(payout),
+                      .bonus_cr = 0,
+                      .by_contract = 1u }});
+    }
+    return payout;
+}
+
+static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
+                                            station_t *st,
+                                            commodity_t filter,
+                                            mining_grade_t grade,
+                                            bool single_unit) {
+    if (!w || !sp || !st) return 0.0f;
+    station_policy_refresh(st, sp->current_station, w->tick);
+    if (!station_policy_accepts_contract_bound_cargo(st)) return 0.0f;
+
+    float payout = 0.0f;
+    bool sold_any = false;
+    while (true) {
+        delivery_shipment_t *shipment = NULL;
+        int idx = -1;
+        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
+            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+            if (filter < COMMODITY_COUNT &&
+                unit->commodity != (uint8_t)filter) {
+                continue;
+            }
+            if (grade < MINING_GRADE_COUNT &&
+                unit->grade != (uint8_t)grade) {
+                continue;
+            }
+            shipment = delivery_shipment_for_cargo(w, sp->id, unit->pub);
+            if (shipment) {
+                idx = (int)i;
+                break;
+            }
+        }
+        if (idx < 0 || !shipment) break;
+
+        cargo_unit_t unit = {0};
+        if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
+                                                   (uint16_t)idx, &unit)) {
+            break;
+        }
+        commodity_t c = (commodity_t)unit.commodity;
+        float unit_price = station_buy_price_unit(st, &unit);
+        if (unit_price <= 0.0f)
+            unit_price = station_buy_price(st, c);
+        payout += unit_price * DELIVERY_BLACK_MARKET_MARKDOWN;
+        shipment->quantity_black_market_sold++;
+        shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
+        int ci = shipment->contract_index;
+        if (ci >= 0 && ci < MAX_CONTRACTS &&
+            w->contracts[ci].active &&
+            w->contracts[ci].action == CONTRACT_DELIVERY) {
+            w->contracts[ci].active = false;
+        }
+        sync_ship_finished_cargo(&sp->ship, c);
+        sync_station_finished_inventory(st, c);
+        sold_any = true;
+        if (single_unit) break;
+    }
+
+    if (payout > 0.01f) {
+        player_ledger_earn_at(sp, st, payout);
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL, .player_id = sp->id,
+            .sell = { .station = sp->current_station,
+                      .grade = (uint8_t)MINING_GRADE_COMMON,
+                      .base_cr = (int)lroundf(payout),
+                      .bonus_cr = 0,
+                      .by_contract = 1u }});
+    }
+    if (sold_any) {
+        SIM_LOG("[delivery] player %d black-market sold bound cargo for %.0f at %s\n",
+                sp->id, payout, st->name);
+    }
+    return payout;
+}
+
+static void delivery_clear_origin_proofs(world_t *w, server_player_t *sp,
+                                         int station_idx) {
+    if (!w || !sp || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    station_t *origin = &w->stations[station_idx];
+    if (!station_exists(origin)) return;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active) continue;
+        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (shipment->origin_station != (uint8_t)station_idx) continue;
+        if (shipment->status != DELIVERY_SHIPMENT_DELIVERED) continue;
+        float credit = shipment->debt_principal +
+                       shipment->origin_completion_credit;
+        player_ledger_earn_at(sp, origin, credit);
+        shipment->status = DELIVERY_SHIPMENT_CLEARED;
+        int ci = shipment->contract_index;
+        if (ci >= 0 && ci < MAX_CONTRACTS &&
+            w->contracts[ci].active &&
+            w->contracts[ci].action == CONTRACT_DELIVERY) {
+            w->contracts[ci].active = false;
+        }
+        SIM_LOG("[delivery] player %d cleared shipment %u at %s for %.0f\n",
+                sp->id, shipment->shipment_id, origin->name, credit);
+    }
+}
+
+static void step_delivery_shipments(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active) continue;
+        if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        if (shipment->due_tick != 0 && w->tick > shipment->due_tick) {
+            shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
+            int ci = shipment->contract_index;
+            if (ci >= 0 && ci < MAX_CONTRACTS &&
+                w->contracts[ci].active &&
+                w->contracts[ci].action == CONTRACT_DELIVERY) {
+                w->contracts[ci].active = false;
+            }
+            continue;
+        }
+        int pid = shipment->debtor_player;
+        if (pid < 0 || pid >= MAX_PLAYERS || !w->players[pid].connected)
+            continue;
+        ship_t *ship = &w->players[pid].ship;
+        int carried = 0;
+        for (uint16_t m = 0; m < ship->manifest.count; m++) {
+            if (delivery_shipment_has_pub(shipment, ship->manifest.units[m].pub))
+                carried++;
+        }
+        if (carried == 0 && shipment->quantity_delivered == 0) {
+            shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
+            int ci = shipment->contract_index;
+            if (ci >= 0 && ci < MAX_CONTRACTS &&
+                w->contracts[ci].active &&
+                w->contracts[ci].action == CONTRACT_DELIVERY) {
+                w->contracts[ci].active = false;
+            }
+        }
+    }
+}
+
 static float manifest_grade_bonus_from_range(const manifest_t *manifest,
                                              uint16_t start,
                                              commodity_t commodity,
@@ -1483,7 +1979,9 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
      * so it can't be sold by the per-row path. */
     if (commodity < COMMODITY_RAW_ORE_COUNT) return false;
     station_t *st = &w->stations[sp->current_station];
-    if (!station_consumes(st, commodity)) return false;
+    if (!station_consumes(st, commodity)) {
+        return delivery_try_black_market_sell(w, sp, st, commodity, grade, true) > 0.01f;
+    }
     float space = station_finished_space(st, commodity);
     if (space < 0.999f) {
         emit_event(w, (sim_event_t){
@@ -1496,7 +1994,12 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
 
     /* Match the TRADE row quote: sell the highest prefix multiplier in
      * this commodity/grade bucket, not whichever unit happens to be FIFO. */
-    int unit_idx = manifest_find_top_sell_unit(&sp->ship.manifest, commodity, grade);
+    int unit_idx = manifest_find_top_sell_unit(w, sp->id, &sp->ship.manifest,
+                                               commodity, grade, false);
+    if (unit_idx < 0 &&
+        delivery_try_black_market_sell(w, sp, st, commodity, grade, true) > 0.01f) {
+        return true;
+    }
     /* Without a manifest unit we'd be selling provenance-less float
      * cargo, which the player UI shouldn't have offered. Fall through
      * to refusal (and keep the cargo) so we don't silently mint a
@@ -1563,6 +2066,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
 
     float payout = 0.0f;
+    float direct_payout = 0.0f;
     /* M7: track whether any of the accepted deliveries landed against an
      * active contract so the client's sell FX can tint yellow. */
     bool sold_against_contract = false;
@@ -1581,6 +2085,13 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
     bool tried_but_full = false;
     bool had_sellable_cargo = false;
+
+    float delivery_payout = delivery_try_deliver_bound_cargo(w, sp, st, filter);
+    if (delivery_payout > 0.01f) {
+        direct_payout += delivery_payout;
+        sold_against_contract = true;
+        had_sellable_cargo = true;
+    }
 
     /* Deliver any cargo matching active supply contracts at this station.
      *
@@ -1614,8 +2125,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (deliver_units <= 0) continue;
         float price_per = contract_price(ct);
         uint16_t station_count_before = st->manifest.count;
-        int moved = transfer_ship_to_station_by_contract(&sp->ship, st, ct,
-                                                         deliver_units);
+        int moved = transfer_ship_to_station_by_contract(w, sp->id, &sp->ship,
+                                                         st, ct, deliver_units);
         if (moved <= 0) continue;
         float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                       station_count_before,
@@ -1662,8 +2173,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 if (accepted_units <= 0) continue;
                 float price = station_buy_price(st, buy);
                 uint16_t station_count_before = st->manifest.count;
-                int moved = transfer_ship_to_station_by_commodity(&sp->ship, st, buy,
-                                                                  accepted_units);
+                int moved = transfer_ship_to_station_by_commodity(w, sp->id,
+                                                                  &sp->ship, st,
+                                                                  buy, accepted_units);
                 if (moved <= 0) continue;
                 float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                               station_count_before,
@@ -1673,6 +2185,14 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 sync_station_finished_inventory(st, buy);
             }
         }
+    }
+
+    float black_market_payout = delivery_try_black_market_sell(
+        w, sp, st, filter, MINING_GRADE_COUNT, false);
+    if (black_market_payout > 0.01f) {
+        direct_payout += black_market_payout;
+        sold_against_contract = true;
+        had_sellable_cargo = true;
     }
 
     if (payout > 0.01f) {
@@ -1718,7 +2238,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * consumer here" from "consumer present but glutted". Fires for
      * both selective and bulk sell so the player isn't left wondering
      * why the dock ate their input silently. */
-    if (payout < 0.01f) {
+    if (payout < 0.01f && direct_payout < 0.01f) {
         if (tried_but_full) {
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_ORDER_REJECTED,
@@ -2681,7 +3201,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
     if (sc->module_type == MODULE_SIGNAL_RELAY) {
         const float MATERIALIZE_RANGE = 600.0f;
         const float MATERIALIZE_RANGE_SQ = MATERIALIZE_RANGE * MATERIALIZE_RANGE;
-        for (int s = 3; s < MAX_STATIONS; s++) {
+        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
             station_t *st = &w->stations[s];
             if (!st->planned) continue;
             if (v2_dist_sq(st->pos, sc->pos) > MATERIALIZE_RANGE_SQ) continue;
@@ -2752,7 +3272,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
     }
 
     /* Auto-snap fallback: try to snap to a nearby outpost ring slot */
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         int ring, slot;
@@ -2777,7 +3297,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         && signal_strength_at(w, sc->pos) > 0.0f
         && can_place_outpost(w, sc->pos)) {
         int slot = -1;
-        for (int s = 3; s < MAX_STATIONS; s++) {
+        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
             if (!station_exists(&w->stations[s])) { slot = s; break; }
         }
         if (slot >= 0) {
@@ -3205,7 +3725,13 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
 static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int issuer_station) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *c = &w->contracts[i];
-        if (c->active && c->claimed_by == (int8_t)sp->id) return i;
+        if (c->active && c->claimed_by == (int8_t)sp->id) {
+            if (c->action == CONTRACT_DELIVERY &&
+                issuer_station == c->target_index) {
+                (void)delivery_pickup_from_origin(w, sp, c, i);
+            }
+            return i;
+        }
     }
 
     if (issuer_station < 0 || issuer_station >= MAX_STATIONS) return -1;
@@ -3215,7 +3741,10 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int 
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *c = &w->contracts[i];
         if (!c->active) continue;
-        if (c->station_index != (uint8_t)issuer_station) continue;
+        bool station_matches = c->station_index == (uint8_t)issuer_station;
+        if (c->action == CONTRACT_DELIVERY)
+            station_matches = station_matches || c->target_index == issuer_station;
+        if (!station_matches) continue;
         if (c->claimed_by >= 0 && c->claimed_by != (int8_t)sp->id) continue;
 
         float price_hint = isfinite(c->base_price) && c->base_price > 0.0f
@@ -3242,6 +3771,29 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int 
                 continue;
             float d = v2_len(v2_sub(w->asteroids[idx].pos, sp->ship.pos));
             score += 250.0f / fmaxf(1.0f, d / 1000.0f);
+        } else if (c->action == CONTRACT_DELIVERY) {
+            if (!delivery_contract_has_source(c)) continue;
+            delivery_shipment_t *shipment =
+                delivery_active_for_contract(w, sp->id, i);
+            int origin = c->target_index;
+            int destination = c->station_index;
+            if (issuer_station == origin) {
+                if (shipment && shipment->status == DELIVERY_SHIPMENT_DELIVERED) {
+                    score += 1000.0f;
+                } else if (!shipment) {
+                    int stock = delivery_source_stock_count(&w->stations[origin], c);
+                    if (stock <= 0) continue;
+                    score += 800.0f + (float)stock * 10.0f;
+                } else {
+                    score += 100.0f;
+                }
+            } else if (issuer_station == destination) {
+                if (!shipment || shipment->status != DELIVERY_SHIPMENT_PICKED_UP)
+                    continue;
+                score += 900.0f;
+            } else {
+                continue;
+            }
         }
 
         if (score > best_score) {
@@ -3252,8 +3804,12 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int 
 
     if (best_contract >= 0) {
         contract_t *ct = &w->contracts[best_contract];
-        if (ct->claimed_by < 0)
+        if (ct->action == CONTRACT_DELIVERY &&
+            issuer_station == ct->target_index) {
+            (void)delivery_pickup_from_origin(w, sp, ct, best_contract);
+        } else if (ct->claimed_by < 0) {
             ct->claimed_by = (int8_t)sp->id;
+        }
         contract_summary_t summary = contract_summary_make(ct);
         contract_pool_insert(sp->ship.known_contracts,
                              &sp->ship.known_contract_count,
@@ -3281,6 +3837,8 @@ static void emit_station_hail_response(world_t *w, server_player_t *sp, int stat
         emit_hail_miss(w, sp);
         return;
     }
+
+    delivery_clear_origin_proofs(w, sp, station_idx);
 
     float balance = server_player_can_use_pubkey_persistence(sp)
         ? ledger_balance_by_pubkey(&w->stations[station_idx], sp->pubkey)
@@ -3429,6 +3987,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         sp->docking_approach = false;
     }
     if (!sp->docked) return;
+    delivery_clear_origin_proofs(w, sp, sp->current_station);
     station_t *docked_st = &w->stations[sp->current_station];
     if (intent->service_sell) {
         /* Deliver to scaffolds/modules first, then sell remaining.
@@ -3922,7 +4481,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         float d_sq = v2_dist_sq(sp->beam_end, sc->pos);
                         if (d_sq > (sc->radius + 30.0f) * (sc->radius + 30.0f)) continue;
                         /* Hit — check if near a player outpost open slot */
-                        for (int s = 3; s < MAX_STATIONS; s++) {
+                        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
                             station_t *st = &w->stations[s];
                             if (!station_is_active(st)) continue;
                             int ring, slot;
@@ -3964,7 +4523,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         vec2 pos = sp->input.planned_outpost_pos;
         /* Faction-shared: only one planned outpost in the world at a time.
          * Any player creating a new blueprint cancels every existing one. */
-        for (int s = 3; s < MAX_STATIONS; s++) {
+        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
             station_t *old = &w->stations[s];
             if (old->planned) {
                 SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
@@ -3988,7 +4547,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
          * core coverage (>= OPERATIONAL band). */
         if (!too_close && plan_sig > 0.0f && plan_sig < OUTPOST_MAX_SIGNAL) {
             int slot = -1;
-            for (int s = 3; s < MAX_STATIONS; s++) {
+            for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
                 if (!station_exists(&w->stations[s])) { slot = s; break; }
             }
             if (slot >= 0) {
@@ -4039,7 +4598,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         int ring = sp->input.plan_ring;
         int slot = sp->input.plan_slot;
         module_type_t type = sp->input.plan_type;
-        if (s >= 3 && s < MAX_STATIONS && station_exists(&w->stations[s])
+        if (s >= SIGNAL_FIRST_OUTPOST_INDEX && s < MAX_STATIONS && station_exists(&w->stations[s])
             && !w->stations[s].scaffold
             && ring >= 1 && ring <= STATION_NUM_RINGS
             && slot >= 0 && slot < STATION_RING_SLOTS[ring]
@@ -4095,7 +4654,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         int s = sp->input.cancel_plan_st;
         int ring = sp->input.cancel_plan_ring;
         int slot = sp->input.cancel_plan_sl;
-        if (s >= 3 && s < MAX_STATIONS && station_exists(&w->stations[s])) {
+        if (s >= SIGNAL_FIRST_OUTPOST_INDEX && s < MAX_STATIONS && station_exists(&w->stations[s])) {
             station_t *st = &w->stations[s];
             for (int p = 0; p < st->placement_plan_count; p++) {
                 if (st->placement_plans[p].ring == ring &&
@@ -4112,7 +4671,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* 4. Cancel a planned outpost (faction-shared — anyone can cancel). */
     if (sp->input.cancel_planned_outpost && !w->player_only_mode) {
         int s = sp->input.cancel_planned_station;
-        if (s >= 3 && s < MAX_STATIONS) {
+        if (s >= SIGNAL_FIRST_OUTPOST_INDEX && s < MAX_STATIONS) {
             station_t *st = &w->stations[s];
             if (st->planned) {
                 station_cleanup(st);
@@ -4203,6 +4762,93 @@ static void contract_require_recipe_provenance(contract_t *c, recipe_id_t recipe
     c->proof_flags |= (uint8_t)(CONTRACT_PROOF_REQUIRE_PROOF |
                                 CONTRACT_PROOF_REQUIRE_RECIPE);
     c->required_recipe_id = (uint16_t)recipe;
+}
+
+static bool delivery_contract_duplicate(const world_t *w, int origin, int dest,
+                                        commodity_t commodity) {
+    if (!w) return true;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        const contract_t *ct = &w->contracts[i];
+        if (!ct->active || ct->action != CONTRACT_DELIVERY) continue;
+        if (ct->target_index == origin &&
+            ct->station_index == (uint8_t)dest &&
+            ct->commodity == commodity) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int delivery_best_source_for_contract(const world_t *w,
+                                             const contract_t *demand) {
+    if (!w || !demand || demand->station_index >= MAX_STATIONS) return -1;
+    int dest = demand->station_index;
+    int best = -1;
+    float best_score = 0.0f;
+    contract_t fit = *demand;
+    fit.action = CONTRACT_DELIVERY;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (s == dest) continue;
+        const station_t *source = &w->stations[s];
+        if (!station_exists(source)) continue;
+        int stock = delivery_source_stock_count(source, &fit);
+        if (stock <= 0) continue;
+        float d = sqrtf(v2_dist_sq(source->pos, w->stations[dest].pos));
+        float score = (float)stock * 1000.0f - d;
+        if (best < 0 || score > best_score) {
+            best = s;
+            best_score = score;
+        }
+    }
+    return best;
+}
+
+static void delivery_maybe_post_credit_contracts(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        const contract_t *demand = &w->contracts[i];
+        if (!demand->active || demand->action != CONTRACT_TRACTOR) continue;
+        if (demand->commodity < COMMODITY_RAW_ORE_COUNT) continue;
+        if (demand->station_index >= MAX_STATIONS) continue;
+
+        int free_slot = -1;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            if (!w->contracts[k].active) {
+                free_slot = k;
+                break;
+            }
+        }
+        if (free_slot < 0) return;
+
+        int dest = demand->station_index;
+        int origin = delivery_best_source_for_contract(w, demand);
+        if (origin < 0) continue;
+        if (delivery_contract_duplicate(w, origin, dest, demand->commodity))
+            continue;
+
+        contract_t fit = *demand;
+        fit.action = CONTRACT_DELIVERY;
+        fit.target_index = origin;
+        int stock = delivery_source_stock_count(&w->stations[origin], &fit);
+        if (stock <= 0) continue;
+        int qty = (int)ceilf(demand->quantity_needed);
+        if (qty <= 0) qty = 1;
+        if (qty > stock) qty = stock;
+        if (qty > 4) qty = 4;
+        if (qty > MAX_DELIVERY_BOUND_CARGO) qty = MAX_DELIVERY_BOUND_CARGO;
+        if (qty <= 0) continue;
+
+        contract_t delivery = *demand;
+        delivery.action = CONTRACT_DELIVERY;
+        delivery.station_index = (uint8_t)dest;
+        delivery.target_index = origin;
+        delivery.quantity_needed = (float)qty;
+        delivery.base_price = demand->base_price * 1.05f;
+        delivery.age = 0.0f;
+        delivery.claimed_by = -1;
+        delivery.target_pos = w->stations[origin].pos;
+        w->contracts[free_slot] = delivery;
+    }
 }
 
 static void step_contracts(world_t *w, float dt) {
@@ -4303,6 +4949,10 @@ static void step_contracts(world_t *w, float dt) {
             if (w->contracts[i].active && w->contracts[i].age > 60.0f) w->contracts[i].active = false;
             break;
         }
+        case CONTRACT_DELIVERY:
+            if (w->contracts[i].claimed_by < 0 && w->contracts[i].age > 600.0f)
+                w->contracts[i].active = false;
+            break;
         }
     }
 
@@ -4326,7 +4976,11 @@ static void step_contracts(world_t *w, float dt) {
         bool has_production_contract = false;
         bool has_kit_input_contract = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (!w->contracts[k].active || w->contracts[k].station_index != s) continue;
+            if (!w->contracts[k].active ||
+                w->contracts[k].action != CONTRACT_TRACTOR ||
+                w->contracts[k].station_index != s) {
+                continue;
+            }
             commodity_t cc = w->contracts[k].commodity;
             if (cc < COMMODITY_RAW_ORE_COUNT) {
                 has_ore_contract = true;
@@ -4560,6 +5214,7 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
     }
+
 }
 
 /* ================================================================== */
@@ -4918,7 +5573,7 @@ static void step_scaffolds(world_t *w, float dt) {
              * straight toward center. No orbit — ghosts aren't rotating.
              * On arrival, materialize the ghost into a real station.
              * Non-relay module scaffolds wait until the outpost is active. */
-            for (int s = 3; s < MAX_STATIONS; s++) {
+            for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
                 if (!st->planned) continue;
                 if (sc->module_type != MODULE_SIGNAL_RELAY) continue;
@@ -5000,7 +5655,7 @@ static void step_scaffolds(world_t *w, float dt) {
             if (!sc->active) continue; /* consumed by planned station above */
 
             /* Check if near an open ring slot on active outpost */
-            for (int s = 3; s < MAX_STATIONS; s++) {
+            for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
                 if (!station_is_active(st)) continue;
                 int ring, slot;
@@ -5658,8 +6313,10 @@ void world_sim_step(world_t *w, float dt) {
     step_frontier_director(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);
+    step_delivery_shipments(w);
     step_npc_ships(w, dt);
     generate_npc_distress_contracts(w, dt);
+    delivery_maybe_post_credit_contracts(w);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
         server_player_apply_queued_movement(&w->players[p], w->tick);
@@ -5836,6 +6493,46 @@ void world_seed_station_manifests(world_t *w) {
     }
 }
 
+void world_ensure_seeded_freeport(world_t *w) {
+    if (!w) return;
+    station_t *st = &w->stations[SIGNAL_FREEPORT_STATION_INDEX];
+    if (station_exists(st)) return;
+
+    station_cleanup(st);
+    memset(st, 0, sizeof(*st));
+    (void)station_manifest_bootstrap(st);
+    station_authority_init_seeded(st, w->belt_seed,
+                                  (uint32_t)SIGNAL_FREEPORT_STATION_INDEX);
+    chain_log_health_set(st, CHAIN_HEALTH_FRESH, false,
+                         0, NULL, "fresh chain; not verified yet");
+
+    if (w->next_station_id == 0) w->next_station_id = 1;
+    st->id = w->next_station_id++;
+    snprintf(st->name, sizeof(st->name), "%s", "Freeport");
+    st->pos = v2(0.0f, 8200.0f);
+    st->radius = 34.0f;
+    st->dock_radius = 220.0f;
+    st->signal_range = 0.0f;
+    st->base_price[COMMODITY_FERRITE_INGOT] = 18.0f;
+    st->base_price[COMMODITY_CUPRITE_INGOT] = 20.0f;
+    st->base_price[COMMODITY_CRYSTAL_INGOT] = 24.0f;
+    st->base_price[COMMODITY_FRAME] = 8.0f;
+    st->base_price[COMMODITY_LASER_MODULE] = 32.0f;
+    st->base_price[COMMODITY_TRACTOR_MODULE] = 34.0f;
+    st->base_price[COMMODITY_REPAIR_KIT] = 1.0f;
+    add_module_at(st, MODULE_DOCK, 1, 0);
+    st->arm_count = 1;
+    rebuild_station_services(st);
+    snprintf(st->station_slug, sizeof(st->station_slug), "freeport");
+    snprintf(st->currency_name, sizeof(st->currency_name), "freeport scrip");
+    snprintf(st->hail_message, sizeof(st->hail_message),
+             "Freeport. Local traffic only. Cargo bought as-is.");
+    snprintf(st->rati_hail_message, sizeof(st->rati_hail_message),
+             "Freeport recognizes the mark. No questions over open relay.");
+    if (w->station_count <= SIGNAL_FREEPORT_STATION_INDEX)
+        w->station_count = SIGNAL_FREEPORT_STATION_INDEX + 1;
+}
+
 /* Build and emit one CHAIN_EVT_OPERATOR_POST event of the given kind +
  * tier, with `text` as the payload body. The chain payload is a
  * fixed-prefix 38-byte header followed by the UTF-8 text bytes (no
@@ -5909,13 +6606,13 @@ static const char *const DEFAULT_STATION_TIER_TEXT[3][4] = {
  * to actual content, so a verifier walking the log can prove a station
  * authored a specific tier message at a specific tick.
  *
- * Stations with index >= 3 (player outposts) emit the hail message but
- * skip the tier events: there's no authored content for outposts yet. */
+ * Non-root stations emit the hail message but skip the tier events:
+ * there's no authored content for off-relay ports or outposts yet. */
 static void seed_station_motd_chain_events(world_t *w, station_t *st,
                                            int station_idx) {
     emit_operator_post(w, st, 0 /* HAIL_MOTD */, 0,
                        st->hail_message, (int)strlen(st->hail_message));
-    if (station_idx < 0 || station_idx >= 3) return;
+    if (station_idx < 0 || station_idx >= SIGNAL_ROOT_STATION_COUNT) return;
     for (int tier_idx = 0; tier_idx < 4; tier_idx++) {
         const char *text = DEFAULT_STATION_TIER_TEXT[station_idx][tier_idx];
         emit_operator_post(w, st, 2 /* RARITY_TIER */,
@@ -5930,7 +6627,9 @@ static void seed_station_motd_chain_events(world_t *w, station_t *st,
  * has set up station_authority. Calling it on a resumed world would
  * append duplicate genesis events to an already-extended chain. */
 void world_seed_station_chain_genesis(world_t *w) {
-    int n = w->station_count < 3 ? w->station_count : 3;
+    int n = w->station_count < SIGNAL_ROOT_STATION_COUNT
+        ? w->station_count
+        : SIGNAL_ROOT_STATION_COUNT;
     for (int s = 0; s < n; s++) {
         station_t *st = &w->stations[s];
         seed_station_motd_chain_events(w, st, s);
@@ -5969,6 +6668,7 @@ void world_reset(world_t *w) {
      * rotation never loses history. */
     w->rng = seed ? seed : 2037u;
     w->belt_seed = w->rng;  /* anchor for rock_pub derivation (#285) */
+    w->next_delivery_shipment_id = 1;
     /* Wipe process-level nav scratch so a freshly-reset world doesn't
      * inherit stale path/nav-mesh state from a previously-run world.
      * Matters for test isolation when many world_t instances are reset
@@ -5979,13 +6679,13 @@ void world_reset(world_t *w) {
         (void)station_manifest_bootstrap(&w->stations[i]);
 
     /* --- Seeded-station identity (Layer B of #479) ---
-     * Derive deterministic Ed25519 keypairs for the three seeded
-     * stations from the world seed *before* any other identity logic
-     * runs, so subsequent code (catalog save, signal_chain bootstrap,
-     * etc.) sees stations with stable pubkeys. New seed → new pubkeys
+     * Derive deterministic Ed25519 keypairs for seeded stations from
+     * the world seed *before* any other identity logic runs, so
+     * subsequent code (catalog save, signal_chain bootstrap, etc.) sees
+     * stations with stable pubkeys. New seed → new pubkeys
      * → new chain log filenames; previous worlds' logs survive on
      * disk under their old pubkeys and feed the highscore replay. */
-    for (int s = 0; s < 3; s++) {
+    for (int s = 0; s < SIGNAL_SEEDED_STATION_COUNT; s++) {
         station_authority_init_seeded(&w->stations[s], w->belt_seed,
                                        (uint32_t)s);
         chain_log_health_set(&w->stations[s], CHAIN_HEALTH_FRESH, false,
@@ -6180,7 +6880,8 @@ void world_reset(world_t *w) {
     snprintf(w->stations[2].hauler_chatter[1], sizeof(w->stations[2].hauler_chatter[1]), "Prestige cargo inbound.");
     snprintf(w->stations[2].rati_hail_message, sizeof(w->stations[2].rati_hail_message),
              "RATi-grade delivery received. Helios will remember the callsign.");
-    w->station_count = 3; /* 3 starter stations */
+
+    world_ensure_seeded_freeport(w);
 
     /* Genesis MOTD + tier events used to be emitted here, but doing so
      * on every world_reset corrupted the chain log: load_world_state
@@ -6197,7 +6898,7 @@ void world_reset(world_t *w) {
     {
         int slot = 0;
         int budget = FIELD_ASTEROID_TARGET; /* leave headroom for fracture children */
-        for (int s = 0; s < 3 && slot < budget; s++) {
+        for (int s = 0; s < SIGNAL_ROOT_STATION_COUNT && slot < budget; s++) {
             vec2 sp = w->stations[s].pos;
             int32_t scx, scy;
             chunk_coord(sp.x, sp.y, &scx, &scy);

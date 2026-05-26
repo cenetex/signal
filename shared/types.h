@@ -40,6 +40,13 @@ enum {
 };
 
 enum {
+    SIGNAL_ROOT_STATION_COUNT = 3,
+    SIGNAL_FREEPORT_STATION_INDEX = 3,
+    SIGNAL_SEEDED_STATION_COUNT = 4,
+    SIGNAL_FIRST_OUTPOST_INDEX = 4,
+};
+
+enum {
     /* bit 0 was STATION_SERVICE_ORE_BUYER — removed in #259 */
     STATION_SERVICE_REPAIR = 1 << 1,
     STATION_SERVICE_UPGRADE_LASER = 1 << 2,
@@ -1126,6 +1133,11 @@ typedef enum {
      * - target_index == -1 → quota of asteroid type (mining contract)
      * Replaces DESTROY and absorbs SCAN. */
     CONTRACT_FRACTURE = 1,
+    /* DELIVERY: recourse shipment credit.
+     * - station_index is the destination station that pays on delivery.
+     * - target_index is the origin/source station that releases cargo on
+     *   credit and clears the debt when destination proof returns. */
+    CONTRACT_DELIVERY = 2,
 } contract_action_t;
 
 typedef enum {
@@ -1135,6 +1147,15 @@ typedef enum {
     CONTRACT_PROOF_REQUIRE_PARENT = 1u << 3, /* required_parent must match parent_merkle */
     CONTRACT_PROOF_FORBID_ORIGIN  = 1u << 4, /* origin_station bit must not be in forbidden_origin_mask */
 } contract_proof_flags_t;
+
+typedef enum {
+    DELIVERY_SHIPMENT_OFFERED = 0,
+    DELIVERY_SHIPMENT_PICKED_UP,
+    DELIVERY_SHIPMENT_DELIVERED,
+    DELIVERY_SHIPMENT_CLEARED,
+    DELIVERY_SHIPMENT_BLACK_MARKET_SOLD,
+    DELIVERY_SHIPMENT_DEFAULTED,
+} delivery_shipment_status_t;
 
 
 enum { SIM_MAX_EVENTS = 64 };

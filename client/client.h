@@ -352,6 +352,8 @@ typedef struct {
      * and receives the mask in that same compact ordinal space; singleplayer
      * computes the equivalent from the local server mirror. */
     uint32_t player_known_contract_mask;
+    NetDeliveryLedgerEntry delivery_ledger[DELIVERY_LEDGER_MAX_RECORDS];
+    int delivery_ledger_count;
     /* --- Local identity (Layer A.1 of #479) --- */
     /* Persistent Ed25519 keypair owned by the player. Loaded from disk
      * (or generated on first run) before WebSocket connect; surfaced

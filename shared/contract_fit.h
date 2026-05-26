@@ -51,6 +51,14 @@ static inline bool contract_fit_has_bytes(const uint8_t bytes[32]) {
     return bytes && memcmp(bytes, zero, sizeof(zero)) != 0;
 }
 
+static inline bool contract_fit_is_finished_cargo_action(
+    const contract_t *contract)
+{
+    return contract &&
+           (contract->action == CONTRACT_TRACTOR ||
+            contract->action == CONTRACT_DELIVERY);
+}
+
 static inline contract_fit_reason_t contract_fit_cargo_fields(
     const contract_t *contract,
     commodity_t commodity,
@@ -59,7 +67,8 @@ static inline contract_fit_reason_t contract_fit_cargo_fields(
     bool has_proof)
 {
     if (!contract || !contract->active) return CONTRACT_FIT_INACTIVE;
-    if (contract->action != CONTRACT_TRACTOR) return CONTRACT_FIT_WRONG_ACTION;
+    if (!contract_fit_is_finished_cargo_action(contract))
+        return CONTRACT_FIT_WRONG_ACTION;
     if (quantity == 0) return CONTRACT_FIT_NO_CARGO;
     if (commodity >= COMMODITY_COUNT ||
         contract->commodity != commodity) {

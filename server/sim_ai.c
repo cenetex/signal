@@ -89,7 +89,7 @@ void frontier_virtual_pilots_set(world_t *w, int count) {
 static int frontier_count_planned_outposts(const world_t *w) {
     int count = 0;
     if (!w) return 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (w->stations[s].planned) count++;
     }
     return count;
@@ -121,7 +121,7 @@ static int frontier_count_scaffold_work(const world_t *w, module_type_t type) {
 static int frontier_count_module_plans(const world_t *w, module_type_t type) {
     int count = 0;
     if (!w) return 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         if (st->planned_owner != -1) continue;
@@ -133,7 +133,7 @@ static int frontier_count_module_plans(const world_t *w, module_type_t type) {
 
 static int frontier_find_free_station_slot(const world_t *w) {
     if (!w) return -1;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) return s;
     }
     return -1;
@@ -252,7 +252,7 @@ static bool frontier_virtual_manufacture_one(world_t *w) {
 
 static int frontier_find_planned_relay_destination(const world_t *w) {
     if (!w) return -1;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (st->planned) return s;
     }
@@ -286,7 +286,7 @@ static int frontier_find_active_module_destination(const world_t *w,
                                                   int *out_ring,
                                                   int *out_slot) {
     if (!w) return -1;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         for (int p = 0; p < st->placement_plan_count; p++) {
@@ -356,7 +356,7 @@ static bool frontier_virtual_deliver_one(world_t *w) {
 
 static bool frontier_virtual_supply_one(world_t *w) {
     if (!w) return false;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st) || st->planned) continue;
         if (st->scaffold && st->scaffold_progress < 1.0f) {
@@ -367,7 +367,7 @@ static bool frontier_virtual_supply_one(world_t *w) {
             return true;
         }
     }
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st) || st->scaffold) continue;
         for (int m = 0; m < st->module_count; m++) {
@@ -492,7 +492,7 @@ static bool frontier_slot_reserved(const station_t *st, int ring, int slot) {
 static bool frontier_add_module_plan(world_t *w, int station_idx,
                                      const frontier_starter_plan_t *plan) {
     if (!w || !plan) return false;
-    if (station_idx < 3 || station_idx >= MAX_STATIONS) return false;
+    if (station_idx < SIGNAL_FIRST_OUTPOST_INDEX || station_idx >= MAX_STATIONS) return false;
     station_t *st = &w->stations[station_idx];
     if (!station_exists(st)) return false;
     if (st->planned_owner != -1) return false;
@@ -514,7 +514,7 @@ static bool frontier_add_module_plan(world_t *w, int station_idx,
 static int frontier_ensure_starter_module_plans(world_t *w) {
     int created = 0;
     if (!w) return 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         if (!st->planned && !station_is_active(st)) continue;
@@ -2417,7 +2417,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
 }
 
-/* Find an open ring slot at any active player outpost (s >= 3) that
+/* Find an open ring slot at any active player outpost that
  * matches the given module type. Used by tow drones to pick a delivery
  * destination for a loose scaffold. Returns -1 if none. */
 static int find_destination_for_scaffold(const world_t *w, module_type_t type,
@@ -2425,7 +2425,7 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type,
     /* Pass 1: active outposts with a placement plan for this type.
      * Planned outposts are only valid for SIGNAL_RELAY below; otherwise
      * a hopper/furnace can accidentally become the founding scaffold. */
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (s == exclude_station) continue;
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -2434,7 +2434,7 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type,
         }
     }
     /* Pass 2: any active outpost with at least one open ring slot. */
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (s == exclude_station) continue;
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -2450,7 +2450,7 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type,
      * and-egg of "first relay needs an outpost that needs a relay" is
      * resolved by the drone. */
     if (type == MODULE_SIGNAL_RELAY) {
-        for (int s = 3; s < MAX_STATIONS; s++) {
+        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
             if (s == exclude_station) continue;
             const station_t *st = &w->stations[s];
             if (st->planned) return s;

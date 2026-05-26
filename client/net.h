@@ -128,6 +128,25 @@ typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
  * hasn't heard about via dock contact. */
 typedef void (*net_on_player_known_contracts_fn)(uint32_t mask);
 
+typedef struct {
+    uint16_t shipment_id;
+    uint8_t status;
+    uint8_t origin_station;
+    uint8_t destination_station;
+    uint8_t contract_index;
+    uint8_t commodity;
+    uint16_t quantity_total;
+    uint16_t quantity_delivered;
+    uint16_t quantity_bound;
+    float debt_principal;
+    float destination_payout;
+    float origin_completion_credit;
+    uint32_t due_tick;
+} NetDeliveryLedgerEntry;
+
+typedef void (*net_on_delivery_ledger_fn)(
+    const NetDeliveryLedgerEntry *entries, int count);
+
 /* Packed station identity for network sync.
  * flags: bit0=scaffold, bit1=planned. */
 typedef struct {
@@ -354,6 +373,7 @@ typedef struct {
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
     net_on_player_known_contracts_fn on_player_known_contracts;
+    net_on_delivery_ledger_fn on_delivery_ledger;
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,
                      float vel_x, float vel_y, float angle,
                      float ore_mined, float credits_earned, float credits_spent,

@@ -3218,7 +3218,7 @@ static int station_unlocked_rings_client(const station_t *st) {
 /* Draw planned stations (server-side ghost outposts) as wireframe rings.
  * Visible to all players. Materialized when a scaffold is towed near. */
 static void draw_planned_stations(void) {
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         if (!st->planned) continue;
         vec2 c = st->pos;
@@ -3262,7 +3262,7 @@ static void draw_planned_stations(void) {
 
 /* Draw existing placement plans as faint colored ghosts at their slots. */
 static void draw_placement_plans(void) {
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         if (!station_exists(st) || st->scaffold) continue;
         if (st->placement_plan_count == 0) continue;

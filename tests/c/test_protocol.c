@@ -793,6 +793,85 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
     ASSERT_EQ_INT(contract_compact_index_for_slot(contracts, 7), 1);
 }
 
+TEST(test_delivery_contract_action_serializes) {
+    contract_t contracts[MAX_CONTRACTS];
+    memset(contracts, 0, sizeof(contracts));
+    contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 3.0f,
+        .base_price = 42.0f,
+    };
+
+    uint8_t buf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
+    int len = serialize_contracts(buf, contracts);
+    ASSERT_EQ_INT(len, 2 + CONTRACT_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_CONTRACTS);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(buf[2], CONTRACT_DELIVERY);
+    ASSERT_EQ_INT(buf[3], 2);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[2 + 28]), 0);
+    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 72);
+}
+
+TEST(test_delivery_ledger_serializes_player_shipments) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.delivery_shipments[0] = (delivery_shipment_t){
+        .active = true,
+        .shipment_id = 77,
+        .origin_station = 0,
+        .destination_station = 2,
+        .contract_index = 4,
+        .debtor_player = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_total = 3,
+        .quantity_bound = 3,
+        .quantity_delivered = 1,
+        .debt_principal = 60.0f,
+        .destination_payout = 150.0f,
+        .origin_completion_credit = 6.0f,
+        .due_tick = 900,
+        .status = DELIVERY_SHIPMENT_PICKED_UP,
+    };
+    w.delivery_shipments[1] = (delivery_shipment_t){
+        .active = true,
+        .shipment_id = 88,
+        .debtor_player = 1,
+        .status = DELIVERY_SHIPMENT_CLEARED,
+    };
+    w.delivery_shipments[2] = (delivery_shipment_t){
+        .active = true,
+        .shipment_id = 99,
+        .debtor_player = 0,
+        .status = DELIVERY_SHIPMENT_PICKED_UP,
+    };
+
+    uint8_t buf[DELIVERY_LEDGER_HEADER +
+                DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE];
+    int len = serialize_delivery_ledger(buf, &w, 1);
+    ASSERT_EQ_INT(len, DELIVERY_LEDGER_HEADER + DELIVERY_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_DELIVERY_LEDGER);
+    ASSERT_EQ_INT(buf[1], 1);
+    const uint8_t *p = &buf[DELIVERY_LEDGER_HEADER];
+    ASSERT_EQ_INT(read_u16_le(&p[0]), 77);
+    ASSERT_EQ_INT(p[2], DELIVERY_SHIPMENT_PICKED_UP);
+    ASSERT_EQ_INT(p[3], 0);
+    ASSERT_EQ_INT(p[4], 2);
+    ASSERT_EQ_INT(p[5], 4);
+    ASSERT_EQ_INT(p[6], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(read_u16_le(&p[7]), 3);
+    ASSERT_EQ_INT(read_u16_le(&p[9]), 1);
+    ASSERT_EQ_INT(read_u16_le(&p[11]), 3);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[13]), 60.0f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[17]), 150.0f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[21]), 6.0f, 0.001f);
+    ASSERT_EQ_INT((int)read_u32_le(&p[25]), 900);
+}
+
 TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
     WORLD_DECL;
     world_reset(&w);
@@ -1174,6 +1253,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_STATION_DIAG);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS);
     ASSERT_EQ_INT(buf[7], (len - PROTOCOL_INFO_HEADER_SIZE) /
                           PROTOCOL_INFO_STREAM_RECORD_SIZE);
     ASSERT(buf[7] <= PROTOCOL_INFO_STREAM_CAPACITY);
@@ -1214,6 +1294,15 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u16_le(&player_manifest[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
     ASSERT_EQ_INT(read_u16_le(&player_manifest[4]), PLAYER_MANIFEST_HEADER);
     ASSERT_EQ_INT(read_u16_le(&player_manifest[6]), PLAYER_MANIFEST_ENTRY);
+
+    const uint8_t *delivery_ledger = find_protocol_stream(buf, NET_MSG_DELIVERY_LEDGER);
+    ASSERT(delivery_ledger != NULL);
+    ASSERT_EQ_INT(delivery_ledger[1], PROTOCOL_STREAM_CLASS_PLAYER);
+    ASSERT(read_u16_le(&delivery_ledger[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&delivery_ledger[2]) & PROTOCOL_STREAM_FLAG_DIRTY_ONLY);
+    ASSERT_EQ_INT(read_u16_le(&delivery_ledger[4]), DELIVERY_LEDGER_HEADER);
+    ASSERT_EQ_INT(read_u16_le(&delivery_ledger[6]), DELIVERY_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&delivery_ledger[8]), DELIVERY_LEDGER_MAX_RECORDS);
 
     const uint8_t *handoff_request = find_protocol_stream(buf, NET_MSG_HANDOFF_REQUEST);
     ASSERT(handoff_request != NULL);
@@ -1315,6 +1404,8 @@ void register_protocol_main_tests(void) {
     RUN(test_station_identity_serializes_operator_text);
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
+    RUN(test_delivery_contract_action_serializes);
+    RUN(test_delivery_ledger_serializes_player_shipments);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);
     RUN(test_named_ingot_record_serializes_grade);

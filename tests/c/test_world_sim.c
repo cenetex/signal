@@ -12,6 +12,11 @@ TEST(test_world_reset_creates_stations) {
     ASSERT_STR_EQ(w.stations[1].name, "Kepler Yard");
     ASSERT_STR_EQ(w.stations[2].name, "Helios Works");
     ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
+    ASSERT_STR_EQ(w.stations[SIGNAL_FREEPORT_STATION_INDEX].name, "Freeport");
+    ASSERT(station_has_module(&w.stations[SIGNAL_FREEPORT_STATION_INDEX], MODULE_DOCK));
+    ASSERT(!station_has_module(&w.stations[SIGNAL_FREEPORT_STATION_INDEX],
+                               MODULE_SIGNAL_RELAY));
+    ASSERT_EQ_INT(w.station_count, SIGNAL_SEEDED_STATION_COUNT);
 }
 
 TEST(test_world_reset_spawns_asteroids) {

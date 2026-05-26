@@ -145,6 +145,17 @@ static bool can_afford_upgrade_manifest_ui(const station_t *station,
                                            ship_upgrade_t upgrade,
                                            float balance);
 
+static const NetDeliveryLedgerEntry *ui_delivery_ledger_for_contract(
+    int contract_index)
+{
+    for (int i = 0; i < g.delivery_ledger_count; i++) {
+        const NetDeliveryLedgerEntry *entry = &g.delivery_ledger[i];
+        if (entry->contract_index == (uint8_t)contract_index)
+            return entry;
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* WORK-tab contract slot builder                                      */
 /* ------------------------------------------------------------------ */
@@ -161,7 +172,7 @@ int build_work_slots(int here_idx, vec2 here_pos,
     }
     int count = 0;
 
-    /* Pass 1: TRACTOR contracts at this station the player can fulfill
+    /* Pass 1: contracts at this station the player can act on
      * right now. Raw ore lives in towed S-tier fragments; finished goods
      * are counted from the ship manifest. */
     for (int ci = 0; ci < MAX_CONTRACTS && count < 3; ci++) {
@@ -171,24 +182,47 @@ int build_work_slots(int here_idx, vec2 here_pos,
         if (!(g.player_known_contract_mask & (1u << ci))) continue;
         const contract_t *ct = &g.world.contracts[ci];
         if (!ct->active) continue;
-        if (ct->action != CONTRACT_TRACTOR) continue;
-        if (here_idx < 0 || ct->station_index != here_idx) continue;
         int held_int = 0;
-        if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
-            float held_ore = 0.0f;
-            const ship_t *ship = &LOCAL_PLAYER.ship;
-            for (int t = 0; t < ship->towed_count; t++) {
-                int fi = ship->towed_fragments[t];
-                if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
-                const asteroid_t *a = &g.world.asteroids[fi];
-                if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
-                held_ore += a->ore;
+        bool actionable_here = false;
+        if (ct->action == CONTRACT_DELIVERY) {
+            const NetDeliveryLedgerEntry *ledger =
+                ui_delivery_ledger_for_contract(ci);
+            bool at_origin = here_idx >= 0 && ct->target_index == here_idx;
+            bool at_dest = here_idx >= 0 && ct->station_index == here_idx;
+            held_int = contract_fit_manifest_count(ct,
+                                                   &LOCAL_PLAYER.ship.manifest);
+            if (at_origin && (!ledger ||
+                              ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
+                actionable_here = true;
+                if (held_int <= 0) {
+                    held_int = ledger && ledger->quantity_total > 0
+                        ? (int)ledger->quantity_total
+                        : (int)ceilf(ct->quantity_needed);
+                }
+            } else if (at_dest && ledger &&
+                       ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+                       held_int > 0) {
+                actionable_here = true;
             }
-            held_int = (int)lroundf(held_ore);
-        } else {
-            held_int = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+        } else if (ct->action == CONTRACT_TRACTOR) {
+            if (here_idx < 0 || ct->station_index != here_idx) continue;
+            if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+                float held_ore = 0.0f;
+                const ship_t *ship = &LOCAL_PLAYER.ship;
+                for (int t = 0; t < ship->towed_count; t++) {
+                    int fi = ship->towed_fragments[t];
+                    if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+                    const asteroid_t *a = &g.world.asteroids[fi];
+                    if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
+                    held_ore += a->ore;
+                }
+                held_int = (int)lroundf(held_ore);
+            } else {
+                held_int = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+            }
+            actionable_here = held_int > 0;
         }
-        if (held_int <= 0) continue;
+        if (!actionable_here) continue;
         out_contracts[count]   = ci;
         out_fulfillable[count] = true;
         out_held[count]        = held_int;
@@ -205,14 +239,37 @@ int build_work_slots(int here_idx, vec2 here_pos,
             if (!(g.player_known_contract_mask & (1u << ci))) continue; /* gossip filter */
             const contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
-            if (ct->station_index >= MAX_STATIONS) continue;
-            if (!station_exists(&g.world.stations[ct->station_index])) continue;
+            if (ct->action == CONTRACT_DELIVERY) {
+                if (ct->station_index >= MAX_STATIONS ||
+                    ct->target_index < 0 ||
+                    ct->target_index >= MAX_STATIONS) {
+                    continue;
+                }
+                if (!station_exists(&g.world.stations[ct->station_index]) ||
+                    !station_exists(&g.world.stations[ct->target_index])) {
+                    continue;
+                }
+            } else {
+                if (ct->station_index >= MAX_STATIONS) continue;
+                if (!station_exists(&g.world.stations[ct->station_index])) continue;
+            }
             bool already = false;
             for (int s = 0; s < count; s++)
                 if (out_contracts[s] == ci) { already = true; break; }
             if (already) continue;
-            vec2 target = (ct->action == CONTRACT_TRACTOR)
-                ? g.world.stations[ct->station_index].pos : ct->target_pos;
+            vec2 target = ct->target_pos;
+            if (ct->action == CONTRACT_TRACTOR) {
+                target = g.world.stations[ct->station_index].pos;
+            } else if (ct->action == CONTRACT_DELIVERY) {
+                const NetDeliveryLedgerEntry *ledger =
+                    ui_delivery_ledger_for_contract(ci);
+                int station_idx = ct->target_index;
+                if (ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP)
+                    station_idx = ct->station_index;
+                if (ledger && ledger->status == DELIVERY_SHIPMENT_DELIVERED)
+                    station_idx = ct->target_index;
+                target = g.world.stations[station_idx].pos;
+            }
             float d = v2_dist_sq(here_pos, target);
             for (int s = 0; s < 3; s++) {
                 if (d < nearest_d[s]) {
@@ -1111,7 +1168,8 @@ static bool contract_accepts_trade_row(const contract_t *ct,
                                        const trade_row_t *row)
 {
     if (!ct || !row || !ct->active) return false;
-    if (ct->action != CONTRACT_TRACTOR) return false;
+    if (ct->action != CONTRACT_TRACTOR && ct->action != CONTRACT_DELIVERY)
+        return false;
     if (ct->commodity < COMMODITY_RAW_ORE_COUNT) return false;
     if (ct->commodity != row->commodity) return false;
     if (row->has_inspect) {
@@ -1167,6 +1225,23 @@ static bool trade_row_tracked_note(const station_t *st,
     int here_idx = station_index_of(st);
     bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
 
+    if (ct->action == CONTRACT_DELIVERY) {
+        bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_contract(objective.contract_index);
+        if (row->kind == 0 && at_origin && (!ledger ||
+            ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
+            snprintf(out, out_size, "use jobs for credit");
+            return true;
+        }
+        if (row->kind == 1 && row->held > 0 && at_dest && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
+            snprintf(out, out_size, "ready to deliver");
+            return true;
+        }
+        return false;
+    }
+
     if (row->kind == 0) {
         if (at_dest) return false;
         if (row->block_reason == TRADE_BLOCK_NO_FUNDS) {
@@ -1202,6 +1277,36 @@ static bool job_row_tracked_note(int here_idx,
     if (!ct->active) return false;
 
     bool tracked = g.tracked_contract == contract_index;
+    if (ct->action == CONTRACT_DELIVERY) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_contract(contract_index);
+        bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
+        bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+        int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+        if (at_origin && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
+            snprintf(out, out_size, "return proof");
+            return true;
+        }
+        if (at_origin && !ledger) {
+            snprintf(out, out_size, "hail to take shipment");
+            return true;
+        }
+        if (at_dest && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP && held > 0) {
+            snprintf(out, out_size, "ready to deliver");
+            return true;
+        }
+        if (tracked && held > 0 && !at_dest) {
+            snprintf(out, out_size, "wrong station");
+            return true;
+        }
+        if (tracked && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
+            snprintf(out, out_size, "deliver to destination");
+            return true;
+        }
+    }
     if (fulfillable_here) {
         snprintf(out, out_size, "ready to deliver");
         return true;

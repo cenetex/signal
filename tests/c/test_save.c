@@ -1058,6 +1058,48 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
 
+TEST(test_world_save_load_preserves_delivery_shipments) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    w->next_delivery_shipment_id = 12;
+    w->delivery_shipments[0] = (delivery_shipment_t){
+        .active = true,
+        .shipment_id = 11,
+        .origin_station = 0,
+        .destination_station = 2,
+        .contract_index = 3,
+        .debtor_player = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_total = 2,
+        .quantity_bound = 2,
+        .quantity_delivered = 1,
+        .quantity_black_market_sold = 0,
+        .debt_principal = 40.0f,
+        .destination_payout = 100.0f,
+        .origin_completion_credit = 4.0f,
+        .due_tick = 1234,
+        .status = DELIVERY_SHIPMENT_DELIVERED,
+    };
+    memset(w->delivery_shipments[0].cargo_pub[0], 0xa1, 32);
+    memset(w->delivery_shipments[0].cargo_pub[1], 0xb2, 32);
+
+    ASSERT(world_save(w, TMP("test_delivery_shipments.sav")));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, TMP("test_delivery_shipments.sav")));
+    ASSERT_EQ_INT(loaded->next_delivery_shipment_id, 12);
+    const delivery_shipment_t *shipment = &loaded->delivery_shipments[0];
+    ASSERT(shipment->active);
+    ASSERT_EQ_INT(shipment->shipment_id, 11);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
+    ASSERT_EQ_INT(shipment->origin_station, 0);
+    ASSERT_EQ_INT(shipment->destination_station, 2);
+    ASSERT_EQ_INT(shipment->quantity_delivered, 1);
+    ASSERT_EQ_FLOAT(shipment->debt_principal, 40.0f, 0.001f);
+    ASSERT(memcmp(shipment->cargo_pub[0], w->delivery_shipments[0].cargo_pub[0], 32) == 0);
+    ASSERT(memcmp(shipment->cargo_pub[1], w->delivery_shipments[0].cargo_pub[1], 32) == 0);
+    remove(TMP("test_delivery_shipments.sav"));
+}
+
 /*
  * EXPECTED_SAVE_SIZE is the exact byte count of a world.sav written by the
  * current SAVE_VERSION. If a field is added to write_station / write_asteroid /
@@ -1121,8 +1163,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
  * v56: +36B per contract for heritage provenance requirements
  * (proof_flags + prefix + recipe + parent hash), × MAX_CONTRACTS=24.
  * v57: +8B per contract for forbidden origin masks.
- * v58: station session section expanded from 64 to 128 slots. */
-#define EXPECTED_SAVE_SIZE 220538
+ * v58: station session section expanded from 64 to 128 slots.
+ * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table. */
+#define EXPECTED_SAVE_SIZE 233620
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1159,7 +1202,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 58);
+    ASSERT_EQ_INT((int)version, 59);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -1281,6 +1324,7 @@ void register_save_persistence_tests(void) {
     RUN(test_v51_migration_furnace_count_heuristic);
     RUN(test_world_save_load_preserves_smelted_ingots);
     RUN(test_world_save_load_preserves_hauler_manifest_cargo);
+    RUN(test_world_save_load_preserves_delivery_shipments);
 }
 
 void register_save_format_tests(void) {

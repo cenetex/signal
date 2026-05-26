@@ -57,6 +57,7 @@
 #include "onboarding.h"
 #include "signal_model.h"
 #include "mining.h"
+#include "contract_fit.h"
 
 static float action_predict_window_sec(void) {
     float window = 0.5f;
@@ -94,6 +95,17 @@ static const char *input_station_currency(const station_t *st) {
 
 static const char *input_current_currency(void) {
     return input_station_currency(current_station_ptr());
+}
+
+static const NetDeliveryLedgerEntry *input_delivery_ledger_for_contract(
+    int contract_index)
+{
+    for (int i = 0; i < g.delivery_ledger_count; i++) {
+        const NetDeliveryLedgerEntry *entry = &g.delivery_ledger[i];
+        if (entry->contract_index == (uint8_t)contract_index)
+            return entry;
+    }
+    return NULL;
 }
 
 static int input_local_ledger_index(station_t *st) {
@@ -188,7 +200,7 @@ typedef struct {
 static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
     int count = 0;
     const float SNAP_RANGE_SQ = 600.0f * 600.0f;
-    for (int s = 3; s < MAX_STATIONS && count < max; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS && count < max; s++) {
         const station_t *st = &g.world.stations[s];
         if (!station_exists(st) || st->scaffold) continue;
         /* Include planned stations — they accept plans even though they
@@ -483,9 +495,34 @@ static void sample_work_keys(input_intent_t *intent) {
     if (g.selected_contract >= 0 && g.selected_contract < MAX_CONTRACTS) {
         const contract_t *ct = &g.world.contracts[g.selected_contract];
         if (ct->active) {
-            intent->service_sell = true;
-            intent->service_sell_only = ct->commodity;
-            set_notice("Delivering %s...", commodity_short_name(ct->commodity));
+            if (ct->action == CONTRACT_DELIVERY) {
+                const NetDeliveryLedgerEntry *ledger =
+                    input_delivery_ledger_for_contract(g.selected_contract);
+                bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
+                bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+                int held = contract_fit_manifest_count(ct,
+                                                       &LOCAL_PLAYER.ship.manifest);
+                if (at_origin && (!ledger ||
+                    ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
+                    intent->hail = true;
+                    set_notice("Taking %s on credit...",
+                               commodity_short_name(ct->commodity));
+                } else if (at_dest && ledger &&
+                           ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+                           held > 0) {
+                    intent->service_sell = true;
+                    intent->service_sell_only = ct->commodity;
+                    set_notice("Delivering %s...",
+                               commodity_short_name(ct->commodity));
+                } else {
+                    intent->hail = true;
+                    set_notice("Contacting station...");
+                }
+            } else {
+                intent->service_sell = true;
+                intent->service_sell_only = ct->commodity;
+                set_notice("Delivering %s...", commodity_short_name(ct->commodity));
+            }
         } else {
             /* Selected contract was completed/cancelled; fall back. */
             intent->service_sell = true;
@@ -704,7 +741,7 @@ static bool plan_mode_handle_exit(input_intent_t *intent, bool ghost_mode) {
         return false;
     if (!ghost_mode) {
         int s = g.placement_target_station;
-        if (s >= 3 && s < MAX_STATIONS &&
+        if (s >= SIGNAL_FIRST_OUTPOST_INDEX && s < MAX_STATIONS &&
             g.world.stations[s].planned &&
             g.world.stations[s].placement_plan_count == 0) {
             intent->cancel_planned_outpost = true;

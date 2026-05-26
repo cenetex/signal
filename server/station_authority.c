@@ -137,7 +137,7 @@ bool station_authority_rederive_secret(station_t *s,
                                        int station_index) {
     if (!s) return false;
     uint8_t seed[32];
-    if (station_index >= 0 && station_index < 3) {
+    if (station_index >= 0 && station_index < SIGNAL_SEEDED_STATION_COUNT) {
         station_authority_seeded_seed(world_seed,
                                        (uint32_t)station_index, seed);
     } else {

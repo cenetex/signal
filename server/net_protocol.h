@@ -254,6 +254,12 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
                         2, CONTRACT_RECORD_SIZE, MAX_CONTRACTS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_DELIVERY_LEDGER, PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        DELIVERY_LEDGER_HEADER, DELIVERY_LEDGER_RECORD_SIZE,
+                        DELIVERY_LEDGER_MAX_RECORDS, ship_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_INSPECT_SNAPSHOT, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -1248,6 +1254,43 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
     buf[0] = NET_MSG_PLAYER_KNOWN_CONTRACTS;
     write_u32_le(&buf[1], mask);
     return 5;
+}
+
+static inline int serialize_delivery_ledger(uint8_t *buf,
+                                            const world_t *w,
+                                            uint8_t player_id) {
+    int count = 0;
+    buf[0] = NET_MSG_DELIVERY_LEDGER;
+    if (!w) {
+        buf[1] = 0;
+        return DELIVERY_LEDGER_HEADER;
+    }
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS &&
+                    count < DELIVERY_LEDGER_MAX_RECORDS; i++) {
+        const delivery_shipment_t *s = &w->delivery_shipments[i];
+        if (!s->active) continue;
+        if (s->debtor_player != player_id) continue;
+        if (s->status == DELIVERY_SHIPMENT_CLEARED) continue;
+        uint8_t *p = &buf[DELIVERY_LEDGER_HEADER +
+                          count * DELIVERY_LEDGER_RECORD_SIZE];
+        memset(p, 0, DELIVERY_LEDGER_RECORD_SIZE);
+        write_u16_le(&p[0], s->shipment_id);
+        p[2] = s->status;
+        p[3] = s->origin_station;
+        p[4] = s->destination_station;
+        p[5] = s->contract_index;
+        p[6] = s->commodity;
+        write_u16_le(&p[7], s->quantity_total);
+        write_u16_le(&p[9], s->quantity_delivered);
+        write_u16_le(&p[11], s->quantity_bound);
+        write_f32_le(&p[13], s->debt_principal);
+        write_f32_le(&p[17], s->destination_payout);
+        write_f32_le(&p[21], s->origin_completion_credit);
+        write_u32_le(&p[25], s->due_tick);
+        count++;
+    }
+    buf[1] = (uint8_t)count;
+    return DELIVERY_LEDGER_HEADER + count * DELIVERY_LEDGER_RECORD_SIZE;
 }
 
 /* ------------------------------------------------------------------ */

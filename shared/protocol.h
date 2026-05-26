@@ -258,6 +258,11 @@ enum {
                                             *   [type:1=0x45][status:1][reason:1]
                                             *   [dest_station:1][ticket_hash:32] */
     NET_MSG_WORLD_CARGO_PODS       = 0x46, /* server -> client: active towable cargo pods */
+    NET_MSG_DELIVERY_LEDGER        = 0x47, /* server -> client. Per-player recourse
+                                            * shipment/debt ledger.
+                                            *
+                                            *   [type:1=0x47][count:1]
+                                            *     count × DELIVERY_LEDGER_RECORD_SIZE */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -305,6 +310,7 @@ enum {
     SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS  = 1u << 4,
     SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT= 1u << 5,
     SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS = 1u << 6,
+    SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS = 1u << 7,
 };
 
 enum {
@@ -341,7 +347,8 @@ enum {
         SIGNAL_PROTOCOL_CAP_LATENCY_METRICS |
         SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS |
         SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT |
-        SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS,
+        SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS |
+        SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS,
 };
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
@@ -632,6 +639,15 @@ enum {
  * target index. Kept shared so client decoders and external tools do not
  * hardcode server-local constants. */
 #define CONTRACT_RECORD_SIZE 72
+
+/* NET_MSG_DELIVERY_LEDGER record:
+ * shipment_id:u16, status:u8, origin:u8, destination:u8, contract_index:u8,
+ * commodity:u8, quantity_total:u16, quantity_delivered:u16,
+ * quantity_bound:u16, debt_principal:f32, destination_payout:f32,
+ * origin_credit:f32, due_tick:u32, reserved:3. */
+#define DELIVERY_LEDGER_HEADER 2
+#define DELIVERY_LEDGER_RECORD_SIZE 32
+#define DELIVERY_LEDGER_MAX_RECORDS 24
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

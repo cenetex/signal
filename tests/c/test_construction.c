@@ -28,7 +28,7 @@ TEST(test_outpost_extends_signal_range) {
     
 
     int slot = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
-    ASSERT(slot >= 3);
+    ASSERT(slot >= SIGNAL_FIRST_OUTPOST_INDEX);
     /* Scaffold doesn't provide signal — only the parent refinery + a sliver
      * of Helios cover this far-east fringe point. The overlap boost applies
      * (2 stations), so the effective strength can reach ~0.2-0.3 even though
@@ -108,7 +108,7 @@ TEST(test_outpost_requires_undocked) {
     /* Undocked — should succeed */
     w.players[0].docked = false;
     slot = test_place_outpost_via_tow(&w, &w.players[0], v2(6000.0f, -2400.0f));
-    ASSERT(slot >= 3);
+    ASSERT(slot >= SIGNAL_FIRST_OUTPOST_INDEX);
 }
 
 TEST(test_outpost_requires_towed_scaffold) {
@@ -124,7 +124,7 @@ TEST(test_outpost_requires_towed_scaffold) {
     world_sim_step(&w, SIM_DT);
     /* No new outpost should exist */
     bool any_new = false;
-    for (int s = 3; s < MAX_STATIONS; s++)
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++)
         if (station_exists(&w.stations[s])) { any_new = true; break; }
     ASSERT(!any_new);
 }
@@ -801,7 +801,7 @@ TEST(test_scaffold_snap_to_slot) {
     /* credits are station-local (ledger) — no ship.credits field */
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     /* Activate the outpost so it can accept scaffolds */
     w.stations[outpost].scaffold = false;
     w.stations[outpost].scaffold_progress = 1.0f;
@@ -864,7 +864,7 @@ TEST(test_scaffold_full_pipeline) {
     /* credits are station-local (ledger) — no ship.credits field */
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     w.stations[outpost].scaffold = false;
     w.stations[outpost].scaffold_progress = 1.0f;
     w.stations[outpost].signal_range = 6000.0f;
@@ -944,7 +944,7 @@ TEST(test_build_outpost_full_economy) {
      * does when the player presses E with a relay in tow. */
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, sp, outpost_pos);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_t *st_out = &w.stations[outpost];
     ASSERT(st_out->scaffold);              /* under construction */
     ASSERT(st_out->signal_range > 0.0f);   /* relay seeded its range */
@@ -1213,7 +1213,7 @@ TEST(test_scaffold_ship_drag) {
 
 static int test_count_planned_frontier_outposts(const world_t *w) {
     int count = 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (w->stations[s].planned) count++;
     }
     return count;
@@ -1264,7 +1264,7 @@ static int test_count_frontier_scaffold_work(const world_t *w,
 static int test_count_frontier_placement_plans(const world_t *w,
                                                module_type_t type) {
     int count = 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         for (int p = 0; p < st->placement_plan_count; p++) {
@@ -1277,7 +1277,7 @@ static int test_count_frontier_placement_plans(const world_t *w,
 
 static int test_count_active_frontier_outposts(const world_t *w) {
     int count = 0;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (station_is_active(&w->stations[s])) count++;
     }
     return count;
@@ -1320,10 +1320,10 @@ TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
     ASSERT_EQ_INT((int)w.frontier_module_scaffold_orders, 2);
 
     int plan_slot = -1;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (w.stations[s].planned) { plan_slot = s; break; }
     }
-    ASSERT(plan_slot >= 3);
+    ASSERT(plan_slot >= SIGNAL_FIRST_OUTPOST_INDEX);
 
     int hopper_ring = -1, furnace_ring = -1;
     for (int p = 0; p < w.stations[plan_slot].placement_plan_count; p++) {
@@ -1377,7 +1377,7 @@ TEST(test_frontier_virtual_pilots_execute_growth_loop) {
     ASSERT(test_count_active_frontier_outposts(&w) >= 1);
 
     bool found_bootstrapped_outpost = false;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         station_t *st = &w.stations[s];
         if (!station_is_active(st)) continue;
         ASSERT(!test_station_has_duplicate_slots(st));
@@ -1408,7 +1408,7 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     w.players[0].input.create_planned_outpost = false;
 
     int plan_slot = -1;
-    for (int s = 3; s < MAX_STATIONS; s++) {
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
         if (w.stations[s].planned) { plan_slot = s; break; }
     }
     ASSERT(plan_slot >= 0);
@@ -1449,7 +1449,7 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     /* Drone must have grabbed the scaffold */
     ASSERT(drone->towed_scaffold >= 0);
     /* Destination must be the planned outpost, not a starter station */
-    ASSERT(drone->dest_station >= 3);
+    ASSERT(drone->dest_station >= SIGNAL_FIRST_OUTPOST_INDEX);
     ASSERT_EQ_INT(drone->dest_station, plan_slot);
 
     /* Run 4 minutes — drone tows at 60 u/s, distance is ~8500u ≈ 142s */
@@ -1511,7 +1511,7 @@ TEST(test_placed_scaffold_supply_phase) {
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_module_t *m = &w.stations[outpost].modules[mod_idx];
     ASSERT(m->scaffold);
     ASSERT(m->build_progress < 0.01f); /* supply phase start */
@@ -1542,7 +1542,7 @@ TEST(test_placed_scaffold_player_delivery) {
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_module_t *m = &w.stations[outpost].modules[mod_idx];
     ASSERT(m->scaffold);
 
@@ -1567,7 +1567,7 @@ TEST(test_construction_contract_closes_on_activation) {
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_module_t *m = &w.stations[outpost].modules[mod_idx];
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
 
@@ -1608,7 +1608,7 @@ TEST(test_stale_contract_does_not_block_next_need) {
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_module_t *m = &w.stations[outpost].modules[mod_idx];
 
     /* Supply, build, activate */
@@ -1644,7 +1644,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
-    ASSERT(outpost >= 3);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
     station_module_t *m = &w.stations[outpost].modules[mod_idx];
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);

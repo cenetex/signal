@@ -39,6 +39,30 @@ static const cargo_unit_t *test_station_first_unit(const station_t *st,
     return NULL;
 }
 
+static delivery_shipment_t *test_find_delivery_shipment(world_t *w,
+                                                        int contract_index) {
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (shipment->active &&
+            shipment->contract_index == (uint8_t)contract_index) {
+            return shipment;
+        }
+    }
+    return NULL;
+}
+
+static void test_setup_delivery_player(world_t *w, server_player_t **out_sp) {
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    memset(w->contracts, 0, sizeof(w->contracts));
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x5a, sizeof(sp->session_token));
+    if (out_sp) *out_sp = sp;
+}
+
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
@@ -574,6 +598,27 @@ TEST(test_station_policy_cards_rank_under_domain_budgets) {
     ASSERT(spent[STATION_POLICY_DOMAIN_CONSTRUCTION] <=
            selection.budget.construction);
     ASSERT(spent[STATION_POLICY_DOMAIN_FINANCE] <= selection.budget.finance);
+}
+
+TEST(test_station_policy_black_market_requires_off_relay_station) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    station_policy_selection_t relay_selection;
+    station_policy_select_cards(&w.stations[0], 0, &relay_selection);
+    ASSERT(!station_policy_selection_has(
+        &relay_selection, STATION_POLICY_CARD_BLACK_MARKET));
+
+    station_t freeport = {0};
+    snprintf(freeport.name, sizeof(freeport.name), "Freeport");
+    freeport.signal_range = 0.0f;
+    freeport.module_count = 1;
+    freeport.modules[0] = (station_module_t){ .type = MODULE_DOCK };
+
+    station_policy_selection_t off_relay_selection;
+    station_policy_select_cards(&freeport, 3, &off_relay_selection);
+    ASSERT(station_policy_selection_has(
+        &off_relay_selection, STATION_POLICY_CARD_BLACK_MARKET));
 }
 
 TEST(test_station_policy_cache_drives_trade_price_modifier) {
@@ -1134,6 +1179,135 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     ASSERT(ledger_balance(kepler, sp->session_token) < kepler_after_delivery);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
                     prospect_after_buy, 0.001f);
+}
+
+TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 3));
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_FERRITE_INGOT, 0));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    helios->base_price[COMMODITY_FERRITE_INGOT] = 30.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
+    ASSERT(shipment != NULL);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 2);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 1);
+    float prospect_after_pickup = ledger_balance(prospect, sp->session_token);
+    ASSERT(prospect_after_pickup < 0.0f);
+
+    sp->docked = true;
+    sp->current_station = 2;
+    sp->nearby_station = 2;
+    sp->in_dock_range = true;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    float helios_before = ledger_balance(helios, sp->session_token);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
+    ASSERT_EQ_INT(shipment->quantity_delivered, 2);
+    ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
+    ASSERT(w.contracts[0].active);
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_CLEARED);
+    ASSERT(!w.contracts[0].active);
+    ASSERT(ledger_balance(prospect, sp->session_token) > 0.0f);
+}
+
+TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *pirate = &w.stations[3];
+    snprintf(pirate->name, sizeof(pirate->name), "Freeport");
+    pirate->signal_range = 0.0f;
+    pirate->dock_radius = 96.0f;
+    pirate->radius = 120.0f;
+    pirate->module_count = 1;
+    pirate->modules[0] = (station_module_t){ .type = MODULE_DOCK };
+    pirate->base_price[COMMODITY_FERRITE_INGOT] = 18.0f;
+    ASSERT(station_manifest_bootstrap(pirate));
+
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 1));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 1.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
+    ASSERT(shipment != NULL);
+    float prospect_after_pickup = ledger_balance(prospect, sp->session_token);
+    ASSERT(prospect_after_pickup < 0.0f);
+
+    sp->docked = true;
+    sp->current_station = 3;
+    sp->nearby_station = 3;
+    sp->in_dock_range = true;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    float pirate_before = ledger_balance(pirate, sp->session_token);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_BLACK_MARKET_SOLD);
+    ASSERT(ledger_balance(pirate, sp->session_token) > pirate_before);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    prospect_after_pickup, 0.001f);
+    ASSERT(!w.contracts[0].active);
 }
 
 TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
@@ -2040,6 +2214,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_generated_heritage_contracts_require_source_recipe);
     RUN(test_station_policy_preserves_seeded_supply_loop);
     RUN(test_station_policy_cards_rank_under_domain_budgets);
+    RUN(test_station_policy_black_market_requires_off_relay_station);
     RUN(test_station_policy_cache_drives_trade_price_modifier);
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
@@ -2075,6 +2250,8 @@ void register_economy_mixed_cargo_tests(void) {
     TEST_SECTION("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
+    RUN(test_delivery_credit_contract_pickup_deliver_and_clear);
+    RUN(test_delivery_credit_black_market_sale_defaults_origin_debt);
     RUN(test_prospect_pubkey_buy_debits_pubkey_ledger);
     RUN(test_deliver_ingots_full_payout_to_pubkey_player);
     RUN(test_deliver_ingots_pending_pubkey_uses_session_ledger);

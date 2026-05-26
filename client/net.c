@@ -1422,7 +1422,7 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int i = 0; i < n; i++) {
                     const uint8_t *p = &data[2 + i * CONTRACT_RECORD_SIZE];
                     contracts[i].active = true;
-                    contracts[i].action = (p[0] <= CONTRACT_FRACTURE) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
+                    contracts[i].action = (p[0] <= CONTRACT_DELIVERY) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
                     contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
                     contracts[i].commodity = (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] : COMMODITY_FERRITE_ORE;
                     contracts[i].required_grade = (p[3] < MINING_GRADE_COUNT) ? p[3] : (uint8_t)MINING_GRADE_COMMON;
@@ -1445,6 +1445,37 @@ static void handle_message(const uint8_t* data, int len) {
                     contracts[i].claimed_by = -1;
                 }
                 net_state.callbacks.on_contracts(contracts, n);
+            }
+        }
+        break;
+
+    case NET_MSG_DELIVERY_LEDGER:
+        if (len >= DELIVERY_LEDGER_HEADER && net_state.callbacks.on_delivery_ledger) {
+            uint8_t count = data[1];
+            if (len >= DELIVERY_LEDGER_HEADER +
+                       count * DELIVERY_LEDGER_RECORD_SIZE) {
+                NetDeliveryLedgerEntry entries[DELIVERY_LEDGER_MAX_RECORDS];
+                memset(entries, 0, sizeof(entries));
+                int n = count < DELIVERY_LEDGER_MAX_RECORDS
+                    ? count : DELIVERY_LEDGER_MAX_RECORDS;
+                for (int i = 0; i < n; i++) {
+                    const uint8_t *p = &data[DELIVERY_LEDGER_HEADER +
+                                             i * DELIVERY_LEDGER_RECORD_SIZE];
+                    entries[i].shipment_id = read_u16_le(&p[0]);
+                    entries[i].status = p[2];
+                    entries[i].origin_station = p[3];
+                    entries[i].destination_station = p[4];
+                    entries[i].contract_index = p[5];
+                    entries[i].commodity = p[6];
+                    entries[i].quantity_total = read_u16_le(&p[7]);
+                    entries[i].quantity_delivered = read_u16_le(&p[9]);
+                    entries[i].quantity_bound = read_u16_le(&p[11]);
+                    entries[i].debt_principal = read_f32_le(&p[13]);
+                    entries[i].destination_payout = read_f32_le(&p[17]);
+                    entries[i].origin_completion_credit = read_f32_le(&p[21]);
+                    entries[i].due_tick = read_u32_le(&p[25]);
+                }
+                net_state.callbacks.on_delivery_ledger(entries, n);
             }
         }
         break;

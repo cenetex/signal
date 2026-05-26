@@ -765,6 +765,16 @@ void apply_remote_player_known_contracts(uint32_t mask) {
     g.player_known_contract_mask = mask;
 }
 
+void apply_remote_delivery_ledger(const NetDeliveryLedgerEntry *entries,
+                                  int count) {
+    if (count < 0) count = 0;
+    if (count > DELIVERY_LEDGER_MAX_RECORDS)
+        count = DELIVERY_LEDGER_MAX_RECORDS;
+    g.delivery_ledger_count = count;
+    for (int i = 0; i < count; i++)
+        g.delivery_ledger[i] = entries[i];
+}
+
 void apply_remote_station_identity(const NetStationIdentity* si) {
     if (si->index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[si->index];
