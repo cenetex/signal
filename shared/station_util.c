@@ -838,7 +838,7 @@ const char *station_flow_diag_label(station_flow_diag_t diag) {
     case STATION_FLOW_DIAG_RUNNING:         return "running";
     case STATION_FLOW_DIAG_NO_INPUT:        return "missing input";
     case STATION_FLOW_DIAG_OUTPUT_FULL:     return "output full";
-    case STATION_FLOW_DIAG_NO_CONSUMER:     return "no route";
+    case STATION_FLOW_DIAG_NO_CONSUMER:     return "no valid consumer";
     case STATION_FLOW_DIAG_CONSUMER_FULL:   return "consumer full";
     case STATION_FLOW_DIAG_SLOW_FEED:       return "slow route";
     case STATION_FLOW_DIAG_AWAITING_SUPPLY: return "scaffold needs supply";
@@ -1226,11 +1226,11 @@ bool station_plan_flow_hint_format(const station_plan_flow_hint_t *hint,
     switch (hint->diag) {
     case STATION_FLOW_DIAG_RUNNING:
         if (hint->role == STATION_PLAN_FLOW_ROLE_INPUT)
-            snprintf(out, cap, "flow: input from %s", peer);
+            snprintf(out, cap, "flow: well-connected input from %s", peer);
         else if (hint->role == STATION_PLAN_FLOW_ROLE_OUTPUT)
-            snprintf(out, cap, "flow: output to %s", peer);
+            snprintf(out, cap, "flow: well-connected output to %s", peer);
         else
-            snprintf(out, cap, "flow: connected");
+            snprintf(out, cap, "flow: well-connected");
         return true;
     case STATION_FLOW_DIAG_SLOW_FEED:
         if (hint->role == STATION_PLAN_FLOW_ROLE_INPUT)
@@ -1246,9 +1246,9 @@ bool station_plan_flow_hint_format(const station_plan_flow_hint_t *hint,
         return true;
     case STATION_FLOW_DIAG_NO_CONSUMER:
         if (commodity)
-            snprintf(out, cap, "flow: no consumer for %s", commodity);
+            snprintf(out, cap, "flow: no valid consumer for %s", commodity);
         else
-            snprintf(out, cap, "flow: no local consumer");
+            snprintf(out, cap, "flow: no valid local consumer");
         return true;
     default:
         snprintf(out, cap, "flow: %s", station_flow_diag_label(hint->diag));

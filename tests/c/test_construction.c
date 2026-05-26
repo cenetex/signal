@@ -2219,7 +2219,7 @@ TEST(test_station_plan_flow_hint_connected_output) {
     ASSERT_EQ_INT(hint.role, STATION_PLAN_FLOW_ROLE_OUTPUT);
     ASSERT_EQ_INT(hint.peer_type, MODULE_HOPPER);
     ASSERT(station_plan_flow_hint_format(&hint, line, sizeof(line)));
-    ASSERT(strstr(line, "output to Hopper") != NULL);
+    ASSERT(strstr(line, "well-connected output to Hopper") != NULL);
 }
 
 TEST(test_station_plan_flow_hint_slow_hopper_feed) {
@@ -2253,7 +2253,7 @@ TEST(test_station_plan_flow_hint_no_consumer) {
     ASSERT(station_plan_flow_hint(&st, MODULE_FRAME_PRESS, 2, 0, &hint));
     ASSERT_EQ_INT(hint.diag, STATION_FLOW_DIAG_NO_CONSUMER);
     ASSERT(station_plan_flow_hint_format(&hint, line, sizeof(line)));
-    ASSERT(strstr(line, "no consumer") != NULL);
+    ASSERT(strstr(line, "no valid consumer") != NULL);
 }
 
 TEST(test_module_flow_diag_no_input) {

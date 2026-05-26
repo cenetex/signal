@@ -43,7 +43,7 @@ TEST(test_station_flow_diag_label_all) {
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_RUNNING), "running");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NO_INPUT), "missing input");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_OUTPUT_FULL), "output full");
-    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NO_CONSUMER), "no route");
+    ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_NO_CONSUMER), "no valid consumer");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_CONSUMER_FULL), "consumer full");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_SLOW_FEED), "slow route");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_AWAITING_SUPPLY),
