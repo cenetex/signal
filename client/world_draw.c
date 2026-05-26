@@ -3224,13 +3224,17 @@ static void draw_planned_stations(void) {
         vec2 c = st->pos;
         float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
         int max_ring = station_unlocked_rings_client(st);
+        bool abandoned = station_planned_site_abandoned(st);
+        float ghost_r = abandoned ? 0.95f : 0.40f;
+        float ghost_g = abandoned ? 0.42f : 0.85f;
+        float ghost_b = abandoned ? 0.28f : 1.00f;
 
         /* Wireframe rings — dashed cyan, only unlocked */
         for (int r = 1; r <= max_ring; r++) {
             float radius = STATION_RING_RADIUS[r];
             int dashes = 32;
             sgl_begin_lines();
-            sgl_c4f(0.4f, 0.85f, 1.0f, pulse * 0.6f);
+            sgl_c4f(ghost_r, ghost_g, ghost_b, pulse * 0.6f);
             for (int i = 0; i < dashes; i += 2) {
                 float a0 = TWO_PI_F * (float)i / (float)dashes;
                 float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
@@ -3243,7 +3247,7 @@ static void draw_planned_stations(void) {
         {
             int dashes = 48;
             sgl_begin_lines();
-            sgl_c4f(0.4f, 1.0f, 1.0f, pulse * 0.4f);
+            sgl_c4f(ghost_r, ghost_g, ghost_b, pulse * 0.4f);
             float radius = OUTPOST_DOCK_RADIUS;
             for (int i = 0; i < dashes; i += 2) {
                 float a0 = TWO_PI_F * (float)i / (float)dashes;
@@ -3254,7 +3258,16 @@ static void draw_planned_stations(void) {
             sgl_end();
         }
         /* Center marker */
-        draw_circle_outline(c, 6.0f, 12, 0.4f, 1.0f, 1.0f, pulse);
+        draw_circle_outline(c, 6.0f, 12, ghost_r, ghost_g, ghost_b, pulse);
+        if (abandoned) {
+            sgl_begin_lines();
+            sgl_c4f(ghost_r, ghost_g, ghost_b, pulse * 0.8f);
+            sgl_v2f(c.x - 22.0f, c.y - 22.0f);
+            sgl_v2f(c.x + 22.0f, c.y + 22.0f);
+            sgl_v2f(c.x - 22.0f, c.y + 22.0f);
+            sgl_v2f(c.x + 22.0f, c.y - 22.0f);
+            sgl_end();
+        }
 
         /* Planned slot ghosts (already drawn by draw_placement_plans below) */
     }

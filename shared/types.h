@@ -410,6 +410,8 @@ static inline const char *commodity_short_label(commodity_t c) {
         case COMMODITY_CUPRITE_INGOT: return "cu ingots";
         case COMMODITY_CRYSTAL_INGOT: return "cr ingots";
         case COMMODITY_REPAIR_KIT:    return "repair kits";
+        case COMMODITY_LASER_MODULE:  return "laser modules";
+        case COMMODITY_TRACTOR_MODULE:return "tractor modules";
         default:                      return "units";
     }
 }

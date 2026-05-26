@@ -89,6 +89,7 @@
 
   var controls = {};
   var groups = [];
+  var controlsRoot = null;
 
   function gameModule() {
     return window.SignalGameModule || window.Module;
@@ -196,30 +197,36 @@
 
   function installStyles() {
     var style = document.createElement("style");
-    style.textContent =
-      ".signal-touch-controls{position:fixed;inset:0;z-index:12;pointer-events:none;font-family:\"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;-webkit-user-select:none;user-select:none}" +
-      ".signal-touch-controls *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}" +
-      ".signal-touch-button{pointer-events:auto;min-width:52px;min-height:48px;padding:0 8px;border:1px solid rgba(245,239,223,.24);border-radius:8px;background:rgba(8,7,6,.50);color:#f5efdf;font:700 11px/1.05 \"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;letter-spacing:0;text-transform:uppercase;box-shadow:0 8px 22px rgba(0,0,0,.28);backdrop-filter:blur(10px);touch-action:none;white-space:normal;overflow:hidden;word-break:break-word}" +
-      ".signal-touch-button[hidden],.signal-touch-stack[hidden]{display:none!important}" +
-      ".signal-touch-button:active,.signal-touch-button.is-held{background:rgba(128,255,213,.18);border-color:rgba(128,255,213,.72);color:#dffff4}" +
-      ".signal-touch-stack{position:absolute;display:grid;gap:8px;pointer-events:none}" +
-      ".signal-touch-left{left:max(14px,env(safe-area-inset-left));bottom:max(16px,env(safe-area-inset-bottom));grid-template-columns:repeat(2,64px);grid-template-rows:52px 62px}" +
-      ".signal-touch-left .boost{grid-column:1/span 2;color:#91bcff}" +
-      ".signal-touch-left .left,.signal-touch-left .right{min-height:62px;color:#80ffd5;font-size:20px}" +
-      ".signal-touch-right{right:max(14px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));grid-template-columns:66px 78px;grid-template-rows:56px 62px 62px 46px}" +
-      ".signal-touch-right .use{grid-column:1/span 2;min-height:56px;color:#f7d389;border-color:rgba(247,211,137,.46);font-size:12px}" +
-      ".signal-touch-right .thrust,.signal-touch-right .brake{grid-column:2;min-height:62px;color:#f5efdf}" +
-      ".signal-touch-right .fire,.signal-touch-right .tractor{grid-column:1;min-height:62px}" +
-      ".signal-touch-right .fire{color:#f1b566}.signal-touch-right .tractor{color:#80ffd5}" +
-      ".signal-touch-right .scan,.signal-touch-right .auto{min-height:46px;font-size:10px;background:rgba(8,7,6,.40)}" +
-      ".signal-touch-secondary{right:max(14px,env(safe-area-inset-right));bottom:calc(max(16px,env(safe-area-inset-bottom)) + 260px);grid-template-columns:repeat(2,68px);grid-auto-rows:42px}" +
-      ".signal-touch-secondary .signal-touch-button{min-height:42px;font-size:10px;background:rgba(8,7,6,.40)}" +
-      ".signal-touch-station{left:50%;bottom:max(16px,env(safe-area-inset-bottom));transform:translateX(-50%);grid-template-columns:repeat(8,44px);grid-auto-rows:42px;justify-content:center}" +
-      ".signal-touch-station .signal-touch-button{min-width:40px;min-height:42px;font-size:10px;background:rgba(8,7,6,.40)}" +
-      ".signal-touch-station .wide{grid-column:span 2;min-width:88px}" +
-      "@media (min-width:860px) and (pointer:fine){.signal-touch-controls{display:none}}" +
-      "@media (max-width:560px){.signal-touch-left{grid-template-columns:repeat(2,58px);grid-template-rows:48px 58px;gap:7px}.signal-touch-right{grid-template-columns:60px 72px;grid-template-rows:52px 58px 58px 42px;gap:7px}.signal-touch-button{min-width:46px;min-height:44px;font-size:10px}.signal-touch-left .left,.signal-touch-left .right{min-height:58px;font-size:18px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:58px}.signal-touch-secondary{bottom:calc(max(16px,env(safe-area-inset-bottom)) + 236px);grid-template-columns:repeat(2,64px);gap:7px}.signal-touch-station{width:calc(100vw - 24px);grid-template-columns:repeat(5,1fr);gap:6px}}" +
-      "@media (max-height:520px){.signal-touch-secondary{right:max(14px,env(safe-area-inset-right));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 224px)}.signal-touch-left,.signal-touch-right,.signal-touch-station{bottom:max(12px,env(safe-area-inset-bottom))}.signal-touch-left{grid-template-columns:repeat(2,56px);grid-template-rows:44px 54px}.signal-touch-right{grid-template-columns:56px 68px;grid-template-rows:48px 54px 54px 38px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-station .signal-touch-button{min-height:38px}}";
+    style.textContent = [
+      ".signal-touch-controls{position:fixed;inset:0;z-index:12;pointer-events:none;font-family:\"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;-webkit-user-select:none;user-select:none}",
+      ".signal-touch-controls *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}",
+      ".signal-touch-button{pointer-events:auto;min-width:48px;min-height:44px;padding:0 7px;border:1px solid rgba(245,239,223,.22);border-radius:7px;background:rgba(8,7,6,.44);color:#f5efdf;font:700 10px/1.05 \"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;letter-spacing:0;text-transform:uppercase;box-shadow:0 6px 16px rgba(0,0,0,.24);backdrop-filter:blur(8px);touch-action:none;white-space:normal;overflow:hidden;word-break:break-word}",
+      ".signal-touch-button[hidden],.signal-touch-stack[hidden]{display:none!important}",
+      ".signal-touch-button:active,.signal-touch-button.is-held{background:rgba(128,255,213,.18);border-color:rgba(128,255,213,.72);color:#dffff4}",
+      ".signal-touch-stack{position:absolute;display:grid;gap:7px;pointer-events:none}",
+      ".signal-touch-left{left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));grid-template-columns:repeat(2,58px);grid-template-rows:46px 58px}",
+      ".signal-touch-left .boost{grid-column:1/span 2;color:#91bcff}",
+      ".signal-touch-left .left,.signal-touch-left .right{min-height:58px;color:#80ffd5;font-size:18px}",
+      ".signal-touch-right{right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));grid-template-columns:60px 72px;grid-template-rows:52px 58px 58px 40px}",
+      ".signal-touch-right .use{grid-column:1/span 2;min-height:52px;color:#f7d389;border-color:rgba(247,211,137,.44);font-size:11px}",
+      ".signal-touch-right .thrust,.signal-touch-right .brake{grid-column:2;min-height:58px;color:#f5efdf}",
+      ".signal-touch-right .fire,.signal-touch-right .tractor{grid-column:1;min-height:58px}",
+      ".signal-touch-right .fire{color:#f1b566}.signal-touch-right .tractor{color:#80ffd5}",
+      ".signal-touch-right .scan,.signal-touch-right .auto{min-height:40px;font-size:9px;background:rgba(8,7,6,.36)}",
+      ".signal-touch-secondary{right:max(12px,env(safe-area-inset-right));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 232px);grid-template-columns:repeat(2,62px);grid-auto-rows:38px}",
+      ".signal-touch-secondary .signal-touch-button{min-height:38px;font-size:9px;background:rgba(8,7,6,.36)}",
+      ".signal-touch-station{left:50%;bottom:max(10px,env(safe-area-inset-bottom));transform:translateX(-50%);width:min(380px,calc(100vw - 20px));grid-template-columns:repeat(8,minmax(0,1fr));grid-auto-rows:38px;justify-content:center}",
+      ".signal-touch-station .signal-touch-button{min-width:0;min-height:38px;padding:0 5px;font-size:9px;background:rgba(8,7,6,.36)}",
+      ".signal-touch-station .wide{grid-column:span 2;min-width:0}",
+      ".signal-touch-controls.is-docked .signal-touch-right{top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));bottom:auto;grid-template-columns:repeat(3,58px);grid-template-rows:38px;gap:6px}",
+      ".signal-touch-controls.is-docked .signal-touch-right .use{grid-column:auto;min-height:38px;font-size:9px}",
+      ".signal-touch-controls.is-docked .signal-touch-right .scan,.signal-touch-controls.is-docked .signal-touch-right .auto{min-height:38px;font-size:9px}",
+      ".signal-touch-controls.is-docked .signal-touch-station{bottom:max(8px,env(safe-area-inset-bottom));width:min(360px,calc(100vw - 20px));grid-template-columns:repeat(6,minmax(0,1fr));grid-auto-rows:36px;gap:5px}",
+      ".signal-touch-controls.is-docked .signal-touch-station .signal-touch-button{min-height:36px;font-size:9px}",
+      "@media (min-width:860px) and (pointer:fine){.signal-touch-controls{display:none}}",
+      "@media (max-width:560px){.signal-touch-button{min-width:44px;min-height:42px;font-size:9px}.signal-touch-left{left:max(10px,env(safe-area-inset-left));grid-template-columns:repeat(2,54px);grid-template-rows:42px 54px;gap:6px}.signal-touch-left .left,.signal-touch-left .right{min-height:54px;font-size:17px}.signal-touch-right{right:max(10px,env(safe-area-inset-right));grid-template-columns:56px 66px;grid-template-rows:48px 54px 54px 38px;gap:6px}.signal-touch-right .use{min-height:48px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-secondary{right:max(10px,env(safe-area-inset-right));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 218px);grid-template-columns:repeat(2,58px);gap:6px}.signal-touch-station{width:calc(100vw - 20px);grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}}",
+      "@media (max-height:520px){.signal-touch-left,.signal-touch-right,.signal-touch-station{bottom:max(8px,env(safe-area-inset-bottom))}.signal-touch-left{grid-template-columns:repeat(2,52px);grid-template-rows:40px 50px}.signal-touch-right{grid-template-columns:52px 62px;grid-template-rows:44px 50px 50px 36px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:50px}.signal-touch-secondary{right:max(8px,env(safe-area-inset-right));bottom:calc(max(8px,env(safe-area-inset-bottom)) + 224px);grid-template-columns:repeat(2,54px)}.signal-touch-station .signal-touch-button{min-height:34px}.signal-touch-controls.is-docked .signal-touch-right{top:max(8px,env(safe-area-inset-top));grid-template-columns:repeat(3,54px);grid-template-rows:34px}.signal-touch-controls.is-docked .signal-touch-right .use,.signal-touch-controls.is-docked .signal-touch-right .scan,.signal-touch-controls.is-docked .signal-touch-right .auto{min-height:34px}.signal-touch-controls.is-docked .signal-touch-station{bottom:max(6px,env(safe-area-inset-bottom));grid-auto-rows:34px}}"
+    ].join("");
     document.head.appendChild(style);
   }
 
@@ -334,6 +341,13 @@
     var workView = has(flags, FLAG.stationWork);
     var yardView = has(flags, FLAG.stationYard);
 
+    if (controlsRoot) {
+      controlsRoot.classList.toggle("is-docked", docked);
+      controlsRoot.classList.toggle("is-flight", flight && !docked);
+      controlsRoot.classList.toggle("is-plan", planActive);
+      controlsRoot.classList.toggle("is-station", docked || tradeView || workView || yardView);
+    }
+
     setButton("left", flight, "<");
     setButton("right", flight, ">");
     setButton("boost", flight, "Boost");
@@ -377,6 +391,7 @@
     var root = document.createElement("div");
     root.className = "signal-touch-controls";
     root.setAttribute("aria-hidden", "false");
+    controlsRoot = root;
 
     var left = document.createElement("div");
     left.className = "signal-touch-stack signal-touch-left";

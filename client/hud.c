@@ -1433,7 +1433,7 @@ static const char *player_current_currency(void) {
 /* UI scaling / layout helpers                                         */
 /* ------------------------------------------------------------------ */
 
-static const float UI_SCALE_TIGHT   = 1.85f;
+static const float UI_SCALE_TIGHT   = 1.45f;
 static const float UI_SCALE_COMPACT = 1.60f;
 static const float UI_SCALE_DEFAULT = 1.42f;
 static const float UI_SCALE_WIDE    = 1.28f;
@@ -1550,15 +1550,26 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     bool compact = ui_is_compact();
-    float hud_margin = compact ? 16.0f : HUD_MARGIN;
-    float bottom_height = compact ? 28.0f : HUD_BOTTOM_PANEL_HEIGHT;
-    float top_height = compact ? HUD_TOP_PANEL_COMPACT_HEIGHT : HUD_TOP_PANEL_HEIGHT;
-    float panel_width = fminf(compact ? STATION_PANEL_COMPACT_WIDTH : STATION_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
-    float panel_height = fminf(compact ? STATION_PANEL_COMPACT_HEIGHT : STATION_PANEL_HEIGHT, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f);
+    bool cramped = compact && (screen_w < 280.0f || screen_h < 300.0f);
+    float hud_margin = compact ? (cramped ? 10.0f : 14.0f) : HUD_MARGIN;
+    float top_reserved = compact ? (cramped ? 18.0f : 38.0f)
+                                 : (HUD_TOP_PANEL_HEIGHT + 16.0f);
+    float bottom_reserved = compact ? (cramped ? 8.0f : 14.0f)
+                                    : (HUD_BOTTOM_PANEL_HEIGHT + 14.0f);
+    float panel_width = fminf(compact ? STATION_PANEL_COMPACT_WIDTH : STATION_PANEL_WIDTH,
+                              screen_w - (hud_margin * 2.0f));
+    float available_h = screen_h - (hud_margin * 2.0f) -
+                        top_reserved - bottom_reserved;
+    if (available_h < 96.0f)
+        available_h = fmaxf(64.0f, screen_h - (hud_margin * 2.0f));
+    float panel_height = fminf(compact ? STATION_PANEL_COMPACT_HEIGHT : STATION_PANEL_HEIGHT,
+                               available_h);
     float panel_x = (screen_w - panel_width) * 0.5f;
-    float min_y = hud_margin + top_height + 16.0f;
-    float max_y = screen_h - hud_margin - bottom_height - panel_height - 14.0f;
+    float min_y = hud_margin + top_reserved;
+    float max_y = screen_h - hud_margin - bottom_reserved - panel_height;
     float panel_y = clampf((screen_h - panel_height) * 0.5f, min_y, fmaxf(min_y, max_y));
+    if (panel_y + panel_height > screen_h - hud_margin)
+        panel_y = fmaxf(hud_margin, screen_h - hud_margin - panel_height);
 
     *x = panel_x;
     *y = panel_y;
@@ -1686,12 +1697,8 @@ static void wrap_hud_message_lines(const char *text, int max_cols,
 
 typedef struct {
     int station_idx;
-    int module_idx;          /* -1 means station shell scaffold. */
-    module_type_t type;
-    commodity_t material;
-    int needed;
+    station_construction_need_t need;
     int held;
-    bool station_shell;
 } hud_construction_need_t;
 
 typedef struct {
@@ -1706,6 +1713,10 @@ typedef struct {
     int blocker_idx;
     module_type_t type;
 } hud_shipyard_blocked_t;
+
+typedef struct {
+    int station_idx;
+} hud_abandoned_plan_t;
 
 static const char *hud_station_short_name(int station_idx) {
     const char *name = station_short_name(station_idx);
@@ -1738,41 +1749,14 @@ static const char *hud_material_source_hint(commodity_t material) {
 static bool hud_station_construction_need(const station_t *st, int station_idx,
                                           hud_construction_need_t *out) {
     if (!st || !out) return false;
-    if (st->scaffold && st->scaffold_progress < 0.999f) {
-        int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED *
-                                (1.0f - st->scaffold_progress));
-        if (needed < 1) needed = 1;
-        *out = (hud_construction_need_t){
-            .station_idx = station_idx,
-            .module_idx = -1,
-            .type = MODULE_SIGNAL_RELAY,
-            .material = COMMODITY_FRAME,
-            .needed = needed,
-            .held = hud_ship_material_count(COMMODITY_FRAME),
-            .station_shell = true,
-        };
-        return true;
-    }
-
-    for (int m = 0; m < st->module_count; m++) {
-        const station_module_t *mod = &st->modules[m];
-        if (module_build_state(mod) != MODULE_BUILD_AWAITING_SUPPLY) continue;
-        commodity_t material = module_build_material_lookup(mod->type);
-        float cost = module_build_cost_lookup(mod->type);
-        int needed = (int)ceilf(cost * (1.0f - module_supply_fraction(mod)));
-        if (needed < 1) needed = 1;
-        *out = (hud_construction_need_t){
-            .station_idx = station_idx,
-            .module_idx = m,
-            .type = mod->type,
-            .material = material,
-            .needed = needed,
-            .held = hud_ship_material_count(material),
-            .station_shell = false,
-        };
-        return true;
-    }
-    return false;
+    station_construction_need_t need;
+    if (!station_construction_material_need(st, &need)) return false;
+    *out = (hud_construction_need_t){
+        .station_idx = station_idx,
+        .need = need,
+        .held = hud_ship_material_count(need.material),
+    };
+    return true;
 }
 
 static bool hud_find_construction_need(hud_construction_need_t *out) {
@@ -1848,6 +1832,25 @@ static bool hud_find_shipyard_blocked(hud_shipyard_blocked_t *out) {
         hud_shipyard_blocked_t candidate;
         if (!hud_station_shipyard_blocked(st, s, &candidate)) continue;
         best = candidate;
+        best_d2 = d2;
+        found = true;
+    }
+    if (found) *out = best;
+    return found;
+}
+
+static bool hud_find_abandoned_plan(hud_abandoned_plan_t *out) {
+    if (!out) return false;
+    const float max_range = 1800.0f;
+    float best_d2 = max_range * max_range;
+    bool found = false;
+    hud_abandoned_plan_t best = {0};
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_planned_site_abandoned(st)) continue;
+        float d2 = v2_dist_sq(st->pos, LOCAL_PLAYER.ship.pos);
+        if (d2 >= best_d2) continue;
+        best.station_idx = s;
         best_d2 = d2;
         found = true;
     }
@@ -1996,22 +1999,34 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
+    hud_abandoned_plan_t abandoned;
+    if (hud_find_abandoned_plan(&abandoned)) {
+        snprintf(label, label_size, "ABANDONED PLAN");
+        snprintf(message, message_size,
+                 "%s has no reserved modules. Enter plan mode to add one, or clear the blueprint.",
+                 hud_station_short_name(abandoned.station_idx));
+        *r = 210; *g0 = 115; *b = 75;
+        return true;
+    }
+
     hud_construction_need_t need;
     if (hud_find_construction_need(&need)) {
         snprintf(label, label_size, "SUPPLY NEED");
         const char *station = hud_station_short_name(need.station_idx);
-        const char *mat = commodity_short_label(need.material);
+        const char *mat = commodity_short_label(need.need.material);
+        int needed = (int)ceilf(need.need.remaining - 0.001f);
+        if (needed < 1) needed = 1;
         if (need.held > 0) {
             snprintf(message, message_size,
                      "%s needs %d %s at %s. You carry %d; dock and press [S].",
-                     need.station_shell ? "Outpost scaffold" : module_type_name(need.type),
-                     need.needed, mat, station, need.held);
+                     need.need.station_shell ? "Outpost scaffold" : module_type_name(need.need.module_type),
+                     needed, mat, station, need.held);
         } else {
             snprintf(message, message_size,
                      "%s needs %d %s at %s. %s",
-                     need.station_shell ? "Outpost scaffold" : module_type_name(need.type),
-                     need.needed, mat, station,
-                     hud_material_source_hint(need.material));
+                     need.need.station_shell ? "Outpost scaffold" : module_type_name(need.need.module_type),
+                     needed, mat, station,
+                     hud_material_source_hint(need.need.material));
         }
         *r = 205; *g0 = 165; *b = 90;
         return true;
@@ -2131,6 +2146,7 @@ enum {
     SMOKE_LOOP_STATE_SCAFFOLD_SNAP = 9,
     SMOKE_LOOP_STATE_SUPPLY_NEED = 10,
     SMOKE_LOOP_STATE_YARD_BLOCKED = 11,
+    SMOKE_LOOP_STATE_ABANDONED_PLAN = 12,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -2283,6 +2299,14 @@ static int smoke_apply_loop_state(int state) {
         g.world.scaffolds[0].pos = sp->ship.pos;
         g.world.scaffolds[0].built_at_station = -1;
         g.world.scaffolds[0].towed_by = -1;
+        return 1;
+    case SMOKE_LOOP_STATE_ABANDONED_PLAN:
+        if (MAX_STATIONS <= SMOKE_OUTPOST_INDEX) return 0;
+        g.world.stations[SMOKE_OUTPOST_INDEX].pos = sp->ship.pos;
+        g.world.stations[SMOKE_OUTPOST_INDEX].planned = true;
+        g.world.stations[SMOKE_OUTPOST_INDEX].scaffold = false;
+        g.world.stations[SMOKE_OUTPOST_INDEX].placement_plan_count = 0;
+        g.world.stations[SMOKE_OUTPOST_INDEX].dock_radius = 0.0f;
         return 1;
     default:
         return 0;
@@ -2924,51 +2948,47 @@ void draw_hud(void) {
             bearing_mark = "R";
         }
 
-        sdtx_pos(top_text_x, top_row_0);
-        sdtx_color3b(PAL_TEXT_PRIMARY);
-        {
-            /* Use the SESSION callsign (sent over the wire and echoed
-             * back in highscores + remote ship labels) — NOT the local
-             * mining-keypair callsign, which is cryptographic-only and
-             * doesn't match what other players or the death-screen
-             * leaderboard see. */
-            const char *cs = net_local_callsign();
-            const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
-            if (LOCAL_PLAYER.docked)
-                sdtx_printf("%s // %d %s", tag, credits, player_current_currency());
-            else
+        if (!LOCAL_PLAYER.docked) {
+            sdtx_pos(top_text_x, top_row_0);
+            sdtx_color3b(PAL_TEXT_PRIMARY);
+            {
+                /* Use the SESSION callsign (sent over the wire and echoed
+                 * back in highscores + remote ship labels) — NOT the local
+                 * mining-keypair callsign, which is cryptographic-only and
+                 * doesn't match what other players or the death-screen
+                 * leaderboard see. */
+                const char *cs = net_local_callsign();
+                const char *tag = (cs && cs[0] != '\0') ? cs : "SHIP";
                 sdtx_puts(tag);
+            }
+
+            sdtx_pos(top_text_x, top_row_1);
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_printf("H %d/%d  C %d/%d  ", hull_units, hull_capacity, cargo_units, cargo_capacity);
+            sdtx_color3b(sig_r, sig_g, sig_b);
+            sdtx_printf("%s %d%%", sig_band, sig_pct);
+            if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
+                int mine_pct = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
+                sdtx_printf(" M%d%%", mine_pct);
+            }
+
+            sdtx_pos(top_text_x, top_row_2);
+            if (LOCAL_PLAYER.in_dock_range) {
+                sdtx_color3b(PAL_SIGNAL_MINT);
+                sdtx_puts("DOCK RANGE // E dock");
+            } else {
+                sdtx_color3b(PAL_NAV_BLUE);
+                sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
+            }
+
+            sdtx_pos(top_text_x, top_row_3);
+            {
+                hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
+                hud_render_action_compact(&act, dock_role);
+            }
         }
 
-        sdtx_pos(top_text_x, top_row_1);
-        sdtx_color3b(PAL_TEXT_SECONDARY);
-        sdtx_printf("H %d/%d  C %d/%d  ", hull_units, hull_capacity, cargo_units, cargo_capacity);
-        sdtx_color3b(sig_r, sig_g, sig_b);
-        sdtx_printf("%s %d%%", sig_band, sig_pct);
-        if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
-            int mine_pct = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
-            sdtx_printf(" M%d%%", mine_pct);
-        }
-
-        sdtx_pos(top_text_x, top_row_2);
-        if (LOCAL_PLAYER.docked) {
-            sdtx_color3b(PAL_SIGNAL_MINT);
-            sdtx_printf("%s // E launch", dock_role);
-        } else if (LOCAL_PLAYER.in_dock_range) {
-            sdtx_color3b(PAL_SIGNAL_MINT);
-            sdtx_puts("DOCK RANGE // E dock");
-        } else {
-            sdtx_color3b(PAL_NAV_BLUE);
-            sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
-        }
-
-        sdtx_pos(top_text_x, top_row_3);
-        {
-            hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
-            hud_render_action_compact(&act, dock_role);
-        }
-
-        if (hud_should_draw_message_panel()) {
+        if (!LOCAL_PLAYER.docked && hud_should_draw_message_panel()) {
             /* Subtitle: up to HUD_MSG_LINES wrapped lines, stacked bottom-up. */
             float cell = HUD_CELL * ui_text_zoom();
             int first_line_with_content = -1;

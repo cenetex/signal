@@ -340,8 +340,14 @@ async function expectTouchControlsFit(page: Page): Promise<void> {
       return !el.hidden && style.display !== 'none' && rect.width > 0 && rect.height > 0;
     });
     const issues: string[] = [];
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
 
     for (const el of visible) {
+      const rect = el.getBoundingClientRect();
+      if (rect.left < -1 || rect.top < -1 || rect.right > viewportWidth + 1 || rect.bottom > viewportHeight + 1) {
+        issues.push(`${el.dataset.control || 'button'} outside viewport`);
+      }
       if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
         issues.push(`${el.dataset.control || 'button'} text overflow`);
       }
@@ -387,6 +393,7 @@ const smokeLoopState = {
   scaffoldSnap: 9,
   supplyNeed: 10,
   yardBlocked: 11,
+  abandonedPlan: 12,
 } as const;
 
 const mobileFlag = {
@@ -602,6 +609,11 @@ test.describe('Browser smoke tests', () => {
       'YARD BLOCKED :: Outpost 4 yard blocked by loose scaffold. Tow it clear to start Furnace.',
     );
 
+    await setSmokeLoopState(page, smokeLoopState.abandonedPlan);
+    expect(await hudHintText(page)).toContain(
+      'ABANDONED PLAN :: Outpost 4 has no reserved modules.',
+    );
+
     expectNoFatalErrors(logs);
   });
 
@@ -666,6 +678,10 @@ test.describe('Browser smoke tests', () => {
     await expect(page.locator('[data-control="plan"]')).toHaveText('Exit');
     await expect(page.locator('[data-control="cycle"]')).toBeVisible();
     await expect(page.locator('[data-control="fire"]')).toBeHidden();
+    await expectTouchControlsFit(page);
+
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.waitForTimeout(250);
     await expectTouchControlsFit(page);
 
     expectNoFatalErrors(logs);

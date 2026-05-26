@@ -40,6 +40,20 @@ int           station_construction_blocker_index(const station_t *st,
 bool          station_construction_area_blocked(const station_t *st,
                                                 const scaffold_t *scaffolds,
                                                 int scaffold_count);
+bool          station_planned_site_abandoned(const station_t *st);
+
+typedef struct {
+    bool          station_shell; /* true for an outpost scaffold, false for a module */
+    int           module_index;  /* -1 when station_shell is true */
+    module_type_t module_type;
+    commodity_t   material;
+    float         required;
+    float         supplied;
+    float         remaining;
+} station_construction_need_t;
+
+bool          station_construction_material_need(const station_t *st,
+                                                 station_construction_need_t *out);
 
 /* Count active (non-scaffold) MODULE_FURNACE modules. Kept for labels,
  * tests, and migration diagnostics; smelt capability itself is

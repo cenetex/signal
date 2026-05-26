@@ -7,6 +7,7 @@
  */
 #include <math.h>
 #include <stdio.h>   /* snprintf — station_short_name */
+#include <string.h>
 #include "types.h"
 #include "commodity.h"
 #include "station_util.h"
@@ -69,6 +70,55 @@ bool station_construction_area_blocked(const station_t *st,
                                        const scaffold_t *scaffolds,
                                        int scaffold_count) {
     return station_construction_blocker_index(st, scaffolds, scaffold_count) >= 0;
+}
+
+bool station_planned_site_abandoned(const station_t *st) {
+    return st && st->planned && st->placement_plan_count <= 0;
+}
+
+bool station_construction_material_need(const station_t *st,
+                                        station_construction_need_t *out) {
+    if (!st || !out) return false;
+    memset(out, 0, sizeof(*out));
+    out->module_index = -1;
+
+    if (st->scaffold && st->scaffold_progress < 0.999f) {
+        float required = SCAFFOLD_MATERIAL_NEEDED;
+        float supplied = required * st->scaffold_progress;
+        if (supplied < 0.0f) supplied = 0.0f;
+        if (supplied > required) supplied = required;
+        *out = (station_construction_need_t){
+            .station_shell = true,
+            .module_index = -1,
+            .module_type = MODULE_SIGNAL_RELAY,
+            .material = COMMODITY_FRAME,
+            .required = required,
+            .supplied = supplied,
+            .remaining = required - supplied,
+        };
+        return out->remaining > 0.001f;
+    }
+
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        const station_module_t *mod = &st->modules[m];
+        if (module_build_state(mod) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        float required = module_build_cost_lookup(mod->type);
+        float supplied = required * module_supply_fraction(mod);
+        if (supplied < 0.0f) supplied = 0.0f;
+        if (supplied > required) supplied = required;
+        *out = (station_construction_need_t){
+            .station_shell = false,
+            .module_index = m,
+            .module_type = mod->type,
+            .material = module_build_material_lookup(mod->type),
+            .required = required,
+            .supplied = supplied,
+            .remaining = required - supplied,
+        };
+        return out->remaining > 0.001f;
+    }
+
+    return false;
 }
 
 int station_max_ring(const station_t *st) {

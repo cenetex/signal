@@ -1748,18 +1748,34 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         /* Special case: docked at a station still being built. The "verb"
          * here is delivering frames to advance construction. */
         int pct = (int)lroundf(st->scaffold_progress * 100.0f);
-        int held = ship_manifest_count_c(ship, COMMODITY_FRAME);
+        station_construction_need_t need;
+        bool has_need = station_construction_material_need(st, &need);
+        commodity_t material = has_need ? need.material : COMMODITY_FRAME;
+        int held = ship_manifest_count_c(ship, material);
+        int remaining = has_need ? (int)ceilf(need.remaining - 0.001f) : 0;
+        int required = has_need ? (int)ceilf(need.required - 0.001f)
+                                : (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+        int supplied = has_need ? (int)lroundf(need.supplied)
+                                : (int)lroundf(st->scaffold_progress *
+                                              SCAFFOLD_MATERIAL_NEEDED);
+        if (remaining < 0) remaining = 0;
         char left_buf[48], right_buf[32];
         snprintf(left_buf, sizeof(left_buf), "SCAFFOLD %d%%", pct);
-        draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_FADED, NULL);
+        snprintf(right_buf, sizeof(right_buf), "%d/%d %s",
+                 supplied, required, commodity_short_label(material));
+        draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_FADED,
+                    right_buf);
         my += row_h * 1.5f;
         if (held > 0) {
-            snprintf(left_buf, sizeof(left_buf), "[S] deliver frames");
-            snprintf(right_buf, sizeof(right_buf), "x%d -> +construction", held);
+            snprintf(left_buf, sizeof(left_buf), "[S] deliver %s",
+                     commodity_short_label(material));
+            snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
+                     held, remaining);
             draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT, right_buf);
         } else {
+            snprintf(right_buf, sizeof(right_buf), "need %d", remaining);
             draw_row_lr(cx, my, inner_right, COL_DIM,
-                        "Bring frames here to finish this outpost.", COL_TEXT, NULL);
+                        "Bring construction material here.", COL_TEXT, right_buf);
         }
         return;
     }
@@ -1847,6 +1863,42 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
     }
     my += 6.0f;
+
+    station_construction_need_t build_need;
+    if (station_construction_material_need(st, &build_need)) {
+        int remaining = (int)ceilf(build_need.remaining - 0.001f);
+        int supplied = (int)lroundf(build_need.supplied);
+        int required = (int)ceilf(build_need.required - 0.001f);
+        int held = ship_manifest_count_c(ship, build_need.material);
+        if (remaining < 1) remaining = 1;
+        char left_buf[64], right_buf[48];
+
+        my += draw_section_header(cx, my, inner_right, "CONSTRUCTION", HDR_YARD);
+        snprintf(left_buf, sizeof(left_buf), "%s r%d/s%d",
+                 module_type_name(build_need.module_type),
+                 st->modules[build_need.module_index].ring,
+                 st->modules[build_need.module_index].slot);
+        snprintf(right_buf, sizeof(right_buf), "%d/%d %s",
+                 supplied, required, commodity_short_label(build_need.material));
+        draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT,
+                    right_buf);
+        my += row_h;
+
+        if (held > 0) {
+            snprintf(left_buf, sizeof(left_buf), "[S] deliver %s",
+                     commodity_short_label(build_need.material));
+            snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
+                     held, remaining);
+            draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT,
+                        right_buf);
+        } else {
+            snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                     remaining, commodity_short_label(build_need.material));
+            draw_row_lr(cx, my, inner_right, COL_DIM, "supply needed",
+                        COL_FADED, right_buf);
+        }
+        my += row_h + 6.0f;
+    }
 
     /* -------- SERVICES (always visible; rows always show their status) -------- */
     my += draw_section_header(cx, my, inner_right, "SERVICES", HDR_SERVICE);
@@ -2275,15 +2327,20 @@ static void draw_yard_view(const station_ui_state_t *ui,
                 : ui->station->_inventory_cache[mat_type];
             int got = (int)lroundf(have);
             int total = (int)lroundf(need);
+            int remaining = (int)ceilf((need - have) - 0.001f);
+            if (remaining < 0) remaining = 0;
+            const char *mat_label = commodity_short_label(mat_type);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             if (p == 0 && blocker_idx >= 0) {
                 sdtx_color3b(PAL_WARNING);
-                sdtx_printf("  %d. %s  yard blocked (stock: %d)",
-                    p + 1, module_type_name(t), (int)lroundf(station_have));
+                sdtx_printf("  %d. %s  yard blocked; needs %d %s (stock: %d)",
+                    p + 1, module_type_name(t), remaining, mat_label,
+                    (int)lroundf(station_have));
             } else if (p == 0) {
                 sdtx_color3b(PAL_DELIVERY_BLUE);
-                sdtx_printf("  %d. %s  intake %d/%d  (stock: %d)",
-                    p + 1, module_type_name(t), got, total, (int)lroundf(station_have));
+                sdtx_printf("  %d. %s  intake %d/%d %s  (stock: %d)",
+                    p + 1, module_type_name(t), got, total, mat_label,
+                    (int)lroundf(station_have));
             } else {
                 sdtx_color3b(PAL_SUPPLY_DIM);
                 sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
@@ -2472,6 +2529,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         const float cell_w = 8.0f;
         float ty = content_top + 2.0f;
         float tx = cx;
+        bool tight_tabs = compact && panel_w < 280.0f;
         /* Record active tab geometry so we can draw the latch after the
          * text pass (so the quad doesn't clobber glyphs). */
         float active_x0 = 0.0f, active_x1 = 0.0f;
@@ -2483,8 +2541,13 @@ void draw_station_services(const station_ui_state_t* ui) {
             if (!panel) continue;
             bool active = (panel->view == g.station_view);
             char cell[20];
-            snprintf(cell, sizeof(cell), active ? "[%s]" : " %s ",
-                     panel->label);
+            if (tight_tabs) {
+                snprintf(cell, sizeof(cell), active ? "[%c]" : " %c ",
+                         panel->label[0]);
+            } else {
+                snprintf(cell, sizeof(cell), active ? "[%s]" : " %s ",
+                         panel->label);
+            }
             float w = (float)strlen(cell) * cell_w;
             if (active) {
                 sdtx_color3b((uint8_t)(rr * 255.0f),
@@ -2498,12 +2561,12 @@ void draw_station_services(const station_ui_state_t* ui) {
             }
             sdtx_pos(ui_text_pos(tx), ui_text_pos(ty));
             sdtx_puts(cell);
-            tx += w + 10.0f;
+            tx += w + (tight_tabs ? 4.0f : 10.0f);
         }
         const char *hint = "[TAB] cycle";
         float hint_w = (float)strlen(hint) * cell_w;
         float hint_x = panel_x + panel_w - 20.0f - hint_w;
-        if (tx + 12.0f < hint_x) {
+        if (!tight_tabs && tx + 12.0f < hint_x) {
             sdtx_color3b(PAL_TEXT_FADED);
             sdtx_pos(ui_text_pos(hint_x), ui_text_pos(ty));
             sdtx_puts(hint);

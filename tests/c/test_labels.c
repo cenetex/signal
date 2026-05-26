@@ -33,9 +33,10 @@ TEST(test_commodity_short_label_all) {
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_FERRITE_INGOT), "fe ingots");
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_CUPRITE_INGOT), "cu ingots");
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_CRYSTAL_INGOT), "cr ingots");
-    /* Default branch covers ore + module commodities. */
+    ASSERT_STR_EQ(commodity_short_label(COMMODITY_LASER_MODULE),  "laser modules");
+    ASSERT_STR_EQ(commodity_short_label(COMMODITY_TRACTOR_MODULE),"tractor modules");
+    /* Default branch covers ore. */
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_FERRITE_ORE), "units");
-    ASSERT_STR_EQ(commodity_short_label(COMMODITY_LASER_MODULE), "units");
 }
 
 TEST(test_station_flow_diag_label_all) {
@@ -48,6 +49,52 @@ TEST(test_station_flow_diag_label_all) {
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_SLOW_FEED), "slow route");
     ASSERT_STR_EQ(station_flow_diag_label(STATION_FLOW_DIAG_AWAITING_SUPPLY),
                   "scaffold needs supply");
+}
+
+TEST(test_station_planned_site_abandoned_helper) {
+    station_t st = {0};
+    ASSERT(!station_planned_site_abandoned(&st));
+
+    st.planned = true;
+    st.placement_plan_count = 1;
+    ASSERT(!station_planned_site_abandoned(&st));
+
+    st.placement_plan_count = 0;
+    ASSERT(station_planned_site_abandoned(&st));
+}
+
+TEST(test_station_construction_material_need_helper) {
+    station_t st = {0};
+    station_construction_need_t need = {0};
+
+    ASSERT(!station_construction_material_need(&st, &need));
+
+    st.scaffold = true;
+    st.scaffold_progress = 0.25f;
+    ASSERT(station_construction_material_need(&st, &need));
+    ASSERT(need.station_shell);
+    ASSERT_EQ_INT(need.module_index, -1);
+    ASSERT_EQ_INT(need.module_type, MODULE_SIGNAL_RELAY);
+    ASSERT_EQ_INT(need.material, COMMODITY_FRAME);
+    ASSERT_EQ_FLOAT(need.required, SCAFFOLD_MATERIAL_NEEDED, 0.01f);
+    ASSERT_EQ_FLOAT(need.remaining, SCAFFOLD_MATERIAL_NEEDED * 0.75f, 0.01f);
+
+    memset(&st, 0, sizeof st);
+    st.modules[0] = (station_module_t){
+        .type = MODULE_LASER_FAB,
+        .scaffold = true,
+        .build_progress = 0.5f,
+    };
+    st.module_count = 1;
+    ASSERT(station_construction_material_need(&st, &need));
+    ASSERT(!need.station_shell);
+    ASSERT_EQ_INT(need.module_index, 0);
+    ASSERT_EQ_INT(need.module_type, MODULE_LASER_FAB);
+    ASSERT_EQ_INT(need.material, module_build_material_lookup(MODULE_LASER_FAB));
+    ASSERT_EQ_FLOAT(need.required, module_build_cost_lookup(MODULE_LASER_FAB), 0.01f);
+    ASSERT_EQ_FLOAT(need.remaining,
+                    module_build_cost_lookup(MODULE_LASER_FAB) * 0.5f,
+                    0.01f);
 }
 
 /* Helper: build a station with a single module of type `mt` so the
@@ -184,6 +231,8 @@ void register_label_tests(void) {
     RUN(test_mining_grade_label_all);
     RUN(test_commodity_short_label_all);
     RUN(test_station_flow_diag_label_all);
+    RUN(test_station_planned_site_abandoned_helper);
+    RUN(test_station_construction_material_need_helper);
     RUN(test_station_dominant_module_priority);
     RUN(test_station_primary_buy_per_dominant_module);
     RUN(test_station_consumes_fab_inputs);
