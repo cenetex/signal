@@ -195,7 +195,7 @@ int station_contract_source_stock_count(const station_t *st,
     }
 
     if (ct->proof_flags != 0) return 0;
-    if (ct->required_grade < 0 || ct->required_grade >= MINING_GRADE_COUNT)
+    if (ct->required_grade >= MINING_GRADE_COUNT)
         return 0;
 
     int count = 0;
