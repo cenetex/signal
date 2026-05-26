@@ -69,7 +69,7 @@ static inline uint32_t client_death_spin_float_bits(float value) {
  * and the deleted tabs were full of unactionable display data. */
 
 typedef enum {
-    STATION_VIEW_DOCK = 0,       /* ship bay: repair / refit / current ship state */
+    STATION_VIEW_DOCK = 0,       /* ship panel: repair / refit / current ship state */
     STATION_VIEW_TRADE,          /* market: buy / sell cargo */
     STATION_VIEW_WORK,           /* dispatch: jobs / contracts */
     STATION_VIEW_YARD,           /* fabrication: kits + construction queue */

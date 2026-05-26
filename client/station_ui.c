@@ -2233,10 +2233,15 @@ static bool station_panel_visible_always(const station_t *station)
     return true;
 }
 
+static bool station_panel_visible_shipyard(const station_t *station)
+{
+    return station && station_has_module(station, MODULE_SHIPYARD);
+}
+
 static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_DOCK] = {
         .view = STATION_VIEW_DOCK,
-        .label = "DOCK",
+        .label = "SHIP",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_verbs_view,
         .input_fn = station_panel_input_dock,
@@ -2258,7 +2263,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_YARD] = {
         .view = STATION_VIEW_YARD,
         .label = "YARD",
-        .visible_fn = station_panel_visible_always,
+        .visible_fn = station_panel_visible_shipyard,
         .draw_fn = draw_yard_view,
         .input_fn = station_panel_input_yard,
     },
@@ -2385,10 +2390,10 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
 
     /* Tab strip, LEFT-aligned on the first content line.
-     *   DOCK  — ship bay (repair / refit / current ship state)
+     *   SHIP  — ship bay (repair / refit / current ship state)
      *   TRADE — market (buy / sell cargo)
      *   WORK  — contracts (jobs / routing)
-     *   YARD  — fabrication (kits + construction queue)
+     *   YARD  — fabrication (kits + construction queue, shipyard stations only)
      * Active tab: station-role tint + a short underline latch. Inactive:
      * muted. The nav legend sits flush against the panel right edge. */
     {

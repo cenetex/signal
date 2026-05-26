@@ -413,7 +413,7 @@ static void sample_e_interact(input_intent_t *intent) {
     if (LOCAL_PLAYER.in_dock_range) intent->interact = true;
 }
 
-/* [Tab] cycle docked tabs (DOCK ↔ CONTRACTS ↔ ...). Shift+Tab reverses. */
+/* [Tab] cycles only the panels visible at this station. Shift+Tab reverses. */
 static void sample_station_tab(void) {
     if (!LOCAL_PLAYER.docked || !is_key_pressed(SAPP_KEYCODE_TAB)) return;
     bool shift = is_key_down(SAPP_KEYCODE_LEFT_SHIFT) ||
@@ -536,7 +536,7 @@ void station_panel_input_work(input_intent_t *intent) {
     set_notice("Delivering all matching cargo...");
 }
 
-/* DOCK (ship bay) tab keys:
+/* SHIP panel keys:
  *   [R] REPAIR
  *   [M] upgrade mining laser
  *   [C] upgrade cargo hold capacity

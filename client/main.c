@@ -2629,6 +2629,10 @@ int signal_mobile_control_flags(void) {
     const bool docked = LOCAL_PLAYER.docked;
 
     if (docked) {
+        const station_t *st = current_station_ptr();
+        if (!station_panel_visible(station_panel_descriptor(g.station_view), st))
+            g.station_view = station_panel_first_visible(st);
+
         flags |= MOBILE_CTRL_DOCKED | MOBILE_CTRL_CAN_USE;
         switch (g.station_view) {
         case STATION_VIEW_DOCK:  flags |= MOBILE_CTRL_STATION_DOCK; break;
@@ -2706,6 +2710,8 @@ int signal_mobile_digit_mask(void) {
     if (!LOCAL_PLAYER.docked) return 0;
     const station_t *st = current_station_ptr();
     if (!st) return 0;
+    if (!station_panel_visible(station_panel_descriptor(g.station_view), st))
+        g.station_view = station_panel_first_visible(st);
 
     int mask = 0;
     switch (g.station_view) {
