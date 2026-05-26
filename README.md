@@ -194,6 +194,14 @@ client-side correction metrics with:
 make smoke-latency
 ```
 
+For a self-contained local run that builds the client/server, starts an
+ephemeral relay, launches both latency proxy modes, and runs both Playwright
+latency assertions:
+
+```sh
+make smoke-latency-suite
+```
+
 The latency smoke reads wasm telemetry for ping RTT, authoritative ack age,
 ack-minus-ping gap, player-state cadence, correction mode counts, replay depth,
 tick skew, unacked inputs, and render-offset bounds.
@@ -222,6 +230,7 @@ make test-soak              # long-running sim/contract/autopilot cases
 make test-all               # fast + soak suites
 make test-serial            # single-process fast suite for debugging
 make smoke                  # build wasm and run Playwright browser smoke
+make smoke-latency-suite    # build, launch local relay/proxies, run latency smokes
 ```
 
 Or invoke the binary directly:

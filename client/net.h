@@ -2,8 +2,8 @@
  * net.h — Multiplayer networking layer for Signal Space Miner.
  *
  * Provides WebSocket-based connectivity to the relay server.
- * Uses emscripten WebSocket API for WASM builds; native builds
- * are stubbed with a TODO for future POSIX implementation.
+ * Uses emscripten WebSocket API for WASM builds and mongoose's
+ * WebSocket client for native builds.
  *
  * Binary protocol (little-endian):
  *   JOIN  (0x01): 1 type + 1 player_id
