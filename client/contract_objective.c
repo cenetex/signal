@@ -410,7 +410,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
 
 static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                       contract_objective_t *out) {
-    if (!ct || ct->station_index < 0 || ct->station_index >= MAX_STATIONS ||
+    if (!ct || ct->station_index >= MAX_STATIONS ||
         ct->target_index < 0 || ct->target_index >= MAX_STATIONS) {
         return false;
     }
