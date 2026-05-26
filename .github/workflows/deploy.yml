@@ -20,6 +20,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  SIGNAL_ECS_HEALTH_GRACE_SECONDS: "420"
 
 jobs:
   # Fast gate: build once, run fast tests with -Werror.
@@ -528,7 +529,7 @@ jobs:
             aws ecs update-service \
               --cluster default \
               --service signal-relay \
-              --health-check-grace-period-seconds 180 \
+              --health-check-grace-period-seconds "$SIGNAL_ECS_HEALTH_GRACE_SECONDS" \
               --deployment-configuration 'maximumPercent=200,minimumHealthyPercent=100,deploymentCircuitBreaker={enable=true,rollback=true}' \
               --task-definition "$CURRENT_TASK_DEF"
             echo "updated=true" >> "$GITHUB_OUTPUT"
@@ -565,7 +566,7 @@ jobs:
           aws ecs update-service \
             --cluster default \
             --service signal-relay \
-            --health-check-grace-period-seconds 180 \
+            --health-check-grace-period-seconds "$SIGNAL_ECS_HEALTH_GRACE_SECONDS" \
             --deployment-configuration 'maximumPercent=200,minimumHealthyPercent=100,deploymentCircuitBreaker={enable=true,rollback=true}' \
             --task-definition "$TASK_DEF_ARN"
           echo "updated=true" >> "$GITHUB_OUTPUT"
@@ -620,7 +621,7 @@ jobs:
           aws ecs update-service \
             --cluster default \
             --service signal-relay \
-            --health-check-grace-period-seconds 180 \
+            --health-check-grace-period-seconds "$SIGNAL_ECS_HEALTH_GRACE_SECONDS" \
             --deployment-configuration 'maximumPercent=200,minimumHealthyPercent=100,deploymentCircuitBreaker={enable=true,rollback=true}' \
             --task-definition "${{ steps.snapshot-server.outputs.task_def_arn }}"
           for attempt in $(seq 1 80); do
@@ -678,7 +679,7 @@ jobs:
           aws ecs update-service \
             --cluster default \
             --service signal-relay \
-            --health-check-grace-period-seconds 180 \
+            --health-check-grace-period-seconds "$SIGNAL_ECS_HEALTH_GRACE_SECONDS" \
             --deployment-configuration 'maximumPercent=200,minimumHealthyPercent=100,deploymentCircuitBreaker={enable=true,rollback=true}' \
             --task-definition "${{ steps.snapshot-server.outputs.task_def_arn }}"
           aws ecs wait services-stable --cluster default --services signal-relay
