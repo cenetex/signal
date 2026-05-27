@@ -69,7 +69,7 @@ static inline uint32_t client_death_spin_float_bits(float value) {
 typedef enum {
     STATION_VIEW_DOCK = 0,       /* ship panel: repair / refit / current ship state */
     STATION_VIEW_TRADE,          /* market: buy / sell cargo */
-    STATION_VIEW_WORK,           /* dispatch: jobs / contracts */
+    STATION_VIEW_WORK,           /* dispatch: contracts and routing */
     STATION_VIEW_YARD,           /* fabrication: kits + construction queue */
     STATION_VIEW_COUNT,
 } station_view_t;
@@ -769,7 +769,7 @@ void draw_hull_fog_back(void);
 void build_station_ui_state(station_ui_state_t* ui);
 void draw_station_services(const station_ui_state_t* ui);
 
-/* JOBS panel contract slot ordering. Single source of truth shared
+/* CONTRACTS panel slot ordering. Single source of truth shared
  * between draw_jobs_view (renders the rows) and the input layer
  * (handles [1]/[2]/[3] selection) so the keypress always maps to the
  * row the player sees. Up to 3 slots filled in this order:

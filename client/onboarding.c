@@ -133,7 +133,7 @@ static bool guide_scan(char *message, size_t message_size) {
     float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
     if (sig > 0.0f) {
         snprintf(message, message_size,
-                 "SIGNAL // GUIDE // LOCAL SCAN READY ::::: [H] REVEAL IDS + JOBS");
+                 "SIGNAL // GUIDE // LOCAL SCAN READY ::::: [H] REVEAL IDS + CONTRACTS");
     } else {
         snprintf(message, message_size,
                  "SIGNAL // GUIDE // RETURN TO SIGNAL ::::: [H] SCANS WHEN LINKED");

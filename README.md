@@ -42,7 +42,7 @@ as the economy: rocks, tractors, dock approaches, hopper levels, signal lines.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both
 players and NPCs are pushed back toward the connected station chain. Expansion
-is signal expansion: an outpost's first job is being a relay.
+is signal expansion: an outpost's first role is being a relay.
 
 Oh yeah and you kill each other with rocks.
 
@@ -107,7 +107,7 @@ for the `swarm.rati.chat` avatar sync workflow.
 - Docked station controls: `Tab` cycles panels. In SHIP, `R` repairs,
   `M` upgrades the mining laser, `C` expands cargo hold, and `T` upgrades the
   tractor. In TRADE, `1`-`5` buy/sell visible rows, `F` pages, and `S` sells
-  accepted cargo. In JOBS, `1`-`3` track work and `S` delivers. In YARD,
+  accepted cargo. In CONTRACTS, `1`-`3` track contracts and `S` delivers. In YARD,
   `1`-`9` order scaffold kits where a shipyard is installed.
 - Plan mode: while undocked and not towing, `B` enters or exits plan mode, `R`
   cycles module type, and `E` reserves the current slot. Press `B` in open

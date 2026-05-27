@@ -207,7 +207,7 @@ int station_contract_source_stock_count(const station_t *st,
 }
 
 /* ------------------------------------------------------------------ */
-/* JOBS-panel contract slot builder                                    */
+/* CONTRACTS-panel slot builder                                        */
 /* ------------------------------------------------------------------ */
 
 int build_work_slots(int here_idx, vec2 here_pos,
@@ -508,7 +508,7 @@ static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
  *   │ view content (descriptor-selected):         │
  *   │   SHIP  — hull, hold, repair, refit         │
  *   │   TRADE — station market                    │
- *   │   JOBS  — station work board                │
+ *   │   CONTRACTS — station contract board        │
  *   │   YARD  — scaffold orders and queue         │
  *   └─────────────────────────────────────────────┘
  *
@@ -1016,7 +1016,7 @@ static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
  * sells) first, then SELL rows (what the station buys). Hotkeys [1]..[5]
  * select a row on the current page. [F] pages forward; pages wrap at
  * the last page so the UI never runs out. At-station trades show the
- * generic "$" symbol — contract payouts in JOBS still name the issuing
+ * generic "$" symbol — contract payouts in CONTRACTS still name the issuing
  * station's currency because that's where the money actually lives.
  *
  * trade_row_t and the pagination constants live in client.h so input.c
@@ -1292,7 +1292,7 @@ static bool trade_row_tracked_note(const station_t *st,
             ui_delivery_ledger_for_contract(objective.contract_index);
         if (row->kind == 0 && at_origin && (!ledger ||
             ledger->status == DELIVERY_SHIPMENT_DELIVERED)) {
-            snprintf(out, out_size, "use jobs for credit");
+            snprintf(out, out_size, "use contracts for credit");
             return true;
         }
         if (row->kind == 1 && row->held > 0 && at_dest && ledger &&
@@ -1310,7 +1310,7 @@ static bool trade_row_tracked_note(const station_t *st,
             return true;
         }
         if (row->station_stock > 0) {
-            snprintf(out, out_size, "needed for tracked job");
+            snprintf(out, out_size, "needed for tracked contract");
             return true;
         }
         return false;
@@ -1387,7 +1387,7 @@ static bool job_row_tracked_note(int here_idx,
         return true;
     }
 
-    snprintf(out, out_size, "needed for tracked job");
+    snprintf(out, out_size, "needed for tracked contract");
     return true;
 }
 
@@ -2013,12 +2013,12 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 }
 
 /* ------------------------------------------------------------------ */
-/* JOBS panel — preserved contract picker, trimmed                     */
+/* CONTRACTS panel — preserved contract picker, trimmed                */
 /* ------------------------------------------------------------------ */
 
-/* JOBS view — dispatch board table.
+/* CONTRACTS view — dispatch board table.
  * Columns (monospace cells, 8px each):
- *   key(4) job(10) cargo(19) state(10)  payout(right-aligned)
+ *   key(4) step(10) cargo(19) state(10)  payout(right-aligned)
  * Rows are sorted: fulfillable here first, then nearest remaining. */
 static void draw_jobs_view(const station_ui_state_t *ui,
                            float cx, float cy, float inner_w, bool compact)
@@ -2037,15 +2037,15 @@ static void draw_jobs_view(const station_ui_state_t *ui,
     const uint8_t COL_TEXT[3]     = { PAL_TEXT_SECONDARY };
     const uint8_t COL_FADED[3]    = { PAL_TEXT_FADED };
 
-    my += draw_section_header(cx, my, inner_right, "JOBS", HDR_TRADE);
+    my += draw_section_header(cx, my, inner_right, "CONTRACTS", HDR_TRADE);
 
-    /* Column header: job verb is now the state (fracture / tractor /
+    /* Column header: step verb is now the state (fracture / tractor /
      * deliver), payout left-aligned at col 33 so it reads together with
      * the cargo instead of fighting it at the panel edge. */
     if (!compact) {
         cell_t hdr[] = {
             {  0, "key",    COL_HDR },
-            {  4, "job",    COL_HDR },
+            {  4, "step",   COL_HDR },
             { 14, "cargo",  COL_HDR },
             { 33, "payout", COL_HDR },
         };
@@ -2064,7 +2064,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
                                       slots, slot_fulfillable, slot_held);
 
     if (slot_count == 0) {
-        draw_row_lr(cx, my, inner_right, COL_DIM, "No active jobs.", NULL, NULL);
+        draw_row_lr(cx, my, inner_right, COL_DIM, "No active contracts.", NULL, NULL);
         return;
     }
 
@@ -2095,7 +2095,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
 
-        /* Job column doubles as the immediate next-step verb. The shared
+        /* Step column doubles as the immediate next-step verb. The shared
          * objective resolver also drives SIGNAL copy and world markers, so
          * the station board cannot drift from the HUD hint. */
         const char *job_txt = "work";
@@ -2391,7 +2391,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     },
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
-        .label = "JOBS",
+        .label = "CONTRACTS",
         .legend = "[1-3] track  [S] deliver  [TAB]",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_jobs_view,
@@ -2530,7 +2530,7 @@ void draw_station_services(const station_ui_state_t* ui) {
     /* Tab strip, LEFT-aligned on the first content line.
      *   SHIP  — ship bay (repair / refit / current ship state)
      *   TRADE — market (buy / sell cargo)
-     *   JOBS  — contracts (jobs / routing)
+     *   CONTRACTS — active contracts and routing
      *   YARD  — fabrication (kits + construction queue, shipyard stations only)
      * Active tab: station-role tint + a short underline latch. Inactive:
      * muted. The active panel's key legend sits against the panel right edge. */

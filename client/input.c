@@ -23,9 +23,9 @@
  *   [F]   TRADE tab → next market page.
  *
  *   [1-5] TRADE tab → buy/sell visible row.
- *   [1-3] JOBS tab → track/select contract row.
+ *   [1-3] CONTRACTS tab → track/select contract row.
  *   [1-9] SHIPYARD tab → order scaffold kit row.
- *   [S]   TRADE tab → sell accepted cargo; JOBS tab → deliver selected
+ *   [S]   TRADE tab → sell accepted cargo; CONTRACTS tab → deliver selected
  *         contract or all matching contract cargo.
  *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
  *   [R]   SHIP panel → repair; plan mode → cycle module type.
@@ -42,7 +42,7 @@
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
  *               (NOT bound in docked UI — use [Tab] to switch views.)
- *   [Tab]       Docked → cycle station panels (SHIP / TRADE / JOBS / YARD).
+ *   [Tab]       Docked → cycle station panels (SHIP / TRADE / CONTRACTS / YARD).
  *               Shift+Tab reverses. Visibility comes from station panels.
  *
  * If adding a new overloaded key, update this table FIRST so the
@@ -460,7 +460,7 @@ void station_panel_input_yard(input_intent_t *intent) {
     }
 }
 
-/* JOBS panel keys:
+/* CONTRACTS panel keys:
  *   [1/2/3] select a contract slot for selective delivery
  *   [S]     deliver — selective if a slot is selected, else all
  * The display in station_ui.c sorts deliverable contracts first so [1]
@@ -489,7 +489,7 @@ void station_panel_input_work(input_intent_t *intent) {
             set_notice("%s", step);
         else {
             const contract_t *ct = &g.world.contracts[slot_contract[k]];
-            set_notice("Tracking %s job.",
+            set_notice("Tracking %s contract.",
                        commodity_short_name(ct->commodity));
         }
         break;

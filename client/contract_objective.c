@@ -375,7 +375,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
                                    deliver, dest);
             } else {
                 objective_set_copy(out, "SIGNAL // CONTRACT",
-                                   "DELIVER %s x%d TO %s: OPEN JOBS [TAB]",
+                                   "DELIVER %s x%d TO %s: OPEN CONTRACTS [TAB]",
                                    commodity_short_name(ct->commodity),
                                    deliver, dest);
             }
