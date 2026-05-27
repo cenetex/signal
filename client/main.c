@@ -216,6 +216,10 @@ static void reset_world(void) {
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
     g.npc_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
+    g.scaffold_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+    g.cargo_pod_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.player_interp, 0, sizeof(g.player_interp));
     g.player_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     reset_station_ring_smoothing();
@@ -225,6 +229,10 @@ static void reset_world(void) {
     memcpy(g.asteroid_interp.prev, g.world.asteroids, sizeof(g.asteroid_interp.prev));
     memcpy(g.npc_interp.curr, g.world.npc_ships, sizeof(g.npc_interp.curr));
     memcpy(g.npc_interp.prev, g.world.npc_ships, sizeof(g.npc_interp.prev));
+    memcpy(g.scaffold_interp.curr, g.world.scaffolds, sizeof(g.scaffold_interp.curr));
+    memcpy(g.scaffold_interp.prev, g.world.scaffolds, sizeof(g.scaffold_interp.prev));
+    memcpy(g.cargo_pod_interp.curr, g.world.cargo_pods, sizeof(g.cargo_pod_interp.curr));
+    memcpy(g.cargo_pod_interp.prev, g.world.cargo_pods, sizeof(g.cargo_pod_interp.prev));
 
     g.thrusting = false;
     g.notice[0] = '\0';
@@ -1115,6 +1123,8 @@ static void sim_step(float dt) {
     /* Advance interpolation timers (both modes) */
     g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
+    g.scaffold_interp.t += dt / fmaxf(g.scaffold_interp.interval, 0.01f);
+    g.cargo_pod_interp.t += dt / fmaxf(g.cargo_pod_interp.interval, 0.01f);
     g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
     /* Thrust flame: local input for manual, server input for autopilot.
@@ -2053,6 +2063,105 @@ EMSCRIPTEN_KEEPALIVE
 int get_net_motion_unacked_inputs(void) {
     return (int)((uint16_t)(g.net_input_seq - g.net_last_server_ack));
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_remote_towable_interp_check(void) {
+    bool saved_local_server_active = g.local_server.active;
+    scaffold_t saved_world_scaffolds[MAX_SCAFFOLDS];
+    scaffold_t saved_scaffold_prev[MAX_SCAFFOLDS];
+    scaffold_t saved_scaffold_curr[MAX_SCAFFOLDS];
+    cargo_pod_t saved_world_cargo_pods[MAX_CARGO_PODS];
+    cargo_pod_t saved_cargo_pod_prev[MAX_CARGO_PODS];
+    cargo_pod_t saved_cargo_pod_curr[MAX_CARGO_PODS];
+    float saved_scaffold_t = g.scaffold_interp.t;
+    float saved_scaffold_interval = g.scaffold_interp.interval;
+    float saved_cargo_pod_t = g.cargo_pod_interp.t;
+    float saved_cargo_pod_interval = g.cargo_pod_interp.interval;
+
+    memcpy(saved_world_scaffolds, g.world.scaffolds, sizeof(saved_world_scaffolds));
+    memcpy(saved_scaffold_prev, g.scaffold_interp.prev, sizeof(saved_scaffold_prev));
+    memcpy(saved_scaffold_curr, g.scaffold_interp.curr, sizeof(saved_scaffold_curr));
+    memcpy(saved_world_cargo_pods, g.world.cargo_pods, sizeof(saved_world_cargo_pods));
+    memcpy(saved_cargo_pod_prev, g.cargo_pod_interp.prev, sizeof(saved_cargo_pod_prev));
+    memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
+
+    g.local_server.active = false;
+    memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
+    memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
+    g.scaffold_interp.interval = 0.1f;
+    memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
+    memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+    g.cargo_pod_interp.interval = 0.1f;
+
+    NetScaffoldState scaffold = {
+        .index = 3,
+        .state = SCAFFOLD_LOOSE,
+        .module_type = MODULE_DOCK,
+        .owner = -1,
+        .pos_x = 0.0f,
+        .pos_y = 0.0f,
+        .vel_x = 100.0f,
+        .vel_y = 0.0f,
+        .radius = 30.0f,
+        .build_amount = 0.0f,
+    };
+    apply_remote_scaffolds(&scaffold, 1);
+    g.scaffold_interp.t = 0.1f / fmaxf(g.scaffold_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float scaffold_first_x = g.world.scaffolds[3].pos.x;
+    scaffold.pos_x = 100.0f;
+    scaffold.vel_x = 0.0f;
+    apply_remote_scaffolds(&scaffold, 1);
+    g.scaffold_interp.t = 0.05f / fmaxf(g.scaffold_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float scaffold_blended_x = g.world.scaffolds[3].pos.x;
+
+    NetCargoPodState pod = {
+        .index = 5,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .towed_by = -1,
+        .pos_x = 0.0f,
+        .pos_y = 0.0f,
+        .vel_x = 100.0f,
+        .vel_y = 0.0f,
+        .radius = 18.0f,
+        .rotation = 0.0f,
+        .quantity = 12,
+    };
+    apply_remote_cargo_pods(&pod, 1);
+    g.cargo_pod_interp.t = 0.1f / fmaxf(g.cargo_pod_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float pod_first_x = g.world.cargo_pods[5].pos.x;
+    pod.pos_x = 100.0f;
+    pod.vel_x = 0.0f;
+    apply_remote_cargo_pods(&pod, 1);
+    g.cargo_pod_interp.t = 0.05f / fmaxf(g.cargo_pod_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float pod_blended_x = g.world.cargo_pods[5].pos.x;
+
+    int ok = scaffold_first_x > 9.0f && scaffold_first_x < 11.5f &&
+             scaffold_blended_x > scaffold_first_x &&
+             scaffold_blended_x < 95.0f &&
+             pod_first_x > 9.0f && pod_first_x < 11.5f &&
+             pod_blended_x > pod_first_x &&
+             pod_blended_x < 95.0f;
+
+    memcpy(g.world.scaffolds, saved_world_scaffolds, sizeof(saved_world_scaffolds));
+    memcpy(g.scaffold_interp.prev, saved_scaffold_prev, sizeof(saved_scaffold_prev));
+    memcpy(g.scaffold_interp.curr, saved_scaffold_curr, sizeof(saved_scaffold_curr));
+    memcpy(g.world.cargo_pods, saved_world_cargo_pods, sizeof(saved_world_cargo_pods));
+    memcpy(g.cargo_pod_interp.prev, saved_cargo_pod_prev, sizeof(saved_cargo_pod_prev));
+    memcpy(g.cargo_pod_interp.curr, saved_cargo_pod_curr, sizeof(saved_cargo_pod_curr));
+    g.scaffold_interp.t = saved_scaffold_t;
+    g.scaffold_interp.interval = saved_scaffold_interval;
+    g.cargo_pod_interp.t = saved_cargo_pod_t;
+    g.cargo_pod_interp.interval = saved_cargo_pod_interval;
+    g.local_server.active = saved_local_server_active;
+    return ok ? 1 : 0;
+}
+#endif
 
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE

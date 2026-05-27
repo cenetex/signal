@@ -661,6 +661,18 @@ typedef struct {
         float interval;
     } npc_interp;
     struct {
+        scaffold_t prev[MAX_SCAFFOLDS];
+        scaffold_t curr[MAX_SCAFFOLDS];
+        float t;
+        float interval;
+    } scaffold_interp;
+    struct {
+        cargo_pod_t prev[MAX_CARGO_PODS];
+        cargo_pod_t curr[MAX_CARGO_PODS];
+        float t;
+        float interval;
+    } cargo_pod_interp;
+    struct {
         NetPlayerState prev[NET_MAX_PLAYERS];
         NetPlayerState curr[NET_MAX_PLAYERS];
         float t;

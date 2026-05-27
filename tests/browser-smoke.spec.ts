@@ -321,6 +321,16 @@ async function hudActionText(page: Page): Promise<string> {
   });
 }
 
+async function remoteTowableInterpCheck(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_remote_towable_interp_check', 'number', [], []);
+  });
+}
+
 async function mobileControlFlags(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -613,6 +623,16 @@ test.describe('Browser smoke tests', () => {
     expect(await hudHintText(page)).toContain(
       'ABANDONED PLAN :: Outpost 4 has no reserved modules.',
     );
+
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('smooths remote towable scaffold and cargo pod snapshots', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+
+    expect(await remoteTowableInterpCheck(page)).toBe(1);
 
     expectNoFatalErrors(logs);
   });
