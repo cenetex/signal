@@ -82,7 +82,10 @@ static uint32_t crc32_file(FILE *f) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 60  /* v60: active fracture-child sidecars persist
+#define SAVE_VERSION 61  /* v61: contracts persist target_pub so fracture
+                          * bounties survive asteroid slot reuse/remap by
+                          * stable rock identity.
+                          * v60: active fracture-child sidecars persist
                           * thrown_by_token + thrown_timer_q for
                           * time-bounded rock-combat ownership.
                           * v59: delivery credit shipment sidecar table
@@ -1138,6 +1141,7 @@ static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->age);
     WRITE_FIELD(f, c->target_pos);
     WRITE_FIELD(f, c->target_index);
+    if (fwrite(c->target_pub, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, c->claimed_by);
     return true;
 }
@@ -1175,6 +1179,11 @@ static bool read_contract(FILE *f, contract_t *c) {
     READ_FIELD(f, c->age);
     READ_FIELD(f, c->target_pos);
     READ_FIELD(f, c->target_index);
+    if (g_loaded_save_version >= 61) {
+        if (fread(c->target_pub, 32, 1, f) != 1) return false;
+    } else {
+        memset(c->target_pub, 0, sizeof(c->target_pub));
+    }
     READ_FIELD(f, c->claimed_by);
     return true;
 }

@@ -960,6 +960,34 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
     ASSERT(!target_gone);
 }
 
+TEST(test_fracture_contract_target_pub_matches_asteroid_identity) {
+    contract_t c = {
+        .active = true,
+        .action = CONTRACT_FRACTURE,
+        .target_index = 5,
+        .base_price = 30.0f,
+        .claimed_by = -1,
+    };
+    asteroid_t asteroid = {
+        .active = true,
+        .tier = ASTEROID_TIER_L,
+        .commodity = COMMODITY_FERRITE_ORE,
+    };
+    for (int i = 0; i < 32; i++)
+        asteroid.rock_pub[i] = (uint8_t)(0x20u + (uint8_t)i);
+
+    contract_set_target_pub_from_asteroid(&c, &asteroid);
+    ASSERT(contract_target_pub_is_set(&c));
+    ASSERT(contract_asteroid_target_matches(&c, &asteroid));
+    ASSERT_EQ_INT((int)contract_fit_asteroid(&c, &asteroid),
+                  (int)CONTRACT_FIT_OK);
+
+    asteroid.rock_pub[0] ^= 0x7Fu;
+    ASSERT(!contract_asteroid_target_matches(&c, &asteroid));
+    ASSERT_EQ_INT((int)contract_fit_asteroid(&c, &asteroid),
+                  (int)CONTRACT_FIT_WRONG_COMMODITY);
+}
+
 TEST(test_supply_contract_uses_correct_material) {
     WORLD_DECL;
     world_reset(&w);
@@ -2286,6 +2314,7 @@ void register_economy_contract3_tests(void) {
     TEST_SECTION("\nContract system (3-action):\n");
     RUN(test_one_contract_per_station);
     RUN(test_destroy_contract_completes_when_asteroid_gone);
+    RUN(test_fracture_contract_target_pub_matches_asteroid_identity);
     RUN(test_supply_contract_uses_correct_material);
 }
 

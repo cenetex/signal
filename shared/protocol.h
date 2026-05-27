@@ -635,10 +635,10 @@ enum {
 #define NET_REPLAY_REBASE_SKEW_TICKS (NET_INPUT_APPLY_FUTURE_MAX_TICKS * 2u)
 
 /* NET_MSG_CONTRACTS record: action, station, commodity, grade, provenance
- * requirements, origin bans, quantity, price, age, target position, and
- * target index. Kept shared so client decoders and external tools do not
- * hardcode server-local constants. */
-#define CONTRACT_RECORD_SIZE 72
+ * requirements, origin bans, quantity, price, age, target position, target
+ * index, and stable target pubkey. Kept shared so client decoders and
+ * external tools do not hardcode server-local constants. */
+#define CONTRACT_RECORD_SIZE 104
 
 /* NET_MSG_DELIVERY_LEDGER record:
  * shipment_id:u16, status:u8, origin:u8, destination:u8, contract_index:u8,

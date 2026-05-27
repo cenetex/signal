@@ -752,6 +752,8 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
         .base_price = 20.0f,
         .target_index = -1,
     };
+    for (int i = 0; i < 32; i++)
+        contracts[7].target_pub[i] = (uint8_t)(0x40u + (uint8_t)i);
 
     uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
     int clen = serialize_contracts(cbuf, contracts);
@@ -765,6 +767,8 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
                   CONTRACT_PROOF_FORBID_ORIGIN);
     ASSERT_EQ_INT(read_u16_le(&cbuf[2 + CONTRACT_RECORD_SIZE + 6]), RECIPE_SMELT);
     ASSERT_EQ_INT((int)read_u64_le(&cbuf[2 + CONTRACT_RECORD_SIZE + 64]), 1);
+    ASSERT(memcmp(&cbuf[2 + CONTRACT_RECORD_SIZE + 72],
+                  contracts[7].target_pub, 32) == 0);
 
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
@@ -782,6 +786,7 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
         .quantity_needed = 8.0f,
         .base_price = 20.0f,
     };
+    memcpy(ship.known_contracts[0].target_pub, contracts[7].target_pub, 32);
 
     uint8_t kbuf[5];
     int klen = serialize_player_known_contracts(kbuf, contracts, &ship);
@@ -814,7 +819,7 @@ TEST(test_delivery_contract_action_serializes) {
     ASSERT_EQ_INT(buf[2], CONTRACT_DELIVERY);
     ASSERT_EQ_INT(buf[3], 2);
     ASSERT_EQ_INT((int)read_u32_le(&buf[2 + 28]), 0);
-    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 72);
+    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 104);
 }
 
 TEST(test_delivery_ledger_serializes_player_shipments) {
@@ -1287,7 +1292,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
     ASSERT(contracts != NULL);
     ASSERT_EQ_INT(read_u16_le(&contracts[6]), CONTRACT_RECORD_SIZE);
-    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 72);
+    ASSERT_EQ_INT(CONTRACT_RECORD_SIZE, 104);
 
     const uint8_t *player_manifest = find_protocol_stream(buf, NET_MSG_PLAYER_MANIFEST);
     ASSERT(player_manifest != NULL);

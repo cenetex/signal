@@ -228,6 +228,7 @@ typedef struct {
     uint8_t required_prefix_class; /* ingot_prefix_t, iff REQUIRE_PREFIX */
     uint16_t required_recipe_id;   /* recipe_id_t, iff REQUIRE_RECIPE */
     uint8_t required_parent[32];   /* cargo parent_merkle, iff REQUIRE_PARENT */
+    uint8_t target_pub[32];        /* stable target identity, when known */
     float quantity_needed;
     float base_price;
     float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
@@ -256,7 +257,7 @@ typedef enum {
 } knowledge_payload_kind_t;
 
 enum {
-    KNOWLEDGE_PAYLOAD_BYTES = 64,
+    KNOWLEDGE_PAYLOAD_BYTES = 96,
     KNOWLEDGE_VIEW_MAX_CAP = 64,
     SHIP_KNOWN_ITEM_CAP = 16,
     STATION_KNOWN_ITEM_CAP = 64,
@@ -1308,6 +1309,7 @@ typedef struct {
     uint8_t required_prefix_class;
     uint16_t required_recipe_id;
     uint8_t required_parent[32];
+    uint8_t target_pub[32];
     uint64_t forbidden_origin_mask;
     float quantity_needed;  /* amount (SUPPLY) or radius (SCAN) */
     float base_price;

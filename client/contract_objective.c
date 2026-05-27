@@ -22,6 +22,24 @@ static void objective_set_job(contract_objective_t *out, const char *job) {
     snprintf(out->job, sizeof(out->job), "%s", job);
 }
 
+static int objective_fracture_target_index(const contract_t *ct)
+{
+    if (!ct || ct->action != CONTRACT_FRACTURE) return -1;
+    int idx = ct->target_index;
+    if (idx >= 0 && idx < MAX_ASTEROIDS &&
+        g.world.asteroids[idx].active &&
+        contract_asteroid_target_matches(ct, &g.world.asteroids[idx])) {
+        return idx;
+    }
+    if (!contract_target_pub_is_set(ct)) return -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!g.world.asteroids[i].active) continue;
+        if (contract_asteroid_target_matches(ct, &g.world.asteroids[i]))
+            return i;
+    }
+    return -1;
+}
+
 static void objective_append(char *dst, size_t cap, const char *src) {
     if (!dst || cap == 0 || !src) return;
     size_t len = strlen(dst);
@@ -250,7 +268,7 @@ static bool objective_fracture(int contract_index, const contract_t *ct,
     out->quantity = 1;
     objective_set_job(out, "fracture");
 
-    int idx = ct->target_index;
+    int idx = objective_fracture_target_index(ct);
     if (idx >= 0 && idx < MAX_ASTEROIDS) {
         const asteroid_t *a = &g.world.asteroids[idx];
         if (a->active && a->tier != ASTEROID_TIER_S) {
@@ -533,8 +551,7 @@ static bool player_can_fulfill_contract_now(const contract_t *ct) {
 
 static bool contract_has_valid_fracture_target(const contract_t *ct) {
     if (!ct || ct->action != CONTRACT_FRACTURE) return true;
-    int idx = ct->target_index;
-    return idx >= 0 && idx < MAX_ASTEROIDS && g.world.asteroids[idx].active;
+    return objective_fracture_target_index(ct) >= 0;
 }
 
 bool contract_objective_for_contract(int contract_index,
@@ -602,9 +619,10 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
         }
 
         vec2 target = here;
-        if (ct->action == CONTRACT_FRACTURE &&
-            ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS) {
-            target = g.world.asteroids[ct->target_index].pos;
+        if (ct->action == CONTRACT_FRACTURE) {
+            int target_idx = objective_fracture_target_index(ct);
+            if (target_idx >= 0)
+                target = g.world.asteroids[target_idx].pos;
         } else if (ct->action == CONTRACT_DELIVERY) {
             const NetDeliveryLedgerEntry *ledger = delivery_ledger_for_contract(i);
             int station_idx = ct->target_index;

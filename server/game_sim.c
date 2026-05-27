@@ -4763,6 +4763,25 @@ float contract_price(const contract_t *c) {
     return c->base_price * escalation;
 }
 
+static int contract_fracture_target_index(const world_t *w,
+                                          const contract_t *ct)
+{
+    if (!w || !ct || ct->action != CONTRACT_FRACTURE) return -1;
+    int idx = ct->target_index;
+    if (idx >= 0 && idx < MAX_ASTEROIDS &&
+        w->asteroids[idx].active &&
+        contract_asteroid_target_matches(ct, &w->asteroids[idx])) {
+        return idx;
+    }
+    if (!contract_target_pub_is_set(ct)) return -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (contract_asteroid_target_matches(ct, &w->asteroids[i]))
+            return i;
+    }
+    return -1;
+}
+
 static bool heritage_recipe_for_commodity(commodity_t c, recipe_id_t *out) {
     if (!out) return false;
     switch (c) {
@@ -4970,11 +4989,14 @@ static void step_contracts(world_t *w, float dt) {
         }
         case CONTRACT_FRACTURE: {
             /* Close when target asteroid is gone or index invalid */
-            int idx = w->contracts[i].target_index;
-            bool target_gone = (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active);
+            int idx = contract_fracture_target_index(w, &w->contracts[i]);
+            bool target_gone = idx < 0;
             if (target_gone) {
                 w->contracts[i].active = false;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_FRACTURE});
+            } else if (idx != w->contracts[i].target_index) {
+                w->contracts[i].target_index = idx;
+                w->contracts[i].target_pos = w->asteroids[idx].pos;
             }
             /* Expire after 60 seconds if unfulfilled */
             if (w->contracts[i].active && w->contracts[i].age > 60.0f) w->contracts[i].active = false;

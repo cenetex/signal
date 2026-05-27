@@ -1440,6 +1440,7 @@ static void handle_message(const uint8_t* data, int len) {
                     contracts[i].target_index = (int)(int32_t)read_u32_le(&p[28]);
                     memcpy(contracts[i].required_parent, &p[32], 32);
                     contracts[i].forbidden_origin_mask = read_u64_le(&p[64]);
+                    memcpy(contracts[i].target_pub, &p[72], 32);
                     if (contracts[i].forbidden_origin_mask == 0)
                         contracts[i].proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
                     contracts[i].claimed_by = -1;

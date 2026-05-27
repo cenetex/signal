@@ -1166,17 +1166,17 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
 
 /*
  * CONTRACTS message:
- * [type:1][count:1] + count * [action:1][station:1][commodity:1][quantity:f32][base_price:f32][age:f32][target_x:f32][target_y:f32][target_index:i32]
- * = 2 + count * 25 bytes
+ * [type:1][count:1] + count * contract record.
  */
-/* Wire layout per contract record (64 bytes total):
+/* Wire layout per contract record:
  *   action(1) + station(1) + commodity(1) + required_grade(1)
  *   + proof_flags(1) + required_prefix_class(1) + required_recipe_id(u16)
  *   + quantity_needed(f32) + base_price(f32) + age(f32)
  *   + target.x(f32) + target.y(f32) + target_index(u32)
  *   + required_parent(32)
  *   + forbidden_origin_mask(u64)
- * Bumped from 64 when origin-ban contract requirements were added. */
+ *   + target_pub(32)
+ * Bumped from 72 when stable target identity was added. */
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -1197,6 +1197,7 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
         write_u32_le(&p[28], (uint32_t)contracts[i].target_index);
         memcpy(&p[32], contracts[i].required_parent, 32);
         write_u64_le(&p[64], contracts[i].forbidden_origin_mask);
+        memcpy(&p[72], contracts[i].target_pub, 32);
         /* Note: claimed_by not sent — server-only field */
         count++;
     }
@@ -1243,7 +1244,8 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
                     cs->required_prefix_class == contracts[k].required_prefix_class &&
                     cs->required_recipe_id == contracts[k].required_recipe_id &&
                     memcmp(cs->required_parent, contracts[k].required_parent, 32) == 0 &&
-                    cs->forbidden_origin_mask == contracts[k].forbidden_origin_mask) {
+                    cs->forbidden_origin_mask == contracts[k].forbidden_origin_mask &&
+                    memcmp(cs->target_pub, contracts[k].target_pub, 32) == 0) {
                     mask |= (1u << ordinal);
                     break;
                 }

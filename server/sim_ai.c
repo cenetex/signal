@@ -771,6 +771,8 @@ static bool hauler_contract_matches_summary(const contract_t *ct,
     if (ct->required_prefix_class != cs->required_prefix_class) return false;
     if (ct->required_recipe_id != cs->required_recipe_id) return false;
     if (ct->forbidden_origin_mask != cs->forbidden_origin_mask) return false;
+    if (memcmp(ct->target_pub, cs->target_pub, sizeof(ct->target_pub)) != 0)
+        return false;
     return memcmp(ct->required_parent, cs->required_parent,
                   sizeof(ct->required_parent)) == 0;
 }
@@ -3049,11 +3051,14 @@ void generate_npc_distress_contracts(world_t *w, float dt) {
             if (d < best_d) { best_d = d; blocker = i; }
         }
         if (blocker < 0) continue;
-        /* Check if a DESTROY contract already exists for this asteroid */
+        /* Check if a FRACTURE contract already exists for this asteroid. */
         bool exists = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_FRACTURE
-                && w->contracts[k].target_index == blocker) {
+            if (w->contracts[k].active &&
+                w->contracts[k].action == CONTRACT_FRACTURE &&
+                w->contracts[k].target_index == blocker &&
+                contract_asteroid_target_matches(&w->contracts[k],
+                                                 &w->asteroids[blocker])) {
                 exists = true; break;
             }
         }
@@ -3069,6 +3074,8 @@ void generate_npc_distress_contracts(world_t *w, float dt) {
                     .base_price = 20.0f, .age = 0.0f,
                     .claimed_by = -1,
                 };
+                contract_set_target_pub_from_asteroid(&w->contracts[k],
+                                                      &w->asteroids[blocker]);
                 break;
             }
         }

@@ -51,6 +51,37 @@ static inline bool contract_fit_has_bytes(const uint8_t bytes[32]) {
     return bytes && memcmp(bytes, zero, sizeof(zero)) != 0;
 }
 
+static inline bool contract_target_pub_is_set(const contract_t *contract)
+{
+    return contract && contract_fit_has_bytes(contract->target_pub);
+}
+
+static inline bool contract_asteroid_target_matches(const contract_t *contract,
+                                                    const asteroid_t *asteroid)
+{
+    if (!contract || !asteroid) return false;
+    if (!contract_target_pub_is_set(contract)) return true;
+    if (contract_fit_has_bytes(asteroid->rock_pub) &&
+        memcmp(contract->target_pub, asteroid->rock_pub, 32) == 0) {
+        return true;
+    }
+    return contract_fit_has_bytes(asteroid->fragment_pub) &&
+           memcmp(contract->target_pub, asteroid->fragment_pub, 32) == 0;
+}
+
+static inline void contract_set_target_pub_from_asteroid(contract_t *contract,
+                                                        const asteroid_t *asteroid)
+{
+    if (!contract) return;
+    memset(contract->target_pub, 0, sizeof(contract->target_pub));
+    if (!asteroid) return;
+    if (contract_fit_has_bytes(asteroid->rock_pub)) {
+        memcpy(contract->target_pub, asteroid->rock_pub, sizeof(contract->target_pub));
+    } else if (contract_fit_has_bytes(asteroid->fragment_pub)) {
+        memcpy(contract->target_pub, asteroid->fragment_pub, sizeof(contract->target_pub));
+    }
+}
+
 static inline bool contract_fit_is_finished_cargo_action(
     const contract_t *contract)
 {
@@ -153,6 +184,8 @@ static inline contract_fit_reason_t contract_fit_asteroid(
         return CONTRACT_FIT_WRONG_ACTION;
     if (asteroid->tier == ASTEROID_TIER_S)
         return CONTRACT_FIT_WRONG_TIER;
+    if (!contract_asteroid_target_matches(contract, asteroid))
+        return CONTRACT_FIT_WRONG_COMMODITY;
     if (contract->target_index >= 0)
         return CONTRACT_FIT_OK;
     if (contract->commodity < COMMODITY_COUNT &&

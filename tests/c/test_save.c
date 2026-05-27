@@ -1170,8 +1170,9 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
  * v58: station session section expanded from 64 to 128 slots.
  * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table.
  * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
- * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged. */
-#define EXPECTED_SAVE_SIZE 233620
+ * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged.
+ * v61: +32B per contract for stable target_pub identity. */
+#define EXPECTED_SAVE_SIZE 234388
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1208,11 +1209,45 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 60);
+    ASSERT_EQ_INT((int)version, 61);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
     remove(TMP("test_header.sav"));
+}
+
+TEST(test_contract_target_pub_roundtrips) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_FRACTURE,
+        .station_index = 0,
+        .target_index = 12,
+        .target_pos = v2(120.0f, -40.0f),
+        .base_price = 30.0f,
+        .age = 4.0f,
+        .claimed_by = -1,
+    };
+    for (int i = 0; i < 32; i++)
+        w->contracts[0].target_pub[i] = (uint8_t)(0xA0u + (uint8_t)i);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_contract_pub_cat")));
+    ASSERT(world_save(w, TMP("test_contract_pub.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(station_catalog_load_all(loaded->stations, MAX_STATIONS,
+                                    TMP("test_contract_pub_cat")));
+    ASSERT(world_load(loaded, TMP("test_contract_pub.sav")));
+    ASSERT(loaded->contracts[0].active);
+    ASSERT_EQ_INT(loaded->contracts[0].action, CONTRACT_FRACTURE);
+    ASSERT(memcmp(loaded->contracts[0].target_pub,
+                  w->contracts[0].target_pub, 32) == 0);
+
+    remove(TMP("test_contract_pub.sav"));
 }
 
 TEST(test_save_load_preserves_player_outpost) {
@@ -1331,6 +1366,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_save_load_preserves_smelted_ingots);
     RUN(test_world_save_load_preserves_hauler_manifest_cargo);
     RUN(test_world_save_load_preserves_delivery_shipments);
+    RUN(test_contract_target_pub_roundtrips);
 }
 
 void register_save_format_tests(void) {
