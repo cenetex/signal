@@ -60,6 +60,15 @@ static inline float signal_boundary_push(float quality) {
     return (SIGNAL_BAND_FRONTIER - quality) / SIGNAL_BAND_FRONTIER;
 }
 
+/* Visual saturation: full color in operational/core signal, fading to
+ * grayscale as the ship leaves coverage. This is intentionally perceptual
+ * rather than a gameplay modifier; mechanics keep using the functions above. */
+static inline float signal_visual_saturation(float quality) {
+    if (quality <= 0.0f) return 0.0f;
+    if (quality >= SIGNAL_BAND_OPERATIONAL) return 1.0f;
+    return quality / SIGNAL_BAND_OPERATIONAL;
+}
+
 /* Signal band name for UI display. */
 static inline const char* signal_band_name(float quality) {
     if (quality < SIGNAL_BAND_FRONTIER)    return "FRONTIER";

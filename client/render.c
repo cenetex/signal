@@ -7,6 +7,51 @@
 
 /* Batched line drawing — call between begin/end_line_batch */
 static bool _line_batch_active = false;
+static float g_render_saturation = 1.0f;
+static render_saturation_sample_fn g_render_saturation_sample = 0;
+static void *g_render_saturation_user = 0;
+
+static float render_clampf(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static void render_desaturate(float saturation, float *r, float *g0, float *b) {
+    saturation = render_clampf(saturation, 0.0f, 1.0f);
+    float gray = *r * 0.2126f + *g0 * 0.7152f + *b * 0.0722f;
+    *r = gray + (*r - gray) * saturation;
+    *g0 = gray + (*g0 - gray) * saturation;
+    *b = gray + (*b - gray) * saturation;
+}
+
+static float render_saturation_at(vec2 pos) {
+    float saturation = g_render_saturation;
+    if (g_render_saturation_sample) {
+        float sampled = g_render_saturation_sample(pos, g_render_saturation_user);
+        if (isfinite(sampled) && sampled > saturation) saturation = sampled;
+    }
+    return render_clampf(saturation, 0.0f, 1.0f);
+}
+
+void render_set_saturation(float saturation) {
+    g_render_saturation = render_clampf(saturation, 0.0f, 1.0f);
+}
+
+void render_set_saturation_sampler(render_saturation_sample_fn fn, void *user) {
+    g_render_saturation_sample = fn;
+    g_render_saturation_user = user;
+}
+
+void render_color4f(float r, float g0, float b, float a) {
+    render_desaturate(g_render_saturation, &r, &g0, &b);
+    sgl_c4f(r, g0, b, a);
+}
+
+void render_color4f_at(vec2 pos, float r, float g0, float b, float a) {
+    render_desaturate(render_saturation_at(pos), &r, &g0, &b);
+    sgl_c4f(r, g0, b, a);
+}
 
 void render_set_screen_space(float screen_w, float screen_h) {
     sgl_defaults();
@@ -28,7 +73,8 @@ void end_line_batch(void) {
 }
 
 void draw_segment_batched(vec2 start, vec2 end, float r, float g0, float b, float a) {
-    sgl_c4f(r, g0, b, a);
+    vec2 mid = v2_scale(v2_add(start, end), 0.5f);
+    render_color4f_at(mid, r, g0, b, a);
     sgl_v2f(start.x, start.y);
     sgl_v2f(end.x, end.y);
 }
@@ -54,7 +100,7 @@ static void ensure_sincos_table(int segments) {
 void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
     if (segments < 3) segments = 3;
     if (segments > 256) segments = 256;
-    sgl_c4f(r, g0, b, a);
+    render_color4f_at(center, r, g0, b, a);
     sgl_begin_triangles();
     if (segments <= SINCOS_TABLE_MAX) {
         ensure_sincos_table(segments);
@@ -90,7 +136,7 @@ void draw_circle_filled(vec2 center, float radius, int segments, float r, float 
 void draw_circle_outline(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
     if (segments < 3) segments = 3;
     if (segments > 256) segments = 256;
-    sgl_c4f(r, g0, b, a);
+    render_color4f_at(center, r, g0, b, a);
     sgl_begin_line_strip();
     if (segments <= SINCOS_TABLE_MAX) {
         ensure_sincos_table(segments);
@@ -108,7 +154,7 @@ void draw_circle_outline(vec2 center, float radius, int segments, float r, float
 }
 
 void draw_rect_centered(vec2 center, float half_w, float half_h, float r, float g0, float b, float a) {
-    sgl_c4f(r, g0, b, a);
+    render_color4f_at(center, r, g0, b, a);
     sgl_begin_quads();
     sgl_v2f(center.x - half_w, center.y - half_h);
     sgl_v2f(center.x + half_w, center.y - half_h);
@@ -118,7 +164,7 @@ void draw_rect_centered(vec2 center, float half_w, float half_h, float r, float 
 }
 
 void draw_rect_outline(vec2 center, float half_w, float half_h, float r, float g0, float b, float a) {
-    sgl_c4f(r, g0, b, a);
+    render_color4f_at(center, r, g0, b, a);
     sgl_begin_line_strip();
     sgl_v2f(center.x - half_w, center.y - half_h);
     sgl_v2f(center.x + half_w, center.y - half_h);
@@ -129,7 +175,8 @@ void draw_rect_outline(vec2 center, float half_w, float half_h, float r, float g
 }
 
 void draw_segment(vec2 start, vec2 end, float r, float g0, float b, float a) {
-    sgl_c4f(r, g0, b, a);
+    vec2 mid = v2_scale(v2_add(start, end), 0.5f);
+    render_color4f_at(mid, r, g0, b, a);
     sgl_begin_lines();
     sgl_v2f(start.x, start.y);
     sgl_v2f(end.x, end.y);
@@ -140,6 +187,7 @@ void draw_texture_rect(uint32_t view_id, uint32_t sampler_id,
                        float x0, float y0, float x1, float y1,
                        float r, float g0, float b, float a) {
     if (view_id == 0 || sampler_id == 0) return;
+    render_desaturate(g_render_saturation, &r, &g0, &b);
     sgl_enable_texture();
     sgl_texture((sg_view){ view_id }, (sg_sampler){ sampler_id });
     sgl_begin_quads();

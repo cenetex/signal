@@ -494,6 +494,10 @@ typedef struct {
         uint8_t  killed_by[8];
     } highscores[10 /* HIGHSCORE_TOP_N */];
     int highscore_count;
+    /* World-pass color intensity. Tracks signal strength smoothly so
+     * leaving coverage drains color instead of snapping the whole scene. */
+    float signal_visual_saturation;
+    bool  signal_visual_saturation_initialized;
     /* Smoothed fog intensity (0..1). Tracks 1 - (hull/max_hull) but
      * eases in/out so the vignette rolls smoothly instead of snapping. */
     float fog_intensity;

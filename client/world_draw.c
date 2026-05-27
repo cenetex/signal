@@ -19,6 +19,8 @@
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
+#define sgl_c4f render_color4f
+
 #define HAIL_PING_DURATION   1.50f   /* ring sweep - gentle, not a shockwave */
 #define HAIL_PING_LIFECYCLE  8.00f   /* widen + very long drift back */
 #define HAIL_PING_PEAK_ZOOM  1.18f   /* half-extent multiplier - subtle */
@@ -104,6 +106,24 @@ static float hail_scan_reveal_alpha(vec2 pos) {
     float life_left = HAIL_PING_LIFECYCLE - g.hail_ping_timer;
     float fade = clampf(life_left / 0.45f, 0.0f, 1.0f);
     return reveal * fade;
+}
+
+float world_signal_visual_saturation_at(vec2 pos, void *user) {
+    (void)user;
+    float base = g.signal_visual_saturation_initialized
+               ? g.signal_visual_saturation : 1.0f;
+    float reveal = hail_scan_reveal_alpha(pos);
+    return clampf(base + (1.0f - base) * reveal, 0.0f, 1.0f);
+}
+
+float world_signal_visual_base_saturation(void) {
+    float base = g.signal_visual_saturation_initialized
+               ? g.signal_visual_saturation : 1.0f;
+    if (!hail_scan_active()) return base;
+
+    float n = clampf(g.hail_ping_timer / HAIL_PING_LIFECYCLE, 0.0f, 1.0f);
+    float pulse = (1.0f - n) * 0.22f;
+    return clampf(base + (1.0f - base) * pulse, 0.0f, 1.0f);
 }
 
 static bool world_hash32_is_zero(const uint8_t hash[32]) {

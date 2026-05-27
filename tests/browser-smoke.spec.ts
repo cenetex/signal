@@ -225,6 +225,28 @@ async function signalStrength(page: Page): Promise<number | null> {
   });
 }
 
+async function signalVisualSaturation(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const value = mod.ccall('get_signal_visual_saturation', 'number', [], []);
+    return Number.isFinite(value) ? value : null;
+  });
+}
+
+async function signalVisualBaseSaturation(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const value = mod.ccall('get_signal_visual_base_saturation', 'number', [], []);
+    return Number.isFinite(value) ? value : null;
+  });
+}
+
 async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -415,6 +437,7 @@ const smokeLoopState = {
   yardBlocked: 11,
   abandonedPlan: 12,
   remotePilotScan: 14,
+  weakSignalVisual: 15,
 } as const;
 
 const mobileFlag = {
@@ -580,6 +603,38 @@ test.describe('Browser smoke tests', () => {
       .toBeGreaterThan(8);
 
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  rootBundleSmokeTest('visual saturation follows signal strength and H resaturates weak signal', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+
+    await setSmokeLoopState(page, smokeLoopState.weakSignalVisual);
+    await expect
+      .poll(async () => (await signalStrength(page)) ?? 1, {
+        timeout: 3_000,
+        message: 'weak-signal smoke state should move the ship outside coverage',
+      })
+      .toBeLessThan(0.01);
+    await expect
+      .poll(async () => (await signalVisualSaturation(page)) ?? 1, {
+        timeout: 3_000,
+        message: 'weak signal should drain world saturation toward grayscale',
+      })
+      .toBeLessThan(0.05);
+
+    const beforeHail = (await signalVisualBaseSaturation(page)) ?? 0;
+    await canvas.click();
+    await tap(page, 'H', 20);
+    await expect
+      .poll(async () => (await signalVisualBaseSaturation(page)) ?? 0, {
+        timeout: 2_000,
+        message: 'H should create a temporary resaturation pulse',
+      })
+      .toBeGreaterThan(Math.max(0.10, beforeHail + 0.05));
+
+    expectNoFatalErrors(logs);
   });
 
   rootBundleSmokeTest('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {

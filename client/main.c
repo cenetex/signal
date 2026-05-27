@@ -970,6 +970,17 @@ static void sim_step(float dt) {
         g.hail_ping_timer += dt;
         if (g.hail_ping_timer > 8.00f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
     }
+    {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float target = signal_visual_saturation(sig);
+        if (!g.signal_visual_saturation_initialized) {
+            g.signal_visual_saturation = target;
+            g.signal_visual_saturation_initialized = true;
+        } else {
+            float k = 1.0f - expf(-dt / 0.35f);
+            g.signal_visual_saturation += (target - g.signal_visual_saturation) * k;
+        }
+    }
     if (g.outpost_lock_timer > 0.0f)
         g.outpost_lock_timer = fmaxf(0.0f, g.outpost_lock_timer - dt);
     mining_client_tick(dt);
@@ -1580,6 +1591,9 @@ static void render_world(void) {
     sgl_matrix_mode_modelview();
     sgl_load_identity();
 
+    render_set_saturation(world_signal_visual_base_saturation());
+    render_set_saturation_sampler(world_signal_visual_saturation_at, NULL);
+
     draw_background(camera);
     draw_signal_borders();
 
@@ -1723,6 +1737,9 @@ static void render_world(void) {
     /* Hail ping — draw last so the ring sits on top of stations and
      * modules, hard to miss. */
     draw_hail_ping();
+
+    render_set_saturation_sampler(NULL, NULL);
+    render_set_saturation(1.0f);
 }
 
 static void render_ui(void) {
@@ -1864,6 +1881,22 @@ EMSCRIPTEN_KEEPALIVE
 float get_signal_strength(void) {
     if (g.local_player_slot < 0) return 0.0f;
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_signal_visual_saturation(void) {
+    if (!g.signal_visual_saturation_initialized)
+        return signal_visual_saturation(get_signal_strength());
+    return g.signal_visual_saturation;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_signal_visual_base_saturation(void) {
+    return world_signal_visual_base_saturation();
 }
 
 #ifdef __EMSCRIPTEN__
