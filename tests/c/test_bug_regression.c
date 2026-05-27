@@ -844,6 +844,32 @@ TEST(test_player_only_predicts_station_collision_geometry) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.001f);
 }
 
+TEST(test_player_only_predicts_tow_band_reaction) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.pos = v2(5000.0f, 0.0f);
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship.towed_fragments[0] = 0;
+    w.players[0].ship.towed_count = 1;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_S;
+    w.asteroids[0].radius = 8.0f;
+    w.asteroids[0].pos = v2(5200.0f, 0.0f);
+    w.asteroids[0].vel = v2(0.0f, 0.0f);
+
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    ASSERT(w.players[0].ship.vel.x > 0.0f);
+    ASSERT(w.asteroids[0].vel.x < 0.0f);
+    ASSERT_EQ_INT(w.players[0].ship.towed_count, 1);
+}
+
 TEST(test_bug48_titan_fracture_overflow) {
     WORLD_DECL;
     world_reset(&w);
@@ -1480,6 +1506,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_bug47_interference_uses_world_rng);
     RUN(test_player_only_predicts_asteroid_collision_geometry);
     RUN(test_player_only_predicts_station_collision_geometry);
+    RUN(test_player_only_predicts_tow_band_reaction);
     RUN(test_bug48_titan_fracture_overflow);
     RUN(test_bug49_asteroid_sticks_to_station);
     RUN(test_bug50_ship_collision_energy_gain);

@@ -3095,6 +3095,31 @@ static void step_leashed_cargo_pods(world_t *w, server_player_t *sp, float dt) {
     }
 }
 
+static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
+                                             float dt) {
+    if (!w || !sp) return;
+
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        asteroid_t *a = &w->asteroids[idx];
+        if (!a->active) continue;
+        apply_band_force(sp, a, dt);
+        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+                                        a->radius, 4.0f);
+    }
+
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active) continue;
+        apply_pod_band_force(sp, pod, dt);
+        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+                                        pod->radius, 5.0f);
+    }
+}
+
 static void release_towed_pods(world_t *w, server_player_t *sp) {
     for (int t = 0; t < sp->ship.towed_pod_count; t++) {
         int idx = sp->ship.towed_pods[t];
@@ -4447,7 +4472,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward, sig);
-            if (!w->player_only_mode) {
+            if (w->player_only_mode) {
+                step_predicted_towed_body_forces(w, sp, dt);
+            } else {
                 /* Hold R = tractor active; tap R = release fragments + scaffold */
                 sp->ship.tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
