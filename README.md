@@ -188,6 +188,12 @@ The multiplayer HUD keeps two latency numbers separate:
 - `gap` is `ack - ping`; this is the cadence/sim/snapshot/render budget to
   optimize after raw transport is accounted for.
 
+Tuning note: the relay keeps its 50 ms baseline `WORLD_PLAYERS` cadence for
+idle players, but it also flushes an authoritative player-state packet when a
+queued movement input is applied, capped at one flush every 25 ms. That lowers
+ack age during active flight/mining/towing without doubling idle traffic; busy
+control input can raise player-state traffic toward ~40 Hz.
+
 With `make dev` and `make latency-proxy-high` still running, validate the
 client-side correction metrics with:
 

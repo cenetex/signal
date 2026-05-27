@@ -465,10 +465,12 @@ static void send_highscores_to(struct mg_connection *c) {
 #define STATION_IDENTITY_FALLBACK_MS 2000
 #define STATION_DIAG_MIN_MS 300
 static uint64_t last_station_identity = 0;
+static uint64_t last_player_state_emit = 0;
 
 /* Timing intervals in milliseconds */
 #define SIM_TICK_MS   8     /* ~120 Hz poll gate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
+#define PLAYER_ACK_FLUSH_MIN_MS 25 /* active-input ack flush cap (~40 Hz) */
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
@@ -4644,12 +4646,26 @@ static void emit_world_identity_anchor(void) {
 /* Run as many fixed-step sim ticks as `sim_accum` covers, up to
  * MAX_SIM_STEPS, broadcasting per-event side effects after each tick.
  * Caller passes the running accumulator + the elapsed-since-last-call
- * seconds. Returns when steps run out or the accumulator is empty. */
-static void run_sim_ticks(float *sim_accum, float elapsed) {
+ * seconds. Returns true if it emitted an input-ack player-state flush. */
+static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
+    uint16_t input_ack_before[MAX_PLAYERS];
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        input_ack_before[i] = world.players[i].last_input_seq;
+
     *sim_accum += elapsed;
     int steps = 0;
+    bool input_ack_changed = false;
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            const server_player_t *sp = &world.players[p];
+            if (!sp->connected || sp->grace_period) continue;
+            if (sp->last_input_seq != 0 &&
+                sp->last_input_seq != input_ack_before[p]) {
+                input_ack_changed = true;
+                input_ack_before[p] = sp->last_input_seq;
+            }
+        }
         for (int e = 0; e < world.events.count; e++)
             srv_dispatch_sim_event(&world.events.events[e]);
         if (world.events.count > 0) {
@@ -4663,6 +4679,14 @@ static void run_sim_ticks(float *sim_accum, float elapsed) {
         steps++;
     }
     if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
+    if (input_ack_changed &&
+        (last_player_state_emit == 0 ||
+         now - last_player_state_emit >= PLAYER_ACK_FLUSH_MIN_MS)) {
+        broadcast_player_states();
+        last_player_state_emit = now;
+        return true;
+    }
+    return false;
 }
 
 /* Tick down per-player grace timers and session-auth timeouts. */
@@ -4890,7 +4914,8 @@ int main(void) {
         if (now - last_sim >= SIM_TICK_MS) {
             float elapsed = (float)(now - last_sim) / 1000.0f;
             last_sim = now;
-            run_sim_ticks(&sim_accum, elapsed);
+            if (run_sim_ticks(&sim_accum, elapsed, now))
+                last_state = now;
             tick_session_timers();
             /* Mark econ dirty every ~1s as fallback for production changes. */
             if (now - last_econ_dirty >= 1000) {
@@ -4902,6 +4927,7 @@ int main(void) {
         if (now - last_state >= STATE_TICK_MS) {
             broadcast_player_states();
             last_state = now;
+            last_player_state_emit = now;
         }
         if (now - last_world >= WORLD_TICK_MS) {
             broadcast_world();
