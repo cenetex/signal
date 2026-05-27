@@ -27,7 +27,7 @@ static inline const char *contract_fit_reason_label(contract_fit_reason_t reason
     switch (reason) {
     case CONTRACT_FIT_OK:              return "match";
     case CONTRACT_FIT_INACTIVE:        return "inactive";
-    case CONTRACT_FIT_WRONG_ACTION:    return "wrong job";
+    case CONTRACT_FIT_WRONG_ACTION:    return "wrong contract";
     case CONTRACT_FIT_WRONG_COMMODITY: return "wrong material";
     case CONTRACT_FIT_GRADE_TOO_LOW:   return "grade too low";
     case CONTRACT_FIT_WRONG_TIER:      return "needs fragment";

@@ -1102,13 +1102,13 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 sdtx_pos(px / cell, (y + 12.0f) / cell);
                 if (contract_fit_is_ok(fit) && has_proof) {
                     sdtx_color4b(PAL_CONTRACT_READY, a8_chain);
-                    sdtx_puts("job: match");
+                    sdtx_puts("contract: match");
                 } else if (contract_fit_is_ok(fit)) {
                     sdtx_color4b(PAL_CONTRACT_HINT, a8_chain);
-                    sdtx_puts("job: match / proof missing");
+                    sdtx_puts("contract: proof missing");
                 } else {
                     sdtx_color4b(PAL_TEXT_GREY, a8_chain);
-                    sdtx_printf("job: %s",
+                    sdtx_printf("contract: %s",
                                 contract_fit_reason_label(fit));
                 }
                 next_y = y + 26.0f;

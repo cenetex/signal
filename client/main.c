@@ -650,12 +650,12 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
     if (ev->contract_complete.action == CONTRACT_TRACTOR) {
-        set_notice("Tractor job complete.");
+        set_notice("Tractor contract complete.");
         episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
     } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
-        set_notice("Fracture job complete.");
+        set_notice("Fracture contract complete.");
     } else if (ev->contract_complete.action == CONTRACT_DELIVERY) {
-        set_notice("Delivery job complete.");
+        set_notice("Delivery contract complete.");
     }
 }
 
