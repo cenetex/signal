@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include "render.h"
+#include "palette.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
 
@@ -153,29 +154,29 @@ void draw_texture_rect(uint32_t view_id, uint32_t sampler_id,
 
 void commodity_material_tint(commodity_t commodity, float* mr, float* mg, float* mb) {
     switch (commodity) {
-        case COMMODITY_FERRITE_ORE: *mr = 0.55f; *mg = 0.25f; *mb = 0.18f; break;
-        case COMMODITY_CUPRITE_ORE: *mr = 0.22f; *mg = 0.30f; *mb = 0.50f; break;
-        case COMMODITY_CRYSTAL_ORE: *mr = 0.25f; *mg = 0.48f; *mb = 0.30f; break;
-        default: *mr = 0.30f; *mg = 0.31f; *mb = 0.34f; break;
+        case COMMODITY_FERRITE_ORE: PAL_UNPACK3(PAL_COMMODITY_FERRITE_ORE, *mr, *mg, *mb); break;
+        case COMMODITY_CUPRITE_ORE: PAL_UNPACK3(PAL_COMMODITY_CUPRITE_ORE, *mr, *mg, *mb); break;
+        case COMMODITY_CRYSTAL_ORE: PAL_UNPACK3(PAL_COMMODITY_CRYSTAL_ORE, *mr, *mg, *mb); break;
+        default: *mr = 0.24f; *mg = 0.25f; *mb = 0.27f; break;
     }
 }
 
 void asteroid_body_color(asteroid_tier_t tier, commodity_t commodity, float hp_ratio, float* r, float* g0, float* b) {
-    float base_r = 0.30f, base_g = 0.31f, base_b = 0.34f;
+    float base_r = 0.22f, base_g = 0.23f, base_b = 0.25f;
     switch (tier) {
-        case ASTEROID_TIER_XXL: base_r = 0.25f; base_g = 0.28f; base_b = 0.45f; break;
-        case ASTEROID_TIER_XL: base_r = 0.29f; base_g = 0.31f; base_b = 0.42f; break;
-        case ASTEROID_TIER_L: base_r = 0.31f; base_g = 0.33f; base_b = 0.38f; break;
-        case ASTEROID_TIER_M: base_r = 0.26f; base_g = 0.36f; base_b = 0.42f; break;
-        case ASTEROID_TIER_S: base_r = 0.28f; base_g = 0.44f; base_b = 0.36f; break;
+        case ASTEROID_TIER_XXL: base_r = 0.17f; base_g = 0.18f; base_b = 0.22f; break;
+        case ASTEROID_TIER_XL:  base_r = 0.19f; base_g = 0.20f; base_b = 0.23f; break;
+        case ASTEROID_TIER_L:   base_r = 0.21f; base_g = 0.22f; base_b = 0.24f; break;
+        case ASTEROID_TIER_M:   base_r = 0.20f; base_g = 0.23f; base_b = 0.24f; break;
+        case ASTEROID_TIER_S:   base_r = 0.21f; base_g = 0.25f; base_b = 0.24f; break;
         default: break;
     }
     float mat_r, mat_g, mat_b;
     commodity_material_tint(commodity, &mat_r, &mat_g, &mat_b);
-    base_r = lerpf(base_r, mat_r, 0.5f);
-    base_g = lerpf(base_g, mat_g, 0.5f);
-    base_b = lerpf(base_b, mat_b, 0.5f);
-    *r = lerpf(base_r * 0.72f, base_r * 1.16f, hp_ratio);
-    *g0 = lerpf(base_g * 0.72f, base_g * 1.16f, hp_ratio);
-    *b = lerpf(base_b * 0.72f, base_b * 1.16f, hp_ratio);
+    base_r = lerpf(base_r, mat_r, 0.30f);
+    base_g = lerpf(base_g, mat_g, 0.30f);
+    base_b = lerpf(base_b, mat_b, 0.30f);
+    *r = lerpf(base_r * 0.70f, base_r * 1.08f, hp_ratio);
+    *g0 = lerpf(base_g * 0.70f, base_g * 1.08f, hp_ratio);
+    *b = lerpf(base_b * 0.70f, base_b * 1.08f, hp_ratio);
 }

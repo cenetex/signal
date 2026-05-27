@@ -45,33 +45,33 @@
  * STATUS & SIGNAL COLORS
  * ================================================================ */
 
-/* Active/mint green — docking, active scan, tractor lock */
+/* Active/mint green - docking, active scan, tractor lock */
 #define PAL_SIGNAL_MINT      112, 255, 214
 #define PAL_F_SIGNAL_MINT    0.44f, 1.00f, 0.84f
 
-/* Light blue — neutral nav info */
+/* Light blue - neutral nav info */
 #define PAL_NAV_BLUE         199, 222, 255
 #define PAL_F_NAV_BLUE       0.78f, 0.87f, 1.00f
 
-/* Bright cyan — interactive status */
+/* Bright cyan - interactive status */
 #define PAL_ACTIVE           130, 255, 235
 #define PAL_F_ACTIVE         0.51f, 1.00f, 0.92f
 
 /* Signal band colors (signal strength) */
-#define PAL_SIGNAL_OPERATIONAL 203, 220, 248
-#define PAL_F_SIGNAL_OPERATIONAL 0.80f, 0.86f, 0.97f
+#define PAL_SIGNAL_OPERATIONAL 255, 220, 120
+#define PAL_F_SIGNAL_OPERATIONAL 1.00f, 0.86f, 0.47f
 
-#define PAL_SIGNAL_FRINGE    255, 221, 119
-#define PAL_F_SIGNAL_FRINGE  1.00f, 0.87f, 0.47f
+#define PAL_SIGNAL_FRINGE    72, 220, 198
+#define PAL_F_SIGNAL_FRINGE  0.28f, 0.86f, 0.78f
 
-#define PAL_SIGNAL_FRONTIER  255, 80, 80
-#define PAL_F_SIGNAL_FRONTIER 1.00f, 0.31f, 0.31f
+#define PAL_SIGNAL_FRONTIER  232, 242, 248
+#define PAL_F_SIGNAL_FRONTIER 0.91f, 0.95f, 0.97f
 
 /* Scan active indicator */
 #define PAL_SCAN_ACTIVE      100, 180, 255
 #define PAL_F_SCAN_ACTIVE    0.39f, 0.71f, 1.00f
 
-/* Radio green — comms flavor */
+/* Radio green - comms flavor */
 #define PAL_RADIO_GREEN      100, 130, 110
 #define PAL_F_RADIO_GREEN    0.39f, 0.51f, 0.43f
 
@@ -79,7 +79,7 @@
  * COMMODITY & RESOURCE COLORS
  * ================================================================ */
 
-/* Ore amber — cargo, haul values */
+/* Ore amber - cargo, haul values */
 #define PAL_ORE_AMBER        255, 221, 119
 #define PAL_F_ORE_AMBER      1.00f, 0.87f, 0.47f
 
@@ -95,19 +95,19 @@
  * WARNING & ALERT COLORS
  * ================================================================ */
 
-/* Hull critical — blood red */
+/* Hull critical - blood red */
 #define PAL_WARNING          255, 60, 50
 #define PAL_F_WARNING        1.00f, 0.24f, 0.20f
 
-/* Generic notice — grey */
+/* Generic notice - grey */
 #define PAL_NOTICE           140, 140, 140
 #define PAL_F_NOTICE         0.55f, 0.55f, 0.55f
 
-/* Plan mode indicator — cyan-ish */
+/* Plan mode indicator - cyan-ish */
 #define PAL_PLAN_MODE        130, 180, 200
 #define PAL_F_PLAN_MODE      0.51f, 0.71f, 0.78f
 
-/* Autopilot mode — warm amber */
+/* Autopilot mode - warm amber */
 #define PAL_AUTOPILOT        180, 160, 90
 #define PAL_F_AUTOPILOT      0.71f, 0.63f, 0.35f
 
@@ -115,7 +115,7 @@
 #define PAL_DOCKING          120, 160, 150
 #define PAL_F_DOCKING        0.47f, 0.63f, 0.59f
 
-/* Collection feedback — pale green */
+/* Collection feedback - pale green */
 #define PAL_SCOOP            120, 150, 120
 #define PAL_F_SCOOP          0.47f, 0.59f, 0.47f
 
@@ -127,66 +127,66 @@
  * STATION IDENTITY COLORS (role-based accents)
  * ================================================================ */
 
-/* Prospect Refinery — green */
-#define PAL_STATION_PROSPECT 0.30f, 0.80f, 0.35f
+/* Prospect Refinery - sodium-vapor amber */
+#define PAL_STATION_PROSPECT 0.62f, 0.45f, 0.24f
 
-/* Kepler Yard — gold */
-#define PAL_STATION_KEPLER   0.90f, 0.75f, 0.20f
+/* Kepler Yard - cool fluorescent steel */
+#define PAL_STATION_KEPLER   0.62f, 0.66f, 0.70f
 
-/* Helios Works (CU module) — bright blue */
-#define PAL_STATION_HELIOS_CU 0.25f, 0.50f, 0.90f
+/* Helios Works (CU module) - green-copper */
+#define PAL_STATION_HELIOS_CU 0.34f, 0.58f, 0.50f
 
-/* Helios Works (CR module) — indigo */
-#define PAL_STATION_HELIOS_CR 0.40f, 0.35f, 0.85f
+/* Helios Works (CR module) - pale violet */
+#define PAL_STATION_HELIOS_CR 0.60f, 0.50f, 0.72f
 
-/* Generic station — neutral teal-grey */
-#define PAL_STATION_NEUTRAL  0.35f, 0.55f, 0.50f
+/* Generic station - neutral teal-grey */
+#define PAL_STATION_NEUTRAL  0.34f, 0.42f, 0.44f
 
 /* ================================================================
  * MODULE COLORS (world rendering)
  * ================================================================ */
 
 /* Prospect modules */
-#define PAL_MODULE_FURNACE   0.30f, 0.80f, 0.35f
-#define PAL_MODULE_HOPPER 0.40f, 0.72f, 0.30f
+#define PAL_MODULE_FURNACE   0.62f, 0.45f, 0.24f
+#define PAL_MODULE_HOPPER    0.45f, 0.42f, 0.30f
 
 /* Per-ring furnace render variants. The simulation uses a single
  * MODULE_FURNACE; the renderer picks one of these tints based on the
  * station's furnace count and the furnace's ring (see
  * station_palette_furnace_color in station_palette.h). */
-#define PAL_FURNACE_FERRITE 0.85f, 0.30f, 0.20f
-#define PAL_FURNACE_CUPRITE 0.25f, 0.50f, 0.90f
-#define PAL_FURNACE_CRYSTAL 0.30f, 0.80f, 0.35f
-#define PAL_FURNACE_CHUNKS  0.85f, 0.85f, 0.90f
+#define PAL_FURNACE_FERRITE 0.62f, 0.28f, 0.22f
+#define PAL_FURNACE_CUPRITE 0.34f, 0.58f, 0.50f
+#define PAL_FURNACE_CRYSTAL 0.60f, 0.50f, 0.72f
+#define PAL_FURNACE_CHUNKS  0.68f, 0.70f, 0.72f
 
-/* Commodity colors — resource-family language for hoppers and spokes:
+/* Commodity colors - resource-family language for hoppers and spokes:
  *   ORE     = full resource color
  *   INGOT   = resource color with gray-metal accent
  *   PRODUCT = gray-metal base with resource accent
  * Single-color callers use the representative blend below; hopper glyphs
  * draw the base/accent split explicitly in world_draw.c. */
-#define PAL_COMMODITY_METAL_ACCENT      0.58f, 0.62f, 0.66f  /* gray metal */
-#define PAL_COMMODITY_FERRITE_ORE     0.85f, 0.30f, 0.20f  /* rusty red */
-#define PAL_COMMODITY_CUPRITE_ORE     0.25f, 0.50f, 0.90f  /* asteroid blue */
-#define PAL_COMMODITY_CRYSTAL_ORE     0.30f, 0.80f, 0.35f  /* asteroid green */
-#define PAL_COMMODITY_FERRITE_INGOT   0.78f, 0.44f, 0.37f  /* ferrite + metal */
-#define PAL_COMMODITY_CUPRITE_INGOT   0.42f, 0.59f, 0.81f  /* cuprite + metal */
-#define PAL_COMMODITY_CRYSTAL_INGOT   0.44f, 0.75f, 0.47f  /* crystal + metal */
-#define PAL_COMMODITY_FRAME           0.64f, 0.53f, 0.53f  /* metal + ferrite */
-#define PAL_COMMODITY_LASER_MODULE    0.53f, 0.61f, 0.75f  /* metal + cuprite */
-#define PAL_COMMODITY_TRACTOR_MODULE  0.51f, 0.69f, 0.56f  /* metal + crystal */
-#define PAL_COMMODITY_REPAIR_KIT      0.72f, 0.55f, 0.55f  /* metal + repair red */
+#define PAL_COMMODITY_METAL_ACCENT    0.50f, 0.54f, 0.58f  /* weathered metal */
+#define PAL_COMMODITY_FERRITE_ORE     0.62f, 0.28f, 0.22f  /* dull red vein */
+#define PAL_COMMODITY_CUPRITE_ORE     0.34f, 0.58f, 0.50f  /* green-copper vein */
+#define PAL_COMMODITY_CRYSTAL_ORE     0.60f, 0.50f, 0.72f  /* pale violet vein */
+#define PAL_COMMODITY_FERRITE_INGOT   0.55f, 0.40f, 0.36f  /* ferrite + metal */
+#define PAL_COMMODITY_CUPRITE_INGOT   0.44f, 0.58f, 0.56f  /* cuprite + metal */
+#define PAL_COMMODITY_CRYSTAL_INGOT   0.58f, 0.55f, 0.66f  /* crystal + metal */
+#define PAL_COMMODITY_FRAME           0.58f, 0.50f, 0.47f  /* metal + ferrite */
+#define PAL_COMMODITY_LASER_MODULE    0.50f, 0.56f, 0.64f  /* metal + cuprite */
+#define PAL_COMMODITY_TRACTOR_MODULE  0.49f, 0.62f, 0.58f  /* metal + crystal */
+#define PAL_COMMODITY_REPAIR_KIT      0.62f, 0.50f, 0.48f  /* metal + repair red */
 
 /* Kepler modules */
-#define PAL_MODULE_FRAME_PRESS 0.90f, 0.75f, 0.20f
-#define PAL_MODULE_SHIPYARD  0.85f, 0.70f, 0.20f
+#define PAL_MODULE_FRAME_PRESS 0.62f, 0.66f, 0.70f
+#define PAL_MODULE_SHIPYARD    0.70f, 0.72f, 0.70f
 
 /* Shared neutral modules */
-#define PAL_MODULE_LASER_FAB 0.55f, 0.45f, 0.50f
-#define PAL_MODULE_TRACTOR_FAB 0.45f, 0.50f, 0.48f
-#define PAL_MODULE_SIGNAL_RELAY 0.35f, 0.55f, 0.50f
-#define PAL_MODULE_REPAIR_BAY 0.40f, 0.60f, 0.50f
-#define PAL_MODULE_GENERIC   0.35f, 0.40f, 0.45f
+#define PAL_MODULE_LASER_FAB   0.46f, 0.50f, 0.58f
+#define PAL_MODULE_TRACTOR_FAB 0.40f, 0.54f, 0.50f
+#define PAL_MODULE_SIGNAL_RELAY 0.86f, 0.66f, 0.22f
+#define PAL_MODULE_REPAIR_BAY  0.45f, 0.56f, 0.52f
+#define PAL_MODULE_GENERIC     0.34f, 0.38f, 0.42f
 
 /* ================================================================
  * SYSTEM UI COLORS
@@ -362,8 +362,12 @@
  * HALO EFFECTS & BACKGROUND
  * ================================================================ */
 
-/* Star background (base neutral) */
-#define PAL_STAR_BASE        0.65f, 0.75f, 1.00f
+/* Void clear and star glints */
+#define PAL_VOID_CLEAR       3, 5, 12
+#define PAL_F_VOID_CLEAR     0.012f, 0.018f, 0.045f
+#define PAL_STAR_BASE        0.58f, 0.64f, 0.74f
+#define PAL_F_STAR_AMBER     0.95f, 0.62f, 0.32f
+#define PAL_F_STAR_STEEL     0.58f, 0.64f, 0.74f
 
 /* Background neutral */
 #define PAL_BG_NEUTRAL       100, 130, 110

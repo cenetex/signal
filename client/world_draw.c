@@ -394,6 +394,45 @@ static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
     return &g_asteroid_draw_frame;
 }
 
+static void draw_asteroid_veins(const asteroid_t *a,
+                                const asteroid_draw_item_t *item) {
+    float vr, vg, vb;
+    commodity_material_tint(a->commodity, &vr, &vg, &vb);
+    vr = lerpf(item->body_r, vr, 0.72f);
+    vg = lerpf(item->body_g, vg, 0.72f);
+    vb = lerpf(item->body_b, vb, 0.72f);
+
+    sgl_c4f(vr, vg, vb, item->target ? 0.48f : 0.30f);
+    sgl_begin_lines();
+    if (item->crystal) {
+        for (int si = 0; si < item->crystal_spikes; si++) {
+            const vec2 *c = item->crystal_corners[si];
+            vec2 root = v2_scale(v2_add(c[0], c[3]), 0.5f);
+            vec2 tip = v2_scale(v2_add(c[1], c[2]), 0.5f);
+            vec2 p0 = v2_add(root, v2_scale(v2_sub(tip, root), 0.18f));
+            vec2 p1 = v2_add(root, v2_scale(v2_sub(tip, root), 0.82f));
+            sgl_v2f(p0.x, p0.y);
+            sgl_v2f(p1.x, p1.y);
+        }
+    } else {
+        int veins = (a->tier == ASTEROID_TIER_S) ? 2 : 3;
+        for (int k = 0; k < veins; k++) {
+            float phase = a->seed * (0.47f + 0.13f * (float)k);
+            float angle = a->rotation + phase + (float)k * 2.17f;
+            float bend = 0.24f * sinf(a->seed * 1.9f + (float)k);
+            float outer = asteroid_profile(a, angle) * 0.78f;
+            float inner = a->radius * (0.16f + 0.06f * (float)k);
+            vec2 p0 = v2(a->pos.x + cosf(angle + bend) * inner,
+                         a->pos.y + sinf(angle + bend) * inner);
+            vec2 p1 = v2(a->pos.x + cosf(angle - bend * 0.5f) * outer,
+                         a->pos.y + sinf(angle - bend * 0.5f) * outer);
+            sgl_v2f(p0.x, p0.y);
+            sgl_v2f(p1.x, p1.y);
+        }
+    }
+    sgl_end();
+}
+
 void draw_asteroids(void) {
     const asteroid_draw_frame_t *frame = asteroid_draw_frame();
 
@@ -451,6 +490,7 @@ void draw_asteroids(void) {
             }
             sgl_end();
         }
+        draw_asteroid_veins(a, item);
 
         /* Glow core (the "dot"). Common and unscanned fragments keep the
          * muted commodity tint. H-scanned fine+ fragments use the original
@@ -500,15 +540,62 @@ void draw_asteroids(void) {
     }
 }
 
+static float void_noise01(int x, int y) {
+    uint32_t h = ((uint32_t)x * 0x8da6b343u) ^
+                 ((uint32_t)y * 0xd8163841u) ^
+                 0x9e3779b9u;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return (float)(h & 0xffu) / 255.0f;
+}
+
 void draw_background(vec2 camera) {
+    const float grain_cell = 42.0f;
+    int gx0 = (int)floorf(g_cam_left / grain_cell) - 1;
+    int gx1 = (int)floorf(g_cam_right / grain_cell) + 1;
+    int gy0 = (int)floorf(g_cam_top / grain_cell) - 1;
+    int gy1 = (int)floorf(g_cam_bottom / grain_cell) + 1;
+
+    sgl_begin_quads();
+    for (int gy = gy0; gy <= gy1; gy++) {
+        for (int gx = gx0; gx <= gx1; gx++) {
+            float n = void_noise01(gx, gy);
+            if (n < 0.62f) continue;
+            float ox = void_noise01(gx + 193, gy - 71);
+            float oy = void_noise01(gx - 47, gy + 211);
+            float x0 = (float)gx * grain_cell + ox * grain_cell;
+            float y0 = (float)gy * grain_cell + oy * grain_cell;
+            float sz = 0.9f + 1.0f * void_noise01(gx + 17, gy + 29);
+            sgl_c4f(0.030f + n * 0.020f,
+                    0.032f + n * 0.018f,
+                    0.052f + n * 0.030f,
+                    0.22f);
+            sgl_v2f(x0, y0);
+            sgl_v2f(x0 + sz, y0);
+            sgl_v2f(x0 + sz, y0 + sz);
+            sgl_v2f(x0, y0 + sz);
+        }
+    }
+    sgl_end();
+
     sgl_begin_quads();
     for (int i = 0; i < MAX_STARS; i++) {
         const star_t* star = &g.stars[i];
         vec2 parallax_pos = v2_add(star->pos, v2_scale(camera, 1.0f - star->depth));
         if (!on_screen(parallax_pos.x, parallax_pos.y, star->size * 2.0f)) continue;
-        float tint = star->brightness;
-        float r = 0.65f * tint, g0 = 0.75f * tint, b = tint;
-        sgl_c4f(r, g0, b, 0.9f);
+        float sr, sg, sb;
+        if ((i & 3) == 0) {
+            PAL_UNPACK3(PAL_F_STAR_AMBER, sr, sg, sb);
+        } else if ((i & 1) == 0) {
+            PAL_UNPACK3(PAL_F_STAR_STEEL, sr, sg, sb);
+        } else {
+            PAL_UNPACK3(PAL_STAR_BASE, sr, sg, sb);
+        }
+        float tint = star->brightness * 0.58f;
+        sgl_c4f(sr * tint, sg * tint, sb * tint, 0.46f + tint * 0.34f);
         sgl_v2f(parallax_pos.x - star->size, parallax_pos.y - star->size);
         sgl_v2f(parallax_pos.x + star->size, parallax_pos.y - star->size);
         sgl_v2f(parallax_pos.x + star->size, parallax_pos.y + star->size);
@@ -528,9 +615,9 @@ typedef struct {
 } signal_border_band_t;
 
 static const signal_border_band_t SIGNAL_BORDER_BANDS[] = {
-    { SIGNAL_BAND_OPERATIONAL, 0.12f, 0.22f, 0.45f, 0.18f, 3.0f },
-    { SIGNAL_BAND_FRINGE,     0.45f, 0.28f, 0.08f, 0.15f, 2.5f },
-    { SIGNAL_BAND_FRONTIER,   0.42f, 0.10f, 0.08f, 0.12f, 2.0f },
+    { SIGNAL_BAND_OPERATIONAL, 1.00f, 0.72f, 0.22f, 0.30f, 3.4f },
+    { SIGNAL_BAND_FRINGE,     0.22f, 0.86f, 0.78f, 0.22f, 2.7f },
+    { SIGNAL_BAND_FRONTIER,   0.90f, 0.95f, 1.00f, 0.18f, 2.2f },
 };
 
 enum {
@@ -1417,12 +1504,12 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             for (int i = 0; i < station->module_count; i++) {
                 if (station->modules[i].ring != r) continue;
                 if (station->modules[i].type == MODULE_DOCK) continue;
-                /* Furnaces use the dynamic per-ring tint (ferrite red /
-                 * cuprite blue / crystal green / chunks white) — same
+                /* Furnaces use the dynamic per-ring tint (ferrite dull red /
+                 * cuprite green-copper / crystal violet / chunks steel) - same
                  * source the furnace glow + body uses, so the corridor
                  * matches the furnace it borders. Without this every
-                 * furnace contributed static PAL_MODULE_FURNACE green
-                 * and every ring with a furnace turned green. */
+                 * furnace contributed static PAL_MODULE_FURNACE amber
+                 * and every ring with a furnace turned amber. */
                 if (station->modules[i].type == MODULE_FURNACE) {
                     station_palette_furnace_module_color(station, &station->modules[i],
                         &colors[count][0], &colors[count][1], &colors[count][2]);
@@ -1533,10 +1620,10 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             /* Furnace: glow + red laser beam to target module when smelting */
             if (!m->scaffold && m->type == MODULE_FURNACE) {
                 /* Glow inherits the per-ring furnace tint (red ferrite,
-                 * blue cuprite, green crystal, white chunks-feeder, plus
-                 * the dynamic blue/green for last-smelted-ore on the
+                 * green-copper cuprite, violet crystal, steel chunks-feeder, plus
+                 * the dynamic cuprite/crystal tint for last-smelted-ore on the
                  * middle ring). Without this, the glow stays the static
-                 * PAL_MODULE_FURNACE green and dominates the per-ring
+                 * PAL_MODULE_FURNACE amber and dominates the per-ring
                  * body color. */
                 float fr, fg, fb;
                 station_palette_furnace_module_color(station, m, &fr, &fg, &fb);
@@ -1750,6 +1837,9 @@ void draw_ship_tractor_field(void) {
         float radius = 20.0f + (tr - 20.0f) * expand;
         float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
+        float shimmer = 0.5f + 0.5f * sinf(g.world.time * 13.0f);
+        draw_circle_outline(LOCAL_PLAYER.ship.pos, radius * (0.94f + 0.04f * shimmer), 40,
+                            PAL_F_SIGNAL_OPERATIONAL, alpha * 0.26f);
     } else if (LOCAL_PLAYER.ship.towed_count > 0) {
         /* LEASHED: beam lines to fragments. Towed fragments are already in
          * custody, so showing rarity here is intentional; brightness still
@@ -1786,11 +1876,11 @@ void draw_ship(void) {
     if (g.thrusting) {
         float flicker = 10.0f + sinf(g.world.time * 42.0f) * 3.0f;
         /* Flame color reads the ship's current situation:
-         *   boost held      → blue   (exhaust is hotter, burning hull)
-         *   frontier signal → red    (matches the red frontier ring)
-         *   fringe signal   → amber  (matches the fringe ring)
-         *   core            → orange default
-         * Boost wins — you can always see it even in a desert. */
+         *   boost held      -> blue (exhaust is hotter, burning hull)
+         *   frontier signal -> static white
+         *   fringe signal   -> teal degradation
+         *   core            -> warm gold/orange default
+         * Boost wins - you can always see it even in a desert. */
         bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
                         || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
@@ -1798,9 +1888,9 @@ void draw_ship(void) {
         if (boost_on && !LOCAL_PLAYER.docked) {
             fr = 0.35f; fg = 0.80f; fb = 1.00f;
         } else if (sig < SIGNAL_BAND_FRONTIER) {
-            fr = 1.00f; fg = 0.28f; fb = 0.18f;
+            fr = 0.82f; fg = 0.92f; fb = 1.00f;
         } else if (sig < SIGNAL_BAND_FRINGE) {
-            fr = 1.00f; fg = 0.55f; fb = 0.20f;
+            fr = 0.18f; fg = 0.78f; fb = 0.72f;
         } else {
             fr = 1.00f; fg = 0.74f; fb = 0.24f;
         }
@@ -1812,10 +1902,11 @@ void draw_ship(void) {
         sgl_end();
     }
 
-    /* Ship body tint: white when empty, blends toward the manifest's
+    /* Ship body tint: weathered gunmetal when empty, blends toward the manifest's
      * grade-weighted color as cargo fills. Same helper drives NPC hulls
      * and future inspect chips so rarity reads consistently everywhere. */
-    float tr = 0.86f, tg = 0.93f, tb = 1.0f;
+    const float hull_base_r = 0.42f, hull_base_g = 0.48f, hull_base_b = 0.54f;
+    float tr = hull_base_r, tg = hull_base_g, tb = hull_base_b;
     {
         const ship_t *s = &LOCAL_PLAYER.ship;
         float cap   = ship_cargo_capacity(s);
@@ -1823,7 +1914,7 @@ void draw_ship(void) {
         if (cap > 0.0f && total > 0.001f) {
             float fill = total / cap;
             (void)manifest_rarity_tint(&s->manifest, fill,
-                                       0.86f, 0.93f, 1.0f,
+                                       hull_base_r, hull_base_g, hull_base_b,
                                        &tr, &tg, &tb);
         }
     }
@@ -1834,15 +1925,15 @@ void draw_ship(void) {
     sgl_v2f(-14.0f, -12.0f);
     sgl_end();
 
-    sgl_c4f(0.12f, 0.20f, 0.28f, 1.0f);
+    sgl_c4f(0.08f, 0.12f, 0.16f, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(8.0f, 0.0f);
     sgl_v2f(-5.0f, 5.5f);
     sgl_v2f(-5.0f, -5.5f);
     sgl_end();
 
-    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.55f, 0.72f, 0.92f, 0.85f);
-    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.55f, 0.72f, 0.92f, 0.85f);
+    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.34f, 0.42f, 0.50f, 0.85f);
+    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.34f, 0.42f, 0.50f, 0.85f);
 
     sgl_pop_matrix();
 }
@@ -1977,10 +2068,11 @@ void draw_npc_ship(const npc_ship_t* npc) {
     const hull_def_t* hull = npc_hull_def(npc);
     bool is_hauler = npc->ship.hull_class == HULL_CLASS_HAULER;
     float scale = hull->render_scale;
-    /* Use accumulated ore tint — starts white, absorbs cargo colors over time */
-    float hull_r = npc->tint_r;
-    float hull_g = npc->tint_g;
-    float hull_b = npc->tint_b;
+    /* NPC hulls keep cleaner, colder lines than the player ship while
+     * still absorbing manifest rarity/cargo tint from the server. */
+    float hull_r = lerpf(0.50f, npc->tint_r, 0.38f);
+    float hull_g = lerpf(0.55f, npc->tint_g, 0.38f);
+    float hull_b = lerpf(0.60f, npc->tint_b, 0.38f);
 
     (void)is_hauler;
 

@@ -17,6 +17,7 @@
 #include "base58.h"
 #include "manifest.h"
 #include "contract_objective.h"
+#include "palette.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -1273,7 +1274,7 @@ static void init(void) {
 
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
-    g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
+    g.pass_action.colors[0].clear_value = (sg_color){ PAL_F_VOID_CLEAR, 1.0f };
 
     init_starfield();
     reset_world();

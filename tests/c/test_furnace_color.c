@@ -1,5 +1,5 @@
 /*
- * test_furnace_color.c — per-ring furnace render-tint logic.
+ * test_furnace_color.c -- per-ring furnace render-tint logic.
  *
  * MODULE_FURNACE is a single sim type; the renderer picks ferrite /
  * cuprite / crystal from the furnace's instance commodity tag and falls
@@ -22,6 +22,11 @@ static bool rgb_eq(float r, float g, float b,
 #define EXPECT_RGB(R, G, B, EXPR_R, EXPR_G, EXPR_B) \
     ASSERT(rgb_eq((R), (G), (B), (EXPR_R), (EXPR_G), (EXPR_B)))
 
+#define EXPECT_RGB_PAL(R, G, B, PAL) do { \
+    const float expected[] = { PAL }; \
+    EXPECT_RGB((R), (G), (B), expected[0], expected[1], expected[2]); \
+} while (0)
+
 /* Helper: synthesize a station with a given list of (type, ring) pairs. */
 static void make_station(station_t *st,
                          const module_type_t *types,
@@ -39,7 +44,7 @@ static void make_station(station_t *st,
     }
 }
 
-/* (1) Prospect (1 furnace) → ferrite (red). */
+/* (1) Prospect (1 furnace) -> ferrite (dull red). */
 TEST(test_furnace_color_prospect_is_ferrite_red) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -56,15 +61,15 @@ TEST(test_furnace_color_prospect_is_ferrite_red) {
     ASSERT(ring > 0);
     float r = 0, g = 0, b = 0;
     station_palette_furnace_color(&w->stations[0], ring, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f); /* ferrite red */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_FERRITE); /* ferrite dull red */
 }
 
-/* (2) Helios (3 furnaces) → each furnace tint follows its commodity tag. */
+/* (2) Helios (3 furnaces) -> each furnace tint follows its commodity tag. */
 TEST(test_furnace_color_helios_uses_instance_tags) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    /* Find the 3-furnace station — that's Helios by design. */
+    /* Find the 3-furnace station -- that's Helios by design. */
     int helios = -1;
     for (int s = 0; s < MAX_STATIONS; s++) {
         int n = 0;
@@ -82,10 +87,10 @@ TEST(test_furnace_color_helios_uses_instance_tags) {
         float r = 0, g = 0, b = 0;
         station_palette_furnace_module_color(&w->stations[helios], m, &r, &g, &b);
         if ((commodity_t)m->commodity == COMMODITY_CUPRITE_INGOT) {
-            EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* cuprite blue */
+            EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CUPRITE); /* cuprite green-copper */
             saw_cu++;
         } else if ((commodity_t)m->commodity == COMMODITY_CRYSTAL_INGOT) {
-            EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* crystal green */
+            EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CRYSTAL); /* crystal pale violet */
             saw_cr++;
         } else {
             ASSERT(false /* unexpected Helios furnace tag */);
@@ -96,8 +101,8 @@ TEST(test_furnace_color_helios_uses_instance_tags) {
 }
 
 /* (3) Outpost growth: as furnaces are added, the inner-most furnace's
- *     role re-tints automatically (1→2 changes lone furnace's color
- *     family; 2→3 reshuffles inner/outer/middle assignment). */
+ *     role re-tints automatically (1->2 changes lone furnace's color
+ *     family; 2->3 reshuffles inner/outer/middle assignment). */
 TEST(test_furnace_color_outpost_growth_reshuffles) {
     station_t *st = calloc(1, sizeof(*st));
     ASSERT(st != NULL);
@@ -107,36 +112,36 @@ TEST(test_furnace_color_outpost_growth_reshuffles) {
     make_station(st, t1, r1, 1);
     float r = 0, g = 0, b = 0;
     station_palette_furnace_color(st, 1, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f); /* 1 furnace → ferrite */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_FERRITE); /* 1 furnace -> ferrite */
 
     /* Grow to 2 furnaces (ring 1 + ring 2). The original ring-1 furnace
-     * is now the inner of two — should still be ferrite; ring 2 is
+     * is now the inner of two -- should still be ferrite; ring 2 is
      * cuprite. */
     module_type_t t2[] = { MODULE_FURNACE, MODULE_FURNACE };
     uint8_t       r2[] = { 1, 2 };
     make_station(st, t2, r2, 2);
     station_palette_furnace_color(st, 1, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f); /* inner = ferrite */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_FERRITE); /* inner = ferrite */
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* outer = cuprite */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CUPRITE); /* outer = cuprite */
 
     /* Grow to 3 furnaces (rings 1, 2, 3). Now the ring-1 furnace's
-     * ROLE changes: it's no longer ferrite — it's the innermost of a
+     * ROLE changes: it's no longer ferrite -- it's the innermost of a
      * 3+ station, which means crystal. */
     module_type_t t3[] = { MODULE_FURNACE, MODULE_FURNACE, MODULE_FURNACE };
     uint8_t       r3[] = { 1, 2, 3 };
     make_station(st, t3, r3, 3);
     station_palette_furnace_color(st, 1, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* inner = crystal */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CRYSTAL); /* inner = crystal */
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f); /* middle = chunks */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CHUNKS); /* middle = chunks */
     station_palette_furnace_color(st, 3, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* outer = cuprite */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CUPRITE); /* outer = cuprite */
 
     free(st);
 }
 
-/* (4) Non-furnace modules are completely untouched by this code path —
+/* (4) Non-furnace modules are completely untouched by this code path --
  *     verifying the helper is only invoked for MODULE_FURNACE. We do
  *     this structurally: walk the seeded world, confirm there are
  *     non-furnace modules, and confirm the helper still gives the
@@ -157,12 +162,12 @@ TEST(test_furnace_color_non_furnace_modules_unaffected) {
     /* Helper still gives a deterministic answer when invoked. */
     float r = 0, g = 0, b = 0;
     station_palette_furnace_color(&w->stations[0], 1, &r, &g, &b);
-    /* Prospect has 1 furnace → ferrite red. */
-    EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f);
+    /* Prospect has 1 furnace -> ferrite dull red. */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_FERRITE);
 }
 
 /* Prospect: ring 1 = DOCK + RELAY + FURNACE (tagged FERRITE_INGOT);
- * ring 2 = single FERRITE_ORE intake at slot 4. 4 modules total —
+ * ring 2 = single FERRITE_ORE intake at slot 4. 4 modules total --
  * no output hopper because nothing on Prospect locally consumes
  * ferrite ingots (no frame press here). */
 TEST(test_prospect_modules_after_silo_cleanup) {
@@ -188,7 +193,7 @@ TEST(test_prospect_modules_after_silo_cleanup) {
 
 /* (6) Middle-ring dynamic glow: the helper reads
  *     last_smelt_commodity on the matching middle-ring furnace and
- *     renders blue (cuprite) / green (crystal) / white (other or
+ *     renders green-copper (cuprite) / pale violet (crystal) / steel (other or
  *     LAST_SMELT_NONE). */
 TEST(test_furnace_color_middle_ring_glows_by_last_smelt) {
     station_t *st = calloc(1, sizeof(*st));
@@ -197,33 +202,33 @@ TEST(test_furnace_color_middle_ring_glows_by_last_smelt) {
     uint8_t       rings[] = { 1, 2, 3 };
     make_station(st, types, rings, 3);
 
-    /* Default (LAST_SMELT_NONE on all three): middle ring is white. */
+    /* Default (LAST_SMELT_NONE on all three): middle ring is steel. */
     float r = 0, g = 0, b = 0;
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f);
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CHUNKS);
 
-    /* Tag middle as cuprite-recent → middle glows blue. */
+    /* Tag middle as cuprite-recent -> middle glows green-copper. */
     st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CUPRITE_ORE;
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f);
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CUPRITE);
 
-    /* Tag middle as crystal-recent → middle glows green. */
+    /* Tag middle as crystal-recent -> middle glows pale violet. */
     st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CRYSTAL_ORE;
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f);
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CRYSTAL);
 
-    /* Ferrite or any other ore → falls back to white (no special
+    /* Ferrite or any other ore -> falls back to steel (no special
      * inner-ring meaning at the middle). */
     st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_FERRITE_ORE;
     station_palette_furnace_color(st, 2, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f);
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CHUNKS);
 
     /* Outer + inner are unaffected by middle's last_smelt setting. */
     st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CUPRITE_ORE;
     station_palette_furnace_color(st, 1, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* inner stays crystal green */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CRYSTAL); /* inner stays crystal violet */
     station_palette_furnace_color(st, 3, &r, &g, &b);
-    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* outer stays cuprite blue */
+    EXPECT_RGB_PAL(r, g, b, PAL_FURNACE_CUPRITE); /* outer stays cuprite */
 
     free(st);
 }

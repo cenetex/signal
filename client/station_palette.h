@@ -1,5 +1,5 @@
 /*
- * station_palette.h — render-time palette helpers for station modules.
+ * station_palette.h -- render-time palette helpers for station modules.
  *
  * These helpers let the renderer pick a module color based on station
  * context. Commodity-tagged furnaces use their instance output when
@@ -20,14 +20,14 @@
  * commodity directly through station_palette_furnace_module_color().
  * The fallback matrix:
  *
- *   1 furnace:    inner ring → ferrite (red)
- *   2 furnaces:   inner → ferrite, outer → cuprite (blue)
- *   3+ furnaces:  innermost → crystal (green),
- *                 outermost → cuprite (blue),
- *                 anything in between → chunks-feeder (white)
+ *   1 furnace:    inner ring -> ferrite (dull red)
+ *   2 furnaces:   inner -> ferrite, outer -> cuprite (green-copper)
+ *   3+ furnaces:  innermost -> crystal (pale violet),
+ *                 outermost -> cuprite (green-copper),
+ *                 anything in between -> chunks-feeder (steel)
  *
  * Rationale: old saves and test-built stations may contain untagged
- * furnaces. Player-planted outposts that grow 1 → 2 → 3 untagged
+ * furnaces. Player-planted outposts that grow 1 -> 2 -> 3 untagged
  * furnaces still get deterministic render colors until save migration
  * assigns explicit commodity tags. */
 static inline void station_palette_furnace_color(const station_t *st,
@@ -52,8 +52,8 @@ static inline void station_palette_furnace_color(const station_t *st,
         return;
     }
     /* 3+ furnaces: inner=crystal, outer=cuprite, middle=chunks. The
-     * middle ring's color is dynamic: glows blue when the most recent
-     * smelt at this furnace was cuprite, green when crystal, white
+     * middle ring's color is dynamic: glows green-copper when the most recent
+     * smelt at this furnace was cuprite, pale violet when crystal, steel
      * otherwise (fresh furnace or recent ferrite smelt). Reads
      * station_module_t::last_smelt_commodity (set in
      * sim_production.c::sim_step_refinery_production). */
@@ -76,7 +76,7 @@ static inline void station_palette_furnace_color(const station_t *st,
         } else if (last == COMMODITY_CRYSTAL_ORE) {
             PAL_UNPACK3(PAL_FURNACE_CRYSTAL, *r, *g, *b);
         } else {
-            /* TODO(#chunks-feeder): sim behavior — middle-ring furnace
+            /* TODO(#chunks-feeder): sim behavior - middle-ring furnace
              * tractors fragments inward to feed outer smelters. Today
              * the simulation treats it as a normal furnace. */
             PAL_UNPACK3(PAL_FURNACE_CHUNKS, *r, *g, *b);

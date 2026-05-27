@@ -2933,10 +2933,16 @@ void draw_hud(void) {
     int sig_pct = (int)lroundf(sig_quality * 100.0f);
     const char* sig_band = signal_band_name(sig_quality);
     uint8_t sig_r, sig_g, sig_b;
-    if (sig_quality < SIGNAL_BAND_FRONTIER)         { sig_r = 255; sig_g = 80;  sig_b = 80;  }
-    else if (sig_quality < SIGNAL_BAND_FRINGE)      { sig_r = 255; sig_g = 180; sig_b = 80;  }
-    else if (sig_quality < SIGNAL_BAND_OPERATIONAL) { sig_r = 255; sig_g = 221; sig_b = 119; }
-    else                                            { sig_r = 203; sig_g = 220; sig_b = 248; }
+    if (sig_quality < SIGNAL_BAND_FRONTIER) {
+        const uint8_t c[3] = { PAL_SIGNAL_FRONTIER };
+        sig_r = c[0]; sig_g = c[1]; sig_b = c[2];
+    } else if (sig_quality < SIGNAL_BAND_FRINGE) {
+        const uint8_t c[3] = { PAL_SIGNAL_FRINGE };
+        sig_r = c[0]; sig_g = c[1]; sig_b = c[2];
+    } else {
+        const uint8_t c[3] = { PAL_SIGNAL_OPERATIONAL };
+        sig_r = c[0]; sig_g = c[1]; sig_b = c[2];
+    }
 
     if (compact) {
         const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station) : "STN";
