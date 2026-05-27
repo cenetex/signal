@@ -766,8 +766,6 @@ static int station_index_of(const station_t *st) {
 void reset_trade_session_rows(int station_index) {
     g.trade_session_station = station_index;
     g.trade_page = 0;
-    memset(g.trade_seen_buy, 0, sizeof(g.trade_seen_buy));
-    memset(g.trade_seen_sell, 0, sizeof(g.trade_seen_sell));
 }
 
 static int trade_session_station_index(const station_t *st) {
@@ -1031,20 +1029,16 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     float credits = player_current_balance();
     int capacity = (int)lroundf(MAX_PRODUCT_STOCK);
 
-    /* BUY rows -- one per (commodity, grade) the station produces.
-     * Rows are additive per dock session: an in-stock grade appears
-     * as soon as it exists, then remains visible if the player buys
-     * the shelf empty. Never-before-seen empty catalog lines stay
-     * hidden. */
+    /* BUY rows -- one per stocked (commodity, grade) the station produces.
+     * Empty catalog lines stay hidden so TRADE reads as the current local
+     * market rather than a stale inventory ledger. */
     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
         if (!station_produces(st, (commodity_t)c)) continue;
         float price_base = station_sell_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int stock = station_market_stock_cg(st, (commodity_t)c, (mining_grade_t)gi);
-            if (stock > 0)
-                g.trade_seen_buy[c][gi] = true;
-            if (stock <= 0 && !g.trade_seen_buy[c][gi]) continue;
+            if (stock <= 0) continue;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             float vol = commodity_volume((commodity_t)c);
@@ -1115,10 +1109,9 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         }
     }
 
-    /* SELL rows -- every commodity/grade the player has carried during
-     * this dock session for a commodity the station consumes. Rows appear
-     * when cargo exists and remain visible after the player sells it all,
-     * but never-before-carried cargo stays hidden. */
+    /* SELL rows -- every held commodity/grade this station consumes.
+     * Cargo-free lines stay hidden; the CONTRACTS panel carries demand
+     * browsing, while TRADE stays focused on immediate buy/sell actions. */
     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
         if (!station_consumes(st, (commodity_t)c)) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
@@ -1127,9 +1120,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         bool station_full = station_total_inv >= capacity;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-            if (manifest_g > 0)
-                g.trade_seen_sell[c][gi] = true;
-            if (manifest_g <= 0 && !g.trade_seen_sell[c][gi]) continue;
+            if (manifest_g <= 0) continue;
             int held = manifest_g;
             int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
                                                          (commodity_t)c,
@@ -1439,42 +1430,6 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
-    /* Factual stock strip. Use the same buyable-market stock definition
-     * as BUY rows, and include repair kits so the strip does not disagree
-     * with the market below. Named ingots stay out of this count because
-     * generic BUY rows deliberately skip prefix-premium collectibles. */
-    {
-        struct { commodity_t c; const char *code; } slots[7] = {
-            { COMMODITY_FERRITE_INGOT,  "FE" },
-            { COMMODITY_CUPRITE_INGOT,  "CU" },
-            { COMMODITY_CRYSTAL_INGOT,  "CR" },
-            { COMMODITY_FRAME,          "FM" },
-            { COMMODITY_LASER_MODULE,   "LM" },
-            { COMMODITY_TRACTOR_MODULE, "TM" },
-            { COMMODITY_REPAIR_KIT,     "RK" },
-        };
-        cell_t cells[8];
-        char labels[7][8];
-        cells[0] = (cell_t){ 0, "STOCK", COL_FADED };
-        int cell_count = 1;
-        for (int i = 0; i < 7; i++) {
-            commodity_t c = slots[i].c;
-            int stock = 0;
-            for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
-                stock += station_market_stock_cg(st, c, (mining_grade_t)gi);
-            snprintf(labels[i], sizeof(labels[i]), "%s%d", slots[i].code, stock);
-            uint8_t cr, cg, cb;
-            commodity_color_u8(c, &cr, &cg, &cb);
-            static uint8_t rgb[7][3];
-            rgb[i][0] = stock > 0 ? cr : 90;
-            rgb[i][1] = stock > 0 ? cg : 90;
-            rgb[i][2] = stock > 0 ? cb : 90;
-            cells[cell_count++] = (cell_t){ 7 + i * 7, labels[i], rgb[i] };
-        }
-        draw_row_cells(cx, my, cells, cell_count);
-        my += row_h;
-    }
-
     {
         station_flow_summary_t summary;
         bool mirrored_authoritative = g.multiplayer_enabled && net_is_connected();
@@ -1502,8 +1457,13 @@ static void draw_trade_view(const station_ui_state_t *ui,
     if (page >= total_pages) { page = 0; g.trade_page = 0; }
 
     if (row_count == 0) {
+        if (flow_line[0]) {
+            draw_row_lr(cx, my, inner_right, flow_rgb ? flow_rgb : COL_FADED,
+                        flow_line, NULL, NULL);
+            my += row_h;
+        }
         draw_row_lr(cx, my, inner_right, COL_FADED,
-                    "No station stock or matching cargo.", NULL, NULL);
+                    "No local buy/sell rows right now.", NULL, NULL);
         return;
     }
 
@@ -1517,7 +1477,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
                      page + 1, total_pages);
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
         const char *page_kind = (first < last && rows[first].kind == 1)
-            ? "SELL" : "BUY";
+            ? (compact ? "SELL" : "SELL TO STATION")
+            : (compact ? "BUY" : "BUY FROM STATION");
         char page_left[128];
         const uint8_t *page_left_rgb = COL_ACTIVE;
         if (flow_line[0]) {
@@ -2411,7 +2372,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_TRADE] = {
         .view = STATION_VIEW_TRADE,
         .label = "TRADE",
-        .legend = "[1-5] trade  [S] sell all  [TAB]",
+        .legend = "[1-5] rows [F] page [S] all [TAB]",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_trade_view,
         .input_fn = station_panel_input_trade,
