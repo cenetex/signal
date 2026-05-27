@@ -2762,7 +2762,6 @@ void draw_compass_ring(void) {
         float nearest_d[3] = {1e18f, 1e18f, 1e18f};
         for (int i = 0; i < NET_MAX_PLAYERS; i++) {
             if (!rp[i].active || i == (int)net_local_id()) continue;
-            if (rp[i].callsign[0] == '\0') continue;
             float d = v2_dist_sq(v2(rp[i].x, rp[i].y), ship);
             for (int s = 0; s < 3; s++) {
                 if (d < nearest_d[s]) {
@@ -2779,7 +2778,11 @@ void draw_compass_ring(void) {
             int pi = nearest[s];
             if (pi < 0) continue;
             int ci = pi % 6;
-            COMPASS_PIP(v2(rp[pi].x, rp[pi].y), pcols[ci][0], pcols[ci][1], pcols[ci][2]);
+            bool scanned = net_remote_player_scanned(pi);
+            COMPASS_PIP(v2(rp[pi].x, rp[pi].y),
+                        scanned ? pcols[ci][0] : 0.45f,
+                        scanned ? pcols[ci][1] : 0.50f,
+                        scanned ? pcols[ci][2] : 0.56f);
         }
     }
 
@@ -2790,6 +2793,7 @@ void draw_compass_ring(void) {
 void draw_remote_players(void) {
     if (!g.multiplayer_enabled) return;
     const NetPlayerState* players = net_get_interpolated_players();
+    net_update_remote_player_scans(players);
     static const float colors[][3] = {
         {1.0f, 0.45f, 0.25f},
         {0.25f, 1.0f, 0.55f},
@@ -2812,8 +2816,14 @@ void draw_remote_players(void) {
             float dy = players[i].y - LOCAL_PLAYER.ship.pos.y;
             if (dx * dx + dy * dy < 4.0f) continue; /* within 2u = us */
         }
+        bool scanned = net_remote_player_scanned(i);
         int ci = i % 6;
         float cr = colors[ci][0], cg = colors[ci][1], cb = colors[ci][2];
+        if (!scanned) {
+            cr = 0.35f;
+            cg = 0.41f;
+            cb = 0.47f;
+        }
         bool thrusting = (players[i].flags & 1) != 0;
         bool mining = (players[i].flags & 2) != 0;
         bool tractor_on = (players[i].flags & 16) != 0;
@@ -2866,6 +2876,13 @@ void draw_remote_players(void) {
 
         /* Callsign label above ship */
         /* Callsign rendered with sdtx (real font) — see callsign pass below. */
+        if (scanned) {
+            vec2 panel = v2(players[i].x + 64.0f, players[i].y + 45.0f);
+            draw_rect_centered(panel, 58.0f, 18.0f,
+                               0.018f, 0.024f, 0.032f, 0.54f);
+            draw_rect_outline(panel, 58.0f, 18.0f,
+                              cr * 0.75f, cg * 0.9f, cb, 0.34f);
+        }
 
         /* Mining or scan beam — server-authoritative endpoints. */
         if (mining) {
@@ -2945,18 +2962,37 @@ void draw_callsigns(void) {
     /* Remote player callsigns */
     if (g.multiplayer_enabled) {
         const NetPlayerState *players = net_get_interpolated_players();
+        net_update_remote_player_scans(players);
         int local_id = (int)net_local_id();
         for (int i = 0; i < NET_MAX_PLAYERS; i++) {
             if (!players[i].active) continue;
             if (i == local_id) continue;
-            if (players[i].callsign[0] == '\0') continue;
+            if (!net_remote_player_scanned(i)) continue;
             if (!on_screen(players[i].x, players[i].y, 60.0f)) continue;
             sdtx_color3b(PAL_WORLD_STATION_CYAN);
-            int len = (int)strlen(players[i].callsign);
-            /* Center horizontally on the ship, sit just above the hull. */
-            sdtx_world_pos(players[i].x - len * cell * 0.5f,
-                           players[i].y + 36.0f, cell);
-            sdtx_puts(players[i].callsign);
+            char label[16];
+            if (players[i].callsign[0]) {
+                snprintf(label, sizeof(label), "%s", players[i].callsign);
+            } else {
+                snprintf(label, sizeof(label), "PILOT %02d", i);
+            }
+            sdtx_world_pos(players[i].x + 16.0f, players[i].y + 53.0f, cell);
+            sdtx_puts(label);
+
+            char info[24];
+            if (players[i].towed_count > 0) {
+                snprintf(info, sizeof(info), "MINER  TOW %u",
+                         (unsigned)players[i].towed_count);
+            } else if ((players[i].flags & 16) != 0) {
+                snprintf(info, sizeof(info), "MINER  TRACTOR");
+            } else if ((players[i].flags & 8) != 0) {
+                snprintf(info, sizeof(info), "MINER  SCANNING");
+            } else {
+                snprintf(info, sizeof(info), "MINER  CLEAR");
+            }
+            sdtx_color3b(PAL_TEXT_MUTED);
+            sdtx_world_pos(players[i].x + 16.0f, players[i].y + 41.0f, cell);
+            sdtx_puts(info);
         }
     }
 }

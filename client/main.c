@@ -223,6 +223,7 @@ static void reset_world(void) {
     g.cargo_pod_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.player_interp, 0, sizeof(g.player_interp));
     g.player_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    memset(g.scanned_players, 0, sizeof(g.scanned_players));
     reset_station_ring_smoothing();
 
     /* Seed interp buffers so first frame has valid data */
@@ -1863,6 +1864,13 @@ EMSCRIPTEN_KEEPALIVE
 float get_signal_strength(void) {
     if (g.local_player_slot < 0) return 0.0f;
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_remote_player_scanned(int player_id) {
+    return net_remote_player_scanned(player_id) ? 1 : 0;
 }
 
 #ifdef __EMSCRIPTEN__

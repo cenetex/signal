@@ -2148,6 +2148,7 @@ enum {
     SMOKE_LOOP_STATE_YARD_BLOCKED = 11,
     SMOKE_LOOP_STATE_ABANDONED_PLAN = 12,
     SMOKE_LOOP_STATE_FRACTURE_TABLEAU = 13,
+    SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN = 14,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -2179,6 +2180,7 @@ static void smoke_clear_loop_state(void) {
     g.collection_feedback_timer = 0.0f;
     g.collection_feedback_fragments = 0;
     g.collection_feedback_ore = 0.0f;
+    memset(g.scanned_players, 0, sizeof(g.scanned_players));
     g.hail_timer = 0.0f;
     g.hail_station[0] = '\0';
     g.hail_message[0] = '\0';
@@ -2386,6 +2388,33 @@ static int smoke_apply_loop_state(int state) {
         memset(g.npc_interp.prev, 0, sizeof(g.npc_interp.prev));
         g.npc_interp.t = 0.0f;
         g.npc_interp.interval = 0.1f;
+        return 1;
+    }
+    case SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN: {
+        int remote_slot = (g.local_player_slot == 1) ? 2 : 1;
+        if (remote_slot >= NET_MAX_PLAYERS) return 0;
+        g.multiplayer_enabled = true;
+        g.local_server.active = false;
+        memset(&g.player_interp, 0, sizeof(g.player_interp));
+        g.player_interp.interval = 0.1f;
+
+        sp->ship.pos = v2_add(sp->ship.pos, v2(-120.0f, 0.0f));
+        sp->ship.angle = 0.0f;
+        sp->ship.tractor_level = 0;
+        g.camera_pos = sp->ship.pos;
+
+        NetPlayerState remote = {0};
+        remote.active = true;
+        remote.player_id = (uint8_t)remote_slot;
+        remote.x = sp->ship.pos.x + ship_tractor_range(&sp->ship) * 0.72f;
+        remote.y = sp->ship.pos.y + 24.0f;
+        remote.angle = 0.35f;
+        remote.flags = 16; /* tractor active */
+        remote.tractor_level = 1;
+        remote.towed_count = 2;
+        snprintf(remote.callsign, sizeof(remote.callsign), "VX4-201");
+        g.player_interp.curr[remote_slot] = remote;
+        g.player_interp.prev[remote_slot] = remote;
         return 1;
     }
     default:

@@ -331,6 +331,16 @@ async function remoteTowableInterpCheck(page: Page): Promise<number> {
   });
 }
 
+async function remotePlayerScanned(page: Page, playerId: number): Promise<number> {
+  return page.evaluate((id) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('get_remote_player_scanned', 'number', ['number'], [id]);
+  }, playerId);
+}
+
 async function mobileControlFlags(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -404,6 +414,7 @@ const smokeLoopState = {
   supplyNeed: 10,
   yardBlocked: 11,
   abandonedPlan: 12,
+  remotePilotScan: 14,
 } as const;
 
 const mobileFlag = {
@@ -593,6 +604,14 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.hailNotice);
     expect(await hudHintText(page)).toContain('Prospect: channel open. Balance 123 cr.');
+
+    await setSmokeLoopState(page, smokeLoopState.remotePilotScan);
+    await expect
+      .poll(async () => remotePlayerScanned(page, 1), {
+        timeout: 5_000,
+        message: 'remote pilot should reveal once inside tractor scan range',
+      })
+      .toBe(1);
 
     expectNoFatalErrors(logs);
   });

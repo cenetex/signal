@@ -391,6 +391,7 @@ typedef struct {
     /* --- Multiplayer --- */
     bool multiplayer_enabled;
     float net_send_timer;
+    bool scanned_players[NET_MAX_PLAYERS];
     uint8_t pending_net_action;
     /* Rides alongside pending_net_action: which grade did the player
      * pick for a BUY_PRODUCT action? Default = MINING_GRADE_COUNT ("any"

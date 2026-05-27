@@ -284,6 +284,7 @@ void on_player_leave(uint8_t player_id) {
             set_notice("Pilot left.");
     }
     g.world.players[player_id].connected = false;
+    g.scanned_players[player_id] = false;
 }
 
 static asteroid_t asteroid_render_state_at(int slot, float elapsed) {
@@ -366,6 +367,7 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
 void reset_remote_dynamic_sync(void) {
     g.net_input_tick_protocol = false;
     net_replay_reset();
+    memset(g.scanned_players, 0, sizeof(g.scanned_players));
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
@@ -384,6 +386,42 @@ void reset_remote_dynamic_sync(void) {
     g.cargo_pod_interp.interval = 0.1f;
 
     LOCAL_PLAYER.hover_asteroid = -1;
+}
+
+bool net_remote_player_scanned(int player_id) {
+    if (player_id < 0 || player_id >= NET_MAX_PLAYERS) return false;
+    return g.scanned_players[player_id];
+}
+
+void net_update_remote_player_scans(const NetPlayerState *players) {
+    if (!g.multiplayer_enabled || !players) return;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+
+    const server_player_t *local = &LOCAL_PLAYER;
+    int local_id = (int)net_local_id();
+    float tractor_range = ship_tractor_range(&local->ship);
+    float tractor_range_sq = tractor_range * tractor_range;
+
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        if (i == local_id || i == g.local_player_slot) continue;
+        if (!players[i].active) {
+            g.scanned_players[i] = false;
+            continue;
+        }
+
+        bool active_scan =
+            local->scan_active &&
+            local->scan_target_type == INSPECT_TARGET_PLAYER &&
+            local->scan_target_index == i;
+        if (active_scan) {
+            g.scanned_players[i] = true;
+            continue;
+        }
+
+        vec2 remote_pos = v2(players[i].x, players[i].y);
+        if (v2_dist_sq(local->ship.pos, remote_pos) <= tractor_range_sq)
+            g.scanned_players[i] = true;
+    }
 }
 
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
