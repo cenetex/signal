@@ -3554,11 +3554,83 @@ static void draw_placement_plans(void) {
     }
 }
 
+static bool station_yard_blocked_for_overlay(int station_idx,
+                                             int *out_blocker_idx,
+                                             module_type_t *out_pending_type) {
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_is_active(st)) return false;
+    if (st->pending_scaffold_count <= 0) return false;
+    if (!station_has_module(st, MODULE_SHIPYARD)) return false;
+    if (station_nascent_scaffold_index(g.world.scaffolds, MAX_SCAFFOLDS,
+                                       station_idx) >= 0) {
+        return false;
+    }
+
+    int blocker = station_construction_blocker_index(st, g.world.scaffolds,
+                                                     MAX_SCAFFOLDS);
+    if (blocker < 0) return false;
+
+    if (out_blocker_idx) *out_blocker_idx = blocker;
+    if (out_pending_type) *out_pending_type = st->pending_scaffolds[0].type;
+    return true;
+}
+
+static void draw_blocked_construction_yards(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        int blocker_idx = -1;
+        module_type_t pending_type = MODULE_COUNT;
+        if (!station_yard_blocked_for_overlay(s, &blocker_idx, &pending_type))
+            continue;
+
+        const station_t *st = &g.world.stations[s];
+        if (!on_screen(st->pos.x, st->pos.y,
+                       STATION_RING_RADIUS[1] + 80.0f)) {
+            continue;
+        }
+
+        const scaffold_t *blocker = &g.world.scaffolds[blocker_idx];
+        float pulse = 0.55f + 0.30f * sinf(g.world.time * 5.0f);
+        float dim = 0.35f + 0.15f * sinf(g.world.time * 3.0f);
+        const float br = 1.0f;
+        const float bg = 0.34f;
+        const float bb = 0.14f;
+        float clear_r = STATION_RING_RADIUS[1] * 0.6f;
+
+        draw_circle_outline(st->pos, clear_r, 36, br, bg, bb, 0.20f + pulse * 0.45f);
+        draw_circle_outline(st->pos, clear_r + 8.0f, 36, br, bg, bb, dim * 0.45f);
+        draw_segment(st->pos, blocker->pos, br, bg, bb, 0.18f + pulse * 0.25f);
+        draw_circle_outline(blocker->pos, blocker->radius + 18.0f, 18,
+                            br, bg, bb, 0.22f + pulse * 0.45f);
+
+        float mr = br, mg = bg, mb = bb;
+        if (pending_type != MODULE_COUNT) module_color_fn(pending_type, &mr, &mg, &mb);
+        draw_circle_filled(st->pos, 5.0f, 8, mr, mg, mb, 0.45f + pulse * 0.25f);
+
+        sgl_begin_lines();
+        sgl_c4f(br, bg, bb, 0.45f + pulse * 0.35f);
+        float cross = 26.0f;
+        sgl_v2f(st->pos.x - cross, st->pos.y - cross);
+        sgl_v2f(st->pos.x + cross, st->pos.y + cross);
+        sgl_v2f(st->pos.x - cross, st->pos.y + cross);
+        sgl_v2f(st->pos.x + cross, st->pos.y - cross);
+        float tag = blocker->radius + 10.0f;
+        sgl_v2f(blocker->pos.x - tag, blocker->pos.y - tag);
+        sgl_v2f(blocker->pos.x + tag, blocker->pos.y + tag);
+        sgl_v2f(blocker->pos.x - tag, blocker->pos.y + tag);
+        sgl_v2f(blocker->pos.x + tag, blocker->pos.y - tag);
+        sgl_end();
+    }
+}
+
 void draw_placement_reticle(void) {
     /* Always draw planned stations (server-side ghosts) */
     draw_planned_stations();
     /* Always draw existing plans on stations (active or planned) */
     draw_placement_plans();
+    /* Blocked shipyards are construction state, so surface them with the
+     * same always-on overlay pass as planned and reserved slots. */
+    draw_blocked_construction_yards();
 
     /* Ghost preview: local-only, uncommitted. Keep it amber/washed-out so
      * it does not read as the committed cyan planned-station blueprint. */
