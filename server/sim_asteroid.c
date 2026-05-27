@@ -9,6 +9,7 @@
 #include "protocol.h"
 #include "sha256.h"  /* rock_pub derivation (#285 slice 1) */
 #include "chain_log.h" /* signed event emission (#479 C) */
+#include "sim_physics.h"
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -663,6 +664,8 @@ void step_fracture_claims(world_t *w) {
 
 void sim_step_asteroid_dynamics(world_t *w, float dt) {
     float cleanup_d_sq = FRACTURE_CHILD_CLEANUP_DISTANCE * FRACTURE_CHILD_CLEANUP_DISTANCE;
+
+    asteroid_step_thrown_state(w);
 
     /* Build "currently towed" set so we can skip ambient drag on them.
      * Towed fragments have their own drag in the tractor physics. */

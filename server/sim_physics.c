@@ -3,6 +3,51 @@
  * collision, and asteroid-station collision.  Extracted from game_sim.c.
  */
 #include "sim_physics.h"
+#include <math.h>
+#include <string.h>
+
+static bool token_has_any_bit(const uint8_t token[8]) {
+    return (token[0] | token[1] | token[2] | token[3] |
+            token[4] | token[5] | token[6] | token[7]) != 0;
+}
+
+void asteroid_clear_thrown(asteroid_t *a) {
+    if (!a) return;
+    bool changed = a->thrown_timer_q > 0 || token_has_any_bit(a->thrown_by_token);
+    memset(a->thrown_by_token, 0, sizeof(a->thrown_by_token));
+    a->thrown_timer_q = 0;
+    if (changed) a->net_dirty = true;
+}
+
+void asteroid_mark_thrown(asteroid_t *a, const uint8_t token[8], float seconds) {
+    if (!a) return;
+    if (!token || !token_has_any_bit(token) || seconds <= 0.0f || !isfinite(seconds)) {
+        asteroid_clear_thrown(a);
+        return;
+    }
+    unsigned q = (unsigned)ceilf(seconds * 10.0f);
+    if (q == 0) q = 1;
+    if (q > 255u) q = 255u;
+    memcpy(a->thrown_by_token, token, sizeof(a->thrown_by_token));
+    a->thrown_timer_q = (uint8_t)q;
+    a->net_dirty = true;
+}
+
+bool asteroid_is_ballistic(const asteroid_t *a) {
+    return a && a->thrown_timer_q > 0 && token_has_any_bit(a->thrown_by_token);
+}
+
+void asteroid_step_thrown_state(world_t *w) {
+    if (!w || w->tick == 0 || (w->tick % ASTEROID_THROW_TIMER_TICKS) != 0) return;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->thrown_timer_q == 0) continue;
+        a->thrown_timer_q--;
+        if (a->thrown_timer_q == 0)
+            memset(a->thrown_by_token, 0, sizeof(a->thrown_by_token));
+        a->net_dirty = true;
+    }
+}
 
 /* ================================================================== */
 /* Asteroid-asteroid gravity                                          */

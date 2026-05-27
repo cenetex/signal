@@ -1103,9 +1103,9 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
  *
  *   1. Damage uses |rel_vel . normal| (not just ship.vel) so a stationary
  *      ship hit by a fast rock takes the right impact.
- *   2. last_towed_token attributes the kill to the player who threw the
- *      rock; self-damage is suppressed so your own thrown rocks don't
- *      kill you on the rebound.
+ *   2. thrown_by_token attributes the kill during the ballistic window;
+ *      self-damage is suppressed so your own thrown rocks don't kill you
+ *      on the rebound.
  *   3. Damage scales with rock radius. An XL rock hits ~2.5× harder
  *      than an S-tier fragment. Free signal that bigger rocks matter. */
 static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
@@ -1122,14 +1122,16 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
     ship_collision_count++;
     if (w->player_only_mode) return;
 
-    /* Self-damage skip: your own thrown rock can't hurt you. The
-     * pushback already resolved geometrically — we just gate the
-     * damage / kill credit. */
-    bool attributed =
-        (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
-         a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
-         a->last_towed_token[6] | a->last_towed_token[7]) != 0;
-    bool self = attributed && memcmp(a->last_towed_token, sp->session_token, 8) == 0;
+    /* Self-damage skip: your own ballistic rock can't hurt you. The
+     * pushback already resolved geometrically; the first impact consumes
+     * combat ownership whether it damages the target or not. */
+    bool attributed = asteroid_is_ballistic(a);
+    uint8_t thrown_token[8] = {0};
+    if (attributed) {
+        memcpy(thrown_token, a->thrown_by_token, sizeof(thrown_token));
+        asteroid_clear_thrown(a);
+    }
+    bool self = attributed && memcmp(thrown_token, sp->session_token, 8) == 0;
     if (self) return;
 
     /* Size scaling: S-tier (~10) → 0.5×, M (~30) → 1.0×, XL (~60) →
@@ -1144,7 +1146,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
         /* Source = rock position so the indicator points at the actual
          * incoming projectile, not the thrower. */
         apply_ship_damage_attributed(w, sp, dmg,
-            attributed ? a->last_towed_token : NULL, cause, a->pos);
+            attributed ? thrown_token : NULL, cause, a->pos);
     }
 }
 
@@ -2975,7 +2977,8 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
  * cheesy because it broke the spatial intuition: you'd stretch east
  * and the rock would yet shoot wherever your nose was pointing.
  *
- * last_towed_token stays set so kill credit resolves on impact. */
+ * last_towed_token stays set for smelt provenance. thrown_by_token is the
+ * short-lived combat owner used for damage and kill credit. */
 #define ROCK_THROW_BASE_SPEED  40.0f
 static void release_towed_fragments(world_t *w, server_player_t *sp) {
     for (int t = 0; t < sp->ship.towed_count; t++) {
@@ -2995,6 +2998,7 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
              * a fallback — no band axis to read. */
             vec2 fwd = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
             a->vel = v2_add(sp->ship.vel, v2_scale(fwd, ROCK_THROW_BASE_SPEED));
+            asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
             a->net_dirty = true;
             continue;
         }
@@ -3009,10 +3013,10 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         float elastic = sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
         float fling = ROCK_THROW_BASE_SPEED + elastic;
         a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
+        asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
         a->net_dirty = true;
         /* last_towed_by / last_towed_token already set when the
-         * tractor pulled the fragment in — leave them so kill credit
-         * resolves on impact. */
+         * tractor pulled the fragment in — leave them for smelt credit. */
     }
     sp->ship.towed_count = 0;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));

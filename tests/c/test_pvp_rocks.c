@@ -2,12 +2,12 @@
  * test_pvp_rocks.c — scenario tests for PvP rock-throwing.
  *
  * Covers the launch feature: tow a rock, release with momentum, hit
- * another ship (player or NPC), credit the kill via last_towed_token.
+ * another ship (player or NPC), credit the kill via thrown_by_token.
  *
  * Behaviors locked in:
  *   - Releasing a tow throws the rock with ship.vel + forward * fling.
- *   - The rock retains last_towed_token across release; that token is
- *     the kill attribution if the rock damages a ship.
+ *   - The rock retains last_towed_token for smelt credit, while
+ *     thrown_by_token becomes the temporary combat attribution.
  *   - Self-damage prevented: your own thrown rock can't hurt you.
  *   - Damage scales with rock radius (size_mult 0.5..2.5).
  *   - SIM_EVENT_DEATH carries killer_token + cause.
@@ -15,6 +15,7 @@
  */
 
 #include "test_harness.h"
+#include "sim_physics.h"
 
 /* Helpers ---------------------------------------------------------- */
 
@@ -124,6 +125,9 @@ TEST(test_release_imparts_throw_velocity) {
     ASSERT(a->vel.x > sp->ship.vel.x + 30.0f);
     /* last_towed_token preserved on release. */
     ASSERT(memcmp(a->last_towed_token, sp->session_token, 8) == 0);
+    ASSERT(asteroid_is_ballistic(a));
+    ASSERT(memcmp(a->thrown_by_token, sp->session_token, 8) == 0);
+    ASSERT_EQ_INT(a->thrown_timer_q, 60);
 }
 
 TEST(test_thrown_rock_damages_target_player) {
@@ -151,6 +155,7 @@ TEST(test_thrown_rock_damages_target_player) {
     a->vel = v2(400.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
     a->last_towed_by = (int8_t)thrower->id;
+    asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
     float hull_before = target->ship.hull;
     /* Step a few ticks so the rock crosses the gap and hits target. */
@@ -180,13 +185,15 @@ TEST(test_thrown_rock_self_damage_prevented) {
     a->pos = v2(sp->ship.pos.x - 50.0f, sp->ship.pos.y);
     a->vel = v2(500.0f, 0.0f);
     memcpy(a->last_towed_token, sp->session_token, 8);
+    asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
     float hull_before = sp->ship.hull;
     for (int t = 0; t < 60; t++) world_sim_step(&w, 1.0f / 120.0f);
     ASSERT_EQ_FLOAT(sp->ship.hull, hull_before, 0.01f);
+    ASSERT(!asteroid_is_ballistic(a));
 }
 
-TEST(test_kill_attribution_via_last_towed_token) {
+TEST(test_kill_attribution_via_thrown_by_token) {
     WORLD_DECL;
     setup_two_players(&w);
     server_player_t *thrower = &w.players[0];
@@ -208,7 +215,8 @@ TEST(test_kill_attribution_via_last_towed_token) {
     a->commodity = COMMODITY_FERRITE_ORE;
     a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
     a->vel = v2(500.0f, 0.0f);
-    memcpy(a->last_towed_token, thrower->session_token, 8);
+    memcpy(a->last_towed_token, "SMELTCRD", 8);
+    asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
     /* Step until the death event fires. */
     const sim_event_t *death = NULL;
@@ -219,6 +227,60 @@ TEST(test_kill_attribution_via_last_towed_token) {
     ASSERT(death != NULL);
     ASSERT_EQ_INT(death->death.cause, DEATH_CAUSE_THROWN_ROCK);
     ASSERT(memcmp(death->death.killer_token, thrower->session_token, 8) == 0);
+    ASSERT(!asteroid_is_ballistic(a));
+}
+
+TEST(test_stale_last_towed_token_does_not_credit_kill) {
+    WORLD_DECL;
+    setup_two_players(&w);
+    server_player_t *thrower = &w.players[0];
+    server_player_t *target  = &w.players[1];
+    target->ship.hull = 1.0f;
+
+    int aidx = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { aidx = i; break; }
+    }
+    ASSERT(aidx >= 0);
+    asteroid_t *a = &w.asteroids[aidx];
+    memset(a, 0, sizeof(*a));
+    a->active = true; a->fracture_child = true;
+    a->tier = ASTEROID_TIER_L;
+    a->radius = 50.0f;
+    a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
+    a->vel = v2(500.0f, 0.0f);
+    memcpy(a->last_towed_token, thrower->session_token, 8);
+
+    const sim_event_t *death = NULL;
+    for (int t = 0; t < 120 && !death; t++) {
+        world_sim_step(&w, 1.0f / 120.0f);
+        death = find_death_event(&w, target->id);
+    }
+    ASSERT(death != NULL);
+    ASSERT_EQ_INT(death->death.cause, DEATH_CAUSE_ASTEROID);
+    ASSERT(memcmp(death->death.killer_token, "\0\0\0\0\0\0\0\0", 8) == 0);
+}
+
+TEST(test_thrown_timer_expiry_clears_ballistic_state) {
+    WORLD_DECL;
+    world_reset(&w);
+    asteroid_t *a = &w.asteroids[0];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    memcpy(a->last_towed_token, "SMELTCRD", 8);
+    asteroid_mark_thrown(a, (const uint8_t *)"THROWER1", 0.1f);
+    ASSERT(asteroid_is_ballistic(a));
+
+    w.tick = ASTEROID_THROW_TIMER_TICKS - 1u;
+    asteroid_step_thrown_state(&w);
+    ASSERT(asteroid_is_ballistic(a));
+
+    w.tick = ASTEROID_THROW_TIMER_TICKS;
+    asteroid_step_thrown_state(&w);
+    ASSERT(!asteroid_is_ballistic(a));
+    ASSERT(memcmp(a->last_towed_token, "SMELTCRD", 8) == 0);
 }
 
 TEST(test_ramming_attributes_kill) {
@@ -295,6 +357,7 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     a->pos = v2(npc->ship.pos.x - (hull->ship_radius + a->radius - 5.0f), npc->ship.pos.y);
     a->vel = v2(800.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
+    asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
     const sim_event_t *kill = NULL;
     /* Pin npc.pos and re-pin asteroid each tick so neither hauler nav
@@ -360,7 +423,9 @@ void register_pvp_rocks_tests(void) {
     RUN(test_release_imparts_throw_velocity);
     RUN(test_thrown_rock_damages_target_player);
     RUN(test_thrown_rock_self_damage_prevented);
-    RUN(test_kill_attribution_via_last_towed_token);
+    RUN(test_kill_attribution_via_thrown_by_token);
+    RUN(test_stale_last_towed_token_does_not_credit_kill);
+    RUN(test_thrown_timer_expiry_clears_ballistic_state);
     RUN(test_ramming_attributes_kill);
     RUN(test_thrown_rock_kills_npc_emits_event);
     RUN(test_collectible_fragment_damages_ship);

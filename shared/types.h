@@ -809,6 +809,8 @@ typedef struct {
      * and grade stay zero/common until the fracture claim window resolves,
      * then become immutable inputs to smelt + downstream crafting. */
     uint8_t last_towed_token[8];      /* session token of last towing player, zero = none */
+    uint8_t thrown_by_token[8];       /* ballistic owner, zero = drift / expired */
+    uint8_t thrown_timer_q;           /* 0.1s units; 0 = not a thrown rock */
     uint8_t last_fractured_token[8];  /* session token of fracturer, zero = none */
     uint8_t fracture_seed[32];
     uint8_t fragment_pub[32];
@@ -1195,7 +1197,7 @@ typedef enum {
 typedef enum {
     DEATH_CAUSE_UNKNOWN     = 0,  /* env / unknown */
     DEATH_CAUSE_RAM         = 1,  /* player-vs-player ramming */
-    DEATH_CAUSE_THROWN_ROCK = 2,  /* asteroid attributed via last_towed_token */
+    DEATH_CAUSE_THROWN_ROCK = 2,  /* asteroid attributed via thrown_by_token */
     DEATH_CAUSE_ASTEROID    = 3,  /* unattributed asteroid collision */
     DEATH_CAUSE_STATION     = 4,  /* corridor / module crush */
     DEATH_CAUSE_SELF        = 5,  /* X-key reset / self-destruct */
@@ -1246,9 +1248,8 @@ typedef struct {
         } death;
         /* SIM_EVENT_NPC_KILL: a player killed an NPC by collision. The
          * NPC slot is going to despawn next tick; clients should surface
-         * a kill-feed line. killer_token attributes via the asteroid's
-         * last_towed_token (i.e. the player who threw the rock that hit
-         * the NPC, or the player whose ship rammed it). */
+         * a kill-feed line. killer_token attributes to the player whose
+         * ship rammed it or whose ballistic rock hit during its TTL. */
         struct {
             uint8_t killer_token[8];
             uint8_t cause;          /* death_cause_t */

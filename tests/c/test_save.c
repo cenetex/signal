@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "sim_physics.h"
 
 static uint32_t test_crc32_update(uint32_t crc, const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
@@ -325,6 +326,7 @@ TEST(test_world_save_load_preserves_fracture_children) {
     a->last_towed_by = 2;
     a->last_fractured_by = 1;
     memcpy(a->last_towed_token, "TOWTOKEN", 8);
+    asteroid_mark_thrown(a, (const uint8_t *)"BALLTOKN", 4.2f);
     memcpy(a->last_fractured_token, "FRAGTOKN", 8);
     for (int i = 0; i < 32; i++) {
         a->fracture_seed[i] = (uint8_t)(0x60 + i);
@@ -363,6 +365,8 @@ TEST(test_world_save_load_preserves_fracture_children) {
     ASSERT(memcmp(loaded->asteroids[17].fracture_seed, a->fracture_seed, 32) == 0);
     ASSERT(memcmp(loaded->asteroids[17].fragment_pub, a->fragment_pub, 32) == 0);
     ASSERT(memcmp(loaded->asteroids[17].last_towed_token, a->last_towed_token, 8) == 0);
+    ASSERT(memcmp(loaded->asteroids[17].thrown_by_token, a->thrown_by_token, 8) == 0);
+    ASSERT_EQ_INT(loaded->asteroids[17].thrown_timer_q, a->thrown_timer_q);
     ASSERT(memcmp(loaded->asteroids[17].last_fractured_token, a->last_fractured_token, 8) == 0);
     ASSERT(loaded->fracture_claims[17].active);
     ASSERT(!loaded->fracture_claims[17].resolved);
@@ -1164,7 +1168,9 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
  * (proof_flags + prefix + recipe + parent hash), × MAX_CONTRACTS=24.
  * v57: +8B per contract for forbidden origin masks.
  * v58: station session section expanded from 64 to 128 slots.
- * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table. */
+ * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table.
+ * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
+ * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged. */
 #define EXPECTED_SAVE_SIZE 233620
 
 TEST(test_save_file_size_stable) {
@@ -1202,7 +1208,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 59);
+    ASSERT_EQ_INT((int)version, 60);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

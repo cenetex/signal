@@ -9,6 +9,7 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "sim_ship.h"
+#include "sim_physics.h"
 #include "sim_mining.h"
 #include "sim_construction.h"
 #include "signal_model.h"
@@ -2025,19 +2026,22 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         float impact = resolve_ship_asteroid_pushback(&npc->ship, a);
         if (impact <= 0.0f) continue;
 
+        bool attributed = asteroid_is_ballistic(a);
+        uint8_t thrown_token[8] = {0};
+        if (attributed) {
+            memcpy(thrown_token, a->thrown_by_token, sizeof(thrown_token));
+            asteroid_clear_thrown(a);
+        }
+
         float size_mult = a->radius / 30.0f;
         if (size_mult < 0.5f) size_mult = 0.5f;
         if (size_mult > 2.5f) size_mult = 2.5f;
         float dmg = collision_damage_for(impact, size_mult);
         if (dmg <= 0.0f) continue;
         int npc_slot = (int)(npc - w->npc_ships);
-        bool attributed =
-            (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
-             a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
-             a->last_towed_token[6] | a->last_towed_token[7]) != 0;
         if (attributed) {
             apply_npc_ship_damage_attributed(w, npc_slot, dmg,
-                a->last_towed_token, DEATH_CAUSE_THROWN_ROCK);
+                thrown_token, DEATH_CAUSE_THROWN_ROCK);
         } else {
             apply_npc_ship_damage(w, npc_slot, dmg);
         }

@@ -82,7 +82,10 @@ static uint32_t crc32_file(FILE *f) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 59  /* v59: delivery credit shipment sidecar table
+#define SAVE_VERSION 60  /* v60: active fracture-child sidecars persist
+                          * thrown_by_token + thrown_timer_q for
+                          * time-bounded rock-combat ownership.
+                          * v59: delivery credit shipment sidecar table
                           * persists outstanding origin debt, delivery
                           * proof, default, and black-market states.
                           * v58: station session section expanded from
@@ -807,6 +810,8 @@ static bool write_fracture_child(FILE *f, uint16_t slot,
     WRITE_FIELD(f, a->last_fractured_by);
     WRITE_FIELD(f, a->smelt_progress);
     WRITE_FIELD(f, a->last_towed_token);
+    WRITE_FIELD(f, a->thrown_by_token);
+    WRITE_FIELD(f, a->thrown_timer_q);
     WRITE_FIELD(f, a->last_fractured_token);
     WRITE_FIELD(f, a->fracture_seed);
     WRITE_FIELD(f, a->fragment_pub);
@@ -881,6 +886,13 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     READ_FIELD(f, a->last_fractured_by);
     READ_FIELD(f, a->smelt_progress);
     READ_FIELD(f, a->last_towed_token);
+    if (g_loaded_save_version >= 60) {
+        READ_FIELD(f, a->thrown_by_token);
+        READ_FIELD(f, a->thrown_timer_q);
+    } else {
+        memset(a->thrown_by_token, 0, sizeof(a->thrown_by_token));
+        a->thrown_timer_q = 0;
+    }
     READ_FIELD(f, a->last_fractured_token);
     READ_FIELD(f, a->fracture_seed);
     READ_FIELD(f, a->fragment_pub);
