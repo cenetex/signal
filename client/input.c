@@ -489,7 +489,7 @@ void station_panel_input_work(input_intent_t *intent) {
             set_notice("%s", step);
         else {
             const contract_t *ct = &g.world.contracts[slot_contract[k]];
-            set_notice("Tracking %s contract.",
+            set_notice("Tracking %s job.",
                        commodity_short_name(ct->commodity));
         }
         break;

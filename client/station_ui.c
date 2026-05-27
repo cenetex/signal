@@ -2064,7 +2064,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
                                       slots, slot_fulfillable, slot_held);
 
     if (slot_count == 0) {
-        draw_row_lr(cx, my, inner_right, COL_DIM, "No active contracts.", NULL, NULL);
+        draw_row_lr(cx, my, inner_right, COL_DIM, "No active jobs.", NULL, NULL);
         return;
     }
 

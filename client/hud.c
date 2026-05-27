@@ -1102,13 +1102,13 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 sdtx_pos(px / cell, (y + 12.0f) / cell);
                 if (contract_fit_is_ok(fit) && has_proof) {
                     sdtx_color4b(PAL_CONTRACT_READY, a8_chain);
-                    sdtx_puts("contract: match");
+                    sdtx_puts("job: match");
                 } else if (contract_fit_is_ok(fit)) {
                     sdtx_color4b(PAL_CONTRACT_HINT, a8_chain);
-                    sdtx_puts("contract: match / proof missing");
+                    sdtx_puts("job: match / proof missing");
                 } else {
                     sdtx_color4b(PAL_TEXT_GREY, a8_chain);
-                    sdtx_printf("contract: %s",
+                    sdtx_printf("job: %s",
                                 contract_fit_reason_label(fit));
                 }
                 next_y = y + 26.0f;
@@ -3149,7 +3149,7 @@ void draw_hud(void) {
         /* SESSION callsign — see compact_top above for why we ignore
          * mining_client_get()->player_callsign here. */
         const char *cs = net_local_callsign();
-        const char *fallback = LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS";
+        const char *fallback = LOCAL_PLAYER.docked ? "DOCK STATUS" : "SHIP STATUS";
         if (cs && cs[0] != '\0')
             sdtx_printf("%s // %s", cs, LOCAL_PLAYER.docked ? "DOCKED" : "FLIGHT");
         else
