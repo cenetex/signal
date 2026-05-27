@@ -1325,11 +1325,11 @@ static bool trade_row_tracked_note(const station_t *st,
     return true;
 }
 
-static bool job_row_tracked_note(int here_idx,
-                                 int contract_index,
-                                 bool fulfillable_here,
-                                 char *out,
-                                 size_t out_size)
+static bool contract_row_tracked_note(int here_idx,
+                                      int contract_index,
+                                      bool fulfillable_here,
+                                      char *out,
+                                      size_t out_size)
 {
     if (!out || out_size == 0) return false;
     out[0] = '\0';
@@ -1389,6 +1389,32 @@ static bool job_row_tracked_note(int here_idx,
 
     snprintf(out, out_size, "needed for tracked contract");
     return true;
+}
+
+static const uint8_t COL_CONTRACT_TYPE_HAUL[3]   = { PAL_TRACTOR_OFF };
+static const uint8_t COL_CONTRACT_TYPE_BOUNTY[3] = { PAL_WARNING };
+static const uint8_t COL_CONTRACT_TYPE_CREDIT[3] = { PAL_DELIVERY_STATUS };
+
+static const char *contract_panel_type_label(const contract_t *ct)
+{
+    if (!ct) return "???";
+    switch (ct->action) {
+    case CONTRACT_TRACTOR:  return "HAUL";
+    case CONTRACT_FRACTURE: return "BOUNTY";
+    case CONTRACT_DELIVERY: return "CREDIT";
+    default:                return "???";
+    }
+}
+
+static const uint8_t *contract_panel_type_color(const contract_t *ct)
+{
+    if (!ct) return COL_CONTRACT_TYPE_HAUL;
+    switch (ct->action) {
+    case CONTRACT_FRACTURE: return COL_CONTRACT_TYPE_BOUNTY;
+    case CONTRACT_DELIVERY: return COL_CONTRACT_TYPE_CREDIT;
+    case CONTRACT_TRACTOR:
+    default:                return COL_CONTRACT_TYPE_HAUL;
+    }
 }
 
 static void draw_trade_view(const station_ui_state_t *ui,
@@ -2018,12 +2044,12 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 
 /* CONTRACTS view — dispatch board table.
  * Columns (monospace cells, 8px each):
- *   key(4) step(10) cargo(19) state(10)  payout(right-aligned)
+ *   key(4) type(8) step(11) cargo(17) payout(right-aligned)
  * Rows are sorted: fulfillable here first, then nearest remaining. */
-static void draw_jobs_view(const station_ui_state_t *ui,
-                           float cx, float cy, float inner_w, bool compact)
+static void draw_contracts_view(const station_ui_state_t *ui,
+                                float cx, float cy, float inner_w,
+                                bool compact)
 {
-    (void)compact;
     (void)inner_w;
     float row_h = compact ? 14.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
@@ -2039,17 +2065,17 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "CONTRACTS", HDR_TRADE);
 
-    /* Column header: step verb is now the state (fracture / tractor /
-     * deliver), payout left-aligned at col 33 so it reads together with
-     * the cargo instead of fighting it at the panel edge. */
+    /* Type is contract class; step is the immediate verb from the shared
+     * objective resolver. Payout sits far right so cargo stays scannable. */
     if (!compact) {
         cell_t hdr[] = {
             {  0, "key",    COL_HDR },
-            {  4, "step",   COL_HDR },
-            { 14, "cargo",  COL_HDR },
-            { 33, "payout", COL_HDR },
+            {  4, "type",   COL_HDR },
+            { 12, "step",   COL_HDR },
+            { 23, "cargo",  COL_HDR },
+            { 40, "payout", COL_HDR },
         };
-        draw_row_cells(cx, my, hdr, 4);
+        draw_row_cells(cx, my, hdr, 5);
         my += row_h;
     }
 
@@ -2094,15 +2120,17 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         char key_buf[8], cargo_buf[32], pay_buf[64]; /* 64 = room for "+%d %s" with 31-char currency name */
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
+        const char *type_txt = contract_panel_type_label(ct);
+        const uint8_t *type_rgb = contract_panel_type_color(ct);
 
         /* Step column doubles as the immediate next-step verb. The shared
          * objective resolver also drives SIGNAL copy and world markers, so
          * the station board cannot drift from the HUD hint. */
-        const char *job_txt = "work";
+        const char *step_txt = "work";
         contract_objective_t objective;
         if (contract_objective_for_contract(slots[s], &objective) &&
             objective.job[0] != '\0') {
-            job_txt = objective.job;
+            step_txt = objective.job;
         }
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
@@ -2122,7 +2150,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             snprintf(route_buf, sizeof(route_buf), "%s %s>%s",
                      commodity_short_name(ct->commodity),
                      source_name, dest_name);
-            ui_fit_text(route_buf, 18, cargo_buf, sizeof(cargo_buf));
+            ui_fit_text(route_buf, 16, cargo_buf, sizeof(cargo_buf));
         } else {
             int qty = slot_fulfillable[s] ? slot_held[s]
                                           : (int)lroundf(ct->quantity_needed);
@@ -2174,20 +2202,18 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         if (compact) {
             cell_t top[] = {
                 {  0, key_buf,   row_rgb },
-                {  4, job_txt,   row_rgb },
-                { 14, cargo_buf, cargo_rgb },
+                {  4, type_txt,  type_rgb },
+                { 12, step_txt,  row_rgb },
             };
             draw_row_cells(cx, my, top, 3);
             my += row_h;
-            cell_t bot[] = {
-                { 14, pay_buf, row_rgb },
-            };
-            draw_row_cells(cx, my, bot, 1);
+            draw_row_lr(cx + 32.0f, my, inner_right,
+                        cargo_rgb, cargo_buf, row_rgb, pay_buf);
             my += row_h;
             char job_note[64];
-            if (job_row_tracked_note(here_idx, slots[s],
-                                     slot_fulfillable[s],
-                                     job_note, sizeof(job_note))) {
+            if (contract_row_tracked_note(here_idx, slots[s],
+                                          slot_fulfillable[s],
+                                          job_note, sizeof(job_note))) {
                 cell_t note[] = {
                     { 14, job_note, COL_TRACKED_JOB },
                 };
@@ -2201,16 +2227,17 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         } else {
             cell_t row[] = {
                 {  0, key_buf,   row_rgb },
-                {  4, job_txt,   row_rgb },
-                { 14, cargo_buf, cargo_rgb },
-                { 33, pay_buf,   row_rgb },
+                {  4, type_txt,  type_rgb },
+                { 12, step_txt,  row_rgb },
+                { 23, cargo_buf, cargo_rgb },
+                { 40, pay_buf,   row_rgb },
             };
-            draw_row_cells(cx, my, row, 4);
+            draw_row_cells(cx, my, row, 5);
             my += row_h;
             char job_note[64];
-            if (job_row_tracked_note(here_idx, slots[s],
-                                     slot_fulfillable[s],
-                                     job_note, sizeof(job_note))) {
+            if (contract_row_tracked_note(here_idx, slots[s],
+                                          slot_fulfillable[s],
+                                          job_note, sizeof(job_note))) {
                 char note_fit[64];
                 int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
                 ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
@@ -2394,7 +2421,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
         .label = "CONTRACTS",
         .legend = "[1-3] track  [S] deliver  [TAB]",
         .visible_fn = station_panel_visible_always,
-        .draw_fn = draw_jobs_view,
+        .draw_fn = draw_contracts_view,
         .input_fn = station_panel_input_work,
     },
     [STATION_VIEW_YARD] = {

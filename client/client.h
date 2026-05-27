@@ -770,7 +770,7 @@ void build_station_ui_state(station_ui_state_t* ui);
 void draw_station_services(const station_ui_state_t* ui);
 
 /* CONTRACTS panel slot ordering. Single source of truth shared
- * between draw_jobs_view (renders the rows) and the input layer
+ * between draw_contracts_view (renders the rows) and the input layer
  * (handles [1]/[2]/[3] selection) so the keypress always maps to the
  * row the player sees. Up to 3 slots filled in this order:
  *   1. Active TRACTOR contracts at this station the player can
