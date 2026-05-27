@@ -26,6 +26,9 @@
 #define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
 #define HAIL_SCAN_ASTEROID_TAG_LIMIT 32
 #define HAIL_SCAN_REVEAL_SOFTNESS 120.0f
+#define ASTEROID_FRACTURE_DRIFT_SEC 0.62f
+#define ASTEROID_FAULT_START_RATIO 0.58f
+#define ASTEROID_LIGHT_LEAK_RATIO 0.20f
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
@@ -179,6 +182,10 @@ typedef struct {
     bool crystal;
     bool target;
     bool ineffective;
+    vec2 center;
+    float fracture_birth_t;
+    float fault_t;
+    float light_leak_t;
     float progress_ratio;
     float body_r, body_g, body_b;
     float rim_r, rim_g, rim_b, rim_a;
@@ -269,11 +276,57 @@ int crystal_spike_count(const asteroid_t *a) {
     }
 }
 
+static float ease_out_cubic(float t) {
+    t = clampf(t, 0.0f, 1.0f);
+    float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
+}
+
+static vec2 asteroid_fault_axis(const asteroid_t *a) {
+    float angle = a->rotation + a->seed * 0.37f;
+    return v2_from_angle(angle);
+}
+
+static vec2 asteroid_fracture_axis(const asteroid_t *a) {
+    vec2 dir = v2_norm(a->vel);
+    if (v2_len_sq(a->vel) < 4.0f) {
+        dir = asteroid_fault_axis(a);
+    }
+    return dir;
+}
+
+static vec2 asteroid_fracture_render_center(const asteroid_t *a,
+                                            float *out_birth_t) {
+    *out_birth_t = 1.0f;
+    if (!a->fracture_child || a->age >= ASTEROID_FRACTURE_DRIFT_SEC) {
+        return a->pos;
+    }
+
+    float t = clampf(a->age / ASTEROID_FRACTURE_DRIFT_SEC, 0.0f, 1.0f);
+    float eased = ease_out_cubic(t);
+    float birth_offset = a->radius * 2.20f + 18.0f;
+    vec2 dir = asteroid_fracture_axis(a);
+    *out_birth_t = eased;
+    return v2_sub(a->pos, v2_scale(dir, birth_offset * (1.0f - eased)));
+}
+
+static float asteroid_fault_progress(float ratio) {
+    if (ratio >= ASTEROID_FAULT_START_RATIO) return 0.0f;
+    return clampf((ASTEROID_FAULT_START_RATIO - ratio) /
+                  ASTEROID_FAULT_START_RATIO, 0.0f, 1.0f);
+}
+
+static float asteroid_light_leak_progress(float ratio) {
+    if (ratio >= ASTEROID_LIGHT_LEAK_RATIO) return 0.0f;
+    return clampf((ASTEROID_LIGHT_LEAK_RATIO - ratio) /
+                  ASTEROID_LIGHT_LEAK_RATIO, 0.0f, 1.0f);
+}
+
 /* Build the four world-space corners of one crystal spike (a rotated
  * rectangle anchored at the asteroid center, extending outward by
  * `length` along `dir`, `width` thick). Out-corners are CCW from the
  * inner-left so the caller can fan-triangulate as (0,1,2)+(0,2,3). */
-static void crystal_spike_corners(const asteroid_t *a, int i, int n,
+static void crystal_spike_corners(const asteroid_t *a, vec2 center, int i, int n,
                                    float out_x[4], float out_y[4])
 {
     /* Spread spikes around the full circle but perturb each one by a
@@ -299,8 +352,8 @@ static void crystal_spike_corners(const asteroid_t *a, int i, int n,
     float lx[4] = { 0.0f,    length, length,  0.0f   };
     float ly[4] = { -width,  -width, +width,  +width };
     for (int k = 0; k < 4; k++) {
-        out_x[k] = a->pos.x + lx[k] * c - ly[k] * s;
-        out_y[k] = a->pos.y + lx[k] * s + ly[k] * c;
+        out_x[k] = center.x + lx[k] * c - ly[k] * s;
+        out_y[k] = center.y + lx[k] * s + ly[k] * c;
     }
 }
 
@@ -324,7 +377,7 @@ static void asteroid_draw_item_build_boundary(asteroid_draw_item_t *item,
         }
         for (int i = 0; i < item->crystal_spikes; i++) {
             float wx[4], wy[4];
-            crystal_spike_corners(a, i, item->crystal_spikes, wx, wy);
+            crystal_spike_corners(a, item->center, i, item->crystal_spikes, wx, wy);
             for (int k = 0; k < 4; k++) {
                 item->crystal_corners[i][k] = v2(wx[k], wy[k]);
             }
@@ -341,8 +394,8 @@ static void asteroid_draw_item_build_boundary(asteroid_draw_item_t *item,
     for (int j = 0; j <= segments; j++) {
         float angle = a->rotation + (float)j * step;
         float radius = asteroid_profile(a, angle);
-        item->outline[j] = v2(a->pos.x + cosf(angle) * radius,
-                              a->pos.y + sinf(angle) * radius);
+        item->outline[j] = v2(item->center.x + cosf(angle) * radius,
+                              item->center.y + sinf(angle) * radius);
     }
 }
 
@@ -353,7 +406,6 @@ static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &g.world.asteroids[i];
         if (!a->active) continue;
-        if (!on_screen(a->pos.x, a->pos.y, a->radius + 16.0f)) continue;
         if (g_asteroid_draw_frame.count >= MAX_ASTEROIDS) break;
 
         asteroid_draw_item_t *item =
@@ -364,7 +416,18 @@ static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
         item->crystal = a->commodity == COMMODITY_CRYSTAL_ORE;
         item->target = (i == LOCAL_PLAYER.hover_asteroid);
         item->ineffective = item->target && LOCAL_PLAYER.beam_ineffective;
+        item->center = asteroid_fracture_render_center(a, &item->fracture_birth_t);
+        if (!on_screen(item->center.x, item->center.y, a->radius + 32.0f)) {
+            g_asteroid_draw_frame.count--;
+            continue;
+        }
         item->progress_ratio = asteroid_progress_ratio(a);
+        item->fault_t = (a->tier != ASTEROID_TIER_S && !a->fracture_child)
+            ? asteroid_fault_progress(item->progress_ratio)
+            : 0.0f;
+        item->light_leak_t = (a->tier != ASTEROID_TIER_S && !a->fracture_child)
+            ? asteroid_light_leak_progress(item->progress_ratio)
+            : 0.0f;
 
         asteroid_body_color(a->tier, a->commodity, item->progress_ratio,
                             &item->body_r, &item->body_g, &item->body_b);
@@ -422,15 +485,83 @@ static void draw_asteroid_veins(const asteroid_t *a,
             float bend = 0.24f * sinf(a->seed * 1.9f + (float)k);
             float outer = asteroid_profile(a, angle) * 0.78f;
             float inner = a->radius * (0.16f + 0.06f * (float)k);
-            vec2 p0 = v2(a->pos.x + cosf(angle + bend) * inner,
-                         a->pos.y + sinf(angle + bend) * inner);
-            vec2 p1 = v2(a->pos.x + cosf(angle - bend * 0.5f) * outer,
-                         a->pos.y + sinf(angle - bend * 0.5f) * outer);
+            vec2 p0 = v2(item->center.x + cosf(angle + bend) * inner,
+                         item->center.y + sinf(angle + bend) * inner);
+            vec2 p1 = v2(item->center.x + cosf(angle - bend * 0.5f) * outer,
+                         item->center.y + sinf(angle - bend * 0.5f) * outer);
             sgl_v2f(p0.x, p0.y);
             sgl_v2f(p1.x, p1.y);
         }
     }
     sgl_end();
+}
+
+static void draw_asteroid_faults(const asteroid_t *a,
+                                 const asteroid_draw_item_t *item) {
+    if (item->fault_t <= 0.001f) return;
+
+    float fault_t = ease_out_cubic(item->fault_t);
+    float leak_t = ease_out_cubic(item->light_leak_t);
+    vec2 axis = asteroid_fault_axis(a);
+    vec2 perp = v2_perp(axis);
+    float half = a->radius * lerpf(0.42f, 0.86f, fault_t);
+    float spread = lerpf(1.0f, 4.0f, fault_t);
+    float alpha = lerpf(0.18f, 0.72f, fault_t);
+    float wr, wg, wb;
+    commodity_material_tint(a->commodity, &wr, &wg, &wb);
+
+    sgl_begin_lines();
+    for (int k = -1; k <= 1; k++) {
+        float offs = (float)k * spread;
+        vec2 shift = v2_scale(perp, offs);
+        vec2 p0 = v2_add(v2_sub(item->center, v2_scale(axis, half)), shift);
+        vec2 p1 = v2_add(v2_add(item->center, v2_scale(axis, half)), shift);
+        sgl_c4f(lerpf(item->body_r * 0.55f, wr * 1.3f, leak_t),
+                lerpf(item->body_g * 0.55f, wg * 1.3f, leak_t),
+                lerpf(item->body_b * 0.55f, wb * 1.3f, leak_t),
+                alpha * (k == 0 ? 1.0f : 0.45f));
+        sgl_v2f(p0.x, p0.y);
+        sgl_v2f(p1.x, p1.y);
+    }
+
+    for (int b = 0; b < 2; b++) {
+        float side = (b == 0) ? -1.0f : 1.0f;
+        float branch_phase = a->seed * (0.21f + 0.11f * (float)b);
+        vec2 root = v2_add(item->center,
+                           v2_scale(axis, side * half * (0.16f + 0.12f * sinf(branch_phase))));
+        vec2 branch_dir = v2_norm(v2_add(v2_scale(axis, side * 0.55f),
+                                         v2_scale(perp, (b == 0) ? 0.82f : -0.82f)));
+        vec2 tip = v2_add(root, v2_scale(branch_dir, half * lerpf(0.22f, 0.48f, fault_t)));
+        sgl_c4f(wr * 0.86f, wg * 0.86f, wb * 0.86f, alpha * 0.55f);
+        sgl_v2f(root.x, root.y);
+        sgl_v2f(tip.x, tip.y);
+    }
+    sgl_end();
+
+    if (leak_t > 0.001f) {
+        float pulse = 0.82f + 0.18f * sinf(g.world.time * 16.0f + a->seed);
+        draw_circle_filled(item->center, a->radius * lerpf(0.08f, 0.18f, leak_t),
+                           10, 1.0f, 0.82f, 0.34f, 0.22f * leak_t * pulse);
+    }
+}
+
+static void draw_asteroid_fracture_wake(const asteroid_t *a,
+                                        const asteroid_draw_item_t *item) {
+    if (!a->fracture_child || item->fracture_birth_t >= 0.999f) return;
+
+    float t = item->fracture_birth_t;
+    float fade = 1.0f - t;
+    vec2 axis = asteroid_fracture_axis(a);
+    vec2 perp = v2_perp(axis);
+    float half = a->radius * lerpf(0.32f, 0.92f, t);
+    vec2 p0 = v2_sub(item->center, v2_scale(perp, half));
+    vec2 p1 = v2_add(item->center, v2_scale(perp, half));
+    draw_segment(p0, p1, 1.0f, 0.82f, 0.34f, 0.58f * fade);
+    draw_segment(v2_sub(p0, v2_scale(axis, a->radius * 0.22f)),
+                 v2_add(p1, v2_scale(axis, a->radius * 0.22f)),
+                 0.22f, 0.86f, 0.78f, 0.25f * fade);
+    draw_circle_filled(item->center, a->radius * lerpf(0.10f, 0.24f, fade),
+                       10, 1.0f, 0.76f, 0.28f, 0.14f * fade);
 }
 
 void draw_asteroids(void) {
@@ -439,7 +570,6 @@ void draw_asteroids(void) {
     sgl_begin_triangles();
     for (int i = 0; i < frame->count; i++) {
         const asteroid_draw_item_t *item = &frame->items[i];
-        const asteroid_t *a = &g.world.asteroids[item->index];
 
         sgl_c4f(item->body_r, item->body_g, item->body_b, 1.0f);
         if (item->crystal) {
@@ -452,7 +582,7 @@ void draw_asteroids(void) {
         }
 
         for (int j = 1; j <= item->segments; j++) {
-            sgl_v2f(a->pos.x, a->pos.y);
+            sgl_v2f(item->center.x, item->center.y);
             sgl_v2f(item->outline[j - 1].x, item->outline[j - 1].y);
             sgl_v2f(item->outline[j].x, item->outline[j].y);
         }
@@ -465,7 +595,7 @@ void draw_asteroids(void) {
 
         if (a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
             float pulse = 1.0f + 0.06f * sinf(g.world.time * 2.0f + a->seed);
-            draw_circle_filled(a->pos, a->radius * 1.55f * pulse, 24,
+            draw_circle_filled(item->center, a->radius * 1.55f * pulse, 24,
                                0.10f, 0.52f, 0.58f, 0.09f);
         }
 
@@ -491,6 +621,8 @@ void draw_asteroids(void) {
             sgl_end();
         }
         draw_asteroid_veins(a, item);
+        draw_asteroid_faults(a, item);
+        draw_asteroid_fracture_wake(a, item);
 
         /* Glow core (the "dot"). Common and unscanned fragments keep the
          * muted commodity tint. H-scanned fine+ fragments use the original
@@ -500,13 +632,13 @@ void draw_asteroids(void) {
             uint8_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
                 ? a->grade
                 : (uint8_t)MINING_GRADE_COMMON;
-            float scan_reveal = hail_scan_reveal_alpha(a->pos);
+            float scan_reveal = hail_scan_reveal_alpha(item->center);
             bool reveal_grade = scan_reveal > 0.01f &&
                 grade > (uint8_t)MINING_GRADE_COMMON;
             if (!reveal_grade) {
                 float cr, cg, cb;
                 commodity_material_tint(a->commodity, &cr, &cg, &cb);
-                draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
+                draw_circle_filled(item->center, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
                     lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
                     lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
             } else {
@@ -517,25 +649,25 @@ void draw_asteroids(void) {
                     ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
                     : 1.0f;
                 float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
-                draw_circle_filled(a->pos, base_r, 12,
+                draw_circle_filled(item->center, base_r, 12,
                     cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio) * scan_reveal);
                 if (grade >= (uint8_t)MINING_GRADE_RARE) {
-                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
+                    draw_circle_outline(item->center, base_r * 1.9f, 18,
                         cr, cg, cb, 0.45f * pulse * scan_reveal);
                 }
             }
         } else if (a->tier == ASTEROID_TIER_M) {
             float cr, cg, cb;
             commodity_material_tint(a->commodity, &cr, &cg, &cb);
-            draw_circle_filled(a->pos, a->radius * 0.16f, 8,
+            draw_circle_filled(item->center, a->radius * 0.16f, 8,
                 lerpf(0.36f, cr * 1.4f, 0.4f), lerpf(0.78f, cg * 1.4f, 0.4f),
                 lerpf(0.98f, cb * 1.4f, 0.4f), 0.4f);
         }
 
         if (item->target && item->ineffective) {
-            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
+            draw_circle_outline(item->center, a->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
         } else if (item->target) {
-            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
+            draw_circle_outline(item->center, a->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
         }
     }
 }

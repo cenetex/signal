@@ -2147,6 +2147,7 @@ enum {
     SMOKE_LOOP_STATE_SUPPLY_NEED = 10,
     SMOKE_LOOP_STATE_YARD_BLOCKED = 11,
     SMOKE_LOOP_STATE_ABANDONED_PLAN = 12,
+    SMOKE_LOOP_STATE_FRACTURE_TABLEAU = 13,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -2198,6 +2199,29 @@ static void smoke_clear_loop_state(void) {
 
     if (g.world.station_count > 0 && station_exists(&g.world.stations[0]))
         sp->ship.pos = g.world.stations[0].pos;
+}
+
+static void smoke_seed_asteroid(int slot, asteroid_tier_t tier,
+                                commodity_t commodity, vec2 pos,
+                                float radius, float hp_ratio,
+                                float seed) {
+    if (slot < 0 || slot >= MAX_ASTEROIDS) return;
+    asteroid_t *a = &g.world.asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = tier;
+    a->commodity = commodity;
+    a->pos = pos;
+    a->radius = radius;
+    a->max_hp = fmaxf(1.0f, radius * 4.0f);
+    a->hp = a->max_hp * clampf(hp_ratio, 0.0f, 1.0f);
+    a->max_ore = (tier == ASTEROID_TIER_S) ? REFINERY_INGOTS_PER_FRAGMENT : 0.0f;
+    a->ore = a->max_ore;
+    a->rotation = seed * 0.17f;
+    a->spin = 0.0f;
+    a->seed = seed;
+    a->age = 2.0f;
+    a->phase = ASTEROID_PHASE_SOLID;
 }
 
 static int smoke_apply_loop_state(int state) {
@@ -2308,6 +2332,62 @@ static int smoke_apply_loop_state(int state) {
         g.world.stations[SMOKE_OUTPOST_INDEX].placement_plan_count = 0;
         g.world.stations[SMOKE_OUTPOST_INDEX].dock_radius = 0.0f;
         return 1;
+    case SMOKE_LOOP_STATE_FRACTURE_TABLEAU: {
+        g.local_server.active = false;
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->nearby_station = -1;
+        sp->in_dock_range = false;
+        sp->docking_approach = false;
+        g.was_docked = false;
+        g.dock_settle_timer = 0.0f;
+        vec2 base = sp->ship.pos;
+        if (g.world.station_count > 0 && station_exists(&g.world.stations[0]))
+            base = v2_add(g.world.stations[0].pos, v2(-1250.0f, -820.0f));
+        sp->ship.pos = base;
+        sp->ship.angle = 0.0f;
+        g.camera_pos = base;
+        for (int i = 0; i < 12 && i < MAX_ASTEROIDS; i++) {
+            memset(&g.world.asteroids[i], 0, sizeof(g.world.asteroids[i]));
+        }
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            g.world.npc_ships[i].active = false;
+        }
+        sp->hover_asteroid = 0;
+        smoke_seed_asteroid(0, ASTEROID_TIER_L, COMMODITY_FERRITE_ORE,
+                            v2_add(base, v2(-190.0f, -96.0f)),
+                            44.0f, 0.11f, 12.3f);
+        smoke_seed_asteroid(1, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE,
+                            v2_add(base, v2(170.0f, -110.0f)),
+                            27.0f, 0.30f, 41.0f);
+        smoke_seed_asteroid(2, ASTEROID_TIER_M, COMMODITY_FERRITE_ORE,
+                            v2_add(base, v2(76.0f, 126.0f)),
+                            26.0f, 0.78f, 83.0f);
+        g.world.asteroids[2].fracture_child = true;
+        g.world.asteroids[2].vel = v2(46.0f, -8.0f);
+        g.world.asteroids[2].age = 0.03f;
+        smoke_seed_asteroid(3, ASTEROID_TIER_M, COMMODITY_FERRITE_ORE,
+                            v2_add(base, v2(10.0f, 182.0f)),
+                            23.0f, 0.82f, 91.0f);
+        g.world.asteroids[3].fracture_child = true;
+        g.world.asteroids[3].vel = v2(-28.0f, 38.0f);
+        g.world.asteroids[3].age = 0.08f;
+        smoke_seed_asteroid(4, ASTEROID_TIER_S, COMMODITY_FERRITE_ORE,
+                            v2_add(base, v2(144.0f, 194.0f)),
+                            14.0f, 1.0f, 66.0f);
+        g.world.asteroids[4].fracture_child = true;
+        g.world.asteroids[4].vel = v2(54.0f, 42.0f);
+        g.world.asteroids[4].age = 0.12f;
+        memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
+        memcpy(g.asteroid_interp.prev, g.world.asteroids, sizeof(g.asteroid_interp.prev));
+        g.asteroid_interp.t = 0.0f;
+        g.asteroid_interp.interval = 0.1f;
+        memset(g.npc_interp.curr, 0, sizeof(g.npc_interp.curr));
+        memset(g.npc_interp.prev, 0, sizeof(g.npc_interp.prev));
+        g.npc_interp.t = 0.0f;
+        g.npc_interp.interval = 0.1f;
+        return 1;
+    }
     default:
         return 0;
     }

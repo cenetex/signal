@@ -409,6 +409,11 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         received[idx] = true;
 
         asteroid_t* a = &g.asteroid_interp.curr[idx];
+        bool was_active = a->active;
+        bool was_child = a->fracture_child;
+        asteroid_tier_t was_tier = a->tier;
+        commodity_t was_commodity = a->commodity;
+        float carried_age = g.asteroid_interp.prev[idx].age;
         a->active = (asteroids[i].flags & 1) != 0;
         a->fracture_child = (asteroids[i].flags & (1 << 1)) != 0;
         a->tier = (asteroid_tier_t)((asteroids[i].flags >> 2) & 0x7);
@@ -424,6 +429,21 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         a->grade = asteroids[i].grade;
         a->crystal_stage = asteroids[i].crystal_stage;
         a->phase = asteroids[i].phase;
+        bool same_identity = was_active && a->active &&
+            was_child == a->fracture_child &&
+            was_tier == a->tier &&
+            was_commodity == a->commodity;
+        if (!a->active) {
+            a->age = 0.0f;
+            a->max_hp = 0.0f;
+            a->max_ore = 0.0f;
+        } else if (same_identity) {
+            a->age = carried_age;
+        } else {
+            a->age = 0.0f;
+            a->max_hp = 0.0f;
+            a->max_ore = 0.0f;
+        }
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }
