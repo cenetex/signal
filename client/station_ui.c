@@ -1759,7 +1759,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                                 : (int)lroundf(st->scaffold_progress *
                                               SCAFFOLD_MATERIAL_NEEDED);
         if (remaining < 0) remaining = 0;
-        char left_buf[48], right_buf[32];
+        char left_buf[48], right_buf[64];
         snprintf(left_buf, sizeof(left_buf), "SCAFFOLD %d%%", pct);
         snprintf(right_buf, sizeof(right_buf), "%d/%d %s",
                  supplied, required, commodity_short_label(material));
