@@ -66,6 +66,7 @@ void draw_signal_borders(void);
 float world_signal_visual_saturation_at(vec2 pos, void *user);
 float world_signal_visual_base_saturation(void);
 float world_signal_visual_cue_saturation(void);
+float world_signal_visual_player_saturation(void);
 
 /* --- Compass ring --- */
 void draw_compass_ring(void);

@@ -53,6 +53,12 @@ type NetMotionSnapshot = {
   actionQueueDepth: number;
 };
 
+type PlayerCameraSnapshot = {
+  offsetX: number;
+  offsetY: number;
+  narrowFocus: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -258,6 +264,31 @@ async function signalVisualCueSaturation(page: Page): Promise<number | null> {
   });
 }
 
+async function signalVisualPlayerSaturation(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const value = mod.ccall('get_signal_visual_player_saturation', 'number', [], []);
+    return Number.isFinite(value) ? value : null;
+  });
+}
+
+async function playerCameraSnapshot(page: Page): Promise<PlayerCameraSnapshot | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const offsetX = mod.ccall('get_player_camera_offset_x', 'number', [], []);
+    const offsetY = mod.ccall('get_player_camera_offset_y', 'number', [], []);
+    const narrowFocus = mod.ccall('get_camera_narrow_focus', 'number', [], []);
+    if (![offsetX, offsetY, narrowFocus].every(Number.isFinite)) return null;
+    return { offsetX, offsetY, narrowFocus };
+  });
+}
+
 async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -435,6 +466,7 @@ async function setSmokeLoopState(page: Page, state: number): Promise<void> {
 }
 
 const smokeLoopState = {
+  clear: 0,
   fragmentsNearby: 1,
   tractorReaching: 2,
   tractorLock: 3,
@@ -449,6 +481,7 @@ const smokeLoopState = {
   abandonedPlan: 12,
   remotePilotScan: 14,
   weakSignalVisual: 15,
+  narrowCameraOffset: 16,
 } as const;
 
 const mobileFlag = {
@@ -640,6 +673,12 @@ test.describe('Browser smoke tests', () => {
         message: 'critical cue saturation should retain readable color in weak signal',
       })
       .toBeGreaterThan(0.7);
+    await expect
+      .poll(async () => (await signalVisualPlayerSaturation(page)) ?? 0, {
+        timeout: 3_000,
+        message: 'player ship should stay readable as the world loses color',
+      })
+      .toBeGreaterThan(0.9);
 
     const beforeHail = (await signalVisualBaseSaturation(page)) ?? 0;
     await canvas.click();
@@ -734,6 +773,28 @@ test.describe('Browser smoke tests', () => {
     const canvas = await loadGame(page);
 
     await canvas.click();
+    await setSmokeLoopState(page, smokeLoopState.narrowCameraOffset);
+    await expect
+      .poll(async () => (await playerCameraSnapshot(page))?.narrowFocus ?? 0, {
+        timeout: 2_000,
+        message: 'portrait viewport should activate narrow camera framing',
+      })
+      .toBeGreaterThan(0.95);
+    await expect
+      .poll(
+        async () => {
+          const snap = await playerCameraSnapshot(page);
+          if (!snap) return Number.POSITIVE_INFINITY;
+          return Math.max(Math.abs(snap.offsetX), Math.abs(snap.offsetY));
+        },
+        {
+          timeout: 6_000,
+          message: 'narrow camera should keep the ship near screen center',
+        },
+      )
+      .toBeLessThan(95);
+    await setSmokeLoopState(page, smokeLoopState.clear);
+
     await tap(page, 'Escape');
     await tap(page, 'Tab');
     await tap(page, 'Tab');

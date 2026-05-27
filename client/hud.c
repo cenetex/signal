@@ -2150,6 +2150,7 @@ enum {
     SMOKE_LOOP_STATE_FRACTURE_TABLEAU = 13,
     SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN = 14,
     SMOKE_LOOP_STATE_WEAK_SIGNAL_VISUAL = 15,
+    SMOKE_LOOP_STATE_NARROW_CAMERA_OFFSET = 16,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -2440,6 +2441,34 @@ static int smoke_apply_loop_state(int state) {
             signal_strength_at(&g.world, sp->ship.pos));
         g.signal_visual_saturation_initialized = true;
         return 1;
+    case SMOKE_LOOP_STATE_NARROW_CAMERA_OFFSET: {
+        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
+            return 0;
+        g.local_server.active = false;
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->nearby_station = -1;
+        sp->in_dock_range = false;
+        sp->docking_approach = false;
+        g.was_docked = false;
+        g.dock_settle_timer = 0.0f;
+        vec2 base = v2_add(g.world.stations[0].pos, v2(90.0f, -80.0f));
+        sp->ship.pos = base;
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship.angle = 0.0f;
+        g.camera_pos = v2_add(base, v2(-210.0f, 170.0f));
+        g.camera_initialized = true;
+        g.camera_drift_timer = 0.0f;
+        g.camera_station_index = -1;
+        g.boost_zoom = 1.0f;
+        g.boost_center_blend = 0.0f;
+        g.hail_ping_timer = 0.0f;
+        g.hail_ping_origin = sp->ship.pos;
+        g.signal_visual_saturation = signal_visual_saturation(
+            signal_strength_at(&g.world, sp->ship.pos));
+        g.signal_visual_saturation_initialized = true;
+        return 1;
+    }
     default:
         return 0;
     }

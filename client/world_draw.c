@@ -130,10 +130,21 @@ float world_signal_visual_cue_saturation(void) {
     return signal_visual_cue_saturation(world_signal_visual_base_saturation());
 }
 
+float world_signal_visual_player_saturation(void) {
+    return signal_visual_player_saturation(world_signal_visual_base_saturation());
+}
+
 static float world_signal_visual_enter_cue(void) {
     float prev = render_min_saturation();
     float cue = world_signal_visual_cue_saturation();
     if (cue > prev) render_set_min_saturation(cue);
+    return prev;
+}
+
+static float world_signal_visual_enter_player_ship(void) {
+    float prev = render_min_saturation();
+    float player = world_signal_visual_player_saturation();
+    if (player > prev) render_set_min_saturation(player);
     return prev;
 }
 
@@ -2040,6 +2051,7 @@ void draw_ship(void) {
     /* While the death cinematic is rolling, the player ship is hidden —
      * we draw the wreckage at the death position via draw_death_wreckage. */
     if (g.death_cinematic.active) return;
+    float ship_sat_prev = world_signal_visual_enter_player_ship();
     sgl_push_matrix();
     sgl_translate(LOCAL_PLAYER.ship.pos.x, LOCAL_PLAYER.ship.pos.y, 0.0f);
     sgl_rotate(LOCAL_PLAYER.ship.angle, 0.0f, 0.0f, 1.0f);
@@ -2075,10 +2087,10 @@ void draw_ship(void) {
         world_signal_visual_leave_cue(cue_prev);
     }
 
-    /* Ship body tint: weathered gunmetal when empty, blends toward the manifest's
-     * grade-weighted color as cargo fills. Same helper drives NPC hulls
-     * and future inspect chips so rarity reads consistently everywhere. */
-    const float hull_base_r = 0.42f, hull_base_g = 0.48f, hull_base_b = 0.54f;
+    /* Ship body tint: signal-blue player livery when empty, blending toward
+     * the manifest's grade-weighted color as cargo fills. Same helper drives
+     * NPC hulls and future inspect chips so rarity reads consistently. */
+    const float hull_base_r = 0.30f, hull_base_g = 0.56f, hull_base_b = 0.64f;
     float tr = hull_base_r, tg = hull_base_g, tb = hull_base_b;
     {
         const ship_t *s = &LOCAL_PLAYER.ship;
@@ -2091,24 +2103,25 @@ void draw_ship(void) {
                                        &tr, &tg, &tb);
         }
     }
-    sgl_c4f(tr, tg, tb, 1.0f);
+    render_color4f_at(LOCAL_PLAYER.ship.pos, tr, tg, tb, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(22.0f, 0.0f);
     sgl_v2f(-14.0f, 12.0f);
     sgl_v2f(-14.0f, -12.0f);
     sgl_end();
 
-    sgl_c4f(0.08f, 0.12f, 0.16f, 1.0f);
+    render_color4f_at(LOCAL_PLAYER.ship.pos, 0.04f, 0.16f, 0.18f, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(8.0f, 0.0f);
     sgl_v2f(-5.0f, 5.5f);
     sgl_v2f(-5.0f, -5.5f);
     sgl_end();
 
-    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.34f, 0.42f, 0.50f, 0.85f);
-    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.34f, 0.42f, 0.50f, 0.85f);
+    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.20f, 0.72f, 0.82f, 0.90f);
+    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.20f, 0.72f, 0.82f, 0.90f);
 
     sgl_pop_matrix();
+    world_signal_visual_leave_cue(ship_sat_prev);
 }
 
 /* Death wreckage — drawn at the cinematic position when the player has

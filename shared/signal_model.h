@@ -70,6 +70,7 @@ static inline float signal_visual_saturation(float quality) {
 }
 
 #define SIGNAL_VISUAL_CUE_SATURATION_MIN 0.72f
+#define SIGNAL_VISUAL_PLAYER_SATURATION_MIN 0.92f
 
 /* Critical cue saturation: signal borders, warnings, active beams, and
  * navigation marks should keep their hue even when the surrounding world
@@ -79,6 +80,15 @@ static inline float signal_visual_cue_saturation(float base_saturation) {
     if (base_saturation >= 1.0f) return 1.0f;
     return SIGNAL_VISUAL_CUE_SATURATION_MIN +
            (1.0f - SIGNAL_VISUAL_CUE_SATURATION_MIN) * base_saturation;
+}
+
+/* The local ship is the player's own orientation marker. It should read
+ * as color even when the surrounding world is losing signal hue. */
+static inline float signal_visual_player_saturation(float base_saturation) {
+    if (base_saturation <= 0.0f) return SIGNAL_VISUAL_PLAYER_SATURATION_MIN;
+    if (base_saturation >= 1.0f) return 1.0f;
+    return SIGNAL_VISUAL_PLAYER_SATURATION_MIN +
+           (1.0f - SIGNAL_VISUAL_PLAYER_SATURATION_MIN) * base_saturation;
 }
 
 /* Signal band name for UI display. */

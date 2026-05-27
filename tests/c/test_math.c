@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "safe_types.h"
+#include "camera_model.h"
 
 TEST(test_v2_add) {
     vec2 a = v2(1.0f, 2.0f);
@@ -65,6 +66,16 @@ TEST(test_signal_checked_size_arithmetic) {
     ASSERT(!signal_checked_mul_size(2u, 2u, NULL));
 }
 
+TEST(test_camera_narrow_focus_tightens_portrait_deadzone) {
+    ASSERT_EQ_FLOAT(camera_narrow_focus(1280.0f, 720.0f), 0.0f, 0.001f);
+    ASSERT(camera_narrow_focus(390.0f, 760.0f) > 0.99f);
+    ASSERT(camera_deadzone_x_scale(1.0f) < camera_deadzone_x_scale(0.0f));
+    ASSERT(camera_deadzone_y_scale(1.0f) < camera_deadzone_y_scale(0.0f));
+    ASSERT_EQ_FLOAT(camera_deadzone_x_scale(1.0f), 0.23f, 0.001f);
+    ASSERT_EQ_FLOAT(camera_deadzone_y_scale(1.0f), 0.22f, 0.001f);
+    ASSERT_EQ_FLOAT(camera_narrow_center_strength(1.0f), 0.72f, 0.001f);
+}
+
 void register_math_tests(void) {
     TEST_SECTION("\nMath tests:\n");
     RUN(test_v2_add);
@@ -78,4 +89,7 @@ void register_math_tests(void) {
     TEST_SECTION("\nType tests:\n");
     RUN(test_ingot_idx);
     RUN(test_signal_checked_size_arithmetic);
+
+    TEST_SECTION("\nCamera model tests:\n");
+    RUN(test_camera_narrow_focus_tightens_portrait_deadzone);
 }

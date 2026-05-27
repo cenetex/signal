@@ -35,6 +35,14 @@ TEST(test_signal_visual_cue_saturation_resists_grayscale) {
     ASSERT_EQ_FLOAT(signal_visual_cue_saturation(1.0f), 1.0f, 0.001f);
 }
 
+TEST(test_signal_visual_player_saturation_keeps_ship_readable) {
+    ASSERT_EQ_FLOAT(signal_visual_player_saturation(0.0f),
+                    SIGNAL_VISUAL_PLAYER_SATURATION_MIN, 0.001f);
+    ASSERT(signal_visual_player_saturation(0.5f) >
+           signal_visual_cue_saturation(0.5f));
+    ASSERT_EQ_FLOAT(signal_visual_player_saturation(1.0f), 1.0f, 0.001f);
+}
+
 TEST(test_mining_grade_label_all) {
     ASSERT_STR_EQ(mining_grade_label(MINING_GRADE_COMMON),       "common");
     ASSERT_STR_EQ(mining_grade_label(MINING_GRADE_FINE),         "fine");
@@ -247,6 +255,7 @@ void register_label_tests(void) {
     RUN(test_signal_band_name_thresholds);
     RUN(test_signal_visual_saturation_tracks_signal_strength);
     RUN(test_signal_visual_cue_saturation_resists_grayscale);
+    RUN(test_signal_visual_player_saturation_keeps_ship_readable);
     RUN(test_mining_grade_label_all);
     RUN(test_commodity_short_label_all);
     RUN(test_station_flow_diag_label_all);

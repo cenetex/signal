@@ -3,6 +3,7 @@
 
 #include "client.h"
 #include "audio.h"
+#include "camera_model.h"
 #include "npc.h"
 #include "render.h"
 #include "rng.h"
@@ -50,6 +51,22 @@
 game_t g;
 
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
+
+static float camera_view_narrow_focus(float fallback_w, float fallback_h) {
+#ifdef __EMSCRIPTEN__
+    int css_w = emscripten_run_script_int(
+        "(function(){var c=(window.SignalGameModule&&window.SignalGameModule.canvas)"
+        "||document.getElementById('canvas');"
+        "return c?Math.round(c.clientWidth):Math.round(window.innerWidth||0);})()");
+    int css_h = emscripten_run_script_int(
+        "(function(){var c=(window.SignalGameModule&&window.SignalGameModule.canvas)"
+        "||document.getElementById('canvas');"
+        "return c?Math.round(c.clientHeight):Math.round(window.innerHeight||0);})()");
+    if (css_w > 0 && css_h > 0)
+        return camera_narrow_focus((float)css_w, (float)css_h);
+#endif
+    return camera_narrow_focus(fallback_w, fallback_h);
+}
 
 static float station_render_cull_radius(const station_t *st) {
     if (!st) return 0.0f;
@@ -1391,6 +1408,7 @@ static void render_world(void) {
     float win_h = ui_safe_positive(sapp_heightf(), 720.0f);
     float half_w = win_w * 0.5f;
     float half_h = win_h * 0.5f;
+    float narrow_focus = camera_view_narrow_focus(win_w, win_h);
     /* Camera modes:
      *   1. Death cinematic — anchor to wreckage, mild damping
      *   2. Station encounter — lock the station to one side of the screen
@@ -1479,8 +1497,8 @@ static void render_world(void) {
             /* (3) FREE FLIGHT — deadzone camera. */
             g.camera_station_index = -1;
             vec2 ship = LOCAL_PLAYER.ship.pos;
-            float dz_x = half_w * 0.45f;  /* deadzone half-width */
-            float dz_y = half_h * 0.40f;  /* deadzone half-height */
+            float dz_x = half_w * camera_deadzone_x_scale(narrow_focus);
+            float dz_y = half_h * camera_deadzone_y_scale(narrow_focus);
             float dx = ship.x - g.camera_pos.x;
             float dy = ship.y - g.camera_pos.y;
 
@@ -1555,6 +1573,14 @@ static void render_world(void) {
                 g.camera_pos.x += (mid.x - g.camera_pos.x) * k;
                 g.camera_pos.y += (mid.y - g.camera_pos.y) * k;
             }
+        }
+
+        if (!g.death_cinematic.active && narrow_focus > 0.001f) {
+            float strength = camera_narrow_center_strength(narrow_focus);
+            float k = (1.0f - expf(-4.0f * dt)) * strength;
+            vec2 ship = LOCAL_PLAYER.ship.pos;
+            g.camera_pos.x += (ship.x - g.camera_pos.x) * k;
+            g.camera_pos.y += (ship.y - g.camera_pos.y) * k;
         }
     }
     vec2 camera = g.camera_pos;
@@ -1906,6 +1932,38 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_signal_visual_cue_saturation(void) {
     return world_signal_visual_cue_saturation();
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_signal_visual_player_saturation(void) {
+    return world_signal_visual_player_saturation();
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_player_camera_offset_x(void) {
+    if (g.local_player_slot < 0) return 0.0f;
+    return LOCAL_PLAYER.ship.pos.x - g.camera_pos.x;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_player_camera_offset_y(void) {
+    if (g.local_player_slot < 0) return 0.0f;
+    return LOCAL_PLAYER.ship.pos.y - g.camera_pos.y;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_camera_narrow_focus(void) {
+    float win_w = ui_safe_positive(sapp_widthf(), 1280.0f);
+    float win_h = ui_safe_positive(sapp_heightf(), 720.0f);
+    return camera_view_narrow_focus(win_w, win_h);
 }
 
 #ifdef __EMSCRIPTEN__
