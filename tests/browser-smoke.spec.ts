@@ -247,6 +247,17 @@ async function signalVisualBaseSaturation(page: Page): Promise<number | null> {
   });
 }
 
+async function signalVisualCueSaturation(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const value = mod.ccall('get_signal_visual_cue_saturation', 'number', [], []);
+    return Number.isFinite(value) ? value : null;
+  });
+}
+
 async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -623,6 +634,12 @@ test.describe('Browser smoke tests', () => {
         message: 'weak signal should drain world saturation toward grayscale',
       })
       .toBeLessThan(0.05);
+    await expect
+      .poll(async () => (await signalVisualCueSaturation(page)) ?? 0, {
+        timeout: 3_000,
+        message: 'critical cue saturation should retain readable color in weak signal',
+      })
+      .toBeGreaterThan(0.7);
 
     const beforeHail = (await signalVisualBaseSaturation(page)) ?? 0;
     await canvas.click();

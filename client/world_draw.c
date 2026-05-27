@@ -126,6 +126,21 @@ float world_signal_visual_base_saturation(void) {
     return clampf(base + (1.0f - base) * pulse, 0.0f, 1.0f);
 }
 
+float world_signal_visual_cue_saturation(void) {
+    return signal_visual_cue_saturation(world_signal_visual_base_saturation());
+}
+
+static float world_signal_visual_enter_cue(void) {
+    float prev = render_min_saturation();
+    float cue = world_signal_visual_cue_saturation();
+    if (cue > prev) render_set_min_saturation(cue);
+    return prev;
+}
+
+static void world_signal_visual_leave_cue(float prev) {
+    render_set_min_saturation(prev);
+}
+
 static bool world_hash32_is_zero(const uint8_t hash[32]) {
     for (int i = 0; i < 32; i++) {
         if (hash[i] != 0) return false;
@@ -970,6 +985,7 @@ void draw_signal_borders(void) {
         signal_border_rebuild_cache(sources);
     }
 
+    float cue_prev = world_signal_visual_enter_cue();
     for (uint32_t si = 0; si < g_signal_border_cache.strip_count; si++) {
         const signal_border_strip_t *strip = &g_signal_border_cache.strips[si];
         if (!on_screen(strip->x, strip->y, strip->radius)) continue;
@@ -982,6 +998,7 @@ void draw_signal_borders(void) {
         }
         sgl_end();
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1982,6 +1999,7 @@ void draw_ship_tractor_field(void) {
     if (g.death_cinematic.active) return;
     float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
 
+    float cue_prev = world_signal_visual_enter_cue();
     if (LOCAL_PLAYER.ship.tractor_active) {
         /* Pulse ring: expands from ship to tractor range over ~0.3s */
         float hold_time = g.world.time - g.input.tractor_press_time;
@@ -2015,6 +2033,7 @@ void draw_ship_tractor_field(void) {
             draw_segment(LOCAL_PLAYER.ship.pos, fpos, beam_r, beam_g, beam_b, beam_a);
         }
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 void draw_ship(void) {
@@ -2046,12 +2065,14 @@ void draw_ship(void) {
         } else {
             fr = 1.00f; fg = 0.74f; fb = 0.24f;
         }
+        float cue_prev = world_signal_visual_enter_cue();
         sgl_c4f(fr, fg, fb, 0.95f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
         sgl_v2f(-26.0f - flicker, 6.0f);
         sgl_v2f(-26.0f - flicker, -6.0f);
         sgl_end();
+        world_signal_visual_leave_cue(cue_prev);
     }
 
     /* Ship body tint: weathered gunmetal when empty, blends toward the manifest's
@@ -2486,6 +2507,7 @@ void draw_beam(void) {
     vec2 beam_end;
     local_player_beam_render_line(&beam_start, &beam_end);
 
+    float cue_prev = world_signal_visual_enter_cue();
     if (LOCAL_PLAYER.scan_active) {
         /* Scan beam: cyan/blue — information, not damage */
         draw_segment(beam_start, beam_end, 0.30f, 0.70f, 1.0f, 0.90f);
@@ -2518,6 +2540,7 @@ void draw_beam(void) {
             draw_spark_burst(beam_end, 0.9f, true, 9.7f);
         }
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2528,6 +2551,7 @@ void draw_beam(void) {
 
 void draw_collision_sparks(void) {
     if (LOCAL_PLAYER.docked) return;
+    float cue_prev = world_signal_visual_enter_cue();
     vec2 sp = LOCAL_PLAYER.ship.pos;
     vec2 sv = LOCAL_PLAYER.ship.vel;
     float ship_r = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius;
@@ -2598,6 +2622,7 @@ void draw_collision_sparks(void) {
             draw_spark_burst(contact, intensity, true, (float)best_s * 1.13f + 17.0f);
         }
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* Draw autopilot path preview: dotted line from ship through next waypoints.
@@ -2610,6 +2635,7 @@ void draw_autopilot_path(void) {
      * apply_remote_player_ship in net_sync.c. No client computation. */
 
     if (g.autopilot_path_count == 0) return;
+    float cue_prev = world_signal_visual_enter_cue();
     vec2 prev = LOCAL_PLAYER.ship.pos;
     float total_drawn = 0.0f;
     const float MAX_DRAW_DIST = 1200.0f;
@@ -2644,6 +2670,7 @@ void draw_autopilot_path(void) {
         total_drawn += seg_len;
         prev = wp;
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* Draw tractor tether lines from ship to towed fragments. Tethers show
@@ -2651,6 +2678,7 @@ void draw_autopilot_path(void) {
 void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
     if (LOCAL_PLAYER.ship.towed_count == 0) return;
+    float cue_prev = world_signal_visual_enter_cue();
     for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
         int idx = LOCAL_PLAYER.ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
@@ -2663,6 +2691,7 @@ void draw_towed_tethers(void) {
             pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
         draw_segment(LOCAL_PLAYER.ship.pos, a->pos, r, gg, b, pulse);
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* --- Compass ring: navigation pips around the player ship --- */
@@ -2699,11 +2728,14 @@ void draw_tracked_contract_highlight(void) {
     float r = radius * (1.0f + 0.06f * pulse);
     float cr, cg, cb;
     contract_target_color(kind, &cr, &cg, &cb);
+    float cue_prev = world_signal_visual_enter_cue();
     draw_circle_outline(target, r, 40, cr, cg, cb, 0.75f + 0.20f * pulse);
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 void draw_compass_ring(void) {
     if (LOCAL_PLAYER.docked) return;
+    float cue_prev = world_signal_visual_enter_cue();
     vec2 ship = LOCAL_PLAYER.ship.pos;
     float ring_r = 120.0f;
     float pip_size = 8.0f;
@@ -2807,6 +2839,7 @@ void draw_compass_ring(void) {
     }
 
     #undef COMPASS_PIP
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* --- Multiplayer: draw remote players as colored triangles --- */
@@ -3461,7 +3494,9 @@ void draw_scaffold_tether(void) {
     if (!sc->active) return;
 
     float pulse = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
+    float cue_prev = world_signal_visual_enter_cue();
     draw_segment(LOCAL_PLAYER.ship.pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 /* Draw beams from producer modules to active shipyard intakes.
@@ -3644,17 +3679,22 @@ static void draw_blocked_construction_yards(void) {
 }
 
 void draw_placement_reticle(void) {
-    /* Always draw planned stations (server-side ghosts) */
-    draw_planned_stations();
-    /* Always draw existing plans on stations (active or planned) */
-    draw_placement_plans();
-    /* Blocked shipyards are construction state, so surface them with the
-     * same always-on overlay pass as planned and reserved slots. */
-    draw_blocked_construction_yards();
+    {
+        float cue_prev = world_signal_visual_enter_cue();
+        /* Always draw planned stations (server-side ghosts) */
+        draw_planned_stations();
+        /* Always draw existing plans on stations (active or planned) */
+        draw_placement_plans();
+        /* Blocked shipyards are construction state, so surface them with the
+         * same always-on overlay pass as planned and reserved slots. */
+        draw_blocked_construction_yards();
+        world_signal_visual_leave_cue(cue_prev);
+    }
 
     /* Ghost preview: local-only, uncommitted. Keep it amber/washed-out so
      * it does not read as the committed cyan planned-station blueprint. */
     if (g.plan_mode_active && g.plan_target_station == -1) {
+        float cue_prev = world_signal_visual_enter_cue();
         vec2 c = LOCAL_PLAYER.ship.pos;
         float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
         const float ghost_r = 0.78f;
@@ -3698,6 +3738,7 @@ void draw_placement_reticle(void) {
                 draw_circle_filled(sp, 4.0f, 8, ghost_r, ghost_g, ghost_b, pulse * 0.55f);
             }
         }
+        world_signal_visual_leave_cue(cue_prev);
     }
 
     /* Plan mode on real station: draw the cycling-type ghost at the
@@ -3705,6 +3746,7 @@ void draw_placement_reticle(void) {
     if (g.plan_mode_active && g.placement_target_station >= 0) {
         const station_t *st = &g.world.stations[g.placement_target_station];
         if (station_exists(st)) {
+            float cue_prev = world_signal_visual_enter_cue();
             vec2 target = module_world_pos_ring(st, g.placement_target_ring, g.placement_target_slot);
             float mr, mg, mb;
             module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
@@ -3724,17 +3766,20 @@ void draw_placement_reticle(void) {
             sgl_end();
             /* Tether line from ship to target */
             draw_segment(LOCAL_PLAYER.ship.pos, target, mr, mg, mb, pulse * 0.5f);
+            world_signal_visual_leave_cue(cue_prev);
         }
     }
 
     /* Outpost lock effect: expanding ring flash at lock position. */
     if (g.outpost_lock_timer > 0.0f) {
+        float cue_prev = world_signal_visual_enter_cue();
         float t = 1.0f - (g.outpost_lock_timer / 1.5f); /* 0→1 over lifetime */
         float expand_r = STATION_RING_RADIUS[1] * (0.8f + 0.5f * t);
         float alpha = (1.0f - t) * 1.2f;
         if (alpha > 1.0f) alpha = 1.0f;
         draw_circle_outline(g.outpost_lock_pos, expand_r, 48, 0.4f, 1.0f, 0.8f, alpha);
         draw_circle_outline(g.outpost_lock_pos, expand_r * 0.6f, 32, 0.6f, 1.0f, 1.0f, alpha * 0.6f);
+        world_signal_visual_leave_cue(cue_prev);
     }
 
     if (!g.placement_reticle_active) return;
@@ -3776,6 +3821,7 @@ void draw_placement_reticle(void) {
     float g0 = valid ? 1.0f : 0.3f;
     float b = valid ? 1.0f : 0.3f;
 
+    float cue_prev = world_signal_visual_enter_cue();
     if (slot_mode) {
         /* Slot reticle: small precise crosshair */
         draw_circle_outline(target, 30.0f, 24, r, g0, b, pulse);
@@ -3806,12 +3852,14 @@ void draw_placement_reticle(void) {
         }
         sgl_end();
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 void draw_shipyard_intake_beams(void) {
     /* Find each nascent scaffold and draw beams from contributing modules
      * (producer modules of the required commodity, plus the shipyard itself)
      * converging on the scaffold at the station center. */
+    float cue_prev = world_signal_visual_enter_cue();
     for (int si = 0; si < MAX_SCAFFOLDS; si++) {
         const scaffold_t *sc = &g.world.scaffolds[si];
         if (!sc->active || sc->state != SCAFFOLD_NASCENT) continue;
@@ -3853,6 +3901,7 @@ void draw_shipyard_intake_beams(void) {
             }
         }
     }
+    world_signal_visual_leave_cue(cue_prev);
 }
 
 
@@ -3892,6 +3941,7 @@ void draw_hail_ping(void) {
     if (g.hail_ping_timer <= 0.0f) return;
     float t = g.hail_ping_timer / HAIL_PING_DURATION;
     if (t >= 1.0f) return;
+    float cue_prev = world_signal_visual_enter_cue();
     float e = ping_ease_out(t);
     /* Scale the visual ring to the camera view so the sweep is always
      * on-screen regardless of comm_range vs. window size. Treats the
@@ -3912,4 +3962,5 @@ void draw_hail_ping(void) {
     draw_circle_outline(g.hail_ping_origin, r,        96, 1.0f, 0.88f, 0.32f, alpha);
     draw_circle_outline(g.hail_ping_origin, r + pad,  96, 1.0f, 0.88f, 0.32f, soft);
     draw_circle_outline(g.hail_ping_origin, r - pad,  96, 1.0f, 0.80f, 0.22f, soft);
+    world_signal_visual_leave_cue(cue_prev);
 }

@@ -1592,6 +1592,7 @@ static void render_world(void) {
     sgl_load_identity();
 
     render_set_saturation(world_signal_visual_base_saturation());
+    render_set_min_saturation(0.0f);
     render_set_saturation_sampler(world_signal_visual_saturation_at, NULL);
 
     draw_background(camera);
@@ -1739,6 +1740,7 @@ static void render_world(void) {
     draw_hail_ping();
 
     render_set_saturation_sampler(NULL, NULL);
+    render_set_min_saturation(0.0f);
     render_set_saturation(1.0f);
 }
 
@@ -1897,6 +1899,13 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_signal_visual_base_saturation(void) {
     return world_signal_visual_base_saturation();
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_signal_visual_cue_saturation(void) {
+    return world_signal_visual_cue_saturation();
 }
 
 #ifdef __EMSCRIPTEN__

@@ -7,6 +7,8 @@ typedef float (*render_saturation_sample_fn)(vec2 pos, void *user);
 
 void render_set_screen_space(float screen_w, float screen_h);
 void render_set_saturation(float saturation);
+float render_min_saturation(void);
+void render_set_min_saturation(float saturation);
 void render_set_saturation_sampler(render_saturation_sample_fn fn, void *user);
 void render_color4f(float r, float g0, float b, float a);
 void render_color4f_at(vec2 pos, float r, float g0, float b, float a);

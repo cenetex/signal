@@ -69,6 +69,18 @@ static inline float signal_visual_saturation(float quality) {
     return quality / SIGNAL_BAND_OPERATIONAL;
 }
 
+#define SIGNAL_VISUAL_CUE_SATURATION_MIN 0.72f
+
+/* Critical cue saturation: signal borders, warnings, active beams, and
+ * navigation marks should keep their hue even when the surrounding world
+ * drains to grayscale. The base value is signal_visual_saturation(). */
+static inline float signal_visual_cue_saturation(float base_saturation) {
+    if (base_saturation <= 0.0f) return SIGNAL_VISUAL_CUE_SATURATION_MIN;
+    if (base_saturation >= 1.0f) return 1.0f;
+    return SIGNAL_VISUAL_CUE_SATURATION_MIN +
+           (1.0f - SIGNAL_VISUAL_CUE_SATURATION_MIN) * base_saturation;
+}
+
 /* Signal band name for UI display. */
 static inline const char* signal_band_name(float quality) {
     if (quality < SIGNAL_BAND_FRONTIER)    return "FRONTIER";

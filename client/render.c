@@ -8,6 +8,7 @@
 /* Batched line drawing — call between begin/end_line_batch */
 static bool _line_batch_active = false;
 static float g_render_saturation = 1.0f;
+static float g_render_min_saturation = 0.0f;
 static render_saturation_sample_fn g_render_saturation_sample = 0;
 static void *g_render_saturation_user = 0;
 
@@ -18,7 +19,8 @@ static float render_clampf(float v, float lo, float hi) {
 }
 
 static void render_desaturate(float saturation, float *r, float *g0, float *b) {
-    saturation = render_clampf(saturation, 0.0f, 1.0f);
+    saturation = render_clampf(fmaxf(saturation, g_render_min_saturation),
+                               0.0f, 1.0f);
     float gray = *r * 0.2126f + *g0 * 0.7152f + *b * 0.0722f;
     *r = gray + (*r - gray) * saturation;
     *g0 = gray + (*g0 - gray) * saturation;
@@ -31,11 +33,20 @@ static float render_saturation_at(vec2 pos) {
         float sampled = g_render_saturation_sample(pos, g_render_saturation_user);
         if (isfinite(sampled) && sampled > saturation) saturation = sampled;
     }
-    return render_clampf(saturation, 0.0f, 1.0f);
+    return render_clampf(fmaxf(saturation, g_render_min_saturation),
+                         0.0f, 1.0f);
 }
 
 void render_set_saturation(float saturation) {
     g_render_saturation = render_clampf(saturation, 0.0f, 1.0f);
+}
+
+float render_min_saturation(void) {
+    return g_render_min_saturation;
+}
+
+void render_set_min_saturation(float saturation) {
+    g_render_min_saturation = render_clampf(saturation, 0.0f, 1.0f);
 }
 
 void render_set_saturation_sampler(render_saturation_sample_fn fn, void *user) {
