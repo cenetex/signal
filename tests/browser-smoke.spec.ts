@@ -415,6 +415,46 @@ async function mobileControlFlags(page: Page): Promise<number> {
   });
 }
 
+async function mobileDigitMask(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_mobile_digit_mask', 'number', [], []) | 0;
+  });
+}
+
+async function stationPanelLabel(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_station_panel_label', 'string', [], []) || '';
+  });
+}
+
+async function stationPanelLegend(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_station_panel_legend', 'string', [], []) || '';
+  });
+}
+
+async function stationPanelDigitSlots(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_station_panel_digit_slot_count', 'number', [], []) | 0;
+  });
+}
+
 async function expectTouchControlsFit(page: Page): Promise<void> {
   const problems = await page.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.signal-touch-button'));
@@ -486,8 +526,13 @@ const smokeLoopState = {
 
 const mobileFlag = {
   docked: 1 << 0,
+  stationTrade: 1 << 10,
+  stationWork: 1 << 11,
   planActive: 1 << 3,
   canFlight: 1 << 16,
+  canPage: 1 << 23,
+  canSell: 1 << 24,
+  canDigits: 1 << 25,
 } as const;
 
 async function waitForRenderedGame(
@@ -830,6 +875,42 @@ test.describe('Browser smoke tests', () => {
     await expect(page.locator('[data-control="thrust"]')).toBeHidden();
     await expect(page.locator('[data-control="tab"]')).toBeVisible();
     await expect(page.locator('[data-control="tab"]')).toHaveText('Panel');
+    await expect.poll(async () => stationPanelLabel(page)).toBe('SHIP');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[R] repair  [M/C/T] refit  [TAB]');
+
+    await tap(page, 'Tab');
+    await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] rows [F] page [S] all [TAB]');
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationTrade)
+      .toBe(mobileFlag.stationTrade);
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canPage)
+      .toBe(mobileFlag.canPage);
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canSell)
+      .toBe(mobileFlag.canSell);
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canDigits)
+      .toBe(mobileFlag.canDigits);
+    const tradeSlots = await stationPanelDigitSlots(page);
+    expect(tradeSlots).toBeGreaterThanOrEqual(0);
+    expect(tradeSlots).toBeLessThanOrEqual(5);
+    expect((await mobileDigitMask(page)) & 0x1f & ~((1 << tradeSlots) - 1)).toBe(0);
+
+    await tap(page, 'Tab');
+    await expect.poll(async () => stationPanelLabel(page)).toBe('CONTRACTS');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-3] track  [S] deliver  [TAB]');
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationWork)
+      .toBe(mobileFlag.stationWork);
+    await expect
+      .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canDigits)
+      .toBe(mobileFlag.canDigits);
+    const contractSlots = await stationPanelDigitSlots(page);
+    expect(contractSlots).toBeGreaterThanOrEqual(0);
+    expect(contractSlots).toBeLessThanOrEqual(3);
+    expect((await mobileDigitMask(page)) & 0x1f & ~((1 << contractSlots) - 1)).toBe(0);
     await expectTouchControlsFit(page);
 
     await page.locator('[data-control="use"]').click();

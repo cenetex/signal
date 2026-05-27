@@ -2923,6 +2923,81 @@ int signal_mobile_control_flags(void) {
     return (int)flags;
 }
 
+static const station_panel_descriptor_t *mobile_active_station_panel(void) {
+    if (!LOCAL_PLAYER.docked) return NULL;
+    const station_t *st = current_station_ptr();
+    if (!st) return NULL;
+    const station_panel_descriptor_t *panel =
+        station_panel_descriptor(g.station_view);
+    if (!station_panel_visible(panel, st)) {
+        g.station_view = station_panel_first_visible(st);
+        panel = station_panel_descriptor(g.station_view);
+    }
+    return panel;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_station_panel_label(void) {
+    const station_panel_descriptor_t *panel = mobile_active_station_panel();
+    return (panel && panel->label) ? panel->label : "";
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_station_panel_legend(void) {
+    const station_panel_descriptor_t *panel = mobile_active_station_panel();
+    return (panel && panel->legend) ? panel->legend : "";
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_station_panel_digit_slot_count(void) {
+    if (!LOCAL_PLAYER.docked) return 0;
+    const station_t *st = current_station_ptr();
+    if (!st || !mobile_active_station_panel()) return 0;
+
+    switch (g.station_view) {
+    case STATION_VIEW_TRADE: {
+        trade_row_t rows[TRADE_MAX_ROWS];
+        int row_count = build_trade_rows(st, &LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
+        int page_first = 0, page_last = 0, total_pages = 1;
+        trade_page_range(rows, row_count, (int)g.trade_page,
+                         &page_first, &page_last, &total_pages);
+        if ((int)g.trade_page >= total_pages) {
+            trade_page_range(rows, row_count, 0,
+                             &page_first, &page_last, &total_pages);
+        }
+        int n = page_last - page_first;
+        if (n < 0) n = 0;
+        return n > 5 ? 5 : n;
+    }
+    case STATION_VIEW_WORK: {
+        int slot_contract[3] = {-1, -1, -1};
+        bool slot_fulfillable[3] = {false, false, false};
+        int slot_held[3] = {0, 0, 0};
+        int n = build_work_slots(LOCAL_PLAYER.current_station, st->pos,
+                                 slot_contract, slot_fulfillable, slot_held);
+        if (n < 0) n = 0;
+        return n > 3 ? 3 : n;
+    }
+    case STATION_VIEW_YARD: {
+        if (!station_has_module(st, MODULE_SHIPYARD)) return 0;
+        int shown = 0;
+        for (int t = 0; t < MODULE_COUNT && shown < 5; t++) {
+            module_type_t kit = (module_type_t)t;
+            if (module_kind(kit) == MODULE_KIND_NONE) continue;
+            if (!station_has_module(st, kit)) continue;
+            if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit))
+                continue;
+            shown++;
+        }
+        return shown;
+    }
+    case STATION_VIEW_DOCK:
+    case STATION_VIEW_COUNT:
+        break;
+    }
+    return 0;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_mobile_digit_mask(void) {
     if (!LOCAL_PLAYER.docked) return 0;
