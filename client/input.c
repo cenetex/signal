@@ -42,7 +42,7 @@
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
  *               (NOT bound in docked UI — use [Tab] to switch views.)
- *   [Tab]       Docked → cycle station panels (SHIP / TRADE / WORK / YARD).
+ *   [Tab]       Docked → cycle station panels (SHIP / TRADE / JOBS / YARD).
  *               Shift+Tab reverses. Visibility comes from station panels.
  *
  * If adding a new overloaded key, update this table FIRST so the
@@ -460,7 +460,7 @@ void station_panel_input_yard(input_intent_t *intent) {
     }
 }
 
-/* WORK (JOBS) tab keys:
+/* JOBS panel keys:
  *   [1/2/3] select a contract slot for selective delivery
  *   [S]     deliver — selective if a slot is selected, else all
  * The display in station_ui.c sorts deliverable contracts first so [1]

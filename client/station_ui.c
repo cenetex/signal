@@ -112,11 +112,11 @@ const char* station_role_short_name(const station_t* station) {
 const char* station_role_hub_label(const station_t* station) {
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
-        case MODULE_FURNACE:     return "REFINERY // smelter";
-        case MODULE_FRAME_PRESS: return "YARD // frame bay";
-        case MODULE_LASER_FAB:   return "BEAMWORKS // field bench";
-        case MODULE_TRACTOR_FAB: return "BEAMWORKS // field bench";
-        case MODULE_SIGNAL_RELAY:return "OUTPOST // relay hub";
+        case MODULE_FURNACE:     return "REFINERY // smelts ore";
+        case MODULE_FRAME_PRESS: return "YARD // presses frames";
+        case MODULE_LASER_FAB:   return "BEAMWORKS // builds lasers";
+        case MODULE_TRACTOR_FAB: return "BEAMWORKS // builds tractors";
+        case MODULE_SIGNAL_RELAY:return "OUTPOST // broadcasts signal";
         default:                 return "STATION";
     }
 }
@@ -207,7 +207,7 @@ int station_contract_source_stock_count(const station_t *st,
 }
 
 /* ------------------------------------------------------------------ */
-/* WORK-tab contract slot builder                                      */
+/* JOBS-panel contract slot builder                                    */
 /* ------------------------------------------------------------------ */
 
 int build_work_slots(int here_idx, vec2 here_pos,
@@ -501,20 +501,20 @@ static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
  *
  * Layout:
  *   ┌─ persistent header band (always rendered) ─┐
- *   │ name · role · ledger here · signal · LAUNCH │
+ *   │ name · role · balance here · signal · LAUNCH │
  *   │ hull X/Y · cargo X/Y                        │
  *   │ ⌁ "ticker line" (faded)                     │
  *   ├─────────────────────────────────────────────┤
- *   │ view content (one of three):                │
- *   │   VERBS — verb-list action surface (default)│
- *   │   JOBS  — contract picker (entered via [J]) │
- *   │   BUILD — module-order picker (via [B])     │
+ *   │ view content (descriptor-selected):         │
+ *   │   SHIP  — hull, hold, repair, refit         │
+ *   │   TRADE — station market                    │
+ *   │   JOBS  — station work board                │
+ *   │   YARD  — scaffold orders and queue         │
  *   └─────────────────────────────────────────────┘
  *
- * Every visible row in the verb-list maps to a single keypress that
- * actually does something at THIS dock. Locked / unaffordable / out-
- * of-stock options simply don't render — no greyed-out aspirational
- * data, no information-without-action.
+ * Every visible row maps to a single keypress that actually does something
+ * at THIS dock. Passive rows explain missing stock, cargo, credits, or
+ * materials directly on the right side.
  * ==================================================================== */
 
 static void draw_header_band(const station_ui_state_t *ui,
@@ -530,7 +530,7 @@ static void draw_header_band(const station_ui_state_t *ui,
      * and title rule at y+14). Keep line 1 >= panel_y + 22 to avoid clipping.
      * Layout (per redesign):
      *   Line 1: station name (left)   ·   [E] LAUNCH (right)
-     *   Line 2: station role (left)   ·   ledger N cur · sig X.XX (right)
+     *   Line 2: station role (left)   ·   balance N cur · sig X.XX (right)
      *   Line 3: ticker (full width)
      * Ship hull/cargo/modules live in the footer + the SHIP panel. */
     const float HEADER_L1 = 26.0f;
@@ -577,10 +577,10 @@ static void draw_header_band(const station_ui_state_t *ui,
         sdtx_puts(launch);
     }
 
-    /* Line 2: role (left)  ·  ledger + signal (right).
-     * Role labels are long ("BEAMWORKS // field bench"), and the right
+    /* Line 2: role (left)  ·  balance + signal (right).
+     * Role labels are long ("BEAMWORKS // builds tractors"), and the right
      * side can run to ~35 chars. Measure both and skip the right-side
-     * data if they'd overlap — compact panels land there. The ledger
+     * data if they'd overlap — compact panels land there. The balance
      * remains visible in the SHIP panel's SHIP BAY section. */
     const char *role_label = station_role_hub_label(st);
     float right_limit = panel_x + panel_w - right_margin;
@@ -605,8 +605,8 @@ static void draw_header_band(const station_ui_state_t *ui,
         const char *full_cur = ui_station_currency(st);
         const char *forms[4];
         char buf0[64], buf1[64], buf2[64], buf3[32];
-        snprintf(buf0, sizeof(buf0), "ledger %d %s   sig %.2f",  balance, full_cur,  sig);
-        snprintf(buf1, sizeof(buf1), "ledger %d %s",             balance, full_cur);
+        snprintf(buf0, sizeof(buf0), "balance %d %s   sig %.2f", balance, full_cur,  sig);
+        snprintf(buf1, sizeof(buf1), "balance %d %s",            balance, full_cur);
         snprintf(buf2, sizeof(buf2), "%d %s   sig %.2f",         balance, short_cur, sig);
         snprintf(buf3, sizeof(buf3), "%d %s",                    balance, short_cur);
         forms[0] = buf0; forms[1] = buf1; forms[2] = buf2; forms[3] = buf3;
@@ -648,7 +648,7 @@ static void draw_header_band(const station_ui_state_t *ui,
 }
 
 /* ------------------------------------------------------------------ */
-/* VERBS view — the new default action surface                         */
+/* Shared row helpers                                                   */
 /* ------------------------------------------------------------------ */
 
 /* Small section header: label on the left, faded rule filling the row
@@ -1016,7 +1016,7 @@ static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
  * sells) first, then SELL rows (what the station buys). Hotkeys [1]..[5]
  * select a row on the current page. [F] pages forward; pages wrap at
  * the last page so the UI never runs out. At-station trades show the
- * generic "$" symbol — contract payouts in WORK still name the issuing
+ * generic "$" symbol — contract payouts in JOBS still name the issuing
  * station's currency because that's where the money actually lives.
  *
  * trade_row_t and the pagination constants live in client.h so input.c
@@ -1477,7 +1477,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     if (row_count == 0) {
         draw_row_lr(cx, my, inner_right, COL_FADED,
-                    "Nothing on offer and nothing to deliver.", NULL, NULL);
+                    "No station stock or matching cargo.", NULL, NULL);
         return;
     }
 
@@ -1787,7 +1787,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         const char *class_name = def && def->name ? def->name : "-";
         char right_buf[48];
 
-        draw_row_lr(cx, my, inner_right, COL_TEXT, "class", COL_TEXT, class_name);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "hull class", COL_TEXT, class_name);
         my += row_h;
 
         snprintf(right_buf, sizeof(right_buf), "%d / %d",
@@ -1798,7 +1798,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         snprintf(right_buf, sizeof(right_buf), "%d / %d",
                  (int)lroundf(ship_manifest_backed_cargo_volume(ship)),
                  (int)lroundf(ship_cargo_capacity(ship)));
-        draw_row_lr(cx, my, inner_right, COL_TEXT, "cargo", COL_TEXT, right_buf);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "hold", COL_TEXT, right_buf);
         /* Grade-tinted cargo fill bar -- sits inside the cargo row, just
          * below the text baseline so it visually belongs to that row.
          * Segments are sized by manifest unit volume and colored per
@@ -1857,9 +1857,14 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         }
         my += row_h;
 
-        snprintf(right_buf, sizeof(right_buf), "LSR %d  HLD %d  TRC %d",
-                 ship->mining_level, ship->hold_level, ship->tractor_level);
-        draw_row_lr(cx, my, inner_right, COL_TEXT, "mods", COL_TEXT, right_buf);
+        if (compact) {
+            snprintf(right_buf, sizeof(right_buf), "LSR %d  HLD %d  TRC %d",
+                     ship->mining_level, ship->hold_level, ship->tractor_level);
+        } else {
+            snprintf(right_buf, sizeof(right_buf), "laser %d  hold %d  tractor %d",
+                     ship->mining_level, ship->hold_level, ship->tractor_level);
+        }
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "modules", COL_TEXT, right_buf);
         my += row_h;
     }
     my += 6.0f;
@@ -1901,7 +1906,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     }
 
     /* -------- SERVICES (always visible; rows always show their status) -------- */
-    my += draw_section_header(cx, my, inner_right, "SERVICES", HDR_SERVICE);
+    my += draw_section_header(cx, my, inner_right, "REPAIR + REFIT", HDR_SERVICE);
 
     /* [R] repair hull — same grammar as the upgrade rows:
      *   kits [ have / need ]  -N cr
@@ -1948,17 +1953,17 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     struct { const char *left; const char *passive_left;
              const char *unit_singular; const char *unit_plural;
              int needed, in_cargo, at_station, credit; bool can; bool maxed; } refit[3] = {
-        { "[M] tune laser",   "laser",   "laser module",   "laser modules",
+        { "[M] upgrade laser", "laser refit", "laser module",   "laser modules",
           ui->mining_units_needed, ui->mining_units_in_cargo,
           ui->mining_units_at_station, ui->mining_credit_cost,
           ui->can_upgrade_mining,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING) },
-        { "[C] expand hold",  "hold",    "frame", "frames",
+        { "[C] expand hold",   "hold refit",  "frame", "frames",
           ui->hold_units_needed, ui->hold_units_in_cargo,
           ui->hold_units_at_station, ui->hold_credit_cost,
           ui->can_upgrade_hold,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD) },
-        { "[T] tune tractor", "tractor", "tractor module", "tractor modules",
+        { "[T] upgrade tractor", "tractor refit", "tractor module", "tractor modules",
           ui->tractor_units_needed, ui->tractor_units_in_cargo,
           ui->tractor_units_at_station, ui->tractor_credit_cost,
           ui->can_upgrade_tractor,
@@ -2008,10 +2013,10 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 }
 
 /* ------------------------------------------------------------------ */
-/* JOBS sub-screen — preserved CONTRACTS picker, trimmed              */
+/* JOBS panel — preserved contract picker, trimmed                     */
 /* ------------------------------------------------------------------ */
 
-/* WORK view — dispatch board table.
+/* JOBS view — dispatch board table.
  * Columns (monospace cells, 8px each):
  *   key(4) job(10) cargo(19) state(10)  payout(right-aligned)
  * Rows are sorted: fulfillable here first, then nearest remaining. */
@@ -2220,7 +2225,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 }
 
 /* ------------------------------------------------------------------ */
-/* YARD view — fabrication tab: KITS catalog + construction QUEUE       */
+/* YARD view — fabrication tab: SCAFFOLD KITS catalog + QUEUE           */
 /* ------------------------------------------------------------------ */
 
 static void draw_yard_view(const station_ui_state_t *ui,
@@ -2246,8 +2251,8 @@ static void draw_yard_view(const station_ui_state_t *ui,
         return;
     }
 
-    /* -------- KITS -------- */
-    my += draw_section_header(cx, my, inner_right, "KITS", HDR_YARD);
+    /* -------- SCAFFOLD KITS -------- */
+    my += draw_section_header(cx, my, inner_right, "SCAFFOLD KITS", HDR_YARD);
     sdtx_color3b(PAL_STATION_HINT);
     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
     sdtx_puts("[1-9] order a scaffold kit");
@@ -2371,6 +2376,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_DOCK] = {
         .view = STATION_VIEW_DOCK,
         .label = "SHIP",
+        .legend = "[R] repair  [M/C/T] refit  [TAB]",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_verbs_view,
         .input_fn = station_panel_input_dock,
@@ -2378,13 +2384,15 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_TRADE] = {
         .view = STATION_VIEW_TRADE,
         .label = "TRADE",
+        .legend = "[1-5] trade  [S] sell all  [TAB]",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_trade_view,
         .input_fn = station_panel_input_trade,
     },
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
-        .label = "WORK",
+        .label = "JOBS",
+        .legend = "[1-3] track  [S] deliver  [TAB]",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_jobs_view,
         .input_fn = station_panel_input_work,
@@ -2392,6 +2400,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_YARD] = {
         .view = STATION_VIEW_YARD,
         .label = "YARD",
+        .legend = "[1-9] order kit  [TAB]",
         .visible_fn = station_panel_visible_shipyard,
         .draw_fn = draw_yard_view,
         .input_fn = station_panel_input_yard,
@@ -2521,10 +2530,10 @@ void draw_station_services(const station_ui_state_t* ui) {
     /* Tab strip, LEFT-aligned on the first content line.
      *   SHIP  — ship bay (repair / refit / current ship state)
      *   TRADE — market (buy / sell cargo)
-     *   WORK  — contracts (jobs / routing)
+     *   JOBS  — contracts (jobs / routing)
      *   YARD  — fabrication (kits + construction queue, shipyard stations only)
      * Active tab: station-role tint + a short underline latch. Inactive:
-     * muted. The nav legend sits flush against the panel right edge. */
+     * muted. The active panel's key legend sits against the panel right edge. */
     {
         const float cell_w = 8.0f;
         float ty = content_top + 2.0f;
@@ -2563,7 +2572,9 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts(cell);
             tx += w + (tight_tabs ? 4.0f : 10.0f);
         }
-        const char *hint = "[TAB] cycle";
+        const char *hint = (active_panel && active_panel->legend)
+            ? active_panel->legend
+            : "[TAB] cycle";
         float hint_w = (float)strlen(hint) * cell_w;
         float hint_x = panel_x + panel_w - 20.0f - hint_w;
         if (!tight_tabs && tx + 12.0f < hint_x) {

@@ -366,13 +366,13 @@
     setButton("plan", has(flags, FLAG.canPlan), planActive ? "Exit" : "Plan");
     setButton("cycle", has(flags, FLAG.canCycle), "Type");
 
-    setButton("tab", docked, "View");
-    setButton("page", has(flags, FLAG.canPage), "Page");
+    setButton("tab", docked, "Panel");
+    setButton("page", has(flags, FLAG.canPage), "More");
     setButton("sell", has(flags, FLAG.canSell), workView ? "Deliver" : "Sell");
     setButton("repair", dockView && has(flags, FLAG.canRepair), "Repair");
-    setButton("laser", dockView && has(flags, FLAG.canUpgradeMine), "Laser");
-    setButton("cargo", dockView && has(flags, FLAG.canUpgradeHold), "Cargo");
-    setButton("tractorUpgrade", dockView && has(flags, FLAG.canUpgradeTractor), "Tractor");
+    setButton("laser", dockView && has(flags, FLAG.canUpgradeMine), "Laser+");
+    setButton("cargo", dockView && has(flags, FLAG.canUpgradeHold), "Hold+");
+    setButton("tractorUpgrade", dockView && has(flags, FLAG.canUpgradeTractor), "Tow+");
 
     var digitMask = (tradeView || workView || yardView) ? mobileDigitMask(flags) : 0;
     setButton("one", (digitMask & 1) !== 0, "1");
@@ -416,13 +416,13 @@
 
     var station = document.createElement("div");
     station.className = "signal-touch-stack signal-touch-station";
-    addButton(station, "tab", "View", ACTION.tab, "tap", "wide");
-    addButton(station, "page", "Page", ACTION.page, "tap", "wide");
+    addButton(station, "tab", "Panel", ACTION.tab, "tap", "wide");
+    addButton(station, "page", "More", ACTION.page, "tap", "wide");
     addButton(station, "sell", "Sell", ACTION.sell, "tap", "wide");
     addButton(station, "repair", "Repair", ACTION.cycle, "tap", "wide");
-    addButton(station, "laser", "Laser", ACTION.fire, "tap", "wide");
-    addButton(station, "cargo", "Cargo", ACTION.cargo, "tap", "wide");
-    addButton(station, "tractorUpgrade", "Tractor", ACTION.tractorUpgrade, "tap", "wide");
+    addButton(station, "laser", "Laser+", ACTION.fire, "tap", "wide");
+    addButton(station, "cargo", "Hold+", ACTION.cargo, "tap", "wide");
+    addButton(station, "tractorUpgrade", "Tow+", ACTION.tractorUpgrade, "tap", "wide");
     addButton(station, "one", "1", ACTION.one, "tap", "");
     addButton(station, "two", "2", ACTION.two, "tap", "");
     addButton(station, "three", "3", ACTION.three, "tap", "");

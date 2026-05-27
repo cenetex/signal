@@ -677,6 +677,7 @@ test.describe('Browser smoke tests', () => {
     await expect(page.locator('[data-control="left"]')).toBeHidden();
     await expect(page.locator('[data-control="thrust"]')).toBeHidden();
     await expect(page.locator('[data-control="tab"]')).toBeVisible();
+    await expect(page.locator('[data-control="tab"]')).toHaveText('Panel');
     await expectTouchControlsFit(page);
 
     await page.locator('[data-control="use"]').click();

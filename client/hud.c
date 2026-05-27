@@ -2632,7 +2632,7 @@ void draw_hud_panels(void) {
 
         /* Divider rule below the persistent header band (drawn by
          * station_ui.c at panel_y + 26/42/58). The rule visually separates
-         * the always-visible header (name/role/ledger/hull/cargo/ticker)
+         * the always-visible header (name/role/balance/hull/hold/ticker)
          * from the per-view content body below. */
         draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, panel_y + 72.0f,
             0.14f, 0.26f, 0.38f, 0.70f);

@@ -60,13 +60,11 @@ static inline uint32_t client_death_spin_float_bits(float value) {
 /* ------------------------------------------------------------------ */
 /* Station docked view enum                                           */
 /* ------------------------------------------------------------------ */
-/* The docked UI is a verb-list action surface, not a tab system.
- * VERBS is the default screen players see on dock — every visible row
- * is an action with a real cost/payoff and a single-letter hotkey.
- * JOBS and BUILD are sub-screens entered with [J] / [B] and exited
- * with [Esc]. There is no STATUS / MARKET / NETWORK / GRADES tab —
- * persistent ship+ledger info lives in the always-visible header band,
- * and the deleted tabs were full of unactionable display data. */
+/* The docked UI is a small set of station panels driven by descriptors.
+ * Every visible panel has its own label, visibility rule, renderer,
+ * input handler, and legend text so the tab strip and controls cannot
+ * drift apart. There is no STATUS / NETWORK / GRADES tab: persistent
+ * ship, balance, and signal info live in the station header or SHIP panel. */
 
 typedef enum {
     STATION_VIEW_DOCK = 0,       /* ship panel: repair / refit / current ship state */
@@ -113,6 +111,7 @@ typedef void (*station_panel_input_fn)(input_intent_t *intent);
 typedef struct {
     station_view_t           view;
     const char              *label;
+    const char              *legend;
     station_panel_visible_fn visible_fn;
     station_panel_draw_fn    draw_fn;
     station_panel_input_fn   input_fn;
@@ -769,7 +768,7 @@ void draw_hull_fog_back(void);
 void build_station_ui_state(station_ui_state_t* ui);
 void draw_station_services(const station_ui_state_t* ui);
 
-/* WORK-tab contract slot ordering. Single source of truth shared
+/* JOBS panel contract slot ordering. Single source of truth shared
  * between draw_jobs_view (renders the rows) and the input layer
  * (handles [1]/[2]/[3] selection) so the keypress always maps to the
  * row the player sees. Up to 3 slots filled in this order:
