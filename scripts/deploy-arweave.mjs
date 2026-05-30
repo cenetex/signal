@@ -1,6 +1,7 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join } from 'path';
 import Arweave from 'arweave';
+import { createHash } from 'crypto';
 
 const SITE_DIR = resolve('_site');
 const HOST = process.env.ARWEAVE_HOST || 'arweave.net';
@@ -21,6 +22,10 @@ if (process.env.ARWEAVE_WALLET_JSON) {
   wallet = JSON.parse(readFileSync(wp, 'utf-8'));
 }
 
+// Content-hash cache to avoid re-uploading unchanged files
+let assetCache = {};
+try { assetCache = JSON.parse(readFileSync('.arweave-cache.json', 'utf-8')); } catch (_) {}
+
 const arweave = Arweave.init({ host: HOST, port: PORT, protocol: PROTOCOL });
 
 function collectFiles(dir, base) {
@@ -33,6 +38,8 @@ function collectFiles(dir, base) {
   }
   return files;
 }
+
+function sha256(data) { return createHash('sha256').update(data).digest('hex'); }
 
 function ct(f) { const t={html:'text/html',js:'application/javascript',wasm:'application/wasm',css:'text/css'}; return t[f.split('.').pop().toLowerCase()]||'application/octet-stream'; }
 
@@ -62,9 +69,19 @@ async function main() {
   console.log('Phase 1: assets...');
   for (const f of files) {
     if (f.name.endsWith('.html')) { htmls.push(f); continue; }
-    const d = readFileSync(f.path); total += d.length;
+    const d = readFileSync(f.path);
+    const hash = sha256(d);
+    const cached = assetCache[f.name];
+    if (cached && cached.hash === hash) {
+      assets[f.name] = cached.tx;
+      console.log(`  ${f.name} (unchanged, reuse ${cached.tx})`);
+      continue;
+    }
+    total += d.length;
     console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
-    assets[f.name] = await upload(d, {'Content-Type':ct(f.name),'App-Name':'Signal'});
+    const tx = await upload(d, {'Content-Type':ct(f.name),'App-Name':'Signal'});
+    assets[f.name] = tx;
+    assetCache[f.name] = { hash, tx };
     console.log(`    -> ${assets[f.name]}`);
   }
 
@@ -103,10 +120,21 @@ Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
       c = c.replace(/<script>\s*var canvas/, wasmLines + '\n<script>var canvas');
     }
 
-    const d = Buffer.from(c); total += d.length;
-    console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
-    assets[f.name] = await upload(d, {'Content-Type':'text/html','App-Name':'Signal'});
-    manifest[f.name] = assets[f.name];
+    const d = Buffer.from(c);
+    const hash = sha256(d);
+    const cached = assetCache[f.name];
+    if (cached && cached.hash === hash) {
+      assets[f.name] = cached.tx;
+      manifest[f.name] = cached.tx;
+      console.log(`  ${f.name} (unchanged, reuse ${cached.tx})`);
+    } else {
+      total += d.length;
+      console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
+      const tx = await upload(d, {'Content-Type':'text/html','App-Name':'Signal'});
+      assets[f.name] = tx;
+      manifest[f.name] = tx;
+      assetCache[f.name] = { hash, tx };
+    }
     if (f.name === 'index.html') manifest['/'] = assets[f.name];
     console.log(`    -> ${assets[f.name]}`);
   }
@@ -118,7 +146,9 @@ Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
     Buffer.from(JSON.stringify({manifest:'arweave/paths',version:'0.2.0',paths:manifest})),
     {'Content-Type':'application/x.arweave-manifest+json','App-Name':'Signal'}
   );
-  console.log(`\nDeployed ${(total/1024).toFixed(1)} KB`);
+  // Persist content-hash cache
+  writeFileSync('.arweave-cache.json', JSON.stringify(assetCache, null, 2));
+  console.log(`\nDeployed ${(total/1024).toFixed(1)} KB (${Object.keys(assetCache).length} files cached)`);
   console.log(`URL: https://arweave.net/${mtx}`);
   writeFileSync('.arweave-manifest-tx', mtx);
 }

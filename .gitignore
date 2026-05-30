@@ -47,3 +47,4 @@ assets/voice/voicebox.exe
 assets/voice/kokoro/
 _site/
 arweave-wallet.json
+.arweave-cache.json
