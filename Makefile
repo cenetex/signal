@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
 
 all: build build-web build-server
 
@@ -345,10 +345,19 @@ latency-proxy-high:
 latency-proxy-ack-lag:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
 
+# --- Arweave deploy (run locally or via CI: .github/workflows/deploy-arweave.yml) ---
+site: build-web
+	@rm -rf _site
+	@mkdir -p _site
+	cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
+	   build-web/play.html build-web/signal-touch-controls.js _site/
+	cp web/index.html _site/
+	@echo "Site built in _site/"
 
-# --- Deploy (triggers CI via push) ---
-deploy:
-	git push origin main
+deploy-arweave: site
+	node scripts/deploy-arweave.mjs
+
+
 
 clean:
 	rm -rf build build-* _site test-results playwright-report coverage.json crap.json

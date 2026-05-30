@@ -1,0 +1,51 @@
+name: Deploy to Arweave
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'client/**'
+      - 'server/**'
+      - 'shared/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - '.github/workflows/deploy-arweave.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+
+      - name: Build WASM client
+        run: make build-web
+
+      - name: Prepare site directory
+        run: |
+          mkdir -p _site
+          cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
+             build-web/play.html build-web/signal-touch-controls.js _site/
+          cp web/index.html _site/
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy to Arweave
+        env:
+          ARWEAVE_WALLET_JSON: ${{ secrets.ARWEAVE_WALLET }}
+        run: node scripts/deploy-arweave.mjs

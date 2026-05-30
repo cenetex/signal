@@ -45,3 +45,5 @@ assets/music/*.mp3
 assets/voice/voicebox
 assets/voice/voicebox.exe
 assets/voice/kokoro/
+_site/
+arweave-wallet.json
