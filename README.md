@@ -160,7 +160,6 @@ with a local server.
 Local multiplayer dev:
 
 ```sh
-make dev       # docker compose server + static web client
 make dev-logs
 make stop
 ```
@@ -214,14 +213,9 @@ ack-minus-ping gap, player-state cadence, correction mode counts, replay depth,
 tick skew, unacked inputs, and render-offset bounds.
 
 Operator metrics for DAU, average latency, ack-gap budget, and concurrency are
-documented in [`docs/operator-metrics.md`](docs/operator-metrics.md). The ECS
-task definition already sends server stdout to CloudWatch Logs at
-`/ecs/signal-relay-server`; the relay emits JSON analytics events and
-CloudWatch EMF summaries there.
 
 Production runs the relay as disposable compute with explicit external state.
 See [`docs/production-ephemeral-relay.md`](docs/production-ephemeral-relay.md)
-for persistence modes, S3 state sync, and `/health` reporting.
 
 ## Test
 
@@ -258,7 +252,6 @@ cmake --build build-test
   with Sokol. Music, station portraits/MOTD JSON, and MPEG episode clips are
   runtime assets loaded from `assets/` in native development or from the asset
   CDN in browser builds. The large media pack is not tracked in git; run
-  `make assets` to fetch the native/dev copy from S3 using
   [`assets/manifest.txt`](assets/manifest.txt).
 - Native builds use Metal on macOS, OpenGL on Linux, and OpenGL on Windows
   through Sokol.

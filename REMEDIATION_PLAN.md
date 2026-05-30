@@ -105,7 +105,7 @@ pool caps make this a good fit.
 
 ## 8. CI breadth
 
-**Problem:** Three workflow files (deploy, release, Valgrind) but no Windows
+**Problem:** Two workflow files (release, Valgrind) but no Windows
 build, no Emscripten build check, no clang-tidy, no sanitizer CI run. The
 Makefile has `test-san` and `test-tsan` targets that nothing calls automatically.
 
@@ -138,8 +138,6 @@ mode should be visible.
 | `protocol-telemetry.md` | Wire protocol stream reference |
 | `replay-harness.md` | Shipped tool documentation |
 | `operator-onboarding.md` | Station operator guide |
-| `operator-metrics.md` | CloudWatch dashboard reference |
-| `production-ephemeral-relay.md` | Production infrastructure |
 | `anime-integration-plan.md` | Shipped episode playback architecture |
 | `decentralization.md` | Federation architecture reference |
 | `decentralization-synthesis.md` | Bridge between federation and P2P designs |

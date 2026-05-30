@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -345,37 +345,6 @@ latency-proxy-high:
 latency-proxy-ack-lag:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
 
-# --- Local dev = docker compose (single source of truth) ---
-# One canonical local path. The container's entrypoint cd's into
-# /app/data (bind-mounted from ./data) before launching the server,
-# so all persistence stays isolated from the working tree. Same
-# binary as production (alpine static build, identical CMake flags).
-#
-# For client-only iteration (HUD, input, render — anything that
-# doesn't need a server) use the offline native build instead:
-#   make build && ./build/signal
-# That path uses the embedded singleplayer server in client/local_server.c.
-dev:
-	@mkdir -p data
-	docker compose up --build -d
-	@echo ""
-	@echo "  Web:     http://localhost:8080/play.html?server=ws://localhost:9091/ws"
-	@echo "  Server:  ws://localhost:9091/ws"
-	@echo "  Logs:    make dev-logs"
-	@echo "  Stop:    make stop  (or  make dev-clean  to wipe state)"
-
-dev-logs:
-	docker compose logs -f signal
-
-stop:
-	docker compose down
-	@echo "Stopped."
-
-# Wipe persisted state. Removes the bind-mounted data dir entirely;
-# next 'make dev' starts from a fresh world.
-dev-clean: stop
-	rm -rf data
-	@echo "Persisted state wiped."
 
 # --- Deploy (triggers CI via push) ---
 deploy:

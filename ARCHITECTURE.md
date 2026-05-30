@@ -101,7 +101,6 @@ Virtual logistics system that auto-plans outposts, manages scaffold work budgets
 | [docs/protocol-telemetry.md](docs/protocol-telemetry.md) | Wire protocol stream reference |
 | [docs/replay-harness.md](docs/replay-harness.md) | Deterministic replay tool |
 | [docs/c_safety_policy.md](docs/c_safety_policy.md) | C safety rules and banned APIs |
-| [docs/production-ephemeral-relay.md](docs/production-ephemeral-relay.md) | Production infrastructure |
 | [docs/anime-integration-plan.md](docs/anime-integration-plan.md) | Episode playback architecture |
 | [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) | Active improvement plan |
 
