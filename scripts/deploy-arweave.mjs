@@ -88,7 +88,7 @@ async function main() {
   // Phase 2: HTML with rewritten URLs
   console.log('\nPhase 2: HTML...');
   const manifest = {};
-  htmls.sort((a,b) => ["signal.html","play.html","index.html"].indexOf(a.name) - ["signal.html","play.html","index.html"].indexOf(b.name));
+  htmls.sort((a,b) => ["signal.html","play.html","index.html"].indexOf(a.name) - ["signal.html","play.html","index.html"].indexOf(b.name));  const deployHash = Date.now().toString(36);
   for (const f of htmls) {
     let c = readFileSync(f.path, 'utf-8');
 
@@ -106,7 +106,7 @@ async function main() {
     }
 
     // Inject wasm locateFile into signal.html and play.html
-    const wasmUrl = rawUrl('signal.wasm', assets);
+    const wasmUrl = rawUrl('signal.wasm', assets) + '?v=' + deployHash;
     const wasmLines =
 `<script>
 if(!Module)var Module={};

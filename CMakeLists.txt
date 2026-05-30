@@ -180,7 +180,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     if(NOT MSVC)
         target_link_libraries(signal_server PRIVATE m)
         target_compile_options(signal_server PRIVATE
-            -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong)
+            -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong -ffp-contract=off -fno-fast-math)
         # _FORTIFY_SOURCE requires optimization; only set for Release-ish.
         target_compile_definitions(signal_server PRIVATE
             $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
@@ -259,7 +259,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
-        target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
     else()
         target_compile_options(signal_test PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
@@ -283,7 +283,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_compile_options(signal_verify PRIVATE
-            -Wall -Wextra -Wpedantic -Werror)
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
     else()
         target_compile_options(signal_verify PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
@@ -299,7 +299,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_compile_options(signal_chain_assets PRIVATE
-            -Wall -Wextra -Wpedantic -Werror)
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
     else()
         target_compile_options(signal_chain_assets PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
@@ -317,7 +317,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_link_libraries(flight_trace PRIVATE m)
-        target_compile_options(flight_trace PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(flight_trace PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
     else()
         target_compile_options(flight_trace PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
@@ -335,7 +335,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_link_libraries(signal_replay PRIVATE m)
-        target_compile_options(signal_replay PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(signal_replay PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
     else()
         target_compile_options(signal_replay PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
@@ -406,7 +406,7 @@ if(MSVC)
 else()
     # -Wno-strict-prototypes is client-only: sokol_* headers intentionally
     # use K&R-style () prototypes for C++ compat.
-    target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-strict-prototypes)
+    target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-strict-prototypes -ffp-contract=off -fno-fast-math)
 
     # client/main.c is the single SOKOL_IMPL translation unit. GCC still emits
     # -Wpedantic warnings from system headers when they are "required

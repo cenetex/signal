@@ -3,7 +3,7 @@
  * Extracted from game_sim.c (#272 slice).
  */
 #include "sim_nav.h"
-#include <math.h>     /* isfinite — see nav_line_clear defensive guard */
+#include <math.h>
 #include <stdlib.h>
 
 

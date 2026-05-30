@@ -12,7 +12,7 @@
 #include "sha256.h"
 #include "chain_log.h"         /* signed event emission (#479 C) */
 #include <stdlib.h>            /* abs */
-#include <math.h>              /* lroundf */
+#include <math.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */

@@ -45,7 +45,7 @@
 #include "station_authority.h" /* per-station Ed25519 identity (#479 B) */
 #include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
-#include <math.h>      /* isfinite for contract base_price sanity clamp */
+#include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/stat.h>

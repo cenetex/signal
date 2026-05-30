@@ -38,7 +38,7 @@ export default {
         if (!fallback) return new Response('Not Found', { status: 404 });
         const fbRes = await fetch(`${GATEWAY}/raw/${fallback}`);
         return new Response(fbRes.body, {
-          headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+          headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60' },
         });
       }
 
