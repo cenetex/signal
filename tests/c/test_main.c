@@ -73,6 +73,7 @@ void register_relationship_tests(void);
 void register_tractor_tests(void);
 void register_laser_tests(void);
 void register_inspect_anim_tests(void);
+void register_settlement_engine_tests(void);
 void register_gossip_tests(void);
 
 static int parse_shard_arg(const char *arg, int *out_index, int *out_total) {
@@ -192,6 +193,7 @@ int main(int argc, char **argv) {
     register_tractor_tests();
     register_laser_tests();
     register_inspect_anim_tests();
+    register_settlement_engine_tests();
     register_gossip_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);

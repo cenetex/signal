@@ -126,6 +126,7 @@ set(SIGNAL_SIM_HELPERS
     shared/tractor.c
     shared/laser.c
     shared/trade_paging.c
+    shared/settlement_engine.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -219,6 +220,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_bug_regression.c
         tests/c/test_save.c
         tests/c/test_construction.c
+        tests/c/test_settlement_engine.c
         tests/c/test_tractor.c
         tests/c/test_laser.c
         tests/c/test_navigation.c
