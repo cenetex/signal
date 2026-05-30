@@ -119,7 +119,7 @@ Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
     {'Content-Type':'application/x.arweave-manifest+json','App-Name':'Signal'}
   );
   console.log(`\nDeployed ${(total/1024).toFixed(1)} KB`);
-  console.log(`URL: https://arweave.net/${mtx.id}`);
+  console.log(`URL: https://arweave.net/${mtx}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
