@@ -71,6 +71,7 @@ async function main() {
   // Phase 2: HTML with rewritten URLs
   console.log('\nPhase 2: HTML...');
   const manifest = {};
+  htmls.sort((a,b) => ["signal.html","play.html","index.html"].indexOf(a.name) - ["signal.html","play.html","index.html"].indexOf(b.name));
   for (const f of htmls) {
     let c = readFileSync(f.path, 'utf-8');
 
@@ -83,8 +84,8 @@ async function main() {
       c = c.replace(/src=["'](\.\/)?signal-touch-controls\.js["']/, `src="${rawUrl('signal-touch-controls.js', assets)}"`);
     }
     if (f.name === 'index.html') {
-      c = c.replace(/href=["']\/play["']/, `href="${rawUrl('play.html', assets)}"`);
-      c = c.replace(/href=["']\/ost["']/, 'href="https://signal.ratimics.com/ost"');
+      c = c.replace(/href=["']\/play["']/g, `href="${rawUrl('play.html', assets)}"`);
+      c = c.replace(/href=["']\/ost["']/g, 'href="https://signal.ratimics.com/ost"');
     }
 
     // Inject wasm locateFile into signal.html and play.html
