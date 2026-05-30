@@ -1,14 +1,5 @@
-// Deploy the Signal website to Arweave.
-//
-// Wallet resolution order:
-//   1. ARWEAVE_WALLET_JSON env var (raw JSON keyfile, for CI secrets)
-//   2. --wallet <path> CLI flag
-//   3. ARWEAVE_WALLET env var (path to keyfile)
-//   4. ./arweave-wallet.json
-
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join } from 'path';
-import { tmpdir } from 'os';
 import Arweave from 'arweave';
 
 const SITE_DIR = resolve('_site');
@@ -17,27 +8,17 @@ const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 
 let wallet;
-
-// 1. Raw JSON from env (CI)
 if (process.env.ARWEAVE_WALLET_JSON) {
   wallet = JSON.parse(process.env.ARWEAVE_WALLET_JSON);
 } else {
-  // 2-4. File-based
-  let walletPath = null;
+  let wp = null;
   for (let i = 0; i < process.argv.length; i++) {
-    if (process.argv[i] === '--wallet' && process.argv[i + 1]) {
-      walletPath = resolve(process.argv[i + 1]);
-    }
+    if (process.argv[i] === '--wallet' && process.argv[i + 1]) wp = resolve(process.argv[i + 1]);
   }
-  if (!walletPath && process.env.ARWEAVE_WALLET) walletPath = resolve(process.env.ARWEAVE_WALLET);
-  if (!walletPath) walletPath = resolve('arweave-wallet.json');
-
-  if (!existsSync(walletPath)) {
-    console.error(`No wallet at: ${walletPath}`);
-    console.error('Set ARWEAVE_WALLET_JSON (CI), ARWEAVE_WALLET, or use --wallet');
-    process.exit(1);
-  }
-  wallet = JSON.parse(readFileSync(walletPath, 'utf-8'));
+  if (!wp && process.env.ARWEAVE_WALLET) wp = resolve(process.env.ARWEAVE_WALLET);
+  if (!wp) wp = resolve('arweave-wallet.json');
+  if (!existsSync(wp)) { console.error(`No wallet at: ${wp}`); process.exit(1); }
+  wallet = JSON.parse(readFileSync(wp, 'utf-8'));
 }
 
 const arweave = Arweave.init({ host: HOST, port: PORT, protocol: PROTOCOL });
@@ -47,61 +28,97 @@ function collectFiles(dir, base) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     const rel = base ? base + '/' + entry : entry;
-    if (statSync(full).isDirectory()) {
-      files.push(...collectFiles(full, rel));
-    } else {
-      files.push({ path: full, name: rel });
-    }
+    if (statSync(full).isDirectory()) files.push(...collectFiles(full, rel));
+    else files.push({ path: full, name: rel });
   }
   return files;
 }
 
-function contentType(f) {
-  const t = { html: 'text/html', js: 'application/javascript', wasm: 'application/wasm', css: 'text/css', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', json: 'application/json' };
-  return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
+function ct(f) { const t={html:'text/html',js:'application/javascript',wasm:'application/wasm',css:'text/css'}; return t[f.split('.').pop().toLowerCase()]||'application/octet-stream'; }
+
+async function upload(data, tags) {
+  const tx = await arweave.createTransaction({ data }, wallet);
+  for (const [n,v] of Object.entries(tags)) tx.addTag(n, v);
+  await arweave.transactions.sign(tx, wallet);
+  const up = await arweave.transactions.getUploader(tx);
+  while (!up.isComplete) await up.uploadChunk();
+  return tx.id;
 }
+
+function rawUrl(name, assets) { return `https://arweave.net/raw/${assets[name]}`; }
 
 async function main() {
   const addr = await arweave.wallets.jwkToAddress(wallet);
   const bal = arweave.ar.winstonToAr(await arweave.wallets.getBalance(addr));
   console.log(`Wallet: ${addr}  Balance: ${bal} AR`);
-
-  if (parseFloat(bal) < 0.0001) {
-    console.error('Balance too low. Fund this wallet first.');
-    process.exit(1);
-  }
+  if (parseFloat(bal) < 0.0001) { console.error('Balance too low.'); process.exit(1); }
 
   const files = collectFiles(SITE_DIR, '');
-  console.log(`Uploading ${files.length} files...`);
-  const manifest = {};
+  const assets = {};
+  const htmls = [];
   let total = 0;
 
+  // Phase 1: non-HTML
+  console.log('Phase 1: assets...');
   for (const f of files) {
-    const data = readFileSync(f.path);
-    total += data.length;
-    console.log(`  ${f.name} (${(data.length / 1024).toFixed(1)} KB)...`);
-    const tx = await arweave.createTransaction({ data }, wallet);
-    tx.addTag('Content-Type', contentType(f.name));
-    tx.addTag('App-Name', 'Signal');
-    await arweave.transactions.sign(tx, wallet);
-    const up = await arweave.transactions.getUploader(tx);
-    while (!up.isComplete) await up.uploadChunk();
-    manifest[f.name] = tx.id;
-    console.log(`    -> ${tx.id}`);
+    if (f.name.endsWith('.html')) { htmls.push(f); continue; }
+    const d = readFileSync(f.path); total += d.length;
+    console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
+    assets[f.name] = await upload(d, {'Content-Type':ct(f.name),'App-Name':'Signal'});
+    console.log(`    -> ${assets[f.name]}`);
   }
 
-  const mtx = await arweave.createTransaction({
-    data: Buffer.from(JSON.stringify({ manifest: 'arweave/paths', version: '0.2.0', paths: manifest })),
-  }, wallet);
-  mtx.addTag('Content-Type', 'application/x.arweave-manifest+json');
-  mtx.addTag('App-Name', 'Signal');
-  await arweave.transactions.sign(mtx, wallet);
-  const mup = await arweave.transactions.getUploader(mtx);
-  while (!mup.isComplete) await mup.uploadChunk();
+  // Phase 2: HTML with rewritten URLs
+  console.log('\nPhase 2: HTML...');
+  const manifest = {};
+  for (const f of htmls) {
+    let c = readFileSync(f.path, 'utf-8');
 
-  console.log(`\nDeployed ${(total / 1024).toFixed(1)} KB`);
+    // Replace asset paths with absolute Arweave raw URLs
+    if (f.name === 'signal.html') {
+      c = c.replace(/src=["'](\.\/)?signal-touch-controls\.js["']/, `src="${rawUrl('signal-touch-controls.js', assets)}"`);
+      c = c.replace(/src=["']signal\.js["']/, `src="${rawUrl('signal.js', assets)}"`);
+    }
+    if (f.name === 'play.html') {
+      c = c.replace(/src=["'](\.\/)?signal-touch-controls\.js["']/, `src="${rawUrl('signal-touch-controls.js', assets)}"`);
+    }
+    if (f.name === 'index.html') {
+      c = c.replace(/href=["']\/play["']/, `href="${rawUrl('play.html', assets)}"`);
+      c = c.replace(/href=["']\/ost["']/, 'href="https://signal.ratimics.com/ost"');
+    }
+
+    // Inject wasm locateFile into signal.html and play.html
+    const wasmUrl = rawUrl('signal.wasm', assets);
+    const wasmLines =
+`<script>
+if(!Module)var Module={};
+Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
+</script>`;
+
+    if (f.name === 'signal.html') {
+      c = c.replace('<script>var Module=', wasmLines + '\n<script>var Module=');
+    }
+    if (f.name === 'play.html') {
+      c = c.replace(/<script>\s*var canvas/, wasmLines + '\n<script>var canvas');
+    }
+
+    const d = Buffer.from(c); total += d.length;
+    console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
+    assets[f.name] = await upload(d, {'Content-Type':'text/html','App-Name':'Signal'});
+    manifest[f.name] = assets[f.name];
+    if (f.name === 'index.html') manifest['/'] = assets[f.name];
+    console.log(`    -> ${assets[f.name]}`);
+  }
+
+  // Phase 3: manifest
+  console.log('\nPhase 3: manifest...');
+  for (const [n, id] of Object.entries(assets)) { if (!manifest[n]) manifest[n] = id; }
+  const mtx = await upload(
+    Buffer.from(JSON.stringify({manifest:'arweave/paths',version:'0.2.0',paths:manifest})),
+    {'Content-Type':'application/x.arweave-manifest+json','App-Name':'Signal'}
+  );
+  console.log(`\nDeployed ${(total/1024).toFixed(1)} KB`);
   console.log(`URL: https://arweave.net/${mtx.id}`);
-  console.log(`::notice title=Arweave Deploy::https://arweave.net/${mtx.id}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
