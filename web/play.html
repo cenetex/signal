@@ -85,103 +85,17 @@
 
       window.SignalGameModule = Module;
 
-      /* ?singleplayer=1 forces the in-process server for local smoke
-       * tests and client-only iteration. Otherwise, default
-       * SIGNAL_SERVER to the local docker websocket when this
-       * page is served from localhost / 127.0.0.1 / a private LAN IP.
-       * Without this, opening http://localhost:8080/signal.html stays in
-       * singleplayer and the docker signal_server on :9091 is unused —
-       * which means no global highscores, no other players, no chain.
-       * Production CDN sets window.SIGNAL_SERVER explicitly before this
-       * script runs, so this default never fires there. */
-      function isLocalHostName(h) {
-        return (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0'
-             || /^192\.168\./.test(h) || /^10\./.test(h)
-             || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h));
-      }
-
+      /* ?singleplayer=1 forces the in-process server.
+       * ?server=ws://... connects to an explicit multiplayer relay.
+       * Otherwise defaults to singleplayer. */
       var signalParams = new URLSearchParams(window.location.search);
-      var signalHost = window.location.hostname;
-      var signalHostIsLocal = isLocalHostName(signalHost);
-      window.SIGNAL_RELAY_DEBUG = window.SIGNAL_RELAY_DEBUG || {};
-
-      function setRelayDebug(fields) {
-        var dbg = window.SIGNAL_RELAY_DEBUG || {};
-        Object.keys(fields).forEach(function(k) { dbg[k] = fields[k]; });
-        window.SIGNAL_RELAY_DEBUG = dbg;
-      }
-
-      function nowMs() {
-        return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      }
 
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
-      if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
-        if (signalHostIsLocal) window.SIGNAL_SERVER = 'ws://' + signalHost + ':9091/ws';
-      }
+      else window.SIGNAL_SERVER = '';
 
       function setLoading(message) {
         document.getElementById('loading').textContent = message;
-      }
-
-      function clientTimezone() {
-        try {
-          return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-        } catch (e) {
-          return '';
-        }
-      }
-
-      function resolveRelayServer() {
-        if (window.SIGNAL_SERVER || signalParams.has('singleplayer')) {
-          setRelayDebug({
-            brokered: false,
-            region: signalParams.has('singleplayer') ? 'solo' : (signalHostIsLocal ? 'local' : 'direct'),
-            preferredRegion: '',
-            brokerLatencyMs: 0,
-            healthLatencyMs: 0,
-            launched: false
-          });
-          return Promise.resolve({ ws: window.SIGNAL_SERVER || '', brokered: false });
-        }
-        var broker = window.SIGNAL_RELAY_BROKER || signalParams.get('relayBroker');
-        if (!broker) return Promise.resolve({ ws: '', brokered: false });
-
-        var tz = clientTimezone();
-        var preferredRegion = signalParams.get('region');
-        var url = new URL(broker, window.location.href);
-        if (preferredRegion) url.searchParams.set('region', preferredRegion);
-        if (tz) url.searchParams.set('tz', tz);
-
-        setLoading('Finding a nearby game server...');
-        setRelayDebug({
-          brokered: true,
-          region: preferredRegion || 'selecting',
-          preferredRegion: preferredRegion || '',
-          brokerLatencyMs: 0,
-          healthLatencyMs: 0,
-          launched: false
-        });
-        var brokerStarted = nowMs();
-        return fetch(url.toString(), { cache: 'no-store' })
-          .then(function(r) {
-            if (!r.ok) throw new Error('Relay broker returned ' + r.status);
-            return r.json();
-          })
-          .then(function(info) {
-            if (!info || !info.server) throw new Error('Relay broker did not return a server');
-            window.SIGNAL_SERVER = info.server;
-            var brokerEnded = nowMs();
-            setRelayDebug({
-              brokered: true,
-              region: info.region || preferredRegion || 'selected',
-              preferredRegion: info.preferredRegion || preferredRegion || '',
-              brokerLatencyMs: Math.max(0, Math.round(brokerEnded - brokerStarted)),
-              launched: !!info.launched
-            });
-            return { ws: info.server, brokered: true };
-          });
       }
 
       canvas.addEventListener('pointerdown', function() {
@@ -199,20 +113,7 @@
         }
       });
 
-      function loadGame(src, version) {
-        /* Cache-bust both signal.js and the wasm fetch by routing
-         * through Module.locateFile. Without this, browsers happily
-         * keep the previous build's bundle and the HUD shows
-         * "syncing..." forever (client_hash != server_hash). */
-        if (version) {
-          var bust = (src.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(version);
-          src = src + bust;
-          var prevLocate = Module.locateFile;
-          Module.locateFile = function(path, prefix) {
-            var base = prevLocate ? prevLocate(path, prefix) : ((prefix || '') + path);
-            return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(version);
-          };
-        }
+      function loadGame(src) {
         var s = document.createElement('script');
         s.src = src;
         s.onload = function() {
@@ -227,74 +128,8 @@
         setLoading(message);
       }
 
-      function delay(ms) {
-        return new Promise(function(resolve) { setTimeout(resolve, ms); });
-      }
-
-      function fetchHealthWithRetry(healthUrl, timeoutMs, brokered) {
-        var started = Date.now();
-        function attempt() {
-          var healthStarted = nowMs();
-          return fetch(healthUrl, { cache: 'no-store' })
-            .then(function(r) {
-              if (!r.ok) throw new Error('Relay health returned ' + r.status);
-              return r.json();
-            })
-            .then(function(info) {
-              var healthEnded = nowMs();
-              setRelayDebug({
-                healthLatencyMs: Math.max(0, Math.round(healthEnded - healthStarted))
-              });
-              return info;
-            })
-            .catch(function(err) {
-              if (Date.now() - started >= timeoutMs) throw err;
-              if (brokered) setLoading('Waking game server...');
-              return delay(1500).then(attempt);
-            });
-        }
-        return attempt();
-      }
-
-      /* Pin the WASM bundle to whatever version the server is running.
-       * Prevents silent wire desync when the server lags behind the CDN:
-       * if /play/v/<server_hash>/ exists on CDN, we load that bundle
-       * instead of ./signal.js (which may have newer wire format).
-       * Local/dev builds may fall back to the root bundle because they do
-       * not usually have a local /play/v/<hash>/ archive. Production must
-       * fail closed instead of loading a client that may be ahead of ECS. */
-      function pickBundle(ws, brokered) {
-        if (!ws) { loadGame('./signal.js'); return; }
-        var healthUrl = ws.replace(/^ws/, 'http').replace(/\/ws$/, '/health');
-        var allowRootFallback = signalHostIsLocal;
-        var fallbackOrFail = function(version) {
-          if (allowRootFallback) loadGame('./signal.js', version);
-          else failBundle('Relay build unavailable. Refresh shortly.');
-        };
-        var healthTimeoutMs = brokered
-          ? (Number(window.SIGNAL_RELAY_START_TIMEOUT_MS) || 90000)
-          : 3000;
-
-        fetchHealthWithRetry(healthUrl, healthTimeoutMs, brokered)
-          .then(function(info) {
-            var v = info && info.version;
-            if (!v || v === 'dev') { fallbackOrFail(); return; }
-            var pinned = '/play/v/' + encodeURIComponent(v) + '/signal.js';
-            fetch(pinned, { method: 'HEAD' })
-              .then(function(r) { r.ok ? loadGame(pinned, v) : fallbackOrFail(v); })
-              .catch(function() { fallbackOrFail(v); });
-          })
-          .catch(function() {
-            fallbackOrFail();
-          });
-      }
-
-      resolveRelayServer()
-        .then(function(relay) { pickBundle(relay.ws, relay.brokered); })
-        .catch(function(err) {
-          failBundle(err && err.message ? err.message : 'Relay unavailable. Refresh shortly.');
-        });
+      loadGame('./signal.js');
     </script>
-    <script src="./signal-touch-controls.js"></script>
+
   </body>
 </html>
