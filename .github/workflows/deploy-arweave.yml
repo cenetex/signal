@@ -1,4 +1,4 @@
-name: Deploy to Arweave
+name: Deploy to Arweave + Cloudflare
 
 on:
   push:
@@ -49,3 +49,11 @@ jobs:
         env:
           ARWEAVE_WALLET_JSON: ${{ secrets.ARWEAVE_WALLET }}
         run: node scripts/deploy-arweave.mjs
+
+      - name: Update Cloudflare KV
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          MANIFEST_TX=$(cat .arweave-manifest-tx)
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST tx "$MANIFEST_TX"
+          npx wrangler kv key delete --remote --binding SIGNAL_MANIFEST manifest

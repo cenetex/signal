@@ -120,6 +120,7 @@ Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
   );
   console.log(`\nDeployed ${(total/1024).toFixed(1)} KB`);
   console.log(`URL: https://arweave.net/${mtx}`);
+  writeFileSync('.arweave-manifest-tx', mtx);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
