@@ -1,0 +1,11 @@
+[package]
+name = "rati-burn-to-mint-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "rati_burn_to_mint_core"
+path = "src/lib.rs"
+
+[dependencies]

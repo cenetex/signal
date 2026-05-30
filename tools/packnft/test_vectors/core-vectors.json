@@ -1,0 +1,211 @@
+{
+  "createAsset": {
+    "desc": "CreateAsset with name, uri, collection",
+    "programId": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+    "disc": "1400080000005465",
+    "data": "14000800000054657374204e46542100000068747470733a2f2f6578616d706c652e636f6d2f6d657461646174612e6a736f6e01000000000100000000",
+    "keys": [
+      {
+        "pubkey": "JA5mS2wKhnqhMi6mHsJeDnmdPrkCKYGpUtA1ythFtk8C",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "5GkTrD4R2V3BuRYA9QmVJTPf7hQ1Rqh7di5hYQpRF5bq",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "3DjHS6NWavtnQP7WUxQyJ8qD9rM58k5V3bMN1jA3bik2",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "11111111111111111111111111111111",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      }
+    ],
+    "asset": "JA5mS2wKhnqhMi6mHsJeDnmdPrkCKYGpUtA1ythFtk8C",
+    "collection": "2tYQ9FSxpkEMeGpf3h2a82bDo3jogAQGjNTQyhDQoc41",
+    "owner": "3DjHS6NWavtnQP7WUxQyJ8qD9rM58k5V3bMN1jA3bik2"
+  },
+  "createAssetNC": {
+    "desc": "CreateAsset without collection",
+    "programId": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+    "disc": "14000a0000004e6f",
+    "data": "14000a0000004e6f436f6c6c204e46541b00000068747470733a2f2f6578616d706c652e636f6d2f6e632e6a736f6e01000000000100000000",
+    "keys": [
+      {
+        "pubkey": "EiCG4qvSNJ469YRUfH7hBpLrJ1X4m2ptgTkSmATMLAHu",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "5GkTrD4R2V3BuRYA9QmVJTPf7hQ1Rqh7di5hYQpRF5bq",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "3DjHS6NWavtnQP7WUxQyJ8qD9rM58k5V3bMN1jA3bik2",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "11111111111111111111111111111111",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      }
+    ]
+  },
+  "createCollection": {
+    "desc": "CreateCollection",
+    "programId": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+    "disc": "150f000000546573",
+    "data": "150f0000005465737420436f6c6c656374696f6e1d00000068747470733a2f2f6578616d706c652e636f6d2f636f6c6c2e6a736f6e01000000000100000000",
+    "keys": [
+      {
+        "pubkey": "87pz7wxyqN8JA34nswazetEeuhf5KfHL3XSeL46sk3N3",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "5GkTrD4R2V3BuRYA9QmVJTPf7hQ1Rqh7di5hYQpRF5bq",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "11111111111111111111111111111111",
+        "signer": false,
+        "writable": false
+      }
+    ],
+    "collection": "87pz7wxyqN8JA34nswazetEeuhf5KfHL3XSeL46sk3N3"
+  },
+  "burn": {
+    "desc": "Burn asset",
+    "programId": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+    "disc": "0c00",
+    "data": "0c00",
+    "keys": [
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "5GkTrD4R2V3BuRYA9QmVJTPf7hQ1Rqh7di5hYQpRF5bq",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      }
+    ]
+  },
+  "update": {
+    "desc": "Update asset name + uri",
+    "programId": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+    "disc": "1e000000",
+    "data": "1e000000",
+    "keys": [
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "5GkTrD4R2V3BuRYA9QmVJTPf7hQ1Rqh7di5hYQpRF5bq",
+        "signer": true,
+        "writable": true
+      },
+      {
+        "pubkey": "7CPRj5KFsd6gJJip4tabpofjoZgLQkBH3fxmgdsbF6qg",
+        "signer": true,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "11111111111111111111111111111111",
+        "signer": false,
+        "writable": false
+      },
+      {
+        "pubkey": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "signer": false,
+        "writable": false
+      }
+    ]
+  }
+}

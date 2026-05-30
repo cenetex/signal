@@ -1,0 +1,474 @@
+{
+  "schema": "rati.burn-to-mint.account-rules/v1",
+  "source": "programs/burn-to-mint/onchain/ACCOUNT_ORDER.md",
+  "maxAccounts": 13,
+  "instructions": {
+    "initializeConfig": {
+      "cArray": "INITIALIZE_CONFIG_RULES",
+      "rules": [
+        {
+          "role": "payer",
+          "label": "payer signer",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "adminAuthority",
+          "label": "admin authority",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "pauseAuthority",
+          "label": "pause authority",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "systemProgram",
+          "label": "system program",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "registerDestinationMint": {
+      "cArray": "REGISTER_DESTINATION_MINT_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "admin signer writable",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationMint",
+          "label": "destination mint writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "mintAuthority",
+          "label": "mint authority PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "destinationTokenProgram",
+          "label": "destination token program",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "systemProgram",
+          "label": "system program",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "registerSourceMint": {
+      "cArray": "REGISTER_SOURCE_MINT_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "admin signer writable",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceMintConfig",
+          "label": "source mint config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "sourceMint",
+          "label": "source mint",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "destinationMint",
+          "label": "destination mint",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceTokenProgram",
+          "label": "source token program",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "systemProgram",
+          "label": "system program",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "setSourceEnabled": {
+      "cArray": "SET_SOURCE_ENABLED_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "admin signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceMintConfig",
+          "label": "source mint config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "migrateNoReceipt": {
+      "cArray": "MIGRATE_BASE_RULES",
+      "rules": [
+        {
+          "role": "user",
+          "label": "user signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceMintConfig",
+          "label": "source mint config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "userSourceTokenAccount",
+          "label": "user source token account writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "userDestinationTokenAccount",
+          "label": "user destination token account writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "sourceMint",
+          "label": "source mint writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationMint",
+          "label": "destination mint writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "mintAuthority",
+          "label": "mint authority PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceTokenProgram",
+          "label": "source token program",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "destinationTokenProgram",
+          "label": "destination token program",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "migrateWithReceipt": {
+      "cArray": "MIGRATE_WITH_RECEIPT_RULES",
+      "rules": [
+        {
+          "role": "user",
+          "label": "user signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceMintConfig",
+          "label": "source mint config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "userSourceTokenAccount",
+          "label": "user source token account writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "userDestinationTokenAccount",
+          "label": "user destination token account writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "sourceMint",
+          "label": "source mint writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationMint",
+          "label": "destination mint writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "mintAuthority",
+          "label": "mint authority PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceTokenProgram",
+          "label": "source token program",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "destinationTokenProgram",
+          "label": "destination token program",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "receipt",
+          "label": "receipt PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "systemProgram",
+          "label": "system program",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "pause": {
+      "cArray": "PAUSE_RULES",
+      "rules": [
+        {
+          "role": "pauseAuthority",
+          "label": "pause authority signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "anyConfig",
+          "label": "source or destination config PDA writable",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    },
+    "finalizeSourceMint": {
+      "cArray": "FINALIZE_SOURCE_MINT_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "admin signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "role": "sourceMintConfig",
+          "label": "source mint config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "destinationTokenConfig",
+          "label": "destination token config PDA",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "transferAuthorityBegin": {
+      "cArray": "TRANSFER_AUTHORITY_BEGIN_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "current admin signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "pendingAuthority",
+          "label": "pending authority",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "transferAuthorityAccept": {
+      "cArray": "TRANSFER_AUTHORITY_ACCEPT_RULES",
+      "rules": [
+        {
+          "role": "pendingAuthority",
+          "label": "pending authority signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "adminAuthority",
+          "label": "current admin authority",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    "retireAuthority": {
+      "cArray": "RETIRE_AUTHORITY_RULES",
+      "rules": [
+        {
+          "role": "adminAuthority",
+          "label": "current admin signer",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "role": "config",
+          "label": "config PDA writable",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "role": "pauseAuthority",
+          "label": "current pause authority signer",
+          "signer": true,
+          "writable": false
+        }
+      ]
+    }
+  },
+  "malformedCases": {
+    "missingAccount": "ERR_ACCOUNT_COUNT_MISMATCH",
+    "extraAccount": "ERR_PROTOCOL_FEE_FORBIDDEN",
+    "missingRequiredSigner": "ERR_MISSING_REQUIRED_SIGNER",
+    "missingWritableAccount": "ERR_MISSING_WRITABLE_ACCOUNT",
+    "wrongConfigPda": "ERR_CONFIG_PDA_MISMATCH",
+    "wrongDestinationConfigPda": "ERR_DESTINATION_CONFIG_PDA_MISMATCH",
+    "wrongSourceConfigPda": "ERR_SOURCE_CONFIG_PDA_MISMATCH",
+    "wrongMintAuthorityPda": "ERR_MINT_AUTHORITY_PDA_MISMATCH",
+    "wrongSystemProgram": "ERR_SYSTEM_PROGRAM_MISMATCH",
+    "wrongTokenProgram": "ERR_TOKEN_PROGRAM_MISMATCH",
+    "wrongTokenAccountMint": "ERR_TOKEN_ACCOUNT_MINT_MISMATCH",
+    "wrongTokenAccountOwner": "ERR_TOKEN_ACCOUNT_OWNER_MISMATCH",
+    "wrongSourceDestinationRelationship": "ERR_RELATIONSHIP_MISMATCH",
+    "wrongMintDecimals": "ERR_MINT_DECIMALS_MISMATCH",
+    "wrongDestinationMintAuthority": "ERR_MINT_AUTHORITY_MISMATCH",
+    "destinationFreezeAuthorityPresent": "ERR_FREEZE_AUTHORITY_PRESENT"
+  },
+  "forbiddenExtraAccountLabels": [
+    "protocolFee",
+    "feeRecipient",
+    "feeSwitch",
+    "treasury"
+  ],
+  "defaultBuild": {
+    "createReceipt": "rejected",
+    "createReceiptError": "ERR_EXECUTOR_NOT_IMPLEMENTED"
+  }
+}

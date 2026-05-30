@@ -1,0 +1,45 @@
+{
+  "schema": "rati.burn-to-mint.disposable-devnet-proof/v1",
+  "source": "target/disposable-migration-retire/evidence.json and solana confirm -v logs",
+  "disposableOnly": true,
+  "cluster": "devnet",
+  "rpc": "https://api.devnet.solana.com",
+  "programId": "2kSQEiYfFaziEm9nmhswePiQapaTvi1Qu7kEgMWKFFtc",
+  "sourceMint": "6MiwVfXp1L8pSVxCnP7eEqYKJ5X24GNJZGMiKAxZ3Fhd",
+  "destinationMint": "JC4whCHbB3Luc1KgHUKrrsUdCd5NY5oEPmuuaXtbA7b8",
+  "artifact": {
+    "path": "programs/burn-to-mint/onchain-c/target/deploy/rati_burn_to_mint_c.so",
+    "bytes": 40464,
+    "sha256": "edfcded499c20c6eba143afb06f9703f19fcdaae66aeb7cea6fe022b11d44e77",
+    "cSbpfCpu": "v2"
+  },
+  "transactions": {
+    "deploy": "3no5PYJUmvBLc7ehrjk4BSiCCuTAdDtx7HgYdGbZyaqewXiGQNbHxtpqUtLkbFWkkZXx2cG13iyFPa5kySVZnKSB",
+    "initializeConfig": "66eJMbbYdFYPtLwUm8tcTcvT8zbVpoxu6SR8MCEMJG82rW5MWuDSqpsLH6vRmz7AZun9srU69B9dmgjbceDy1Tah",
+    "registerDestinationMint": "2nhGWBRcQC9ssmRsPVeA6rr7ENUPTigm1xBq6o8aigBFjmhHdVbHSMP8aLZuFwpoAX5bRXQ8WgyYnE2pxP3LmZF9",
+    "registerSourceMint": "3c66HcuD8ESerDCPhcVR34MAopBjTTxL6Bp5Tto7oZpzGsDFSHxXPfmpNpTY4Rs9hCyVXckYmeQbYW4HiQS9NsFh",
+    "setSourceEnabled": "KkJuMa7aYukqqF4yeFr7LpaszfCuB8fS51jZiv8hGGWaTi2JgpAXjHXPuAE2NTFPu3f6vgmrx3zkg3qgpbUQBbb",
+    "migrate": "2z3pWhCAPPu8vwE9knZaSMGqwsS7N2LhsYMc3irNJPZozPc7uULXtxrwZ41sPV35zwVLMUVEMuaWjAw2QLH7CZYg"
+  },
+  "accountCounts": {
+    "initializeConfig": 5,
+    "registerDestinationMint": 7,
+    "registerSourceMint": 8,
+    "setSourceEnabled": 4,
+    "migrateNoReceipt": 11
+  },
+  "computeUnits": {
+    "initializeConfig": 9144,
+    "registerDestinationMint": 10268,
+    "registerSourceMint": 10656,
+    "setSourceEnabled": 5449,
+    "migrate": 18936
+  },
+  "result": {
+    "computeBudgetRaised": false,
+    "sourceAmountBurned": "1000000",
+    "destinationAmountMinted": "1000000",
+    "sourceCounterDelta": "1000000",
+    "destinationCounterDelta": "1000000"
+  }
+}

@@ -1,0 +1,28 @@
+[package]
+name = "rati-burn-to-mint-onchain"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "rati_burn_to_mint_onchain"
+path = "src/lib.rs"
+
+[features]
+default = []
+bpf-entrypoint = []
+receipts = []
+
+[dependencies]
+pinocchio = { version = "=0.10.0", default-features = false }
+rati-burn-to-mint-core = { path = "../native" }
+
+[target.'cfg(any(target_os = "solana", target_arch = "bpf"))'.dependencies.solana-define-syscall]
+version = "=4.0.1"
+default-features = false
+features = ["unstable-static-syscalls"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(target_os, values("solana"))']
