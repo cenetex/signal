@@ -66,7 +66,7 @@ Stations are rotating ring structures with module slots arranged around each arc
 - **Helios Works** — cuprite + crystal processing, laser and tractor module fabs, its own shipyard.
 - **Outposts** — player-planted; begin as scaffolds, materialize once frames are delivered, then grow via module scaffolds snapped onto ring slots.
 
-The economy model is under active redesign toward a stricter 3-tier structure (Prospect = T1 smelt, Kepler = T2 fab, Helios = T3 assembly) — see memory and in-flight issues. Don't assume the current module layout is the intended end state.
+The economy model is under active redesign toward a stricter 3-tier structure (Prospect = T1 smelt, Kepler = T2 fab, Helios = T3 assembly) — see in-flight issues. Don't assume the current module layout is the intended end state.
 
 ## Economy: per-station credits
 
@@ -112,6 +112,6 @@ Per-player saves live under `saves/`:
 - Prefer targeted changes over premature file splits. The codebase already split once; don't split further without need.
 - Keep native and wasm builds green after changes. Run the test binary.
 - If the docked UI changes, verify fullscreen and narrow browser windows both.
-- Don't assume what's in `MEMORY.md` is still true — verify against code before acting on a remembered fact.
+- Verify against code before acting on a remembered fact. Prefer `ARCHITECTURE.md` for navigation.
 - Be careful with economy/ledger invariants. Credits are per-station; do not silently globalize them, and do not assume a single balance exists on the player.
 - Be careful with cargo vocabulary. Do not turn raw ore/fragments into manifest crates unless a design explicitly changes the three-state model.
