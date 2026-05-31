@@ -4739,6 +4739,7 @@ int main(void) {
     setvbuf(stderr, NULL, _IONBF, 0);
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGPIPE, SIG_IGN);  /* WebSocket disconnect during write */
 
     char listen_url[64];
     if (!read_env_config(listen_url, sizeof(listen_url))) return 1;
