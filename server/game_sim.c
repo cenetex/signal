@@ -6973,7 +6973,15 @@ void world_reset(world_t *w) {
      * feed (Prospect-homed miners only deliver to Prospect's hopper).
      *
      * Tow drones stay at the two shipyards (Kepler, Helios). --- */
-    /* NPC fleet removed — neural brain pilots handle all roles */
+    spawn_npc(w, 0, NPC_ROLE_MINER);
+    spawn_npc(w, 0, NPC_ROLE_MINER);
+    spawn_npc(w, 2, NPC_ROLE_MINER);
+    spawn_npc(w, 0, NPC_ROLE_HAULER);
+    spawn_npc(w, 0, NPC_ROLE_HAULER);
+    spawn_npc(w, 1, NPC_ROLE_HAULER);
+    spawn_npc(w, 2, NPC_ROLE_HAULER);
+    spawn_npc(w, 1, NPC_ROLE_TOW);
+    spawn_npc(w, 2, NPC_ROLE_TOW);
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to
