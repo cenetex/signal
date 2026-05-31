@@ -1,5 +1,6 @@
 #include "neural_checkpoint.h"
 #include "signal_brain.h"
+extern bool g_neural_singleplayer;
 #include <stdio.h>
 #include <string.h>
 #include <emscripten.h>
@@ -25,6 +26,7 @@ bool neural_singleplayer_init(void) {
     }
     
     neural_checkpoint_loaded = true;
+    g_neural_singleplayer = true;
     printf("[neural] brain loaded (%u bytes)\n", (unsigned)CKPT_LEN);
     return true;
 }

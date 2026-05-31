@@ -19,3 +19,7 @@ uint64_t signal_brain_inference_count(void);
 void signal_brain_drive(world_t *w, server_player_t *sp, float dt);
 
 #endif /* SIGNAL_BRAIN_H */
+
+void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt);
+
+extern bool g_neural_singleplayer;

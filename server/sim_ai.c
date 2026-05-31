@@ -8,6 +8,7 @@
 #include "tractor.h"
 #include "sim_nav.h"
 #include "sim_flight.h"
+#include "signal_brain.h"
 #include "sim_ship.h"
 #include "sim_physics.h"
 #include "sim_mining.h"
@@ -2673,6 +2674,16 @@ void step_npc_ships(world_t *w, float dt) {
         npc_enforce_role_hull(npc);
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
+
+        /* Neural brain control: when brain_mode is set, the brain handles
+         * flight. Physics + collision are still applied by the caller. */
+        if (npc->brain_mode == 1 && signal_brain_loaded()) {
+            signal_brain_drive_npc(w, npc, dt);
+            /* Brain sets turn/thrust — let physics integration do the rest.
+             * Skip the role-based state machine below. */
+            mirror_ship_to_npc(w, n);
+            continue;
+        }
 
         if (npc->role == NPC_ROLE_HAULER) {
             step_hauler(w, npc, n, dt);

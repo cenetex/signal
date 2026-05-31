@@ -983,6 +983,11 @@ typedef struct {
     /* NPC-local situated knowledge. Slice 1 mirrors contract gossip into
      * KNOW_CONTRACT payloads without changing the hauler picker yet. */
     knowledge_view_t knowledge;
+
+    /* Neural brain mode: 0 = heuristic (legacy), 1 = neural flight.
+     * When set, the step_npc_ships loop delegates flight control to
+     * signal_brain_drive_npc instead of the role-specific state machine. */
+    uint8_t brain_mode;
 } npc_ship_t;
 
 /* ------------------------------------------------------------------ */

@@ -74,6 +74,7 @@ typedef struct {
 } signal_brain_state_t;
 
 static signal_brain_model_t g_brain;
+bool g_neural_singleplayer = false;
 
 static const signal_brain_action_t SB_ACTIONS[SB_ACTION_COUNT] = {
     {"NONE", 0, 0},
@@ -649,4 +650,67 @@ void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
     sp->input.turn = (float)SB_ACTIONS[best].turn;
     sp->input.thrust = (float)SB_ACTIONS[best].thrust;
     sp->input.reverse_thrust = false;
+}
+
+
+/* Simplified feature fill for NPC ships — avoids server_player_t dependency. */
+static void fill_npc_features(const npc_ship_t *npc, const vec2 target,
+                              const signal_brain_action_t *action, double row[SB_FEATURE_COUNT]) {
+    const ship_t *s = &npc->ship;
+    memset(row, 0, SB_FEATURE_COUNT * sizeof(double));
+    
+    float dx = target.x - s->pos.x;
+    float dy = target.y - s->pos.y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    float target_heading = atan2f(dy, dx);
+    float heading_error = target_heading - s->angle;
+    while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
+    while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;
+    
+    float speed = v2_len(s->vel);
+    float fwd_speed = s->vel.x * cosf(s->angle) + s->vel.y * sinf(s->angle);
+    
+    row[0] = 1.0;  /* bias */
+    row[1] = dist / 5000.0;
+    row[2] = heading_error / 3.14159265f;
+    row[3] = cosf(heading_error);
+    row[4] = sinf(heading_error);
+    row[5] = speed / 300.0;
+    row[6] = fwd_speed / 300.0;
+    row[7] = action->turn;
+    row[8] = action->thrust;
+    row[9] = npc->hull > 0.0f ? s->hull / npc->hull : 0.0f;
+    row[10] = (npc->brain_mode == 1) ? 1.0 : 0.0;
+}
+
+void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
+    (void)dt;
+    if (!g_brain.loaded || !w || !npc || !npc->active || npc->brain_mode != 1) return;
+    if (npc->state == NPC_STATE_DOCKED) return;
+    
+    /* Target: asteroid if assigned, otherwise home station */
+    vec2 target = {0};
+    if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
+        target = w->asteroids[npc->target_asteroid].pos;
+    } else {
+        int home = npc->home_station;
+        target = (home >= 0 && home < MAX_STATIONS) ? w->stations[home].pos : v2(0,0);
+    }
+    
+    double row[SB_FEATURE_COUNT];
+    double best_score = -1e300;
+    int best = 0;
+    
+    for (int i = 0; i < SB_ACTION_COUNT; i++) {
+        fill_npc_features(npc, target, &SB_ACTIONS[i], row);
+        double score = forward_model(row);
+        if (isfinite(score) && score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+    
+    npc->input.turn = (float)SB_ACTIONS[best].turn;
+    npc->input.thrust = (float)SB_ACTIONS[best].thrust;
+    npc->thrusting = (SB_ACTIONS[best].thrust > 0);
 }
