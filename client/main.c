@@ -1339,6 +1339,11 @@ static void init(void) {
 #else
         /* Native: check SIGNAL_SERVER environment variable or command line */
         server_url = getenv("SIGNAL_SERVER");
+        /* Load neural brain for singleplayer if no server */
+        extern bool neural_singleplayer_init(void);
+        if (!server_url || server_url[0] == '\0') {
+            neural_singleplayer_init();
+        }
 #endif
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
