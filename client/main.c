@@ -1333,6 +1333,7 @@ static void init(void) {
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
             "  if (p.has('singleplayer')) return '';"
+            "  if (p.has('neural')) { Module._neural_singleplayer_init(); }"
             "  return p.get('server') || window.SIGNAL_SERVER || '';"
             "})()");
 #else

@@ -142,6 +142,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/render.c
     client/input.c
     client/net_sync.c
+    client/neural_singleplayer.c
     client/local_server.c
     client/onboarding.c
     client/contract_objective.c
