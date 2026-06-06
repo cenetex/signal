@@ -4799,6 +4799,19 @@ int main(void) {
                 memcpy(g_avatar_nacl_secret, nacl_secret, 64);
                 g_has_avatar_keypair = true;
                 printf("[server] imported avatar keypair from SIGNAL_AVATAR_KEYPAIR_B64\n");
+                
+                /* Derive station position from pubkey */
+                sha256_ctx_t pctx;
+                uint8_t phash[32];
+                sha256_init(&pctx);
+                sha256_update(&pctx, nacl_secret + 32, 32);  /* pubkey */
+                sha256_update(&pctx, (const uint8_t*)"station", 7);
+                sha256_final(&pctx, phash);
+                
+                int32_t px = (int32_t)((phash[0] << 24 | phash[1] << 16 | phash[2] << 8 | phash[3]) % 20000 - 10000);
+                int32_t py = (int32_t)((phash[4] << 24 | phash[5] << 16 | phash[6] << 8 | phash[7]) % 20000 - 10000);
+                printf("[server] avatar station position: (%d, %d)\n", px, py);
+                printf("[server] tow a SIGNAL RELAY scaffold here and press E to found your station\n");
             } else {
                 fprintf(stderr, "[server] WARNING: SIGNAL_AVATAR_KEYPAIR_B64 decode failed (got %d bytes, expected 32)\n", seed_len);
             }
