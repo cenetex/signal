@@ -42,7 +42,11 @@
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
 #include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
-#include "station_authority.h" /* per-station Ed25519 identity (#479 B) */
+#include "station_authority.h"
+
+/* Imported from main.c — aws-swarm avatar keypair */
+extern bool g_has_avatar_keypair;
+extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B) */
 #include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include <math.h>
