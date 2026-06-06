@@ -80,3 +80,13 @@ void gossip_dock_handshake(world_t *w, int station_index,
 void gossip_bootstrap_world_stations(world_t *w);
 
 #endif
+
+/* Holographic experience exchange: when a holographic pilot docks at a
+ * station, their accumulated memory is bundled into the station's pool,
+ * and the station's pool is bundled into the pilot's memory. This lets
+ * experience propagate through the station network as ships travel.
+ *
+ * Called alongside gossip_dock_handshake during dock events.
+ * Only activates for ships with brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC. */
+void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc);
+

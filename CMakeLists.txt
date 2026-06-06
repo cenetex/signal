@@ -127,6 +127,7 @@ set(SIGNAL_SIM_HELPERS
     shared/laser.c
     shared/trade_paging.c
     shared/settlement_engine.c
+    shared/holographic_nn.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not

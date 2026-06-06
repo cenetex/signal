@@ -192,3 +192,17 @@ void station_pubkey_b58_prefix(const station_t *s, char out[16]) {
     memcpy(out, tmp, n);
     out[n] = '\0';
 }
+
+void station_authority_init_outpost_keypair(station_t *s,
+                                            const uint8_t founder_pub[32],
+                                            const uint8_t nacl_secret[64]) {
+    if (!s) return;
+    if (founder_pub)
+        memcpy(s->outpost_founder_pubkey, founder_pub, 32);
+    else
+        memset(s->outpost_founder_pubkey, 0, 32);
+    /* nacl_secret format: seed[0..31] || pubkey[32..63] */
+    memcpy(s->station_secret, nacl_secret, 64);
+    memcpy(s->station_pubkey, nacl_secret + 32, 32);
+    s->outpost_planted_tick = 0; /* imported keypair */
+}

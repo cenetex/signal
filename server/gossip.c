@@ -1,6 +1,7 @@
 #include "gossip.h"
 
 #include "../shared/sha256.h"
+#include "../shared/holographic_nn.h"
 #include "../shared/station_util.h"
 #include <string.h>
 
@@ -324,5 +325,60 @@ void gossip_bootstrap_world_stations(world_t *w) {
             if (has_item)
                 knowledge_view_insert(&w->stations[s_idx].knowledge, &item);
         }
+    }
+}
+
+/* ---- Holographic experience exchange ---- */
+
+void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
+    if (!w || !npc || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    if (npc->brain_mode != SERVER_BRAIN_MODE_HOLOGRAPHIC) return;
+
+    fprintf(stderr, "[hnn] exchange called: slot=%ld mode=%d st=%d exp=%d\n",
+            (long)(npc - w->npc_ships), npc->brain_mode, station_idx,
+            npc->hnn_mem.experience_count);
+
+    station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return;
+
+    /*
+     * Upload: bundle the pilot's experience into the station's pool.
+     * Skip if the pilot has no experience yet (experience_count == 0).
+     */
+    if (npc->hnn_mem.experience_count > 0) {
+        /* Bundle pilot's store into station's pool */
+        for (int i = 0; i < HNN_DIM; i++)
+            st->hnn_experience.store[i] += npc->hnn_mem.store[i];
+        st->hnn_experience.experience_count += npc->hnn_mem.experience_count;
+        hnn_normalize(st->hnn_experience.store);
+        st->hnn_experience_version++;
+
+        fprintf(stderr, "[hnn] pilot %d uploaded experience to station %d "
+                "(pilot_count=%d, station_total=%d, version=%u)\n",
+                (int)(npc - w->npc_ships), station_idx,
+                npc->hnn_mem.experience_count,
+                st->hnn_experience.experience_count,
+                st->hnn_experience_version);
+    }
+
+    /*
+     * Download: if the station has experience the pilot hasn't seen
+     * yet (version mismatch), bundle it into the pilot's memory.
+     */
+    if (st->hnn_experience.experience_count > 0 &&
+        npc->hnn_experience_version < st->hnn_experience_version) {
+
+        /* Bundle station pool into pilot's memory */
+        for (int i = 0; i < HNN_DIM; i++)
+            npc->hnn_mem.store[i] += st->hnn_experience.store[i];
+        npc->hnn_mem.experience_count += st->hnn_experience.experience_count;
+        hnn_normalize(npc->hnn_mem.store);
+        npc->hnn_experience_version = st->hnn_experience_version;
+
+        fprintf(stderr, "[hnn] pilot %d downloaded experience from station %d "
+                "(station_version=%u, pilot_total=%d)\n",
+                (int)(npc - w->npc_ships), station_idx,
+                st->hnn_experience_version,
+                npc->hnn_mem.experience_count);
     }
 }

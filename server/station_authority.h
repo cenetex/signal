@@ -79,6 +79,17 @@ void station_authority_init_outpost(station_t *s,
                                     const uint8_t founder_pub[32],
                                     uint64_t planted_tick);
 
+/* Populate s->station_pubkey + s->station_secret from a pre-generated
+ * Ed25519 keypair (64 bytes NaCl format: seed || pubkey).
+ * This bypasses the operator-secret derivation and is used when an
+ * external agent (e.g. aws-swarm avatar) already holds a keypair.
+ * Also stamps provenance fields for save/load re-derivation.
+ * The secret key is copied into memory only — never serialized. */
+void station_authority_init_outpost_keypair(station_t *s,
+                                            const uint8_t founder_pub[32],
+                                            const uint8_t nacl_secret[64]);
+
+
 /* Re-populate s->station_secret from operator secret + already-set
  * identity material. Called by the world loader so the secret never
  * has to be written to disk. Returns true when a non-zero saved pubkey

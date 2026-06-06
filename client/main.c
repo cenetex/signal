@@ -19,6 +19,7 @@
 #include "manifest.h"
 #include "contract_objective.h"
 #include "palette.h"
+#include "signal_brain.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -1345,6 +1346,7 @@ static void init(void) {
             neural_singleplayer_init();
         }
 #endif
+        signal_brain_holographic_init();
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
             cbs.on_join = on_player_join;

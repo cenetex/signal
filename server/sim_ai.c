@@ -2096,6 +2096,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                                   &npc->known_contract_count,
                                   SHIP_KNOWN_CONTRACT_CAP,
                                   &npc->knowledge);
+            gossip_hnn_exchange(w, npc->home_station, npc);
 
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
@@ -2221,6 +2222,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                                   &npc->known_contract_count,
                                   SHIP_KNOWN_CONTRACT_CAP,
                                   &npc->knowledge);
+            gossip_hnn_exchange(w, npc->dest_station, npc);
 
             station_t *dest = &w->stations[npc->dest_station];
             if (hauler_ship && hauler_ship->manifest.count > 0) {
@@ -2636,7 +2638,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
 /* Cooldown between auto-respawn attempts. 15 s feels recoverable
  * (full chain-wipe of 7 NPCs comes back over ~100 s) without making
  * the rocks-vs-NPC PvP feature feel toothless. */
-#define NPC_RESPAWN_INTERVAL 15.0f
+#define NPC_RESPAWN_INTERVAL 3.0f
 
 void step_npc_ships(world_t *w, float dt) {
     /* Replenish dead haulers/miners on a slow drip. The first call
@@ -2675,12 +2677,33 @@ void step_npc_ships(world_t *w, float dt) {
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
 
-        /* Neural brain control: when brain_mode is set, the brain handles
-         * flight. Physics + collision are still applied by the caller. */
-        if (npc->brain_mode == 1 && signal_brain_loaded()) {
+        /* Neural / holographic brain control: when brain_mode is set,
+         * the brain handles flight. Physics + collision are still
+         * applied by the caller.
+         *
+         * Holographic NPCs run their DOCKED state through the normal
+         * state machine so dock gossip still fires; only flight is
+         * delegated. Neural NPCs skip the state machine entirely
+         * (legacy behavior). */
+        if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
+            if (npc->state != NPC_STATE_DOCKED) {
+                signal_brain_drive_npc(w, npc, dt);
+                /* Apply the brain's turn/thrust output to the ship */
+                step_ship_rotation(&npc->ship, dt, npc->input.turn);
+                {
+                    vec2 fwd = ship_forward(npc->ship.angle);
+                    step_ship_thrust(&npc->ship, dt, npc->input.thrust,
+                                     fwd, false, 0.0f, false);
+                }
+                npc_apply_physics(npc, dt, w);
+                npc_resolve_station_collisions(w, npc);
+                npc_resolve_asteroid_collisions(w, npc);
+                mirror_ship_to_npc(w, n);
+                continue;
+            }
+            /* DOCKED: fall through to state machine for dock gossip */
+        } else if (npc->brain_mode == 1 && signal_brain_loaded()) {
             signal_brain_drive_npc(w, npc, dt);
-            /* Brain sets turn/thrust — let physics integration do the rest.
-             * Skip the role-based state machine below. */
             mirror_ship_to_npc(w, n);
             continue;
         }
@@ -2710,6 +2733,9 @@ void step_npc_ships(world_t *w, float dt) {
             npc->state_timer -= dt;
             npc->ship.vel = v2(0.0f, 0.0f);
             if (npc->state_timer <= 0.0f) {
+                /* Holographic experience exchange at dock */
+                gossip_hnn_exchange(w, npc->home_station, npc);
+
                 /* Prefer towing a loose fragment over fracturing fresh
                  * rock, but only if the fragment is inside this ship's
                  * actual tractor range. NPC miners do not get a remote

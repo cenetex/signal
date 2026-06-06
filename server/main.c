@@ -23,6 +23,7 @@
 #include "handoff_flow.h"
 #include "sha256.h"
 #include "station_authority.h"
+#include "shared/base64.h"
 #include "station_policy.h"
 #include "station_util.h"
 #include <math.h>       /* lroundf */
@@ -4731,6 +4732,10 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
+/* aws-swarm avatar keypair (imported at startup) */
+static uint8_t g_avatar_nacl_secret[64];
+static bool g_has_avatar_keypair = false;
+
 int main(void) {
     /* Line-buffer stdout and unbuffer stderr so `docker compose logs`
      * sees server output in real time. Without this, fully-buffered
@@ -4750,6 +4755,7 @@ int main(void) {
     ensure_persistence_dirs();
     load_world_state();
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
+    signal_brain_holographic_init();
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
         char err[256];
         if (!signal_brain_load_checkpoint(server_bot_brain_checkpoint, err, sizeof(err))) {
@@ -4774,6 +4780,31 @@ int main(void) {
                    server_bot_contract_brain_checkpoint);
         }
     }
+
+    /* ── aws-swarm avatar keypair import ────────────────────────────
+     * When SIGNAL_AVATAR_KEYPAIR_B64 is set, use the avatar's Ed25519
+     * keypair for the player's station identity instead of deriving one
+     * from the operator secret. The keypair is base64-encoded NaCl format
+     * (seed || pubkey = 64 bytes).
+     */
+    {
+        const char *avatar_keypair_b64 = getenv("SIGNAL_AVATAR_KEYPAIR_B64");
+        if (avatar_keypair_b64 && avatar_keypair_b64[0]) {
+            /* Decode base64 → 32-byte seed */
+            uint8_t seed[32];
+            int seed_len = base64_decode(avatar_keypair_b64, seed, 32);
+            if (seed_len == 32) {
+                uint8_t nacl_secret[64];
+                signal_crypto_keypair_from_seed(seed, nacl_secret + 32, nacl_secret);
+                memcpy(g_avatar_nacl_secret, nacl_secret, 64);
+                g_has_avatar_keypair = true;
+                printf("[server] imported avatar keypair from SIGNAL_AVATAR_KEYPAIR_B64\n");
+            } else {
+                fprintf(stderr, "[server] WARNING: SIGNAL_AVATAR_KEYPAIR_B64 decode failed (got %d bytes, expected 32)\n", seed_len);
+            }
+        }
+    }
+
     spawn_server_bots();
 
     struct mg_mgr mgr;

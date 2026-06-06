@@ -683,11 +683,21 @@ static void fill_npc_features(const npc_ship_t *npc, const vec2 target,
     row[10] = (npc->brain_mode == 1) ? 1.0 : 0.0;
 }
 
+static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc);
+
 void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
     (void)dt;
-    if (!g_brain.loaded || !w || !npc || !npc->active || npc->brain_mode != 1) return;
+    if (!w || !npc || !npc->active) return;
     if (npc->state == NPC_STATE_DOCKED) return;
-    
+
+    if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
+        signal_brain_drive_npc_holographic(w, npc);
+        return;
+    }
+
+    /* Legacy neural brain path */
+    if (!g_brain.loaded || npc->brain_mode != 1) return;
+
     /* Target: asteroid if assigned, otherwise home station */
     vec2 target = {0};
     if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
@@ -696,11 +706,11 @@ void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
         int home = npc->home_station;
         target = (home >= 0 && home < MAX_STATIONS) ? w->stations[home].pos : v2(0,0);
     }
-    
+
     double row[SB_FEATURE_COUNT];
     double best_score = -1e300;
     int best = 0;
-    
+
     for (int i = 0; i < SB_ACTION_COUNT; i++) {
         fill_npc_features(npc, target, &SB_ACTIONS[i], row);
         double score = forward_model(row);
@@ -709,8 +719,327 @@ void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
             best = i;
         }
     }
-    
+
     npc->input.turn = (float)SB_ACTIONS[best].turn;
     npc->input.thrust = (float)SB_ACTIONS[best].thrust;
     npc->thrusting = (SB_ACTIONS[best].thrust > 0);
+}
+
+/* ---- Holographic pilot brain ---- */
+
+static hnn_action_table_t g_hnn_actions;
+static bool g_hnn_actions_initialized = false;
+
+void signal_brain_holographic_init(void) {
+    if (g_hnn_actions_initialized) return;
+    fprintf(stderr, "[hnn] holographic init: generating action vectors...\n");
+    hnn_action_table_init(&g_hnn_actions);
+    fprintf(stderr, "[hnn] holographic init: done\n");
+    g_hnn_actions_initialized = true;
+}
+
+/*
+ * Build holographic pilot features from an NPC ship's current state.
+ * Mirrors the feature set used by signal_brain_drive but compressed
+ * into the hnn_pilot_features_t struct for VSA encoding.
+ */
+static void hnn_fill_npc_features(const world_t *w,
+                                  const npc_ship_t *npc,
+                                  vec2 target,
+                                  int action_turn,
+                                  int action_thrust,
+                                  int action_idx,
+                                  hnn_pilot_features_t *f) {
+    const ship_t *s = &npc->ship;
+    memset(f, 0, sizeof(*f));
+
+    float dx = target.x - s->pos.x;
+    float dy = target.y - s->pos.y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    float target_heading = atan2f(dy, dx);
+    float heading_error = target_heading - s->angle;
+    while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
+    while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;
+
+    float speed = v2_len(s->vel);
+    vec2 forward = v2(cosf(s->angle), sinf(s->angle));
+    float fwd_speed = v2_dot(s->vel, forward);
+    vec2 right = v2(-forward.y, forward.x);
+    float lat_speed = v2_dot(s->vel, right);
+    float brake_dist = (speed * speed) / (2.0f * SHIP_BRAKE);
+
+    /* Simple clearance: distance to nearest station/asteroid in forward direction */
+    float fwd_clear = 1.0f;
+    {
+        float lookahead = 400.0f;
+        vec2 probe = v2_add(s->pos, v2_scale(forward, lookahead));
+        /* Check stations using closest-point-on-segment */
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (!station_exists(&w->stations[i])) continue;
+            float r = w->stations[i].radius + 200.0f;
+            vec2 closest = v2_closest_on_segment(w->stations[i].pos, s->pos, probe);
+            float d_sq = v2_dist_sq(closest, w->stations[i].pos);
+            if (d_sq < r * r) {
+                float seg_dist = v2_len(v2_sub(closest, s->pos));
+                float t = seg_dist / lookahead;
+                if (t < fwd_clear) fwd_clear = t;
+            }
+        }
+        /* Check asteroids */
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
+            float r = w->asteroids[i].radius + 60.0f;
+            vec2 closest = v2_closest_on_segment(w->asteroids[i].pos, s->pos, probe);
+            float d_sq = v2_dist_sq(closest, w->asteroids[i].pos);
+            if (d_sq < r * r) {
+                float seg_dist = v2_len(v2_sub(closest, s->pos));
+                float t = seg_dist / lookahead;
+                if (t < fwd_clear) fwd_clear = t;
+            }
+        }
+        if (fwd_clear > 1.0f) fwd_clear = 1.0f;
+        if (fwd_clear < 0.0f) fwd_clear = 0.0f;
+    }
+
+    float left_clear = fwd_clear;
+    float right_clear = fwd_clear;
+    float fwd_blocked = (fwd_clear < 0.15f) ? 1.0f : 0.0f;
+    float left_blocked = fwd_blocked;
+    float right_blocked = fwd_blocked;
+
+    float signal_q = signal_strength_at(w, s->pos);
+    const hull_def_t *hull = npc_hull_def(npc);
+    float max_hull = hull ? hull->max_hull : 100.0f;
+    float hull_r = max_hull > 0.0f ? s->hull / max_hull : 1.0f;
+
+    f->target_dist     = dist / 6000.0f;
+    f->heading_error   = heading_error / 3.14159265f;
+    f->heading_cos     = cosf(heading_error);
+    f->heading_sin     = sinf(heading_error);
+    f->speed           = speed / 350.0f;
+    f->forward_speed   = fwd_speed / 350.0f;
+    f->lateral_speed   = lat_speed / 350.0f;
+    f->brake_distance  = (brake_dist > 700.0f) ? 1.0f : brake_dist / 700.0f;
+    f->fwd_clear       = fwd_clear;
+    f->left_clear      = left_clear;
+    f->right_clear     = right_clear;
+    f->signal_quality  = signal_q;
+    f->hull_ratio      = hull_r;
+    f->path_count      = 0.0f;
+    f->path_current    = 0.0f;
+    f->fwd_blocked     = fwd_blocked;
+    f->left_blocked    = left_blocked;
+    f->right_blocked   = right_blocked;
+    f->goal_close      = 1.0f - (dist / 6000.0f);
+    f->action_delta_turn   = (float)action_turn;
+    f->action_delta_thrust = (float)action_thrust;
+    f->action_is_none      = (action_idx == 0) ? 1.0f : 0.0f;
+    f->action_is_reverse   = (action_thrust < 0) ? 1.0f : 0.0f;
+    f->composite_dot       = (float)action_turn * f->heading_sin;
+}
+
+
+/* Holographic NPC flight controller.
+ *
+ * Each tick:
+ *   1. Build state features (without action info)
+ *   2. Retrieve best action from holographic memory
+ *   3. Apply turn/thrust to NPC input
+ *
+ * The state vector is encoded by bundling (feature_idx, value) pairs.
+ * Retrieval unbinds the state from the holographic memory to get an
+ * action vector, then cosine-similarity picks the closest action.
+ */
+static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
+    if (!w || !npc) return;
+    static int debug_call_count = 0;
+    debug_call_count++;
+    if (debug_call_count == 1 || debug_call_count % 600 == 0)
+        fprintf(stderr, "[hnn] call #%d state=%d tgt=%d timer=%.1f exp=%d pos=(%.0f,%.0f)\n",
+                debug_call_count, npc->state, npc->target_asteroid,
+                npc->state_timer, npc->hnn_mem.experience_count,
+                npc->ship.pos.x, npc->ship.pos.y);
+
+    /* Dock-return cycle: after accumulating experience, head home to
+     * share it via the gossip dock handshake. Use state_timer as a
+     * flight-duration counter. The state machine may have set
+     * state_timer to a recheck delay (e.g. 5.0 for IDLE); we reset it
+     * on the first holographic-brain tick after undocking by checking
+     * if we have no target and state_timer is suspiciously large. */
+    int home = npc->home_station;
+    vec2 home_pos = (home >= 0 && home < MAX_STATIONS) ? w->stations[home].pos : v2(0, 0);
+
+    /* Reset flight timer if state machine left a stale recheck delay.
+     * The state machine sets state_timer >= 2.0 for IDLE rechecks;
+     * we want a clean clock starting from 0. */
+    if (npc->target_asteroid < 0 && npc->state_timer > 1.0f) {
+        npc->state_timer = 0.0f;
+    }
+
+    /* Count flight ticks */
+    npc->state_timer += 1.0f / 120.0f; /* SIM_DT */
+
+    /* Return home after ~30 seconds of flight, or sooner if we have
+     * good experience, have been flying at least 5 seconds, and happen
+     * to be nearby. The 5-second floor prevents immediate re-docking
+     * right after undocking. */
+    bool time_to_dock = (npc->state_timer > 30.0f);
+    float dist_to_home = v2_len(v2_sub(npc->ship.pos, home_pos));
+    bool near_home = (dist_to_home < 400.0f && npc->hnn_mem.experience_count > 10
+                      && npc->state_timer > 5.0f);
+
+    if ((time_to_dock || near_home) && dist_to_home < 250.0f) {
+        /* Close enough — transition to docked. The next tick the
+         * state machine will handle the dock handshake including
+         * holographic experience exchange. */
+        fprintf(stderr, "[hnn] slot=%ld ->DOCKED exp=%d t=%.1f dist=%.0f\n",
+                (long)(npc - w->npc_ships), npc->hnn_mem.experience_count,
+                npc->state_timer, dist_to_home);
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = NPC_DOCK_TIME;
+        npc->target_asteroid = -1;
+        /* state_timer will be 0 after state machine runs the dock
+         * cycle, so the holographic brain gets a clean counter on
+         * the next undock. */
+        return;
+    }
+
+    /* Pick an exploration target: if we have no target, find a
+     * nearby asteroid to fly toward. When it's time to return, steer
+     * home. This only triggers once per flight cycle since we set
+     * target_asteroid after picking. */
+    vec2 target;
+    if (npc->target_asteroid < 0) {
+        /* Need a destination — find a nearby asteroid to explore */
+        float best_d = 999999.0f;
+        int best_ast = -1;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i]))
+                continue;
+            float d = v2_dist_sq(npc->ship.pos, w->asteroids[i].pos);
+            /* Pick something 500-3000 units away — not too close, not
+             * too far. Weight toward mid-range. */
+            if (d > 250000.0f && d < 9000000.0f && d < best_d) {
+                best_d = d;
+                best_ast = i;
+            }
+        }
+        if (best_ast >= 0) {
+            npc->target_asteroid = best_ast;
+            fprintf(stderr, "[hnn] slot=%ld exploring asteroid %d (dist=%.0f)\n",
+                    (long)(npc - w->npc_ships), best_ast, sqrtf(best_d));
+        }
+    }
+
+    if (time_to_dock) {
+        target = home_pos;
+        npc->target_asteroid = -1;
+    } else if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
+        target = w->asteroids[npc->target_asteroid].pos;
+    } else {
+        target = home_pos;
+    }
+
+    /* Action definitions: 0=NONE, 1=W, 2=A, 3=D, 4=S, 5=WA, 6=WD, 7=SA, 8=SD */
+    static const int action_turns[HNN_ACTION_COUNT] = {0, 0, -1, 1, 0, -1, 1, -1, 1};
+    static const int action_thrusts[HNN_ACTION_COUNT] = {0, 1, 0, 0, -1, 1, 1, -1, -1};
+
+    /* Score each action by encoding (state, action) and comparing
+     * against the holographic memory. The action that best matches
+     * stored experiences wins. */
+    int best_action = 0;
+    float best_sim = -2.0f;
+
+    /* If memory is empty (first few ticks), use heading correction
+     * to bootstrap. Store these early experiences so the memory
+     * can start learning immediately. */
+    if (npc->hnn_mem.experience_count == 0) {
+        float dx = target.x - npc->ship.pos.x;
+        float dy = target.y - npc->ship.pos.y;
+        float target_heading = atan2f(dy, dx);
+        float heading_error = target_heading - npc->ship.angle;
+        while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
+        while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;
+
+        int boot_turn = 0, boot_thrust = 0;
+        if (fabsf(heading_error) > 0.3f) {
+            boot_turn = (heading_error > 0.0f) ? 1 : -1;
+            boot_thrust = 1;
+        } else {
+            boot_turn = 0;
+            boot_thrust = 1;
+        }
+        npc->input.turn = (float)boot_turn;
+        npc->input.thrust = (float)boot_thrust;
+        npc->thrusting = (boot_thrust > 0);
+
+        /* Map (turn,thrust) to action index for storage */
+        int boot_action = 0;
+        if (boot_turn == 0 && boot_thrust == 0) boot_action = 0;
+        else if (boot_turn == 0 && boot_thrust == 1) boot_action = 1;
+        else if (boot_turn == -1 && boot_thrust == 0) boot_action = 2;
+        else if (boot_turn == 1 && boot_thrust == 0) boot_action = 3;
+        else if (boot_turn == 0 && boot_thrust == -1) boot_action = 4;
+        else if (boot_turn == -1 && boot_thrust == 1) boot_action = 5;
+        else if (boot_turn == 1 && boot_thrust == 1) boot_action = 6;
+        else if (boot_turn == -1 && boot_thrust == -1) boot_action = 7;
+        else if (boot_turn == 1 && boot_thrust == -1) boot_action = 8;
+
+        /* Store bootstrap experience */
+        hnn_pilot_features_t fs;
+        fprintf(stderr, "[hnn] bootstrap: filling features...\n");
+        hnn_fill_npc_features(w, npc, target, boot_turn, boot_thrust,
+                              boot_action, &fs);
+        fprintf(stderr, "[hnn] bootstrap: encoding state...\n");
+        float sv[HNN_DIM];
+        hnn_encode_state(&fs, sv);
+        fprintf(stderr, "[hnn] bootstrap: storing in memory...\n");
+        hnn_memory_store(&npc->hnn_mem, sv, g_hnn_actions.vecs[boot_action]);
+        fprintf(stderr, "[hnn] bootstrap: done! exp=%d\n", npc->hnn_mem.experience_count);
+        return;
+    }
+
+    /* Encode state-only features (action-independent) */
+    hnn_pilot_features_t state_only;
+    hnn_fill_npc_features(w, npc, target, 0, 0, 0, &state_only);
+
+    /* Retrieve from holographic memory */
+    float retrieved[HNN_DIM];
+    {
+        float state_vec[HNN_DIM];
+        hnn_encode_state(&state_only, state_vec);
+        hnn_memory_cleanup(&npc->hnn_mem, state_vec, retrieved, 3);
+    }
+
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        float sim = hnn_similarity(retrieved, g_hnn_actions.vecs[i]);
+        if (sim > best_sim) {
+            best_sim = sim;
+            best_action = i;
+        }
+    }
+
+    /* Hard safety: if forward is blocked and we selected thrust, override to brake */
+    if (state_only.fwd_blocked > 0.5f && action_thrusts[best_action] > 0) {
+        best_action = 4; /* S = brake */
+    }
+
+    npc->hnn_mem.last_retrieval_similarity = best_sim;
+    npc->input.turn = (float)action_turns[best_action];
+    npc->input.thrust = (float)action_thrusts[best_action];
+    npc->thrusting = (action_thrusts[best_action] > 0);
+
+    /* Store this experience into holographic memory for future recall.
+     * Encode the full (state, action) pair and bundle it in. */
+    {
+        hnn_pilot_features_t full_state;
+        hnn_fill_npc_features(w, npc, target,
+                              action_turns[best_action],
+                              action_thrusts[best_action],
+                              best_action,
+                              &full_state);
+        float state_vec[HNN_DIM];
+        hnn_encode_state(&full_state, state_vec);
+        hnn_memory_store(&npc->hnn_mem, state_vec, g_hnn_actions.vecs[best_action]);
+    }
 }

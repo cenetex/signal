@@ -6973,15 +6973,20 @@ void world_reset(world_t *w) {
      * feed (Prospect-homed miners only deliver to Prospect's hopper).
      *
      * Tow drones stay at the two shipyards (Kepler, Helios). --- */
-    spawn_npc(w, 0, NPC_ROLE_MINER);
-    spawn_npc(w, 0, NPC_ROLE_MINER);
-    spawn_npc(w, 2, NPC_ROLE_MINER);
-    spawn_npc(w, 0, NPC_ROLE_HAULER);
-    spawn_npc(w, 0, NPC_ROLE_HAULER);
-    spawn_npc(w, 1, NPC_ROLE_HAULER);
-    spawn_npc(w, 2, NPC_ROLE_HAULER);
-    spawn_npc(w, 1, NPC_ROLE_TOW);
-    spawn_npc(w, 2, NPC_ROLE_TOW);
+    /* Three demonstration pilots, one per seeded station, each with a
+     * different flight brain:
+     *   Prospect (station 0) — heuristic (legacy state machine)
+     *   Kepler   (station 1) — neural flight (requires .nnckpt on disk)
+     *   Helios   (station 2) — holographic VSA associative memory */
+    {
+        int slot;
+        slot = spawn_npc(w, 0, NPC_ROLE_MINER);
+        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_NONE;
+        slot = spawn_npc(w, 1, NPC_ROLE_MINER);
+        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+        slot = spawn_npc(w, 2, NPC_ROLE_MINER);
+        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    }
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to
@@ -7005,7 +7010,7 @@ void world_reset(world_t *w) {
      * before any ship has moved. */
     gossip_bootstrap_world_stations(w);
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, 7 NPCs)\n", FIELD_ASTEROID_TARGET);
+    SIM_LOG("[sim] world reset complete (%d asteroids, 3 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
 
 /* ================================================================== */

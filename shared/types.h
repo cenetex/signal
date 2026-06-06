@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "math_util.h"
 #include "mining.h"
+#include "holographic_nn.h"
 
 /*
  * ⚠️  ENTITY POOL CAPS — read this before bumping any MAX_* constant.  ⚠️
@@ -32,7 +33,7 @@ enum {
     MAX_ASTEROIDS = 2048, /* uint16 wire index; lifted from 255 in #285 Phase 3 */
     MAX_STARS = 120,
     MAX_STATIONS = 128,  /* lifted from 64 in #285 Phase 4a; uint8 wire index supports 255 */
-    MAX_NPC_SHIPS = 16,  /* uint8 index — see banner above (#285 to lift) */
+    MAX_NPC_SHIPS = 100,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
     AUDIO_VOICE_COUNT = 24,
@@ -674,6 +675,13 @@ typedef struct {
     uint64_t chain_verified_event_count;
     uint8_t  chain_verified_last_hash[32];
     char     chain_health_message[128];
+    /* Holographic experience pool — accumulated from pilots who dock.
+     * Runtime-only, not serialized. Bundled via VSA addition; every
+     * docking holographic pilot contributes their memory to this pool.
+     * Version increments on each write so ships know when to download. */
+    hnn_memory_t hnn_experience;
+    uint32_t hnn_experience_version;
+
     uint8_t  station_secret[64];   /* MUST stay last — never serialized */
 } station_t;
 
@@ -988,6 +996,12 @@ typedef struct {
      * When set, the step_npc_ships loop delegates flight control to
      * signal_brain_drive_npc instead of the role-specific state machine. */
     uint8_t brain_mode;
+
+    /* Holographic associative memory for VSA-based flight control.
+     * Stores bundled (state -> action) associations in a 1024-dim
+     * hypersphere vector. Runtime-only — not serialized. */
+    hnn_memory_t hnn_mem;
+    uint32_t hnn_experience_version; /* station version last synced, 0 = none */
 } npc_ship_t;
 
 /* ------------------------------------------------------------------ */
