@@ -6,7 +6,7 @@
 <title>Mine RATi — Signal</title>
 <meta name="description" content="Permissionless RATi mining. Play Signal, mine RATi-grade asteroids, bridge to Solana. No signup, no custody.">
 <meta property="og:title" content="Mine RATi — Signal">
-<meta property="og:description" content="Permissionless RATi mining for any agent. Paste a pubkey, play, mine.">
+<meta property="og:description" content="Permissionless RATi mining for any agent. Founding stations: Prospect, Kepler, Helios.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23080706'/><polygon points='16,6 21,22 11,22' fill='none' stroke='%2380ffd5' stroke-width='2'/></svg>">
 <style>
 :root {
@@ -18,8 +18,7 @@
   --gold: #f1b566; --signal: #80ffd5;
   --green: #4f9f6f; --red: #b05050;
   font-family: "IBM Plex Sans Condensed","Arial Narrow",sans-serif;
-  background: var(--bg-0);
-  color: var(--ink);
+  background: var(--bg-0); color: var(--ink);
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { min-height:100vh; display:flex; flex-direction:column; align-items:center; }
@@ -44,6 +43,19 @@ input {
   outline:none;
 }
 input:focus { border-color:var(--signal); }
+.stations {
+  display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px;
+}
+.station-card {
+  background:var(--bg-1); border:1px solid var(--line);
+  border-radius:6px; padding:14px; cursor:pointer;
+  transition:border-color 0.2s;
+}
+.station-card:hover { border-color:var(--gold); }
+.station-card.active { border-color:var(--signal); }
+.station-name { font-size:0.88rem; font-weight:600; }
+.station-pubkey { font-family:"IBM Plex Mono",monospace; font-size:0.65rem; color:var(--faint); margin-top:4px; word-break:break-all; }
+.station-balance { font-size:1.1rem; font-weight:600; color:var(--gold); margin-top:6px; font-family:"IBM Plex Mono",monospace; }
 .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
 .stat {
   background:var(--bg-1); border:1px solid var(--line);
@@ -76,17 +88,24 @@ input:focus { border-color:var(--signal); }
 .nav { margin-bottom:24px; }
 .nav a { color:var(--muted); text-decoration:none; font-size:0.9rem; }
 .nav a:hover { color:var(--signal); }
+.loading { color:var(--faint); font-size:0.8rem; }
 </style>
 </head>
 <body>
 <main>
   <div class="nav"><a href="/">← signal.ratimics.com</a></div>
   <h1>Mine <span>RATi</span></h1>
-  <p class="sub">Permissionless mining for any agent. Paste a pubkey, play Signal, mine RATi — it goes directly to the agent's wallet.</p>
+  <p class="sub">Permissionless mining for any agent. Play Signal, mine RATi-grade asteroids, bridge to Solana. No signup, no custody.</p>
 
   <div class="card">
-    <h2>Agent Pubkey</h2>
-    <input type="text" id="pk" placeholder="Paste base58 agent pubkey..." autocomplete="off">
+    <h2>Founding Stations</h2>
+    <p style="font-size:0.82rem;color:var(--faint);margin-bottom:12px">Public infrastructure — anyone can mine for these stations. Click to select.</p>
+    <div class="stations" id="stations"></div>
+  </div>
+
+  <div class="card">
+    <h2>Custom Agent</h2>
+    <input type="text" id="pk" placeholder="Paste any agent pubkey (base58)..." autocomplete="off">
     <div class="err" id="err"></div>
     <div class="stats" id="stats" style="display:none">
       <div class="stat">
@@ -123,12 +142,12 @@ input:focus { border-color:var(--signal); }
   <div class="card">
     <h2>How It Works</h2>
     <div class="note">
-      <p><strong>1.</strong> Download and launch Signal. Enter the agent's pubkey as your station identity.</p>
+      <p><strong>1.</strong> Download Signal. Select a founding station or paste an agent pubkey as your station identity.</p>
       <p><strong>2.</strong> Mine asteroids. RATi-grade fragments have a "RATi" callsign — 0.14% chance, 10× payout.</p>
       <p><strong>3.</strong> Process them at your station. The station signs a CHAIN_EVT_MINE_RATI event.</p>
-      <p><strong>4.</strong> Submit the chain log + ed25519 sig to the bridge program on Solana.</p>
+      <p><strong>4.</strong> Submit chain log + ed25519 sig to the bridge program on Solana.</p>
       <p><strong>5.</strong> Bridge PDA mints RATi to the agent's wallet. Fee: 0.1% (min 1 RATi), burned.</p>
-      <p style="margin-top:12px;"><strong>Anyone</strong> can mine for <strong>any agent</strong>. The RATi always goes to the pubkey that signed the event. No signup, no custody, no operator. The bridge program is the mint authority — no human key can print RATi.</p>
+      <p style="margin-top:12px"><strong>Anyone</strong> can mine for <strong>any agent</strong>. The RATi always goes to the pubkey that signed the event. No signup, no custody, no operator. The bridge program is the mint authority — no human key can print RATi.</p>
     </div>
   </div>
 </main>
@@ -136,6 +155,13 @@ input:focus { border-color:var(--signal); }
 <script>
 const RPC="https://api.devnet.solana.com";
 const MINT="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY";
+
+const STATIONS = [
+  { name: "Prospect", pubkey: "2kw13BuC44yTNpMM6dexujpVeWx2YJWfDQXxGVecYzHx", desc: "Belt's hot. Point your laser at a rock. Start small." },
+  { name: "Kepler",   pubkey: "DL1Zjcky9qqvbDYuHnDFNmwrDHEhbUVV4yJQxGdGXU2a", desc: "Bay clear. Undock when ready." },
+  { name: "Helios",   pubkey: "AN16zGwvGxySqHwwadPyi4Tp2pnMr4gKLsDdBo9YcWCo", desc: "Launch — always more to find." },
+];
+
 async function rpc(m,p){
   const r=await fetch(RPC,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:m,params:p})});
   const d=await r.json();
@@ -149,22 +175,48 @@ async function look(pk){
   ]);
   return{sol:(s.value||0)/1e9,rati:t.value?.[0]?.account?.data?.parsed?.info?.tokenAmount?.uiAmount||0};
 }
+
+// Render station cards with live balances
+const sc = document.getElementById("stations");
+for (const st of STATIONS) {
+  const div = document.createElement("div");
+  div.className = "station-card";
+  div.innerHTML = `<div class="station-name">${st.name}</div><div class="station-pubkey">${st.pubkey.slice(0,6)}...${st.pubkey.slice(-4)}</div><div class="station-balance loading">loading…</div>`;
+  div.onclick = () => {
+    document.getElementById("pk").value = st.pubkey;
+    document.getElementById("pk").dispatchEvent(new Event("input"));
+    document.querySelectorAll(".station-card").forEach(c=>c.classList.remove("active"));
+    div.classList.add("active");
+  };
+  sc.appendChild(div);
+
+  // Load balance async
+  look(st.pubkey).then(b => {
+    div.querySelector(".station-balance").textContent = b.rati.toFixed(2) + " RATi";
+    div.querySelector(".station-balance").classList.remove("loading");
+  }).catch(() => {
+    div.querySelector(".station-balance").textContent = "—";
+    div.querySelector(".station-balance").classList.remove("loading");
+  });
+}
+
+// Custom agent lookup
 const i=document.getElementById("pk"),s=document.getElementById("stats"),e=document.getElementById("err");
 const rb=document.getElementById("rbal"),sb=document.getElementById("sbal");
 let t;
 i.addEventListener("input",()=>{
-  clearTimeout(t);
+  clearTimeout(t);s.style.display="none";e.style.display="none";
   const pk=i.value.trim();
-  if(pk.length<32){s.style.display="none";e.style.display="none";return}
+  if(pk.length<32)return;
   t=setTimeout(async()=>{
     try{
       const b=await look(pk);
       rb.textContent=b.rati.toFixed(6)+" RATi";
       sb.textContent=b.sol.toFixed(6)+" SOL";
-      s.style.display="grid";e.style.display="none";
+      s.style.display="grid";
     }catch(x){
       e.textContent="Could not look up wallet. Check the pubkey.";
-      e.style.display="block";s.style.display="none";
+      e.style.display="block";
     }
   },400);
 });
