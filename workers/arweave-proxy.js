@@ -1,7 +1,18 @@
+// This worker only handles HTML routing. JS/WASM assets are served
+// by a separate mechanism (direct Arweave URLs embedded in the HTML).
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.slice(1) || "index.html";
+    
+    // Only handle HTML files
+    if (!path.endsWith(".html") && path !== "" && !path.includes(".")) {
+      // Non-HTML requests fall through to the default origin
+      return fetch(request);
+    }
+    if (path.endsWith(".js") || path.endsWith(".wasm")) {
+      return fetch(request);
+    }
 
     try {
       const manifestTx = await env.SIGNAL_MANIFEST.get("tx");
@@ -15,18 +26,15 @@ export default {
       const txId = entry?.id || manifest.paths?.["index.html"]?.id;
       if (!txId) return new Response("Not Found", { status: 404 });
 
-      // Large files: redirect to Arweave directly
-      const ext = path.split(".").pop().toLowerCase();
-      if (ext === "wasm" || ext === "js") {
-        return Response.redirect(`https://arweave.net/raw/${txId}`, 302);
-      }
-
       const fileRes = await fetch(`https://arweave.net/raw/${txId}`);
       if (!fileRes.ok) return new Response("File offline", { status: 503 });
 
-      const ct = { html: "text/html; charset=utf-8" }[ext] || "application/octet-stream";
       return new Response(fileRes.body, {
-        headers: { "content-type": ct, "cache-control": "public, max-age=3600", "access-control-allow-origin": "*" },
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=3600",
+          "access-control-allow-origin": "*",
+        },
       });
     } catch (e) {
       return new Response("Unavailable", { status: 503 });
