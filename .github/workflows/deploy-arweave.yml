@@ -48,7 +48,7 @@ jobs:
       - name: Deploy via Irys
         env:
           SOLANA_KEYPAIR: ${{ secrets.SOLANA_KEYPAIR }}
-        run: node scripts/deploy-irys.mjs
+        run: node scripts/deploy-irys.cjs
 
       - name: Update Cloudflare KV
         env:
