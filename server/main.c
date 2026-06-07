@@ -23,7 +23,7 @@
 #include "handoff_flow.h"
 #include "sha256.h"
 #include "station_authority.h"
-#include "shared/base64.h"
+#include "base64.h"
 #include "station_policy.h"
 #include "station_util.h"
 #include <math.h>       /* lroundf */
