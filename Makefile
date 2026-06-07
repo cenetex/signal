@@ -39,8 +39,8 @@ build:
 
 # --- Emscripten web client ---
 build-web:
-	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$$(git rev-parse --short HEAD)
-	cmake --build build-web --parallel
+	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(git rev-parse --short HEAD)
+	emmake cmake --build build-web --parallel
 
 # --- Headless game server ---
 build-server:
