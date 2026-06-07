@@ -1,4 +1,4 @@
-name: Deploy to Arweave + Cloudflare
+name: Deploy via Irys (Solana → Arweave)
 
 on:
   push:
@@ -45,15 +45,15 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Deploy to Arweave
+      - name: Deploy via Irys
         env:
-          ARWEAVE_WALLET_JSON: ${{ secrets.ARWEAVE_WALLET }}
-        run: node scripts/deploy-arweave.mjs
+          SOLANA_KEYPAIR: ${{ secrets.SOLANA_KEYPAIR }}
+        run: node scripts/deploy-irys.mjs
 
       - name: Update Cloudflare KV
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          MANIFEST_TX=$(cat .arweave-manifest-tx)
+          MANIFEST_TX=$(cat .arweave-manifest-tx 2>/dev/null || cat .irys-manifest-tx)
           npx wrangler kv key put --remote --binding SIGNAL_MANIFEST tx "$MANIFEST_TX"
           npx wrangler kv key delete --remote --binding SIGNAL_MANIFEST manifest

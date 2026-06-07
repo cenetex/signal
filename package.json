@@ -10,6 +10,7 @@
     "@playwright/test": "^1.52.0"
   },
   "dependencies": {
+    "@irys/sdk": "^0.2.11",
     "arweave": "^1.15.7"
   }
 }
