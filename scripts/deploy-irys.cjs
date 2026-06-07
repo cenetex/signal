@@ -4,7 +4,6 @@ const { Keypair } = require('@solana/web3.js');
 const { homedir } = require('os');
 
 async function main() {
-  // Load Solana keypair: CI uses SOLANA_KEYPAIR env var, local uses ~/.config/solana/id.json
   let keyBytes;
   if (process.env.SOLANA_KEYPAIR) {
     keyBytes = Uint8Array.from(JSON.parse(process.env.SOLANA_KEYPAIR));
@@ -21,20 +20,29 @@ async function main() {
   });
 
   const files = ['index.html', 'mine.html', 'play.html', 'signal.html', 'signal.js', 'signal.wasm', 'signal-touch-controls.js'];
-  const txIds = {};
 
+  // Calculate total cost and pre-fund once
+  let totalBytes = 0;
+  for (const name of files) {
+    try { totalBytes += readFileSync(`_site/${name}`).length; } catch {}
+  }
+  const totalPrice = await irys.getPrice(totalBytes);
+  const bal = await irys.getLoadedBalance();
+  if (bal < totalPrice) {
+    const need = totalPrice - bal;
+    console.log(`Funding ${need} winston for ${files.length} files (${totalBytes} bytes)...`);
+    await irys.fund(need);
+    console.log('Funded. Waiting for confirmation...');
+    // Wait for Irys to process the funding
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  // Upload files
+  const txIds = {};
   for (const name of files) {
     const path = `_site/${name}`;
     let data;
     try { data = readFileSync(path); } catch { console.log(`  SKIP ${name} (not found)`); continue; }
-
-    const price = await irys.getPrice(data.length);
-    const bal = await irys.getLoadedBalance();
-    if (bal < price) {
-      const need = price - bal;
-      console.log(`  Funding ${need} winston for ${name}...`);
-      await irys.fund(need);
-    }
 
     const tx = await irys.upload(data, {
       tags: [
@@ -48,11 +56,10 @@ async function main() {
     console.log(`  ${name} → ${tx.id}`);
   }
 
-  // Write primary tx ID for Cloudflare KV update
   const primary = txIds['index.html'] || txIds['mine.html'] || Object.values(txIds)[0];
   if (primary) {
     writeFileSync('.irys-manifest-tx', primary);
-    console.log(`\nManifest tx: ${primary}`);
+    console.log(`\nManifest: ${primary}`);
     console.log(`https://arweave.net/${primary}`);
   }
 }
