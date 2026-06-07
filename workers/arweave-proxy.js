@@ -1,36 +1,29 @@
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.slice(1) || "index.html";
-    
-    // Irys tx IDs for Signal files
-    const files = {
-      "index.html":  "3LZEte9Zjnom32AierB6oE9S5ybaKqCZMwmTPwzFqW2B",
-      "mine.html":   "4r5E9C3VvfXERrv9KAy83vwWiyiY3483vQ5iAhvPMqUM",
-      "play.html":   "C9RGdaEHUNRx5exRewGsXiZoaHCFBLxiw1iFw9hET58h",
-      "signal.html": "5JgXGeswjeXb14fnYLnSqMM3Qv7g64eQ28YWh4327q8S",
-    };
-    const txId = files[path] || files["index.html"];
-    if (!txId) return new Response("Not Found", { status: 404 });
 
-    // Try Arweave raw first, then Irys gateway
-    const urls = [
-      `https://arweave.net/raw/${txId}`,
-      `https://gateway.irys.dev/${txId}`,
-    ];
+    try {
+      const manifestTx = await env.SIGNAL_MANIFEST.get("tx");
+      if (!manifestTx) return new Response("Not Configured", { status: 503 });
 
-    for (const u of urls) {
-      try {
-        const res = await fetch(u);
-        if (res.ok && res.status === 200) {
-          const ct = path.endsWith(".html") ? "text/html; charset=utf-8" : 
-                     path.endsWith(".js") ? "application/javascript" : "application/octet-stream";
-          return new Response(res.body, {
-            headers: { "content-type": ct, "cache-control": "public, max-age=3600", "access-control-allow-origin": "*" },
-          });
-        }
-      } catch {}
+      // Fetch manifest from Arweave
+      const rawRes = await fetch(`https://arweave.net/raw/${manifestTx}`);
+      if (!rawRes.ok) return new Response("Manifest not found", { status: 503 });
+      const manifest = await rawRes.json();
+
+      const entry = manifest.paths?.[path];
+      const txId = entry?.id || manifest.paths?.["index.html"]?.id;
+      if (!txId) return new Response("Not Found", { status: 404 });
+
+      const fileRes = await fetch(`https://arweave.net/raw/${txId}`);
+      if (!fileRes.ok) return new Response("File not found on Arweave yet", { status: 503 });
+
+      const ext = path.split(".").pop().toLowerCase();
+      const ct = { html: "text/html; charset=utf-8", js: "application/javascript", wasm: "application/wasm" }[ext] || "text/html; charset=utf-8";
+      return new Response(fileRes.body, { headers: { "content-type": ct, "cache-control": "public, max-age=86400", "access-control-allow-origin": "*" } });
+    } catch (e) {
+      return new Response("Service Unavailable", { status: 503 });
     }
-    return new Response("Content not yet available on gateways. Try again soon.", { status: 503 });
   },
 };
