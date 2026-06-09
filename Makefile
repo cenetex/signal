@@ -351,7 +351,7 @@ site: build-web
 	@mkdir -p _site
 	cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
 	   build-web/play.html build-web/signal-touch-controls.js _site/
-	cp web/index.html _site/
+	cp web/index.html web/ost.html web/mine.html web/shell.html _site/
 	@echo "Site built in _site/"
 
 deploy-arweave: site

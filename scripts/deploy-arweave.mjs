@@ -1,32 +1,28 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join } from 'path';
-import Arweave from 'arweave';
 import { createHash } from 'crypto';
+import Irys from '@irys/sdk';
+import { Keypair } from '@solana/web3.js';
+import { homedir } from 'os';
 
 const SITE_DIR = resolve('_site');
 const HOST = process.env.ARWEAVE_HOST || 'arweave.net';
 const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 
-let wallet;
-if (process.env.ARWEAVE_WALLET_JSON) {
-  wallet = JSON.parse(process.env.ARWEAVE_WALLET_JSON);
+// Load Solana keypair for Irys
+let keypair;
+if (process.env.SOLANA_KEYPAIR) {
+  keypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.SOLANA_KEYPAIR)));
 } else {
-  let wp = null;
-  for (let i = 0; i < process.argv.length; i++) {
-    if (process.argv[i] === '--wallet' && process.argv[i + 1]) wp = resolve(process.argv[i + 1]);
-  }
-  if (!wp && process.env.ARWEAVE_WALLET) wp = resolve(process.env.ARWEAVE_WALLET);
-  if (!wp) wp = resolve('arweave-wallet.json');
-  if (!existsSync(wp)) { console.error(`No wallet at: ${wp}`); process.exit(1); }
-  wallet = JSON.parse(readFileSync(wp, 'utf-8'));
+  const keyPath = process.env.SOLANA_KEY_PATH || homedir() + '/.config/solana/id.json';
+  if (!existsSync(keyPath)) { console.error(`No Solana key at: ${keyPath}`); process.exit(1); }
+  keypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(keyPath, 'utf-8'))));
 }
 
 // Content-hash cache to avoid re-uploading unchanged files
 let assetCache = {};
 try { assetCache = JSON.parse(readFileSync('.arweave-cache.json', 'utf-8')); } catch (_) {}
-
-const arweave = Arweave.init({ host: HOST, port: PORT, protocol: PROTOCOL });
 
 function collectFiles(dir, base) {
   const files = [];
@@ -41,116 +37,117 @@ function collectFiles(dir, base) {
 
 function sha256(data) { return createHash('sha256').update(data).digest('hex'); }
 
-function ct(f) { const t={html:'text/html',js:'application/javascript',wasm:'application/wasm',css:'text/css'}; return t[f.split('.').pop().toLowerCase()]||'application/octet-stream'; }
-
-async function upload(data, tags) {
-  const tx = await arweave.createTransaction({ data }, wallet);
-  for (const [n,v] of Object.entries(tags)) tx.addTag(n, v);
-  await arweave.transactions.sign(tx, wallet);
-  const up = await arweave.transactions.getUploader(tx);
-  while (!up.isComplete) await up.uploadChunk();
-  return tx.id;
+function ct(f) {
+  const t = { html: 'text/html', js: 'application/javascript', wasm: 'application/wasm', css: 'text/css', mp3: 'audio/mpeg' };
+  return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
 }
 
-function rawUrl(name, assets) { return `https://arweave.net/raw/${assets[name]}`; }
-
 async function main() {
-  const addr = await arweave.wallets.jwkToAddress(wallet);
-  const bal = arweave.ar.winstonToAr(await arweave.wallets.getBalance(addr));
-  console.log(`Wallet: ${addr}  Balance: ${bal} AR`);
-  if (parseFloat(bal) < 0.0001) { console.error('Balance too low.'); process.exit(1); }
+  const irys = new Irys({
+    network: 'mainnet',
+    token: 'solana',
+    key: keypair.secretKey,
+    config: { providerUrl: 'https://api.mainnet-beta.solana.com' },
+  });
+
+  const addr = irys.address;
+  const bal = await irys.getLoadedBalance();
+  console.log(`Wallet: ${addr}  Irys credit: ${bal}`);
 
   const files = collectFiles(SITE_DIR, '');
-  const assets = {};
-  const htmls = [];
-  let total = 0;
+  const htmlFiles = [];
+  const manifestEntries = {};
+  let totalBytes = 0;
 
-  // Phase 1: non-HTML
-  console.log('Phase 1: assets...');
+  // Phase 1: upload non-HTML (assets, js, wasm, mp3)
+  console.log('\nPhase 1: assets...');
   for (const f of files) {
-    if (f.name.endsWith('.html')) { htmls.push(f); continue; }
-    const d = readFileSync(f.path);
-    const hash = sha256(d);
+    if (f.name.endsWith('.html')) { htmlFiles.push(f); continue; }
+    const data = readFileSync(f.path);
+    const hash = sha256(data);
     const cached = assetCache[f.name];
     if (cached && cached.hash === hash) {
-      assets[f.name] = cached.tx;
-      console.log(`  ${f.name} (unchanged, reuse ${cached.tx})`);
+      manifestEntries[f.name] = cached.tx;
+      console.log(`  ${f.name} (unchanged, reuse ${cached.tx.slice(0, 8)}...)`);
       continue;
     }
-    total += d.length;
-    console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
-    const tx = await upload(d, {'Content-Type':ct(f.name),'App-Name':'Signal'});
-    assets[f.name] = tx;
-    assetCache[f.name] = { hash, tx };
-    console.log(`    -> ${assets[f.name]}`);
+    totalBytes += data.length;
+    console.log(`  ${f.name} (${(data.length / 1024).toFixed(1)} KB)...`);
+    const receipt = await irys.upload(data, {
+      tags: [{ name: 'Content-Type', value: ct(f.name) }, { name: 'App-Name', value: 'Signal' }],
+    });
+    manifestEntries[f.name] = receipt.id;
+    assetCache[f.name] = { hash, tx: receipt.id };
+    console.log(`    -> ${receipt.id}`);
   }
 
-  // Phase 2: HTML with rewritten URLs
+  // Phase 2: upload HTML with rewritten asset URLs
   console.log('\nPhase 2: HTML...');
-  const manifest = {};
-  htmls.sort((a,b) => ["signal.html","play.html","index.html"].indexOf(a.name) - ["signal.html","play.html","index.html"].indexOf(b.name));  const deployHash = Date.now().toString(36);
-  for (const f of htmls) {
-    let c = readFileSync(f.path, 'utf-8');
+  const deployHash = Date.now().toString(36);
+  for (const f of htmlFiles) {
+    let content = readFileSync(f.path, 'utf-8');
 
-    // Replace asset paths with absolute Arweave raw URLs
-    if (f.name === 'signal.html') {
-      c = c.replace(/src=["'](\.\/)?signal-touch-controls\.js["']/, `src="${rawUrl('signal-touch-controls.js', assets)}"`);
-      c = c.replace(/src=["']signal\.js["']/, `src="${rawUrl('signal.js', assets)}"`);
-    }
-    if (f.name === 'play.html') {
-      c = c.replace(/src=["'](\.\/)?signal-touch-controls\.js["']/, `src="${rawUrl('signal-touch-controls.js', assets)}"`);
-    }
-    if (f.name === 'index.html') {
-      c = c.replace(/href=["']\/play["']/g, `href="${rawUrl('play.html', assets)}"`);
-      c = c.replace(/href=["']\/ost["']/g, 'href="https://signal.ratimics.com/ost"');
+    // Rewrite asset references to arweave raw URLs
+    for (const [name, txId] of Object.entries(manifestEntries)) {
+      if (!name.includes('/') && (name.endsWith('.js') || name.endsWith('.wasm') || name.endsWith('.css'))) {
+        content = content.replaceAll(`./${name}`, `https://arweave.net/raw/${txId}`);
+        content = content.replaceAll(`"${name}"`, `"https://arweave.net/raw/${txId}"`);
+      }
+      if (name.startsWith('music/')) {
+        content = content.replaceAll(`"./music/${name.slice(6)}"`, `https://arweave.net/raw/${txId}`);
+      }
     }
 
-    // Inject wasm locateFile into signal.html and play.html
-    const wasmUrl = rawUrl('signal.wasm', assets) + '?v=' + deployHash;
-    const wasmLines =
-`<script>
-if(!Module)var Module={};
-Module.locateFile=function(p){if(p==='signal.wasm')return'${wasmUrl}';return p};
-</script>`;
-
-    if (f.name === 'signal.html') {
-      c = c.replace('<script>var Module=', wasmLines + '\n<script>var Module=');
-    }
-    if (f.name === 'play.html') {
-      c = c.replace(/<script>\s*var canvas/, wasmLines + '\n<script>var canvas');
+    // Inject wasm locateFile
+    const wasmUrl = `https://arweave.net/raw/${manifestEntries['signal.wasm']}?v=${deployHash}`;
+    if (f.name === 'signal.html' || f.name === 'play.html') {
+      const moduleInject = `<script>\nif (!Module) var Module = {};\nModule.locateFile = function(p) { return p === 'signal.wasm' ? '${wasmUrl}' : p; };\n</script>\n`;
+      content = content.replace('<script>', moduleInject + '<script>');
     }
 
-    const d = Buffer.from(c);
-    const hash = sha256(d);
+    const data = Buffer.from(content);
+    const hash = sha256(data);
     const cached = assetCache[f.name];
     if (cached && cached.hash === hash) {
-      assets[f.name] = cached.tx;
-      manifest[f.name] = cached.tx;
-      console.log(`  ${f.name} (unchanged, reuse ${cached.tx})`);
-    } else {
-      total += d.length;
-      console.log(`  ${f.name} (${(d.length/1024).toFixed(1)} KB)...`);
-      const tx = await upload(d, {'Content-Type':'text/html','App-Name':'Signal'});
-      assets[f.name] = tx;
-      manifest[f.name] = tx;
-      assetCache[f.name] = { hash, tx };
+      manifestEntries[f.name] = cached.tx;
+      if (f.name.endsWith('.html')) manifestEntries[f.name.replace('.html', '')] = cached.tx;
+      console.log(`  ${f.name} (unchanged, reuse ${cached.tx.slice(0, 8)}...)`);
+      continue;
     }
-    if (f.name === 'index.html') manifest['/'] = assets[f.name];
-    console.log(`    -> ${assets[f.name]}`);
+
+    totalBytes += data.length;
+    console.log(`  ${f.name} (${(data.length / 1024).toFixed(1)} KB)...`);
+    const receipt = await irys.upload(data, {
+      tags: [{ name: 'Content-Type', value: 'text/html' }, { name: 'App-Name', value: 'Signal' }],
+    });
+    manifestEntries[f.name] = receipt.id;
+    if (f.name.endsWith('.html')) manifestEntries[f.name.replace('.html', '')] = receipt.id;
+    assetCache[f.name] = { hash, tx: receipt.id };
+    console.log(`    -> ${receipt.id}`);
   }
 
-  // Phase 3: manifest
-  console.log('\nPhase 3: manifest...');
-  for (const [n, id] of Object.entries(assets)) { if (!manifest[n]) manifest[n] = id; }
-  const mtx = await upload(
-    Buffer.from(JSON.stringify({manifest:'arweave/paths',version:'0.2.0',paths:manifest})),
-    {'Content-Type':'application/x.arweave-manifest+json','App-Name':'Signal'}
-  );
-  // Persist content-hash cache
+  // Persist cache
   writeFileSync('.arweave-cache.json', JSON.stringify(assetCache, null, 2));
-  console.log(`\nDeployed ${(total/1024).toFixed(1)} KB (${Object.keys(assetCache).length} files cached)`);
-  console.log(`URL: https://arweave.net/${mtx}`);
-  writeFileSync('.arweave-manifest-tx', mtx);
+
+  // Upload manifest JSON to Irys (settles to Arweave)
+  console.log('\nPhase 3: manifest...');
+  const manifest = { manifest: 'arweave/paths', version: '0.2.0', paths: manifestEntries };
+  const manifestData = Buffer.from(JSON.stringify(manifest));
+  const manifestReceipt = await irys.upload(manifestData, {
+    tags: [
+      { name: 'Content-Type', value: 'application/x.arweave-manifest+json' },
+      { name: 'App-Name', value: 'Signal' },
+    ],
+  });
+  console.log(`Manifest TX: ${manifestReceipt.id}`);
+  writeFileSync('.arweave-manifest-tx', manifestReceipt.id);
+
+  // Also write the paths map for KV-accelerated worker
+  writeFileSync('.arweave-paths.json', JSON.stringify(manifestEntries, null, 2));
+
+  console.log(`\nDeployed ${(totalBytes / 1024).toFixed(1)} KB (${Object.keys(assetCache).length} files cached)`);
+  console.log(`Manifest URL: https://arweave.net/${manifestReceipt.id}`);
+  console.log('Copy .arweave-paths.json into Cloudflare KV key "manifest" to update worker');
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

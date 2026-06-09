@@ -5,10 +5,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 
-#define MAX_INPUT 65536
+#define PACKNFT_MAX_INPUT 65536
 
-static char input_buf[MAX_INPUT];
+static char input_buf[PACKNFT_MAX_INPUT];
+
+static void copy_cstr(char *dst, size_t dst_cap, const char *src) {
+    if (dst_cap == 0) return;
+    int written = snprintf(dst, dst_cap, "%s", src);
+    if (written < 0) dst[0] = 0;
+}
 
 /* Minimal JSON string extractor — copies value into caller-provided buffer.
    Returns 0 on success, -1 if key not found or not a string value. */
@@ -36,7 +44,11 @@ static int json_get_copy(const char *json, const char *key, char *out, int out_c
 static int json_get_int(const char *json, const char *key, int def) {
     char buf[32];
     if (json_get_copy(json, key, buf, sizeof(buf)) < 0) return def;
-    return atoi(buf);
+    char *end = NULL;
+    errno = 0;
+    long value = strtol(buf, &end, 10);
+    if (errno || end == buf || *end != '\0' || value < INT_MIN || value > INT_MAX) return def;
+    return (int)value;
 }
 
 static void write_ok(const char *result_json) {
@@ -49,7 +61,7 @@ static void write_err(const char *msg) {
 
 int main(void) {
     /* Read all of stdin */
-    size_t len = fread(input_buf, 1, MAX_INPUT - 1, stdin);
+    size_t len = fread(input_buf, 1, PACKNFT_MAX_INPUT - 1, stdin);
     if (len == 0) { write_err("empty input"); return 1; }
     input_buf[len] = 0;
 
@@ -90,7 +102,6 @@ int main(void) {
             write_err("missing required fields"); return 1;
         }
         char commitment[65];
-        char h[65]; strncpy(h, catalog_hash, 65);
         reveal_pack_commitment(catalog_hash, asset, mint_sig, owner[0] ? owner : "", product[0] ? product : "", card_count, nonce, commitment);
         char out[256];
         snprintf(out, sizeof(out), "\"commitment\":\"%s\"", commitment);
@@ -127,10 +138,10 @@ int main(void) {
         reveal_card_slot(commitment, reveal_seed, asset, slot, proof, &card_index);
         const card_profile_t *card = &FIRST_BELL_CATALOG[card_index];
         reveal_provenance_t prov = {0};
-        strncpy(prov.pack_reveal_version, REVEAL_VERSION, 31);
-        strncpy(prov.commitment, commitment, 64);
-        strncpy(prov.reveal_proof, proof, 64);
-        strncpy(prov.pack_asset_address, asset, 47);
+        copy_cstr(prov.pack_reveal_version, sizeof(prov.pack_reveal_version), REVEAL_VERSION);
+        copy_cstr(prov.commitment, sizeof(prov.commitment), commitment);
+        copy_cstr(prov.reveal_proof, sizeof(prov.reveal_proof), proof);
+        copy_cstr(prov.pack_asset_address, sizeof(prov.pack_asset_address), asset);
         prov.reveal_slot = (uint64_t)slot;
         char card_json[METADATA_JSON_MAX];
         metadata_card_json(card, "", "", &prov, card_json, sizeof(card_json));
@@ -151,8 +162,8 @@ int main(void) {
         int card_count = json_get_int(input_buf, "cardCount", 5);
         int serial     = json_get_int(input_buf, "serial", 1);
 
-        if (!name[0]) strncpy(name, "Ruby High Card Pack", 63);
-        if (!symbol[0]) strncpy(symbol, "RUBY-PACK", 15);
+        if (!name[0]) copy_cstr(name, sizeof(name), "Ruby High Card Pack");
+        if (!symbol[0]) copy_cstr(symbol, sizeof(symbol), "RUBY-PACK");
         char meta[METADATA_JSON_MAX];
         metadata_pack_json(name, symbol, image, coll, prod, pack_count, card_count, serial, NULL, meta, sizeof(meta));
         char out[METADATA_JSON_MAX + 64];
@@ -181,10 +192,10 @@ int main(void) {
         json_get_copy(input_buf, "imageUri", image, sizeof(image));
         json_get_copy(input_buf, "description", desc, sizeof(desc));
 
-        if (!name[0]) strncpy(name, "Ruby High: First Bell", 63);
-        if (!family[0]) strncpy(family, FIRST_BELL_SET_FAMILY, 31);
-        if (!symbol[0]) strncpy(symbol, "RUBY", 15);
-        if (!desc[0]) strncpy(desc, "The First Bell set from Ruby High.", 255);
+        if (!name[0]) copy_cstr(name, sizeof(name), "Ruby High: First Bell");
+        if (!family[0]) copy_cstr(family, sizeof(family), FIRST_BELL_SET_FAMILY);
+        if (!symbol[0]) copy_cstr(symbol, sizeof(symbol), "RUBY");
+        if (!desc[0]) copy_cstr(desc, sizeof(desc), "The First Bell set from Ruby High.");
         char meta[METADATA_JSON_MAX];
         metadata_collection_json(name, family, symbol, image, desc, meta, sizeof(meta));
         char out[METADATA_JSON_MAX + 64];

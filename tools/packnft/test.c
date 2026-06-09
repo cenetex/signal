@@ -8,6 +8,12 @@
 static int tests_run = 0;
 static int tests_failed = 0;
 
+static void copy_cstr(char *dst, size_t dst_cap, const char *src) {
+    if (dst_cap == 0) return;
+    int written = snprintf(dst, dst_cap, "%s", src);
+    if (written < 0) dst[0] = 0;
+}
+
 #define TEST(name) static void name(void)
 #define RUN(test) do { tests_run++; test(); } while(0)
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); tests_failed++; return; } } while(0)
@@ -132,10 +138,10 @@ TEST(test_pack_shape_well_defined) {
 
 TEST(test_provenance_roundtrip) {
     reveal_provenance_t prov = {0};
-    strncpy(prov.pack_reveal_version, REVEAL_VERSION, 31);
-    strncpy(prov.commitment, "abc123commitment", 64);
-    strncpy(prov.reveal_proof, "def456revealproof", 64);
-    strncpy(prov.pack_asset_address, "PackAssetAddr123", 47);
+    copy_cstr(prov.pack_reveal_version, sizeof(prov.pack_reveal_version), REVEAL_VERSION);
+    copy_cstr(prov.commitment, sizeof(prov.commitment), "abc123commitment");
+    copy_cstr(prov.reveal_proof, sizeof(prov.reveal_proof), "def456revealproof");
+    copy_cstr(prov.pack_asset_address, sizeof(prov.pack_asset_address), "PackAssetAddr123");
     prov.reveal_slot = 3;
 
     const card_profile_t *c = catalog_by_set_number(1);

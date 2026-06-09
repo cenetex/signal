@@ -35,7 +35,7 @@ jobs:
           mkdir -p _site
           cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
              build-web/play.html build-web/signal-touch-controls.js _site/
-          cp web/index.html web/mine.html _site/
+          cp web/index.html web/mine.html web/ost.html web/shell.html _site/
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -45,15 +45,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Deploy to Arweave
+      - name: Deploy via Irys (Arweave)
         env:
-          ARWEAVE_WALLET_JSON: ${{ secrets.ARWEAVE_WALLET }}
+          SOLANA_KEYPAIR: ${{ secrets.SOLANA_KEYPAIR }}
         run: node scripts/deploy-arweave.mjs
 
       - name: Update Cloudflare KV
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          MANIFEST_TX=$(cat .arweave-manifest-tx)
-          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST tx "$MANIFEST_TX"
-          npx wrangler kv key delete --remote --binding SIGNAL_MANIFEST manifest
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST manifest "$(cat .arweave-paths.json)"
