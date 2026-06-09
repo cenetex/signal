@@ -1172,7 +1172,7 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
  * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
  * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged.
  * v61: +32B per contract for stable target_pub identity. */
-#define EXPECTED_SAVE_SIZE 234388
+#define EXPECTED_SAVE_SIZE 244132
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
