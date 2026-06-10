@@ -473,6 +473,40 @@ TEST(test_player_save_load_preserves_ship) {
     remove(TMP("player_99.sav"));
 }
 
+TEST(test_player_save_uses_temp_then_atomic_rename) {
+    WORLD_DECL;
+    world_reset(&w);
+    SERVER_PLAYER_DECL(sp);
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.hull = 42.0f;
+    ASSERT(player_save(&sp, test_tmp_dir(), 91));
+
+    char path[256], tmp_path[272];
+    ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &sp, 91));
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
+    FILE *tmp = fopen(tmp_path, "wb");
+    ASSERT(tmp != NULL);
+    fputs("partial player save", tmp);
+    fclose(tmp);
+
+    SERVER_PLAYER_DECL(loaded);
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 91));
+    ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
+
+    sp.ship.hull = 77.0f;
+    ASSERT(player_save(&sp, test_tmp_dir(), 91));
+    FILE *leftover = fopen(tmp_path, "rb");
+    ASSERT(leftover == NULL);
+
+    SERVER_PLAYER_DECL(reloaded);
+    ASSERT(player_load(&reloaded, &w, test_tmp_dir(), 91));
+    ASSERT_EQ_FLOAT(reloaded.ship.hull, 77.0f, 0.01f);
+    remove(path);
+    remove(tmp_path);
+}
+
 TEST(test_world_save_round_trips_station_manifest) {
     /* Previously, non-empty station manifests caused world_save to fail —
      * the pre-#339 guard rejected them because manifest wasn't persisted.
@@ -1349,6 +1383,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
+    RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_world_load_repairs_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);

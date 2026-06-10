@@ -8,7 +8,7 @@
  *     Per-station / per-npc / per-contract field-by-field I/O so adding
  *     new struct fields requires bumping SAVE_VERSION and adding a
  *     migration block in world_load().
- *   - Player save: PLAYER_MAGIC "PLY2", per-session token in filename.
+ *   - Player save: PLAYER_MAGIC "PLY2", atomic temp+rename like world.sav.
  *     v1 -> v2 migrates unlocked_modules bits across the #280 enum cleanup.
  *
  * v24 (#314): Layered persistence refactor.
@@ -2289,6 +2289,7 @@ bool player_save_rename_legacy_to_pubkey(const char *dir,
 
 bool player_save(const server_player_t *sp, const char *dir, int slot) {
     char path[256];
+    char tmp_path[272];
     ship_v4_t ship_disk;
     /* #339 slice A.2: PLY5 format lifts the empty-manifest guard and
      * appends a manifest tail (count + packed cargo_unit_t entries)
@@ -2297,7 +2298,8 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
      * legacy session_token under saves/legacy/. */
     ensure_save_subdirs(dir);
     if (!player_save_path(path, sizeof(path), dir, sp, slot)) return false;
-    FILE *f = fopen(path, "wb");
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
     encode_v4_ship(&ship_disk, &sp->ship);
     player_save_data_t data = {
@@ -2358,7 +2360,17 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
              fwrite(&crc, sizeof(crc), 1, f) == 1;
     }
-    fclose(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
+    }
+    /* Atomic rename matches world_save(): never remove the previous
+     * player save before the replacement is complete. */
+    if (rename(tmp_path, path) != 0) {
+        remove(tmp_path);
+        return false;
+    }
     if (ok) SIM_LOG("[sim] saved player %d\n", slot);
     return ok;
 }
