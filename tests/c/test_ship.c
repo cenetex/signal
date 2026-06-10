@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "sim_ship.h"
+#include "fixpoint.h"
 
 TEST(test_ship_hull_def_miner) {
     ship_t ship = {0};
@@ -92,6 +93,67 @@ TEST(test_npc_hull_def) {
     ASSERT_EQ_FLOAT(hull->tractor_range, 150.0f, 0.01f);
 }
 
+TEST(test_ship_boost_curve_uses_deterministic_exp) {
+    float boosted = ship_boost_thrust_mult(true, 0.5f);
+    float expected = 1.6f + 0.4f * fixp_expf(-1.5f);
+    ASSERT_EQ_FLOAT(boosted, expected, 0.0001f);
+    ASSERT_EQ_FLOAT(ship_boost_thrust_mult(false, 0.5f), 1.0f, 0.0001f);
+}
+
+TEST(test_ship_circle_pushback_deterministic_reference) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(6.0f, 8.0f);
+    ship.vel = v2(-3.0f, -4.0f);
+
+    float impact = resolve_ship_circle_pushback(&ship, v2(0.0f, 0.0f), 10.0f);
+    float pushed = 10.0f + ship_hull_def(&ship)->ship_radius + SHIP_COLLISION_SKIN;
+    ASSERT_EQ_FLOAT(impact, 5.0f, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(ship.pos), pushed, 0.001f);
+    ASSERT_EQ_FLOAT(ship.pos.x, pushed * 0.6f, 0.001f);
+    ASSERT_EQ_FLOAT(ship.pos.y, pushed * 0.8f, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(ship.vel), 0.0f, 0.001f);
+}
+
+TEST(test_ship_asteroid_pushback_deterministic_reference) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(9.0f, 12.0f);
+    ship.vel = v2(-6.0f, -8.0f);
+
+    asteroid_t rock = {0};
+    rock.active = true;
+    rock.pos = v2(0.0f, 0.0f);
+    rock.vel = v2(0.0f, 0.0f);
+    rock.radius = 12.0f;
+
+    float impact = resolve_ship_asteroid_pushback(&ship, &rock);
+    float pushed = rock.radius + ship_hull_def(&ship)->ship_radius + SHIP_COLLISION_SKIN;
+    ASSERT_EQ_FLOAT(impact, 10.0f, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(ship.pos), pushed, 0.001f);
+    ASSERT_EQ_FLOAT(ship.vel.x, -3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ship.vel.y, -4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(rock.vel.x, -3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(rock.vel.y, -4.0f, 0.001f);
+    ASSERT(rock.net_dirty);
+}
+
+TEST(test_ship_annular_pushback_uses_deterministic_angle_margin) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(50.0f, 0.0f);
+    ship.vel = v2(-7.0f, 0.0f);
+
+    float impact = resolve_ship_annular_pushback(&ship, v2(0.0f, 0.0f),
+                                                 50.0f, -0.2f, 0.4f);
+    float outer = 50.0f + STATION_CORRIDOR_HW +
+                  ship_hull_def(&ship)->ship_radius + SHIP_COLLISION_SKIN;
+    ASSERT(fixp_asinf(ship_hull_def(&ship)->ship_radius / 50.0f) > 0.0f);
+    ASSERT_EQ_FLOAT(impact, 7.0f, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(ship.pos), outer, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(ship.vel), 0.0f, 0.001f);
+}
+
 TEST(test_ship_fragment_tow_applies_ship_reaction) {
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
@@ -150,6 +212,10 @@ void register_ship_tests(void) {
     RUN(test_upgrade_required_product);
     RUN(test_upgrade_product_cost_scales_with_level);
     RUN(test_npc_hull_def);
+    RUN(test_ship_boost_curve_uses_deterministic_exp);
+    RUN(test_ship_circle_pushback_deterministic_reference);
+    RUN(test_ship_asteroid_pushback_deterministic_reference);
+    RUN(test_ship_annular_pushback_uses_deterministic_angle_margin);
     RUN(test_ship_fragment_tow_applies_ship_reaction);
     RUN(test_ship_tow_applies_to_ship_like_body);
     RUN(test_product_name);

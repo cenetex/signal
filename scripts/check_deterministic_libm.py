@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 MIGRATED_FILES = (
+    "server/sim_ship.c",
     "shared/laser.c",
     "shared/tractor.c",
 )
@@ -20,6 +21,8 @@ BANNED = {
     "sinf": "use v2_from_angle() or fixp_sinf()",
     "cosf": "use v2_from_angle() or fixp_cosf()",
     "atan2f": "use fixp_atan2f()",
+    "asinf": "use fixp_asinf()",
+    "expf": "use fixp_expf()",
     "tanf": "use fixp_tanf()",
     "powf": "use fixp_powf() or checked integer math",
 }

@@ -21,7 +21,7 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
     const float peak   = 2.0f;
     /* exp(-3t) ≈ 1.0 at t=0, 0.05 at t=1.0s — most of the kick in
      * the first ~500ms, tail blends into the steady burn. */
-    float kick = expf(-3.0f * hold_t);
+    float kick = fixp_expf(-3.0f * hold_t);
     return steady + (peak - steady) * kick;
 }
 
@@ -93,7 +93,7 @@ float resolve_ship_circle_pushback(ship_t *ship, vec2 center, float radius) {
     vec2 delta = v2_sub(ship->pos, center);
     float d_sq = v2_len_sq(delta);
     if (d_sq >= minimum * minimum) return 0.0f;
-    float d = sqrtf(d_sq);
+    float d = v2_len(delta);
     vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
     /* Push past the surface by SKIN so we're cleanly outside. */
     ship->pos = v2_add(center, v2_scale(normal, minimum + SHIP_COLLISION_SKIN));
@@ -107,7 +107,7 @@ float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
                                     float ring_r, float angle_a, float arc_delta) {
     float ship_r = ship_hull_def(ship)->ship_radius;
     vec2 delta = v2_sub(ship->pos, center);
-    float dist = sqrtf(v2_len_sq(delta));
+    float dist = v2_len(delta);
     if (dist < 1.0f) return 0.0f;
 
     /* Radial test: is the ship within the corridor's inflated band? */
@@ -117,8 +117,8 @@ float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
 
     /* Angular test with margin so ships near the arc edge don't
      * clip through. */
-    float ship_angle = atan2f(delta.y, delta.x);
-    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
+    float ship_angle = fixp_atan2f(delta.y, delta.x);
+    float angular_margin = (dist > 1.0f) ? fixp_asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
     float expanded_start = angle_a - angular_margin;
     float expanded_da = arc_delta + 2.0f * angular_margin;
     if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return 0.0f;
@@ -153,7 +153,7 @@ float resolve_ship_asteroid_pushback(ship_t *ship, asteroid_t *a) {
     vec2 delta = v2_sub(ship->pos, a->pos);
     float d_sq = v2_len_sq(delta);
     if (d_sq >= minimum * minimum) return 0.0f;
-    float d = sqrtf(d_sq);
+    float d = v2_len(delta);
     vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
     ship->pos = v2_add(a->pos, v2_scale(normal, minimum + SHIP_COLLISION_SKIN));
 
@@ -187,7 +187,7 @@ void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal
             if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
         }
         vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
-        float d = sqrtf(v2_len_sq(to_station));
+        float d = v2_len(to_station);
         if (d > 0.001f) {
             /* Strong pull — at zero signal this is the only way back.
              * Scales with boundary (0 at frontier, 1 at zero signal). */
