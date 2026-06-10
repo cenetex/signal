@@ -3,6 +3,27 @@
 #include "sim_mining.h"
 #include "sim_ship.h"
 #include "sim_asteroid.h"
+#include "cargo_receipt_issue.h"
+
+static bool test_issue_world_station_receipt(station_t *st,
+                                             const uint8_t cargo_pub[32],
+                                             uint64_t event_id,
+                                             cargo_receipt_chain_t *out_chain) {
+    uint8_t recipient[32];
+    uint8_t origin_pin[32];
+    for (int i = 0; i < 32; i++) {
+        recipient[i] = (uint8_t)(0x50 + i);
+        origin_pin[i] = (uint8_t)(0xA0 + i);
+    }
+    memset(out_chain, 0, sizeof(*out_chain));
+    if (!cargo_receipt_issue(st, 1, event_id, cargo_pub, recipient,
+                             origin_pin, &out_chain->links[0])) {
+        return false;
+    }
+    out_chain->len = 1;
+    return cargo_receipt_chain_verify(out_chain->links, out_chain->len,
+                                      cargo_pub) == CARGO_RECEIPT_OK;
+}
 
 TEST(test_world_reset_creates_stations) {
     WORLD_DECL;
@@ -397,9 +418,9 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
         fragment_pub[31] = (uint8_t)(0x40 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        chains[i].len = 1;
-        memcpy(chains[i].links[0].cargo_pub, units[i].pub, 32);
-        chains[i].links[0].event_id = (uint64_t)(700 + i);
+        ASSERT(test_issue_world_station_receipt(home, units[i].pub,
+                                                (uint64_t)(700 + i),
+                                                &chains[i]));
         ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }
     home->_inventory_cache[COMMODITY_FERRITE_INGOT] = (float)stock_units;

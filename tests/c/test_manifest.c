@@ -1,4 +1,32 @@
 #include "test_harness.h"
+#include "cargo_receipt_issue.h"
+#include "station_authority.h"
+
+static void test_fill_bytes(uint8_t out[32], uint8_t seed) {
+    for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
+}
+
+static bool test_signed_receipt_chain(station_t *st, const uint8_t cargo_pub[32],
+                                      cargo_receipt_chain_t *out_chain) {
+    uint8_t recipient[32];
+    uint8_t origin_pin[32];
+    uint8_t prev_hash[32];
+    test_fill_bytes(recipient, 0x40);
+    test_fill_bytes(origin_pin, 0x80);
+    memset(out_chain, 0, sizeof(*out_chain));
+    if (!cargo_receipt_issue(st, 1, 101, cargo_pub, recipient, origin_pin,
+                             &out_chain->links[0])) {
+        return false;
+    }
+    cargo_receipt_hash(&out_chain->links[0], prev_hash);
+    if (!cargo_receipt_issue(st, 2, 202, cargo_pub, recipient, prev_hash,
+                             &out_chain->links[1])) {
+        return false;
+    }
+    out_chain->len = 2;
+    return cargo_receipt_chain_verify(out_chain->links, out_chain->len,
+                                      cargo_pub) == CARGO_RECEIPT_OK;
+}
 
 TEST(test_manifest_push_find_remove_preserves_order) {
     manifest_t manifest = {0};
@@ -139,16 +167,15 @@ TEST(test_station_manifest_receipts_track_push_remove) {
     cargo_unit_t removed = {0};
     cargo_receipt_chain_t removed_chain = {0};
 
+    station_authority_init_seeded(&st, 1234u, 0u);
     ASSERT(station_manifest_bootstrap(&st));
     first.kind = (uint8_t)CARGO_KIND_INGOT;
     first.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
-    first.pub[0] = 0xA1;
+    test_fill_bytes(first.pub, 0xA1);
     second.kind = (uint8_t)CARGO_KIND_FRAME;
     second.commodity = (uint8_t)COMMODITY_FRAME;
     second.pub[0] = 0xB2;
-    chain.len = 2;
-    chain.links[0].event_id = 101;
-    chain.links[1].event_id = 202;
+    ASSERT(test_signed_receipt_chain(&st, first.pub, &chain));
 
     ASSERT(station_manifest_push_with_chain(&st, &first, &chain));
     ASSERT(station_manifest_push_with_chain(&st, &second, NULL));
@@ -166,6 +193,28 @@ TEST(test_station_manifest_receipts_track_push_remove) {
     ASSERT_EQ_INT(st.manifest.count, 1);
     ASSERT_EQ_INT((int)rcpts->count, 1);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 0);
+
+    station_cleanup(&st);
+}
+
+TEST(test_station_manifest_rejects_unverified_receipt_chain) {
+    station_t st = {0};
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+
+    station_authority_init_seeded(&st, 5678u, 0u);
+    ASSERT(station_manifest_bootstrap(&st));
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    test_fill_bytes(unit.pub, 0xC0);
+    ASSERT(test_signed_receipt_chain(&st, unit.pub, &chain));
+
+    chain.links[1].signature[0] ^= 0x80u;
+    ASSERT(!station_manifest_push_with_chain(&st, &unit, &chain));
+    ASSERT_EQ_INT(st.manifest.count, 0);
+    ship_receipts_t *rcpts = station_get_receipts(&st);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->count, 0);
 
     station_cleanup(&st);
 }
@@ -996,6 +1045,7 @@ void register_manifest_tests(void) {
     RUN(test_station_copy_clones_manifest_storage);
     RUN(test_manifest_rarity_tint_blends_grade_average);
     RUN(test_station_manifest_receipts_track_push_remove);
+    RUN(test_station_manifest_rejects_unverified_receipt_chain);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);

@@ -321,8 +321,9 @@ static bool receipt_store_reconcile(ship_receipts_t *r, const manifest_t *m) {
 static bool receipt_store_push_chain_or_empty(ship_receipts_t *r,
                                               const cargo_receipt_chain_t *chain) {
     if (!r) return false;
-    if (chain && chain->len > 0)
+    if (chain && chain->len > 0) {
         return ship_receipts_push_chain(r, chain->links, chain->len);
+    }
     return ship_receipts_push_empty(r);
 }
 
@@ -523,6 +524,11 @@ bool station_manifest_push_with_chain(station_t *station,
                                       const cargo_unit_t *unit,
                                       const cargo_receipt_chain_t *chain) {
     if (!station || !unit) return false;
+    if (chain && chain->len > 0 &&
+        cargo_receipt_chain_verify(chain->links, chain->len, unit->pub) !=
+            CARGO_RECEIPT_OK) {
+        return false;
+    }
     if (!station_manifest_bootstrap(station)) return false;
     if (!holder_manifest_push_with_chain(&station->manifest,
                                          station_get_receipts(station),
