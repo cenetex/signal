@@ -1205,8 +1205,10 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
  * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table.
  * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
  * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged.
- * v61: +32B per contract for stable target_pub identity. */
-#define EXPECTED_SAVE_SIZE 244132
+ * v61: +32B per contract for stable target_pub identity.
+ * v62: station ledger table expands from 16 to STATION_LEDGER_MAX=64 entries.
+ * v46+ ledger entries are 76B, so +48 entries × 76B × MAX_STATIONS=128. */
+#define EXPECTED_SAVE_SIZE 711076
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1243,7 +1245,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 61);
+    ASSERT_EQ_INT((int)version, 62);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

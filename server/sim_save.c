@@ -82,7 +82,10 @@ static uint32_t crc32_file(FILE *f) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 61  /* v61: contracts persist target_pub so fracture
+#define SAVE_VERSION 62  /* v62: station player ledgers expand from 16 to
+                          * STATION_LEDGER_MAX entries. v61 and older saves
+                          * still read their historical 16-entry table.
+                          * v61: contracts persist target_pub so fracture
                           * bounties survive asteroid slot reuse/remap by
                           * stable rock identity.
                           * v60: active fracture-child sidecars persist
@@ -452,7 +455,7 @@ static bool write_station_session(FILE *f, const station_t *s) {
     /* (credit_pool field removed in v43 — derived from ledger now.) */
     /* Economy ledger */
     WRITE_FIELD(f, s->ledger_count);
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < STATION_LEDGER_MAX; i++) {
         WRITE_FIELD(f, s->ledger[i].player_pubkey);
         WRITE_FIELD(f, s->ledger[i].balance);
         WRITE_FIELD(f, s->ledger[i].lifetime_supply);
@@ -557,8 +560,9 @@ static bool read_station_session(FILE *f, station_t *s) {
     /* Economy ledger */
     READ_FIELD(f, s->ledger_count);
     if (s->ledger_count < 0) s->ledger_count = 0;
-    if (s->ledger_count > 16) s->ledger_count = 16;
-    for (int i = 0; i < 16; i++) {
+    int disk_ledger_slots = (g_loaded_save_version >= 62) ? STATION_LEDGER_MAX : 16;
+    if (s->ledger_count > disk_ledger_slots) s->ledger_count = disk_ledger_slots;
+    for (int i = 0; i < disk_ledger_slots; i++) {
         if (g_loaded_save_version >= 46) {
             /* v46+: ledger keyed by player_pubkey with relationship data */
             READ_FIELD(f, s->ledger[i].player_pubkey);
@@ -590,6 +594,9 @@ static bool read_station_session(FILE *f, station_t *s) {
             s->ledger[i].top_commodity = 0;
             memset(s->ledger[i]._pad, 0, 3);
         }
+    }
+    for (int i = disk_ledger_slots; i < STATION_LEDGER_MAX; i++) {
+        memset(&s->ledger[i], 0, sizeof(s->ledger[i]));
     }
     /* Shipyard queue */
     READ_FIELD(f, s->pending_scaffold_count);

@@ -301,12 +301,13 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     ASSERT(kepler >= 0);
     station_t *st = &w.stations[kepler];
 
-    /* Fill the ledger with 16 dummy tokens so find_or_create rejects ours. */
-    for (int i = 0; i < 16; i++) {
+    /* Fill the ledger to capacity so find_or_create rejects ours without
+     * evicting any funded trader balance. */
+    for (int i = 0; i < STATION_LEDGER_MAX; i++) {
         uint8_t dummy[8] = { (uint8_t)(0xA0 + i), 0,0,0,0,0,0,0 };
         ledger_earn(st, dummy, 1.0f);
     }
-    ASSERT_EQ_INT(st->ledger_count, 16);
+    ASSERT_EQ_INT(st->ledger_count, STATION_LEDGER_MAX);
 
     /* Player dockged at the station with no ledger entry available.
      * Give the station inventory and the player cargo space. */
@@ -334,6 +335,48 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
      * "cargo moved without payment"). */
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
     ASSERT_EQ_FLOAT(station_credit_pool(st), pool_before, 0.001f);
+}
+
+TEST(test_station_ledger_admits_more_than_sixteen_without_eviction) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    uint8_t first[16][8];
+
+    for (int i = 0; i < 16; i++) {
+        memset(first[i], 0, sizeof(first[i]));
+        first[i][0] = (uint8_t)(0x20 + i);
+        ledger_earn(&st, first[i], (float)(100 + i));
+    }
+    ASSERT_EQ_INT(st.ledger_count, 16);
+
+    uint8_t seventeenth[8] = {0x77, 1,2,3,4,5,6,7};
+    ledger_earn(&st, seventeenth, 50.0f);
+    ASSERT_EQ_INT(st.ledger_count, 17);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, seventeenth), 50.0f, 0.001f);
+    for (int i = 0; i < 16; i++) {
+        ASSERT_EQ_FLOAT(ledger_balance(&st, first[i]), (float)(100 + i), 0.001f);
+    }
+}
+
+TEST(test_station_ledger_full_does_not_evict_funded_balances) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+
+    for (int i = 0; i < STATION_LEDGER_MAX; i++) {
+        uint8_t token[8] = { (uint8_t)(0x40 + i), 1,2,3,4,5,6,7 };
+        ledger_earn(&st, token, (float)(10 + i));
+    }
+    ASSERT_EQ_INT(st.ledger_count, STATION_LEDGER_MAX);
+
+    uint8_t newcomer[8] = {0xF0, 9,9,9,9,9,9,9};
+    ledger_earn(&st, newcomer, 999.0f);
+    ASSERT_EQ_INT(st.ledger_count, STATION_LEDGER_MAX);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, newcomer), 0.0f, 0.001f);
+
+    for (int i = 0; i < STATION_LEDGER_MAX; i++) {
+        uint8_t token[8] = { (uint8_t)(0x40 + i), 1,2,3,4,5,6,7 };
+        ASSERT_EQ_FLOAT(ledger_balance(&st, token), (float)(10 + i), 0.001f);
+    }
 }
 
 TEST(test_buy_finished_good_requires_manifest_unit) {
@@ -902,6 +945,8 @@ void register_econ_sim_sim_tests(void) {
 void register_econ_sim_bug312_tests(void) {
     TEST_SECTION("\n#312 4-bug-fix regressions:\n");
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
+    RUN(test_station_ledger_admits_more_than_sixteen_without_eviction);
+    RUN(test_station_ledger_full_does_not_evict_funded_balances);
     RUN(test_buy_finished_good_requires_manifest_unit);
     RUN(test_sell_finished_good_requires_manifest_unit);
     RUN(test_bug312_2_ledger_balance_matches_by_token);

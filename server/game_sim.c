@@ -3704,18 +3704,21 @@ int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]) {
         if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) == 0) return i;
     }
     int idx;
-    if (st->ledger_count < 16) {
+    if (st->ledger_count < STATION_LEDGER_MAX) {
         idx = st->ledger_count++;
     } else {
-        /* Evict least-supplied. Ties resolved by lowest index. */
-        int evict = 0;
-        float worst = st->ledger[0].lifetime_supply;
-        for (int i = 1; i < 16; i++) {
-            if (st->ledger[i].lifetime_supply < worst) {
+        /* Prefer reclaiming an empty/inert entry; never discard a funded
+         * ledger because that destroys spendable station-local credits. */
+        int evict = -1;
+        float worst = 0.0f;
+        for (int i = 0; i < STATION_LEDGER_MAX; i++) {
+            if (st->ledger[i].balance > 0.01f) continue;
+            if (evict < 0 || st->ledger[i].lifetime_supply < worst) {
                 worst = st->ledger[i].lifetime_supply;
                 evict = i;
             }
         }
+        if (evict < 0) return -1;
         idx = evict;
     }
     memcpy(st->ledger[idx].player_pubkey, pubkey, 32);

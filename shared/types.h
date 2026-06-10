@@ -33,6 +33,7 @@ enum {
     MAX_ASTEROIDS = 2048, /* uint16 wire index; lifted from 255 in #285 Phase 3 */
     MAX_STARS = 120,
     MAX_STATIONS = 128,  /* lifted from 64 in #285 Phase 4a; uint8 wire index supports 255 */
+    STATION_LEDGER_MAX = 64,
     MAX_NPC_SHIPS = 100,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
@@ -531,7 +532,7 @@ typedef struct {
         uint32_t lifetime_credits_out;/* total credits redeemed against this station's ledger */
         uint8_t top_commodity;        /* most-frequent ore commodity index, for prompt flavor */
         uint8_t _pad[3];
-    } ledger[16];
+    } ledger[STATION_LEDGER_MAX];
     int ledger_count;
     /* Shipyard: pending scaffold orders awaiting materials */
     struct {
