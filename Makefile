@@ -271,8 +271,10 @@ cppcheck:
 
 # Browser smoke: builds the WASM client, serves build-web locally, and
 # drives the canvas through the same Playwright smoke used after deploy.
+SMOKE_PORT ?= 39111
+
 smoke: build-web
-	npm run smoke
+	SMOKE_PORT=$(SMOKE_PORT) npm run smoke
 
 SMOKE_LATENCY_URL ?= http://localhost:8080/play.html?server=ws://127.0.0.1:19091/ws
 

@@ -17,8 +17,54 @@ permissions:
   contents: read
 
 jobs:
+  test-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+
+      - name: Run fast C suite
+        run: make test
+
+  test-sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ASan/UBSan suite
+        run: make test-san
+
+  smoke-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke
+        run: make smoke
+
   deploy:
     runs-on: ubuntu-latest
+    needs: [test-fast, test-sanitizers, smoke-browser]
     steps:
       - uses: actions/checkout@v4
 

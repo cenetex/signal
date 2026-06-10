@@ -103,7 +103,7 @@ TEST(test_autopilot_ignores_fragments_targets_rocks) {
     ASSERT(sp->autopilot_target >= 0);
 }
 
-static void test_nav_approach_speed_basic(void) {
+TEST(test_nav_approach_speed_basic) {
     /* Far away = max speed */
     ASSERT_EQ_FLOAT(nav_approach_speed(10000.0f, 150.0f), 150.0f, 0.1f);
     /* Close = slow but above floor */
@@ -115,7 +115,7 @@ static void test_nav_approach_speed_basic(void) {
     ASSERT_EQ_FLOAT(nav_approach_speed(0.0f, 150.0f), 0.0f, 0.1f);
 }
 
-static void test_nav_speed_control_deadband(void) {
+TEST(test_nav_speed_control_deadband) {
     /* Below 85% = speed up */
     ASSERT_EQ_FLOAT(nav_speed_control(50.0f, 100.0f), 1.0f, 0.01f);
     /* Above 110% = brake */
@@ -125,7 +125,7 @@ static void test_nav_speed_control_deadband(void) {
     ASSERT_EQ_FLOAT(nav_speed_control(105.0f, 100.0f), 0.0f, 0.01f);
 }
 
-static void test_spatial_grid_grows_past_initial_hash_capacity(void) {
+TEST(test_spatial_grid_grows_past_initial_hash_capacity) {
     WORLD_DECL;
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
 
@@ -155,7 +155,7 @@ static void test_spatial_grid_grows_past_initial_hash_capacity(void) {
     ASSERT(found);
 }
 
-static void test_flight_steer_to_brakes_for_intermediate_waypoint(void) {
+TEST(test_flight_steer_to_brakes_for_intermediate_waypoint) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
@@ -179,7 +179,7 @@ static void test_flight_steer_to_brakes_for_intermediate_waypoint(void) {
     ASSERT(cmd.thrust < 0.0f);
 }
 
-static void test_flight_steer_to_reverses_from_low_speed_obstacle(void) {
+TEST(test_flight_steer_to_reverses_from_low_speed_obstacle) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
@@ -209,7 +209,7 @@ static void test_flight_steer_to_reverses_from_low_speed_obstacle(void) {
     ASSERT(cmd.reverse_thrust);
 }
 
-static void test_flight_steer_to_escapes_station_ring_wall(void) {
+TEST(test_flight_steer_to_escapes_station_ring_wall) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -242,7 +242,7 @@ static void test_flight_steer_to_escapes_station_ring_wall(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_autopilot_exits_station_before_mining_route(void) {
+TEST(test_autopilot_exits_station_before_mining_route) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -279,7 +279,7 @@ static void test_autopilot_exits_station_before_mining_route(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_forward_clearance_empty(void) {
+TEST(test_nav_forward_clearance_empty) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear all asteroids so nothing is in the way */
@@ -290,7 +290,7 @@ static void test_nav_forward_clearance_empty(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_forward_clearance_blocked(void) {
+TEST(test_nav_forward_clearance_blocked) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear field, place one big rock dead ahead */
@@ -307,7 +307,7 @@ static void test_nav_forward_clearance_blocked(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_segment_clear_blocks_station_ring_wall(void) {
+TEST(test_nav_segment_clear_blocks_station_ring_wall) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -339,7 +339,7 @@ static void test_nav_segment_clear_blocks_station_ring_wall(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_find_path_direct(void) {
+TEST(test_nav_find_path_direct) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Path between two points far from stations/asteroids = direct */
@@ -351,7 +351,7 @@ static void test_nav_find_path_direct(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_find_path_around_asteroid(void) {
+TEST(test_nav_find_path_around_asteroid) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear field, place one large rock between start and goal
@@ -373,7 +373,7 @@ static void test_nav_find_path_around_asteroid(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_follow_path_replans_on_stale(void) {
+TEST(test_nav_follow_path_replans_on_stale) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     nav_path_t path = {0};
@@ -387,14 +387,14 @@ static void test_nav_follow_path_replans_on_stale(void) {
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
-static void test_nav_force_replan(void) {
+TEST(test_nav_force_replan) {
     nav_path_t path = {0};
     path.age = 1.0f;
     nav_force_replan(&path);
     ASSERT(path.age > 100.0f);
 }
 
-static void test_nav_waypoint_advancement(void) {
+TEST(test_nav_waypoint_advancement) {
     nav_path_t path = {0};
     path.count = 2;
     path.current = 0;
@@ -408,7 +408,7 @@ static void test_nav_waypoint_advancement(void) {
     ASSERT(wp.x >= 199.0f);
 }
 
-static void test_nav_waypoint_advances_after_overshoot(void) {
+TEST(test_nav_waypoint_advances_after_overshoot) {
     nav_path_t path = {0};
     path.count = 2;
     path.current = 0;
@@ -455,7 +455,7 @@ static bool test_station_smelt_midpoint(const station_t *st, commodity_t ore,
     return found;
 }
 
-static void test_nav_routes_to_station_smelt_midpoint(void) {
+TEST(test_nav_routes_to_station_smelt_midpoint) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -484,7 +484,7 @@ static void test_nav_routes_to_station_smelt_midpoint(void) {
     ASSERT(path.count > 0);
 }
 
-static void test_nav_routes_to_kepler_dock_through_outer_ring_gap(void) {
+TEST(test_nav_routes_to_kepler_dock_through_outer_ring_gap) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -519,7 +519,7 @@ static void test_nav_routes_to_kepler_dock_through_outer_ring_gap(void) {
     ASSERT(saw_ring2_gap);
 }
 
-static void test_station_entry_target_uses_outer_roadway(void) {
+TEST(test_station_entry_target_uses_outer_roadway) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
 
@@ -541,7 +541,7 @@ static void test_station_entry_target_uses_outer_roadway(void) {
     ASSERT(fabsf(wrap_angle(a - expected)) < 0.05f);
 }
 
-static void test_nav_segment_clear_respects_kepler_open_gap(void) {
+TEST(test_nav_segment_clear_respects_kepler_open_gap) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
