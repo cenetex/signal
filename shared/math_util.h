@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include "fixpoint.h"
 
 static const float PI_F = 3.14159265359f;
 static const float TWO_PI_F = 6.28318530718f;
@@ -63,7 +64,7 @@ static inline float v2_len_sq(vec2 value) {
 }
 
 static inline float v2_len(vec2 value) {
-    return sqrtf(v2_len_sq(value));
+    return fixp_sqrtf(v2_len_sq(value));
 }
 
 static inline vec2 v2_norm(vec2 value) {
@@ -75,7 +76,7 @@ static inline vec2 v2_norm(vec2 value) {
 }
 
 static inline vec2 v2_from_angle(float angle) {
-    return v2(cosf(angle), sinf(angle));
+    return v2(fixp_cosf(angle), fixp_sinf(angle));
 }
 
 static inline float wrap_angle(float angle) {

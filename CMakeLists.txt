@@ -117,6 +117,7 @@ set(SIGNAL_SIM_HELPERS
     shared/economy.c
     shared/asteroid.c
     shared/rng.c
+    shared/fixpoint.c
     shared/belt.c
     shared/module_schema.c
     shared/station_util.c

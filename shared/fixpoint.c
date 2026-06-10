@@ -5,6 +5,7 @@
  * and converts float ↔ fixp at the boundary.
  */
 #include "fixpoint.h"
+#include <limits.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -15,25 +16,49 @@ typedef int64_t fixp_t;
 #define FIXP_PI        ((fixp_t)0x3243F6A88LL)
 #define FIXP_TWO_PI    ((fixp_t)0x6487ED511LL)
 #define FIXP_HALF_PI   ((fixp_t)0x1921FB544LL)
-#define FIXP_INV_TWO_PI ((fixp_t)0x28BE60DB9LL)
+#define FIXP_INV_TWO_PI ((fixp_t)0x28BE60DCLL)
 #define FIXP_PI_OVER_4 ((fixp_t)0x00000000c90fdaa2LL)
 
 static fixp_t fixp_from_float(float x) {
-    return (fixp_t)((double)x * (double)FIXP_ONE);
+    if (!isfinite(x)) return 0;
+    double scaled = (double)x * (double)FIXP_ONE;
+    if (scaled > (double)INT64_MAX) return INT64_MAX;
+    if (scaled < (double)INT64_MIN) return INT64_MIN;
+    return (fixp_t)scaled;
 }
 
 static float fixp_to_float(fixp_t x) {
     return (float)((double)x / (double)FIXP_ONE);
 }
 
+#if defined(_MSC_VER) && !defined(__clang__)
+static fixp_t fixp_from_wide_double(long double x) {
+    if (!isfinite((double)x)) return 0;
+    if (x > (long double)INT64_MAX) return INT64_MAX;
+    if (x < (long double)INT64_MIN) return INT64_MIN;
+    return (fixp_t)x;
+}
+
+/* MSVC's C frontend does not expose __int128. Native Windows release builds
+ * use this clamped fallback; GCC/Clang/WASM take the exact integer path below. */
 static fixp_t fixp_mul(fixp_t a, fixp_t b) {
-    return (fixp_t)(((__int128)a * (__int128)b) >> 32);
+    return fixp_from_wide_double(((long double)a * (long double)b) / (long double)FIXP_ONE);
 }
 
 static fixp_t fixp_div(fixp_t a, fixp_t b) {
     if (b == 0) return (a >= 0) ? INT64_MAX : INT64_MIN;
-    return (fixp_t)(((__int128)a << 32) / (__int128)b);
+    return fixp_from_wide_double(((long double)a * (long double)FIXP_ONE) / (long double)b);
 }
+#else
+static fixp_t fixp_mul(fixp_t a, fixp_t b) {
+    return (fixp_t)(((__int128)a * (__int128)b) / (__int128)FIXP_ONE);
+}
+
+static fixp_t fixp_div(fixp_t a, fixp_t b) {
+    if (b == 0) return (a >= 0) ? INT64_MAX : INT64_MIN;
+    return (fixp_t)(((__int128)a * (__int128)FIXP_ONE) / (__int128)b);
+}
+#endif
 
 /* ---- sin LUT ---- */
 
@@ -47,11 +72,10 @@ static fixp_t fixp_sin(fixp_t x) {
     while (x >= FIXP_TWO_PI) x -= FIXP_TWO_PI;
     while (x < 0)           x += FIXP_TWO_PI;
     uint64_t scaled = (uint64_t)fixp_mul(x, (fixp_t)(SIN_LUT_SIZE * FIXP_INV_TWO_PI));
-    uint32_t idx = (uint32_t)(scaled >> 32);
+    uint32_t idx = (uint32_t)((scaled >> 32) % SIN_LUT_SIZE);
     fixp_t frac = (fixp_t)(scaled & (FIXP_ONE - 1));
-    if (idx >= SIN_LUT_SIZE - 1) idx = 0;
     fixp_t a = sin_lut[idx];
-    fixp_t b = sin_lut[idx + 1];
+    fixp_t b = sin_lut[(idx + 1) % SIN_LUT_SIZE];
     return a + fixp_mul(b - a, frac);
 }
 
@@ -141,34 +165,39 @@ static fixp_t fixp_atan2_fixp(fixp_t y, fixp_t x) {
 /* ---- Public API ---- */
 
 float fixp_sqrtf(float x) {
-    if (x < 0.0f) return 0.0f;
+    if (!isfinite(x) || x < 0.0f) return 0.0f;
     return fixp_to_float(fixp_sqrt_fixp(fixp_from_float(x)));
 }
 
 float fixp_sinf(float x) {
+    if (!isfinite(x)) return 0.0f;
     return fixp_to_float(fixp_sin(fixp_from_float(x)));
 }
 
 float fixp_cosf(float x) {
+    if (!isfinite(x)) return 1.0f;
     return fixp_to_float(fixp_cos(fixp_from_float(x)));
 }
 
 float fixp_atan2f(float y, float x) {
+    if (!isfinite(y) || !isfinite(x)) return 0.0f;
     return fixp_to_float(fixp_atan2_fixp(fixp_from_float(y), fixp_from_float(x)));
 }
 
 float fixp_expf(float x) {
+    if (!isfinite(x)) return 0.0f;
     if (x > 20.0f) return expf(20.0f);
     if (x < -20.0f) return 0.0f;
     return expf(x);
 }
 
 float fixp_powf(float base, float exp) {
-    if (base <= 0.0f) return 0.0f;
+    if (!isfinite(base) || !isfinite(exp) || base <= 0.0f) return 0.0f;
     return expf(exp * logf(base));
 }
 
 float fixp_tanf(float x) {
+    if (!isfinite(x)) return 0.0f;
     fixp_t fx = fixp_from_float(x);
     fixp_t s = fixp_sin(fx);
     fixp_t c = fixp_cos(fx);
@@ -177,6 +206,7 @@ float fixp_tanf(float x) {
 }
 
 float fixp_asinf(float x) {
+    if (!isfinite(x)) return 0.0f;
     if (x < -1.0f) x = -1.0f;
     if (x > 1.0f) x = 1.0f;
     fixp_t fx = fixp_from_float(x);

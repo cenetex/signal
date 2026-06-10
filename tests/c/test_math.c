@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "safe_types.h"
 #include "camera_model.h"
+#include "fixpoint.h"
 
 TEST(test_v2_add) {
     vec2 a = v2(1.0f, 2.0f);
@@ -27,6 +28,43 @@ TEST(test_v2_norm_zero) {
     vec2 n = v2_norm(a);
     ASSERT_EQ_FLOAT(n.x, 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(n.y, 0.0f, 0.001f);
+}
+
+TEST(test_v2_math_uses_deterministic_fixed_helpers) {
+    vec2 a = v2(123.25f, -456.5f);
+    ASSERT_EQ_FLOAT(v2_len(a), fixp_sqrtf(v2_len_sq(a)), 0.0001f);
+
+    float angles[] = { -3.0f, -1.0f, 0.0f, 0.75f, 2.5f };
+    for (int i = 0; i < (int)(sizeof(angles) / sizeof(angles[0])); i++) {
+        vec2 dir = v2_from_angle(angles[i]);
+        ASSERT_EQ_FLOAT(dir.x, fixp_cosf(angles[i]), 0.0001f);
+        ASSERT_EQ_FLOAT(dir.y, fixp_sinf(angles[i]), 0.0001f);
+        ASSERT_EQ_FLOAT(v2_len(dir), 1.0f, 0.01f);
+    }
+}
+
+TEST(test_fixpoint_transcendentals_track_libm_envelope) {
+    float values[] = { -3.0f, -1.0f, -0.25f, 0.0f, 0.25f, 1.0f, 3.0f };
+    for (int i = 0; i < (int)(sizeof(values) / sizeof(values[0])); i++) {
+        float x = values[i];
+        ASSERT_EQ_FLOAT(fixp_sinf(x), sinf(x), 0.01f);
+        ASSERT_EQ_FLOAT(fixp_cosf(x), cosf(x), 0.01f);
+        ASSERT_EQ_FLOAT(fixp_sqrtf(fabsf(x)), sqrtf(fabsf(x)), 0.01f);
+    }
+    ASSERT_EQ_FLOAT(fixp_atan2f(1.0f, 1.0f), atan2f(1.0f, 1.0f), 0.02f);
+    ASSERT_EQ_FLOAT(fixp_atan2f(-2.0f, 3.0f), atan2f(-2.0f, 3.0f), 0.02f);
+}
+
+TEST(test_fixpoint_transcendentals_handle_nonfinite_inputs) {
+    ASSERT_EQ_FLOAT(fixp_sqrtf(INFINITY), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_sinf(INFINITY), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_cosf(-INFINITY), 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_atan2f(INFINITY, 1.0f), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_tanf(NAN), 0.0f, 0.001f);
+
+    vec2 dir = v2_from_angle(-INFINITY);
+    ASSERT_EQ_FLOAT(dir.x, 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(dir.y, 0.0f, 0.001f);
 }
 
 TEST(test_wrap_angle) {
@@ -82,6 +120,9 @@ void register_math_tests(void) {
     RUN(test_v2_len);
     RUN(test_v2_norm);
     RUN(test_v2_norm_zero);
+    RUN(test_v2_math_uses_deterministic_fixed_helpers);
+    RUN(test_fixpoint_transcendentals_track_libm_envelope);
+    RUN(test_fixpoint_transcendentals_handle_nonfinite_inputs);
     RUN(test_wrap_angle);
     RUN(test_clampf);
     RUN(test_lerpf);
