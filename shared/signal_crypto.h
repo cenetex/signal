@@ -45,6 +45,9 @@ void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYT
                                      uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                                      uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
 
+/* Fill buf[0..len) from the platform CSPRNG used by the crypto backend. */
+void signal_crypto_random_bytes(uint8_t *buf, size_t len);
+
 /* Detached Ed25519 signature over msg[0..len). sig[64] is the result. */
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                         const uint8_t *msg, size_t len,

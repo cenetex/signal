@@ -328,27 +328,8 @@ static void ensure_session_token(void) {
             net_state.session_token[i] = (hex_nibble(hex[i*2]) << 4) | hex_nibble(hex[i*2+1]);
     }
 #else
-    /* Native: generate random token */
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (f) {
-        size_t got = fread(net_state.session_token, 1, 8, f);
-        fclose(f);
-        if (got != 8) {
-            /* Short read from /dev/urandom; fall back to time-based seed */
-            uint32_t seed = (uint32_t)time(NULL);
-            for (int i = 0; i < 8; i++) {
-                seed = seed * 1103515245u + 12345u;
-                net_state.session_token[i] = (uint8_t)(seed >> 16);
-            }
-        }
-    } else {
-        /* Fallback: time-based seed */
-        uint32_t seed = (uint32_t)time(NULL);
-        for (int i = 0; i < 8; i++) {
-            seed = seed * 1103515245u + 12345u;
-            net_state.session_token[i] = (uint8_t)(seed >> 16);
-        }
-    }
+    signal_crypto_random_bytes(net_state.session_token,
+                               sizeof(net_state.session_token));
 #endif
     net_state.session_token_ready = true;
 }

@@ -19,6 +19,19 @@ TEST(test_crypto_keypair_distinct) {
     ASSERT(memcmp(pub_b, sec_b + 32, SIGNAL_CRYPTO_PUBKEY_BYTES) == 0);
 }
 
+TEST(test_crypto_random_bytes_distinct_and_nonzero) {
+    uint8_t a[8] = {0};
+    uint8_t b[8] = {0};
+    uint8_t zero[8] = {0};
+
+    signal_crypto_random_bytes(a, sizeof(a));
+    signal_crypto_random_bytes(b, sizeof(b));
+
+    ASSERT(memcmp(a, zero, sizeof(a)) != 0);
+    ASSERT(memcmp(b, zero, sizeof(b)) != 0);
+    ASSERT(memcmp(a, b, sizeof(a)) != 0);
+}
+
 TEST(test_crypto_sign_verify_roundtrip) {
     uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES];
     uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES];
@@ -79,6 +92,7 @@ void register_crypto_tests(void);
 void register_crypto_tests(void) {
     TEST_SECTION("\nCrypto (Ed25519) tests:\n");
     RUN(test_crypto_keypair_distinct);
+    RUN(test_crypto_random_bytes_distinct_and_nonzero);
     RUN(test_crypto_sign_verify_roundtrip);
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);

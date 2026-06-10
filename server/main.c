@@ -532,14 +532,8 @@ static void spawn_server_bots(void) {
         unsigned bot_no = (unsigned)(server_bot_players_spawned % 900) + 1u;
         snprintf(sp->callsign, sizeof(sp->callsign), "BOT%03u", bot_no);
 
-        sp->session_token[0] = 0xB0u;
-        sp->session_token[1] = 0x7Au;
-        sp->session_token[2] = (uint8_t)server_bot_players_spawned;
-        sp->session_token[3] = (uint8_t)i;
-        sp->session_token[4] = (uint8_t)(world.world_seq & 0xffu);
-        sp->session_token[5] = (uint8_t)((world.world_seq >> 8) & 0xffu);
-        sp->session_token[6] = (uint8_t)(world.belt_seed & 0xffu);
-        sp->session_token[7] = (uint8_t)((world.belt_seed >> 8) & 0xffu);
+        signal_crypto_random_bytes(sp->session_token,
+                                   sizeof(sp->session_token));
 
         int home_station = server_bot_home_station_for(server_bot_players_spawned);
         if (home_station >= 0 && home_station < MAX_STATIONS &&

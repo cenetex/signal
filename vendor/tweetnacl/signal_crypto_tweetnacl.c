@@ -14,6 +14,8 @@
 
 #include "tweetnacl.h"
 
+extern void randombytes(uint8_t *buf, unsigned long long n);
+
 void signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                            uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]) {
     /* TweetNaCl's secret key is already (seed||pub). */
@@ -26,6 +28,11 @@ void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYT
     /* Deterministic — replays the same key derivation as
      * crypto_sign_keypair but skips the random seed step. */
     crypto_sign_keypair_from_seed(pub, secret, seed);
+}
+
+void signal_crypto_random_bytes(uint8_t *buf, size_t len) {
+    if (!buf || len == 0) return;
+    randombytes(buf, (unsigned long long)len);
 }
 
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
