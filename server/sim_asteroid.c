@@ -807,7 +807,7 @@ static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
 
 /* destroyed_rocks is kept sorted ascending by rock_pub (lexicographic
  * byte order) so membership is bsearch in O(log n) — three to nine
- * memcmp(32B) on a 256-entry table. Slice 2 of #285 lays the right
+ * memcmp(32B) on the interim table. Slice 2 of #285 lays the right
  * shape; slice 3 hangs Binary Fuse off the same key set for O(1)
  * filter probes when cardinality climbs. */
 
@@ -836,12 +836,11 @@ static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]) {
  * so closed-epoch snapshots can bound "destroyed before epoch N"
  * proofs.
  *
- * Cap-overflow policy: at 256 entries the rock is still removed from
- * the active pool (the player-facing outcome stays "destroyed
- * forever"), but the tombstone is dropped — the verifier loses a
- * row of provenance. This gap closes when slice 3 swaps to the
- * append-only side-file. The cap is loud (SIM_LOG) so we'll know if
- * it ever binds in practice. */
+ * Cap-overflow policy: if the interim array ever fills, the rock is
+ * still removed from the active pool (the player-facing outcome stays
+ * "destroyed forever"), but the tombstone is dropped and the verifier
+ * loses a row of provenance. The cap is loud (SIM_LOG) until the
+ * append-only side-file removes this ceiling entirely. */
 static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]) {
     static const uint8_t zero[32] = {0};
     if (memcmp(pub, zero, 32) == 0) return;  /* unstamped (fracture child) */
@@ -850,9 +849,9 @@ static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]) {
         memcmp(w->destroyed_rocks[idx].rock_pub, pub, 32) == 0) {
         return; /* already retired, idempotent */
     }
-    int cap = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
-    if ((int)w->destroyed_rock_count >= cap) {
-        SIM_LOG("[sim] destroyed_rocks ledger full (%d) — tombstone dropped\n", cap);
+    if ((int)w->destroyed_rock_count >= MAX_DESTROYED_ROCKS) {
+        SIM_LOG("[sim] destroyed_rocks ledger full (%d) — tombstone dropped\n",
+                MAX_DESTROYED_ROCKS);
         return;
     }
     int tail = (int)w->destroyed_rock_count - idx;

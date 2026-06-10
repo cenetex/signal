@@ -3605,6 +3605,67 @@ TEST(test_save_preserves_destroyed_rocks_ledger) {
     remove(TMP("test_rockpub.sav"));
 }
 
+TEST(test_destroyed_rocks_persists_past_legacy_256_cap) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(w && loaded);
+    world_reset(w);
+
+    enum { COUNT = 300 };
+    ASSERT(COUNT < MAX_DESTROYED_ROCKS);
+    for (uint16_t i = 0; i < COUNT; i++) {
+        memset(w->destroyed_rocks[i].rock_pub, 0, 32);
+        w->destroyed_rocks[i].rock_pub[30] = (uint8_t)(i >> 8);
+        w->destroyed_rocks[i].rock_pub[31] = (uint8_t)i;
+        w->destroyed_rocks[i].destroyed_at_ms = (uint64_t)(100000 + i);
+    }
+    w->destroyed_rock_count = COUNT;
+
+    ASSERT(world_save(w, TMP("test_rockpub_300.sav")));
+    ASSERT(world_load(loaded, TMP("test_rockpub_300.sav")));
+    ASSERT_EQ_INT(loaded->destroyed_rock_count, COUNT);
+    ASSERT_EQ_INT((int)loaded->destroyed_rocks[299].destroyed_at_ms, 100299);
+    ASSERT_EQ_INT(loaded->destroyed_rocks[299].rock_pub[30], 1);
+    ASSERT_EQ_INT(loaded->destroyed_rocks[299].rock_pub[31], 43);
+    remove(TMP("test_rockpub_300.sav"));
+}
+
+TEST(test_destroyed_rocks_insert_past_legacy_256_cap) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w);
+    world_reset(w);
+    w->time = 12.345f;
+
+    for (uint16_t i = 0; i < 256; i++) {
+        memset(w->destroyed_rocks[i].rock_pub, 0, 32);
+        w->destroyed_rocks[i].rock_pub[30] = (uint8_t)(i >> 8);
+        w->destroyed_rocks[i].rock_pub[31] = (uint8_t)i;
+        w->destroyed_rocks[i].destroyed_at_ms = (uint64_t)i;
+    }
+    w->destroyed_rock_count = 256;
+
+    int slot = 0;
+    memset(&w->asteroids[slot], 0, sizeof(w->asteroids[slot]));
+    memset(&w->asteroid_origin[slot], 0, sizeof(w->asteroid_origin[slot]));
+    asteroid_t *a = &w->asteroids[slot];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 1.0f;
+    a->max_ore = 1.0f;
+    a->radius = 16.0f;
+    a->pos = w->stations[0].pos;
+    memset(a->rock_pub, 0, 32);
+    a->rock_pub[30] = 1;
+    a->rock_pub[31] = 0;
+
+    fracture_asteroid(w, slot, v2(1.0f, 0.0f), -1);
+    ASSERT_EQ_INT(w->destroyed_rock_count, 257);
+    ASSERT_EQ_INT(w->destroyed_rocks[256].rock_pub[30], 1);
+    ASSERT_EQ_INT(w->destroyed_rocks[256].rock_pub[31], 0);
+    ASSERT_EQ_INT((int)w->destroyed_rocks[256].destroyed_at_ms, 12345);
+}
+
 /* Slice 2 invariant: destroyed_rocks stays sorted ascending by rock_pub
  * across out-of-order inserts. Without this, bsearch breaks. */
 TEST(test_destroyed_rocks_stays_sorted_after_inserts) {
@@ -3644,5 +3705,7 @@ void register_world_sim_chunk_tests(void) {
     RUN(test_rock_pub_assigned_at_first_contact);
     RUN(test_destroyed_rock_does_not_respawn);
     RUN(test_save_preserves_destroyed_rocks_ledger);
+    RUN(test_destroyed_rocks_persists_past_legacy_256_cap);
+    RUN(test_destroyed_rocks_insert_past_legacy_256_cap);
     RUN(test_destroyed_rocks_stays_sorted_after_inserts);
 }

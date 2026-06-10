@@ -1476,8 +1476,7 @@ bool world_load(world_t *w, const char *path) {
         }
         uint16_t count = 0;
         READ_FIELD(f, count);
-        int cap = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
-        if (count > cap) { fclose(f); return false; }
+        if (count > MAX_DESTROYED_ROCKS) { fclose(f); return false; }
         for (uint16_t i = 0; i < count; i++) {
             if (fread(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
                 fclose(f); return false;

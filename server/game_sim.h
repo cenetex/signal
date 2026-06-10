@@ -30,6 +30,7 @@ enum {
     MAX_SHIPS = MAX_NPC_SHIPS,
     MAX_DELIVERY_SHIPMENTS = 24,
     MAX_DELIVERY_BOUND_CARGO = 16,
+    MAX_DESTROYED_ROCKS = 4096,
 };
 
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
@@ -462,14 +463,11 @@ typedef struct {
      *     MMR root) become immutable. Bounty contracts (Tier 4)
      *     consume `(rock_pub, mmr_proof, anchor_epoch)` tuples.
      *
-     *   - **Cap-overflow policy is "log + drop tombstone".** If we
-     *     ever hit 256 destroyed rocks in one session before the
-     *     side-file lands, the rock is still removed from the
-     *     active pool (the player-facing outcome stays "destroyed
-     *     forever"), but the tombstone isn't recorded — so a future
-     *     materialize of the same chunk could re-spawn that slot.
-     *     Verifiers also lose the tombstone for chain-walk. This is
-     *     a known gap, fixed structurally by the side-file.
+     *   - **Interim cap.** The eventual side-file removes the in-memory
+     *     ceiling. Until then MAX_DESTROYED_ROCKS is deliberately sized
+     *     above the old 256-entry cliff so ordinary long sessions keep
+     *     the permanent tombstone needed by chunk rematerialization and
+     *     verifier walks.
      *
      *   - **Cohabitation with fragment_pub on asteroid_t.** Terrain
      *     rocks have rock_pub set + fragment_pub zero; fracture
@@ -481,12 +479,12 @@ typedef struct {
      * lookup. `destroyed_at_ms` is the world-clock timestamp of the
      * fracture (rounded to milliseconds), recorded so that closed-
      * epoch snapshots in slice 3 can bound "destroyed before epoch N"
-     * proofs. Sorted on insert via memmove — at the 256-entry cap a
-     * worst-case shift is ~10KB, negligible on a fracture. */
+     * proofs. Sorted on insert via memmove — at the interim cap a
+     * worst-case shift is ~160KB, negligible on a terrain fracture. */
     struct destroyed_rock_s {
         uint8_t  rock_pub[32];
         uint64_t destroyed_at_ms;
-    } destroyed_rocks[256];
+    } destroyed_rocks[MAX_DESTROYED_ROCKS];
     uint16_t destroyed_rock_count;
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
     /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
