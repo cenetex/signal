@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "sim_physics.h"
 #include "cargo_receipt_issue.h"
+#include <stddef.h>
 
 static bool test_issue_station_receipt(station_t *st, const uint8_t cargo_pub[32],
                                        uint64_t event_id,
@@ -87,6 +88,61 @@ static bool test_patch_catalog_version(const char *path, uint32_t version) {
     }
     fclose(f);
     return true;
+}
+
+static bool test_rewrite_crc32_trailer(const char *path) {
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    if (len < 8) { fclose(f); return false; }
+    long trailer = len - 8;
+    fseek(f, 0, SEEK_SET);
+    uint32_t crc = 0;
+    long remaining = trailer;
+    uint8_t chunk[4096];
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(chunk) ? (size_t)remaining : sizeof(chunk);
+        size_t n = fread(chunk, 1, want, f);
+        if (n == 0) { fclose(f); return false; }
+        crc = test_crc32_update(crc, chunk, n);
+        remaining -= (long)n;
+    }
+    fseek(f, len - 4, SEEK_SET);
+    if (fwrite(&crc, sizeof(crc), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+static bool test_patch_file_byte(const char *path, long offset, uint8_t value) {
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    bool ok = fwrite(&value, 1, 1, f) == 1;
+    fclose(f);
+    return ok;
+}
+
+static long test_find_bytes_in_file(const char *path, const uint8_t *needle,
+                                    size_t needle_len) {
+    if (!needle || needle_len == 0) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t data[8192];
+    size_t len = fread(data, 1, sizeof(data), f);
+    bool ok = !ferror(f);
+    fclose(f);
+    if (!ok || len < needle_len) return -1;
+    for (size_t i = 0; i + needle_len <= len; i++) {
+        if (memcmp(&data[i], needle, needle_len) == 0) return (long)i;
+    }
+    return -1;
 }
 
 static bool test_furnace_has_adjacent_ore_hopper_save(const station_t *st,
@@ -641,6 +697,69 @@ TEST(test_player_save_round_trips_ship_manifest) {
     ASSERT_EQ_INT(loaded.ship.manifest.units[0].grade, MINING_GRADE_FINE);
     ASSERT(memcmp(loaded.ship.manifest.units[0].pub, unit.pub, 32) == 0);
     remove(TMP("player_92.sav"));
+}
+
+TEST(test_player_load_bad_crc_rejects_without_mutating_live_player) {
+    WORLD_DECL;
+    SERVER_PLAYER_DECL(sp);
+    SERVER_PLAYER_DECL(loaded);
+    char path[256];
+
+    world_reset(&w);
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.id = 89;
+    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 12.0f;
+    ASSERT(player_save(&sp, test_tmp_dir(), 89));
+    ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &sp, 89));
+
+    ASSERT(test_patch_file_byte(path, 16, 0xA5));
+    player_init_ship(&loaded, &w);
+    loaded.ship.cargo[COMMODITY_FERRITE_ORE] = 77.0f;
+    loaded.current_station = 2;
+    loaded.docked = false;
+    ASSERT(!player_load(&loaded, &w, test_tmp_dir(), 89));
+    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 77.0f, 0.001f);
+    ASSERT_EQ_INT(loaded.current_station, 2);
+    ASSERT(!loaded.docked);
+    remove(path);
+}
+
+TEST(test_player_load_bad_receipt_count_rejects_without_mutating_live_player) {
+    WORLD_DECL;
+    SERVER_PLAYER_DECL(sp);
+    SERVER_PLAYER_DECL(loaded);
+    cargo_unit_t unit = {0};
+    char path[256];
+
+    world_reset(&w);
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.id = 88;
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.grade = (uint8_t)MINING_GRADE_RARE;
+    for (int i = 0; i < 32; i++) unit.pub[i] = (uint8_t)(0xC0 + i);
+    ASSERT(manifest_push(&sp.ship.manifest, &unit));
+    ASSERT(player_save(&sp, test_tmp_dir(), 88));
+    ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &sp, 88));
+
+    long pub_at = test_find_bytes_in_file(path, unit.pub, sizeof(unit.pub));
+    ASSERT(pub_at >= 0);
+    long unit_at = pub_at - (long)offsetof(cargo_unit_t, pub);
+    long receipt_len_at = unit_at + (long)sizeof(cargo_unit_t) + (long)sizeof(uint64_t);
+    ASSERT(test_patch_file_byte(path, receipt_len_at,
+                                (uint8_t)(CARGO_RECEIPT_CHAIN_MAX_LEN + 1)));
+    ASSERT(test_rewrite_crc32_trailer(path));
+
+    player_init_ship(&loaded, &w);
+    loaded.ship.cargo[COMMODITY_CUPRITE_ORE] = 55.0f;
+    loaded.current_station = 1;
+    ASSERT(!player_load(&loaded, &w, test_tmp_dir(), 88));
+    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_CUPRITE_ORE], 55.0f, 0.001f);
+    ASSERT_EQ_INT(loaded.ship.manifest.count, 0);
+    ASSERT_EQ_INT(loaded.current_station, 1);
+    remove(path);
 }
 
 TEST(test_player_load_clamps_negative_cargo) {
@@ -1407,6 +1526,8 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_repairs_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_round_trips_ship_manifest);
+    RUN(test_player_load_bad_crc_rejects_without_mutating_live_player);
+    RUN(test_player_load_bad_receipt_count_rejects_without_mutating_live_player);
     RUN(test_player_load_clamps_negative_cargo);
     RUN(test_player_load_clamps_hull_hp);
     RUN(test_player_load_clamps_upgrade_levels);

@@ -80,6 +80,28 @@ static uint32_t crc32_file(FILE *f) {
     return crc;
 }
 
+static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
+    if (!f || !out_crc || end < 0) return false;
+    uint32_t crc = 0;
+    long start = ftell(f);
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    long remaining = end;
+    uint8_t chunk[4096];
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(chunk) ? (size_t)remaining : sizeof(chunk);
+        size_t n = fread(chunk, 1, want, f);
+        if (n == 0) {
+            (void)fseek(f, start, SEEK_SET);
+            return false;
+        }
+        crc = crc32_update(crc, chunk, n);
+        remaining -= (long)n;
+    }
+    if (fseek(f, start, SEEK_SET) != 0) return false;
+    *out_crc = crc;
+    return true;
+}
+
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
 #define SAVE_VERSION 62  /* v62: station player ledgers expand from 16 to
@@ -1577,17 +1599,9 @@ bool world_load(world_t *w, const char *path) {
                 printf("[save] truncated CRC32 trailer\n");
                 fclose(f); return false;
             }
-            /* Recompute CRC over bytes [0, data_end) */
-            fseek(f, 0, SEEK_SET);
             uint32_t crc = 0;
-            long remaining = data_end;
-            uint8_t chunk[4096];
-            while (remaining > 0) {
-                size_t to_read = (remaining > (long)sizeof(chunk)) ? sizeof(chunk) : (size_t)remaining;
-                size_t n = fread(chunk, 1, to_read, f);
-                if (n == 0) break;
-                crc = crc32_update(crc, chunk, n);
-                remaining -= (long)n;
+            if (!crc32_file_prefix(f, data_end, &crc)) {
+                fclose(f); return false;
             }
             if (crc != stored_crc) {
                 printf("[save] CRC32 mismatch: computed=0x%08x stored=0x%08x -- save may be corrupt\n",
@@ -2453,7 +2467,39 @@ static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
     dst->comm_range = 0.0f;
 }
 
-static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
+static bool player_save_verify_crc32_trailer(FILE *f, const char *path) {
+    (void)path;
+    if (!f) return false;
+    long start = ftell(f);
+    if (fseek(f, 0, SEEK_END) != 0) return false;
+    long len = ftell(f);
+    if (len < (long)(sizeof(uint32_t) * 3)) {
+        (void)fseek(f, start, SEEK_SET);
+        return false;
+    }
+    long trailer = len - (long)(sizeof(uint32_t) * 2);
+    if (fseek(f, trailer, SEEK_SET) != 0) return false;
+    uint32_t crc_magic = 0, stored_crc = 0;
+    if (fread(&crc_magic, sizeof(crc_magic), 1, f) != 1 ||
+        fread(&stored_crc, sizeof(stored_crc), 1, f) != 1 ||
+        crc_magic != 0x43524332u) {
+        (void)fseek(f, start, SEEK_SET);
+        return false;
+    }
+    uint32_t crc = 0;
+    if (!crc32_file_prefix(f, trailer, &crc)) {
+        (void)fseek(f, start, SEEK_SET);
+        return false;
+    }
+    if (crc != stored_crc) {
+        SIM_LOG("[sim] player save CRC mismatch for %s\n", path ? path : "(unknown)");
+        (void)fseek(f, start, SEEK_SET);
+        return false;
+    }
+    return fseek(f, start, SEEK_SET) == 0;
+}
+
+static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const char *path, int slot) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
 
@@ -2461,6 +2507,10 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     uint32_t magic;
     if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); return false; }
     rewind(f);
+    if (magic == PLAYER_MAGIC && !player_save_verify_crc32_trailer(f, path)) {
+        fclose(f);
+        return false;
+    }
 
     float migrated_credits = 0.0f;
     bool is_v1 = false;
@@ -2646,6 +2696,20 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     }
     (void)slot;
     SIM_LOG("[sim] loaded player %d (station %d)\n", slot, sp->current_station);
+    return true;
+}
+
+static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
+    if (!sp || !w || !path) return false;
+    server_player_t staged = *sp;
+    memset(&staged.ship, 0, sizeof(staged.ship));
+    bool ok = player_load_from_path_decode(&staged, w, path, slot);
+    if (!ok) {
+        ship_cleanup(&staged.ship);
+        return false;
+    }
+    ship_cleanup(&sp->ship);
+    *sp = staged;
     return true;
 }
 
