@@ -772,7 +772,7 @@ contract `target_pub`; v62 expands each station's player ledger from 16 to
 [UNLOCKED_MODULES] bitmask:u32
 ```
 
-Keyed by `saves/pubkey/<base58(pubkey)>.sav` (canonical) or `saves/legacy/<token_hex>.sav` (auto-migrated at startup). Legacy saves can be claimed via signed `"claim-legacy-save-v1" || <token_hex>` challenge.
+Keyed by `saves/pubkey/<base58(pubkey)>.sav` (canonical) or `saves/legacy/<token_hex>.sav` (auto-migrated at startup). Legacy saves can be claimed via signed `"claim-legacy-save-v1" || <token_hex>` challenge; verified attempts append `legacy_claims.log` so operators can audit first-claim-wins imports.
 
 ---
 

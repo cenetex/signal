@@ -751,6 +751,14 @@ int player_save_list_legacy(const char *dir,
 bool player_save_rename_legacy_to_pubkey(const char *dir,
                                          const char *basename,
                                          const uint8_t pubkey[32]);
+/* Append a durable audit row for a verified legacy-save claim attempt.
+ * This does not prove original ownership of the legacy token; it records
+ * which pubkey presented a valid claim signature and whether the rename won. */
+bool player_save_audit_legacy_claim(const char *dir,
+                                    const char *basename,
+                                    const uint8_t pubkey[32],
+                                    bool success,
+                                    const char *reason);
 
 /* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c. */
 void anchor_ship_in_station(server_player_t *sp, world_t *w);

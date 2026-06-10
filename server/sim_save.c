@@ -2294,6 +2294,50 @@ bool player_save_rename_legacy_to_pubkey(const char *dir,
     return true;
 }
 
+bool player_save_audit_legacy_claim(const char *dir,
+                                    const char *basename,
+                                    const uint8_t pubkey[32],
+                                    bool success,
+                                    const char *reason) {
+    if (!dir || !basename || !basename[0]) return false;
+    if (pubkey_is_zero32(pubkey)) return false;
+    for (const char *p = basename; *p; p++) {
+        bool ok = (*p >= '0' && *p <= '9') ||
+                  (*p >= 'a' && *p <= 'z') ||
+                  (*p >= 'A' && *p <= 'Z') ||
+                  *p == '_' || *p == '-';
+        if (!ok) return false;
+    }
+    char b58[64];
+    if (base58_encode(pubkey, 32, b58, sizeof(b58)) == 0) return false;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/legacy_claims.log", dir);
+    ensure_save_subdirs(dir);
+    FILE *f = fopen(path, "ab");
+    if (!f) return false;
+    if (!reason || !reason[0]) reason = success ? "renamed" : "failed";
+    for (const char *p = reason; *p; p++) {
+        bool ok = (*p >= '0' && *p <= '9') ||
+                  (*p >= 'a' && *p <= 'z') ||
+                  (*p >= 'A' && *p <= 'Z') ||
+                  *p == '_' || *p == '-';
+        if (!ok) {
+            fclose(f);
+            return false;
+        }
+    }
+    int wrote = fprintf(f, "%s basename=%s claimant=%s result=%s reason=%s\n",
+                        CLAIM_LEGACY_SAVE_DOMAIN, basename, b58,
+                        success ? "success" : "failure", reason);
+    bool ok = wrote > 0 && fflush(f) == 0;
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    if (ok) ok = fsync(fileno(f)) == 0;
+#endif
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
 bool player_save(const server_player_t *sp, const char *dir, int slot) {
     char path[256];
     char tmp_path[272];

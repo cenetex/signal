@@ -9,7 +9,8 @@
  * client signs ("claim-legacy-save-v1" || token_hex) with its identity
  * secret, and the server renames legacy/<basename>.sav to
  * pubkey/<base58(pubkey)>.sav. First-claim-wins: if two clients race on
- * the same legacy save, the second sees ENOENT.
+ * the same legacy save, the second sees ENOENT. Verified claim attempts
+ * are appended to legacy_claims.log for operator/federation audit.
  *
  * These tests exercise the save-path computation, the pubkey-keyed
  * round-trip, and the claim flow at the file-rename layer (the wire
@@ -108,6 +109,17 @@ static uint8_t read_first_byte(const char *path) {
     return b;
 }
 
+static bool read_text_file(const char *path, char *buf, size_t cap) {
+    if (!buf || cap == 0) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t n = fread(buf, 1, cap - 1, f);
+    buf[n] = '\0';
+    bool ok = !ferror(f);
+    fclose(f);
+    return ok;
+}
+
 /* ---- tests ------------------------------------------------------- */
 
 /* 1. Pubkey-keyed save round-trip. */
@@ -194,6 +206,57 @@ TEST(test_save_legacy_claim_renames_to_pubkey) {
     remove(dst);
 }
 
+TEST(test_save_legacy_claim_audit_logs_success_and_failure) {
+    const char *dir = TMP("a4_claim_audit");
+    make_save_dir(dir);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+    (void)sk;
+
+    uint8_t token[8];
+    fill_token(token, 21);
+    write_sentinel_legacy(dir, token, 0xA7);
+
+    char hex[17];
+    session_token_to_hex_local(token, hex);
+    char basename[80];
+    snprintf(basename, sizeof(basename), "player_%s", hex);
+
+    ASSERT(player_save_rename_legacy_to_pubkey(dir, basename, pk));
+    ASSERT(player_save_audit_legacy_claim(dir, basename, pk, true, "renamed"));
+    ASSERT(player_save_audit_legacy_claim(dir, basename, pk, false, "missing-or-raced"));
+
+    char b58[64];
+    ASSERT(base58_encode(pk, 32, b58, sizeof(b58)) > 0);
+    char log_path[512];
+    snprintf(log_path, sizeof(log_path), "%s/legacy_claims.log", dir);
+    char log[2048];
+    ASSERT(read_text_file(log_path, log, sizeof(log)));
+    ASSERT(strstr(log, CLAIM_LEGACY_SAVE_DOMAIN) != NULL);
+    ASSERT(strstr(log, basename) != NULL);
+    ASSERT(strstr(log, b58) != NULL);
+    ASSERT(strstr(log, "result=success") != NULL);
+    ASSERT(strstr(log, "result=failure") != NULL);
+    ASSERT(strstr(log, "reason=missing-or-raced") != NULL);
+
+    char dst[512];
+    snprintf(dst, sizeof(dst), "%s/pubkey/%s.sav", dir, b58);
+    remove(dst);
+    remove(log_path);
+}
+
+TEST(test_save_legacy_claim_audit_rejects_unsafe_names) {
+    const char *dir = TMP("a4_claim_audit_bad");
+    make_save_dir(dir);
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+    (void)sk;
+
+    ASSERT(!player_save_audit_legacy_claim(dir, "../escape", pk, false, "bad"));
+    ASSERT(!player_save_audit_legacy_claim(dir, "player_ok", pk, false, "bad reason"));
+}
+
 /* 3. Bad signature on claim — verified at the wire layer. We exercise
  *    signal_crypto_verify directly so we know a forged signature does
  *    NOT verify; the wire dispatcher in server/main.c uses exactly that
@@ -275,7 +338,8 @@ TEST(test_pubkey_persistence_gate_requires_verified_proof) {
  *    against Q's pubkey, and the rename proceeds — into Q's pubkey
  *    file, not P's. That's the documented A.4 semantics: signature
  *    proves the claimant holds *some* identity, not that they were
- *    ever the legacy session's owner. Auditability is a TODO(#479-A.5). */
+ *    ever the legacy session's owner. The audited claim row records
+ *    Q as the claimant so operators can review the import after the fact. */
 TEST(test_save_legacy_claim_wrong_pubkey_first_claim_wins) {
     const char *dir = TMP("a4_first_claim");
     make_save_dir(dir);
@@ -431,6 +495,8 @@ void register_save_keyed_by_pubkey_tests(void) {
     TEST_SECTION("\nSave keyed-by-pubkey (#479 A.4):\n");
     RUN(test_save_keyed_by_pubkey_roundtrip);
     RUN(test_save_legacy_claim_renames_to_pubkey);
+    RUN(test_save_legacy_claim_audit_logs_success_and_failure);
+    RUN(test_save_legacy_claim_audit_rejects_unsafe_names);
     RUN(test_save_legacy_claim_bad_signature_rejected);
     RUN(test_pubkey_proof_is_session_bound);
     RUN(test_pubkey_persistence_gate_requires_verified_proof);

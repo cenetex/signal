@@ -103,7 +103,9 @@ Per-player saves live under `saves/`:
   any pre-A.4 saves migrated at startup. Players claim their legacy
   save by signing `"claim-legacy-save-v1" || <token_hex>` with their
   identity secret; the server verifies and renames the legacy file
-  into `saves/pubkey/`. First-claim-wins — see #479-A.4.
+  into `saves/pubkey/`, appending `legacy_claims.log` for audit.
+  First-claim-wins; this records the claimant identity but cannot prove
+  original ownership of a pre-identity token — see #479-A.4.
 
 `world.sav` is versioned. The current format is v62 (minimum accepted v49).
 Recent migration highlights: v62 expands each station's player ledger from 16

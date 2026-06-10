@@ -1923,12 +1923,17 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 
         bool ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
                                                        basename, sp->pubkey);
+        const char *audit_name = basename;
+        char prefixed[96];
         if (!ok) {
-            char prefixed[96];
             snprintf(prefixed, sizeof(prefixed), "player_%s", basename);
             ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
                                                      prefixed, sp->pubkey);
+            if (ok) audit_name = prefixed;
         }
+        (void)player_save_audit_legacy_claim(PLAYER_SAVE_DIR, audit_name,
+                                             sp->pubkey, ok,
+                                             ok ? "renamed" : "missing-or-raced");
         if (!ok) {
             printf("[server] player %d: claim rename failed (race / missing)\n", pid);
             goto claim_done;

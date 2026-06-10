@@ -289,12 +289,12 @@ enum {
                                             * same legacy save sees ENOENT and gets dropped.
                                             *
                                             * Threat-model note: signature ties the claim to a
-                                            * specific pubkey-private-key holder so a future
-                                            * federation chain log can audit who claimed what.
+                                            * specific pubkey-private-key holder and the server
+                                            * appends legacy_claims.log so operators can audit
+                                            * who claimed what.
                                             * It does NOT prove the claimant was the original
                                             * owner of the legacy session token — that data
-                                            * predates Layer A.3's signed actions.
-                                            * TODO(#479-A.5): make claims auditable on the chain log. */
+                                            * predates Layer A.3's signed actions. */
 };
 
 /* Protocol discovery. Increment SIGNAL_PROTOCOL_VERSION only when a
