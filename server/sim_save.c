@@ -598,6 +598,7 @@ static bool read_station_session(FILE *f, station_t *s) {
     for (int i = disk_ledger_slots; i < STATION_LEDGER_MAX; i++) {
         memset(&s->ledger[i], 0, sizeof(s->ledger[i]));
     }
+    ledger_sanitize_station(s);
     /* Shipyard queue */
     READ_FIELD(f, s->pending_scaffold_count);
     if (s->pending_scaffold_count < 0) s->pending_scaffold_count = 0;

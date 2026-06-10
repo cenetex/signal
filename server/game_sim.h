@@ -34,6 +34,11 @@ enum {
 };
 
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
+/* Ledger balances are still floats until the #588 fixed-point rewrite, so
+ * keep station-local credit values inside the exact integer range where
+ * one-credit transactions remain representable and non-finite values cannot
+ * poison derived station pools. */
+#define LEDGER_FLOAT_LIMIT 16000000.0f
 /* Belt noise scale: world units per noise period divisor. Smaller =
  * tighter belt structure (more rivers/lakes per signal bubble), larger =
  * broader continents. At 15000, the ridged-noise period is ~5000u so a
@@ -787,6 +792,7 @@ void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount);
  * token (8B). Relationships survive session-token rotation. */
 int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]);
 float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]);
+void ledger_sanitize_station(station_t *st);
 void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount);
 bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
 void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);

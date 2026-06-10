@@ -340,7 +340,7 @@ typedef struct {
     station_t           stations[MAX_STATIONS];         // 128
     asteroid_t          asteroids[MAX_ASTEROIDS];        // 2,048
     fracture_claim_state_t fracture_claims[MAX_ASTEROIDS];
-    destroyed_rock_s    destroyed_rocks[256];            // sorted, bsearch
+    destroyed_rock_s    destroyed_rocks[MAX_DESTROYED_ROCKS]; // sorted, bsearch
     npc_ship_t          npc_ships[MAX_NPC_SHIPS];        // 100
     ship_t              ships[MAX_SHIPS];                // 100 (unified pool)
     character_t         characters[MAX_PLAYERS + MAX_NPC_SHIPS]; // controller pool
@@ -402,7 +402,7 @@ station_t
 ├── pos, jostle_vel, radius, dock_radius, signal_range
 ├── scaffold, planned, scaffold_progress
 ├── _inventory_cache[COMMODITY_COUNT]  (raw ore floats + manifest cache)
-├── ledger[16]  — per-player-pubkey credit balances
+├── ledger[STATION_LEDGER_MAX] — per-player-pubkey credit balances
 ├── modules[MAX_MODULES_PER_STATION=16]
 │   └── station_module_t { type, ring, slot, scaffold, commodity, build_progress }
 ├── plans[8] — reserved placement slots
@@ -543,9 +543,9 @@ Rebuild runs every tick. Connected stations form a spanning tree from roots. Iso
 ### 8.1 Per-Station Ledgers
 
 ```c
-station_t.ledger[16] = {
+station_t.ledger[STATION_LEDGER_MAX] = {
     { player_pubkey[32], balance: float, lifetime_supply: float },
-    // 16-entry LRU eviction
+    // 64-entry table; full ledgers reclaim only empty/inert rows
 }
 ```
 

@@ -379,6 +379,61 @@ TEST(test_station_ledger_full_does_not_evict_funded_balances) {
     }
 }
 
+TEST(test_station_ledger_rejects_nonfinite_amounts) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    uint8_t token[8] = {0x91, 1,2,3,4,5,6,7};
+    ship_t ship = {0};
+
+    ledger_earn(&st, token, NAN);
+    ledger_earn(&st, token, INFINITY);
+    ledger_force_debit(&st, token, NAN, &ship);
+    ASSERT(!ledger_spend(&st, token, INFINITY, &ship));
+    ASSERT_EQ_INT(st.ledger_count, 0);
+    ASSERT_EQ_FLOAT(station_credit_pool(&st), 0.0f, 0.001f);
+
+    ASSERT_EQ_FLOAT(ledger_credit_supply_amount(&st, token, INFINITY), 0.0f, 0.001f);
+    ASSERT_EQ_INT(st.ledger_count, 0);
+}
+
+TEST(test_station_ledger_clamps_large_float_balances) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    uint8_t token[8] = {0x92, 1,2,3,4,5,6,7};
+    ship_t ship = {0};
+
+    ledger_earn(&st, token, LEDGER_FLOAT_LIMIT * 2.0f);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, token), LEDGER_FLOAT_LIMIT, 0.001f);
+    ASSERT(isfinite(station_credit_pool(&st)));
+    ASSERT_EQ_FLOAT(station_credit_pool(&st), -LEDGER_FLOAT_LIMIT, 0.001f);
+
+    ledger_force_debit(&st, token, LEDGER_FLOAT_LIMIT * 4.0f, &ship);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, token), -LEDGER_FLOAT_LIMIT, 0.001f);
+    ASSERT(isfinite(station_credit_pool(&st)));
+    ASSERT_EQ_FLOAT(station_credit_pool(&st), LEDGER_FLOAT_LIMIT, 0.001f);
+}
+
+TEST(test_world_load_sanitizes_nonfinite_ledger_balances) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(w && loaded);
+    world_reset(w);
+
+    station_t *st = &w->stations[0];
+    uint8_t token[8] = {0x93, 1,2,3,4,5,6,7};
+    ledger_earn(st, token, 10.0f);
+    ASSERT_EQ_INT(st->ledger_count, 1);
+    st->ledger[0].balance = NAN;
+    st->ledger[0].lifetime_supply = INFINITY;
+
+    ASSERT(world_save(w, TMP("test_ledger_nan.sav")));
+    ASSERT(world_load(loaded, TMP("test_ledger_nan.sav")));
+    ASSERT(isfinite(station_credit_pool(&loaded->stations[0])));
+    ASSERT_EQ_FLOAT(ledger_balance(&loaded->stations[0], token), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(loaded->stations[0].ledger[0].lifetime_supply, 0.0f, 0.001f);
+    remove(TMP("test_ledger_nan.sav"));
+}
+
 TEST(test_buy_finished_good_requires_manifest_unit) {
     /* Manifest authority for finished-good BUY (#340 slice A): if the
      * station's float inventory says a frame is available but no
@@ -947,6 +1002,9 @@ void register_econ_sim_bug312_tests(void) {
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
     RUN(test_station_ledger_admits_more_than_sixteen_without_eviction);
     RUN(test_station_ledger_full_does_not_evict_funded_balances);
+    RUN(test_station_ledger_rejects_nonfinite_amounts);
+    RUN(test_station_ledger_clamps_large_float_balances);
+    RUN(test_world_load_sanitizes_nonfinite_ledger_balances);
     RUN(test_buy_finished_good_requires_manifest_unit);
     RUN(test_sell_finished_good_requires_manifest_unit);
     RUN(test_bug312_2_ledger_balance_matches_by_token);

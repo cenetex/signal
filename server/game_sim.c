@@ -86,6 +86,33 @@ static void token_to_pseudo_pubkey(const uint8_t *token, uint8_t pseudo[32]) {
     if (token) memcpy(pseudo, token, 8);
 }
 
+static float ledger_sanitize_float(float value) {
+    if (!isfinite(value)) return 0.0f;
+    if (value > LEDGER_FLOAT_LIMIT) return LEDGER_FLOAT_LIMIT;
+    if (value < -LEDGER_FLOAT_LIMIT) return -LEDGER_FLOAT_LIMIT;
+    return value;
+}
+
+static void ledger_add_stat_u32(uint32_t *field, float amount) {
+    if (!field || !isfinite(amount) || amount <= 0.0f) return;
+    float room = (float)(UINT32_MAX - *field);
+    if (amount >= room) {
+        *field = UINT32_MAX;
+    } else {
+        *field += (uint32_t)amount;
+    }
+}
+
+void ledger_sanitize_station(station_t *st) {
+    if (!st) return;
+    if (st->ledger_count < 0) st->ledger_count = 0;
+    if (st->ledger_count > STATION_LEDGER_MAX) st->ledger_count = STATION_LEDGER_MAX;
+    for (int i = 0; i < st->ledger_count; i++) {
+        st->ledger[i].balance = ledger_sanitize_float(st->ledger[i].balance);
+        st->ledger[i].lifetime_supply = ledger_sanitize_float(st->ledger[i].lifetime_supply);
+    }
+}
+
 float ledger_balance(const station_t *st, const uint8_t *token) {
     uint8_t pseudo[32];
     token_to_pseudo_pubkey(token, pseudo);
@@ -102,8 +129,13 @@ float ledger_balance(const station_t *st, const uint8_t *token) {
  * conservation is structural now. */
 float station_credit_pool(const station_t *st) {
     float total = 0.0f;
-    for (int i = 0; i < st->ledger_count; i++) total += st->ledger[i].balance;
-    return -total;
+    int count = st->ledger_count;
+    if (count < 0) count = 0;
+    if (count > STATION_LEDGER_MAX) count = STATION_LEDGER_MAX;
+    for (int i = 0; i < count; i++) {
+        total = ledger_sanitize_float(total + ledger_sanitize_float(st->ledger[i].balance));
+    }
+    return ledger_sanitize_float(-total);
 }
 
 void ledger_earn(station_t *st, const uint8_t *token, float amount) {
@@ -144,39 +176,44 @@ void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount) {
 
 float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]) {
     if (!pubkey) return 0.0f;
-    for (int i = 0; i < st->ledger_count; i++)
+    int count = st->ledger_count;
+    if (count < 0) count = 0;
+    if (count > STATION_LEDGER_MAX) count = STATION_LEDGER_MAX;
+    for (int i = 0; i < count; i++)
         if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) == 0)
-            return st->ledger[i].balance;
+            return ledger_sanitize_float(st->ledger[i].balance);
     return 0.0f;
 }
 
 void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount) {
-    if (amount <= 0.0f) return;
+    if (!isfinite(amount) || amount <= 0.0f) return;
     int idx = ledger_find_or_create_by_pubkey(st, pubkey);
     if (idx < 0) return;
-    st->ledger[idx].balance += amount;
-    st->ledger[idx].lifetime_credits_in += (uint32_t)amount;
+    st->ledger[idx].balance = ledger_sanitize_float(st->ledger[idx].balance + amount);
+    ledger_add_stat_u32(&st->ledger[idx].lifetime_credits_in, amount);
 }
 
 bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship) {
+    if (!isfinite(amount)) return false;
     if (amount <= 0.0f) return true;
     int idx = ledger_find_or_create_by_pubkey(st, pubkey);
     if (idx < 0) return false;
-    if (st->ledger[idx].balance + 0.01f < amount) return false;
-    st->ledger[idx].balance -= amount;
+    float balance = ledger_sanitize_float(st->ledger[idx].balance);
+    if (balance + 0.01f < amount) return false;
+    st->ledger[idx].balance = ledger_sanitize_float(balance - amount);
     if (st->ledger[idx].balance < 0.0f) st->ledger[idx].balance = 0.0f;
     if (ship) ship->stat_credits_spent += amount;
-    st->ledger[idx].lifetime_credits_out += (uint32_t)amount;
+    ledger_add_stat_u32(&st->ledger[idx].lifetime_credits_out, amount);
     return true;
 }
 
 void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship) {
-    if (amount <= 0.0f) return;
+    if (!isfinite(amount) || amount <= 0.0f) return;
     int idx = ledger_find_or_create_by_pubkey(st, pubkey);
     if (idx < 0) return;
-    st->ledger[idx].balance -= amount;
+    st->ledger[idx].balance = ledger_sanitize_float(st->ledger[idx].balance - amount);
     if (ship) ship->stat_credits_spent += amount;
-    st->ledger[idx].lifetime_credits_out += (uint32_t)amount;
+    ledger_add_stat_u32(&st->ledger[idx].lifetime_credits_out, amount);
 }
 
 /* Smelt-payout credit. Station keeps a 35% cut, supplier gets 65%.
@@ -184,17 +221,17 @@ void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float
  * UI events. Pre-Layer-A.1 anonymous players (zero pubkey) are not
  * credited; the supplier-cut amount stays on the station's pool. */
 float ledger_credit_supply_amount_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value) {
-    if (ore_value <= 0.0f) return 0.0f;
+    if (!isfinite(ore_value) || ore_value <= 0.0f) return 0.0f;
     int idx = ledger_find_or_create_by_pubkey(st, pubkey);
     if (idx < 0) return 0.0f;
     /* Station keeps 35% cut for smelting — supplier gets 65% */
     float supplier_share = ore_value * 0.65f;
-    if (supplier_share < 0.01f) return 0.0f;
+    if (!isfinite(supplier_share) || supplier_share < 0.01f) return 0.0f;
     /* Pool is derived from -Σ(balance); crediting the supplier here
      * automatically pushes the station's net issuance more negative. */
-    st->ledger[idx].balance += supplier_share;
-    st->ledger[idx].lifetime_supply += ore_value;
-    st->ledger[idx].lifetime_credits_in += (uint32_t)supplier_share;
+    st->ledger[idx].balance = ledger_sanitize_float(st->ledger[idx].balance + supplier_share);
+    st->ledger[idx].lifetime_supply = ledger_sanitize_float(st->ledger[idx].lifetime_supply + ore_value);
+    ledger_add_stat_u32(&st->ledger[idx].lifetime_credits_in, supplier_share);
     return supplier_share;
 }
 
