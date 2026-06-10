@@ -28,7 +28,10 @@ jobs:
           sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
 
       - name: Run fast C suite
-        run: make test
+        run: |
+          make banned-apis
+          make deterministic-libm
+          make test
 
   test-sanitizers:
     runs-on: ubuntu-latest

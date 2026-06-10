@@ -3,7 +3,6 @@
  * See laser.h for the conceptual model.
  */
 #include "laser.h"
-#include <math.h>
 
 bool laser_target_in_beam(const laser_ray_t *ray,
                           vec2 target_pos,
@@ -27,14 +26,14 @@ bool laser_target_in_beam(const laser_ray_t *ray,
     /* Perpendicular distance from the ray axis to the target center. */
     vec2 axis_point  = v2_add(ray->source_pos, v2_scale(ray->source_dir, along));
     vec2 perp        = v2_sub(target_pos, axis_point);
-    float perp_dist  = sqrtf(v2_len_sq(perp));
+    float perp_dist  = v2_len(perp);
 
     /* Cone test. A thin ray (half_angle == 0) collapses to a strict
      * "perpendicular distance ≤ target_radius" check; a cone widens
      * the tolerance with distance from source. */
     float allowed_perp = target_radius;
     if (ray->cone_half_angle > 0.0f) {
-        allowed_perp += along * tanf(ray->cone_half_angle);
+        allowed_perp += along * fixp_tanf(ray->cone_half_angle);
     }
     if (perp_dist > allowed_perp) return false;
 
@@ -42,7 +41,7 @@ bool laser_target_in_beam(const laser_ray_t *ray,
      * beam clearly lands on its surface rather than passing through. */
     if (out_hit_pos) {
         vec2 to_target_unit = (along > 1e-6f)
-            ? v2_scale(to_target, 1.0f / sqrtf(v2_len_sq(to_target)))
+            ? v2_scale(to_target, 1.0f / v2_len(to_target))
             : ray->source_dir;
         *out_hit_pos = v2_sub(target_pos,
                               v2_scale(to_target_unit, target_radius * 0.85f));

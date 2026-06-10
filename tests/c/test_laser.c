@@ -7,6 +7,7 @@
  */
 #include "test_harness.h"
 #include "laser.h"
+#include "fixpoint.h"
 
 TEST(test_laser_target_in_thin_ray_hits_on_axis) {
     /* Ray along +X from origin, range 100, thin (cone=0). Target at
@@ -54,6 +55,39 @@ TEST(test_laser_cone_widens_with_distance) {
     ASSERT(!laser_target_in_beam(&ray, v2(10.0f, 10.0f), 1.0f, NULL, NULL));
     /* Same target at d=100 → allowed ~58.7; perp 10 < 58.7 → hit. */
     ASSERT(laser_target_in_beam(&ray, v2(100.0f, 10.0f), 1.0f, NULL, NULL));
+}
+
+TEST(test_laser_cone_uses_deterministic_tangent_boundary) {
+    laser_ray_t ray = {
+        .source_pos = v2(0.0f, 0.0f),
+        .source_dir = v2(1.0f, 0.0f),
+        .range = 100.0f,
+        .cone_half_angle = 0.375f,
+    };
+    float allowed_perp = 2.0f + 40.0f * fixp_tanf(ray.cone_half_angle);
+
+    ASSERT(laser_target_in_beam(&ray,
+                                v2(40.0f, allowed_perp - 0.01f),
+                                2.0f, NULL, NULL));
+    ASSERT(!laser_target_in_beam(&ray,
+                                 v2(40.0f, allowed_perp + 0.01f),
+                                 2.0f, NULL, NULL));
+}
+
+TEST(test_laser_diagonal_hit_deterministic_reference) {
+    laser_ray_t ray = {
+        .source_pos = v2(-3.0f, 4.0f),
+        .source_dir = v2_norm(v2(3.0f, 4.0f)),
+        .range = 100.0f,
+        .cone_half_angle = 0.0f,
+    };
+    vec2 hit = v2(0.0f, 0.0f);
+    float along = 0.0f;
+
+    ASSERT(laser_target_in_beam(&ray, v2(9.0f, 20.0f), 3.0f, &hit, &along));
+    ASSERT_EQ_FLOAT(along, 20.0f, 0.002f);
+    ASSERT_EQ_FLOAT(hit.x, 7.47f, 0.002f);
+    ASSERT_EQ_FLOAT(hit.y, 17.96f, 0.002f);
 }
 
 TEST(test_laser_range_gate_disengages) {
@@ -125,6 +159,8 @@ void register_laser_tests(void) {
     RUN(test_laser_target_in_thin_ray_hits_on_axis);
     RUN(test_laser_target_in_thin_ray_misses_off_axis);
     RUN(test_laser_cone_widens_with_distance);
+    RUN(test_laser_cone_uses_deterministic_tangent_boundary);
+    RUN(test_laser_diagonal_hit_deterministic_reference);
     RUN(test_laser_range_gate_disengages);
     RUN(test_laser_target_behind_source_misses);
     RUN(test_laser_apply_effect_accumulates);
