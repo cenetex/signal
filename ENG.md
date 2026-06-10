@@ -737,7 +737,8 @@ Tab-cycled panels:
 
 ### 12.1 World Save (`world.sav`)
 
-Binary format, little-endian. Versioned (currently v53). Sections:
+Binary format, little-endian. Versioned (currently v62; minimum accepted v49).
+Sections:
 
 ```
 [HEADER] version:u32, world_seq:u32, belt_seed:u32, time:f32, tick:u32
@@ -753,7 +754,14 @@ Binary format, little-endian. Versioned (currently v53). Sections:
 [PUBKEY_REGISTRY] count, then (pubkey, session_token) pairs
 ```
 
-Migration paths: `world_load()` applies version-gated fixups (e.g., v50→v51 furnace tagging, v52→v53 receipt chain seeding).
+Migration paths: `world_load()` applies version-gated fixups (e.g., v50→v51
+furnace tagging, v52→v53 receipt chain seeding). Recent layout changes:
+v54 adds `world_seq`; v55 persists staged-crystal fracture-child sidecars;
+v56/v57 add contract provenance and forbidden-origin gates; v58 expands station
+session slots to `MAX_STATIONS`; v59 persists delivery-shipment debt/proof
+state; v60 persists active fracture-child throw ownership; v61 persists
+contract `target_pub`; v62 expands each station's player ledger from 16 to
+`STATION_LEDGER_MAX` entries while older saves still read the 16-entry table.
 
 ### 12.2 Player Save
 
@@ -897,4 +905,3 @@ Enforced by `scripts/check_banned_apis.py` in `make banned-apis`.
 | Txn Design | [docs/txn-design.md](docs/txn-design.md) | Transaction/action design |
 | Yield Split | [docs/yield-split-design.md](docs/yield-split-design.md) | Mining yield split design |
 | PackNFT | [docs/packnft-architecture.md](docs/packnft-architecture.md) | NFT packing tool architecture |
-
