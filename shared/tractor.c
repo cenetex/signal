@@ -3,7 +3,6 @@
  * beam primitive. See tractor.h for the model.
  */
 #include "tractor.h"
-#include <math.h>
 
 bool tractor_apply(const tractor_anchor_t *src,
                    const tractor_anchor_t *tgt,
@@ -19,7 +18,7 @@ bool tractor_apply(const tractor_anchor_t *src,
 
     /* Co-located bodies: report active but apply no force this tick.
      * Avoids divide-by-zero on the line-of-action unit vector. */
-    float d = sqrtf(d_sq);
+    float d = v2_len(to_target);
     const float epsilon = 1e-4f;
     if (d < epsilon) return true;
 
@@ -69,7 +68,7 @@ bool tractor_apply(const tractor_anchor_t *src,
         float spd_sq = v2_len_sq(*tgt->vel);
         float cap_sq = beam->speed_cap * beam->speed_cap;
         if (spd_sq > cap_sq) {
-            float spd = sqrtf(spd_sq);
+            float spd = v2_len(*tgt->vel);
             *tgt->vel = v2_scale(*tgt->vel, beam->speed_cap / spd);
         }
     }

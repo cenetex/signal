@@ -8,6 +8,7 @@
  */
 #include "test_harness.h"
 #include "tractor.h"
+#include "fixpoint.h"
 
 /* Convenience: anchor that's body-attached with given vel + inv_mass. */
 static tractor_anchor_t mk_body_anchor(vec2 pos, vec2 *vel, float inv_mass) {
@@ -231,9 +232,48 @@ TEST(test_tractor_speed_cap_clamps_target) {
     /* Without cap the impulse would push vel.x to -10000. With cap=50
      * the |vel| should land at 50 along the line of action (-X). */
     ASSERT(tractor_apply(&src, &tgt, &beam, 1.0f));
-    float spd = sqrtf(tgt_vel.x * tgt_vel.x + tgt_vel.y * tgt_vel.y);
+    float spd = v2_len(tgt_vel);
     ASSERT_EQ_FLOAT(spd, 50.0f, 0.001f);
     ASSERT(tgt_vel.x < 0.0f);  /* still pulled toward source */
+}
+
+TEST(test_tractor_speed_cap_uses_deterministic_length) {
+    vec2 tgt_vel = v2(30.0f, 40.0f);
+    tractor_anchor_t src = mk_world_anchor(v2(0.0f, 0.0f));
+    tractor_anchor_t tgt = mk_body_anchor(v2(3.0f, 4.0f), &tgt_vel, 1.0f);
+    tractor_beam_t beam = {
+        .rest_length = 5.0f, .pull_strength = 0.0f, .push_strength = 0.0f,
+        .range = 100.0f, .axial_damping = 0.0f, .tangent_damping = 0.0f,
+        .speed_cap = 10.0f, .falloff = TRACTOR_FALLOFF_CONSTANT,
+    };
+
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(tgt.pos, src.pos)),
+                    fixp_sqrtf(v2_len_sq(v2_sub(tgt.pos, src.pos))), 0.0001f);
+    ASSERT(tractor_apply(&src, &tgt, &beam, 1.0f));
+    ASSERT_EQ_FLOAT(tgt_vel.x, 6.0f, 0.001f);
+    ASSERT_EQ_FLOAT(tgt_vel.y, 8.0f, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(tgt_vel), fixp_sqrtf(v2_len_sq(tgt_vel)), 0.0001f);
+}
+
+TEST(test_tractor_diagonal_pull_deterministic_reference) {
+    vec2 tgt_vel = v2(1.25f, -2.5f);
+    tractor_anchor_t src = mk_world_anchor(v2(-2.0f, 3.0f));
+    tractor_anchor_t tgt = mk_body_anchor(v2(7.0f, 15.0f), &tgt_vel, 1.0f);
+    tractor_beam_t beam = {
+        .rest_length = 5.0f,
+        .pull_strength = 1.25f,
+        .push_strength = 0.0f,
+        .pull_constant = 0.5f,
+        .range = 100.0f,
+        .axial_damping = 0.2f,
+        .tangent_damping = 0.1f,
+        .speed_cap = 0.0f,
+        .falloff = TRACTOR_FALLOFF_LINEAR,
+    };
+
+    ASSERT(tractor_apply(&src, &tgt, &beam, 0.125f));
+    ASSERT_EQ_FLOAT(tgt_vel.x, 0.415f, 0.002f);
+    ASSERT_EQ_FLOAT(tgt_vel.y, -3.561f, 0.002f);
 }
 
 void register_tractor_tests(void) {
@@ -248,4 +288,6 @@ void register_tractor_tests(void) {
     RUN(test_tractor_reaction_symmetry_conserves_momentum);
     RUN(test_tractor_world_pinned_source_no_reaction);
     RUN(test_tractor_speed_cap_clamps_target);
+    RUN(test_tractor_speed_cap_uses_deterministic_length);
+    RUN(test_tractor_diagonal_pull_deterministic_reference);
 }
