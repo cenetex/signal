@@ -81,11 +81,10 @@ static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
     if (n->kind == SNAV_RING) {
         float ang = module_angle_ring(st, n->ring, n->slot) + n->angle;
         float r = STATION_RING_RADIUS[n->ring] + n->radius;
-        return v2_add(st->pos, v2(cosf(ang) * r, sinf(ang) * r));
+        return v2_add(st->pos, v2_scale(v2_from_angle(ang), r));
     }
     /* SNAV_FIXED */
-    return v2_add(st->pos, v2(cosf(n->angle) * n->radius,
-                               sinf(n->angle) * n->radius));
+    return v2_add(st->pos, v2_scale(v2_from_angle(n->angle), n->radius));
 }
 
 static bool station_ring_angle_blocked(const station_t *st, int ring,
@@ -284,7 +283,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
             float cc = v2_len_sq(lp) - ring_r * ring_r;
             float disc = bb * bb - 4.0f * cc;
             if (disc < 0.0f) continue;
-            float sqd = sqrtf(disc);
+            float sqd = fixp_sqrtf(disc);
             float t1 = (-bb - sqd) * 0.5f;
             float t2 = (-bb + sqd) * 0.5f;
             /* Check both intersection points */
@@ -292,7 +291,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
                 float t = (ti == 0) ? t1 : t2;
                 if (t < 0.0f || t > seg_len) continue;
                 vec2 cross_local = v2_add(lp, v2_scale(fwd, t));
-                float cross_ang = atan2f(cross_local.y, cross_local.x);
+                float cross_ang = fixp_atan2f(cross_local.y, cross_local.x);
                 if (station_ring_angle_blocked(st, ring, cross_ang, clearance))
                     return false;
             }
@@ -530,7 +529,7 @@ bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
     if (nav_line_clear(w, start, goal, clearance)) {
         bool station_nearby = false;
         vec2 mid = v2_scale(v2_add(start, goal), 0.5f);
-        float half_len = sqrtf(v2_dist_sq(start, goal)) * 0.5f + 400.0f;
+        float half_len = v2_len(v2_sub(goal, start)) * 0.5f + 400.0f;
         for (int s = 0; s < MAX_STATIONS; s++) {
             const station_t *st = &w->stations[s];
             if (!station_collides(st)) continue;
@@ -600,11 +599,11 @@ bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
             if (!nav_graph_has_edge(&graph, cur, nb) &&
                 !nav_line_clear(w, graph.nodes[cur].pos, graph.nodes[nb].pos, clearance))
                 continue;
-            float edge = sqrtf(v2_dist_sq(graph.nodes[cur].pos, graph.nodes[nb].pos));
+            float edge = v2_len(v2_sub(graph.nodes[nb].pos, graph.nodes[cur].pos));
             float new_g = g_cost[cur] + edge;
             if (new_g < g_cost[nb]) {
                 g_cost[nb] = new_g;
-                f_cost[nb] = new_g + sqrtf(v2_dist_sq(graph.nodes[nb].pos, goal));
+                f_cost[nb] = new_g + v2_len(v2_sub(goal, graph.nodes[nb].pos));
                 came_from[nb] = cur;
                 in_open[nb] = true;
             }
@@ -687,7 +686,7 @@ nav_steer_t nav_steer_toward_waypoint(nav_path_t *path, vec2 ship_pos,
     float dist = v2_len(to_wp);
     nav_steer_t out;
     out.desired_heading = (dist > 0.001f)
-        ? atan2f(to_wp.y, to_wp.x)
+        ? fixp_atan2f(to_wp.y, to_wp.x)
         : 0.0f;
     out.wp_dist = dist;
     out.at_intermediate = (path->current < path->count);
@@ -696,7 +695,7 @@ nav_steer_t nav_steer_toward_waypoint(nav_path_t *path, vec2 ship_pos,
 
 float nav_approach_speed(float dist, float max_speed) {
     const float decel = 150.0f;
-    float v = sqrtf(2.0f * decel * fmaxf(dist, 0.0f));
+    float v = fixp_sqrtf(2.0f * decel * fmaxf(dist, 0.0f));
     if (v > max_speed) v = max_speed;
     if (v < 30.0f && dist > 5.0f) v = 30.0f;
     return v;
@@ -710,7 +709,7 @@ float nav_speed_control(float current_speed, float target_speed) {
 
 float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
                             float ship_radius, float heading) {
-    vec2 fwd = v2(cosf(heading), sinf(heading));
+    vec2 fwd = v2_from_angle(heading);
     float speed = v2_len(vel);
     /* Lookahead: 1.5s of travel, min 100u, max 500u */
     float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
