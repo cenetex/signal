@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
 
 all: build build-web build-server
 
@@ -155,6 +155,7 @@ build-test:
 	# an incremental build of the same -O2/-g object cache, so unchanged
 	# files don't re-link.
 	cmake --build build --target signal --parallel
+	python3 scripts/check_deterministic_build_flags.py
 
 # Number of shards for the parallel test runner. Defaults to min(8, ncores).
 NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
@@ -248,6 +249,9 @@ banned-apis:
 
 deterministic-libm:
 	python3 scripts/check_deterministic_libm.py
+
+deterministic-build-flags:
+	python3 scripts/check_deterministic_build_flags.py
 
 # Static analysis for owned C sources. Avoid --project=compile_commands.json
 # here: it pulls in test fixtures and single-header vendor libraries whose

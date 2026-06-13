@@ -53,7 +53,7 @@ docker run --rm \
     -e GIT_HASH="$GIT_HASH" \
     signal-builder:dev \
     sh -c 'cmake -S /workspace -B /build -DCMAKE_BUILD_TYPE=Release \
-                 -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+                 -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG -ffp-contract=off -fno-fast-math" \
                  -DCMAKE_EXE_LINKER_FLAGS="-static" \
                  -DBUILD_SERVER_ONLY=ON \
                  -DBUILD_TOOLS=OFF \
