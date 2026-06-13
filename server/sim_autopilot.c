@@ -155,10 +155,10 @@ static void autopilot_low_speed_unstick_nudge(const world_t *w,
         away = v2_sub(sp->ship.pos, w->asteroids[sp->autopilot_target].pos);
     }
     if (v2_len_sq(away) < 1.0f)
-        away = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+        away = v2_from_angle(sp->ship.angle);
 
     vec2 dir = v2_norm(away);
-    sp->ship.angle = atan2f(dir.y, dir.x);
+    sp->ship.angle = fixp_atan2f(dir.y, dir.x);
     sp->ship.vel = v2_scale(dir, 70.0f);
 }
 
@@ -315,7 +315,7 @@ static float autopilot_best_global_ore_priority(const world_t *w,
     for (int s = 0; s < MAX_STATIONS; s++) {
         float priority = autopilot_station_ore_priority(w, s, a->commodity);
         if (priority <= 0.0f) continue;
-        float station_dist = sqrtf(v2_dist_sq(a->pos, w->stations[s].pos));
+        float station_dist = v2_len(v2_sub(w->stations[s].pos, a->pos));
         float reach_penalty = fminf(station_dist / 18000.0f, 0.35f);
         priority -= reach_penalty;
         if (priority > best) {
@@ -511,7 +511,7 @@ static vec2 autopilot_station_exit_target(const station_t *st, vec2 from) {
     if (lane_r < outer_r + 140.0f)
         return lane;
     if (lane_r < 1.0f)
-        rel = v2(cosf(0.0f), sinf(0.0f));
+        rel = v2_from_angle(0.0f);
     else
         rel = v2_scale(rel, 1.0f / lane_r);
     return v2_add(st->pos, v2_scale(rel, autopilot_station_exit_radius(st) + 80.0f));
@@ -647,8 +647,8 @@ static float autopilot_contract_score(const world_t *w,
     if (!autopilot_finished_good(ct->commodity)) return -1.0f;
     if (!autopilot_valid_dock_station(w, ct->station_index)) return -1.0f;
     if (ct->quantity_needed <= 0.01f) return -1.0f;
-    float dist = sqrtf(v2_dist_sq(sp->ship.pos,
-                                  w->stations[ct->station_index].pos));
+    float dist = v2_len(v2_sub(w->stations[ct->station_index].pos,
+                               sp->ship.pos));
     return contract_price(ct) / fmaxf(1.0f, dist / 1000.0f);
 }
 
@@ -702,7 +702,7 @@ static void autopilot_make_contract_candidate(
     out->ledger_balance = src ? autopilot_ledger_balance(src, sp) : 0.0f;
     out->free_cargo = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
     out->distance = (dst && source_station != dest_station)
-        ? sqrtf(v2_dist_sq(sp->ship.pos, dst->pos))
+        ? v2_len(v2_sub(dst->pos, sp->ship.pos))
         : 0.0f;
     out->age = ct ? ct->age : 0.0f;
     out->hull_ratio = autopilot_hull_ratio(&sp->ship);
@@ -1005,13 +1005,13 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float standoff = (a->tier == ASTEROID_TIER_S)
             ? 0.0f
             : (a->radius + 120.0f);
-        float dist_to_a = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
+        float dist_to_a = v2_len(v2_sub(a->pos, sp->ship.pos));
         float effective_dist = fmaxf(0.0f, dist_to_a - standoff);
 
         /* Transition to MINE/COLLECT once close enough AND slow enough
          * for the hover controller to manage. 30 u/s prevents the
          * overshoot-through-asteroid cycle. */
-        float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
+        float current_speed = v2_len(sp->ship.vel);
         if (effective_dist < 30.0f && current_speed < 30.0f) {
             sp->input.thrust = 0.0f;
             if (a->tier == ASTEROID_TIER_S) {
@@ -1062,7 +1062,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         /* Hover near the rock at a safe standoff via flight controller. */
         float standoff = a->radius + 120.0f;
-        float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
+        float dist = v2_len(v2_sub(a->pos, sp->ship.pos));
 
         /* If we drifted way out, return to FLY_TO_TARGET. */
         if (dist > standoff + 30.0f + 200.0f) {
@@ -1087,7 +1087,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * Angle threshold widened to 0.35 rad (~20°) to prevent the
          * proportional turn from oscillating past the fire window. */
         vec2 to_a = v2_sub(a->pos, sp->ship.pos);
-        float face = atan2f(to_a.y, to_a.x);
+        float face = fixp_atan2f(to_a.y, to_a.x);
         float diff = wrap_angle(face - sp->ship.angle);
         if (dist < standoff + 50.0f && fabsf(diff) < 0.35f) {
             sp->input.mine = true;
@@ -1141,10 +1141,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         const asteroid_t *frag = &w->asteroids[best];
         vec2 to = v2_sub(frag->pos, sp->ship.pos);
-        float desired = atan2f(to.y, to.x);
+        float desired = fixp_atan2f(to.y, to.x);
         sp->input.turn = flight_face_heading(&sp->ship, desired);
         float diff = wrap_angle(desired - sp->ship.angle);
-        sp->input.thrust = (cosf(diff) > 0.5f) ? 0.6f : 0.0f;
+        sp->input.thrust = (fixp_cosf(diff) > 0.5f) ? 0.6f : 0.0f;
         if (sp->autopilot_timer > 8.0f) {
             sp->autopilot_state = (sp->ship.towed_count > 0)
                 ? AUTOPILOT_STEP_RETURN_TO_REFINERY
@@ -1197,8 +1197,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->input.thrust = cmd.thrust;
         sp->input.reverse_thrust = cmd.reverse_thrust;
         sp->input.mine = false;
-        float dist = sqrtf(v2_dist_sq(sp->ship.pos, smelt_pt));
-        float fly_dist = sqrtf(v2_dist_sq(sp->ship.pos, fly_target));
+        float dist = v2_len(v2_sub(smelt_pt, sp->ship.pos));
+        float fly_dist = v2_len(v2_sub(fly_target, sp->ship.pos));
 
         /* Drop-and-leave path (no damage): once the smelter has consumed
          * everything we towed in, head back out for another load. The
@@ -1388,10 +1388,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         if (sp->autopilot_timer > 1.0f && v2_len(sp->ship.vel) < 5.0f) {
             vec2 away = v2_sub(sp->ship.pos, st->pos);
             if (v2_len_sq(away) > 1.0f) {
-                float away_heading = atan2f(away.y, away.x);
+                float away_heading = fixp_atan2f(away.y, away.x);
                 float diff = wrap_angle(away_heading - sp->ship.angle);
                 cmd.turn = flight_face_heading(&sp->ship, away_heading);
-                cmd.thrust = cosf(diff) > 0.25f ? 0.7f : 0.0f;
+                cmd.thrust = fixp_cosf(diff) > 0.25f ? 0.7f : 0.0f;
                 cmd.reverse_thrust = false;
             }
         }
