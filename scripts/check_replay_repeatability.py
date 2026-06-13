@@ -36,6 +36,24 @@ SCENARIOS = (
         "--horizon-ticks", "24",
         "--candidates", "A,D,WA,WD",
     ),
+    (
+        "--seed", "2037",
+        "--station", "0",
+        "--history", "W,W,W,W,WA,WA,D,D,S,W,WD,WD",
+        "--horizon-ticks", "240",
+        "--candidates", "NONE,W,WA,WD",
+    ),
+    (
+        "--seed", "5150",
+        "--station", "2",
+        "--spawn", "-2500,1800",
+        "--velocity", "-18.0,9.0",
+        "--angle", "-1.25",
+        "--goal", "-4100,900",
+        "--history", "S,SA,A,W,WA,W,D,WD",
+        "--horizon-ticks", "180",
+        "--candidates", "S,SA,SD,W",
+    ),
 )
 
 

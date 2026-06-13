@@ -461,13 +461,27 @@ static void sr_hash_manifest(sha256_ctx_t *ctx, const manifest_t *manifest)
     }
 }
 
+static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
+{
+    sr_hash_float_milli(ctx, ship->pos.x);
+    sr_hash_float_milli(ctx, ship->pos.y);
+    sr_hash_float_milli(ctx, ship->vel.x);
+    sr_hash_float_milli(ctx, ship->vel.y);
+    sr_hash_float_milli(ctx, ship->angle);
+    sr_hash_float_milli(ctx, ship->hull);
+    sr_hash_u8(ctx, (uint8_t)ship->hull_class);
+    sr_hash_u8(ctx, ship->towed_count);
+    sr_hash_u8(ctx, ship->towed_pod_count);
+    sr_hash_i32(ctx, ship->towed_scaffold);
+}
+
 static void sr_state_hash(const world_t *w,
                           const server_player_t *sp,
                           uint8_t out[32])
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v1", 22);
+    sha256_update(&ctx, "signal-replay-state-v2", 22);
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_milli(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
@@ -505,6 +519,109 @@ static void sr_state_hash(const world_t *w,
         sr_hash_float_milli(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
+    }
+
+    int active_asteroids = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (w->asteroids[i].active) active_asteroids++;
+    sr_hash_i32(&ctx, active_asteroids);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        sr_hash_i32(&ctx, i);
+        sr_hash_u8(&ctx, a->fracture_child ? 1u : 0u);
+        sr_hash_u8(&ctx, (uint8_t)a->tier);
+        sr_hash_u8(&ctx, (uint8_t)a->commodity);
+        sr_hash_u8(&ctx, a->crystal_stage);
+        sr_hash_u8(&ctx, a->phase);
+        sr_hash_float_milli(&ctx, a->pos.x);
+        sr_hash_float_milli(&ctx, a->pos.y);
+        sr_hash_float_milli(&ctx, a->vel.x);
+        sr_hash_float_milli(&ctx, a->vel.y);
+        sr_hash_float_milli(&ctx, a->radius);
+        sr_hash_float_milli(&ctx, a->hp);
+        sr_hash_float_milli(&ctx, a->ore);
+        sr_hash_float_milli(&ctx, a->rotation);
+        sr_hash_float_milli(&ctx, a->spin);
+        sr_hash_float_milli(&ctx, a->smelt_progress);
+        sr_hash_i32(&ctx, a->last_towed_by);
+        sr_hash_i32(&ctx, a->last_fractured_by);
+        sr_hash_u8(&ctx, a->thrown_timer_q);
+        sr_hash_u8(&ctx, a->grade);
+        sha256_update(&ctx, a->last_towed_token, sizeof(a->last_towed_token));
+        sha256_update(&ctx, a->thrown_by_token, sizeof(a->thrown_by_token));
+        sha256_update(&ctx, a->fragment_pub, sizeof(a->fragment_pub));
+        sha256_update(&ctx, a->rock_pub, sizeof(a->rock_pub));
+    }
+
+    int active_npcs = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        if (w->npc_ships[i].active) active_npcs++;
+    sr_hash_i32(&ctx, active_npcs);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &w->npc_ships[i];
+        if (!npc->active) continue;
+        sr_hash_i32(&ctx, i);
+        sr_hash_u8(&ctx, (uint8_t)npc->role);
+        sr_hash_u8(&ctx, (uint8_t)npc->state);
+        sr_hash_ship_body(&ctx, &npc->ship);
+        for (int c = 0; c < COMMODITY_COUNT; c++)
+            sr_hash_float_milli(&ctx, npc->cargo[c]);
+        sr_hash_i32(&ctx, npc->target_asteroid);
+        sr_hash_i32(&ctx, npc->home_station);
+        sr_hash_i32(&ctx, npc->dest_station);
+        sr_hash_float_milli(&ctx, npc->state_timer);
+        sr_hash_u8(&ctx, npc->thrusting ? 1u : 0u);
+        sr_hash_i32(&ctx, npc->towed_fragment);
+        sr_hash_i32(&ctx, npc->towed_scaffold);
+        sr_hash_float_milli(&ctx, npc->hull);
+        sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
+    }
+
+    int active_scaffolds = 0;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        if (w->scaffolds[i].active) active_scaffolds++;
+    sr_hash_i32(&ctx, active_scaffolds);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active) continue;
+        sr_hash_i32(&ctx, i);
+        sr_hash_u8(&ctx, (uint8_t)sc->module_type);
+        sr_hash_u8(&ctx, (uint8_t)sc->state);
+        sr_hash_i32(&ctx, sc->owner);
+        sr_hash_float_milli(&ctx, sc->pos.x);
+        sr_hash_float_milli(&ctx, sc->pos.y);
+        sr_hash_float_milli(&ctx, sc->vel.x);
+        sr_hash_float_milli(&ctx, sc->vel.y);
+        sr_hash_float_milli(&ctx, sc->rotation);
+        sr_hash_float_milli(&ctx, sc->spin);
+        sr_hash_i32(&ctx, sc->placed_station);
+        sr_hash_i32(&ctx, sc->placed_ring);
+        sr_hash_i32(&ctx, sc->placed_slot);
+        sr_hash_i32(&ctx, sc->towed_by);
+        sr_hash_i32(&ctx, sc->built_at_station);
+        sr_hash_float_milli(&ctx, sc->build_amount);
+    }
+
+    int active_pods = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        if (w->cargo_pods[i].active) active_pods++;
+    sr_hash_i32(&ctx, active_pods);
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        sr_hash_i32(&ctx, i);
+        sr_hash_u8(&ctx, (uint8_t)pod->kind);
+        sr_hash_u8(&ctx, (uint8_t)pod->commodity);
+        sr_hash_u16(&ctx, pod->quantity);
+        sr_hash_float_milli(&ctx, pod->pos.x);
+        sr_hash_float_milli(&ctx, pod->pos.y);
+        sr_hash_float_milli(&ctx, pod->vel.x);
+        sr_hash_float_milli(&ctx, pod->vel.y);
+        sr_hash_float_milli(&ctx, pod->rotation);
+        sr_hash_float_milli(&ctx, pod->spin);
+        sr_hash_float_milli(&ctx, pod->age);
+        sr_hash_i32(&ctx, pod->towed_by);
     }
     sha256_final(&ctx, out);
 }
