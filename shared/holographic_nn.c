@@ -9,6 +9,7 @@
  *   - In-place radix-2 Cooley-Tukey FFT
  */
 #include "holographic_nn.h"
+#include "fixpoint.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -61,8 +62,8 @@ static void hnn_fft(float *data, int n) {
     hnn_bit_reverse(data, n);
     for (int len = 2; len <= n; len <<= 1) {
         float angle = -2.0f * 3.14159265358979323846f / (float)len;
-        float w_re = cosf(angle);
-        float w_im = sinf(angle);
+        float w_re = fixp_cosf(angle);
+        float w_im = fixp_sinf(angle);
         for (int i = 0; i < n; i += len) {
             float cur_re = 1.0f, cur_im = 0.0f;
             int half = len >> 1;
@@ -104,7 +105,7 @@ float hnn_normalize(float v[HNN_DIM]) {
     float sum_sq = 0.0f;
     for (int i = 0; i < HNN_DIM; i++) sum_sq += v[i] * v[i];
     if (sum_sq < 1e-30f) return 0.0f;
-    float inv_norm = 1.0f / sqrtf(sum_sq);
+    float inv_norm = 1.0f / fixp_sqrtf(sum_sq);
     for (int i = 0; i < HNN_DIM; i++) v[i] *= inv_norm;
     return 1.0f / inv_norm;
 }
@@ -130,8 +131,8 @@ void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
 
     for (int i = 1; i < half; i++) {
         float phase = hnn_randf() * 2.0f * 3.14159265358979323846f;
-        float a_re = cosf(phase);
-        float a_im = sinf(phase);
+        float a_re = fixp_cosf(phase);
+        float a_im = fixp_sinf(phase);
         F[2 * i]             = a_re;
         F[2 * i + 1]         = a_im;
         F[2 * (HNN_DIM - i)]     = a_re;
@@ -399,4 +400,3 @@ int hnn_select_action(const hnn_memory_t *mem,
     if (out_confidence) *out_confidence = best_sim;
     return best_idx;
 }
-
