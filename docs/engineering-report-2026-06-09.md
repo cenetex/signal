@@ -22,7 +22,7 @@ The original risk register drove a concentrated remediation pass. Landed fixes:
 - `2338c80`: station receipt chains verify on insert.
 - `5248298`: destroyed-rock tombstone capacity was raised.
 - `2963fce`: legacy-save claims are audited.
-- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code.
+- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code. The replay matrix now includes free flight, provenance buy/sell, pod tow/sell, and mining→fracture coverage.
 
 Net effect: several items that were urgent on 2026-06-09 are now closed or materially reduced. Remaining high-leverage work is narrower: keep expanding cross-build replay scenarios over physics/economy surfaces, then address float currency/ledger balances and the larger float-state migration.
 
@@ -76,7 +76,7 @@ Lifting any cap requires protocol v2 (#285, "streaming entity pool"), which is a
 ### 3.2 Determinism status
 
 - Deterministic-by-construction: single `uint32_t` world RNG (`shared/rng.h`), belt seed anchoring procedural rocks, fracture seeds computed from quantized inputs (`sim_asteroid.c:565`), rock identity as `SHA256("rock-v1" || belt_seed || chunk || slot)`.
-- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
+- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. The default replay checks cover eight scenarios, including mining→fracture and fragment identity hash inputs. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
 
 ---
 

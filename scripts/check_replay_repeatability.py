@@ -68,6 +68,13 @@ SCENARIOS = (
         "--candidates", "NONE",
         "--provenance-script", "pod-tow-sell",
     ),
+    (
+        "--seed", "5880",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--provenance-script", "mine-fracture",
+    ),
 )
 
 

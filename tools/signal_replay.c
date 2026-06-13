@@ -30,6 +30,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
     SR_PROVENANCE_SCRIPT_BUY_SELL,
     SR_PROVENANCE_SCRIPT_POD_TOW_SELL,
+    SR_PROVENANCE_SCRIPT_MINE_FRACTURE,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -66,6 +67,8 @@ typedef struct {
     int buy_events;
     int sell_events;
     int repair_events;
+    int mining_tick_events;
+    int fracture_events;
     int pickup_fragments;
     float pickup_ore;
     float damage_amount;
@@ -133,8 +136,8 @@ static void sr_usage(FILE *fp)
             "  --history LIST       comma-separated prefix actions, e.g. W,W,WA,D\n"
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
-            "  --provenance-script NAME  run a deterministic economy/provenance script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell\n"
+            "  --provenance-script NAME  run a deterministic setup/action script\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -271,12 +274,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_POD_TOW_SELL;
         return true;
     }
+    if (strcmp(text, "mine-fracture") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_MINE_FRACTURE;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_MINE_FRACTURE:
+        return "mine-fracture";
     case SR_PROVENANCE_SCRIPT_POD_TOW_SELL:
         return "pod-tow-sell";
     case SR_PROVENANCE_SCRIPT_BUY_SELL:
@@ -559,6 +568,41 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
                                   CARGO_POD_CARGO);
         return pod_idx >= 0;
     }
+    case SR_PROVENANCE_SCRIPT_MINE_FRACTURE: {
+        const int asteroid_idx = 0;
+        asteroid_t *a = &w->asteroids[asteroid_idx];
+        vec2 forward = ship_forward(sp->ship.angle);
+        vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(a, 0, sizeof(*a));
+        a->active = true;
+        a->fracture_child = false;
+        a->tier = ASTEROID_TIER_M;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->pos = v2_add(muzzle, v2_scale(forward, 90.0f));
+        a->vel = v2(0.0f, 0.0f);
+        a->radius = 34.0f;
+        a->hp = 0.32f;
+        a->max_hp = 0.32f;
+        a->ore = 6.0f;
+        a->max_ore = 6.0f;
+        a->rotation = 0.25f;
+        a->spin = 0.0f;
+        a->seed = 588.0f;
+        a->last_towed_by = -1;
+        a->last_fractured_by = -1;
+        a->crystal_stage_station = 0xFF;
+        a->crystal_stage_module = 0xFF;
+        a->phase = ASTEROID_PHASE_SOLID;
+        a->net_dirty = true;
+
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship.mining_level = 0;
+        sp->input.mining_target_hint = asteroid_idx;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -753,6 +797,9 @@ static void sr_state_hash(const world_t *w,
         sr_hash_u8(&ctx, a->grade);
         sha256_update(&ctx, a->last_towed_token, sizeof(a->last_towed_token));
         sha256_update(&ctx, a->thrown_by_token, sizeof(a->thrown_by_token));
+        sha256_update(&ctx, a->last_fractured_token,
+                      sizeof(a->last_fractured_token));
+        sha256_update(&ctx, a->fracture_seed, sizeof(a->fracture_seed));
         sha256_update(&ctx, a->fragment_pub, sizeof(a->fragment_pub));
         sha256_update(&ctx, a->rock_pub, sizeof(a->rock_pub));
     }
@@ -867,6 +914,8 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         sr_hash_i32(ctx, ev->fracture.tier);
         sr_hash_i32(ctx, ev->fracture.asteroid_id);
         break;
+    case SIM_EVENT_MINING_TICK:
+        break;
     case SIM_EVENT_REPAIR:
     case SIM_EVENT_DOCK:
     case SIM_EVENT_LAUNCH:
@@ -914,6 +963,12 @@ static void sr_accumulate_events(const world_t *w,
             break;
         case SIM_EVENT_REPAIR:
             counts->repair_events++;
+            break;
+        case SIM_EVENT_MINING_TICK:
+            counts->mining_tick_events++;
+            break;
+        case SIM_EVENT_FRACTURE:
+            counts->fracture_events++;
             break;
         default:
             break;
@@ -998,6 +1053,27 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         }
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             if (w->cargo_pods[i].active) return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_MINE_FRACTURE: {
+        int mining_before = counts->mining_tick_events;
+        int fracture_before = counts->fracture_events;
+
+        for (int i = 0; i < 30 && counts->fracture_events <= fracture_before; i++) {
+            sp->input.mine = true;
+            sp->input.mining_target_hint = 0;
+            world_sim_step(w, SIM_DT);
+            sr_accumulate_events(w, counts, event_hash);
+        }
+        sp->input.mine = false;
+
+        if (counts->mining_tick_events <= mining_before ||
+            counts->fracture_events <= fracture_before ||
+            !w->asteroids[0].active ||
+            !w->asteroids[0].fracture_child ||
+            sp->ship.stat_asteroids_fractured <= 0) {
+            return false;
         }
         return true;
     }
@@ -1180,6 +1256,8 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             ",\"sell_base\":%d"
             ",\"sell_bonus\":%d"
             ",\"repair_events\":%d"
+            ",\"mining_tick_events\":%d"
+            ",\"fracture_events\":%d"
             ",\"damage_amount\":%.3f"
             ",\"authority\":\"deterministic_seed_prefix_replay\"}\n",
             r->start_dist,
@@ -1216,6 +1294,8 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->events.sell_base,
             r->events.sell_bonus,
             r->events.repair_events,
+            r->events.mining_tick_events,
+            r->events.fracture_events,
             r->events.damage_amount);
 }
 
