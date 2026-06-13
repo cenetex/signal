@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 MIGRATED_FILES = (
+    "server/sim_physics.c",
     "server/sim_ship.c",
     "shared/laser.c",
     "shared/tractor.c",

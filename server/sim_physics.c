@@ -76,7 +76,7 @@ void step_asteroid_gravity(world_t *w, float dt) {
                     vec2 delta = v2_sub(b->pos, a->pos);
                     float dist_sq = v2_len_sq(delta);
                     if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
-                    float dist = sqrtf(dist_sq);
+                    float dist = v2_len(delta);
                     /* Don't attract asteroids at or inside collision boundary */
                     float min_dist = a->radius + b->radius;
                     if (dist < min_dist * 1.3f) continue; /* dead zone: 30% beyond contact */
@@ -126,7 +126,7 @@ void step_asteroid_gravity(world_t *w, float dt) {
             float dist_sq = v2_len_sq(delta);
             float pull_range = 600.0f + (float)intake_modules * 100.0f;
             if (dist_sq > pull_range * pull_range || dist_sq < 1.0f) continue;
-            float dist = sqrtf(dist_sq);
+            float dist = v2_len(delta);
             float min_dist = a->radius + st->radius;
             if (dist < min_dist + 10.0f) continue;
             vec2 normal = v2_scale(delta, 1.0f / dist);
@@ -201,7 +201,7 @@ void step_asteroid_gravity(world_t *w, float dt) {
         float glen_sq = v2_len_sq(uphill);
         if (glen_sq < 0.000001f) continue;
 
-        vec2 downhill = v2_scale(uphill, -1.0f / sqrtf(glen_sq));
+        vec2 downhill = v2_scale(uphill, -1.0f / v2_len(uphill));
         float pressure = (sig_here - SIGNAL_BAND_FRONTIER) /
                          (SIGNAL_BAND_OPERATIONAL - SIGNAL_BAND_FRONTIER);
         if (pressure > 1.0f) pressure = 1.0f;
@@ -235,7 +235,7 @@ void resolve_asteroid_collisions(world_t *w) {
                     vec2 delta = v2_sub(a->pos, b->pos);
                     float dist_sq = v2_len_sq(delta);
                     if (dist_sq >= min_dist * min_dist) continue;
-                    float dist = sqrtf(dist_sq);
+                    float dist = v2_len(delta);
                     if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
                     vec2 normal = v2_scale(delta, 1.0f / dist);
                     float overlap = min_dist - dist;
@@ -270,7 +270,7 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
     vec2 delta = v2_sub(a->pos, mod_pos);
     float dist_sq = v2_len_sq(delta);
     if (dist_sq >= min_dist * min_dist) return;
-    float dist = sqrtf(dist_sq);
+    float dist = v2_len(delta);
     if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
     vec2 normal = v2_scale(delta, 1.0f / dist);
     float overlap = min_dist - dist;
@@ -285,15 +285,15 @@ static void resolve_asteroid_corridor_collision(asteroid_t *a, vec2 center,
                                                 float ring_r, float angle_a,
                                                 float arc_delta) {
     vec2 delta = v2_sub(a->pos, center);
-    float dist = sqrtf(v2_len_sq(delta));
+    float dist = v2_len(delta);
     if (dist < 1.0f) return;
 
     float r_inner = ring_r - STATION_CORRIDOR_HW - a->radius;
     float r_outer = ring_r + STATION_CORRIDOR_HW + a->radius;
     if (dist <= r_inner || dist >= r_outer) return;
 
-    float ast_angle = atan2f(delta.y, delta.x);
-    float angular_margin = asinf(fminf(a->radius / dist, 1.0f));
+    float ast_angle = fixp_atan2f(delta.y, delta.x);
+    float angular_margin = fixp_asinf(fminf(a->radius / dist, 1.0f));
     float expanded_start = angle_a - angular_margin;
     float expanded_delta = arc_delta + 2.0f * angular_margin;
     if (angle_in_arc(ast_angle, expanded_start, expanded_delta) < 0.0f) return;
@@ -322,12 +322,12 @@ static bool asteroid_near_corridor_module(const asteroid_t *a,
                                           const station_geom_t *geom,
                                           const geom_corridor_t *cor) {
     vec2 delta = v2_sub(a->pos, geom->center);
-    float dist = sqrtf(v2_len_sq(delta));
+    float dist = v2_len(delta);
     if (fabsf(dist - cor->ring_radius) >=
         STATION_CORRIDOR_HW + a->radius + STATION_MODULE_COL_RADIUS)
         return false;
 
-    float ast_ang = atan2f(delta.y, delta.x);
+    float ast_ang = fixp_atan2f(delta.y, delta.x);
     for (int mi = 0; mi < geom->circle_count; mi++) {
         const geom_circle_t *circle = &geom->circles[mi];
         if (circle->ring != cor->ring) continue;

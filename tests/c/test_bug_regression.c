@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "sim_physics.h"
 
 TEST(test_bug2_angle_lerp_wraparound) {
     /* FIXED: apply_remote_player_state should use wrap-aware lerp.
@@ -676,6 +677,75 @@ TEST(test_bug42_station_gravity_ignores_mass) {
     /* After fix: fragment should accelerate faster (less mass, same force).
      * Currently both get same velocity change because mass isn't considered. */
     ASSERT(accel_s > accel_xl * 1.5f);
+}
+
+TEST(test_asteroid_collision_uses_deterministic_length_reference) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_M;
+    w.asteroids[0].radius = 15.0f;
+    w.asteroids[0].pos = v2(0.0f, 0.0f);
+    w.asteroids[0].vel = v2(6.0f, 8.0f);
+
+    w.asteroids[1].active = true;
+    w.asteroids[1].tier = ASTEROID_TIER_M;
+    w.asteroids[1].radius = 15.0f;
+    w.asteroids[1].pos = v2(12.0f, 16.0f);
+    w.asteroids[1].vel = v2(0.0f, 0.0f);
+
+    spatial_grid_build(&w);
+    resolve_asteroid_collisions(&w);
+
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(w.asteroids[0].pos, w.asteroids[1].pos)),
+                    30.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].pos.x, -3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].pos.y, -4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[1].pos.x, 15.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[1].pos.y, 20.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].vel.x, 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[0].vel.y, 4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[1].vel.x, 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.asteroids[1].vel.y, 4.0f, 0.001f);
+}
+
+TEST(test_asteroid_station_corridor_uses_deterministic_angle_reference) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int s = 1; s < MAX_STATIONS; s++) w.stations[s].pos = v2(100000.0f, 100000.0f);
+
+    station_geom_t geom;
+    station_build_geom(&w.stations[0], &geom);
+    const geom_corridor_t *picked = NULL;
+    const float radius = 5.0f;
+    for (int i = 0; i < geom.corridor_count; i++) {
+        const geom_corridor_t *cor = &geom.corridors[i];
+        float angular_size = (STATION_MODULE_COL_RADIUS + radius) / cor->ring_radius;
+        if (cor->arc_delta * 0.5f > angular_size + 0.05f) {
+            picked = cor;
+            break;
+        }
+    }
+    ASSERT(picked != NULL);
+
+    float angle = picked->angle_a + picked->arc_delta * 0.5f;
+    vec2 radial = v2_from_angle(angle);
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->radius = radius;
+    a->pos = v2_add(geom.center, v2_scale(radial, picked->ring_radius + 5.0f));
+    a->vel = v2_scale(radial, -8.0f);
+
+    resolve_asteroid_station_collisions(&w);
+
+    float expected_r = picked->ring_radius + STATION_CORRIDOR_HW + radius + 1.0f;
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(a->pos, geom.center)), expected_r, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(a->vel), 0.0f, 0.001f);
+    ASSERT(a->net_dirty);
 }
 
 TEST(test_bug43_fracture_children_inside_station) {
@@ -1499,6 +1569,8 @@ void register_bug_regression_batch5_tests(void) {
     TEST_SECTION("\nBug regression batch 5 (bugs 41-50):\n");
     RUN(test_bug41_gravity_asymmetric);
     RUN(test_bug42_station_gravity_ignores_mass);
+    RUN(test_asteroid_collision_uses_deterministic_length_reference);
+    RUN(test_asteroid_station_corridor_uses_deterministic_angle_reference);
     RUN(test_bug43_fracture_children_inside_station);
     RUN(test_bug44_gravity_collision_oscillation);
     RUN(test_bug45_player_only_still_mines);
