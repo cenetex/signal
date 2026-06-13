@@ -300,7 +300,7 @@ vec2 module_world_pos_ring(const station_t *st, int ring, int slot) {
     int slots = STATION_RING_SLOTS[ring];
     float angle = TWO_PI_F * (float)slot / (float)slots + station_ring_rotation(st, ring);
     float r = STATION_RING_RADIUS[ring];
-    return v2_add(st->pos, v2(cosf(angle) * r, sinf(angle) * r));
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), r));
 }
 
 float module_angle_ring(const station_t *st, int ring, int slot) {
@@ -321,7 +321,7 @@ float station_dock_lane_angle(const station_t *st, int ring, int slot) {
 vec2 station_dock_lane_pos(const station_t *st, int ring, int slot,
                            float radius) {
     float angle = station_dock_lane_angle(st, ring, slot);
-    return v2_add(st->pos, v2(cosf(angle) * radius, sinf(angle) * radius));
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), radius));
 }
 
 bool station_ring_open_gap_lane(const station_t *st, int ring,
@@ -371,7 +371,7 @@ float station_ring_open_gap_angle(const station_t *st, int ring) {
 vec2 station_ring_open_gap_lane_pos(const station_t *st, int ring,
                                     float radius) {
     float angle = station_ring_open_gap_angle(st, ring);
-    return v2_add(st->pos, v2(cosf(angle) * radius, sinf(angle) * radius));
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), radius));
 }
 
 int ring_module_count(const station_t *st, int ring) {

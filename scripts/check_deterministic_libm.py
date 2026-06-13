@@ -16,6 +16,7 @@ MIGRATED_FILES = (
     "server/sim_physics.c",
     "server/sim_ship.c",
     "shared/laser.c",
+    "shared/station_util.c",
     "shared/tractor.c",
 )
 
