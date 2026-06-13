@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "chain_log.h"
+#include "fixpoint.h"
 #include "game_sim.h"
 #include "manifest.h"
 #include "sha256.h"
@@ -479,8 +480,8 @@ static bool sr_setup_world(const sr_config_t *config,
     }
     sp->ship.angle = config->angle_set
                    ? config->angle
-                   : atan2f(out_goal->y - sp->ship.pos.y,
-                            out_goal->x - sp->ship.pos.x);
+                   : fixp_atan2f(out_goal->y - sp->ship.pos.y,
+                                  out_goal->x - sp->ship.pos.x);
     sp->ship.hull = ship_max_hull(&sp->ship);
     sp->ship.towed_count = 0;
     sp->ship.towed_scaffold = -1;

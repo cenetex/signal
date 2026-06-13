@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail on raw libm calls in production server/shared code."""
+"""Fail on raw libm calls in deterministic sim and replay code."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SCAN_ROOTS = ("server", "shared")
 SCAN_SUFFIXES = (".c", ".h")
+SCAN_EXTRA_FILES = ("tools/signal_replay.c",)
 
 BANNED = {
     "sqrtf": "use v2_len() or fixp_sqrtf()",
@@ -58,6 +59,8 @@ def main() -> int:
         for path in (ROOT / root).rglob("*")
         if path.suffix in SCAN_SUFFIXES
     )
+    paths.extend(ROOT / rel for rel in SCAN_EXTRA_FILES)
+    paths = sorted(set(paths))
     for path in paths:
         rel = str(path.relative_to(ROOT))
         in_block_comment = False
@@ -68,7 +71,7 @@ def main() -> int:
                 findings.append((rel, lineno, api, BANNED[api]))
 
     if findings:
-        print("Raw libm calls found in production server/shared code:", file=sys.stderr)
+        print("Raw libm calls found in deterministic sim/replay code:", file=sys.stderr)
         for rel, lineno, api, replacement in findings:
             print(f"  {rel}:{lineno}: {api}() is banned; {replacement}", file=sys.stderr)
         return 1
