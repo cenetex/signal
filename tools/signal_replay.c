@@ -9,7 +9,6 @@
  */
 #include <errno.h>
 #include <inttypes.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -446,10 +445,11 @@ static void sr_hash_u64(sha256_ctx_t *ctx, uint64_t v)
     sha256_update(ctx, b, sizeof(b));
 }
 
-static void sr_hash_float_milli(sha256_ctx_t *ctx, float v)
+static void sr_hash_float_bits(sha256_ctx_t *ctx, float v)
 {
-    if (!isfinite(v)) v = 0.0f;
-    sr_hash_i32(ctx, (int32_t)lroundf(v * 1000.0f));
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    sr_hash_u32(ctx, bits);
 }
 
 static bool sr_reverse_allowed(const server_player_t *sp)
@@ -860,8 +860,8 @@ static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
     for (int i = 0; i < count; i++) {
         sha256_update(ctx, st->ledger[i].player_pubkey,
                       sizeof(st->ledger[i].player_pubkey));
-        sr_hash_float_milli(ctx, st->ledger[i].balance);
-        sr_hash_float_milli(ctx, st->ledger[i].lifetime_supply);
+        sr_hash_float_bits(ctx, st->ledger[i].balance);
+        sr_hash_float_bits(ctx, st->ledger[i].lifetime_supply);
         sr_hash_u64(ctx, st->ledger[i].first_dock_tick);
         sr_hash_u64(ctx, st->ledger[i].last_dock_tick);
         sr_hash_u32(ctx, st->ledger[i].total_docks);
@@ -890,16 +890,16 @@ static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
     if (plan_count < 0) plan_count = 0;
     if (plan_count > 8) plan_count = 8;
 
-    sr_hash_float_milli(ctx, st->radius);
-    sr_hash_float_milli(ctx, st->dock_radius);
-    sr_hash_float_milli(ctx, st->signal_range);
-    sr_hash_float_milli(ctx, st->jostle_vel.x);
-    sr_hash_float_milli(ctx, st->jostle_vel.y);
+    sr_hash_float_bits(ctx, st->radius);
+    sr_hash_float_bits(ctx, st->dock_radius);
+    sr_hash_float_bits(ctx, st->signal_range);
+    sr_hash_float_bits(ctx, st->jostle_vel.x);
+    sr_hash_float_bits(ctx, st->jostle_vel.y);
     sr_hash_u8(ctx, st->signal_connected ? 1u : 0u);
     sr_hash_u8(ctx, st->scaffold ? 1u : 0u);
     sr_hash_u8(ctx, st->planned ? 1u : 0u);
     sr_hash_i32(ctx, st->planned_owner);
-    sr_hash_float_milli(ctx, st->scaffold_progress);
+    sr_hash_float_bits(ctx, st->scaffold_progress);
 
     sr_hash_i32(ctx, module_count);
     for (int m = 0; m < module_count; m++) {
@@ -910,19 +910,19 @@ static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
         sr_hash_u8(ctx, mod->scaffold ? 1u : 0u);
         sr_hash_u8(ctx, mod->last_smelt_commodity);
         sr_hash_u8(ctx, mod->commodity);
-        sr_hash_float_milli(ctx, mod->build_progress);
-        sr_hash_float_milli(ctx, st->module_input[m]);
-        sr_hash_float_milli(ctx, st->module_output[m]);
-        sr_hash_float_milli(ctx, st->module_craft_progress[m]);
+        sr_hash_float_bits(ctx, mod->build_progress);
+        sr_hash_float_bits(ctx, st->module_input[m]);
+        sr_hash_float_bits(ctx, st->module_output[m]);
+        sr_hash_float_bits(ctx, st->module_craft_progress[m]);
         sr_hash_u8(ctx, st->module_diag[m]);
     }
 
     sr_hash_i32(ctx, arm_count);
     for (int a = 0; a < MAX_ARMS; a++) {
-        sr_hash_float_milli(ctx, st->arm_rotation[a]);
-        sr_hash_float_milli(ctx, st->arm_speed[a]);
-        sr_hash_float_milli(ctx, st->arm_omega[a]);
-        sr_hash_float_milli(ctx, st->ring_offset[a]);
+        sr_hash_float_bits(ctx, st->arm_rotation[a]);
+        sr_hash_float_bits(ctx, st->arm_speed[a]);
+        sr_hash_float_bits(ctx, st->arm_omega[a]);
+        sr_hash_float_bits(ctx, st->ring_offset[a]);
     }
 
     sr_hash_i32(ctx, pending_count);
@@ -961,11 +961,11 @@ static void sr_hash_contracts(sha256_ctx_t *ctx, const world_t *w)
         sha256_update(ctx, ct->required_parent, sizeof(ct->required_parent));
         sha256_update(ctx, ct->target_pub, sizeof(ct->target_pub));
         sr_hash_u64(ctx, ct->forbidden_origin_mask);
-        sr_hash_float_milli(ctx, ct->quantity_needed);
-        sr_hash_float_milli(ctx, ct->base_price);
-        sr_hash_float_milli(ctx, ct->age);
-        sr_hash_float_milli(ctx, ct->target_pos.x);
-        sr_hash_float_milli(ctx, ct->target_pos.y);
+        sr_hash_float_bits(ctx, ct->quantity_needed);
+        sr_hash_float_bits(ctx, ct->base_price);
+        sr_hash_float_bits(ctx, ct->age);
+        sr_hash_float_bits(ctx, ct->target_pos.x);
+        sr_hash_float_bits(ctx, ct->target_pos.y);
         sr_hash_i32(ctx, ct->target_index);
         sr_hash_i32(ctx, ct->claimed_by);
     }
@@ -985,12 +985,12 @@ static float sr_player_station_balance(const world_t *w, const server_player_t *
 
 static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
 {
-    sr_hash_float_milli(ctx, ship->pos.x);
-    sr_hash_float_milli(ctx, ship->pos.y);
-    sr_hash_float_milli(ctx, ship->vel.x);
-    sr_hash_float_milli(ctx, ship->vel.y);
-    sr_hash_float_milli(ctx, ship->angle);
-    sr_hash_float_milli(ctx, ship->hull);
+    sr_hash_float_bits(ctx, ship->pos.x);
+    sr_hash_float_bits(ctx, ship->pos.y);
+    sr_hash_float_bits(ctx, ship->vel.x);
+    sr_hash_float_bits(ctx, ship->vel.y);
+    sr_hash_float_bits(ctx, ship->angle);
+    sr_hash_float_bits(ctx, ship->hull);
     sr_hash_u8(ctx, (uint8_t)ship->hull_class);
     sr_hash_u8(ctx, ship->towed_count);
     sr_hash_u8(ctx, ship->towed_pod_count);
@@ -1015,9 +1015,9 @@ static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *playe
     sr_hash_i32(ctx, player->autopilot_target);
     sr_hash_i32(ctx, player->autopilot_station_target);
     sr_hash_u8(ctx, (uint8_t)player->autopilot_cargo);
-    sr_hash_float_milli(ctx, player->autopilot_timer);
+    sr_hash_float_bits(ctx, player->autopilot_timer);
     sr_hash_u8(ctx, player->was_in_signal ? 1u : 0u);
-    sr_hash_float_milli(ctx, player->boost_hold_timer);
+    sr_hash_float_bits(ctx, player->boost_hold_timer);
     sr_hash_ship_body(ctx, &player->ship);
     for (int i = 0; i < (int)(sizeof(player->ship.towed_fragments) /
                               sizeof(player->ship.towed_fragments[0])); i++) {
@@ -1028,7 +1028,7 @@ static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *playe
         sr_hash_i32(ctx, player->ship.towed_pods[i]);
     }
     for (int c = 0; c < COMMODITY_COUNT; c++) {
-        sr_hash_float_milli(ctx, player->ship.cargo[c]);
+        sr_hash_float_bits(ctx, player->ship.cargo[c]);
     }
     sr_hash_ship_cargo_identity(ctx, &player->ship);
 }
@@ -1052,9 +1052,9 @@ static void sr_state_hash(const world_t *w,
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v2", 22);
+    sha256_update(&ctx, "signal-replay-state-v3-float-bits", 33);
     sr_hash_u64(&ctx, w->tick);
-    sr_hash_float_milli(&ctx, w->time);
+    sr_hash_float_bits(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
     int connected_players = 0;
     for (int p = 0; p < MAX_PLAYERS; p++) {
@@ -1074,8 +1074,8 @@ static void sr_state_hash(const world_t *w,
     for (int s = 0; s < station_count; s++) {
         const station_t *st = &w->stations[s];
         sr_hash_i32(&ctx, st->id);
-        sr_hash_float_milli(&ctx, st->pos.x);
-        sr_hash_float_milli(&ctx, st->pos.y);
+        sr_hash_float_bits(&ctx, st->pos.x);
+        sr_hash_float_bits(&ctx, st->pos.y);
         sr_hash_station_construction(&ctx, st);
         sha256_update(&ctx, st->station_pubkey, sizeof(st->station_pubkey));
         sha256_update(&ctx, st->outpost_founder_pubkey,
@@ -1084,11 +1084,11 @@ static void sr_state_hash(const world_t *w,
         sr_hash_manifest(&ctx, &st->manifest);
         sr_hash_receipts(&ctx, &st->manifest, station_get_receipts_const(st));
         for (int c = 0; c < COMMODITY_COUNT; c++) {
-            sr_hash_float_milli(&ctx, st->_inventory_cache[c]);
+            sr_hash_float_bits(&ctx, st->_inventory_cache[c]);
         }
         sr_hash_station_ledger(&ctx, st);
-        sr_hash_float_milli(&ctx, ledger_balance(st, sp->session_token));
-        sr_hash_float_milli(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
+        sr_hash_float_bits(&ctx, ledger_balance(st, sp->session_token));
+        sr_hash_float_bits(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
     }
@@ -1107,16 +1107,16 @@ static void sr_state_hash(const world_t *w,
         sr_hash_u8(&ctx, (uint8_t)a->commodity);
         sr_hash_u8(&ctx, a->crystal_stage);
         sr_hash_u8(&ctx, a->phase);
-        sr_hash_float_milli(&ctx, a->pos.x);
-        sr_hash_float_milli(&ctx, a->pos.y);
-        sr_hash_float_milli(&ctx, a->vel.x);
-        sr_hash_float_milli(&ctx, a->vel.y);
-        sr_hash_float_milli(&ctx, a->radius);
-        sr_hash_float_milli(&ctx, a->hp);
-        sr_hash_float_milli(&ctx, a->ore);
-        sr_hash_float_milli(&ctx, a->rotation);
-        sr_hash_float_milli(&ctx, a->spin);
-        sr_hash_float_milli(&ctx, a->smelt_progress);
+        sr_hash_float_bits(&ctx, a->pos.x);
+        sr_hash_float_bits(&ctx, a->pos.y);
+        sr_hash_float_bits(&ctx, a->vel.x);
+        sr_hash_float_bits(&ctx, a->vel.y);
+        sr_hash_float_bits(&ctx, a->radius);
+        sr_hash_float_bits(&ctx, a->hp);
+        sr_hash_float_bits(&ctx, a->ore);
+        sr_hash_float_bits(&ctx, a->rotation);
+        sr_hash_float_bits(&ctx, a->spin);
+        sr_hash_float_bits(&ctx, a->smelt_progress);
         sr_hash_i32(&ctx, a->last_towed_by);
         sr_hash_i32(&ctx, a->last_fractured_by);
         sr_hash_u8(&ctx, a->thrown_timer_q);
@@ -1149,15 +1149,15 @@ static void sr_state_hash(const world_t *w,
             sr_hash_ship_cargo_identity(&ctx, paired_ship);
         }
         for (int c = 0; c < COMMODITY_COUNT; c++)
-            sr_hash_float_milli(&ctx, npc->cargo[c]);
+            sr_hash_float_bits(&ctx, npc->cargo[c]);
         sr_hash_i32(&ctx, npc->target_asteroid);
         sr_hash_i32(&ctx, npc->home_station);
         sr_hash_i32(&ctx, npc->dest_station);
-        sr_hash_float_milli(&ctx, npc->state_timer);
+        sr_hash_float_bits(&ctx, npc->state_timer);
         sr_hash_u8(&ctx, npc->thrusting ? 1u : 0u);
         sr_hash_i32(&ctx, npc->towed_fragment);
         sr_hash_i32(&ctx, npc->towed_scaffold);
-        sr_hash_float_milli(&ctx, npc->hull);
+        sr_hash_float_bits(&ctx, npc->hull);
         sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
     }
 
@@ -1172,18 +1172,18 @@ static void sr_state_hash(const world_t *w,
         sr_hash_u8(&ctx, (uint8_t)sc->module_type);
         sr_hash_u8(&ctx, (uint8_t)sc->state);
         sr_hash_i32(&ctx, sc->owner);
-        sr_hash_float_milli(&ctx, sc->pos.x);
-        sr_hash_float_milli(&ctx, sc->pos.y);
-        sr_hash_float_milli(&ctx, sc->vel.x);
-        sr_hash_float_milli(&ctx, sc->vel.y);
-        sr_hash_float_milli(&ctx, sc->rotation);
-        sr_hash_float_milli(&ctx, sc->spin);
+        sr_hash_float_bits(&ctx, sc->pos.x);
+        sr_hash_float_bits(&ctx, sc->pos.y);
+        sr_hash_float_bits(&ctx, sc->vel.x);
+        sr_hash_float_bits(&ctx, sc->vel.y);
+        sr_hash_float_bits(&ctx, sc->rotation);
+        sr_hash_float_bits(&ctx, sc->spin);
         sr_hash_i32(&ctx, sc->placed_station);
         sr_hash_i32(&ctx, sc->placed_ring);
         sr_hash_i32(&ctx, sc->placed_slot);
         sr_hash_i32(&ctx, sc->towed_by);
         sr_hash_i32(&ctx, sc->built_at_station);
-        sr_hash_float_milli(&ctx, sc->build_amount);
+        sr_hash_float_bits(&ctx, sc->build_amount);
     }
 
     int active_pods = 0;
@@ -1197,13 +1197,13 @@ static void sr_state_hash(const world_t *w,
         sr_hash_u8(&ctx, (uint8_t)pod->kind);
         sr_hash_u8(&ctx, (uint8_t)pod->commodity);
         sr_hash_u16(&ctx, pod->quantity);
-        sr_hash_float_milli(&ctx, pod->pos.x);
-        sr_hash_float_milli(&ctx, pod->pos.y);
-        sr_hash_float_milli(&ctx, pod->vel.x);
-        sr_hash_float_milli(&ctx, pod->vel.y);
-        sr_hash_float_milli(&ctx, pod->rotation);
-        sr_hash_float_milli(&ctx, pod->spin);
-        sr_hash_float_milli(&ctx, pod->age);
+        sr_hash_float_bits(&ctx, pod->pos.x);
+        sr_hash_float_bits(&ctx, pod->pos.y);
+        sr_hash_float_bits(&ctx, pod->vel.x);
+        sr_hash_float_bits(&ctx, pod->vel.y);
+        sr_hash_float_bits(&ctx, pod->rotation);
+        sr_hash_float_bits(&ctx, pod->spin);
+        sr_hash_float_bits(&ctx, pod->age);
         sr_hash_i32(&ctx, pod->towed_by);
     }
     sha256_final(&ctx, out);
@@ -1215,9 +1215,9 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
     sr_hash_i32(ctx, ev->player_id);
     switch (ev->type) {
     case SIM_EVENT_DAMAGE:
-        sr_hash_float_milli(ctx, ev->damage.amount);
-        sr_hash_float_milli(ctx, ev->damage.source_x);
-        sr_hash_float_milli(ctx, ev->damage.source_y);
+        sr_hash_float_bits(ctx, ev->damage.amount);
+        sr_hash_float_bits(ctx, ev->damage.source_x);
+        sr_hash_float_bits(ctx, ev->damage.source_y);
         break;
     case SIM_EVENT_DEATH:
         sr_hash_u8(ctx, ev->death.cause);
@@ -1240,7 +1240,7 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         sr_hash_u8(ctx, ev->sell.by_contract);
         break;
     case SIM_EVENT_PICKUP:
-        sr_hash_float_milli(ctx, ev->pickup.ore);
+        sr_hash_float_bits(ctx, ev->pickup.ore);
         sr_hash_i32(ctx, ev->pickup.fragments);
         break;
     case SIM_EVENT_FRACTURE:
@@ -1590,7 +1590,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     sr_state_hash(w, sp, out->prefix_state_hash);
 
     sha256_init(&event_hash);
-    sha256_update(&event_hash, "signal-replay-events-v1", 23);
+    sha256_update(&event_hash, "signal-replay-events-v2-float-bits", 34);
     if (!sr_run_provenance_script(config, w, sp, &out->events, &event_hash)) {
         world_cleanup(w);
         free(w);

@@ -71,8 +71,10 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
 manifest, station identity, station inventory cache, player ledger balance by
-session token and pubkey, and station chain tail. This makes repeated runs with
-the same seed and prefix cheap to diff and safe to ingest from CRLPLRIMES-style
+session token and pubkey, and station chain tail. Float fields are hashed as
+their exact IEEE-754 bits, not rounded display values, so one-bit native/WASM
+or cross-build drift fails the diff. This makes repeated runs with the same
+seed and prefix cheap to diff and safe to ingest from CRLPLRIMES-style
 experiments.
 
 ## Determinism Check
@@ -86,3 +88,10 @@ diff -u /tmp/replay-a.jsonl /tmp/replay-b.jsonl
 ```
 
 An empty diff is the expected result.
+
+For the native-vs-WASM determinism gate, build the Emscripten replay CLI and
+compare it against the native replay binary:
+
+```sh
+make replay-native-wasm
+```

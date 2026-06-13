@@ -58,6 +58,7 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 # logs post-mortem. Default ON so dev builds get it; the
 # server-only Docker image flips it off.
 option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_replay)" ON)
+option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
@@ -346,6 +347,28 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_replay PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
+endif()
+
+if(BUILD_WASM_REPLAY AND EMSCRIPTEN)
+    add_executable(signal_replay
+        tools/signal_replay.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_replay PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_link_libraries(signal_replay PRIVATE m)
+    target_compile_options(signal_replay PRIVATE
+        -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    set_target_properties(signal_replay PROPERTIES SUFFIX ".js")
+    target_link_options(signal_replay PRIVATE
+        "SHELL:-sENVIRONMENT=node"
+        "SHELL:-sEXIT_RUNTIME=1"
+        "SHELL:-sNODERAWFS=1"
+        "SHELL:-sSTACK_SIZE=8388608"
+        "SHELL:-sALLOW_MEMORY_GROWTH=1")
 endif()
 
 # Short-circuit before wiring up the sokol-dependent client target so

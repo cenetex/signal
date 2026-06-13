@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Compare signal_replay output across two independently built binaries."""
+"""Compare signal_replay output across two independently built binaries.
+
+Either input may be a native executable or an Emscripten-generated .js CLI.
+"""
 
 from __future__ import annotations
 
@@ -11,15 +14,33 @@ from pathlib import Path
 from check_replay_repeatability import ROOT, SCENARIOS
 
 
-def run_once(binary: Path, args: tuple[str, ...], out: Path) -> None:
-    subprocess.run(
-        [str(binary), *args, "--out", str(out)],
-        cwd=ROOT,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+def runner_for(binary: Path) -> list[str]:
+    if binary.suffix == ".js":
+        return ["node", str(binary)]
+    return [str(binary)]
+
+
+def run_once(binary: Path, args: tuple[str, ...], out: Path) -> bool:
+    try:
+        subprocess.run(
+            [*runner_for(binary), *args, "--out", str(out)],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"signal_replay command failed: {' '.join(exc.cmd)}",
+            file=sys.stderr,
+        )
+        if exc.stdout:
+            print(exc.stdout, file=sys.stderr)
+        if exc.stderr:
+            print(exc.stderr, file=sys.stderr)
+        return False
+    return True
 
 
 def main() -> int:
@@ -44,8 +65,16 @@ def main() -> int:
         for i, args in enumerate(SCENARIOS):
             left = tmpdir / f"scenario-{i}-left.jsonl"
             right = tmpdir / f"scenario-{i}-right.jsonl"
-            run_once(left_binary, args, left)
-            run_once(right_binary, args, right)
+            if not run_once(left_binary, args, left):
+                print(f"signal_replay scenario {i} failed on left binary", file=sys.stderr)
+                print(f"  args: {' '.join(args)}", file=sys.stderr)
+                print(f"  left binary: {left_binary}", file=sys.stderr)
+                return 1
+            if not run_once(right_binary, args, right):
+                print(f"signal_replay scenario {i} failed on right binary", file=sys.stderr)
+                print(f"  args: {' '.join(args)}", file=sys.stderr)
+                print(f"  right binary: {right_binary}", file=sys.stderr)
+                return 1
             left_bytes = left.read_bytes()
             right_bytes = right.read_bytes()
             if left_bytes != right_bytes:
