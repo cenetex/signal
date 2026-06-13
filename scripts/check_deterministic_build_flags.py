@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPILE_COMMANDS = ROOT / "compile_commands.json"
+DEFAULT_COMPILE_COMMANDS = ROOT / "compile_commands.json"
 SCAN_ROOTS = ("server", "shared")
 REQUIRED_FLAGS = ("-ffp-contract=off", "-fno-fast-math")
 
@@ -38,18 +38,24 @@ def command_flags(entry: dict[str, object]) -> list[str]:
 
 
 def main() -> int:
-    if not COMPILE_COMMANDS.exists():
+    compile_commands = (
+        Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_COMPILE_COMMANDS
+    )
+    if not compile_commands.is_absolute():
+        compile_commands = ROOT / compile_commands
+
+    if not compile_commands.exists():
         print(
-            "compile_commands.json not found; run a CMake build before "
+            f"{compile_commands} not found; run a CMake build before "
             "checking deterministic build flags",
             file=sys.stderr,
         )
         return 1
 
     try:
-        entries = json.loads(COMPILE_COMMANDS.read_text())
+        entries = json.loads(compile_commands.read_text())
     except json.JSONDecodeError as exc:
-        print(f"invalid compile_commands.json: {exc}", file=sys.stderr)
+        print(f"invalid {compile_commands}: {exc}", file=sys.stderr)
         return 1
 
     findings: list[tuple[str, str]] = []
@@ -82,7 +88,11 @@ def main() -> int:
             print(f"  {rel}: missing {flag}", file=sys.stderr)
         return 1
 
-    print(f"deterministic build flag check passed ({checked} compile commands)")
+    try:
+        rel_db = compile_commands.relative_to(ROOT)
+    except ValueError:
+        rel_db = compile_commands
+    print(f"deterministic build flag check passed ({checked} compile commands in {rel_db})")
     return 0
 
 

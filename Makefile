@@ -39,8 +39,9 @@ build:
 
 # --- Emscripten web client ---
 build-web:
-	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(git rev-parse --short HEAD)
+	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH)
 	emmake cmake --build build-web --parallel
+	python3 scripts/check_deterministic_build_flags.py build-web/compile_commands.json
 
 # --- Headless game server ---
 build-server:
@@ -254,7 +255,7 @@ deterministic-libm:
 	python3 scripts/check_deterministic_libm.py
 
 deterministic-build-flags:
-	python3 scripts/check_deterministic_build_flags.py
+	python3 scripts/check_deterministic_build_flags.py $(COMPILE_COMMANDS)
 
 # Static analysis for owned C sources. Avoid --project=compile_commands.json
 # here: it pulls in test fixtures and single-header vendor libraries whose
