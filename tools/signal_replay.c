@@ -31,6 +31,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_BUY_SELL,
     SR_PROVENANCE_SCRIPT_POD_TOW_SELL,
     SR_PROVENANCE_SCRIPT_MINE_FRACTURE,
+    SR_PROVENANCE_SCRIPT_ASTEROID_DEATH,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -137,7 +138,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -278,12 +279,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_MINE_FRACTURE;
         return true;
     }
+    if (strcmp(text, "asteroid-death") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_ASTEROID_DEATH;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_ASTEROID_DEATH:
+        return "asteroid-death";
     case SR_PROVENANCE_SCRIPT_MINE_FRACTURE:
         return "mine-fracture";
     case SR_PROVENANCE_SCRIPT_POD_TOW_SELL:
@@ -601,6 +608,44 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         sp->ship.vel = v2(0.0f, 0.0f);
         sp->ship.mining_level = 0;
         sp->input.mining_target_hint = asteroid_idx;
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_ASTEROID_DEATH: {
+        const int asteroid_idx = 0;
+        asteroid_t *a = &w->asteroids[asteroid_idx];
+        const float asteroid_radius = 36.0f;
+        float ship_radius = ship_hull_def(&sp->ship)->ship_radius;
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(a, 0, sizeof(*a));
+        a->active = true;
+        a->fracture_child = false;
+        a->tier = ASTEROID_TIER_M;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->pos = v2(sp->ship.pos.x - (asteroid_radius + ship_radius - 3.0f),
+                    sp->ship.pos.y);
+        a->vel = v2(1800.0f, 0.0f);
+        a->radius = asteroid_radius;
+        a->hp = 25.0f;
+        a->max_hp = 25.0f;
+        a->ore = 5.0f;
+        a->max_ore = 5.0f;
+        a->rotation = 0.0f;
+        a->spin = 0.0f;
+        a->seed = 589.0f;
+        a->last_towed_by = -1;
+        a->last_fractured_by = -1;
+        a->crystal_stage_station = 0xFF;
+        a->crystal_stage_module = 0xFF;
+        a->phase = ASTEROID_PHASE_SOLID;
+        a->net_dirty = true;
+
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship.hull = 20.0f;
+        sp->docked = false;
+        sp->docking_approach = false;
+        sp->in_dock_range = false;
+        sp->nearby_station = -1;
         return true;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
@@ -1073,6 +1118,21 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             !w->asteroids[0].active ||
             !w->asteroids[0].fracture_child ||
             sp->ship.stat_asteroids_fractured <= 0) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_ASTEROID_DEATH: {
+        int damage_before = counts->damage_events;
+        int death_before = counts->death_events;
+
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        if (counts->damage_events <= damage_before ||
+            counts->death_events <= death_before ||
+            !sp->docked ||
+            sp->ship.hull <= 0.0f) {
             return false;
         }
         return true;
