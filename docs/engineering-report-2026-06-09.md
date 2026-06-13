@@ -1,6 +1,6 @@
 # Signal — Engineering Deep-Dive Report
 
-**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 replay/build-flag, planned-outpost, station-jostle, and player-ram slices · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
+**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 replay/build-flag, planned-outpost, station-jostle, player-ram, and NPC-ram slices · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
 
 ---
 
@@ -22,7 +22,7 @@ The original risk register drove a concentrated remediation pass. Landed fixes:
 - `2338c80`: station receipt chains verify on insert.
 - `5248298`: destroyed-rock tombstone capacity was raised.
 - `2963fce`: legacy-save claims are audited.
-- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code. The replay matrix now includes free flight, provenance buy/sell, pod tow/sell, mining→fracture, asteroid collision→death, planned-outpost scaffold materialization, station-jostle, and player-player ram coverage.
+- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code. The replay matrix now includes free flight, provenance buy/sell, pod tow/sell, mining→fracture, asteroid collision→death, planned-outpost scaffold materialization, station-jostle, player-player ram, and NPC-NPC ram coverage.
 
 Net effect: several items that were urgent on 2026-06-09 are now closed or materially reduced. Remaining high-leverage work is narrower: keep expanding cross-build replay scenarios over physics/economy surfaces, then address float currency/ledger balances and the larger float-state migration.
 
@@ -76,7 +76,7 @@ Lifting any cap requires protocol v2 (#285, "streaming entity pool"), which is a
 ### 3.2 Determinism status
 
 - Deterministic-by-construction: single `uint32_t` world RNG (`shared/rng.h`), belt seed anchoring procedural rocks, fracture seeds computed from quantized inputs (`sim_asteroid.c:565`), rock identity as `SHA256("rock-v1" || belt_seed || chunk || slot)`.
-- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. The default replay checks cover twelve scenarios, including mining→fracture, fragment identity hash inputs, collision→death recovery, planned-outpost scaffold materialization with station construction/contract state hashed, station-pair jostle with transient jostle velocity hashed, and player-player ram collision with all connected player bodies hashed. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
+- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. The default replay checks cover thirteen scenarios, including mining→fracture, fragment identity hash inputs, collision→death recovery, planned-outpost scaffold materialization with station construction/contract state hashed, station-pair jostle with transient jostle velocity hashed, player-player ram collision with all connected player bodies hashed, and NPC-NPC ram collision with paired authoritative NPC `ship_t` bodies hashed. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
 
 ---
 
@@ -247,4 +247,4 @@ Worth stating explicitly, because most of it is non-obvious discipline:
 
 ---
 
-*Methodology: six parallel exploration passes (sim core, economy/provenance, client, protocol/persistence, build/CI/deploy, docs/on-chain) plus git-history analysis, reconciled against source. File:line references verified against main @ `31197b1`; 2026-06-13 remediation notes reconciled through the deterministic replay player-ram slice.*
+*Methodology: six parallel exploration passes (sim core, economy/provenance, client, protocol/persistence, build/CI/deploy, docs/on-chain) plus git-history analysis, reconciled against source. File:line references verified against main @ `31197b1`; 2026-06-13 remediation notes reconciled through the deterministic replay NPC-ram slice.*

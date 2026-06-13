@@ -21,6 +21,7 @@
 #include "game_sim.h"
 #include "manifest.h"
 #include "sha256.h"
+#include "sim_ai.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_ACTION_COUNT 9
@@ -35,6 +36,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST,
     SR_PROVENANCE_SCRIPT_STATION_JOSTLE,
     SR_PROVENANCE_SCRIPT_PLAYER_RAM,
+    SR_PROVENANCE_SCRIPT_NPC_RAM,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -143,7 +145,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -300,12 +302,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_PLAYER_RAM;
         return true;
     }
+    if (strcmp(text, "npc-ram") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_NPC_RAM;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_NPC_RAM:
+        return "npc-ram";
     case SR_PROVENANCE_SCRIPT_PLAYER_RAM:
         return "player-ram";
     case SR_PROVENANCE_SCRIPT_STATION_JOSTLE:
@@ -740,6 +748,53 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         other->nearby_station = -1;
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_NPC_RAM: {
+        int left = spawn_npc(w, 0, NPC_ROLE_MINER);
+        int right = spawn_npc(w, 0, NPC_ROLE_MINER);
+        if (left < 0 || right < 0) return false;
+        npc_ship_t *a = &w->npc_ships[left];
+        npc_ship_t *b = &w->npc_ships[right];
+        ship_t *a_ship = world_npc_ship_for(w, left);
+        ship_t *b_ship = world_npc_ship_for(w, right);
+        asteroid_t *target = &w->asteroids[0];
+        vec2 center = v2_add(w->stations[0].pos, v2(1800.0f, 320.0f));
+        if (!a_ship || !b_ship) return false;
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(target, 0, sizeof(*target));
+        target->active = true;
+        target->tier = ASTEROID_TIER_M;
+        target->commodity = COMMODITY_FERRITE_ORE;
+        target->pos = v2_add(center, v2(420.0f, 0.0f));
+        target->vel = v2(0.0f, 0.0f);
+        target->radius = 30.0f;
+        target->hp = 20.0f;
+        target->max_hp = 20.0f;
+        target->ore = 5.0f;
+        target->max_ore = 5.0f;
+        target->phase = ASTEROID_PHASE_SOLID;
+        target->net_dirty = true;
+
+        a->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+        b->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+        a->target_asteroid = 0;
+        b->target_asteroid = 0;
+        a->brain_mode = SERVER_BRAIN_MODE_NONE;
+        b->brain_mode = SERVER_BRAIN_MODE_NONE;
+        a->ship.pos = center;
+        b->ship.pos = v2_add(center, v2(30.0f, 0.0f));
+        a->ship.vel = v2(250.0f, 0.0f);
+        b->ship.vel = v2(-250.0f, 0.0f);
+        a->ship.angle = 0.0f;
+        b->ship.angle = PI_F;
+        a->ship.hull = npc_max_hull(a);
+        b->ship.hull = npc_max_hull(b);
+        a->hull = a->ship.hull;
+        b->hull = b->ship.hull;
+        *a_ship = a->ship;
+        *b_ship = b->ship;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -978,6 +1033,19 @@ static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *playe
     sr_hash_ship_cargo_identity(ctx, &player->ship);
 }
 
+static const ship_t *sr_npc_paired_ship_const(const world_t *w, int npc_slot)
+{
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
+    if (!w->npc_ships[npc_slot].active) return NULL;
+    for (int c = 0; c < MAX_PLAYERS + MAX_NPC_SHIPS; c++) {
+        const character_t *ch = &w->characters[c];
+        if (!ch->active || ch->npc_slot != npc_slot) continue;
+        if (ch->ship_idx < 0 || ch->ship_idx >= MAX_SHIPS) return NULL;
+        return &w->ships[ch->ship_idx];
+    }
+    return NULL;
+}
+
 static void sr_state_hash(const world_t *w,
                           const server_player_t *sp,
                           uint8_t out[32])
@@ -1068,11 +1136,18 @@ static void sr_state_hash(const world_t *w,
     sr_hash_i32(&ctx, active_npcs);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &w->npc_ships[i];
+        const ship_t *paired_ship;
         if (!npc->active) continue;
         sr_hash_i32(&ctx, i);
         sr_hash_u8(&ctx, (uint8_t)npc->role);
         sr_hash_u8(&ctx, (uint8_t)npc->state);
         sr_hash_ship_body(&ctx, &npc->ship);
+        paired_ship = sr_npc_paired_ship_const(w, i);
+        sr_hash_u8(&ctx, paired_ship ? 1u : 0u);
+        if (paired_ship) {
+            sr_hash_ship_body(&ctx, paired_ship);
+            sr_hash_ship_cargo_identity(&ctx, paired_ship);
+        }
         for (int c = 0; c < COMMODITY_COUNT; c++)
             sr_hash_float_milli(&ctx, npc->cargo[c]);
         sr_hash_i32(&ctx, npc->target_asteroid);
@@ -1420,6 +1495,28 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             sp->ship.hull >= primary_hull ||
             other->ship.hull >= other_hull ||
             v2_dist_sq(sp->ship.pos, other->ship.pos) <= 0.0f) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_NPC_RAM: {
+        ship_t *left = world_npc_ship_for(w, 0);
+        ship_t *right = world_npc_ship_for(w, 1);
+        float left_hull;
+        float right_hull;
+        if (!left || !right) return false;
+        left_hull = left->hull;
+        right_hull = right->hull;
+
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        if (!w->npc_ships[0].active ||
+            !w->npc_ships[1].active ||
+            left->hull >= left_hull ||
+            right->hull >= right_hull ||
+            v2_dist_sq(w->npc_ships[0].ship.pos,
+                       w->npc_ships[1].ship.pos) <= 0.0f) {
             return false;
         }
         return true;

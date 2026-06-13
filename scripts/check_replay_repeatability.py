@@ -103,6 +103,13 @@ SCENARIOS = (
         "--candidates", "NONE",
         "--provenance-script", "player-ram",
     ),
+    (
+        "--seed", "5930",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--provenance-script", "npc-ram",
+    ),
 )
 
 
