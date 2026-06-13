@@ -28,7 +28,7 @@ int sim_mining_pick_target(const world_t *w, vec2 origin, vec2 forward) {
         float proj = v2_dot(to_a, forward);
         float perp = fabsf(v2_cross(to_a, forward));
         if (perp > a->radius) continue;
-        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
+        float surface_dist = proj - fixp_sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
         if (surface_dist < -a->radius) continue;
         if (surface_dist > MINING_RANGE) continue;
         if (surface_dist < best_dist) { best_dist = surface_dist; best = i; }
@@ -49,7 +49,7 @@ static bool mining_target_hit_with_slack(vec2 muzzle, vec2 forward,
     float perp = fabsf(v2_cross(to_a, forward));
     if (perp > effective_radius) return false;
 
-    float chord = sqrtf(fmaxf(0.0f, effective_radius * effective_radius - perp * perp));
+    float chord = fixp_sqrtf(fmaxf(0.0f, effective_radius * effective_radius - perp * perp));
     float surface_dist = proj - chord;
     if (surface_dist < -effective_radius) return false;
     if (surface_dist > MINING_RANGE) return false;
