@@ -32,6 +32,7 @@ jobs:
           make banned-apis
           make deterministic-libm
           make test
+          make replay-repeatability
 
   test-sanitizers:
     runs-on: ubuntu-latest

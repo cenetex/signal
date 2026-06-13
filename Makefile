@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay signal-replay replay-repeatability build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
 
 all: build build-web build-server
 
@@ -89,6 +89,9 @@ signal-replay: build-signal-replay
 		--horizon-ticks $(SIGNAL_REPLAY_HORIZON_TICKS) \
 		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
 		--out $(SIGNAL_REPLAY_OUT)
+
+replay-repeatability: build-signal-replay
+	python3 scripts/check_replay_repeatability.py ./build/signal_replay
 
 # --- Chain asset inventory export ---
 CHAIN_ASSETS_FORMAT ?= json
