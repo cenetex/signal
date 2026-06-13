@@ -34,6 +34,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_ASTEROID_DEATH,
     SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST,
     SR_PROVENANCE_SCRIPT_STATION_JOSTLE,
+    SR_PROVENANCE_SCRIPT_PLAYER_RAM,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -142,7 +143,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -295,12 +296,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_STATION_JOSTLE;
         return true;
     }
+    if (strcmp(text, "player-ram") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_PLAYER_RAM;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_PLAYER_RAM:
+        return "player-ram";
     case SR_PROVENANCE_SCRIPT_STATION_JOSTLE:
         return "station-jostle";
     case SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST:
@@ -710,6 +717,29 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         crowded->jostle_vel = v2(0.0f, 0.0f);
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_PLAYER_RAM: {
+        server_player_t *other = &w->players[1];
+        vec2 center = v2_add(w->stations[0].pos, v2(1700.0f, 240.0f));
+        sr_reset_player(w, other);
+        other->id = 1;
+        memset(other->session_token, 0x52, sizeof(other->session_token));
+        memset(other->pubkey, 0xB8, sizeof(other->pubkey));
+        sp->ship.pos = center;
+        other->ship.pos = v2_add(center, v2(30.0f, 0.0f));
+        sp->ship.vel = v2(250.0f, 0.0f);
+        other->ship.vel = v2(-250.0f, 0.0f);
+        sp->ship.angle = 0.0f;
+        other->ship.angle = PI_F;
+        sp->ship.hull = ship_max_hull(&sp->ship);
+        other->ship.hull = ship_max_hull(&other->ship);
+        sp->docked = false;
+        other->docked = false;
+        sp->in_dock_range = false;
+        other->in_dock_range = false;
+        sp->nearby_station = -1;
+        other->nearby_station = -1;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -912,6 +942,42 @@ static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
     sr_hash_i32(ctx, ship->towed_scaffold);
 }
 
+static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *player)
+{
+    sr_hash_i32(ctx, player->id);
+    sha256_update(ctx, player->session_token, sizeof(player->session_token));
+    sha256_update(ctx, player->pubkey, sizeof(player->pubkey));
+    sr_hash_u8(ctx, player->session_ready ? 1u : 0u);
+    sr_hash_u8(ctx, player->pubkey_set ? 1u : 0u);
+    sr_hash_u8(ctx, player->pubkey_proof_ok ? 1u : 0u);
+    sr_hash_u8(ctx, player->docked ? 1u : 0u);
+    sr_hash_i32(ctx, player->current_station);
+    sr_hash_i32(ctx, player->nearby_station);
+    sr_hash_u8(ctx, player->in_dock_range ? 1u : 0u);
+    sr_hash_i32(ctx, player->dock_berth);
+    sr_hash_i32(ctx, player->autopilot_mode);
+    sr_hash_i32(ctx, player->autopilot_state);
+    sr_hash_i32(ctx, player->autopilot_target);
+    sr_hash_i32(ctx, player->autopilot_station_target);
+    sr_hash_u8(ctx, (uint8_t)player->autopilot_cargo);
+    sr_hash_float_milli(ctx, player->autopilot_timer);
+    sr_hash_u8(ctx, player->was_in_signal ? 1u : 0u);
+    sr_hash_float_milli(ctx, player->boost_hold_timer);
+    sr_hash_ship_body(ctx, &player->ship);
+    for (int i = 0; i < (int)(sizeof(player->ship.towed_fragments) /
+                              sizeof(player->ship.towed_fragments[0])); i++) {
+        sr_hash_i32(ctx, player->ship.towed_fragments[i]);
+    }
+    for (int i = 0; i < (int)(sizeof(player->ship.towed_pods) /
+                              sizeof(player->ship.towed_pods[0])); i++) {
+        sr_hash_i32(ctx, player->ship.towed_pods[i]);
+    }
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        sr_hash_float_milli(ctx, player->ship.cargo[c]);
+    }
+    sr_hash_ship_cargo_identity(ctx, &player->ship);
+}
+
 static void sr_state_hash(const world_t *w,
                           const server_player_t *sp,
                           uint8_t out[32])
@@ -922,31 +988,16 @@ static void sr_state_hash(const world_t *w,
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_milli(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
-    sr_hash_float_milli(&ctx, sp->ship.pos.x);
-    sr_hash_float_milli(&ctx, sp->ship.pos.y);
-    sr_hash_float_milli(&ctx, sp->ship.vel.x);
-    sr_hash_float_milli(&ctx, sp->ship.vel.y);
-    sr_hash_float_milli(&ctx, sp->ship.angle);
-    sr_hash_float_milli(&ctx, sp->ship.hull);
-    sr_hash_u8(&ctx, sp->docked ? 1u : 0u);
-    sr_hash_i32(&ctx, sp->current_station);
-    sr_hash_i32(&ctx, sp->nearby_station);
-    sr_hash_u8(&ctx, sp->in_dock_range ? 1u : 0u);
-    sr_hash_u8(&ctx, sp->ship.towed_count);
-    for (int i = 0; i < (int)(sizeof(sp->ship.towed_fragments) /
-                              sizeof(sp->ship.towed_fragments[0])); i++) {
-        sr_hash_i32(&ctx, sp->ship.towed_fragments[i]);
+    int connected_players = 0;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (w->players[p].connected) connected_players++;
     }
-    sr_hash_u8(&ctx, sp->ship.towed_pod_count);
-    for (int i = 0; i < (int)(sizeof(sp->ship.towed_pods) /
-                              sizeof(sp->ship.towed_pods[0])); i++) {
-        sr_hash_i32(&ctx, sp->ship.towed_pods[i]);
+    sr_hash_i32(&ctx, connected_players);
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (!w->players[p].connected) continue;
+        sr_hash_i32(&ctx, p);
+        sr_hash_player_state(&ctx, &w->players[p]);
     }
-    sr_hash_i32(&ctx, sp->ship.towed_scaffold);
-    for (int c = 0; c < COMMODITY_COUNT; c++) {
-        sr_hash_float_milli(&ctx, sp->ship.cargo[c]);
-    }
-    sr_hash_ship_cargo_identity(&ctx, &sp->ship);
 
     int station_count = w->station_count;
     if (station_count < 0) station_count = 0;
@@ -1352,6 +1403,23 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         if (after <= before ||
             v2_len_sq(w->stations[0].jostle_vel) <= 0.0001f ||
             v2_len_sq(w->stations[1].jostle_vel) <= 0.0001f) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_PLAYER_RAM: {
+        server_player_t *other = &w->players[1];
+        int damage_before = counts->damage_events;
+        float primary_hull = sp->ship.hull;
+        float other_hull = other->ship.hull;
+
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        if (counts->damage_events <= damage_before ||
+            sp->ship.hull >= primary_hull ||
+            other->ship.hull >= other_hull ||
+            v2_dist_sq(sp->ship.pos, other->ship.pos) <= 0.0f) {
             return false;
         }
         return true;
