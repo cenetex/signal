@@ -33,6 +33,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_MINE_FRACTURE,
     SR_PROVENANCE_SCRIPT_ASTEROID_DEATH,
     SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST,
+    SR_PROVENANCE_SCRIPT_STATION_JOSTLE,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -141,7 +142,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -290,12 +291,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST;
         return true;
     }
+    if (strcmp(text, "station-jostle") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_STATION_JOSTLE;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_STATION_JOSTLE:
+        return "station-jostle";
     case SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST:
         return "planned-outpost";
     case SR_PROVENANCE_SCRIPT_ASTEROID_DEATH:
@@ -688,6 +695,21 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         w->scaffolds[sc_idx].vel = v2(0.0f, 0.0f);
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_STATION_JOSTLE: {
+        const int station_index = 1;
+        station_t *root;
+        station_t *crowded;
+        if (w->station_count <= station_index) return false;
+        root = &w->stations[0];
+        crowded = &w->stations[station_index];
+        if (!station_is_active(root) || !station_is_active(crowded)) {
+            return false;
+        }
+        crowded->pos = v2_add(root->pos, v2(160.0f, 0.0f));
+        root->jostle_vel = v2(0.0f, 0.0f);
+        crowded->jostle_vel = v2(0.0f, 0.0f);
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -786,6 +808,8 @@ static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
     sr_hash_float_milli(ctx, st->radius);
     sr_hash_float_milli(ctx, st->dock_radius);
     sr_hash_float_milli(ctx, st->signal_range);
+    sr_hash_float_milli(ctx, st->jostle_vel.x);
+    sr_hash_float_milli(ctx, st->jostle_vel.y);
     sr_hash_u8(ctx, st->signal_connected ? 1u : 0u);
     sr_hash_u8(ctx, st->scaffold ? 1u : 0u);
     sr_hash_u8(ctx, st->planned ? 1u : 0u);
@@ -828,6 +852,37 @@ static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
         sr_hash_u8(ctx, st->placement_plans[p].ring);
         sr_hash_u8(ctx, st->placement_plans[p].slot);
         sr_hash_i32(ctx, st->placement_plans[p].owner);
+    }
+}
+
+static void sr_hash_contracts(sha256_ctx_t *ctx, const world_t *w)
+{
+    int active_count = 0;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (w->contracts[i].active) active_count++;
+    }
+    sr_hash_i32(ctx, active_count);
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        const contract_t *ct = &w->contracts[i];
+        if (!ct->active) continue;
+        sr_hash_i32(ctx, i);
+        sr_hash_u8(ctx, (uint8_t)ct->action);
+        sr_hash_u8(ctx, ct->station_index);
+        sr_hash_u8(ctx, (uint8_t)ct->commodity);
+        sr_hash_u8(ctx, ct->required_grade);
+        sr_hash_u8(ctx, ct->proof_flags);
+        sr_hash_u8(ctx, ct->required_prefix_class);
+        sr_hash_u16(ctx, ct->required_recipe_id);
+        sha256_update(ctx, ct->required_parent, sizeof(ct->required_parent));
+        sha256_update(ctx, ct->target_pub, sizeof(ct->target_pub));
+        sr_hash_u64(ctx, ct->forbidden_origin_mask);
+        sr_hash_float_milli(ctx, ct->quantity_needed);
+        sr_hash_float_milli(ctx, ct->base_price);
+        sr_hash_float_milli(ctx, ct->age);
+        sr_hash_float_milli(ctx, ct->target_pos.x);
+        sr_hash_float_milli(ctx, ct->target_pos.y);
+        sr_hash_i32(ctx, ct->target_index);
+        sr_hash_i32(ctx, ct->claimed_by);
     }
 }
 
@@ -918,6 +973,7 @@ static void sr_state_hash(const world_t *w,
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
     }
+    sr_hash_contracts(&ctx, w);
 
     int active_asteroids = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++)
@@ -1283,6 +1339,20 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         }
         for (int i = 0; i < MAX_SCAFFOLDS; i++) {
             if (w->scaffolds[i].active) return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_STATION_JOSTLE: {
+        float before = v2_dist_sq(w->stations[0].pos, w->stations[1].pos);
+        for (int i = 0; i < 12; i++) {
+            world_sim_step(w, SIM_DT);
+            sr_accumulate_events(w, counts, event_hash);
+        }
+        float after = v2_dist_sq(w->stations[0].pos, w->stations[1].pos);
+        if (after <= before ||
+            v2_len_sq(w->stations[0].jostle_vel) <= 0.0001f ||
+            v2_len_sq(w->stations[1].jostle_vel) <= 0.0001f) {
+            return false;
         }
         return true;
     }
