@@ -14,6 +14,7 @@ MIGRATED_FILES = (
     "server/sim_flight.c",
     "server/sim_autopilot.c",
     "server/sim_asteroid.c",
+    "server/sim_ai.c",
     "server/sim_mining.c",
     "server/sim_nav.c",
     "server/sim_physics.c",

@@ -63,7 +63,7 @@ static int frontier_planned_limit(int virtual_pilots) {
 
 static float frontier_director_interval(int virtual_pilots) {
     if (virtual_pilots <= 0) return FRONTIER_DIRECTOR_BASE_INTERVAL;
-    float n = sqrtf((float)virtual_pilots);
+    float n = fixp_sqrtf((float)virtual_pilots);
     if (n < 1.0f) n = 1.0f;
     float interval = FRONTIER_DIRECTOR_BASE_INTERVAL / n;
     if (interval < FRONTIER_DIRECTOR_MIN_INTERVAL)
@@ -228,8 +228,8 @@ static bool frontier_virtual_manufacture_type(world_t *w, module_type_t type) {
             sc->built_at_station = -1;
             float angle = (float)((w->frontier_virtual_scaffolds_manufactured % 16u)
                                   * 0.3926990817f);
-            sc->pos = v2_add(st->pos, v2(cosf(angle) * 180.0f,
-                                         sinf(angle) * 180.0f));
+            sc->pos = v2_add(st->pos,
+                             v2_scale(v2_from_angle(angle), 180.0f));
             sc->vel = v2(0.0f, 0.0f);
             frontier_remove_pending_scaffold(st, p);
             w->frontier_virtual_scaffolds_manufactured++;
@@ -418,7 +418,7 @@ static bool frontier_plan_outpost(world_t *w) {
             if (dist < OUTPOST_MIN_DISTANCE * 1.25f)
                 dist = OUTPOST_MIN_DISTANCE * 1.25f;
             vec2 pos = v2_add(parent->pos,
-                              v2(cosf(angle) * dist, sinf(angle) * dist));
+                              v2_scale(v2_from_angle(angle), dist));
             if (!can_place_outpost(w, pos)) continue;
 
             if (slot >= w->station_count) w->station_count = slot + 1;
@@ -1704,7 +1704,7 @@ static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p);
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
     vec2 delta = v2_sub(target, npc->ship.pos);
-    float desired = atan2f(delta.y, delta.x);
+    float desired = fixp_atan2f(delta.y, delta.x);
     float diff = wrap_angle(desired - npc->ship.angle);
     float max_turn = hull->turn_speed * dt;
     flight_cmd_t cmd = {0.0f, 1.0f, false};
@@ -1971,9 +1971,9 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
 
         /* Near-module suppression + corridor annular sectors
          * (matches player collision logic) */
-        float npc_dist = sqrtf(v2_dist_sq(npc->ship.pos, st->pos));
+        float npc_dist = v2_len(v2_sub(npc->ship.pos, st->pos));
         vec2 npc_delta = v2_sub(npc->ship.pos, st->pos);
-        float npc_ang = atan2f(npc_delta.y, npc_delta.x);
+        float npc_ang = fixp_atan2f(npc_delta.y, npc_delta.x);
 
         for (int ci = 0; ci < geom.corridor_count; ci++) {
             float ring_r = geom.corridors[ci].ring_radius;
