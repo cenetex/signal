@@ -18,6 +18,9 @@ typedef int64_t fixp_t;
 #define FIXP_HALF_PI   ((fixp_t)0x1921FB544LL)
 #define FIXP_INV_TWO_PI ((fixp_t)0x28BE60DCLL)
 #define FIXP_PI_OVER_4 ((fixp_t)0x00000000c90fdaa2LL)
+#define FIXP_LN2       ((fixp_t)0x00000000b17217f8LL)
+#define FIXP_SQRT2     ((fixp_t)0x000000016a09e668LL)
+#define FIXP_INV_SQRT2 ((fixp_t)0x00000000b504f334LL)
 
 static fixp_t fixp_from_float(float x) {
     if (!isfinite(x)) return 0;
@@ -162,6 +165,61 @@ static fixp_t fixp_atan2_fixp(fixp_t y, fixp_t x) {
     return result;
 }
 
+/* ---- exp/log: range-reduced Taylor series ---- */
+
+static fixp_t fixp_exp_fixp(fixp_t x) {
+    fixp_t scaled = fixp_div(x, FIXP_LN2);
+    int64_t n;
+    if (scaled >= 0) {
+        n = (scaled + FIXP_HALF) >> 32;
+    } else {
+        n = -(((-scaled) + FIXP_HALF) >> 32);
+    }
+
+    fixp_t r = x - (fixp_t)n * FIXP_LN2; /* |r| <= ln(2)/2 */
+    fixp_t term = FIXP_ONE;
+    fixp_t sum = FIXP_ONE;
+    for (int i = 1; i <= 12; i++) {
+        term = fixp_mul(term, r);
+        term /= i;
+        sum += term;
+    }
+
+    if (n >= 0) {
+        if (n >= 31) return INT64_MAX;
+        if (sum > (INT64_MAX >> n)) return INT64_MAX;
+        return sum << n;
+    }
+    int64_t shift = -n;
+    if (shift >= 63) return 0;
+    return sum >> shift;
+}
+
+static fixp_t fixp_ln_fixp(fixp_t x) {
+    if (x <= 0) return INT64_MIN;
+
+    int k = 0;
+    while (x >= FIXP_SQRT2) {
+        x >>= 1;
+        k++;
+    }
+    while (x < FIXP_INV_SQRT2) {
+        x <<= 1;
+        k--;
+    }
+
+    fixp_t z = fixp_div(x - FIXP_ONE, x + FIXP_ONE);
+    fixp_t z2 = fixp_mul(z, z);
+    fixp_t zpow = z;
+    fixp_t sum = z;
+    for (int denom = 3; denom <= 23; denom += 2) {
+        zpow = fixp_mul(zpow, z2);
+        sum += zpow / denom;
+    }
+
+    return (sum << 1) + (fixp_t)k * FIXP_LN2;
+}
+
 /* ---- Public API ---- */
 
 float fixp_sqrtf(float x) {
@@ -186,14 +244,16 @@ float fixp_atan2f(float y, float x) {
 
 float fixp_expf(float x) {
     if (!isfinite(x)) return 0.0f;
-    if (x > 20.0f) return expf(20.0f);
+    if (x > 20.0f) x = 20.0f;
     if (x < -20.0f) return 0.0f;
-    return expf(x);
+    return fixp_to_float(fixp_exp_fixp(fixp_from_float(x)));
 }
 
 float fixp_powf(float base, float exp) {
     if (!isfinite(base) || !isfinite(exp) || base <= 0.0f) return 0.0f;
-    return expf(exp * logf(base));
+    fixp_t ln_base = fixp_ln_fixp(fixp_from_float(base));
+    fixp_t exponent = fixp_mul(fixp_from_float(exp), ln_base);
+    return fixp_to_float(fixp_exp_fixp(exponent));
 }
 
 float fixp_tanf(float x) {

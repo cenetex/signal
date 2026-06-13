@@ -50,9 +50,13 @@ TEST(test_fixpoint_transcendentals_track_libm_envelope) {
         ASSERT_EQ_FLOAT(fixp_sinf(x), sinf(x), 0.01f);
         ASSERT_EQ_FLOAT(fixp_cosf(x), cosf(x), 0.01f);
         ASSERT_EQ_FLOAT(fixp_sqrtf(fabsf(x)), sqrtf(fabsf(x)), 0.01f);
+        ASSERT_EQ_FLOAT(fixp_expf(x), expf(x), 0.02f);
     }
     ASSERT_EQ_FLOAT(fixp_atan2f(1.0f, 1.0f), atan2f(1.0f, 1.0f), 0.02f);
     ASSERT_EQ_FLOAT(fixp_atan2f(-2.0f, 3.0f), atan2f(-2.0f, 3.0f), 0.02f);
+    ASSERT_EQ_FLOAT(fixp_powf(0.25f, 0.7f), powf(0.25f, 0.7f), 0.02f);
+    ASSERT_EQ_FLOAT(fixp_powf(0.85f, 0.7f), powf(0.85f, 0.7f), 0.02f);
+    ASSERT_EQ_FLOAT(fixp_powf(2.5f, 1.5f), powf(2.5f, 1.5f), 0.05f);
 }
 
 TEST(test_fixpoint_transcendentals_handle_nonfinite_inputs) {
@@ -60,6 +64,8 @@ TEST(test_fixpoint_transcendentals_handle_nonfinite_inputs) {
     ASSERT_EQ_FLOAT(fixp_sinf(INFINITY), 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(fixp_cosf(-INFINITY), 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(fixp_atan2f(INFINITY, 1.0f), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_expf(-INFINITY), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fixp_powf(-1.0f, 0.5f), 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(fixp_tanf(NAN), 0.0f, 0.001f);
 
     vec2 dir = v2_from_angle(-INFINITY);
