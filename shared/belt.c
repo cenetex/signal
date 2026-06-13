@@ -8,6 +8,7 @@
  */
 #include <math.h>
 #include "belt.h"
+#include "fixpoint.h"
 
 /* ------------------------------------------------------------------ */
 /* Permutation-based Perlin noise (2D)                                */
@@ -108,7 +109,7 @@ float belt_density_at(const belt_field_t *bf, float x, float y) {
     d = (d - 0.15f) / 0.85f;
 
     /* Slight boost to mid-range */
-    d = powf(d, 0.7f);
+    d = fixp_powf(d, 0.7f);
     return fminf(fmaxf(d, 0.0f), 1.0f);
 }
 
