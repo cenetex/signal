@@ -1,6 +1,6 @@
 # Signal — Engineering Deep-Dive Report
 
-**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 deterministic flight slice · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
+**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 replay/build-flag slices · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
 
 ---
 
@@ -22,9 +22,9 @@ The original risk register drove a concentrated remediation pass. Landed fixes:
 - `2338c80`: station receipt chains verify on insert.
 - `5248298`: destroyed-rock tombstone capacity was raised.
 - `2963fce`: legacy-save claims are audited.
-- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 flight slice: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, and the shared flight controller, with `scripts/check_deterministic_libm.py` preventing regressions in migrated files.
+- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code.
 
-Net effect: several items that were urgent on 2026-06-09 are now closed or materially reduced. Remaining high-leverage work is narrower: continue #588 through `sim_mining.c`, `sim_nav.c`, `sim_autopilot.c`, and selected `game_sim.c` hot paths; then address float currency/ledger balances and monolith extraction.
+Net effect: several items that were urgent on 2026-06-09 are now closed or materially reduced. Remaining high-leverage work is narrower: keep expanding cross-build replay scenarios over physics/economy surfaces, then address float currency/ledger balances and the larger float-state migration.
 
 ---
 
@@ -76,7 +76,7 @@ Lifting any cap requires protocol v2 (#285, "streaming entity pool"), which is a
 ### 3.2 Determinism status
 
 - Deterministic-by-construction: single `uint32_t` world RNG (`shared/rng.h`), belt seed anchoring procedural rocks, fracture seeds computed from quantized inputs (`sim_asteroid.c:565`), rock identity as `SHA256("rock-v1" || belt_seed || chunk || slot)`.
-- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated into `shared/math_util.h`, `shared/tractor.c`, `shared/laser.c`, `server/sim_ship.c`, `server/sim_physics.c`, and `server/sim_flight.c`, with a CI/local ratchet (`make deterministic-libm`) covering migrated files. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path instead of a dormant fixed-point library.
+- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
 
 ---
 
@@ -221,7 +221,7 @@ WASM + HTML live permanently on Arweave; `workers/arweave-proxy.js` on `signal.r
 
 Ordered by (impact × likelihood), with the cheapest mitigation named.
 
-1. **#588 float→fixed rewrite** — still the largest decentralization blocker. The migration is now underway and ratcheted, but sim state remains float and many server hot paths still use raw libm outside the migrated set. Keep converting one sim module at a time, adding each to `scripts/check_deterministic_libm.py`.
+1. **#588 float→fixed rewrite** — still the largest decentralization blocker. The raw-transcendental surface is now ratcheted across `server/`, `shared/`, and deterministic replay code, but sim state remains float. Keep broadening replay scenarios and migrate high-value state/accounting fields to fixed or integer representation where cross-world consensus needs exact agreement.
 2. **Float currency** — ledger balances are `float`; large balances lose integer precision past 2^24. `749ec0e` hardened ledger float handling, but the right substrate for station credits is fixed/integer accounting.
 3. **Monolith risk concentration** — `game_sim.c`, server `main.c`, `hud.c`/`world_draw.c`, and parts of `sim_ai.c` are still large change-conflict and review-risk centers. The #285-gating rationale is sound for `game_sim.c`, but `main.c`'s handler table and `sim_ai.c`'s frontier director are extractable now.
 4. **Legacy-save ownership semantics** — claim auditing now exists, but possession-of-keypair still is not the same as original ownership. Full resolution needs chain-log-backed claim history.

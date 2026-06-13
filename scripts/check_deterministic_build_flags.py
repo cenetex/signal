@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when production server/shared C files build without strict FP flags."""
+"""Fail when deterministic sim/replay C files build without strict FP flags."""
 
 from __future__ import annotations
 
@@ -12,14 +12,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMPILE_COMMANDS = ROOT / "compile_commands.json"
 SCAN_ROOTS = ("server", "shared")
+SCAN_EXTRA_FILES = ("tools/signal_replay.c",)
 REQUIRED_FLAGS = ("-ffp-contract=off", "-fno-fast-math")
 
 
-def is_production_source(path: Path) -> bool:
+def is_deterministic_source(path: Path) -> bool:
     try:
         rel = path.resolve().relative_to(ROOT)
     except ValueError:
         return False
+    if str(rel) in SCAN_EXTRA_FILES:
+        return True
     return (
         rel.suffix == ".c"
         and len(rel.parts) >= 2
@@ -68,7 +71,7 @@ def main() -> int:
         if not source.is_absolute():
             directory = Path(str(entry.get("directory", ROOT)))
             source = directory / source
-        if not is_production_source(source):
+        if not is_deterministic_source(source):
             continue
 
         checked += 1
@@ -79,11 +82,11 @@ def main() -> int:
                 findings.append((rel, flag))
 
     if checked == 0:
-        print("no production server/shared compile commands found", file=sys.stderr)
+        print("no deterministic sim/replay compile commands found", file=sys.stderr)
         return 1
 
     if findings:
-        print("Production C files missing deterministic FP flags:", file=sys.stderr)
+        print("Deterministic C files missing strict FP flags:", file=sys.stderr)
         for rel, flag in findings:
             print(f"  {rel}: missing {flag}", file=sys.stderr)
         return 1
