@@ -28,7 +28,7 @@ static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
 static int find_free_slot(const world_t *w);
 
 static float unit_from_seed(float seed) {
-    float x = sinf(seed * 12.9898f) * 43758.5453f;
+    float x = fixp_sinf(seed * 12.9898f) * 43758.5453f;
     return x - floorf(x);
 }
 
@@ -174,7 +174,7 @@ uint16_t mining_burst_cap_for_position(vec2 pos) {
     const float SCALE_FULL  = 30000.0f;    /* above this — clamped at max */
     const uint16_t CAP_MIN  = FRACTURE_CHALLENGE_BURST_CAP;     /* 50 */
     const uint16_t CAP_MAX  = FRACTURE_CHALLENGE_BURST_CAP * 4; /* 200 */
-    float dist = sqrtf(pos.x * pos.x + pos.y * pos.y);
+    float dist = v2_len(pos);
     if (dist <= SCALE_START) return CAP_MIN;
     if (dist >= SCALE_FULL)  return CAP_MAX;
     float t = (dist - SCALE_START) / (SCALE_FULL - SCALE_START);
@@ -330,14 +330,15 @@ static vec2 find_belt_clump_center(world_t *w, float *out_density) {
         int stn = pick_active_station(w);
         float angle = w_rand_range(w, 0.0f, TWO_PI_F);
         float distance = w_rand_range(w, 200.0f, w->stations[stn].signal_range * 0.85f);
-        vec2 pos = v2_add(w->stations[stn].pos, v2(cosf(angle) * distance, sinf(angle) * distance));
+        vec2 pos = v2_add(w->stations[stn].pos,
+                          v2_scale(v2_from_angle(angle), distance));
         float d = belt_density_at(&w->belt, pos.x, pos.y);
         /* Gradient walk: take 4 steps toward higher density */
         float step = 200.0f;
         for (int g = 0; g < 4; g++) {
             float dx = belt_density_at(&w->belt, pos.x + step, pos.y) - belt_density_at(&w->belt, pos.x - step, pos.y);
             float dy = belt_density_at(&w->belt, pos.x, pos.y + step) - belt_density_at(&w->belt, pos.x, pos.y - step);
-            float glen = sqrtf(dx * dx + dy * dy);
+            float glen = v2_len(v2(dx, dy));
             if (glen > 0.001f) {
                 pos.x += dx / glen * step;
                 pos.y += dy / glen * step;
@@ -374,8 +375,8 @@ int seed_asteroid_clump(world_t *w, int first_slot) {
     /* Elongation: stretch the clump along a random axis */
     float stretch_angle = w_rand_range(w, 0.0f, TWO_PI_F);
     float stretch_factor = w_rand_range(w, 1.0f, 2.5f);
-    float cos_s = cosf(stretch_angle);
-    float sin_s = sinf(stretch_angle);
+    float cos_s = fixp_cosf(stretch_angle);
+    float sin_s = fixp_sinf(stretch_angle);
 
     /* Shared drift velocity for the clump */
     vec2 drift = v2(w_rand_range(w, -3.0f, 3.0f), w_rand_range(w, -3.0f, 3.0f));
@@ -400,10 +401,11 @@ int seed_asteroid_clump(world_t *w, int first_slot) {
         a->fracture_child = false;
 
         /* Scatter around center with elongation */
-        float r = w_rand_range(w, 0.0f, clump_radius) * sqrtf(w_randf(w)); /* sqrt for uniform disk */
+        float r = w_rand_range(w, 0.0f, clump_radius) * fixp_sqrtf(w_randf(w)); /* sqrt for uniform disk */
         float theta = w_rand_range(w, 0.0f, TWO_PI_F);
-        float lx = cosf(theta) * r;
-        float ly = sinf(theta) * r;
+        vec2 local = v2_scale(v2_from_angle(theta), r);
+        float lx = local.x;
+        float ly = local.y;
         /* Apply stretch */
         float sx = lx * cos_s - ly * sin_s;
         float sy = lx * sin_s + ly * cos_s;
@@ -523,7 +525,7 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
         child_slots[child_count++] = i;
     }
 
-    float base_angle = atan2f(outward_dir.y, outward_dir.x);
+    float base_angle = fixp_atan2f(outward_dir.y, outward_dir.x);
     for (int i = 0; i < child_count; i++) {
         float spread_t = (child_count == 1) ? 0.0f : (((float)i / (float)(child_count - 1)) - 0.5f);
         float child_angle = base_angle + (spread_t * 1.35f) + w_rand_range(w, -0.14f, 0.14f);
@@ -705,8 +707,9 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
                 if (qty > 10u) qty = 10u;
                 float angle = w_rand_range(w, 0.0f, TWO_PI_F);
                 float dist = a->radius + w_rand_range(w, 20.0f, 70.0f);
-                vec2 pos = v2_add(a->pos, v2(cosf(angle) * dist, sinf(angle) * dist));
-                vec2 vel = v2_add(a->vel, v2(cosf(angle) * 12.0f, sinf(angle) * 12.0f));
+                vec2 dir = v2_from_angle(angle);
+                vec2 pos = v2_add(a->pos, v2_scale(dir, dist));
+                vec2 vel = v2_add(a->vel, v2_scale(dir, 12.0f));
                 (void)spawn_cargo_pod(w, pos, vel, a->commodity, qty,
                                       CARGO_POD_GAS);
                 a->gas_emit_timer = 8.0f + (1.0f - heat) * 12.0f +
@@ -742,7 +745,7 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
             float d_sq = v2_dist_sq(a->pos, st->pos);
             float vortex_range = st->dock_radius * 2.0f;
             if (d_sq > vortex_range * vortex_range || d_sq < 1.0f) continue;
-            float d = sqrtf(d_sq);
+            float d = fixp_sqrtf(d_sq);
             vec2 radial = v2_scale(v2_sub(a->pos, st->pos), 1.0f / d);
             vec2 tangent = v2(-radial.y, radial.x);
             if (a->tier == ASTEROID_TIER_S) {
