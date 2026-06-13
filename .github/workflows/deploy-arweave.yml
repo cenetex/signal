@@ -33,6 +33,7 @@ jobs:
           make deterministic-libm
           make test
           make replay-repeatability
+          make replay-cross-build
 
   test-sanitizers:
     runs-on: ubuntu-latest
