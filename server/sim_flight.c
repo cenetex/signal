@@ -20,7 +20,7 @@ float flight_face_heading(const ship_t *ship, float desired_angle) {
 
 static bool flight_heading_blocked(const world_t *w, const ship_t *ship,
                                    float clearance, float heading) {
-    vec2 fwd = v2(cosf(heading), sinf(heading));
+    vec2 fwd = v2_from_angle(heading);
     float speed = v2_len(ship->vel);
     float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
     vec2 probe_end = v2_add(ship->pos, v2_scale(fwd, lookahead));
@@ -56,7 +56,7 @@ void flight_avoid_station_wall(const world_t *w, const ship_t *ship,
     if (nearest) {
         vec2 away = v2_sub(ship->pos, nearest->pos);
         if (v2_len_sq(away) > 1.0f)
-            cmd->turn = flight_face_heading(ship, atan2f(away.y, away.x));
+            cmd->turn = flight_face_heading(ship, fixp_atan2f(away.y, away.x));
     } else if (left_blocked != right_blocked) {
         cmd->turn = left_blocked ? -1.0f : 1.0f;
     } else {
@@ -98,12 +98,12 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
     float turn_strength = fminf(fabsf(diff) * 3.0f, 1.0f);
     cmd.turn = (diff > 0.02f) ? turn_strength
              : (diff < -0.02f ? -turn_strength : 0.0f);
-    float facing = cosf(diff);
+    float facing = fixp_cosf(diff);
 
     /* Velocity-controlled approach. Intermediate path legs must brake
      * against their active waypoint, not the final destination, or ships
      * carry too much speed into station lanes and orbit the dock. */
-    float dist_to_control = sqrtf(v2_dist_sq(ship->pos, control_target));
+    float dist_to_control = v2_len(v2_sub(control_target, ship->pos));
     float control_standoff = st.at_intermediate ? 0.0f : standoff;
     float effective_dist = fmaxf(0.0f, dist_to_control - control_standoff);
     float target_speed = nav_approach_speed(effective_dist, max_speed);
@@ -117,7 +117,7 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
     /* Project velocity onto the same leg used for speed control. */
     vec2 to_target_dir = (dist_to_control > 0.5f)
         ? v2_scale(v2_sub(control_target, ship->pos), 1.0f / dist_to_control)
-        : v2(cosf(ship->angle), sinf(ship->angle));
+        : v2_from_angle(ship->angle);
     float approach_v = v2_dot(ship->vel, to_target_dir);
     float thrust_cmd = nav_speed_control(approach_v, target_speed);
 
@@ -132,7 +132,7 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
     float speed = v2_len(ship->vel);
     float vel_clear = fwd_clear;
     if (speed > 0.5f) {
-        float vel_angle = atan2f(ship->vel.y, ship->vel.x);
+        float vel_angle = fixp_atan2f(ship->vel.y, ship->vel.x);
         vel_clear = nav_forward_clearance(w, ship->pos, ship->vel,
                                           hull->ship_radius, vel_angle);
     }
@@ -178,8 +178,8 @@ flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
     (void)w;
 
     flight_cmd_t cmd = {0.0f, 0.0f, false};
-    float dist = sqrtf(v2_dist_sq(ship->pos, target));
-    float speed = sqrtf(v2_len_sq(ship->vel));
+    float dist = v2_len(v2_sub(target, ship->pos));
+    float speed = v2_len(ship->vel);
     float sweet_min = standoff - 15.0f;
     float sweet_max = standoff + 30.0f;
 
@@ -198,27 +198,27 @@ flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
         /* Too close — drift away gently. Don't thrust hard or we
          * overshoot and enter the rocket cycle. */
         vec2 away = v2_sub(ship->pos, target);
-        float push_angle = atan2f(away.y, away.x);
+        float push_angle = fixp_atan2f(away.y, away.x);
         cmd.turn = flight_face_heading(ship, push_angle);
-        float facing = cosf(wrap_angle(push_angle - ship->angle));
+        float facing = fixp_cosf(wrap_angle(push_angle - ship->angle));
         cmd.thrust = (facing > 0.6f) ? 0.3f : 0.0f;
     } else if (dist > sweet_max) {
         /* Drifted out — close in slowly at max 40 u/s. */
-        float face = atan2f(to_target.y, to_target.x);
+        float face = fixp_atan2f(to_target.y, to_target.x);
         cmd.turn = flight_face_heading(ship, face);
-        float facing = cosf(wrap_angle(face - ship->angle));
+        float facing = fixp_cosf(wrap_angle(face - ship->angle));
         float approach_v = v2_dot(ship->vel, v2_scale(to_target, 1.0f / dist));
         cmd.thrust = nav_speed_control(approach_v, 40.0f);
         if (facing < 0.5f) cmd.thrust = 0.0f;
     } else {
         /* Sweet spot — face target, hold position. */
-        float face = atan2f(to_target.y, to_target.x);
+        float face = fixp_atan2f(to_target.y, to_target.x);
         cmd.turn = flight_face_heading(ship, face);
         /* Gently oppose any residual drift. */
         if (speed > 10.0f) {
-            float vel_angle = atan2f(ship->vel.y, ship->vel.x);
+            float vel_angle = fixp_atan2f(ship->vel.y, ship->vel.x);
             float brake_heading = wrap_angle(vel_angle + PI_F);
-            float brake_facing = cosf(wrap_angle(brake_heading - ship->angle));
+            float brake_facing = fixp_cosf(wrap_angle(brake_heading - ship->angle));
             if (brake_facing > 0.3f)
                 cmd.thrust = fminf(speed / 30.0f, 0.5f);
             /* else: turning to face, let it happen */
@@ -233,14 +233,14 @@ flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
 
 flight_cmd_t flight_brake(const ship_t *ship) {
     flight_cmd_t cmd = {0.0f, 0.0f, false};
-    float speed = sqrtf(v2_len_sq(ship->vel));
+    float speed = v2_len(ship->vel);
     if (speed < 5.0f) return cmd;
 
     /* Face opposite to velocity and thrust forward. */
-    float vel_angle = atan2f(ship->vel.y, ship->vel.x);
+    float vel_angle = fixp_atan2f(ship->vel.y, ship->vel.x);
     float brake_angle = wrap_angle(vel_angle + PI_F);
     cmd.turn = flight_face_heading(ship, brake_angle);
     float diff = wrap_angle(brake_angle - ship->angle);
-    if (cosf(diff) > 0.3f) cmd.thrust = 1.0f;
+    if (fixp_cosf(diff) > 0.3f) cmd.thrust = 1.0f;
     return cmd;
 }

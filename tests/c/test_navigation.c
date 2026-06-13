@@ -209,6 +209,44 @@ TEST(test_flight_steer_to_reverses_from_low_speed_obstacle) {
     ASSERT(cmd.reverse_thrust);
 }
 
+TEST(test_flight_brake_uses_deterministic_velocity_heading) {
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(30.0f, 40.0f);
+    ship.angle = wrap_angle(fixp_atan2f(40.0f, 30.0f) + PI_F);
+
+    flight_cmd_t cmd = flight_brake(&ship);
+    ASSERT_EQ_FLOAT(v2_len(ship.vel), 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cmd.turn, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cmd.thrust, 1.0f, 0.001f);
+}
+
+TEST(test_flight_hover_near_uses_deterministic_target_heading) {
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(0.0f, 0.0f);
+    ship.angle = 0.0f;
+
+    flight_cmd_t cmd = flight_hover_near(NULL, &ship, v2(54.0f, 72.0f), 30.0f);
+    ASSERT_EQ_FLOAT(fixp_atan2f(72.0f, 54.0f), 0.927f, 0.01f);
+    ASSERT(cmd.turn > 0.9f);
+    ASSERT_EQ_FLOAT(cmd.thrust, 1.0f, 0.001f);
+}
+
+TEST(test_flight_hover_near_brakes_with_deterministic_speed) {
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(30.0f, 40.0f);
+    ship.angle = wrap_angle(fixp_atan2f(40.0f, 30.0f) + PI_F);
+
+    flight_cmd_t cmd = flight_hover_near(NULL, &ship, v2(80.0f, 0.0f), 80.0f);
+    ASSERT_EQ_FLOAT(v2_len(ship.vel), 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cmd.thrust, 1.0f, 0.001f);
+}
+
 TEST(test_flight_steer_to_escapes_station_ring_wall) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -810,6 +848,9 @@ void register_navigation_nav_tests(void) {
     RUN(test_spatial_grid_grows_past_initial_hash_capacity);
     RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
     RUN(test_flight_steer_to_reverses_from_low_speed_obstacle);
+    RUN(test_flight_brake_uses_deterministic_velocity_heading);
+    RUN(test_flight_hover_near_uses_deterministic_target_heading);
+    RUN(test_flight_hover_near_brakes_with_deterministic_speed);
     RUN(test_flight_steer_to_escapes_station_ring_wall);
     RUN(test_autopilot_exits_station_before_mining_route);
     RUN(test_nav_forward_clearance_empty);
