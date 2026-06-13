@@ -495,7 +495,7 @@ static float signal_strength_unboosted(const world_t *w, vec2 pos) {
     float best = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_provides_signal(&w->stations[s])) continue;
-        float dist = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        float dist = v2_len(v2_sub(pos, w->stations[s].pos));
         float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
         if (strength > best) best = strength;
     }
@@ -517,7 +517,7 @@ static float signal_strength_raw(const world_t *w, vec2 pos) {
     int overlap_count = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_provides_signal(&w->stations[s])) continue;
-        float dist = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        float dist = v2_len(v2_sub(pos, w->stations[s].pos));
         float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
         if (strength > 0.0f) overlap_count++;
         if (strength > best) best = strength;
@@ -870,9 +870,9 @@ static void launch_ship(world_t *w, server_player_t *sp) {
      * forward thrust clears the berth instead of driving back into it. */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(sp->ship.pos, st->pos);
-    float len = sqrtf(v2_len_sq(away));
+    float len = v2_len(away);
     if (len > 1.0f) {
-        sp->ship.angle = atan2f(away.y, away.x);
+        sp->ship.angle = fixp_atan2f(away.y, away.x);
         sp->ship.vel = v2_scale(away, 40.0f / len);
     } else {
         sp->ship.angle = -PI_F * 0.5f;
@@ -927,8 +927,9 @@ static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
             float angle = ((float)c * 1.618f) + (float)units * 0.37f;
             float dist = ship_hull_def(&sp->ship)->ship_radius + 32.0f +
                          (float)(units % 5) * 7.0f;
-            vec2 pos = v2_add(sp->ship.pos, v2(cosf(angle) * dist, sinf(angle) * dist));
-            vec2 vel = v2_add(sp->ship.vel, v2(cosf(angle) * 35.0f, sinf(angle) * 35.0f));
+            vec2 dir = v2_from_angle(angle);
+            vec2 pos = v2_add(sp->ship.pos, v2_scale(dir, dist));
+            vec2 vel = v2_add(sp->ship.vel, v2_scale(dir, 35.0f));
             (void)spawn_cargo_pod(w, pos, vel, (commodity_t)c, (uint16_t)q,
                                   CARGO_POD_CARGO);
             units -= q;
@@ -1251,7 +1252,7 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
         /* Ray-circle intersection: ray hits if perpendicular distance < radius */
         if (perp > a->radius) continue;
         /* Distance to surface along the ray (not center) */
-        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
+        float surface_dist = proj - fixp_sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
         if (surface_dist < -a->radius) continue; /* behind us */
         if (surface_dist > MINING_RANGE) continue; /* too far */
         /* Pick closest surface hit */
@@ -2446,9 +2447,9 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     /* Near-module suppression: if ship is angularly close to any module
      * on a corridor's ring, skip corridor tests (module circle takes priority,
      * prevents junction jitter). */
-    float ship_dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
+    float ship_dist = v2_len(v2_sub(sp->ship.pos, st->pos));
     vec2 ship_delta = v2_sub(sp->ship.pos, st->pos);
-    float ship_ang = atan2f(ship_delta.y, ship_delta.x);
+    float ship_ang = fixp_atan2f(ship_delta.y, ship_delta.x);
 
     for (int ci = 0; ci < geom.corridor_count; ci++) {
         float ring_r = geom.corridors[ci].ring_radius;
@@ -2649,7 +2650,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
         vec2 target = dock_berth_pos(dock_st, sp->dock_berth);
-        float dist = sqrtf(v2_dist_sq(sp->ship.pos, target));
+        float dist = v2_len(v2_sub(target, sp->ship.pos));
 
         /* Decelerate: approach speed scales with distance for smooth arrival */
         float approach_speed = fminf(160.0f, 40.0f + dist * 0.8f);
@@ -2764,7 +2765,7 @@ static void resolve_towed_body_ship_overlap(const ship_t *ship, vec2 *pos,
     float dd = 0.0f;
     vec2 n = ship_forward(ship->angle);
     if (ds > 0.1f) {
-        dd = sqrtf(ds);
+        dd = fixp_sqrtf(ds);
         n = v2_scale(ship_to_body, 1.0f / dd);
     }
     *pos = v2_add(*pos, v2_scale(n, min_d - dd));
@@ -2881,7 +2882,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             vec2 ab = v2_sub(b->pos, a->pos);
             float ab_sq = v2_len_sq(ab);
             if (ab_sq < sep * sep && ab_sq > 0.1f) {
-                float abd = sqrtf(ab_sq);
+                float abd = fixp_sqrtf(ab_sq);
                 float overlap = (sep - abd) * 0.5f;
                 vec2 n = v2_scale(ab, overlap / abd);
                 a->pos = v2_sub(a->pos, n);
@@ -3037,7 +3038,7 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         if (dist < 0.01f) {
             /* Degenerate: rock is on top of the ship. Fire forward as
              * a fallback — no band axis to read. */
-            vec2 fwd = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+            vec2 fwd = v2_from_angle(sp->ship.angle);
             a->vel = v2_add(sp->ship.vel, v2_scale(fwd, ROCK_THROW_BASE_SPEED));
             asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
             a->net_dirty = true;
@@ -3051,7 +3052,7 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         /* v = sqrt(K) * stretch  is the elastic-energy fling. With
          * SHIP_TOW_BAND_SPRING_K = 4 and stretch = 200 (deep stretch),
          * this is ~400 m/s. Half-stretch (100) is ~200 m/s. */
-        float elastic = sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
+        float elastic = fixp_sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
         float fling = ROCK_THROW_BASE_SPEED + elastic;
         a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
         asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
@@ -3175,7 +3176,7 @@ static void release_towed_pods(world_t *w, server_player_t *sp) {
         if (dist > 0.01f) {
             vec2 dir = v2_scale(to_ship, 1.0f / dist);
             float stretch = fmaxf(0.0f, dist - SHIP_TOW_BAND_REST_LEN);
-            float fling = ROCK_THROW_BASE_SPEED + sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
+            float fling = ROCK_THROW_BASE_SPEED + fixp_sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
             pod->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
         }
         pod->towed_by = -1;
@@ -3583,7 +3584,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
             float c_coef = v2_dot(oc, oc) - rr * rr;
             float disc = b_coef * b_coef - c_coef;
             if (disc < 0.0f) continue;
-            float sq = sqrtf(disc);
+            float sq = fixp_sqrtf(disc);
             float t_near = -b_coef - sq;
             float t_far  = -b_coef + sq;
             /* Choose the first positive intersection (entry point) */
@@ -3981,7 +3982,7 @@ static bool try_dock_from_range(world_t *w, server_player_t *sp) {
     int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
     sp->dock_berth = berth;
     vec2 bp = dock_berth_pos(dock_st, berth);
-    float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
+    float d = v2_len(v2_sub(sp->ship.pos, bp));
     if (d <= DOCK_SNAP_DISTANCE) {
         dock_ship(w, sp);
     } else {
@@ -4276,7 +4277,7 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
         if (&w->players[i] == sp) continue;
         float dist_sq = v2_dist_sq(pos, w->players[i].ship.pos);
         if (dist_sq < 200.0f * 200.0f) {
-            float d = sqrtf(dist_sq);
+            float d = fixp_sqrtf(dist_sq);
             float strength = (200.0f - d) / 200.0f;
             interference += strength * 0.5f;
         }
@@ -4289,7 +4290,7 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
         float range = a->radius * 3.0f;
         float dist_sq = v2_dist_sq(pos, a->pos);
         if (dist_sq < range * range) {
-            float d = sqrtf(dist_sq);
+            float d = fixp_sqrtf(dist_sq);
             float strength = (range - d) / range;
             float mass_factor = a->radius / 80.0f;  /* bigger = more interference */
             interference += strength * mass_factor * 0.15f;
@@ -4887,7 +4888,7 @@ static int delivery_best_source_for_contract(const world_t *w,
         if (!station_exists(source)) continue;
         int stock = delivery_source_stock_count(source, &fit);
         if (stock <= 0) continue;
-        float d = sqrtf(v2_dist_sq(source->pos, w->stations[dest].pos));
+        float d = v2_len(v2_sub(source->pos, w->stations[dest].pos));
         float score = (float)stock * 1000.0f - d;
         if (best < 0 || score > best_score) {
             best = s;
@@ -5451,8 +5452,9 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
              * builds spread around the station instead of stacking. Push
              * hard enough to clear the inner ring quickly. */
             float angle = w->time * 0.7f; /* slow rotation through directions */
-            nascent->pos = v2_add(st->pos, v2(cosf(angle) * 12.0f, sinf(angle) * 12.0f));
-            nascent->vel = v2(cosf(angle) * 90.0f, sinf(angle) * 90.0f);
+            vec2 dir = v2_from_angle(angle);
+            nascent->pos = v2_add(st->pos, v2_scale(dir, 12.0f));
+            nascent->vel = v2_scale(dir, 90.0f);
             /* Shift queue */
             for (int i = 0; i < st->pending_scaffold_count - 1; i++) {
                 st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];
@@ -5513,7 +5515,7 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
  * inner area for ring 1, outer area for ring 3, and aiming the angle. */
 static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot) {
     vec2 delta = v2_sub(pos, st->pos);
-    float dist = sqrtf(v2_len_sq(delta));
+    float dist = v2_len(delta);
     if (dist > SCAFFOLD_SNAP_RANGE + STATION_RING_RADIUS[STATION_NUM_RINGS]) return false;
 
     /* Pick ring by distance match — closest STATION_RING_RADIUS wins */
@@ -5542,7 +5544,7 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
 
     /* Pick the open slot on that ring whose angle best matches the
      * scaffold's angle (slot angle includes ring rotation). */
-    float scaffold_angle = atan2f(delta.y, delta.x);
+    float scaffold_angle = fixp_atan2f(delta.y, delta.x);
     int best_slot = -1;
     float best_slot_diff = 1e18f;
     int slots = STATION_RING_SLOTS[best_ring];
@@ -5643,7 +5645,7 @@ static void step_scaffolds(world_t *w, float dt) {
                 station_t *st = &w->stations[s];
                 if (!station_is_active(st)) continue;
                 vec2 delta = v2_sub(st->pos, sc->pos);
-                float dist = sqrtf(v2_len_sq(delta));
+                float dist = v2_len(delta);
                 float vortex_range = st->dock_radius * 2.0f;
                 if (dist < 10.0f || dist > vortex_range) continue;
                 vec2 norm = v2_scale(delta, 1.0f / dist);
@@ -5667,7 +5669,7 @@ static void step_scaffolds(world_t *w, float dt) {
                 float dist_sq = v2_len_sq(delta);
                 const float PLAN_PULL_RANGE = 800.0f;
                 if (dist_sq > PLAN_PULL_RANGE * PLAN_PULL_RANGE) continue;
-                float dist = sqrtf(dist_sq);
+                float dist = fixp_sqrtf(dist_sq);
                 /* Constant-pull beam from blueprint center to scaffold.
                  * Legacy 25*(1 + 2*(1-d/range)) ranged from 25 (at
                  * d=range) to 75 (at d=0) with average ~50. Modeling
@@ -5762,7 +5764,7 @@ static void step_scaffolds(world_t *w, float dt) {
             station_t *st = &w->stations[sc->placed_station];
             vec2 target = module_world_pos_ring(st, sc->placed_ring, sc->placed_slot);
             vec2 delta = v2_sub(target, sc->pos);
-            float dist = sqrtf(v2_len_sq(delta));
+            float dist = v2_len(delta);
 
             if (dist < SCAFFOLD_SNAP_ARRIVE) {
                 /* Close enough — lock into place and become a module */
@@ -6090,7 +6092,7 @@ void step_station_jostle(world_t *w, float dt) {
             float dist_sq = v2_len_sq(delta);
             float personal = (sa->dock_radius + sb->dock_radius) * STATION_PERSONAL_SPACE_FACTOR;
             if (dist_sq >= personal * personal) continue;
-            float dist = sqrtf(dist_sq);
+            float dist = fixp_sqrtf(dist_sq);
             float overlap = personal - dist;
             if (dist < 0.001f) {
                 /* Coincident — pick an arbitrary direction so the
@@ -6114,7 +6116,7 @@ void step_station_jostle(world_t *w, float dt) {
         /* Cap absolute speed */
         float speed_sq = v2_len_sq(st->jostle_vel);
         if (speed_sq > STATION_JOSTLE_MAX_SPEED * STATION_JOSTLE_MAX_SPEED) {
-            float speed = sqrtf(speed_sq);
+            float speed = fixp_sqrtf(speed_sq);
             st->jostle_vel = v2_scale(st->jostle_vel, STATION_JOSTLE_MAX_SPEED / speed);
         }
         /* Integrate onto pos */
@@ -6144,7 +6146,7 @@ static void apply_spoke_torque(const station_t *st,
     float dr = wb - wa;
     while (dr >  PI_F) dr -= TWO_PI_F;
     while (dr < -PI_F) dr += TWO_PI_F;
-    float T = pulse * RING_SPOKE_K * sinf(dr);
+    float T = pulse * RING_SPOKE_K * fixp_sinf(dr);
     net_torque[ra-1] += T;
     net_torque[rb-1] -= T;
     (void)prod; /* reserved for future per-spoke scaling */
@@ -6420,7 +6422,7 @@ void world_sim_step(world_t *w, float dt) {
             vec2 delta = v2_sub(w->players[i].ship.pos, w->players[j].ship.pos);
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
-            float d = sqrtf(d_sq);
+            float d = fixp_sqrtf(d_sq);
             vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
             float overlap = minimum - d;
             w->players[i].ship.pos = v2_add(w->players[i].ship.pos, v2_scale(normal, overlap * 0.5f));
@@ -6465,7 +6467,7 @@ void world_sim_step(world_t *w, float dt) {
             vec2 delta = v2_sub(a->ship.pos, b->ship.pos);
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
-            float d = sqrtf(d_sq);
+            float d = fixp_sqrtf(d_sq);
             vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
             float overlap = minimum - d;
             a->ship.pos = v2_add(a->ship.pos, v2_scale(normal, overlap * 0.5f));
@@ -6508,7 +6510,7 @@ void world_sim_step(world_t *w, float dt) {
             vec2 delta = v2_sub(sp->ship.pos, npc->ship.pos);
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
-            float d = sqrtf(d_sq);
+            float d = fixp_sqrtf(d_sq);
             vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
             float overlap = minimum - d;
             sp->ship.pos = v2_add(sp->ship.pos, v2_scale(normal, overlap * 0.5f));
