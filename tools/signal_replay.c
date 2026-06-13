@@ -28,6 +28,7 @@
 typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
     SR_PROVENANCE_SCRIPT_BUY_SELL,
+    SR_PROVENANCE_SCRIPT_POD_TOW_SELL,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -60,9 +61,12 @@ typedef struct {
     int death_events;
     int dock_events;
     int launch_events;
+    int pickup_events;
     int buy_events;
     int sell_events;
     int repair_events;
+    int pickup_fragments;
+    float pickup_ore;
     float damage_amount;
     int buy_cost;
     int buy_quantity;
@@ -129,7 +133,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic economy/provenance script\n"
-            "                       before each branch; names: none,buy-sell\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -262,12 +266,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_BUY_SELL;
         return true;
     }
+    if (strcmp(text, "pod-tow-sell") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_POD_TOW_SELL;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_POD_TOW_SELL:
+        return "pod-tow-sell";
     case SR_PROVENANCE_SCRIPT_BUY_SELL:
         return "buy-sell";
     case SR_PROVENANCE_SCRIPT_NONE:
@@ -519,6 +529,35 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         anchor_ship_in_station(sp, w);
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_POD_TOW_SELL: {
+        const int station_index = 0;
+        station_t *st;
+        int pod_idx;
+        if (station_index >= w->station_count) return false;
+        st = &w->stations[station_index];
+        memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+        if (st->base_price[COMMODITY_FERRITE_ORE] <= FLOAT_EPSILON) {
+            st->base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+        }
+
+        sp->docked = false;
+        sp->current_station = station_index;
+        sp->nearby_station = -1;
+        sp->in_dock_range = false;
+        sp->docking_approach = false;
+        sp->dock_berth = 0;
+        sp->ship.pos = v2_add(st->pos, v2(220.0f, 0.0f));
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship.angle = PI_F;
+
+        pod_idx = spawn_cargo_pod(w,
+                                  v2_add(sp->ship.pos, v2(28.0f, 0.0f)),
+                                  v2(0.0f, 0.0f),
+                                  COMMODITY_FERRITE_ORE,
+                                  7,
+                                  CARGO_POD_CARGO);
+        return pod_idx >= 0;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -644,6 +683,15 @@ static void sr_state_hash(const world_t *w,
     sr_hash_i32(&ctx, sp->nearby_station);
     sr_hash_u8(&ctx, sp->in_dock_range ? 1u : 0u);
     sr_hash_u8(&ctx, sp->ship.towed_count);
+    for (int i = 0; i < (int)(sizeof(sp->ship.towed_fragments) /
+                              sizeof(sp->ship.towed_fragments[0])); i++) {
+        sr_hash_i32(&ctx, sp->ship.towed_fragments[i]);
+    }
+    sr_hash_u8(&ctx, sp->ship.towed_pod_count);
+    for (int i = 0; i < (int)(sizeof(sp->ship.towed_pods) /
+                              sizeof(sp->ship.towed_pods[0])); i++) {
+        sr_hash_i32(&ctx, sp->ship.towed_pods[i]);
+    }
     sr_hash_i32(&ctx, sp->ship.towed_scaffold);
     for (int c = 0; c < COMMODITY_COUNT; c++) {
         sr_hash_float_milli(&ctx, sp->ship.cargo[c]);
@@ -848,6 +896,11 @@ static void sr_accumulate_events(const world_t *w,
         case SIM_EVENT_LAUNCH:
             counts->launch_events++;
             break;
+        case SIM_EVENT_PICKUP:
+            counts->pickup_events++;
+            counts->pickup_ore += ev->pickup.ore;
+            counts->pickup_fragments += ev->pickup.fragments;
+            break;
         case SIM_EVENT_BUY:
             counts->buy_events++;
             counts->buy_cost += ev->buy.cost;
@@ -900,6 +953,50 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         if (counts->sell_events <= 0 ||
             sp->ship.manifest.count != start_ship_manifest) {
             return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_POD_TOW_SELL: {
+        int pickup_before = counts->pickup_events;
+        int dock_before = counts->dock_events;
+        int sell_before = counts->sell_events;
+        int station_index = sp->current_station;
+
+        sp->input.tractor_hold = true;
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (counts->pickup_events <= pickup_before ||
+            sp->ship.towed_pod_count <= 0) {
+            return false;
+        }
+
+        sp->input.tractor_hold = true;
+        sp->input.dock = true;
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        for (int i = 0; i < 240 && !sp->docked; i++) {
+            sp->input.tractor_hold = true;
+            world_sim_step(w, SIM_DT);
+            sr_accumulate_events(w, counts, event_hash);
+        }
+        if (!sp->docked || sp->current_station != station_index ||
+            counts->dock_events <= dock_before ||
+            sp->ship.towed_pod_count <= 0) {
+            return false;
+        }
+
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_COUNT;
+        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (counts->sell_events <= sell_before ||
+            sp->ship.towed_pod_count != 0) {
+            return false;
+        }
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            if (w->cargo_pods[i].active) return false;
         }
         return true;
     }
@@ -1072,6 +1169,9 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             ",\"death_events\":%d"
             ",\"dock_events\":%d"
             ",\"launch_events\":%d"
+            ",\"pickup_events\":%d"
+            ",\"pickup_fragments\":%d"
+            ",\"pickup_ore\":%.3f"
             ",\"buy_events\":%d"
             ",\"buy_cost\":%d"
             ",\"buy_quantity\":%d"
@@ -1105,6 +1205,9 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->events.death_events,
             r->events.dock_events,
             r->events.launch_events,
+            r->events.pickup_events,
+            r->events.pickup_fragments,
+            r->events.pickup_ore,
             r->events.buy_events,
             r->events.buy_cost,
             r->events.buy_quantity,
