@@ -340,7 +340,7 @@ static vec2 asteroid_approach_point(const server_player_t *sp,
                                     float *out_standoff) {
     vec2 delta = v2_sub(sp->ship.pos, a->pos);
     float d = v2_len(delta);
-    if (d < 1.0f) delta = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+    if (d < 1.0f) delta = v2_from_angle(sp->ship.angle);
     else delta = v2_scale(delta, 1.0f / d);
     float standoff = fmaxf(a->radius + 118.0f, 210.0f);
     if (out_standoff) *out_standoff = standoff;
@@ -359,7 +359,7 @@ static vec2 station_approach_point(const station_t *st,
                                    float *out_standoff) {
     vec2 delta = v2_sub(sp->ship.pos, st->pos);
     float d = v2_len(delta);
-    if (d < 1.0f) delta = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+    if (d < 1.0f) delta = v2_from_angle(sp->ship.angle);
     else delta = v2_scale(delta, 1.0f / d);
     float radius = fmaxf(st->dock_radius * 0.82f, st->radius + 160.0f);
     if (out_standoff) *out_standoff = 96.0f;
@@ -411,7 +411,7 @@ static double station_forward_clearance(const world_t *w,
                                         vec2 vel,
                                         float ship_radius,
                                         float heading) {
-    vec2 fwd = v2(cosf(heading), sinf(heading));
+    vec2 fwd = v2_from_angle(heading);
     vec2 perp = v2(-fwd.y, fwd.x);
     float speed = v2_len(vel);
     float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
@@ -425,7 +425,7 @@ static double station_forward_clearance(const world_t *w,
         if (fd < -clearance || fd > lookahead) continue;
         float lateral = fabsf(v2_dot(to_st, perp));
         if (lateral >= clearance) continue;
-        float along = sqrtf(fmaxf(0.0f, clearance * clearance - lateral * lateral));
+        float along = fixp_sqrtf(fmaxf(0.0f, clearance * clearance - lateral * lateral));
         float entry = fd - along;
         float exit = fd + along;
         if (entry >= 0.0f) {
@@ -453,7 +453,7 @@ static double path_blocked_at(const world_t *w,
                               const server_player_t *sp,
                               float ship_radius,
                               float heading) {
-    vec2 fwd = v2(cosf(heading), sinf(heading));
+    vec2 fwd = v2_from_angle(heading);
     float speed = v2_len(sp->ship.vel);
     float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
     vec2 probe_end = v2_add(sp->ship.pos, v2_scale(fwd, lookahead));
@@ -468,9 +468,9 @@ static signal_brain_state_t brain_state_for(const world_t *w,
     memset(&s, 0, sizeof(s));
     vec2 to_goal = v2_sub(target, sp->ship.pos);
     float dist = v2_len(to_goal);
-    float desired = dist > 0.001f ? atan2f(to_goal.y, to_goal.x) : sp->ship.angle;
+    float desired = dist > 0.001f ? fixp_atan2f(to_goal.y, to_goal.x) : sp->ship.angle;
     float heading_error = wrap_angle(desired - sp->ship.angle);
-    vec2 forward = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+    vec2 forward = v2_from_angle(sp->ship.angle);
     vec2 right = v2(-forward.y, forward.x);
     float speed = v2_len(sp->ship.vel);
     float forward_speed = v2_dot(sp->ship.vel, forward);
@@ -498,7 +498,7 @@ static signal_brain_state_t brain_state_for(const world_t *w,
     s.left_path_blocked = path_blocked_at(w, sp, ship_radius, sp->ship.angle + 0.7f);
     s.right_path_blocked = path_blocked_at(w, sp, ship_radius, sp->ship.angle - 0.7f);
     s.vel_clear = speed > 0.5f
-        ? clearance_at(w, sp, ship_radius, atan2f(sp->ship.vel.y, sp->ship.vel.x))
+        ? clearance_at(w, sp, ship_radius, fixp_atan2f(sp->ship.vel.y, sp->ship.vel.x))
         : s.fwd_clear;
     s.signal = signal_strength_at(w, sp->ship.pos);
     {
@@ -661,20 +661,21 @@ static void fill_npc_features(const npc_ship_t *npc, const vec2 target,
     
     float dx = target.x - s->pos.x;
     float dy = target.y - s->pos.y;
-    float dist = sqrtf(dx * dx + dy * dy);
-    float target_heading = atan2f(dy, dx);
+    float dist = v2_len(v2(dx, dy));
+    float target_heading = fixp_atan2f(dy, dx);
     float heading_error = target_heading - s->angle;
     while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
     while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;
     
     float speed = v2_len(s->vel);
-    float fwd_speed = s->vel.x * cosf(s->angle) + s->vel.y * sinf(s->angle);
+    vec2 forward = v2_from_angle(s->angle);
+    float fwd_speed = v2_dot(s->vel, forward);
     
     row[0] = 1.0;  /* bias */
     row[1] = dist / 5000.0;
     row[2] = heading_error / 3.14159265f;
-    row[3] = cosf(heading_error);
-    row[4] = sinf(heading_error);
+    row[3] = fixp_cosf(heading_error);
+    row[4] = fixp_sinf(heading_error);
     row[5] = speed / 300.0;
     row[6] = fwd_speed / 300.0;
     row[7] = action->turn;
@@ -755,14 +756,14 @@ static void hnn_fill_npc_features(const world_t *w,
 
     float dx = target.x - s->pos.x;
     float dy = target.y - s->pos.y;
-    float dist = sqrtf(dx * dx + dy * dy);
-    float target_heading = atan2f(dy, dx);
+    float dist = v2_len(v2(dx, dy));
+    float target_heading = fixp_atan2f(dy, dx);
     float heading_error = target_heading - s->angle;
     while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
     while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;
 
     float speed = v2_len(s->vel);
-    vec2 forward = v2(cosf(s->angle), sinf(s->angle));
+    vec2 forward = v2_from_angle(s->angle);
     float fwd_speed = v2_dot(s->vel, forward);
     vec2 right = v2(-forward.y, forward.x);
     float lat_speed = v2_dot(s->vel, right);
@@ -814,8 +815,8 @@ static void hnn_fill_npc_features(const world_t *w,
 
     f->target_dist     = dist / 6000.0f;
     f->heading_error   = heading_error / 3.14159265f;
-    f->heading_cos     = cosf(heading_error);
-    f->heading_sin     = sinf(heading_error);
+    f->heading_cos     = fixp_cosf(heading_error);
+    f->heading_sin     = fixp_sinf(heading_error);
     f->speed           = speed / 350.0f;
     f->forward_speed   = fwd_speed / 350.0f;
     f->lateral_speed   = lat_speed / 350.0f;
@@ -927,7 +928,7 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         if (best_ast >= 0) {
             npc->target_asteroid = best_ast;
             fprintf(stderr, "[hnn] slot=%ld exploring asteroid %d (dist=%.0f)\n",
-                    (long)(npc - w->npc_ships), best_ast, sqrtf(best_d));
+                    (long)(npc - w->npc_ships), best_ast, fixp_sqrtf(best_d));
         }
     }
 
@@ -956,7 +957,7 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
     if (npc->hnn_mem.experience_count == 0) {
         float dx = target.x - npc->ship.pos.x;
         float dy = target.y - npc->ship.pos.y;
-        float target_heading = atan2f(dy, dx);
+        float target_heading = fixp_atan2f(dy, dx);
         float heading_error = target_heading - npc->ship.angle;
         while (heading_error > 3.14159265f) heading_error -= 2.0f * 3.14159265f;
         while (heading_error < -3.14159265f) heading_error += 2.0f * 3.14159265f;

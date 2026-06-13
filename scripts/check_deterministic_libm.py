@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATED_FILES = (
     "server/sim_flight.c",
     "server/game_sim.c",
+    "server/signal_brain.c",
     "server/sim_autopilot.c",
     "server/sim_asteroid.c",
     "server/sim_ai.c",
