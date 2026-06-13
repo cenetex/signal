@@ -20,6 +20,7 @@
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
+#include "fixpoint.h"
 #include "handoff_flow.h"
 #include "sha256.h"
 #include "station_authority.h"
@@ -2786,7 +2787,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
                 "{\"index\":%d,\"tier\":%d,\"x\":%.0f,\"y\":%.0f,"
                 "\"distance\":%.0f,\"hp\":%.0f}",
                 target->index, a->tier, a->pos.x, a->pos.y,
-                sqrtf(target->dist_sq), a->hp);
+                fixp_sqrtf(target->dist_sq), a->hp);
         }
         BUF_APPEND(pos, buf, BUFSZ, "]}");
     }
@@ -2864,7 +2865,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         if (d_sq > sr_sq) continue;
         if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
-        float overlap = st->signal_range + world.stations[i].signal_range - sqrtf(d_sq);
+        float overlap = st->signal_range + world.stations[i].signal_range - fixp_sqrtf(d_sq);
         BUF_APPEND(pos, buf, BUFSZ,
             "{\"index\":%d,\"name\":\"", i);
         json_escape_append(buf, &pos, BUFSZ, world.stations[i].name);

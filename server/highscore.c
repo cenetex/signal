@@ -2,6 +2,7 @@
 
 #include "base58.h"
 #include "chain_log.h"
+#include "fixpoint.h"
 #include "sha256.h"
 
 #include <math.h>
@@ -143,7 +144,7 @@ float highscore_trace_weight_from_score(float credits_earned,
     if (ratio < 0.0f) ratio = 0.0f;
     if (ratio > 1.0f) ratio = 1.0f;
     return TRACE_WEIGHT_FLOOR +
-           (TRACE_WEIGHT_CEILING - TRACE_WEIGHT_FLOOR) * sqrtf(ratio);
+           (TRACE_WEIGHT_CEILING - TRACE_WEIGHT_FLOOR) * fixp_sqrtf(ratio);
 }
 
 int highscore_find_rank(const highscore_table_t *t, const char *callsign) {
