@@ -461,6 +461,58 @@ static void sr_hash_manifest(sha256_ctx_t *ctx, const manifest_t *manifest)
     }
 }
 
+static void sr_hash_receipts(sha256_ctx_t *ctx,
+                             const manifest_t *manifest,
+                             const ship_receipts_t *receipts)
+{
+    uint16_t manifest_count = manifest ? manifest->count : 0;
+    uint16_t receipt_count = receipts ? receipts->count : 0;
+    sr_hash_u16(ctx, receipt_count);
+    for (uint16_t i = 0; i < manifest_count; i++) {
+        uint8_t len = 0;
+        if (receipts && receipts->chains && i < receipts->count) {
+            len = receipts->chains[i].len;
+            if (len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                len = CARGO_RECEIPT_CHAIN_MAX_LEN;
+            }
+        }
+        sr_hash_u8(ctx, len);
+        for (uint8_t j = 0; j < len; j++) {
+            uint8_t packed[CARGO_RECEIPT_SIZE];
+            cargo_receipt_pack(&receipts->chains[i].links[j], packed);
+            sha256_update(ctx, packed, sizeof(packed));
+        }
+    }
+}
+
+static void sr_hash_ship_cargo_identity(sha256_ctx_t *ctx, const ship_t *ship)
+{
+    sr_hash_manifest(ctx, &ship->manifest);
+    sr_hash_receipts(ctx, &ship->manifest, ship_get_receipts_const(ship));
+}
+
+static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
+{
+    int count = st->ledger_count;
+    if (count < 0) count = 0;
+    if (count > STATION_LEDGER_MAX) count = STATION_LEDGER_MAX;
+    sr_hash_i32(ctx, count);
+    for (int i = 0; i < count; i++) {
+        sha256_update(ctx, st->ledger[i].player_pubkey,
+                      sizeof(st->ledger[i].player_pubkey));
+        sr_hash_float_milli(ctx, st->ledger[i].balance);
+        sr_hash_float_milli(ctx, st->ledger[i].lifetime_supply);
+        sr_hash_u64(ctx, st->ledger[i].first_dock_tick);
+        sr_hash_u64(ctx, st->ledger[i].last_dock_tick);
+        sr_hash_u32(ctx, st->ledger[i].total_docks);
+        sr_hash_u32(ctx, st->ledger[i].lifetime_ore_units);
+        sr_hash_u32(ctx, st->ledger[i].lifetime_credits_in);
+        sr_hash_u32(ctx, st->ledger[i].lifetime_credits_out);
+        sr_hash_u8(ctx, st->ledger[i].top_commodity);
+        sha256_update(ctx, st->ledger[i]._pad, sizeof(st->ledger[i]._pad));
+    }
+}
+
 static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
 {
     sr_hash_float_milli(ctx, ship->pos.x);
@@ -500,7 +552,7 @@ static void sr_state_hash(const world_t *w,
     for (int c = 0; c < COMMODITY_COUNT; c++) {
         sr_hash_float_milli(&ctx, sp->ship.cargo[c]);
     }
-    sr_hash_manifest(&ctx, &sp->ship.manifest);
+    sr_hash_ship_cargo_identity(&ctx, &sp->ship);
 
     int station_count = w->station_count;
     if (station_count < 0) station_count = 0;
@@ -511,10 +563,16 @@ static void sr_state_hash(const world_t *w,
         sr_hash_i32(&ctx, st->id);
         sr_hash_float_milli(&ctx, st->pos.x);
         sr_hash_float_milli(&ctx, st->pos.y);
-        sr_hash_u16(&ctx, st->manifest.count);
+        sha256_update(&ctx, st->station_pubkey, sizeof(st->station_pubkey));
+        sha256_update(&ctx, st->outpost_founder_pubkey,
+                      sizeof(st->outpost_founder_pubkey));
+        sr_hash_u64(&ctx, st->outpost_planted_tick);
+        sr_hash_manifest(&ctx, &st->manifest);
+        sr_hash_receipts(&ctx, &st->manifest, station_get_receipts_const(st));
         for (int c = 0; c < COMMODITY_COUNT; c++) {
             sr_hash_float_milli(&ctx, st->_inventory_cache[c]);
         }
+        sr_hash_station_ledger(&ctx, st);
         sr_hash_float_milli(&ctx, ledger_balance(st, sp->session_token));
         sr_hash_float_milli(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
@@ -733,7 +791,7 @@ static bool sr_replay_prefix(const sr_config_t *config,
 
 static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t *out)
 {
-    world_t w = {0};
+    world_t *w = NULL;
     server_player_t *sp = NULL;
     vec2 spawn = v2(0.0f, 0.0f);
     vec2 goal = v2(0.0f, 0.0f);
@@ -745,13 +803,20 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->prefix_ticks = config->prefix_count;
     out->horizon_ticks = config->horizon_ticks;
 
-    if (!sr_setup_world(config, &w, &sp, &spawn, &goal)) {
+    w = (world_t *)calloc(1, sizeof(*w));
+    if (!w) {
+        return false;
+    }
+
+    if (!sr_setup_world(config, w, &sp, &spawn, &goal)) {
+        free(w);
         return false;
     }
     (void)spawn;
 
-    if (!sr_replay_prefix(config, &w, sp)) {
-        world_cleanup(&w);
+    if (!sr_replay_prefix(config, w, sp)) {
+        world_cleanup(w);
+        free(w);
         return false;
     }
 
@@ -761,17 +826,17 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->start_hull = sp->ship.hull;
     out->start_cargo = ship_total_cargo(&sp->ship);
     if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS) {
-        out->start_balance = ledger_balance(&w.stations[sp->current_station],
+        out->start_balance = ledger_balance(&w->stations[sp->current_station],
                                             sp->session_token);
     }
-    sr_state_hash(&w, sp, out->prefix_state_hash);
+    sr_state_hash(w, sp, out->prefix_state_hash);
 
     sha256_init(&event_hash);
     sha256_update(&event_hash, "signal-replay-events-v1", 23);
     for (int i = 0; i < config->horizon_ticks; i++) {
         sr_apply_action(sp, candidate);
-        world_sim_step(&w, SIM_DT);
-        sr_accumulate_events(&w, &out->events, &event_hash);
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, &out->events, &event_hash);
         if (out->events.death_events > 0 || sp->ship.hull <= 0.0f) {
             break;
         }
@@ -789,7 +854,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     if (out->hull_loss < 0.0f) out->hull_loss = 0.0f;
     out->end_cargo = ship_total_cargo(&sp->ship);
     if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS) {
-        out->end_balance = ledger_balance(&w.stations[sp->current_station],
+        out->end_balance = ledger_balance(&w->stations[sp->current_station],
                                           sp->session_token);
     }
     out->end_docked = sp->docked;
@@ -800,11 +865,12 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
                    ((double)out->events.damage_amount * 0.25) -
                    ((double)out->events.damage_events * 2.0) -
                    ((double)out->events.death_events * 80.0);
-    sr_state_hash(&w, sp, out->state_hash);
+    sr_state_hash(w, sp, out->state_hash);
     out->ok = true;
     ok = true;
 
-    world_cleanup(&w);
+    world_cleanup(w);
+    free(w);
     return ok;
 }
 
