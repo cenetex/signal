@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail on raw libm calls in files migrated to deterministic sim math."""
+"""Fail on raw libm calls in production server/shared code."""
 
 from __future__ import annotations
 
@@ -10,26 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-MIGRATED_FILES = (
-    "server/sim_flight.c",
-    "server/game_sim.c",
-    "server/highscore.c",
-    "server/main.c",
-    "server/signal_brain.c",
-    "server/sim_autopilot.c",
-    "server/sim_asteroid.c",
-    "server/sim_ai.c",
-    "server/sim_mining.c",
-    "server/sim_nav.c",
-    "server/sim_physics.c",
-    "server/sim_production.c",
-    "server/sim_ship.c",
-    "shared/belt.c",
-    "shared/holographic_nn.c",
-    "shared/laser.c",
-    "shared/station_util.c",
-    "shared/tractor.c",
-)
+SCAN_ROOTS = ("server", "shared")
+SCAN_SUFFIXES = (".c", ".h")
 
 BANNED = {
     "sqrtf": "use v2_len() or fixp_sqrtf()",
@@ -38,6 +20,7 @@ BANNED = {
     "atan2f": "use fixp_atan2f()",
     "asinf": "use fixp_asinf()",
     "expf": "use fixp_expf()",
+    "logf": "use fixed-point log/exp helpers",
     "tanf": "use fixp_tanf()",
     "powf": "use fixp_powf() or checked integer math",
 }
@@ -69,8 +52,14 @@ def strip_line_comments(line: str, in_block: bool) -> tuple[str, bool]:
 
 def main() -> int:
     findings: list[tuple[str, int, str, str]] = []
-    for rel in MIGRATED_FILES:
-        path = ROOT / rel
+    paths = sorted(
+        path
+        for root in SCAN_ROOTS
+        for path in (ROOT / root).rglob("*")
+        if path.suffix in SCAN_SUFFIXES
+    )
+    for path in paths:
+        rel = str(path.relative_to(ROOT))
         in_block_comment = False
         for lineno, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
             line, in_block_comment = strip_line_comments(raw, in_block_comment)
@@ -79,7 +68,7 @@ def main() -> int:
                 findings.append((rel, lineno, api, BANNED[api]))
 
     if findings:
-        print("Raw libm calls found in deterministic-migrated sim files:", file=sys.stderr)
+        print("Raw libm calls found in production server/shared code:", file=sys.stderr)
         for rel, lineno, api, replacement in findings:
             print(f"  {rel}:{lineno}: {api}() is banned; {replacement}", file=sys.stderr)
         return 1
