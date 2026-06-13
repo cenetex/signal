@@ -539,7 +539,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                 st->modules[m].last_smelt_commodity = (uint8_t)a->commodity;
                 st->module_active_pulse[m] = 1.0f;
 
-                float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
+                float d_mid = v2_len(v2_sub(a->pos, midpoint));
                 /* Smelt once the fragment is in the central beam corridor.
                  * The both-module reach gate above keeps this local to the
                  * furnace/hopper pair; the wider midpoint radius lets player
