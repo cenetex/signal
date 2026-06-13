@@ -54,6 +54,13 @@ SCENARIOS = (
         "--horizon-ticks", "180",
         "--candidates", "S,SA,SD,W",
     ),
+    (
+        "--seed", "7777",
+        "--station", "1",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--provenance-script", "buy-sell",
+    ),
 )
 
 

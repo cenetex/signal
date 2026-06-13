@@ -25,6 +25,11 @@
 #define SR_ACTION_COUNT 9
 #define SR_MAX_PREFIX 4096
 
+typedef enum {
+    SR_PROVENANCE_SCRIPT_NONE = 0,
+    SR_PROVENANCE_SCRIPT_BUY_SELL,
+} sr_provenance_script_t;
+
 typedef struct {
     int turn;
     int thrust;
@@ -46,6 +51,7 @@ typedef struct {
     int prefix[SR_MAX_PREFIX];
     int prefix_count;
     bool candidate_enabled[SR_ACTION_COUNT];
+    sr_provenance_script_t provenance_script;
     const char *out_path;
 } sr_config_t;
 
@@ -122,6 +128,8 @@ static void sr_usage(FILE *fp)
             "  --history LIST       comma-separated prefix actions, e.g. W,W,WA,D\n"
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
+            "  --provenance-script NAME  run a deterministic economy/provenance script\n"
+            "                       before each branch; names: none,buy-sell\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -242,6 +250,32 @@ static bool sr_parse_candidate_list(const char *text, bool enabled[SR_ACTION_COU
     return true;
 }
 
+static bool sr_parse_provenance_script(const char *text,
+                                       sr_provenance_script_t *out)
+{
+    if (!text || !out) return false;
+    if (strcmp(text, "none") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_NONE;
+        return true;
+    }
+    if (strcmp(text, "buy-sell") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_BUY_SELL;
+        return true;
+    }
+    return false;
+}
+
+static const char *sr_provenance_script_name(sr_provenance_script_t script)
+{
+    switch (script) {
+    case SR_PROVENANCE_SCRIPT_BUY_SELL:
+        return "buy-sell";
+    case SR_PROVENANCE_SCRIPT_NONE:
+    default:
+        return "none";
+    }
+}
+
 static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
 {
     if (!config) return false;
@@ -291,6 +325,11 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
             i++;
         } else if (strcmp(arg, "--candidates") == 0 && value) {
             if (!sr_parse_candidate_list(value, config->candidate_enabled)) return false;
+            i++;
+        } else if (strcmp(arg, "--provenance-script") == 0 && value) {
+            if (!sr_parse_provenance_script(value, &config->provenance_script)) {
+                return false;
+            }
             i++;
         } else if (strcmp(arg, "--out") == 0 && value) {
             config->out_path = value;
@@ -441,6 +480,51 @@ static bool sr_setup_world(const sr_config_t *config,
     return true;
 }
 
+static bool sr_setup_provenance_script(const sr_config_t *config,
+                                       world_t *w,
+                                       server_player_t *sp)
+{
+    if (!config || !w || !sp) return false;
+    if (config->provenance_script == SR_PROVENANCE_SCRIPT_NONE) return true;
+
+    switch (config->provenance_script) {
+    case SR_PROVENANCE_SCRIPT_BUY_SELL: {
+        const int station_index = 1; /* Kepler: seeded frame producer. */
+        station_t *st;
+        if (station_index >= w->station_count) return false;
+        st = &w->stations[station_index];
+        if (!station_manifest_bootstrap(st)) return false;
+        if (station_finished_mint(st, COMMODITY_FRAME, 4, NULL) < 4) {
+            return false;
+        }
+        ledger_earn_by_pubkey(st, sp->pubkey, 10000.0f);
+
+        memset(w->contracts, 0, sizeof(w->contracts));
+        w->contracts[0] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)station_index,
+            .commodity = COMMODITY_FRAME,
+            .quantity_needed = 1.0f,
+            .base_price = station_buy_price(st, COMMODITY_FRAME),
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+
+        sp->docked = true;
+        sp->current_station = station_index;
+        sp->nearby_station = station_index;
+        sp->in_dock_range = true;
+        sp->dock_berth = 0;
+        anchor_ship_in_station(sp, w);
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_NONE:
+    default:
+        return true;
+    }
+}
+
 static void sr_hash_manifest(sha256_ctx_t *ctx, const manifest_t *manifest)
 {
     uint16_t count = manifest ? manifest->count : 0;
@@ -511,6 +595,18 @@ static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
         sr_hash_u8(ctx, st->ledger[i].top_commodity);
         sha256_update(ctx, st->ledger[i]._pad, sizeof(st->ledger[i]._pad));
     }
+}
+
+static float sr_player_station_balance(const world_t *w, const server_player_t *sp)
+{
+    if (!w || !sp ||
+        sp->current_station < 0 || sp->current_station >= MAX_STATIONS) {
+        return 0.0f;
+    }
+    const station_t *st = &w->stations[sp->current_station];
+    return server_player_can_use_pubkey_persistence(sp)
+         ? ledger_balance_by_pubkey(st, sp->pubkey)
+         : ledger_balance(st, sp->session_token);
 }
 
 static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
@@ -771,6 +867,48 @@ static void sr_accumulate_events(const world_t *w,
     }
 }
 
+static bool sr_run_provenance_script(const sr_config_t *config,
+                                     world_t *w,
+                                     server_player_t *sp,
+                                     sr_event_counts_t *counts,
+                                     sha256_ctx_t *event_hash)
+{
+    if (!config || !w || !sp || !counts || !event_hash) return false;
+    if (config->provenance_script == SR_PROVENANCE_SCRIPT_NONE) return true;
+
+    switch (config->provenance_script) {
+    case SR_PROVENANCE_SCRIPT_BUY_SELL: {
+        uint16_t start_station_manifest = w->stations[sp->current_station].manifest.count;
+        uint16_t start_ship_manifest = sp->ship.manifest.count;
+
+        sp->input.buy_product = true;
+        sp->input.buy_commodity = COMMODITY_FRAME;
+        sp->input.buy_grade = MINING_GRADE_COMMON;
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (counts->buy_events <= 0 ||
+            sp->ship.manifest.count <= start_ship_manifest ||
+            w->stations[sp->current_station].manifest.count >= start_station_manifest) {
+            return false;
+        }
+
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_FRAME;
+        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (counts->sell_events <= 0 ||
+            sp->ship.manifest.count != start_ship_manifest) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_NONE:
+    default:
+        return true;
+    }
+}
+
 static bool sr_replay_prefix(const sr_config_t *config,
                              world_t *w,
                              server_player_t *sp)
@@ -812,6 +950,11 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         free(w);
         return false;
     }
+    if (!sr_setup_provenance_script(config, w, sp)) {
+        world_cleanup(w);
+        free(w);
+        return false;
+    }
     (void)spawn;
 
     if (!sr_replay_prefix(config, w, sp)) {
@@ -825,14 +968,16 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->start_dist = v2_len(v2_sub(goal, sp->ship.pos));
     out->start_hull = sp->ship.hull;
     out->start_cargo = ship_total_cargo(&sp->ship);
-    if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS) {
-        out->start_balance = ledger_balance(&w->stations[sp->current_station],
-                                            sp->session_token);
-    }
+    out->start_balance = sr_player_station_balance(w, sp);
     sr_state_hash(w, sp, out->prefix_state_hash);
 
     sha256_init(&event_hash);
     sha256_update(&event_hash, "signal-replay-events-v1", 23);
+    if (!sr_run_provenance_script(config, w, sp, &out->events, &event_hash)) {
+        world_cleanup(w);
+        free(w);
+        return false;
+    }
     for (int i = 0; i < config->horizon_ticks; i++) {
         sr_apply_action(sp, candidate);
         world_sim_step(w, SIM_DT);
@@ -853,10 +998,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->hull_loss = out->start_hull - out->end_hull;
     if (out->hull_loss < 0.0f) out->hull_loss = 0.0f;
     out->end_cargo = ship_total_cargo(&sp->ship);
-    if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS) {
-        out->end_balance = ledger_balance(&w->stations[sp->current_station],
-                                          sp->session_token);
-    }
+    out->end_balance = sr_player_station_balance(w, sp);
     out->end_docked = sp->docked;
     out->end_current_station = sp->current_station;
     out->end_manifest_count = sp->ship.manifest.count;
@@ -887,6 +1029,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             "{\"schema\":\"%s\","
             "\"seed\":%" PRIu32 ","
             "\"station\":%d,"
+            "\"provenance_script\":\"%s\","
             "\"prefix_ticks\":%d,"
             "\"horizon_ticks\":%d,"
             "\"candidate\":%d,"
@@ -894,6 +1037,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             SR_SCHEMA,
             config->seed,
             config->station,
+            sr_provenance_script_name(config->provenance_script),
             r->prefix_ticks,
             r->horizon_ticks,
             r->candidate,
