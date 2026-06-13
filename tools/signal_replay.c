@@ -32,6 +32,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_POD_TOW_SELL,
     SR_PROVENANCE_SCRIPT_MINE_FRACTURE,
     SR_PROVENANCE_SCRIPT_ASTEROID_DEATH,
+    SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -70,6 +71,8 @@ typedef struct {
     int repair_events;
     int mining_tick_events;
     int fracture_events;
+    int outpost_placed_events;
+    int scaffold_ready_events;
     int pickup_fragments;
     float pickup_ore;
     float damage_amount;
@@ -138,7 +141,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -283,12 +286,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_ASTEROID_DEATH;
         return true;
     }
+    if (strcmp(text, "planned-outpost") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST:
+        return "planned-outpost";
     case SR_PROVENANCE_SCRIPT_ASTEROID_DEATH:
         return "asteroid-death";
     case SR_PROVENANCE_SCRIPT_MINE_FRACTURE:
@@ -648,6 +657,37 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         sp->nearby_station = -1;
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST: {
+        const int station_index = SIGNAL_FIRST_OUTPOST_INDEX;
+        station_t *st;
+        int sc_idx;
+        vec2 plan_pos = v2_add(w->stations[0].pos, v2(6200.0f, 0.0f));
+        if (station_index >= MAX_STATIONS) return false;
+        st = &w->stations[station_index];
+        station_cleanup(st);
+        memset(st, 0, sizeof(*st));
+        (void)station_manifest_bootstrap(st);
+        st->id = (uint32_t)station_index;
+        snprintf(st->name, sizeof(st->name), "Replay Outpost");
+        st->pos = plan_pos;
+        st->planned = true;
+        st->planned_owner = (int8_t)sp->id;
+        st->placement_plan_count = 1;
+        st->placement_plans[0].type = MODULE_SIGNAL_RELAY;
+        st->placement_plans[0].ring = 1;
+        st->placement_plans[0].slot = 0;
+        st->placement_plans[0].owner = (int8_t)sp->id;
+        if (w->station_count <= station_index) {
+            w->station_count = station_index + 1;
+        }
+
+        sc_idx = spawn_scaffold(w, MODULE_SIGNAL_RELAY,
+                                v2_add(plan_pos, v2(24.0f, 0.0f)),
+                                sp->id);
+        if (sc_idx < 0) return false;
+        w->scaffolds[sc_idx].vel = v2(0.0f, 0.0f);
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -726,6 +766,71 @@ static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
     }
 }
 
+static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
+{
+    int module_count = st->module_count;
+    int arm_count = st->arm_count;
+    int pending_count = st->pending_scaffold_count;
+    int plan_count = st->placement_plan_count;
+
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION)
+        module_count = MAX_MODULES_PER_STATION;
+    if (arm_count < 0) arm_count = 0;
+    if (arm_count > MAX_ARMS) arm_count = MAX_ARMS;
+    if (pending_count < 0) pending_count = 0;
+    if (pending_count > 4) pending_count = 4;
+    if (plan_count < 0) plan_count = 0;
+    if (plan_count > 8) plan_count = 8;
+
+    sr_hash_float_milli(ctx, st->radius);
+    sr_hash_float_milli(ctx, st->dock_radius);
+    sr_hash_float_milli(ctx, st->signal_range);
+    sr_hash_u8(ctx, st->signal_connected ? 1u : 0u);
+    sr_hash_u8(ctx, st->scaffold ? 1u : 0u);
+    sr_hash_u8(ctx, st->planned ? 1u : 0u);
+    sr_hash_i32(ctx, st->planned_owner);
+    sr_hash_float_milli(ctx, st->scaffold_progress);
+
+    sr_hash_i32(ctx, module_count);
+    for (int m = 0; m < module_count; m++) {
+        const station_module_t *mod = &st->modules[m];
+        sr_hash_u8(ctx, (uint8_t)mod->type);
+        sr_hash_u8(ctx, mod->ring);
+        sr_hash_u8(ctx, mod->slot);
+        sr_hash_u8(ctx, mod->scaffold ? 1u : 0u);
+        sr_hash_u8(ctx, mod->last_smelt_commodity);
+        sr_hash_u8(ctx, mod->commodity);
+        sr_hash_float_milli(ctx, mod->build_progress);
+        sr_hash_float_milli(ctx, st->module_input[m]);
+        sr_hash_float_milli(ctx, st->module_output[m]);
+        sr_hash_float_milli(ctx, st->module_craft_progress[m]);
+        sr_hash_u8(ctx, st->module_diag[m]);
+    }
+
+    sr_hash_i32(ctx, arm_count);
+    for (int a = 0; a < MAX_ARMS; a++) {
+        sr_hash_float_milli(ctx, st->arm_rotation[a]);
+        sr_hash_float_milli(ctx, st->arm_speed[a]);
+        sr_hash_float_milli(ctx, st->arm_omega[a]);
+        sr_hash_float_milli(ctx, st->ring_offset[a]);
+    }
+
+    sr_hash_i32(ctx, pending_count);
+    for (int p = 0; p < pending_count; p++) {
+        sr_hash_u8(ctx, (uint8_t)st->pending_scaffolds[p].type);
+        sr_hash_i32(ctx, st->pending_scaffolds[p].owner);
+    }
+
+    sr_hash_i32(ctx, plan_count);
+    for (int p = 0; p < plan_count; p++) {
+        sr_hash_u8(ctx, (uint8_t)st->placement_plans[p].type);
+        sr_hash_u8(ctx, st->placement_plans[p].ring);
+        sr_hash_u8(ctx, st->placement_plans[p].slot);
+        sr_hash_i32(ctx, st->placement_plans[p].owner);
+    }
+}
+
 static float sr_player_station_balance(const world_t *w, const server_player_t *sp)
 {
     if (!w || !sp ||
@@ -797,6 +902,7 @@ static void sr_state_hash(const world_t *w,
         sr_hash_i32(&ctx, st->id);
         sr_hash_float_milli(&ctx, st->pos.x);
         sr_hash_float_milli(&ctx, st->pos.y);
+        sr_hash_station_construction(&ctx, st);
         sha256_update(&ctx, st->station_pubkey, sizeof(st->station_pubkey));
         sha256_update(&ctx, st->outpost_founder_pubkey,
                       sizeof(st->outpost_founder_pubkey));
@@ -959,6 +1065,16 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         sr_hash_i32(ctx, ev->fracture.tier);
         sr_hash_i32(ctx, ev->fracture.asteroid_id);
         break;
+    case SIM_EVENT_OUTPOST_PLACED:
+        sr_hash_i32(ctx, ev->outpost_placed.slot);
+        break;
+    case SIM_EVENT_OUTPOST_ACTIVATED:
+        sr_hash_i32(ctx, ev->outpost_activated.slot);
+        break;
+    case SIM_EVENT_SCAFFOLD_READY:
+        sr_hash_i32(ctx, ev->scaffold_ready.station);
+        sr_hash_i32(ctx, ev->scaffold_ready.module_type);
+        break;
     case SIM_EVENT_MINING_TICK:
         break;
     case SIM_EVENT_REPAIR:
@@ -1014,6 +1130,12 @@ static void sr_accumulate_events(const world_t *w,
             break;
         case SIM_EVENT_FRACTURE:
             counts->fracture_events++;
+            break;
+        case SIM_EVENT_OUTPOST_PLACED:
+            counts->outpost_placed_events++;
+            break;
+        case SIM_EVENT_SCAFFOLD_READY:
+            counts->scaffold_ready_events++;
             break;
         default:
             break;
@@ -1134,6 +1256,33 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             !sp->docked ||
             sp->ship.hull <= 0.0f) {
             return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_PLANNED_OUTPOST: {
+        const int station_index = SIGNAL_FIRST_OUTPOST_INDEX;
+        int outpost_before = counts->outpost_placed_events;
+        const station_t *st;
+
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        if (counts->outpost_placed_events <= outpost_before ||
+            station_index >= w->station_count) {
+            return false;
+        }
+        st = &w->stations[station_index];
+        if (st->planned ||
+            !st->scaffold ||
+            st->radius <= 0.0f ||
+            st->dock_radius <= 0.0f ||
+            st->signal_range <= 0.0f ||
+            st->module_count < 2 ||
+            st->placement_plan_count != 0) {
+            return false;
+        }
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            if (w->scaffolds[i].active) return false;
         }
         return true;
     }
@@ -1318,6 +1467,8 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             ",\"repair_events\":%d"
             ",\"mining_tick_events\":%d"
             ",\"fracture_events\":%d"
+            ",\"outpost_placed_events\":%d"
+            ",\"scaffold_ready_events\":%d"
             ",\"damage_amount\":%.3f"
             ",\"authority\":\"deterministic_seed_prefix_replay\"}\n",
             r->start_dist,
@@ -1356,6 +1507,8 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->events.repair_events,
             r->events.mining_tick_events,
             r->events.fracture_events,
+            r->events.outpost_placed_events,
+            r->events.scaffold_ready_events,
             r->events.damage_amount);
 }
 
