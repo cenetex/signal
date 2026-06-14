@@ -25,6 +25,7 @@
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_ACTION_COUNT 9
 #define SR_MAX_PREFIX 4096
+#define SR_MAX_HORIZON_TICKS 120000
 
 typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
@@ -141,7 +142,7 @@ static void sr_usage(FILE *fp)
             "  --angle R            branch start angle in radians; default points at goal\n"
             "  --goal X,Y           replay utility target; default beyond station\n"
             "  --history LIST       comma-separated prefix actions, e.g. W,W,WA,D\n"
-            "  --horizon-ticks N    branch horizon per candidate (default 36)\n"
+            "  --horizon-ticks N    branch horizon per candidate (default 36; max 120000)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
             "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram\n"
@@ -378,7 +379,8 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
             }
             i++;
         } else if (strcmp(arg, "--horizon-ticks") == 0 && value) {
-            if (!sr_parse_i32(value, 1, 12000, &config->horizon_ticks)) return false;
+            if (!sr_parse_i32(value, 1, SR_MAX_HORIZON_TICKS,
+                              &config->horizon_ticks)) return false;
             i++;
         } else if (strcmp(arg, "--candidates") == 0 && value) {
             if (!sr_parse_candidate_list(value, config->candidate_enabled)) return false;

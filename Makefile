@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-cross-build replay-native-wasm build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
 
 all: build build-web build-server
 
@@ -97,6 +97,9 @@ signal-replay: build-signal-replay
 replay-repeatability: build-signal-replay
 	python3 scripts/check_replay_repeatability.py ./build/signal_replay
 
+replay-repeatability-long: build-signal-replay
+	python3 scripts/check_replay_repeatability.py ./build/signal_replay --scenario-set long
+
 build-signal-replay-wasm:
 	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH)
 	emmake cmake --build $(SIGNAL_REPLAY_WASM_BUILD) --target signal_replay --parallel
@@ -113,10 +116,28 @@ replay-cross-build:
 		./$(SIGNAL_REPLAY_DEBUG_BUILD)/signal_replay \
 		./$(SIGNAL_REPLAY_RELEASE_BUILD)/signal_replay
 
+replay-cross-build-long:
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake --build $(SIGNAL_REPLAY_DEBUG_BUILD) --target signal_replay --parallel
+	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_DEBUG_BUILD)/compile_commands.json
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH)
+	cmake --build $(SIGNAL_REPLAY_RELEASE_BUILD) --target signal_replay --parallel
+	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_RELEASE_BUILD)/compile_commands.json
+	python3 scripts/check_replay_cross_build.py \
+		./$(SIGNAL_REPLAY_DEBUG_BUILD)/signal_replay \
+		./$(SIGNAL_REPLAY_RELEASE_BUILD)/signal_replay \
+		--scenario-set long
+
 replay-native-wasm: build-signal-replay build-signal-replay-wasm
 	python3 scripts/check_replay_cross_build.py \
 		./build/signal_replay \
 		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js
+
+replay-native-wasm-long: build-signal-replay build-signal-replay-wasm
+	python3 scripts/check_replay_cross_build.py \
+		./build/signal_replay \
+		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js \
+		--scenario-set long
 
 # --- Chain asset inventory export ---
 CHAIN_ASSETS_FORMAT ?= json

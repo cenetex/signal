@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from check_replay_repeatability import ROOT, SCENARIOS
+from check_replay_repeatability import ROOT, scenarios_for_name
 
 
 def runner_for(binary: Path) -> list[str]:
@@ -43,16 +43,49 @@ def run_once(binary: Path, args: tuple[str, ...], out: Path) -> bool:
     return True
 
 
+def first_diff(left: Path, right: Path) -> str:
+    left_lines = left.read_text(errors="replace").splitlines()
+    right_lines = right.read_text(errors="replace").splitlines()
+    max_lines = max(len(left_lines), len(right_lines))
+    for i in range(max_lines):
+        left_line = left_lines[i] if i < len(left_lines) else "<missing>"
+        right_line = right_lines[i] if i < len(right_lines) else "<missing>"
+        if left_line == right_line:
+            continue
+        return (
+            f"  first differing row: {i + 1}\n"
+            f"  left:  {left_line[:500]}\n"
+            f"  right: {right_line[:500]}"
+        )
+    return "  outputs differ but no differing text row was found"
+
+
 def main() -> int:
-    if len(sys.argv) != 3:
+    scenario_set_name = "fast"
+    args = sys.argv[1:]
+    if "--scenario-set" in args:
+        idx = args.index("--scenario-set")
+        if idx + 1 >= len(args):
+            print("--scenario-set requires a value", file=sys.stderr)
+            return 2
+        scenario_set_name = args[idx + 1]
+        del args[idx:idx + 2]
+
+    if len(args) != 2:
         print(
-            "usage: check_replay_cross_build.py LEFT_SIGNAL_REPLAY RIGHT_SIGNAL_REPLAY",
+            "usage: check_replay_cross_build.py LEFT_SIGNAL_REPLAY RIGHT_SIGNAL_REPLAY "
+            "[--scenario-set fast|long|all]",
             file=sys.stderr,
         )
         return 2
 
-    left_binary = Path(sys.argv[1])
-    right_binary = Path(sys.argv[2])
+    scenarios = scenarios_for_name(scenario_set_name)
+    if scenarios is None:
+        print(f"unknown scenario set: {scenario_set_name}", file=sys.stderr)
+        return 2
+
+    left_binary = Path(args[0])
+    right_binary = Path(args[1])
     if not left_binary.exists():
         print(f"left signal_replay binary not found: {left_binary}", file=sys.stderr)
         return 1
@@ -62,17 +95,19 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="signal-replay-cross-build-") as tmp:
         tmpdir = Path(tmp)
-        for i, args in enumerate(SCENARIOS):
+        for i, scenario_args in enumerate(scenarios):
             left = tmpdir / f"scenario-{i}-left.jsonl"
             right = tmpdir / f"scenario-{i}-right.jsonl"
-            if not run_once(left_binary, args, left):
+            if not run_once(left_binary, scenario_args, left):
                 print(f"signal_replay scenario {i} failed on left binary", file=sys.stderr)
-                print(f"  args: {' '.join(args)}", file=sys.stderr)
+                print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
                 print(f"  left binary: {left_binary}", file=sys.stderr)
                 return 1
-            if not run_once(right_binary, args, right):
+            if not run_once(right_binary, scenario_args, right):
                 print(f"signal_replay scenario {i} failed on right binary", file=sys.stderr)
-                print(f"  args: {' '.join(args)}", file=sys.stderr)
+                print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
                 print(f"  right binary: {right_binary}", file=sys.stderr)
                 return 1
             left_bytes = left.read_bytes()
@@ -82,17 +117,22 @@ def main() -> int:
                     f"signal_replay scenario {i} differed across builds",
                     file=sys.stderr,
                 )
-                print(f"  args: {' '.join(args)}", file=sys.stderr)
+                print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
                 print(f"  left binary: {left_binary}", file=sys.stderr)
                 print(f"  right binary: {right_binary}", file=sys.stderr)
                 print(f"  left output: {left}", file=sys.stderr)
                 print(f"  right output: {right}", file=sys.stderr)
+                print(first_diff(left, right), file=sys.stderr)
                 return 1
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
                 return 1
 
-    print(f"signal replay cross-build check passed ({len(SCENARIOS)} scenarios)")
+    print(
+        f"signal replay cross-build check passed "
+        f"({len(scenarios)} {scenario_set_name} scenarios)"
+    )
     return 0
 
 

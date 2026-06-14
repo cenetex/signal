@@ -95,3 +95,13 @@ compare it against the native replay binary:
 ```sh
 make replay-native-wasm
 ```
+
+Long-horizon drift probes live in a separate scenario set so day-to-day checks
+can stay quick while #588 work still has a hard accumulation test:
+
+```sh
+make replay-native-wasm-long
+```
+
+The long set includes two 10,000-tick probes and one 100,000-tick probe. A
+cross-build mismatch prints the first differing JSON row plus both output paths.

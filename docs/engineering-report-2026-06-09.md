@@ -1,6 +1,6 @@
 # Signal — Engineering Deep-Dive Report
 
-**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 replay/build-flag, planned-outpost, station-jostle, player-ram, NPC-ram, and native↔WASM bit-hash replay slices · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
+**Date:** 2026-06-09 · **Updated:** 2026-06-13 · **Branch:** main @ `31197b1` for original audit; remediation notes through the 2026-06-13 replay/build-flag, planned-outpost, station-jostle, player-ram, NPC-ram, native↔WASM bit-hash replay, and long-horizon replay slices · **Scope:** full repo audit (sim, economy, client, protocol, persistence, infra, decentralization stack)
 
 ---
 
@@ -22,7 +22,7 @@ The original risk register drove a concentrated remediation pass. Landed fixes:
 - `2338c80`: station receipt chains verify on insert.
 - `5248298`: destroyed-rock tombstone capacity was raised.
 - `2963fce`: legacy-save claims are audited.
-- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code. The replay matrix now includes free flight, provenance buy/sell, pod tow/sell, mining→fracture, asteroid collision→death, planned-outpost scaffold materialization, station-jostle, player-player ram, and NPC-NPC ram coverage. Replay state/event hashes now use exact IEEE-754 float bits instead of milliunit rounding, and `make replay-native-wasm` builds an Emscripten/Node replay CLI and diffs it against the native replay binary.
+- `417c520`, `f7c1695`, `423cbe1`, `617f8b0`, `9c9a236`, plus the 2026-06-13 replay slices: deterministic math has been integrated into shared vector helpers plus tractor, laser, ship physics, asteroid physics, the shared flight controller, and the replay harness, with `scripts/check_deterministic_libm.py` preventing raw-transcendental regressions across all `server/`, `shared/`, and deterministic replay code. The replay matrix now includes free flight, provenance buy/sell, pod tow/sell, mining→fracture, asteroid collision→death, planned-outpost scaffold materialization, station-jostle, player-player ram, and NPC-NPC ram coverage. Replay state/event hashes now use exact IEEE-754 float bits instead of milliunit rounding. `make replay-native-wasm` builds an Emscripten/Node replay CLI and diffs it against the native replay binary, and `make replay-native-wasm-long` adds two 10k-tick probes plus one 100k-tick accumulation probe.
 
 Net effect: several items that were urgent on 2026-06-09 are now closed or materially reduced. Remaining high-leverage work is narrower: keep expanding native↔WASM replay scenarios over physics/economy surfaces, then address float currency/ledger balances and the larger float-state migration.
 
@@ -76,7 +76,7 @@ Lifting any cap requires protocol v2 (#285, "streaming entity pool"), which is a
 ### 3.2 Determinism status
 
 - Deterministic-by-construction: single `uint32_t` world RNG (`shared/rng.h`), belt seed anchoring procedural rocks, fracture seeds computed from quantized inputs (`sim_asteroid.c:565`), rock identity as `SHA256("rock-v1" || belt_seed || chunk || slot)`.
-- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. The default replay checks cover thirteen scenarios, including mining→fracture, fragment identity hash inputs, collision→death recovery, planned-outpost scaffold materialization with station construction/contract state hashed, station-pair jostle with transient jostle velocity hashed, player-player ram collision with all connected player bodies hashed, and NPC-NPC ram collision with paired authoritative NPC `ship_t` bodies hashed. Replay hashes are bit-exact for float fields, and the first native↔WASM replay gate exists as `make replay-native-wasm`. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
+- `shared/fixpoint.c` provides deterministic `sqrt/sin/cos/atan2/exp/pow` replacements and the build sets `-ffp-contract=off -fno-fast-math`. As of 2026-06-13, deterministic helpers are integrated through the authoritative `server/` and `shared/` sim surfaces covered by `make deterministic-libm`, and the `signal_replay` harness is included in the ratchet because it emits the cross-build evidence. The default replay checks cover thirteen scenarios, including mining→fracture, fragment identity hash inputs, collision→death recovery, planned-outpost scaffold materialization with station construction/contract state hashed, station-pair jostle with transient jostle velocity hashed, player-player ram collision with all connected player bodies hashed, and NPC-NPC ram collision with paired authoritative NPC `ship_t` bodies hashed. Replay hashes are bit-exact for float fields, and native↔WASM replay now has both a fast gate and a long gate that passes two 10k-tick probes plus one 100k-tick accumulation probe. **Sim state is still float throughout**, so #588 is not complete, but the project now has an incremental migration path with guardrails instead of a dormant fixed-point library.
 
 ---
 
@@ -202,7 +202,7 @@ CMake, Ninja-preferred; 8 targets (server, client, WASM client, test binary, 4 t
 Custom harness (`tests/c/test_harness.h`): 42 files / 69 registries / ~340 cases, modulo-sharding (`--shard=K/N`, default min(8, nproc)), `--filter`, quiet mode, soak gating (`RUN_SOAK` ≈ 75% of wall-clock, skipped by default; `-O2 -g` test builds cut the suite 180 s → 56 s). Cleanup attributes for fixtures. Seven bug-regression batches institutionalize "every fixed bug gets a test" (c_safety_policy.md). Banned-API scanner (`gets/strcpy/sprintf/atoi/rand/...`), cppcheck with vendor suppressions, CRAP scoring script.
 
 ### CI (3 workflows)
-- `deploy-arweave.yml` — push-to-main: blocking fast C suite, ASan/UBSan suite, browser smoke, banned-API scanner, deterministic-libm ratchet, native/native replay diff, native↔WASM replay diff, then Emscripten build → Irys upload to Arweave (content-hash cached) → manifest to Cloudflare KV.
+- `deploy-arweave.yml` — push-to-main: blocking fast C suite, ASan/UBSan suite, browser smoke, banned-API scanner, deterministic-libm ratchet, native/native replay diff, native↔WASM replay diff, native↔WASM long-horizon replay diff, then Emscripten build → Irys upload to Arweave (content-hash cached) → manifest to Cloudflare KV.
 - `release.yml` — on release: native binaries for Linux/macOS-arm64/Windows + server tarball.
 - `valgrind.yml` — nightly 8-shard memcheck (definite leaks only, non-soak only).
 
@@ -221,7 +221,7 @@ WASM + HTML live permanently on Arweave; `workers/arweave-proxy.js` on `signal.r
 
 Ordered by (impact × likelihood), with the cheapest mitigation named.
 
-1. **#588 float→fixed rewrite** — still the largest decentralization blocker. The raw-transcendental surface is now ratcheted across `server/`, `shared/`, and deterministic replay code, and native↔WASM bit-exact replay diffing now exists, but sim state remains float. Keep broadening replay scenarios and migrate high-value state/accounting fields to fixed or integer representation where cross-world consensus needs exact agreement.
+1. **#588 float→fixed rewrite** — still the largest decentralization blocker. The raw-transcendental surface is now ratcheted across `server/`, `shared/`, and deterministic replay code, and native↔WASM bit-exact replay diffing now survives the current 100k-tick accumulation probe, but sim state remains float. Keep broadening replay scenarios and migrate high-value state/accounting fields to fixed or integer representation where cross-world consensus needs exact agreement.
 2. **Float currency** — ledger balances are `float`; large balances lose integer precision past 2^24. `749ec0e` hardened ledger float handling, but the right substrate for station credits is fixed/integer accounting.
 3. **Monolith risk concentration** — `game_sim.c`, server `main.c`, `hud.c`/`world_draw.c`, and parts of `sim_ai.c` are still large change-conflict and review-risk centers. The #285-gating rationale is sound for `game_sim.c`, but `main.c`'s handler table and `sim_ai.c`'s frontier director are extractable now.
 4. **Legacy-save ownership semantics** — claim auditing now exists, but possession-of-keypair still is not the same as original ownership. Full resolution needs chain-log-backed claim history.
@@ -247,4 +247,4 @@ Worth stating explicitly, because most of it is non-obvious discipline:
 
 ---
 
-*Methodology: six parallel exploration passes (sim core, economy/provenance, client, protocol/persistence, build/CI/deploy, docs/on-chain) plus git-history analysis, reconciled against source. File:line references verified against main @ `31197b1`; 2026-06-13 remediation notes reconciled through the deterministic replay native↔WASM bit-hash slice.*
+*Methodology: six parallel exploration passes (sim core, economy/provenance, client, protocol/persistence, build/CI/deploy, docs/on-chain) plus git-history analysis, reconciled against source. File:line references verified against main @ `31197b1`; 2026-06-13 remediation notes reconciled through the deterministic replay native↔WASM long-horizon slice.*
