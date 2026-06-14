@@ -24,6 +24,7 @@
 #include "music.h"
 #include "identity.h"
 #include "trade_paging.h"
+#include "npc_radio.h"
 
 static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t out[32]) {
     memset(out, 0, 32);
@@ -70,6 +71,7 @@ typedef enum {
     STATION_VIEW_DOCK = 0,       /* ship panel: repair / refit / current ship state */
     STATION_VIEW_TRADE,          /* market: buy / sell cargo */
     STATION_VIEW_WORK,           /* dispatch: contracts and routing */
+    STATION_VIEW_HISTORY,        /* signed route/station history summaries */
     STATION_VIEW_YARD,           /* fabrication: kits + construction queue */
     STATION_VIEW_COUNT,
 } station_view_t;
@@ -128,6 +130,14 @@ station_view_t station_panel_next_visible(station_view_t current,
                                           const station_t *station,
                                           int direction);
 void station_panel_sample_current(input_intent_t *intent);
+
+enum {
+    HAIL_CONVERSATION_NPC_LIMIT = NPC_RADIO_HAIL_CONVERSATION_LIMIT,
+    HAIL_CONVERSATION_LINE_LEN = NPC_RADIO_LINE_LEN,
+    HAIL_CHOICE_PROMPT_LEN = NPC_RADIO_CHOICE_PROMPT_LEN,
+};
+
+typedef npc_radio_hail_entry_t hail_conversation_entry_t;
 
 /* TRADE picker row — single source of truth shared by the picker
  * renderer (station_ui.c) and the input handler (input.c). Both walk
@@ -446,6 +456,7 @@ typedef struct {
     uint16_t net_replay_count;
     input_replay_frame_t net_replay[NET_REPLAY_FRAME_CAP];
     station_view_t station_view;
+    uint8_t history_filter;
     /* TRADE tab pagination: [F] cycles through pages of 5 rows each.
      * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */
     uint8_t trade_page;
@@ -547,6 +558,8 @@ typedef struct {
     int inspect_module;      /* module info pane: module index */
     NetInspectSnapshot inspect_snapshot;
     float inspect_snapshot_timer;
+    uint8_t inspect_receipt_page; /* [TAB] pages local receipt-link rows while scanning */
+    bool inspect_receipt_browser;  /* focused receipt/relay view while scanning */
     /* True while the player has an active scan target. The release
      * edge (was_active=true → now_active=false) bumps the timer
      * once into the linger window; subsequent idle frames see this
@@ -591,6 +604,13 @@ typedef struct {
     float hail_ping_timer;       /* seconds since last ping, 0 = inactive */
     vec2  hail_ping_origin;      /* world-space origin (ship pos at press) */
     float hail_ping_range;       /* local scan visual/tag radius at press time */
+    char hail_player_line[HAIL_CONVERSATION_LINE_LEN];
+    char hail_choice_prompt[HAIL_CHOICE_PROMPT_LEN];
+    uint16_t hail_choice_prompt_len;
+    uint8_t hail_choice_applied_count;
+    uint32_t hail_choice_request_id;
+    uint8_t hail_conversation_count;
+    hail_conversation_entry_t hail_conversation[HAIL_CONVERSATION_NPC_LIMIT];
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;

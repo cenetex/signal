@@ -35,7 +35,7 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0/120.0`). Every tick:
 2. **Physics step** — ship movement, asteroid drift, fragment drag, collision resolution
 3. **Mining step** — beam targeting, asteroid fracture, fragment spawning
 4. **Production step** — station smelting, fabrication, scaffold manufacturing
-5. **AI step** — NPC miners/haulers, autopilot, frontier director planning
+5. **AI step** — neural worker job assignment, autopilot, frontier director planning
 6. **Signal step** — signal grid rebuild, boundary push, band classification
 7. **Event emission** — chain-log events for state mutations (smelt, trade, construction, death)
 8. **Snapshot broadcast** — world snapshots to connected clients (multiplayer only)
@@ -89,12 +89,22 @@ Deterministic keypair derivation from operator secret + world seed (seeded stati
 ### Frontier Director ([server/sim_ai.c](server/sim_ai.c))
 Virtual logistics system that auto-plans outposts, manages scaffold work budgets, and scales with virtual pilot count. Drives NPC expansion without consuming player or ship slots.
 
+### Gossip And Holographic Memory ([server/gossip.h](server/gossip.h), [shared/holographic_nn.h](shared/holographic_nn.h))
+Stations and ships exchange bounded situated knowledge through dock contact.
+Exact contracts remain authoritative in `contract_t`; gossip carries portable
+`contract_summary_t` snapshots and decaying `market_memory_t` pressure through
+`knowledge_view_t`. Holographic pilot memory can also bundle station/pilot
+experience so neural workers learn through the same physical routes that move
+cargo.
+
 ## Further Reading
 
 | Doc | Covers |
 |-----|--------|
 | [CLAUDE.md](CLAUDE.md) | AI-oriented build commands, save layout, working style |
 | [docs/cargo-architecture.md](docs/cargo-architecture.md) | Three-state cargo model (fragment, bulk, crate) |
+| [docs/holographic-gossip-network.md](docs/holographic-gossip-network.md) | Decaying market gossip and neural worker coordination |
+| [docs/holographic-gossip-gap-analysis.md](docs/holographic-gossip-gap-analysis.md) | Gap analysis from current docs/code to the gossip-network vision |
 | [docs/decentralization.md](docs/decentralization.md) | Federation architecture and trust model |
 | [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) | Bridge between federation and P2P designs |
 | [docs/operator-onboarding.md](docs/operator-onboarding.md) | Station operator guide |
@@ -103,4 +113,3 @@ Virtual logistics system that auto-plans outposts, manages scaffold work budgets
 | [docs/c_safety_policy.md](docs/c_safety_policy.md) | C safety rules and banned APIs |
 | [docs/anime-integration-plan.md](docs/anime-integration-plan.md) | Episode playback architecture |
 | [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) | Active improvement plan |
-

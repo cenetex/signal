@@ -20,11 +20,12 @@ float module_build_cost(module_type_t type) {
     return module_schema(type)->build_material;
 }
 
-/* A station sells scaffolds only if it has a SHIPYARD module AND an
- * installed example of the requested type (it "knows how to build" that). */
+/* A station sells scaffolds only if it has installed examples of the
+ * requested type (it "knows how to build" that). One active shipyard can
+ * bootstrap ship construction and more yard capacity; general station-module
+ * scaffolds require two active shipyards. */
 bool station_sells_scaffold(const station_t *st, module_type_t type) {
-    if (!station_has_module(st, MODULE_SHIPYARD)) return false;
-    return station_has_module(st, type);
+    return station_can_order_scaffold(st, type);
 }
 
 /* ------------------------------------------------------------------ */
@@ -284,7 +285,7 @@ void step_module_activation(world_t *w, float dt) {
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
                     spawn_npc(w, s, NPC_ROLE_HAULER);
                 if (st->modules[i].type == MODULE_SHIPYARD)
-                    spawn_npc(w, s, NPC_ROLE_TOW);
+                    spawn_npc(w, s, NPC_ROLE_MINER);
                 /* Close any construction supply contracts that targeted
                  * this module's build material, unless another scaffold
                  * at this station still needs it. */

@@ -102,7 +102,9 @@ On module activation:
 - `scaffold` flips off
 - station services are rebuilt
 - signal is recalculated if needed
-- production modules can spawn NPC miners, haulers, or tow drones
+- production modules can seed neural worker pools that specialize from local
+  station pressure into mining, hauling, delivery-proof, repair, scout, or
+  scaffold-tow job offers
 
 ## Implemented Data Model
 
@@ -144,7 +146,7 @@ Planning is server-side and faction-shared:
 2. Dock at Kepler or Helios, open SHIPYARD, and order any unlocked scaffold the
    yard can fabricate. If you already made a plan, order a type that fits it.
 3. Wait for the scaffold to eject as a loose object near the station.
-4. Toggle the tractor with `R`, tow the scaffold, and press `E` to place it.
+4. Hold `Space` to tractor the scaffold, tow it, and press `E` to place it.
 5. For a new outpost, deliver frames until the station activates.
 6. For a placed module, let station inventory feed the supply phase, then wait
    out the 10-second commissioning timer.

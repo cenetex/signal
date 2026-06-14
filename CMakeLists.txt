@@ -91,6 +91,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_autopilot.c
     server/signal_brain.c
     server/signal_contract_brain.c
+    server/signal_npc_worker_brain.c
     server/sim_flight.c
     server/sim_nav.c
     server/sim_save.c
@@ -130,6 +131,7 @@ set(SIGNAL_SIM_HELPERS
     shared/trade_paging.c
     shared/settlement_engine.c
     shared/holographic_nn.c
+    shared/npc_radio.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -254,7 +256,10 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_cargo_lineage.c
         tests/c/test_trade_paging.c
         tests/c/test_inspect_anim.c
+        tests/c/test_inspect_labels.c
+        tests/c/test_route_history_labels.c
         tests/c/test_gossip.c
+        tests/c/test_npc_radio.c
         client/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
@@ -473,6 +478,12 @@ if(EMSCRIPTEN)
         "'_main'"
         "'__saudio_emsc_pull'"
         "'_get_signal_strength'"
+        "'_signal_hail_llm_apply_response'"
+        "'_signal_hail_llm_request_id'"
+        "'_signal_hail_llm_prompt_len'"
+        "'_signal_hail_llm_prompt'"
+        "'_signal_hail_llm_debug_seed_nearby'"
+        "'_signal_hail_llm_debug_trigger_hail'"
         "'_get_signal_visual_saturation'"
         "'_get_signal_visual_base_saturation'"
         "'_get_signal_visual_cue_saturation'"
@@ -507,6 +518,7 @@ if(EMSCRIPTEN)
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
+        "'_neural_singleplayer_init'"
         "'_signal_mobile_control_flags'"
         "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
@@ -550,10 +562,51 @@ if(EMSCRIPTEN)
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-touch-controls.js
         VERBATIM
     )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-llm.js
+                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-llm.js
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-gguf-worker.js
+                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-gguf-worker.js
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-wllama-runtime.js
+                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-wllama-runtime.js
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                ${CMAKE_CURRENT_BINARY_DIR}/wllama
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm
+                ${CMAKE_CURRENT_BINARY_DIR}/wllama/esm
+        COMMAND ${CMAKE_COMMAND} -E touch
+                ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm/index.js
+                ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm/wasm/wllama.wasm
+        VERBATIM
+    )
     add_custom_target(signal_web_assets
         DEPENDS
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
+            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
+            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
+            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
+            ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
     )
     add_dependencies(signal signal_web_assets)
 elseif(APPLE)

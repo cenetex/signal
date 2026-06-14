@@ -7,6 +7,7 @@
 #include "net.h"
 #include "net_sync.h"
 #include "inspect_anim.h"
+#include "inspect_labels.h"
 #include "onboarding.h"
 #include "world_draw.h"
 #include "avatar.h"
@@ -16,6 +17,8 @@
 #include "signal_model.h"
 #include "palette.h"
 #include "contract_fit.h"
+#include "npc_identity.h"
+#include "ui_clarity.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -796,6 +799,227 @@ static const char *hud_grade_short_label(uint8_t grade) {
     return mining_grade_label((mining_grade_t)grade);
 }
 
+static bool hash32_is_zero(const uint8_t hash[32]);
+static void hud_hash_detail_label(const uint8_t hash[32],
+                                  char *out,
+                                  size_t cap);
+
+static const char *hud_inspect_diag_label(uint8_t kind) {
+    switch ((inspect_diag_kind_t)kind) {
+    case INSPECT_DIAG_MARKET_DEMAND:      return "memory demand";
+    case INSPECT_DIAG_MARKET_SUPPLY:      return "memory supply";
+    case INSPECT_DIAG_ROUTE_DANGER:       return "route danger";
+    case INSPECT_DIAG_ROUTE_SUCCESS:      return "route success";
+    case INSPECT_DIAG_DELIVERY_RECEIPT:   return "delivery proof";
+    case INSPECT_DIAG_RECEIPT_LINK:       return "receipt link";
+    case INSPECT_DIAG_ROUTE_REPUTATION:   return "route trust";
+    case INSPECT_DIAG_ROUTE_RISK:         return "route risk";
+    case INSPECT_DIAG_STATION_TRUST:      return "station trust";
+    case INSPECT_DIAG_STATION_RISK:       return "station risk";
+    case INSPECT_DIAG_JOB_MINE:           return "job mine";
+    case INSPECT_DIAG_JOB_HAUL:           return "job haul";
+    case INSPECT_DIAG_JOB_TOW:            return "job tow";
+    case INSPECT_DIAG_JOB_DELIVER_PROOF:  return "job proof";
+    case INSPECT_DIAG_JOB_SCOUT:          return "job scout";
+    case INSPECT_DIAG_JOB_REPAIR:         return "job repair";
+    case INSPECT_DIAG_NONE:
+    default:                              return "memory";
+    }
+}
+
+static bool hud_inspect_diag_is_job(uint8_t kind) {
+    switch ((inspect_diag_kind_t)kind) {
+    case INSPECT_DIAG_JOB_MINE:
+    case INSPECT_DIAG_JOB_HAUL:
+    case INSPECT_DIAG_JOB_TOW:
+    case INSPECT_DIAG_JOB_DELIVER_PROOF:
+    case INSPECT_DIAG_JOB_SCOUT:
+    case INSPECT_DIAG_JOB_REPAIR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static const char *hud_job_factor_name(int idx) {
+    switch (idx) {
+    case INSPECT_JOB_FACTOR_VALUE:      return "payout";
+    case INSPECT_JOB_FACTOR_DEMAND:     return "demand";
+    case INSPECT_JOB_FACTOR_SUPPLY:     return "supply";
+    case INSPECT_JOB_FACTOR_ROUTE:      return "route";
+    case INSPECT_JOB_FACTOR_FRESHNESS:  return "fresh";
+    case INSPECT_JOB_FACTOR_CAPABILITY: return "hull";
+    case INSPECT_JOB_FACTOR_PROOF:      return "proof";
+    case INSPECT_JOB_FACTOR_HOLOGRAM:   return "hologram";
+    default:                            return "signal";
+    }
+}
+
+static const char *hud_job_base_reason(uint8_t reason) {
+    switch ((inspect_job_reason_t)reason) {
+    case INSPECT_JOB_REASON_LOCAL_CONTRACT:     return "known contract";
+    case INSPECT_JOB_REASON_MARKET_DEMAND:      return "heard demand";
+    case INSPECT_JOB_REASON_REMOTE_SUPPLY:      return "remote supply";
+    case INSPECT_JOB_REASON_RECEIPT_PROOF:      return "receipt proof";
+    case INSPECT_JOB_REASON_STATION_TRUST:      return "station trust";
+    case INSPECT_JOB_REASON_STATION_RISK:       return "risk adjusted";
+    case INSPECT_JOB_REASON_HNN_RESONANCE:      return "hologram match";
+    case INSPECT_JOB_REASON_ORE_PRESSURE:       return "ore pressure";
+    case INSPECT_JOB_REASON_CONSTRUCTION_PLAN:  return "build plan";
+    case INSPECT_JOB_REASON_DELIVERY_PROOF:     return "delivery proof";
+    case INSPECT_JOB_REASON_DISTRESS_SIGNAL:    return "distress signal";
+    case INSPECT_JOB_REASON_REPAIR_NEED:        return "repair need";
+    case INSPECT_JOB_REASON_ROUTE_MEMORY:       return "route memory";
+    case INSPECT_JOB_REASON_ROUTE_RISK:         return "route risk";
+    case INSPECT_JOB_REASON_GOSSIP_COURIER:     return "gossip courier";
+    case INSPECT_JOB_REASON_NONE:
+    default:                                    return NULL;
+    }
+}
+
+static void hud_job_proof_prefix(const NetInspectSnapshotRow *row,
+                                 char *out,
+                                 size_t cap) {
+    inspect_label_job_proof_prefix(row, out, cap);
+}
+
+static bool hud_job_source_chain_label(const NetInspectSnapshotRow *row,
+                                       char *out,
+                                       size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!row) return false;
+
+    uint8_t memory_kind = row->cargo_pub[INSPECT_JOB_META_MEMORY_KIND];
+    uint8_t station = row->cargo_pub[INSPECT_JOB_META_SOURCE_STATION];
+    uint8_t hops = row->cargo_pub[INSPECT_JOB_META_HOPS];
+    uint8_t age = row->cargo_pub[INSPECT_JOB_META_AGE];
+    uint8_t proof_kind = row->cargo_pub[INSPECT_JOB_META_PROOF_KIND];
+    if (memory_kind == (uint8_t)MARKET_MEMORY_NONE &&
+        proof_kind == (uint8_t)INSPECT_JOB_PROOF_NONE) {
+        return false;
+    }
+
+    const char *station_name = (station < MAX_STATIONS)
+        ? g.world.stations[station].name : "?";
+    (void)memory_kind;
+    (void)hops;
+    (void)age;
+    (void)proof_kind;
+    return inspect_label_job_source_chain(row, station_name, out, cap);
+}
+
+static bool hud_market_source_chain_label(const NetInspectSnapshotRow *row,
+                                          char *out,
+                                          size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!row) return false;
+
+    return inspect_label_market_source_chain(row, out, cap);
+}
+
+static void hud_job_reason_label(const NetInspectSnapshotRow *row,
+                                 char *out,
+                                 size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!row) return;
+
+    const char *base = hud_job_base_reason(row->cargo_pub[INSPECT_JOB_META_REASON]);
+    if (base) {
+        char proof[12];
+        hud_job_proof_prefix(row, proof, sizeof(proof));
+        snprintf(out, cap, "why %s%s%s", base,
+                 proof[0] ? " " : "", proof);
+        return;
+    }
+
+    int best_a = -1;
+    int best_b = -1;
+    uint8_t score_a = 0;
+    uint8_t score_b = 0;
+    for (int i = 0; i < INSPECT_JOB_FACTOR_COUNT; i++) {
+        uint8_t score = row->cargo_pub[i];
+        if (score > score_a) {
+            best_b = best_a;
+            score_b = score_a;
+            best_a = i;
+            score_a = score;
+        } else if (score > score_b) {
+            best_b = i;
+            score_b = score;
+        }
+    }
+
+    if (best_a < 0 || score_a == 0) {
+        snprintf(out, cap, "why pending evidence");
+    } else if (best_b >= 0 && score_b > 32) {
+        snprintf(out, cap, "why %s + %s",
+                 hud_job_factor_name(best_a),
+                 hud_job_factor_name(best_b));
+    } else {
+        snprintf(out, cap, "why %s", hud_job_factor_name(best_a));
+    }
+}
+
+static ui_clarity_t hud_job_clarity(const NetInspectSnapshotRow *row) {
+    const uint8_t HI[3] = { PAL_CONTRACT_READY };
+    const uint8_t LO[3] = { PAL_TEXT_FADED };
+    if (!row) return ui_clarity_from_evidence(210, 190, 0, HI, LO);
+    uint8_t best = row->cargo_pub[0];
+    for (int i = 1; i < INSPECT_JOB_FACTOR_COUNT; i++) {
+        if (row->cargo_pub[i] > best) best = row->cargo_pub[i];
+    }
+    uint8_t confidence = row->grade ? row->grade : best;
+    uint8_t salience = best ? best : 160;
+    uint8_t hops = row->cargo_pub[INSPECT_JOB_META_HOPS];
+    return ui_clarity_from_evidence(confidence, salience, hops, HI, LO);
+}
+
+static void hud_job_top_signal_label(const NetInspectSnapshotRow *row,
+                                     char *out,
+                                     size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!row) return;
+
+    int best_a = -1;
+    int best_b = -1;
+    uint8_t score_a = 0;
+    uint8_t score_b = 0;
+    for (int i = 0; i < INSPECT_JOB_FACTOR_COUNT; i++) {
+        uint8_t score = row->cargo_pub[i];
+        if (score > score_a) {
+            best_b = best_a;
+            score_b = score_a;
+            best_a = i;
+            score_a = score;
+        } else if (score > score_b) {
+            best_b = i;
+            score_b = score;
+        }
+    }
+    if (best_a < 0 || score_a == 0) {
+        snprintf(out, cap, "signals pending");
+    } else if (best_b >= 0 && score_b > 32) {
+        snprintf(out, cap, "signals %s + %s",
+                 hud_job_factor_name(best_a),
+                 hud_job_factor_name(best_b));
+    } else {
+        snprintf(out, cap, "signals %s", hud_job_factor_name(best_a));
+    }
+}
+
+static const char *hud_contract_action_short(uint8_t action) {
+    switch ((contract_action_t)action) {
+    case CONTRACT_TRACTOR:  return "haul";
+    case CONTRACT_FRACTURE: return "fracture";
+    case CONTRACT_DELIVERY: return "deliver";
+    default:                return "act";
+    }
+}
+
 static bool hash32_is_zero(const uint8_t hash[32]) {
     for (int i = 0; i < 32; i++) {
         if (hash[i] != 0) return false;
@@ -809,6 +1033,21 @@ static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
         return;
     }
     mining_callsign_from_pubkey(hash, out);
+}
+
+static void hud_hash_detail_label(const uint8_t hash[32],
+                                  char *out,
+                                  size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (hash32_is_zero(hash)) return;
+    if (cap < 17) {
+        hud_hash_short_label(hash, out);
+        return;
+    }
+    snprintf(out, cap, "%02x%02x%02x%02x%02x%02x%02x%02x",
+             hash[0], hash[1], hash[2], hash[3],
+             hash[4], hash[5], hash[6], hash[7]);
 }
 
 static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
@@ -890,11 +1129,60 @@ static uint32_t hud_cargo_prefix_lock(const char *cargo) {
 /* hud_row_signature lives in inspect_anim.c so signal_test can link
  * it without sokol. See inspect_anim.h. */
 
-/* Find a station by pubkey; returns the human name if the pubkey
- * matches a live station, else writes the 7-char hash short label.
- * out cap must be >= 13 to hold the longest station name + null. */
-static void hud_station_name_for_pubkey(const uint8_t pub[32],
-                                        char *out, size_t cap) {
+static void hud_callsign_label(const char callsign[8], char *out, size_t cap)
+{
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!callsign) return;
+    size_t n = 0;
+    while (n < 8 && callsign[n] != '\0') n++;
+    if (n == 0) return;
+    if (n >= cap) n = cap - 1;
+    memcpy(out, callsign, n);
+    out[n] = '\0';
+}
+
+static const char *hud_npc_custody_role_label(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return "MINER";
+    case NPC_ROLE_HAULER: return "HAULER";
+    case NPC_ROLE_TOW:    return "TOW";
+    default:              return "NPC";
+    }
+}
+
+static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!npc) {
+        snprintf(out, cap, "NPC --");
+        return;
+    }
+    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
+        npc->session_token[2] == 'C') {
+        snprintf(out, cap, "%s N%02u", hud_npc_custody_role_label(npc->role),
+                 (unsigned)npc->session_token[5]);
+    } else {
+        snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
+    }
+}
+
+static void hud_npc_custody_pubkey(const npc_ship_t *npc,
+                                   int npc_slot,
+                                   uint8_t out[32]) {
+    uint8_t role = npc ? (uint8_t)npc->role : 0;
+    uint8_t home = npc ? (uint8_t)npc->home_station : 0xFFu;
+    npc_custody_pubkey_from_fields(npc ? npc->session_token : NULL,
+                                   npc_slot, role, home, out);
+}
+
+/* Resolve a 32-byte receipt identity for player-facing provenance. Stations
+ * sign receipt links, so they get first claim. Player and worker identities
+ * are local labels only: they make the provenance readable without changing
+ * the station-signed receipt authority. Unknown identities stay as short hash
+ * labels rather than pretending we know more than we do. */
+static void hud_identity_name_for_pubkey(const uint8_t pub[32],
+                                         char *out, size_t cap) {
     if (cap == 0) return;
     if (!hash32_is_zero(pub)) {
         for (int i = 0; i < MAX_STATIONS; i++) {
@@ -905,10 +1193,45 @@ static void hud_station_name_for_pubkey(const uint8_t pub[32],
                 return;
             }
         }
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            const server_player_t *sp = &g.world.players[i];
+            if (!sp->pubkey_set) continue;
+            if (memcmp(sp->pubkey, pub, 32) != 0) continue;
+            char callsign[12];
+            hud_callsign_label(sp->callsign, callsign, sizeof(callsign));
+            if (callsign[0])
+                snprintf(out, cap, "%s", callsign);
+            else
+                snprintf(out, cap, "pilot %d", i);
+            return;
+        }
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            const npc_ship_t *npc = &g.world.npc_ships[i];
+            if (!npc->active) continue;
+            bool has_token = false;
+            for (int b = 0; b < 8; b++) {
+                if (npc->session_token[b] != 0) {
+                    has_token = true;
+                    break;
+                }
+            }
+            if (!has_token) continue;
+            uint8_t custody[32];
+            hud_npc_custody_pubkey(npc, i, custody);
+            if (memcmp(custody, pub, 32) != 0) continue;
+            hud_npc_label(npc, i, out, cap);
+            return;
+        }
     }
     char tmp[8];
     hud_hash_short_label(pub, tmp);
     snprintf(out, cap, "%s", tmp);
+}
+
+/* Compatibility wrapper for existing provenance callsites. */
+static void hud_station_name_for_pubkey(const uint8_t pub[32],
+                                        char *out, size_t cap) {
+    hud_identity_name_for_pubkey(pub, out, cap);
 }
 
 static const contract_t *hud_tracked_tractor_contract(void) {
@@ -920,6 +1243,231 @@ static const contract_t *hud_tracked_tractor_contract(void) {
     if (!contract->active || contract->action != CONTRACT_TRACTOR)
         return NULL;
     return contract;
+}
+
+static bool hud_receipt_link_line_named(const NetInspectSnapshotRow *link,
+                                        char *out,
+                                        size_t cap)
+{
+    if (!link || !out || cap == 0) return false;
+    char author[24];
+    char recipient[24];
+    hud_identity_name_for_pubkey(link->origin_station, author, sizeof(author));
+    hud_identity_name_for_pubkey(link->latest_station, recipient, sizeof(recipient));
+    return inspect_label_receipt_link_line_named(link, author, recipient, out, cap);
+}
+
+static int hud_receipt_link_lines_for_cause_page(
+    const NetInspectSnapshot *snap,
+    const InspectJobCause *cause,
+    int skip_lines,
+    char out[][64],
+    int max_lines)
+{
+    if (!snap || !cause || !cause->receipt || !out || max_lines <= 0)
+        return 0;
+    for (int i = 0; i < max_lines; i++)
+        out[i][0] = '\0';
+    if (skip_lines < 0) skip_lines = 0;
+
+    bool receipt_seen = false;
+    int count = 0;
+    int seen_links = 0;
+    for (int i = 0; i < snap->row_count && i < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        const NetInspectSnapshotRow *row = &snap->rows[i];
+        if (row == cause->receipt) {
+            receipt_seen = true;
+            continue;
+        }
+        if (!receipt_seen) continue;
+        if (!(row->flags & INSPECT_ROW_DIAGNOSTIC) ||
+            row->commodity != (uint8_t)INSPECT_DIAG_RECEIPT_LINK) {
+            continue;
+        }
+        if (seen_links++ < skip_lines) continue;
+        if (hud_receipt_link_line_named(row, out[count], 64))
+            count++;
+        if (count >= max_lines) break;
+    }
+    return count;
+}
+
+static bool hud_inspect_ticker_row_label(const NetInspectSnapshot *snap,
+                                         const NetInspectSnapshotRow *row,
+                                         char *out,
+                                         size_t cap,
+                                         ui_clarity_t *clarity_out)
+{
+    if (!snap || !row || !out || cap == 0) return false;
+    out[0] = '\0';
+    ui_clarity_t clarity = ui_clarity_from_evidence(
+        row->grade ? row->grade : 180,
+        row->chain_len ? row->chain_len : 160,
+        0,
+        (const uint8_t[3]){ PAL_CONTRACT_READY },
+        (const uint8_t[3]){ PAL_TEXT_FADED });
+
+    if (row->flags & INSPECT_ROW_DIAGNOSTIC) {
+        if (row->commodity == (uint8_t)INSPECT_DIAG_RECEIPT_LINK) {
+            char head[16];
+            hud_hash_short_label(row->receipt_head, head);
+            snprintf(out, cap, "receipt link  head %s  ev %llu",
+                     head[0] ? head : "--------",
+                     (unsigned long long)row->event_id);
+            if (clarity_out) *clarity_out = clarity;
+            return true;
+        }
+
+        uint8_t station_a = (uint8_t)(row->event_id & 0xFFu);
+        uint8_t station_b = (uint8_t)((row->event_id >> 8) & 0xFFu);
+        uint8_t action = (uint8_t)((row->event_id >> 16) & 0xFFu);
+        uint8_t commodity = (uint8_t)((row->event_id >> 24) & 0xFFu);
+        const char *src = (station_a < MAX_STATIONS)
+            ? g.world.stations[station_a].name : "?";
+        const char *dst = (station_b < MAX_STATIONS)
+            ? g.world.stations[station_b].name : "?";
+        const char *comm = (commodity < COMMODITY_COUNT)
+            ? commodity_code((commodity_t)commodity) : "GEN";
+        bool job_row = hud_inspect_diag_is_job(row->commodity);
+        if (job_row) {
+            char reason[48];
+            hud_job_reason_label(row, reason, sizeof(reason));
+            clarity = hud_job_clarity(row);
+            snprintf(out, cap, "%s %s  %.10s > %.10s  %s",
+                     hud_inspect_diag_label(row->commodity),
+                     comm, src, dst, reason[0] ? reason : "signals pending");
+        } else {
+            snprintf(out, cap, "%s %s  %s %.12s",
+                     hud_inspect_diag_label(row->commodity),
+                     comm,
+                     hud_contract_action_short(action),
+                     src);
+        }
+        if (clarity_out) *clarity_out = clarity;
+        return true;
+    }
+
+    const char *comm = (row->commodity < COMMODITY_COUNT)
+        ? commodity_code((commodity_t)row->commodity) : "cargo";
+    unsigned qty = row->quantity > 0 ? row->quantity : 1;
+    char cargo[12];
+    hud_cargo_label(row->cargo_pub, cargo);
+    if (cargo[0]) {
+        snprintf(out, cap, "cargo %s %s x%u  %s",
+                 hud_grade_short_label(row->grade), comm, qty, cargo);
+    } else {
+        snprintf(out, cap, "cargo %s %s x%u",
+                 hud_grade_short_label(row->grade), comm, qty);
+    }
+    if (clarity_out) *clarity_out = clarity;
+    return true;
+}
+
+static int hud_inspect_ticker_pick_row(const NetInspectSnapshot *snap,
+                                       int cycle)
+{
+    if (!snap || snap->row_count <= 0) return -1;
+    int diag_count = 0;
+    for (int i = 0; i < snap->row_count && i < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        if (snap->rows[i].flags & INSPECT_ROW_DIAGNOSTIC)
+            diag_count++;
+    }
+    int eligible = diag_count > 0 ? diag_count : snap->row_count;
+    if (eligible <= 0) return -1;
+    int wanted = cycle % eligible;
+    if (wanted < 0) wanted += eligible;
+    for (int i = 0; i < snap->row_count && i < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        bool use = diag_count > 0
+            ? ((snap->rows[i].flags & INSPECT_ROW_DIAGNOSTIC) != 0)
+            : true;
+        if (!use) continue;
+        if (wanted-- == 0) return i;
+    }
+    return -1;
+}
+
+static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
+                                       int target_idx,
+                                       float screen_w,
+                                       float screen_h)
+{
+    if (!snap || target_idx < 0 || target_idx >= MAX_NPC_SHIPS) return;
+    const npc_ship_t *npc = &g.world.npc_ships[target_idx];
+    if (!npc->active) return;
+
+    float cell = 8.0f;
+    float px = fmaxf(14.0f, screen_w - 340.0f);
+    float py = (screen_h < 520.0f) ? 70.0f : 86.0f;
+    float bg_x = fmaxf(8.0f, px - 10.0f);
+    float bg_y = fmaxf(8.0f, py - 9.0f);
+    float bg_w = fminf(326.0f, screen_w - bg_x - 12.0f);
+    float bg_h = 76.0f;
+
+    int cycle = (int)floorf(g.world.time / 0.85f);
+    int row_idx = hud_inspect_ticker_pick_row(snap, cycle);
+    char memory[96];
+    ui_clarity_t clarity = hud_job_clarity(NULL);
+    if (row_idx >= 0) {
+        hud_inspect_ticker_row_label(snap, &snap->rows[row_idx],
+                                     memory, sizeof(memory), &clarity);
+    } else {
+        snprintf(memory, sizeof(memory), "memory quiet  awaiting dock gossip");
+        clarity = ui_clarity_from_evidence(
+            150, 120, 1,
+            (const uint8_t[3]){ PAL_CONTRACT_READY },
+            (const uint8_t[3]){ PAL_TEXT_FADED });
+    }
+
+    char memory_seen[96];
+    ui_clarity_degrade_text(memory, clarity.clarity,
+                            (uint32_t)(target_idx * 2654435761u + cycle),
+                            memory_seen, sizeof(memory_seen));
+
+    static const char stream_chars[] = "|/-\\:*+.";
+    char stream = stream_chars[((int)(g.world.time * 14.0f) + target_idx) %
+                               ((int)sizeof(stream_chars) - 1)];
+
+    hud_draw_alpha_rect(bg_x, bg_y, bg_w, bg_h,
+                        0.02f, 0.015f, 0.025f, 0.54f);
+    hud_draw_alpha_rect(bg_x, bg_y, 3.0f, bg_h,
+                        0.18f, 0.55f, 0.75f, 0.38f);
+
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+
+    char npc_name[24];
+    char npc_seen[24];
+    hud_npc_label(npc, target_idx, npc_name, sizeof(npc_name));
+    ui_clarity_degrade_text(npc_name, clarity.clarity,
+                            (uint32_t)(target_idx * 977u + snap->role),
+                            npc_seen, sizeof(npc_seen));
+
+    sdtx_pos(px / cell, py / cell);
+    sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
+    sdtx_printf("[ CONTACT %s ]", npc_seen);
+
+    sdtx_pos(px / cell, (py + 14.0f) / cell);
+    sdtx_color3b(PAL_INSPECT_STATION);
+    const char *home = (snap->home_station < MAX_STATIONS)
+        ? g.world.stations[snap->home_station].name : "?";
+    const char *dest = (snap->dest_station < MAX_STATIONS)
+        ? g.world.stations[snap->dest_station].name : "?";
+    sdtx_printf("%s %s  %.10s > %.10s",
+                hud_npc_role_label(snap->role),
+                hud_npc_state_label(snap->state),
+                home, dest);
+
+    sdtx_pos(px / cell, (py + 32.0f) / cell);
+    sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
+    sdtx_printf("%c MEMORY", stream);
+
+    sdtx_pos(px / cell, (py + 46.0f) / cell);
+    sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
+    sdtx_puts(memory_seen);
+
+    sdtx_pos(px / cell, (py + 60.0f) / cell);
+    sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
+    sdtx_printf("%s %s", clarity.meter, clarity.word);
 }
 
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
@@ -937,6 +1485,8 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (target_is_npc) {
         if (target_idx < 0 || target_idx >= MAX_NPC_SHIPS) return;
         if (!g.world.npc_ships[target_idx].active) return;
+        hud_draw_npc_memory_ticker(snap, target_idx, screen_w, screen_h);
+        return;
     } else {
         if (target_idx < 0 || target_idx >= MAX_PLAYERS) return;
         const NetPlayerState *np = hud_net_player_state(target_idx);
@@ -952,11 +1502,91 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     const contract_t *tracked_contract = hud_tracked_tractor_contract();
     int max_rows = (screen_h < 520.0f) ? 5 : 8;
     if (tracked_contract && max_rows > 1) max_rows--;
+    InspectJobCause cause;
+    char detail_line1[64];
+    char detail_line2[64];
+    char detail_line3[64];
+    char detail_line4[64];
+    char detail_line5[64];
+    char detail_line6[64];
+    char link_lines[8][64];
+    int link_line_count = 0;
+    char link_page_line[64];
+    bool has_link_page_line = false;
+    bool has_detail = false;
+    bool receipt_browser = g.inspect_receipt_browser;
+    const NetInspectSnapshotRow *contact_job_row = NULL;
+    int receipt_links_per_page = receipt_browser
+        ? ((screen_h < 560.0f) ? 5 : 8)
+        : 3;
+    if (target_is_npc && inspect_label_find_job_cause(snap, &cause)) {
+        contact_job_row = cause.job;
+        const char *cause_station = "?";
+        uint8_t station_idx = cause.job
+            ? cause.job->cargo_pub[INSPECT_JOB_META_SOURCE_STATION]
+            : 0xffu;
+        if (station_idx < MAX_STATIONS)
+            cause_station = g.world.stations[station_idx].name;
+        has_detail = inspect_label_job_detail_lines(
+            &cause, cause_station,
+            detail_line1, sizeof(detail_line1),
+            detail_line2, sizeof(detail_line2),
+            detail_line3, sizeof(detail_line3),
+            detail_line4, sizeof(detail_line4),
+            detail_line5, sizeof(detail_line5),
+            detail_line6, sizeof(detail_line6));
+        if (has_detail) {
+            int link_total = cause.receipt_link_count;
+            if (link_total > 0) {
+                int page_count =
+                    (link_total + receipt_links_per_page - 1) /
+                    receipt_links_per_page;
+                if (page_count < 1) page_count = 1;
+                if (g.inspect_receipt_page >= (uint8_t)page_count)
+                    g.inspect_receipt_page =
+                        (uint8_t)(g.inspect_receipt_page % (uint8_t)page_count);
+                int page = (int)g.inspect_receipt_page;
+                int start = page * receipt_links_per_page;
+                link_line_count = hud_receipt_link_lines_for_cause_page(
+                    snap, &cause, start, link_lines,
+                    receipt_links_per_page);
+                if (receipt_browser || page_count > 1) {
+                    int end = start + link_line_count;
+                    if (end > link_total) end = link_total;
+                    if (page_count > 1) {
+                        inspect_label_receipt_browser_footer(
+                            link_total, start, end - start, true,
+                            link_page_line, sizeof(link_page_line));
+                    } else if (receipt_browser) {
+                        inspect_label_receipt_browser_footer(
+                            link_total, start, end - start, false,
+                            link_page_line, sizeof(link_page_line));
+                    }
+                    has_link_page_line = true;
+                }
+            } else if (receipt_browser) {
+                inspect_label_receipt_browser_footer(
+                    0, 0, 0, false, link_page_line, sizeof(link_page_line));
+                has_link_page_line = true;
+            }
+        }
+    }
+    if (!has_detail)
+        receipt_browser = false;
+    if (has_detail && max_rows > 3)
+        max_rows -= 2;
+    if (has_link_page_line && max_rows > 2)
+        max_rows--;
+    for (int i = 0; i < link_line_count && max_rows > 2; i++)
+        max_rows--;
+    if (receipt_browser)
+        max_rows = 0;
     int rows = snap->row_count;
     if (rows > max_rows) rows = max_rows;
     unsigned visible_units = 0;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
+        if (row->flags & INSPECT_ROW_DIAGNOSTIC) continue;
         visible_units += row->quantity > 0 ? row->quantity : 1;
     }
     bool has_more_units = snap->manifest_count > visible_units;
@@ -964,19 +1594,38 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         float bg_x = fmaxf(8.0f, px - 12.0f);
         float bg_y = fmaxf(8.0f, py - 10.0f);
         float bg_w = fmaxf(340.0f, screen_w - bg_x - 16.0f);
-        float row_stride = tracked_contract ? 40.0f : 28.0f;
-        float bg_h = (snap->manifest_count == 0)
+        float row_stride = 64.0f;
+        float bg_h = (snap->manifest_count == 0 && rows == 0)
             ? 72.0f
             : 58.0f + (float)rows * row_stride + (has_more_units ? 22.0f : 0.0f);
+        if (has_detail) {
+            bg_h += 94.0f + (float)link_line_count * 12.0f +
+                    (has_link_page_line ? 12.0f : 0.0f);
+            if (receipt_browser)
+                bg_h += 18.0f;
+        }
         bg_h = fminf(bg_h, screen_h - bg_y - 16.0f);
         hud_draw_alpha_rect(bg_x, bg_y, bg_w, bg_h, 0.02f, 0.015f, 0.025f, 0.58f);
         hud_draw_alpha_rect(bg_x, bg_y, 3.0f, bg_h, 0.18f, 0.55f, 0.75f, 0.34f);
     }
 
     sdtx_pos(px / cell, py / cell);
-    sdtx_color3b(PAL_ORE_AMBER);
+    ui_clarity_t contact_clarity = target_is_npc
+        ? hud_job_clarity(contact_job_row)
+        : ui_clarity_from_evidence(235, 235, 0,
+                                   (const uint8_t[3]){ PAL_ORE_AMBER },
+                                   (const uint8_t[3]){ PAL_TEXT_FADED });
+    sdtx_color3b(contact_clarity.fg[0], contact_clarity.fg[1],
+                 contact_clarity.fg[2]);
     if (target_is_npc) {
-        sdtx_printf("[ %s CHAIN %02d ]", hud_npc_role_label(snap->role), target_idx);
+        char npc_name[24];
+        char npc_seen[24];
+        const npc_ship_t *npc = &g.world.npc_ships[target_idx];
+        hud_npc_label(npc, target_idx, npc_name, sizeof(npc_name));
+        ui_clarity_degrade_text(npc_name, contact_clarity.clarity,
+                                (uint32_t)(target_idx * 977u + snap->role),
+                                npc_seen, sizeof(npc_seen));
+        sdtx_printf("[ CONTACT %s ]", npc_seen);
     } else {
         char pilot[16];
         hud_player_scan_label(target_idx, pilot, sizeof(pilot));
@@ -990,8 +1639,17 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     const char *dest = (snap->dest_station < MAX_STATIONS)
         ? g.world.stations[snap->dest_station].name : "?";
     if (target_is_npc) {
-        sdtx_printf("%s  %.12s > %.12s",
-                    hud_npc_state_label(snap->state), home, dest);
+        char home_seen[24];
+        char dest_seen[24];
+        ui_clarity_degrade_text(home, contact_clarity.clarity,
+                                (uint32_t)(snap->home_station * 131u + 7u),
+                                home_seen, sizeof(home_seen));
+        ui_clarity_degrade_text(dest, contact_clarity.clarity,
+                                (uint32_t)(snap->dest_station * 173u + 11u),
+                                dest_seen, sizeof(dest_seen));
+        sdtx_printf("%s %s  %.12s > %.12s",
+                    hud_npc_role_label(snap->role),
+                    hud_npc_state_label(snap->state), home_seen, dest_seen);
     } else {
         sdtx_printf("%s  hull %u  near %.12s",
                     hud_hull_class_label(snap->role),
@@ -999,12 +1657,18 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     }
 
     sdtx_pos(px / cell, (py + 28.0f) / cell);
-    sdtx_color3b(PAL_TEXT_GREY);
+    if (target_is_npc)
+        sdtx_color3b(contact_clarity.dim[0], contact_clarity.dim[1],
+                     contact_clarity.dim[2]);
+    else
+        sdtx_color3b(PAL_TEXT_GREY);
     sdtx_printf("manifest %u unit%s",
                 (unsigned)snap->manifest_count,
                 snap->manifest_count == 1 ? "" : "s");
+    if (target_is_npc)
+        sdtx_printf("  %s %s", contact_clarity.meter, contact_clarity.word);
 
-    if (snap->manifest_count == 0) {
+    if (snap->manifest_count == 0 && rows == 0) {
         sdtx_pos(px / cell, (py + 44.0f) / cell);
         sdtx_color3b(PAL_TEXT_GREY);
         sdtx_puts(target_is_player ? "no cargo aboard" : "no cargo in custody");
@@ -1012,9 +1676,167 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     }
 
     float next_y = py + 48.0f;
+    if (has_detail) {
+        sdtx_pos(px / cell, next_y / cell);
+        sdtx_color3b(PAL_CONTRACT_READY);
+        sdtx_puts(receipt_browser ? "RECEIPT RELAY" : "JOB DETAIL");
+        if (receipt_browser) {
+            sdtx_pos(px / cell, (next_y + 12.0f) / cell);
+            sdtx_color3b(PAL_TEXT_FADED);
+            sdtx_puts("local proof view for selected worker job");
+            next_y += 18.0f;
+        }
+        sdtx_pos(px / cell, (next_y + 12.0f) / cell);
+        sdtx_color3b(PAL_TEXT_GREY);
+        sdtx_puts(detail_line1);
+        sdtx_pos(px / cell, (next_y + 24.0f) / cell);
+        sdtx_color3b(PAL_TEXT_GREY);
+        sdtx_puts(detail_line2);
+        sdtx_pos(px / cell, (next_y + 36.0f) / cell);
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_puts(detail_line3);
+        sdtx_pos(px / cell, (next_y + 48.0f) / cell);
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_puts(detail_line4);
+        sdtx_pos(px / cell, (next_y + 60.0f) / cell);
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_puts(detail_line5);
+        sdtx_pos(px / cell, (next_y + 72.0f) / cell);
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_puts(detail_line6);
+        for (int li = 0; li < link_line_count; li++) {
+            sdtx_pos(px / cell, (next_y + 84.0f + (float)li * 12.0f) / cell);
+            sdtx_color3b(PAL_TEXT_FADED);
+            sdtx_puts(link_lines[li]);
+        }
+        if (has_link_page_line) {
+            sdtx_pos(px / cell,
+                     (next_y + 84.0f + (float)link_line_count * 12.0f) / cell);
+            sdtx_color3b(PAL_CONTRACT_STATUS);
+            sdtx_puts(link_page_line);
+        }
+        next_y += 94.0f + (float)link_line_count * 12.0f +
+                  (has_link_page_line ? 12.0f : 0.0f);
+    }
     float now = g.world.time;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
+        if (row->flags & INSPECT_ROW_DIAGNOSTIC) {
+            if (row->commodity == (uint8_t)INSPECT_DIAG_RECEIPT_LINK) {
+                char author[20];
+                char recipient[20];
+                char head[20];
+                hud_hash_detail_label(row->origin_station, author, sizeof(author));
+                hud_hash_detail_label(row->latest_station, recipient, sizeof(recipient));
+                hud_hash_detail_label(row->receipt_head, head, sizeof(head));
+                float y = next_y;
+                sdtx_pos(px / cell, y / cell);
+                sdtx_color3b(PAL_CONTRACT_READY);
+                sdtx_printf("receipt link %u/%u",
+                            (unsigned)row->grade,
+                            (unsigned)row->chain_len);
+                sdtx_pos(px / cell, (y + 12.0f) / cell);
+                sdtx_color3b(PAL_TEXT_GREY);
+                sdtx_printf("event %llu head %.8s",
+                            (unsigned long long)row->event_id,
+                            head[0] ? head : "--------");
+                sdtx_pos(px / cell, (y + 24.0f) / cell);
+                sdtx_color3b(PAL_TEXT_FADED);
+                sdtx_printf("auth %.8s > rec %.8s",
+                            author[0] ? author : "--------",
+                            recipient[0] ? recipient : "--------");
+                next_y = y + 42.0f;
+                continue;
+            }
+            uint8_t station_a = (uint8_t)(row->event_id & 0xFFu);
+            uint8_t station_b = (uint8_t)((row->event_id >> 8) & 0xFFu);
+            uint8_t action = (uint8_t)((row->event_id >> 16) & 0xFFu);
+            uint8_t commodity = (uint8_t)((row->event_id >> 24) & 0xFFu);
+            bool job_row = hud_inspect_diag_is_job(row->commodity);
+            const char *station = (station_a < MAX_STATIONS)
+                ? g.world.stations[station_a].name : "?";
+            const char *source = (station_b < MAX_STATIONS)
+                ? g.world.stations[station_b].name : NULL;
+            const char *job_source = (station_a < MAX_STATIONS)
+                ? g.world.stations[station_a].name : "?";
+            const char *job_dest = (station_b < MAX_STATIONS)
+                ? g.world.stations[station_b].name : "?";
+            const char *comm = (commodity < COMMODITY_COUNT)
+                ? commodity_code((commodity_t)commodity) : "GEN";
+            float y = next_y;
+            sdtx_pos(px / cell, y / cell);
+            sdtx_color3b(PAL_CONTRACT_READY);
+            if (job_row) {
+                ui_clarity_t clarity = hud_job_clarity(row);
+                sdtx_printf("%s  %s %.10s",
+                            hud_inspect_diag_label(row->commodity),
+                            comm,
+                            job_source);
+                sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
+            } else {
+                sdtx_printf("%s  %s %.12s",
+                            hud_inspect_diag_label(row->commodity),
+                            comm,
+                            station);
+            }
+            sdtx_pos(px / cell, (y + 12.0f) / cell);
+            sdtx_color3b(PAL_TEXT_GREY);
+            if (job_row) {
+                const char *status = row->chain_len >= 200 ? "selected" : "candidate";
+                sdtx_printf("%.10s > %.10s  %s sc%u",
+                            job_source, job_dest, status, (unsigned)row->grade);
+                sdtx_pos(px / cell, (y + 24.0f) / cell);
+                ui_clarity_t clarity = hud_job_clarity(row);
+                sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
+                char reason[48];
+                hud_job_reason_label(row, reason, sizeof(reason));
+                sdtx_puts(reason);
+                char source_chain[72];
+                if (hud_job_source_chain_label(row, source_chain,
+                                               sizeof(source_chain))) {
+                    char source_seen[72];
+                    ui_clarity_degrade_text(source_chain, clarity.clarity,
+                                            (uint32_t)(row->event_id & 0xffffffffu),
+                                            source_seen, sizeof(source_seen));
+                    sdtx_pos(px / cell, (y + 36.0f) / cell);
+                    sdtx_color3b(clarity.dim[0], clarity.dim[1],
+                                 clarity.dim[2]);
+                    sdtx_puts(source_seen);
+                    sdtx_pos(px / cell, (y + 48.0f) / cell);
+                } else {
+                    sdtx_pos(px / cell, (y + 36.0f) / cell);
+                }
+                sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
+                char signals[48];
+                hud_job_top_signal_label(row, signals, sizeof(signals));
+                sdtx_printf("%s  %s %s", signals, clarity.meter, clarity.word);
+                next_y = y + (source_chain[0] ? 66.0f : 54.0f);
+                continue;
+            } else if (source) {
+                sdtx_printf("%s via %.12s  c%u s%u hint %u",
+                            hud_contract_action_short(action), source,
+                            (unsigned)row->grade,
+                            (unsigned)row->chain_len,
+                            (unsigned)row->quantity);
+            } else {
+                sdtx_printf("%s  c%u s%u hint %u",
+                            hud_contract_action_short(action),
+                            (unsigned)row->grade,
+                            (unsigned)row->chain_len,
+                            (unsigned)row->quantity);
+            }
+            char market_source[72];
+            if (hud_market_source_chain_label(row, market_source,
+                                              sizeof(market_source))) {
+                sdtx_pos(px / cell, (y + 24.0f) / cell);
+                sdtx_color3b(PAL_TEXT_FADED);
+                sdtx_puts(market_source);
+                next_y = y + 42.0f;
+            } else {
+                next_y = y + 28.0f;
+            }
+            continue;
+        }
         char cargo[12];
         hud_cargo_label(row->cargo_pub, cargo);
         unsigned qty = row->quantity > 0 ? row->quantity : 1;
@@ -3136,7 +3958,8 @@ void draw_hud(void) {
             sdtx_printf("%s %d%%", sig_band, sig_pct);
             if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
                 int mine_pct = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
-                sdtx_printf(" M%d%%", mine_pct);
+                int ctrl_pct = (int)lroundf(signal_control_scale(sig_quality) * 100.0f);
+                sdtx_printf(" M%d%% CTRL%d%%", mine_pct, ctrl_pct);
             }
 
             sdtx_pos(top_text_x, top_row_2);

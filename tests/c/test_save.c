@@ -1073,6 +1073,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(w != NULL);
     world_reset(w);
 
+    int seeded_hauler = spawn_npc(w, 0, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
+
     int hauler_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
@@ -1194,9 +1197,30 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
 
     loaded_hauler->state = NPC_STATE_UNLOADING;
     loaded_hauler->state_timer = 0.0f;
+    loaded_hauler->role = NPC_ROLE_HAULER;
+    loaded_hauler->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    loaded_hauler->ship.hull_class = HULL_CLASS_HAULER;
     loaded_hauler->dest_station = 1;
+    loaded_hauler->pickup_station = -1;
+    loaded_hauler->pickup_commodity = COMMODITY_COUNT;
+    loaded_hauler->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+    loaded_hauler->towed_fragment = -1;
+    loaded_hauler->towed_scaffold = -1;
+    loaded_hauler->ship.pos = station_approach_target(&loaded->stations[1],
+                                                       loaded_hauler->ship.pos);
+    loaded_ship->hull_class = HULL_CLASS_HAULER;
+    loaded_ship->pos = loaded_hauler->ship.pos;
+    loaded_ship->vel = v2(0.0f, 0.0f);
+    loaded_ship->hull = 100.0f;
+    loaded_hauler->ship.vel = v2(0.0f, 0.0f);
+    loaded_hauler->hull = loaded_ship->hull;
 
     step_npc_ships(loaded, SIM_DT);
+
+    loaded_ship = world_npc_ship_for(loaded, hauler_slot);
+    ASSERT(loaded_ship != NULL);
+    loaded_receipts = ship_get_receipts(loaded_ship);
+    ASSERT(loaded_receipts != NULL);
 
     ASSERT_EQ_INT(loaded_ship->manifest.count, 0);
     ASSERT_EQ_INT((int)loaded_receipts->count, 0);
@@ -1339,12 +1363,14 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
  * v57: +8B per contract for forbidden origin masks.
  * v58: station session section expanded from 64 to 128 slots.
  * v59: +2B next_delivery_shipment_id + fixed delivery shipment sidecar table.
- * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
- * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged.
- * v61: +32B per contract for stable target_pub identity.
- * v62: station ledger table expands from 16 to STATION_LEDGER_MAX=64 entries.
- * v46+ ledger entries are 76B, so +48 entries × 76B × MAX_STATIONS=128. */
-#define EXPECTED_SAVE_SIZE 711076
+	 * v60: active fracture-child sidecars add thrown_by_token + thrown_timer_q;
+	 * fresh world.sav has zero fracture children, so EXPECTED_SAVE_SIZE is unchanged.
+	 * v61: +32B per contract for stable target_pub identity.
+	 * v62: station ledger table expands from 16 to STATION_LEDGER_MAX=64 entries.
+	 * v46+ ledger entries are 76B, so +48 entries × 76B × MAX_STATIONS=128.
+	 * v63: station session persists pending ship-build queue:
+	 * count int + 4 × 12B records per station, × MAX_STATIONS=128. */
+	#define EXPECTED_SAVE_SIZE 717732
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1381,7 +1407,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 62);
+    ASSERT_EQ_INT((int)version, 63);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

@@ -878,6 +878,9 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     ASSERT(test_set_station_finished_units(&w->stations[shipyard],
                                            COMMODITY_REPAIR_KIT, 100));
 
+    int seeded_hauler = spawn_npc(w, shipyard, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
+
     /* Pick the first hauler that's currently homed at the shipyard,
      * wound it, and drop it directly on the dock approach lane. */
     npc_ship_t *hauler = NULL;

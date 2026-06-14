@@ -37,8 +37,9 @@ as the economy: rocks, tractors, dock approaches, hopper levels, signal lines.
    frames delivered before they activate; placed module scaffolds enter a
    station-fed supply phase, then finish with a short commissioning timer.
 7. Hail (`H`) to send a local scan/contact ping: reveal nearby tags, hear the
-   current or nearest reachable station, see your local ledger balance there,
-   and pick up current station work.
+   current or nearest reachable station, and see your local ledger balance
+   there. Dock and open CONTRACTS to accept, track, load, or deliver station
+   work.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both
 players and NPCs are pushed back toward the connected station chain. Expansion
@@ -69,10 +70,11 @@ station chain before clients see it.
 Press `H` to send a hail/scan ping. If you are docked, the docked station
 answers. Otherwise the nearest active station within dock range, signal range,
 or the ship's scan fallback answers. The response shows that station's MOTD,
-your local ledger balance there, and the current station work. The ping also
-reveals short-lived local tags for nearby world objects.
+your local ledger balance there, and station work previews; dock at the station
+to accept and resolve contracts. The ping also reveals short-lived local tags
+for nearby world objects.
 
-Station operators can set the MOTD, miner/hauler chatter, and special RATi-grade
+Station operators can set the MOTD, worker chatter, and special RATi-grade
 delivery hail. See [`docs/operator-onboarding.md`](docs/operator-onboarding.md)
 for the `swarm.rati.chat` avatar sync workflow.
 
@@ -84,16 +86,14 @@ for the `swarm.rati.chat` avatar sync workflow.
   signed chain logs, cargo receipts, and the off-chain trust model.
 - [`docs/cargo-architecture.md`](docs/cargo-architecture.md): canonical cargo
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
+- [`docs/holographic-gossip-network.md`](docs/holographic-gossip-network.md):
+  contract gossip, decaying market memory, and neural worker coordination.
 - [`docs/protocol-telemetry.md`](docs/protocol-telemetry.md): protocol
   discovery, stream classes, record sizes, and telemetry split.
 - [`docs/replay-harness.md`](docs/replay-harness.md): deterministic
   seed+prefix counterfactual replay harness for agent experiments.
-- [`docs/anime-framework.md`](docs/anime-framework.md): milestone-video product
-  scope and cut line.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current
   in-engine milestone-video playback architecture and remaining work.
-- [`docs/sector-x-whitepaper.md`](docs/sector-x-whitepaper.md): post-MVP vision
-  for dark-sector battery runs, megastructures, jump crystals, and gates.
 - [`tests/fixtures/README.md`](tests/fixtures/README.md): deterministic
   `signal_verify` chain-log fixtures.
 
@@ -107,8 +107,10 @@ for the `swarm.rati.chat` avatar sync workflow.
 - Docked station controls: `Tab` cycles panels. In SHIP, `R` repairs,
   `M` upgrades the mining laser, `C` expands cargo hold, and `T` upgrades the
   tractor. In TRADE, `1`-`5` buy/sell visible rows, `F` pages, and `S` sells
-  accepted cargo. In CONTRACTS, `1`-`3` track contracts and `S` delivers. In YARD,
-  `1`-`9` order scaffold kits where a shipyard is installed.
+  accepted cargo. In CONTRACTS, number keys select or track visible contracts;
+  when the selected contract is ready, `S` loads pickup cargo or unloads
+  delivery cargo. In YARD, `1`-`9` order scaffold kits where a shipyard is
+  installed.
 - Plan mode: while undocked and not towing, `B` enters or exits plan mode, `R`
   cycles module type, and `E` reserves the current slot. Press `B` in open
   signal to create a planned outpost.

@@ -293,12 +293,300 @@ static void local_server_copy_inspect_group(NetInspectSnapshotRow *row,
     row->flags |= INSPECT_ROW_GROUPED;
 }
 
+static uint8_t local_inspect_diag_kind_from_market(uint8_t memory_kind) {
+    switch ((market_memory_kind_t)memory_kind) {
+    case MARKET_MEMORY_DEMAND:           return (uint8_t)INSPECT_DIAG_MARKET_DEMAND;
+    case MARKET_MEMORY_SUPPLY:           return (uint8_t)INSPECT_DIAG_MARKET_SUPPLY;
+    case MARKET_MEMORY_ROUTE_DANGER:     return (uint8_t)INSPECT_DIAG_ROUTE_DANGER;
+    case MARKET_MEMORY_ROUTE_SUCCESS:    return (uint8_t)INSPECT_DIAG_ROUTE_SUCCESS;
+    case MARKET_MEMORY_DELIVERY_RECEIPT: return (uint8_t)INSPECT_DIAG_DELIVERY_RECEIPT;
+    case MARKET_MEMORY_ROUTE_REPUTATION: return (uint8_t)INSPECT_DIAG_ROUTE_REPUTATION;
+    case MARKET_MEMORY_ROUTE_RISK:       return (uint8_t)INSPECT_DIAG_ROUTE_RISK;
+    case MARKET_MEMORY_STATION_TRUST:    return (uint8_t)INSPECT_DIAG_STATION_TRUST;
+    case MARKET_MEMORY_STATION_RISK:     return (uint8_t)INSPECT_DIAG_STATION_RISK;
+    case MARKET_MEMORY_NONE:
+    default:                             return (uint8_t)INSPECT_DIAG_NONE;
+    }
+}
+
+static bool local_inspect_market_memory_from_item(const knowledge_item_t *item,
+                                                  market_memory_t *out) {
+    if (!item || !out) return false;
+    if (item->kind != (uint8_t)KNOW_MARKET) return false;
+    if (item->payload_kind != (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY) return false;
+    market_memory_t memory;
+    memset(&memory, 0, sizeof(memory));
+    memcpy(&memory, item->payload, sizeof(memory));
+    if (!memory.active) return false;
+    if (memory.memory_kind == (uint8_t)MARKET_MEMORY_NONE) return false;
+    memory.confidence = item->confidence;
+    memory.salience = item->salience;
+    *out = memory;
+    return true;
+}
+
+static void local_server_copy_inspect_market_diag(NetInspectSnapshotRow *row,
+                                                  const market_memory_t *memory,
+                                                  const knowledge_item_t *item) {
+    memset(row, 0, sizeof(*row));
+    if (!memory) return;
+    row->commodity = local_inspect_diag_kind_from_market(memory->memory_kind);
+    row->grade = memory->confidence;
+    row->chain_len = memory->salience;
+    row->flags = INSPECT_ROW_DIAGNOSTIC;
+    row->event_id = (uint64_t)memory->station_a
+                  | ((uint64_t)memory->station_b << 8)
+                  | ((uint64_t)memory->action << 16)
+                  | ((uint64_t)memory->commodity << 24);
+    row->quantity = memory->value_hint ? memory->value_hint : memory->quantity_hint;
+    if (item) {
+        memcpy(row->cargo_pub, item->subject_hash, sizeof(row->cargo_pub));
+        memcpy(row->receipt_head, item->chain_anchor, sizeof(row->receipt_head));
+        memcpy(row->origin_station, item->source_hash, sizeof(row->origin_station));
+        memcpy(row->latest_station, item->witness_hash, sizeof(row->latest_station));
+    }
+}
+
+static bool local_hash32_nonzero(const uint8_t hash[32]) {
+    if (!hash) return false;
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return true;
+    }
+    return false;
+}
+
+static bool local_hash32_equal(const uint8_t a[32], const uint8_t b[32]) {
+    if (!local_hash32_nonzero(a) || !local_hash32_nonzero(b)) return false;
+    return memcmp(a, b, 32) == 0;
+}
+
+static bool local_inspect_item_matches_job_proof(const knowledge_item_t *item,
+                                                 const npc_ship_t *npc,
+                                                 int job_idx) {
+    if (!item || !npc || job_idx < 0 || job_idx >= npc->job_diag_count)
+        return false;
+    const uint8_t *proof = npc->job_diag_proof_hash[job_idx];
+    if (!local_hash32_nonzero(proof)) return false;
+    return local_hash32_equal(proof, item->chain_anchor) ||
+           local_hash32_equal(proof, item->witness_hash) ||
+           local_hash32_equal(proof, item->subject_hash);
+}
+
+static void local_server_fill_job_source_diagnostics(
+    NetInspectSnapshot *snap,
+    const knowledge_view_t *knowledge,
+    const npc_ship_t *npc,
+    uint8_t emitted[KNOWLEDGE_VIEW_MAX_CAP]) {
+    if (!snap || !knowledge || !npc || !emitted) return;
+    int item_cap = knowledge->count;
+    if (item_cap > KNOWLEDGE_VIEW_MAX_CAP) item_cap = KNOWLEDGE_VIEW_MAX_CAP;
+    int job_count = npc->job_diag_count;
+    int job_cap = (int)(sizeof(npc->job_diag_kind) / sizeof(npc->job_diag_kind[0]));
+    if (job_count > job_cap) job_count = job_cap;
+    for (int j = 0; j < job_count &&
+                    snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; j++) {
+        if (npc->job_diag_kind[j] == (uint8_t)INSPECT_DIAG_NONE) continue;
+        for (int i = 0; i < item_cap &&
+                        snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+            if (emitted[i]) continue;
+            market_memory_t memory;
+            if (!local_inspect_market_memory_from_item(&knowledge->items[i],
+                                                       &memory)) {
+                continue;
+            }
+            if (!local_inspect_item_matches_job_proof(&knowledge->items[i],
+                                                      npc, j)) {
+                continue;
+            }
+            local_server_copy_inspect_market_diag(
+                &snap->rows[snap->row_count], &memory, &knowledge->items[i]);
+            emitted[i] = 1;
+            snap->row_count++;
+            break;
+        }
+    }
+}
+
+static bool local_inspect_chain_matches_job_proof(const cargo_receipt_chain_t *chain,
+                                                  const npc_ship_t *npc) {
+    if (!chain || chain->len == 0 || chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+        return false;
+    if (!npc) return false;
+    uint8_t head[32];
+    cargo_receipt_hash(&chain->links[chain->len - 1], head);
+    int job_count = npc->job_diag_count;
+    int job_cap = (int)(sizeof(npc->job_diag_kind) / sizeof(npc->job_diag_kind[0]));
+    if (job_count > job_cap) job_count = job_cap;
+    for (int i = 0; i < job_count; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_NONE) continue;
+        if (local_hash32_equal(head, npc->job_diag_proof_hash[i]))
+            return true;
+    }
+    return false;
+}
+
+static void local_server_copy_inspect_receipt_link(NetInspectSnapshotRow *row,
+                                                   const cargo_receipt_t *receipt,
+                                                   uint8_t link_idx,
+                                                   uint8_t link_count) {
+    memset(row, 0, sizeof(*row));
+    if (!receipt) return;
+    row->commodity = (uint8_t)INSPECT_DIAG_RECEIPT_LINK;
+    row->grade = link_idx;
+    row->chain_len = link_count;
+    row->flags = INSPECT_ROW_DIAGNOSTIC | INSPECT_ROW_HAS_RECEIPT;
+    row->event_id = receipt->event_id;
+    row->quantity = link_idx;
+    memcpy(row->cargo_pub, receipt->cargo_pub, sizeof(row->cargo_pub));
+    cargo_receipt_hash(receipt, row->receipt_head);
+    memcpy(row->origin_station, receipt->authoring_station,
+           sizeof(row->origin_station));
+    memcpy(row->latest_station, receipt->recipient_pubkey,
+           sizeof(row->latest_station));
+}
+
+static void local_server_fill_matching_receipt_diagnostics(
+    NetInspectSnapshot *snap,
+    const ship_t *ship,
+    const ship_receipts_t *rcpts,
+    const npc_ship_t *npc) {
+    if (!snap || !ship || !ship->manifest.units || !rcpts || !npc) return;
+    for (uint16_t i = 0; i < ship->manifest.count &&
+                         snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        const cargo_unit_t *unit = &ship->manifest.units[i];
+        if (inspect_snapshot_unit_is_groupable(unit)) continue;
+        const cargo_receipt_chain_t *chain =
+            (i < rcpts->count) ? &rcpts->chains[i] : NULL;
+        if (!local_inspect_chain_matches_job_proof(chain, npc)) continue;
+        local_server_copy_inspect_row(&snap->rows[snap->row_count],
+                                      unit, chain);
+        snap->row_count++;
+        for (uint8_t link = 0; link < chain->len &&
+                               snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS;
+             link++) {
+            local_server_copy_inspect_receipt_link(
+                &snap->rows[snap->row_count], &chain->links[link],
+                (uint8_t)(link + 1), chain->len);
+            snap->row_count++;
+        }
+    }
+}
+
+static void local_server_fill_matching_station_receipt_diagnostics(
+    NetInspectSnapshot *snap,
+    const station_t *stations,
+    int station_count,
+    const npc_ship_t *npc) {
+    if (!snap || !stations || station_count <= 0 || !npc) return;
+    for (int st = 0; st < station_count &&
+                    snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; st++) {
+        const station_t *station = &stations[st];
+        if (!station->manifest.units) continue;
+        const ship_receipts_t *rcpts = station_get_receipts_const(station);
+        if (!rcpts) continue;
+        for (uint16_t i = 0; i < station->manifest.count &&
+                             snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+            const cargo_unit_t *unit = &station->manifest.units[i];
+            if (inspect_snapshot_unit_is_groupable(unit)) continue;
+            const cargo_receipt_chain_t *chain =
+                (i < rcpts->count) ? &rcpts->chains[i] : NULL;
+            if (!local_inspect_chain_matches_job_proof(chain, npc)) continue;
+            local_server_copy_inspect_row(&snap->rows[snap->row_count],
+                                          unit, chain);
+            snap->rows[snap->row_count].flags |= INSPECT_ROW_STATION_RECEIPT;
+            snap->row_count++;
+            for (uint8_t link = 0; link < chain->len &&
+                                   snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS;
+                 link++) {
+                local_server_copy_inspect_receipt_link(
+                    &snap->rows[snap->row_count], &chain->links[link],
+                    (uint8_t)(link + 1), chain->len);
+                snap->row_count++;
+            }
+            return;
+        }
+    }
+}
+
+static void local_server_fill_inspect_diagnostics(NetInspectSnapshot *snap,
+                                                  const knowledge_view_t *knowledge,
+                                                  const npc_ship_t *npc) {
+    if (!snap) return;
+    if (npc) {
+        int count = npc->job_diag_count;
+        int cap = (int)(sizeof(npc->job_diag_kind) / sizeof(npc->job_diag_kind[0]));
+        if (count > cap) count = cap;
+        for (int i = 0; i < count && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS &&
+             snap->row_count < 4; i++) {
+            if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_NONE) continue;
+            NetInspectSnapshotRow *row = &snap->rows[snap->row_count];
+            memset(row, 0, sizeof(*row));
+            row->commodity = npc->job_diag_kind[i];
+            row->grade = npc->job_diag_score[i];
+            row->chain_len = npc->job_diag_selected[i];
+            row->flags = INSPECT_ROW_DIAGNOSTIC;
+            row->event_id = (uint64_t)npc->job_diag_source[i]
+                          | ((uint64_t)npc->job_diag_dest[i] << 8)
+                          | ((uint64_t)npc->job_diag_kind[i] << 16)
+                          | ((uint64_t)npc->job_diag_commodity[i] << 24);
+            row->quantity = npc->job_diag_hint[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_VALUE] = npc->job_diag_factor_value[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_DEMAND] = npc->job_diag_factor_demand[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_SUPPLY] = npc->job_diag_factor_supply[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_ROUTE] = npc->job_diag_factor_route[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_FRESHNESS] = npc->job_diag_factor_freshness[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_CAPABILITY] = npc->job_diag_factor_capability[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_PROOF] = npc->job_diag_factor_proof[i];
+            row->cargo_pub[INSPECT_JOB_FACTOR_HOLOGRAM] = npc->job_diag_factor_hologram[i];
+            row->cargo_pub[INSPECT_JOB_META_REASON] = npc->job_diag_reason[i];
+            row->cargo_pub[INSPECT_JOB_META_MEMORY_KIND] = npc->job_diag_memory_kind[i];
+            row->cargo_pub[INSPECT_JOB_META_HOPS] = npc->job_diag_memory_hops[i];
+            row->cargo_pub[INSPECT_JOB_META_AGE] = npc->job_diag_memory_age[i];
+            row->cargo_pub[INSPECT_JOB_META_SOURCE_STATION] = npc->job_diag_memory_station[i];
+            row->cargo_pub[INSPECT_JOB_META_PROOF_KIND] = npc->job_diag_proof_kind[i];
+            row->cargo_pub[INSPECT_JOB_META_PROOF0] = npc->job_diag_proof_prefix[i][0];
+            row->cargo_pub[INSPECT_JOB_META_PROOF1] = npc->job_diag_proof_prefix[i][1];
+            row->cargo_pub[INSPECT_JOB_META_PROOF2] = npc->job_diag_proof_prefix[i][2];
+            row->cargo_pub[INSPECT_JOB_META_PROOF3] = npc->job_diag_proof_prefix[i][3];
+            memcpy(row->receipt_head, npc->job_diag_proof_hash[i],
+                   sizeof(row->receipt_head));
+            snap->row_count++;
+        }
+    }
+    uint8_t emitted_market_rows[KNOWLEDGE_VIEW_MAX_CAP] = {0};
+    local_server_fill_job_source_diagnostics(snap, knowledge, npc,
+                                             emitted_market_rows);
+    if (knowledge) {
+        int cap = knowledge->count;
+        if (cap > KNOWLEDGE_VIEW_MAX_CAP) cap = KNOWLEDGE_VIEW_MAX_CAP;
+        for (int i = 0; i < cap && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS &&
+             snap->row_count < 4; i++) {
+            if (emitted_market_rows[i]) continue;
+            market_memory_t memory;
+            if (!local_inspect_market_memory_from_item(&knowledge->items[i], &memory))
+                continue;
+            local_server_copy_inspect_market_diag(&snap->rows[snap->row_count],
+                                                  &memory, &knowledge->items[i]);
+            snap->row_count++;
+        }
+    }
+}
+
 static void local_server_fill_inspect_manifest(NetInspectSnapshot *snap,
-                                               const ship_t *ship) {
+                                               const ship_t *ship,
+                                               const npc_ship_t *npc,
+                                               const station_t *stations,
+                                               int station_count) {
     if (!snap || !ship) return;
 
     snap->manifest_count = ship->manifest.units ? ship->manifest.count : 0;
     const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+    uint8_t receipt_row_start = snap->row_count;
+    local_server_fill_matching_receipt_diagnostics(snap, ship, rcpts, npc);
+    if (snap->row_count == receipt_row_start) {
+        local_server_fill_matching_station_receipt_diagnostics(
+            snap, stations, station_count, npc);
+    }
     uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
     memset(bulk, 0, sizeof(bulk));
     for (uint16_t i = 0; i < snap->manifest_count; i++) {
@@ -308,7 +596,6 @@ static void local_server_fill_inspect_manifest(NetInspectSnapshot *snap,
                 bulk[unit->commodity][unit->grade]++;
         }
     }
-    snap->row_count = 0;
     for (int gr = 0; gr < MINING_GRADE_COUNT && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; gr++) {
         for (int c = 0; c < COMMODITY_COUNT && snap->row_count < INSPECT_SNAPSHOT_MAX_ROWS; c++) {
             if (bulk[c][gr] > 0) {
@@ -325,6 +612,8 @@ static void local_server_fill_inspect_manifest(NetInspectSnapshot *snap,
                 if (inspect_snapshot_unit_is_groupable(unit)) continue;
                 const cargo_receipt_chain_t *chain =
                     (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
+                if (local_inspect_chain_matches_job_proof(chain, npc))
+                    continue;
                 local_server_copy_inspect_row(&snap->rows[snap->row_count],
                                               unit, chain);
                 snap->row_count++;
@@ -362,6 +651,7 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
         ? (uint8_t)src->scan_module_index : 0xFFu;
 
     const ship_t *inspect_ship = NULL;
+    const npc_ship_t *inspect_npc = NULL;
     if (src->scan_target_type == INSPECT_TARGET_NPC &&
         src->scan_target_index >= 0 &&
         src->scan_target_index < MAX_NPC_SHIPS) {
@@ -374,7 +664,9 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
                 ? (uint8_t)npc->home_station : 0xFFu;
             snap.dest_station = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
                 ? (uint8_t)npc->dest_station : 0xFFu;
+            local_server_fill_inspect_diagnostics(&snap, &npc->knowledge, npc);
             inspect_ship = ship;
+            inspect_npc = npc;
         }
     } else if (src->scan_target_type == INSPECT_TARGET_PLAYER &&
                src->scan_target_index >= 0 &&
@@ -396,8 +688,15 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
         }
     }
     if (inspect_ship)
-        local_server_fill_inspect_manifest(&snap, inspect_ship);
+        local_server_fill_inspect_manifest(&snap, inspect_ship, inspect_npc,
+                                           ls->world.stations, MAX_STATIONS);
 
+    if (g.inspect_snapshot.target_type != snap.target_type ||
+        g.inspect_snapshot.target_index != snap.target_index ||
+        g.inspect_snapshot.module_index != snap.module_index) {
+        g.inspect_receipt_page = 0;
+        g.inspect_receipt_browser = false;
+    }
     g.inspect_snapshot = snap;
     g.inspect_snapshot_timer = 0.60f;
     g.inspect_was_active = true;

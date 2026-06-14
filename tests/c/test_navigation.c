@@ -574,7 +574,7 @@ TEST(test_station_entry_target_uses_outer_roadway) {
         road_ring--;
     float expected = station_ring_open_gap_angle(kepler, road_ring);
     ASSERT(shell_ring == 3);
-    ASSERT(road_ring == 2);
+    ASSERT(road_ring == 3);
     ASSERT(r > STATION_RING_RADIUS[shell_ring] + 120.0f);
     ASSERT(fabsf(wrap_angle(a - expected)) < 0.05f);
 }

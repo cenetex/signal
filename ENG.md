@@ -691,31 +691,46 @@ The destination verifies: signature valid, authority known, head receipt names t
 
 ---
 
-## 11. NPC AI Architecture
+## 11. Neural Worker Architecture
 
-### 11.1 State Machines
+### 11.1 Assignment Outcomes And Legacy Role Labels
+
+The code still has legacy role labels such as `NPC_ROLE_MINER`,
+`NPC_ROLE_HAULER`, and `NPC_ROLE_TOW` because they are useful for compatibility,
+presentation, and capability hints. The target architecture is broader:
+workers produce `npc_job_offer_t` candidates from exact contracts, structured
+market memory, route evidence, HNN resonance, and local capability, then execute
+the best safe offer.
+
+Current job offer families:
 
 ```
-NPC_ROLE_MINER:
-  EXIT_STATION → target = nearest belt chunk with un-mined rocks
-  NAVIGATE → A* path to target region
-  MINING → sim_mining_beam_step() on nearest mineable asteroid
-  COLLECT → tractor toward fragment
-  RETURN → navigate to home station, approach entry lane
-  DOCK → anchor at dock berth, deposit fragment to furnace
-  IDLE → wait for next cycle
+NPC_JOB_MINE:
+  find ore/fracture pressure -> navigate to belt -> fracture/tow fragment
+  -> return to smelter
 
-NPC_ROLE_HAULER:
-  IDLE → scan known_contracts[] for profitable delivery
-  PICKUP → navigate to source station, load cargo into manifest
-  DELIVER → navigate to destination station, present receipt chain
-  RETURN → navigate home (or chain to next delivery)
+NPC_JOB_HAUL:
+  score exact contracts plus demand/supply/route memory -> pick source
+  -> load cargo -> deliver to destination -> present receipt chain
 
-NPC_ROLE_TOW:
-  PICKUP → navigate to shipyard, acquire scaffold
-  DELIVER → navigate to planned outpost/module slot
-  PLACE → snap scaffold to slot, trigger supply phase
+NPC_JOB_DELIVER_PROOF:
+  bind NPC-owned shipment cargo -> deliver to destination -> return proof
+  -> clear origin debt and emit route/receipt memory
+
+NPC_JOB_TOW:
+  read scaffold/build pressure -> acquire scaffold -> tow to plan
+  -> place or advance construction
+
+NPC_JOB_SCOUT:
+  respond to fracture, route danger, or stuck-worker pressure
+
+NPC_JOB_REPAIR:
+  respond to repair-kit supply and damaged-worker pressure
 ```
+
+The invariant is that memory only chooses what to try. Completion still resolves
+through authoritative station state: contracts, ledgers, manifests, receipt
+chains, and chain logs.
 
 ### 11.2 Frontier Director
 

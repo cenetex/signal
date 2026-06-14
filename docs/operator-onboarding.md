@@ -197,11 +197,25 @@ supported flow is:
 
 1. Read the station state from `/api/station/<id>/state?include=activity_history,chain_history`.
 2. Ask the station avatar model for a MOTD, RATi-grade delivery hail, and
-   eight miner plus eight hauler chatter lines.
+   worker chatter lines for mining and hauling assignments.
 3. Post the results back through `/api/station/<id>/command`.
 4. Let the server emit `CHAIN_EVT_OPERATOR_POST`, materialize the fields into
    `station_t`, persist them in the station catalog, and rebroadcast station
    identity to clients.
+
+When `chain_history` is included, `chain_history.route_history_aggregate[]`
+exposes compact cross-station route-memory groups built from recent signed
+route-history rows. Each aggregate includes route/action labels, signed row
+count, total receipt evidence, peak confidence/salience, and latest observed
+tick. `chain_history.route_history[]` still exposes the requested station's
+recent signed route-history tail. Treat both arrays as station-authored context
+for copy and operations; they are not payout, inventory, or settlement
+authority.
+
+Add `history_filter=outbound`, `history_filter=inbound`, or
+`history_filter=local` to narrow the aggregate view for the requested station.
+`all` is the default; `local` leaves `route_history_aggregate[]` empty and uses
+the station-local signed `route_history[]` tail as the drill-down surface.
 
 Use the helper script:
 
@@ -223,10 +237,10 @@ Optional knobs:
 The station command API accepts:
 
 - `{"action":"set_hail","hail":"..."}` for the station MOTD/hail text.
-- `{"action":"set_miner_chatter","slot":0,"message":"..."}` for miner NPC
-  chatter slots `0..7`.
-- `{"action":"set_hauler_chatter","slot":0,"message":"..."}` for hauler NPC
-  chatter slots `0..7`.
+- `{"action":"set_miner_chatter","slot":0,"message":"..."}` for worker
+  chatter while the economy has assigned that worker to mining slots `0..7`.
+- `{"action":"set_hauler_chatter","slot":0,"message":"..."}` for worker
+  chatter while the economy has assigned that worker to hauling slots `0..7`.
 - `{"action":"set_rati_hail","message":"..."}` for player-facing hail after
   RATi-grade ore delivery.
 - `{"action":"set_currency_name","currency_name":"..."}` for the local

@@ -13,7 +13,7 @@
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
  *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
- *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 29-byte records
+ *   WORLD_NPCS      (0x11): [type:1][count:1] + count * NPC_RECORD_SIZE records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
@@ -479,13 +479,33 @@ enum {
  *     [quantity:u16][cargo_pub:32][receipt_head:32][origin_station_pub:32]
  *     [latest_station_pub:32]
  *
+ * Diagnostic rows (flags bit2) reuse the row payload for NPC scan context:
+ * commodity = inspect_diag_kind_t. For market rows, grade = confidence,
+ * chain_len = salience, event_id bytes [station_a, station_b, action,
+ * commodity], quantity = value/quantity hint. For job rows, grade = compact
+ * score, chain_len = selected/candidate marker, event_id bytes
+ * [source_station, dest_station, job_kind, commodity], quantity = job hint,
+ * cargo_pub bytes [0..6] = compact factor scores for
+ * value/demand/supply/route/freshness/capability/proof; byte [7] =
+ * inspect_job_reason_t provenance/reason code; bytes [8..11] =
+ * market-memory kind, hop count, observed-age seconds bucket, source station,
+ * proof/hash kind, and a four-byte proof/hash prefix for compact provenance.
+ * Job rows also place the full 32-byte provenance hash, when known, in the
+ * receipt_head field so clients can expand the compact prefix without widening
+ * the row. Market diagnostic rows place full source-chain hashes in the normal
+ * row hash fields: cargo_pub = subject_hash, receipt_head = chain_anchor,
+ * origin_station_pub = source_hash, latest_station_pub = witness_hash.
+ *
  * target_type mirrors server_player_t.scan_target_type:
  *   0 none, 1 station/module, 2 NPC, 3 player.
  * For NPC targets, role/state are npc_role_t/npc_state_t. For player
  * targets, role is hull_class_t and state is rounded hull, clamped to
  * one byte. target_index/module_index/home_station/dest_station use 0xFF as
  * unknown/none. flags bit0 = row has at least one receipt link;
- * bit1 = row is a grouped bulk/finished-good row with no individual cargo identity. */
+ * bit1 = row is a grouped bulk/finished-good row with no individual cargo
+ * identity; bit2 = row is a diagnostic row, not cargo; bit3 = receipt chain
+ * was retrieved from local station storage rather than carried cargo; bit4 =
+ * receipt chain was retrieved from another local relay/custodian ship. */
 enum {
     INSPECT_TARGET_NONE    = 0,
     INSPECT_TARGET_STATION = 1,
@@ -497,7 +517,81 @@ enum {
     INSPECT_SNAPSHOT_ROW      = 142,
     INSPECT_ROW_HAS_RECEIPT   = 1 << 0,
     INSPECT_ROW_GROUPED       = 1 << 1,
+    INSPECT_ROW_DIAGNOSTIC    = 1 << 2,
+    INSPECT_ROW_STATION_RECEIPT = 1 << 3,
+    INSPECT_ROW_RELAY_RECEIPT   = 1 << 4,
 };
+
+typedef enum {
+    INSPECT_DIAG_NONE = 0,
+    INSPECT_DIAG_MARKET_DEMAND,
+    INSPECT_DIAG_MARKET_SUPPLY,
+    INSPECT_DIAG_ROUTE_DANGER,
+    INSPECT_DIAG_ROUTE_SUCCESS,
+    INSPECT_DIAG_DELIVERY_RECEIPT,
+    INSPECT_DIAG_RECEIPT_LINK,
+    INSPECT_DIAG_ROUTE_REPUTATION,
+    INSPECT_DIAG_ROUTE_RISK,
+    INSPECT_DIAG_STATION_TRUST,
+    INSPECT_DIAG_STATION_RISK,
+    INSPECT_DIAG_JOB_MINE,
+    INSPECT_DIAG_JOB_HAUL,
+    INSPECT_DIAG_JOB_TOW,
+    INSPECT_DIAG_JOB_DELIVER_PROOF,
+    INSPECT_DIAG_JOB_SCOUT,
+    INSPECT_DIAG_JOB_REPAIR,
+} inspect_diag_kind_t;
+
+enum {
+    INSPECT_JOB_FACTOR_VALUE = 0,
+    INSPECT_JOB_FACTOR_DEMAND,
+    INSPECT_JOB_FACTOR_SUPPLY,
+    INSPECT_JOB_FACTOR_ROUTE,
+    INSPECT_JOB_FACTOR_FRESHNESS,
+    INSPECT_JOB_FACTOR_CAPABILITY,
+    INSPECT_JOB_FACTOR_PROOF,
+    INSPECT_JOB_FACTOR_HOLOGRAM,
+    INSPECT_JOB_FACTOR_COUNT,
+};
+
+enum {
+    INSPECT_JOB_META_REASON = INSPECT_JOB_FACTOR_COUNT,
+    INSPECT_JOB_META_MEMORY_KIND,
+    INSPECT_JOB_META_HOPS,
+    INSPECT_JOB_META_AGE,
+    INSPECT_JOB_META_SOURCE_STATION,
+    INSPECT_JOB_META_PROOF_KIND,
+    INSPECT_JOB_META_PROOF0,
+    INSPECT_JOB_META_PROOF1,
+    INSPECT_JOB_META_PROOF2,
+    INSPECT_JOB_META_PROOF3,
+};
+
+typedef enum {
+    INSPECT_JOB_REASON_NONE = 0,
+    INSPECT_JOB_REASON_LOCAL_CONTRACT,
+    INSPECT_JOB_REASON_MARKET_DEMAND,
+    INSPECT_JOB_REASON_REMOTE_SUPPLY,
+    INSPECT_JOB_REASON_RECEIPT_PROOF,
+    INSPECT_JOB_REASON_STATION_TRUST,
+    INSPECT_JOB_REASON_STATION_RISK,
+    INSPECT_JOB_REASON_HNN_RESONANCE,
+    INSPECT_JOB_REASON_ORE_PRESSURE,
+    INSPECT_JOB_REASON_CONSTRUCTION_PLAN,
+    INSPECT_JOB_REASON_DELIVERY_PROOF,
+    INSPECT_JOB_REASON_DISTRESS_SIGNAL,
+    INSPECT_JOB_REASON_REPAIR_NEED,
+    INSPECT_JOB_REASON_ROUTE_MEMORY,
+    INSPECT_JOB_REASON_ROUTE_RISK,
+    INSPECT_JOB_REASON_GOSSIP_COURIER,
+} inspect_job_reason_t;
+
+typedef enum {
+    INSPECT_JOB_PROOF_NONE = 0,
+    INSPECT_JOB_PROOF_SUBJECT_HASH,
+    INSPECT_JOB_PROOF_CHAIN_ANCHOR,
+    INSPECT_JOB_PROOF_WITNESS_HASH,
+} inspect_job_proof_t;
 
 #define INSPECT_SNAPSHOT_MAX_SIZE \
     (INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_MAX_ROWS * INSPECT_SNAPSHOT_ROW)
@@ -596,6 +690,7 @@ enum {
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
     NET_ACTION_DELIVER_COMMODITY  = 70, /* +commodity offset, range [70..70+COMMODITY_COUNT) */
     NET_ACTION_AUTOPILOT_TOGGLE   = 90, /* toggle player mining autopilot on/off */
+    NET_ACTION_COMMISSION_SHIP     = 91, /* +hull_class offset, range [91..91+HULL_CLASS_COUNT) */
 };
 
 enum {
@@ -670,6 +765,8 @@ _Static_assert(NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT <= NET_ACTION_DELIVE
                "BUY_SCAFFOLD_TYPED overlaps DELIVER_COMMODITY range");
 _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
                "DELIVER_COMMODITY range overflows uint8_t");
+_Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
+               "COMMISSION_SHIP range overflows uint8_t");
 
 /* ------------------------------------------------------------------ */
 /* Record sizes                                                       */
@@ -700,8 +797,10 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define CARGO_POD_RECORD_SIZE 30
 
 /* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
- * [target:u16][towed_fragment:u16][rarity_tint:3], 0xFFFF = none */
-#define NPC_RECORD_SIZE 29
+ * [target:u16][towed_fragment:u16][rarity_tint:3][session_token:8][home_station:1],
+ * 0xFFFF = none. The identity tail lets remote clients derive worker custody
+ * pubkeys for receipt/provenance labels; station signatures remain authority. */
+#define NPC_RECORD_SIZE 38
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
  * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×9]
@@ -715,6 +814,8 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define STATION_PLAN_RECORD_COUNT 8
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
 #define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
+#define STATION_PENDING_SHIP_RECORD_SIZE 6      /* hull:1 + owner:1 + progress:f32 */
+#define STATION_PENDING_SHIP_RECORD_COUNT 4
 #define STATION_IDENTITY_HAIL_MESSAGE_LEN 256  /* trailer: station MOTD/hail copy */
 #define STATION_IDENTITY_CHATTER_LINES 8
 #define STATION_IDENTITY_CHATTER_LINE_LEN 64
@@ -726,6 +827,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
+    + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE \
     + STATION_IDENTITY_HAIL_MESSAGE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \

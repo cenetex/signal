@@ -32,6 +32,11 @@ specialty supply chain, and — after Layer B of #479 — its own Ed25519 keypai
 Federation is the natural extension of a primitive that was already in the
 codebase.
 
+The same sovereignty rule applies to information. Stations sign local truth;
+ships transport memories about that truth through dock contact, cargo movement,
+and receipt presentation. Gossip may influence discovery and job selection, but
+the station ledger and chain log remain the authority surface.
+
 ## The identity stack
 
 Every long-lived object in Signal has a content-addressed identity: an asteroid,

@@ -1,11 +1,12 @@
 #include "ship.h"
 
 const hull_def_t* hull_def_for_class(hull_class_t hc) {
+    if ((unsigned)hc >= HULL_CLASS_COUNT) hc = HULL_CLASS_MINER;
     return &HULL_DEFS[hc];
 }
 
 float hull_max_for_class(hull_class_t hc) {
-    return HULL_DEFS[hc].max_hull;
+    return hull_def_for_class(hc)->max_hull;
 }
 
 const hull_def_t* ship_hull_def(const ship_t* ship) {
@@ -14,6 +15,22 @@ const hull_def_t* ship_hull_def(const ship_t* ship) {
 
 const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
     return hull_def_for_class(npc->ship.hull_class);
+}
+
+uint8_t ship_module_socket_count(const ship_t *ship) {
+    return ship_hull_def(ship)->module_slots;
+}
+
+uint8_t ship_module_mask(const ship_t *ship) {
+    return ship_hull_def(ship)->module_mask;
+}
+
+bool ship_has_module(const ship_t *ship, ship_module_flags_t module) {
+    return (ship_module_mask(ship) & (uint8_t)module) != 0;
+}
+
+const char* ship_loadout_name(hull_class_t hull_class) {
+    return hull_def_for_class(hull_class)->name;
 }
 
 vec2 ship_forward(float angle) {

@@ -16,6 +16,8 @@
 #include "palette.h"
 #include "station_palette.h"
 #include "sim_mining.h"
+#include "sim_ship.h"
+#include "npc_radio.h"
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
@@ -28,9 +30,18 @@
 #define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
 #define HAIL_SCAN_ASTEROID_TAG_LIMIT 32
 #define HAIL_SCAN_REVEAL_SOFTNESS 120.0f
+#define HAIL_CONVERSATION_LINE_DURATION 3.4f
 #define ASTEROID_FRACTURE_DRIFT_SEC 0.62f
 #define ASTEROID_FAULT_START_RATIO 0.58f
 #define ASTEROID_LIGHT_LEAK_RATIO 0.20f
+#define THROW_PREVIEW_MAX_LEN 132.0f
+#define THROW_PREVIEW_HOT_RANGE 280.0f
+#define THROW_LOCK_MAX_RANGE 900.0f
+#define THROW_LOCK_MIN_HOTNESS 0.08f
+
+/* Mirror server/game_sim.c's release floor so the throw preview shows
+ * the actual slingshot release velocity instead of a generic aim line. */
+#define ROCK_THROW_BASE_SPEED 40.0f
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
@@ -2047,10 +2058,166 @@ void draw_ship_tractor_field(void) {
     world_signal_visual_leave_cue(cue_prev);
 }
 
+static float throw_preview_size_mult(const asteroid_t *a) {
+    float size_mult = a ? a->radius / 30.0f : 1.0f;
+    if (size_mult < 0.5f) size_mult = 0.5f;
+    if (size_mult > 2.5f) size_mult = 2.5f;
+    return size_mult;
+}
+
+static float throw_preview_damage_threshold(const asteroid_t *a) {
+    return SHIP_COLLISION_DAMAGE_THRESHOLD * throw_preview_size_mult(a);
+}
+
+static bool throw_preview_for_fragment(const asteroid_t *a,
+                                       vec2 *out_start,
+                                       vec2 *out_dir,
+                                       float *out_speed,
+                                       float *out_hotness)
+{
+    if (!a || !out_start || !out_dir || !out_speed || !out_hotness)
+        return false;
+    vec2 to_ship = v2_sub(LOCAL_PLAYER.ship.pos, a->pos);
+    float dist = v2_len(to_ship);
+    vec2 release_dir = dist > 0.01f
+        ? v2_scale(to_ship, 1.0f / dist)
+        : v2_from_angle(LOCAL_PLAYER.ship.angle);
+    float stretch = dist - SHIP_TOW_BAND_REST_LEN;
+    if (stretch < 0.0f) stretch = 0.0f;
+    float fling = ROCK_THROW_BASE_SPEED +
+        sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
+    vec2 predicted_vel = v2_add(LOCAL_PLAYER.ship.vel,
+                                v2_scale(release_dir, fling));
+    float speed = v2_len(predicted_vel);
+    vec2 dir = speed > 0.01f ? v2_scale(predicted_vel, 1.0f / speed)
+                             : release_dir;
+    float threshold = throw_preview_damage_threshold(a);
+    float hotness = clampf((speed - threshold) / THROW_PREVIEW_HOT_RANGE,
+                           0.0f, 1.0f);
+    *out_start = a->pos;
+    *out_dir = dir;
+    *out_speed = speed;
+    *out_hotness = hotness;
+    return true;
+}
+
+static void draw_throw_arrow(vec2 start, vec2 dir, float speed, float hotness) {
+    float len = 18.0f + clampf(speed / 4.0f, 0.0f, THROW_PREVIEW_MAX_LEN);
+    vec2 end = v2_add(start, v2_scale(dir, len));
+    vec2 side = v2(-dir.y, dir.x);
+    float cold = 1.0f - hotness;
+    float r = 0.48f * cold + 1.00f * hotness;
+    float g = 0.52f * cold + 0.24f * hotness;
+    float b = 0.54f * cold + 0.08f * hotness;
+    float a = 0.22f + 0.72f * hotness;
+
+    draw_segment(start, end, r, g, b, a);
+    if (hotness > 0.0f)
+        draw_segment(start, end, r, g * 0.78f, b * 0.65f, a * 0.45f);
+
+    float head = 8.0f + 8.0f * hotness;
+    vec2 back = v2_sub(end, v2_scale(dir, head));
+    draw_segment(end, v2_add(back, v2_scale(side, head * 0.55f)),
+                 r, g, b, a);
+    draw_segment(end, v2_sub(back, v2_scale(side, head * 0.55f)),
+                 r, g, b, a);
+}
+
+static void draw_throw_lock_bracket(vec2 pos, float radius, float hotness) {
+    float half = radius + 10.0f + 4.0f * hotness;
+    float arm = fminf(half * 0.45f, 18.0f);
+    float pulse = 0.65f + 0.35f * sinf(g.world.time * 10.0f);
+    float r = 1.0f;
+    float g0 = 0.32f + 0.34f * (1.0f - hotness);
+    float b = 0.10f;
+    float a = (0.48f + 0.35f * hotness) * pulse;
+
+    vec2 tl = v2(pos.x - half, pos.y - half);
+    vec2 tr = v2(pos.x + half, pos.y - half);
+    vec2 bl = v2(pos.x - half, pos.y + half);
+    vec2 br = v2(pos.x + half, pos.y + half);
+    draw_segment(tl, v2(tl.x + arm, tl.y), r, g0, b, a);
+    draw_segment(tl, v2(tl.x, tl.y + arm), r, g0, b, a);
+    draw_segment(tr, v2(tr.x - arm, tr.y), r, g0, b, a);
+    draw_segment(tr, v2(tr.x, tr.y + arm), r, g0, b, a);
+    draw_segment(bl, v2(bl.x + arm, bl.y), r, g0, b, a);
+    draw_segment(bl, v2(bl.x, bl.y - arm), r, g0, b, a);
+    draw_segment(br, v2(br.x - arm, br.y), r, g0, b, a);
+    draw_segment(br, v2(br.x, br.y - arm), r, g0, b, a);
+}
+
+static bool throw_preview_hits_target(vec2 start, vec2 dir, vec2 target,
+                                      float radius, float max_dist)
+{
+    vec2 rel = v2_sub(target, start);
+    float along = v2_dot(rel, dir);
+    if (along <= 0.0f || along > max_dist) return false;
+    vec2 closest = v2_add(start, v2_scale(dir, along));
+    float miss_sq = v2_dist_sq(target, closest);
+    float lock_r = radius + 22.0f;
+    return miss_sq <= lock_r * lock_r;
+}
+
+static void draw_throw_locks(vec2 start, vec2 dir, float speed, float hotness) {
+    if (hotness < THROW_LOCK_MIN_HOTNESS) return;
+    float max_dist = fminf(THROW_LOCK_MAX_RANGE,
+                           260.0f + speed * 1.45f);
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == g.local_player_slot) continue;
+        const server_player_t *sp = &g.world.players[i];
+        if (!sp->connected || sp->docked) continue;
+        float radius = ship_hull_def(&sp->ship)->ship_radius;
+        if (throw_preview_hits_target(start, dir, sp->ship.pos,
+                                      radius, max_dist))
+            draw_throw_lock_bracket(sp->ship.pos, radius, hotness);
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &g.world.npc_ships[i];
+        if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
+        float radius = npc_hull_def(npc)->ship_radius;
+        if (throw_preview_hits_target(start, dir, npc->ship.pos,
+                                      radius, max_dist))
+            draw_throw_lock_bracket(npc->ship.pos, radius, hotness);
+    }
+}
+
+static void draw_throw_preview(void) {
+    if (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_count <= 0) return;
+
+    float best_hotness = -1.0f;
+    vec2 best_start = v2(0.0f, 0.0f);
+    vec2 best_dir = v2(1.0f, 0.0f);
+    float best_speed = 0.0f;
+
+    for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active) continue;
+        vec2 start, dir;
+        float speed, hotness;
+        if (!throw_preview_for_fragment(a, &start, &dir, &speed, &hotness))
+            continue;
+        draw_throw_arrow(start, dir, speed, hotness);
+        if (hotness > best_hotness ||
+            (hotness == best_hotness && speed > best_speed)) {
+            best_hotness = hotness;
+            best_start = start;
+            best_dir = dir;
+            best_speed = speed;
+        }
+    }
+
+    if (best_hotness >= 0.0f)
+        draw_throw_locks(best_start, best_dir, best_speed, best_hotness);
+}
+
 void draw_ship(void) {
     /* While the death cinematic is rolling, the player ship is hidden —
      * we draw the wreckage at the death position via draw_death_wreckage. */
     if (g.death_cinematic.active) return;
+    draw_throw_preview();
     float ship_sat_prev = world_signal_visual_enter_player_ship();
     sgl_push_matrix();
     sgl_translate(LOCAL_PLAYER.ship.pos.x, LOCAL_PLAYER.ship.pos.y, 0.0f);
@@ -3063,6 +3230,33 @@ void draw_callsigns(void) {
     }
 }
 
+static const hail_conversation_entry_t *hail_conversation_entry_for_npc(int npc_index) {
+    int count = g.hail_conversation_count;
+    if (count > HAIL_CONVERSATION_NPC_LIMIT) count = HAIL_CONVERSATION_NPC_LIMIT;
+    for (int i = 0; i < count; i++) {
+        if (g.hail_conversation[i].npc_index == npc_index)
+            return &g.hail_conversation[i];
+    }
+    return NULL;
+}
+
+static bool hail_conversation_age_active(float start, float *out_alpha) {
+    float age = g.hail_ping_timer - start;
+    if (age < 0.0f || age > HAIL_CONVERSATION_LINE_DURATION) return false;
+
+    float fade_in = clampf(age / 0.25f, 0.0f, 1.0f);
+    float fade_out = clampf((HAIL_CONVERSATION_LINE_DURATION - age) / 0.55f,
+                            0.0f, 1.0f);
+    if (out_alpha) *out_alpha = fade_in < fade_out ? fade_in : fade_out;
+    return true;
+}
+
+static bool hail_conversation_line_active(const hail_conversation_entry_t *entry,
+                                          float *out_alpha) {
+    if (!entry) return false;
+    return hail_conversation_age_active(entry->at_s, out_alpha);
+}
+
 void draw_npc_chatter(void) {
     if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > HAIL_PING_LIFECYCLE) return;
     float hail_range = hail_scan_range();
@@ -3138,6 +3332,19 @@ void draw_npc_chatter(void) {
         sdtx_puts(label);
     }
 
+    if (g.hail_player_line[0] && on_screen(LOCAL_PLAYER.ship.pos.x,
+                                           LOCAL_PLAYER.ship.pos.y, 50.0f)) {
+        float player_alpha = 0.0f;
+        if (hail_conversation_age_active(0.0f, &player_alpha)) {
+            int len = (int)strlen(g.hail_player_line);
+            uint8_t line_alpha = (uint8_t)(230.0f * player_alpha);
+            sdtx_color4b(PAL_WORLD_STATION_CYAN, line_alpha);
+            sdtx_world_pos(LOCAL_PLAYER.ship.pos.x - len * cell * 0.5f,
+                           LOCAL_PLAYER.ship.pos.y - 34.0f, cell);
+            sdtx_puts(g.hail_player_line);
+        }
+    }
+
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
@@ -3146,10 +3353,20 @@ void draw_npc_chatter(void) {
         float reveal = hail_scan_reveal_alpha(npc->ship.pos);
         if (reveal <= 0.01f) continue;
 
-        /* Rotate line every 8 seconds, offset by NPC index. Station-authored
-         * lines override the global fallback when this NPC's home station
-         * has operator content wired. */
+        const hail_conversation_entry_t *entry =
+            hail_conversation_entry_for_npc(i);
+        float conversation_alpha = 0.0f;
+        bool speak_now = hail_conversation_line_active(entry,
+                                                       &conversation_alpha);
+
+        /* Rotate fallback line every 8 seconds, offset by NPC index.
+         * Station-authored lines still backstop workers without situated
+         * memory, but the visible hail response is gated by the async
+         * proximity-ordered conversation window. */
         const char *line;
+        char memory_line[96];
+        bool has_memory_line = npc_radio_line(g.world.stations, npc, i,
+                                              memory_line, sizeof(memory_line));
         if (npc->role == NPC_ROLE_MINER) {
             int idx = (i + (int)(g.world.time / 8.0f)) % NPC_CHATTER_MINER_COUNT;
             line = NPC_CHATTER_MINER[idx];
@@ -3167,8 +3384,10 @@ void draw_npc_chatter(void) {
                 if (station_line[0]) line = station_line;
             }
         } else {
-            line = "tow drone";
+            line = "worker";
         }
+        if (has_memory_line && memory_line[0]) line = memory_line;
+        if (entry && entry->line[0]) line = entry->line;
 
         char ident[32];
         world_npc_scan_label(npc, i, ident);
@@ -3179,11 +3398,13 @@ void draw_npc_chatter(void) {
                        npc->ship.pos.y + 34.0f, cell);
         sdtx_puts(ident);
 
+        if (!speak_now) continue;
+
         int len = (int)strlen(line);
         uint8_t nr = (uint8_t)(clampf(npc->tint_r, 0.0f, 1.0f) * 255.0f);
         uint8_t ng = (uint8_t)(clampf(npc->tint_g, 0.0f, 1.0f) * 255.0f);
         uint8_t nb = (uint8_t)(clampf(npc->tint_b, 0.0f, 1.0f) * 255.0f);
-        uint8_t line_alpha = (uint8_t)(230.0f * reveal);
+        uint8_t line_alpha = (uint8_t)(230.0f * reveal * conversation_alpha);
         sdtx_color4b(nr, ng, nb, line_alpha);
         /* Sit chatter just below the NPC sprite. World Y-up: smaller
          * world_y is below on screen. */

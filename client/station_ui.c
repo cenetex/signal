@@ -11,6 +11,9 @@
 #include "cargo_lineage.h"
 #include "station_authority.h"
 #include "contract_fit.h"
+#include "chain_log.h"
+#include "route_history_labels.h"
+#include "ui_clarity.h"
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
@@ -682,6 +685,7 @@ static void draw_yard_view(const station_ui_state_t *ui,
 void station_panel_input_dock(input_intent_t *intent);
 void station_panel_input_trade(input_intent_t *intent);
 void station_panel_input_work(input_intent_t *intent);
+void station_panel_input_history(input_intent_t *intent);
 void station_panel_input_yard(input_intent_t *intent);
 
 /* ------------------------------------------------------------------ */
@@ -1301,8 +1305,7 @@ static bool trade_row_tracked_note(const station_t *st,
             return true;
         }
         if (row->station_stock > 0) {
-            snprintf(out, out_size, "needed for tracked contract");
-            return true;
+            return false;
         }
         return false;
     }
@@ -1319,6 +1322,7 @@ static bool trade_row_tracked_note(const station_t *st,
 static bool contract_row_tracked_note(int here_idx,
                                       int contract_index,
                                       bool fulfillable_here,
+                                      bool selected,
                                       char *out,
                                       size_t out_size)
 {
@@ -1327,8 +1331,8 @@ static bool contract_row_tracked_note(int here_idx,
     if (contract_index < 0 || contract_index >= MAX_CONTRACTS) return false;
     const contract_t *ct = &g.world.contracts[contract_index];
     if (!ct->active) return false;
+    if (!selected) return false;
 
-    bool tracked = g.tracked_contract == contract_index;
     if (ct->action == CONTRACT_DELIVERY) {
         const NetDeliveryLedgerEntry *ledger =
             ui_delivery_ledger_for_contract(contract_index);
@@ -1344,31 +1348,30 @@ static bool contract_row_tracked_note(int here_idx,
             int source_stock = station_contract_source_stock_count(
                 &g.world.stations[here_idx], ct);
             if (source_stock > 0)
-                snprintf(out, out_size, "shipment ready");
+                snprintf(out, out_size, "load cargo");
             else
                 snprintf(out, out_size, "origin out of stock");
             return true;
         }
         if (at_dest && ledger &&
             ledger->status == DELIVERY_SHIPMENT_PICKED_UP && held > 0) {
-            snprintf(out, out_size, "ready to deliver");
+            snprintf(out, out_size, "unload cargo");
             return true;
         }
-        if (tracked && held > 0 && !at_dest) {
+        if (held > 0 && !at_dest) {
             snprintf(out, out_size, "wrong station");
             return true;
         }
-        if (tracked && ledger &&
+        if (ledger &&
             ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
             snprintf(out, out_size, "deliver to destination");
             return true;
         }
     }
     if (fulfillable_here) {
-        snprintf(out, out_size, "ready to deliver");
+        snprintf(out, out_size, "deliver cargo");
         return true;
     }
-    if (!tracked) return false;
 
     if (ct->action == CONTRACT_TRACTOR &&
         ct->commodity >= COMMODITY_RAW_ORE_COUNT &&
@@ -1378,13 +1381,27 @@ static bool contract_row_tracked_note(int here_idx,
         return true;
     }
 
-    snprintf(out, out_size, "needed for tracked contract");
-    return true;
+    return false;
+}
+
+static bool contract_row_note_is_action(const char *note)
+{
+    if (!note || !note[0]) return false;
+    return strcmp(note, "load cargo") == 0 ||
+           strcmp(note, "unload cargo") == 0 ||
+           strcmp(note, "deliver cargo") == 0 ||
+           strcmp(note, "return proof") == 0;
 }
 
 static const uint8_t COL_CONTRACT_TYPE_HAUL[3]   = { PAL_TRACTOR_OFF };
 static const uint8_t COL_CONTRACT_TYPE_BOUNTY[3] = { PAL_WARNING };
 static const uint8_t COL_CONTRACT_TYPE_CREDIT[3] = { PAL_DELIVERY_STATUS };
+
+typedef struct {
+    market_memory_t memory;
+    uint8_t hops;
+    int score;
+} station_gossip_row_t;
 
 static const char *contract_panel_type_label(const contract_t *ct)
 {
@@ -1408,6 +1425,375 @@ static const uint8_t *contract_panel_type_color(const contract_t *ct)
     }
 }
 
+static const char *station_gossip_sentence_prefix(uint8_t kind)
+{
+    switch ((market_memory_kind_t)kind) {
+    case MARKET_MEMORY_DEMAND:             return "wanted";
+    case MARKET_MEMORY_SUPPLY:             return "stock";
+    case MARKET_MEMORY_ROUTE_DANGER:       return "danger";
+    case MARKET_MEMORY_ROUTE_SUCCESS:      return "route";
+    case MARKET_MEMORY_DELIVERY_RECEIPT:   return "receipt";
+    case MARKET_MEMORY_ROUTE_REPUTATION:   return "trusted";
+    case MARKET_MEMORY_ROUTE_RISK:         return "risky";
+    case MARKET_MEMORY_STATION_TRUST:      return "trusted";
+    case MARKET_MEMORY_STATION_RISK:       return "risky";
+    case MARKET_MEMORY_ORE_PRESSURE:       return "ore need";
+    case MARKET_MEMORY_SCAFFOLD_PRESSURE:  return "build need";
+    case MARKET_MEMORY_NONE:
+    default:                               return "memory";
+    }
+}
+
+static const char *station_gossip_action_label(uint8_t action)
+{
+    switch ((contract_action_t)action) {
+    case CONTRACT_TRACTOR:  return "haul";
+    case CONTRACT_FRACTURE: return "fracture";
+    case CONTRACT_DELIVERY: return "deliver";
+    default:                return "work";
+    }
+}
+
+static mining_grade_t station_gossip_clarity_grade(float clarity)
+{
+    if (clarity >= 0.86f) return MINING_GRADE_RATI;
+    if (clarity >= 0.66f) return MINING_GRADE_RARE;
+    if (clarity >= 0.42f) return MINING_GRADE_FINE;
+    return MINING_GRADE_COMMON;
+}
+
+static bool station_gossip_memory_from_item(const knowledge_item_t *item,
+                                            market_memory_t *out)
+{
+    if (!item || !out) return false;
+    if (item->kind != (uint8_t)KNOW_MARKET) return false;
+    if (item->payload_kind != (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY) return false;
+    market_memory_t memory;
+    memset(&memory, 0, sizeof(memory));
+    memcpy(&memory, item->payload, sizeof(memory));
+    if (!memory.active) return false;
+    if (memory.memory_kind == (uint8_t)MARKET_MEMORY_NONE) return false;
+    memory.confidence = item->confidence;
+    memory.salience = item->salience;
+    *out = memory;
+    return true;
+}
+
+static int station_gossip_collect_rows(const station_t *st,
+                                       station_gossip_row_t *out,
+                                       int cap)
+{
+    if (!st || !out || cap <= 0) return 0;
+    int count = 0;
+    int item_count = st->knowledge.count;
+    if (item_count > KNOWLEDGE_VIEW_MAX_CAP) item_count = KNOWLEDGE_VIEW_MAX_CAP;
+    for (int i = 0; i < item_count; i++) {
+        market_memory_t memory;
+        const knowledge_item_t *item = &st->knowledge.items[i];
+        if (!station_gossip_memory_from_item(item, &memory))
+            continue;
+        if (memory.confidence == 0 || memory.salience == 0) continue;
+        int score = (int)memory.confidence * (int)memory.salience;
+        int insert = count;
+        while (insert > 0 && out[insert - 1].score < score) insert--;
+        if (insert >= cap) continue;
+        if (count < cap) count++;
+        for (int j = count - 1; j > insert; j--) out[j] = out[j - 1];
+        out[insert].memory = memory;
+        out[insert].hops = item->hops;
+        out[insert].score = score;
+    }
+    return count;
+}
+
+static float draw_station_gossip_rows(const station_t *st,
+                                      float cx, float my, float inner_right,
+                                      bool compact)
+{
+    station_gossip_row_t rows[2];
+    int count = station_gossip_collect_rows(st, rows, 2);
+    if (count <= 0) return my;
+
+    const uint8_t COL_MEMORY[3] = { PAL_CONTRACT_READY };
+    const uint8_t COL_DIM[3]    = { PAL_TEXT_FADED };
+    const float row_h = compact ? 14.0f : 15.0f;
+
+    my += compact ? 8.0f : 12.0f;
+    my += draw_section_header(cx, my, inner_right, "OVERHEARD", HDR_TRADE);
+    for (int i = 0; i < count; i++) {
+        const market_memory_t *m = &rows[i].memory;
+        char station_name[12];
+        ui_station_name_short(m->station_a, station_name, sizeof(station_name));
+        const char *commodity = (m->commodity < COMMODITY_COUNT)
+            ? commodity_short_name((commodity_t)m->commodity)
+            : "signal";
+        ui_clarity_t clarity = ui_clarity_from_evidence(
+            m->confidence, m->salience, rows[i].hops, COL_MEMORY, COL_DIM);
+        char station_seen[12];
+        char commodity_seen[24];
+        ui_clarity_degrade_text(station_name, clarity.clarity,
+                                (uint32_t)(m->subject_nonce ^ (uint64_t)i),
+                                station_seen, sizeof(station_seen));
+        ui_clarity_degrade_text(commodity, clarity.clarity,
+                                (uint32_t)(m->subject_nonce >> 32),
+                                commodity_seen, sizeof(commodity_seen));
+        char left[48];
+        char right[48];
+        snprintf(left, sizeof(left), "%s %s",
+                 station_gossip_sentence_prefix(m->memory_kind),
+                 commodity_seen);
+        mining_grade_t rumor_grade =
+            station_gossip_clarity_grade(clarity.clarity);
+        uint8_t rumor_rgb[3];
+        mining_grade_rgb(rumor_grade, &rumor_rgb[0],
+                         &rumor_rgb[1], &rumor_rgb[2]);
+        uint8_t rumor_dim[3];
+        ui_clarity_mix_rgb(rumor_rgb, COL_DIM,
+                           clarity.clarity * 0.70f, rumor_dim);
+        snprintf(right, sizeof(right), "%s %.10s",
+                 station_gossip_action_label(m->action), station_seen);
+        draw_row_lr(cx, my, inner_right, rumor_rgb, left, rumor_dim, right);
+        my += row_h;
+    }
+    return my;
+}
+
+static float draw_station_route_history_rows(const station_t *st,
+                                             float cx, float my,
+                                             float inner_right,
+                                             bool compact)
+{
+    chain_route_history_tail_t rows[2];
+    int count = chain_log_read_route_history_tail(st, rows, 2);
+    if (count <= 0) return my;
+
+    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_DIM[3]     = { PAL_TEXT_SECONDARY };
+    const float row_h = compact ? 14.0f : 15.0f;
+
+    my += compact ? 8.0f : 12.0f;
+    my += draw_section_header(cx, my, inner_right, "HISTORY", HDR_TRADE);
+    for (int i = count - 1; i >= 0; i--) {
+        const chain_payload_route_history_t *p = &rows[i].payload;
+        char left[72];
+        char right[48];
+        route_history_compact_fields(p->memory_kind,
+                                     p->origin_station,
+                                     p->destination_station,
+                                     p->commodity,
+                                     p->action,
+                                     p->evidence_count,
+                                     p->confidence,
+                                     left, sizeof(left),
+                                     right, sizeof(right));
+        draw_row_lr(cx, my, inner_right, COL_HISTORY, left, COL_DIM, right);
+        my += row_h;
+    }
+    return my;
+}
+
+static int collect_route_history_aggregates(route_history_aggregate_row_t *out,
+                                            int cap)
+{
+    if (!out || cap <= 0) return 0;
+    memset(out, 0, (size_t)cap * sizeof(out[0]));
+
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        chain_route_history_tail_t tail[16];
+        int count = chain_log_read_route_history_tail(&g.world.stations[si],
+                                                      tail, 16);
+        for (int i = 0; i < count; i++) {
+            const chain_payload_route_history_t *p = &tail[i].payload;
+            route_history_aggregate_add_fields(out,
+                                               cap,
+                                               p->memory_kind,
+                                               p->origin_station,
+                                               p->destination_station,
+                                               p->commodity,
+                                               p->action,
+                                               p->evidence_count,
+                                               p->confidence,
+                                               p->salience,
+                                               p->observed_tick);
+        }
+    }
+
+    return route_history_aggregate_sort(out, cap);
+}
+
+static const char *history_filter_title(uint8_t filter)
+{
+    switch (filter) {
+    case 1:  return "OUTBOUND ROUTE MEMORY";
+    case 2:  return "INBOUND ROUTE MEMORY";
+    case 3:  return "LOCAL SIGNED EVENTS";
+    case 0:
+    default: return "AGGREGATE ROUTE MEMORY";
+    }
+}
+
+static bool history_filter_matches_aggregate(
+    const route_history_aggregate_row_t *row,
+    uint8_t filter,
+    int station_idx)
+{
+    if (!row || !row->used) return false;
+    switch (filter) {
+    case 1: return station_idx >= 0 && row->origin_station == (uint8_t)station_idx;
+    case 2: return station_idx >= 0 && row->destination_station == (uint8_t)station_idx;
+    case 3: return false;
+    case 0:
+    default: return true;
+    }
+}
+
+static void draw_history_view(const station_ui_state_t *ui,
+                              float cx, float cy, float inner_w,
+                              bool compact)
+{
+    const station_t *st = ui->station;
+    int station_idx = LOCAL_PLAYER.current_station;
+    uint8_t filter = g.history_filter <= 3 ? g.history_filter : 0;
+    float inner_right = cx + inner_w - 36.0f;
+    float my = cy;
+    const float row_h = compact ? 14.0f : 15.0f;
+    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_DIM[3]     = { PAL_TEXT_SECONDARY };
+    const uint8_t COL_FADED[3]   = { PAL_TEXT_FADED };
+
+    my += draw_section_header(cx, my, inner_right,
+                              history_filter_title(filter), HDR_TRADE);
+
+    route_history_aggregate_row_t aggregate[8];
+    int aggregate_count = collect_route_history_aggregates(
+        aggregate, (int)(sizeof(aggregate) / sizeof(aggregate[0])));
+    if (aggregate_count <= 0 && filter != 3) {
+        draw_row_lr(cx, my, inner_right, COL_DIM,
+                    "No signed route history yet.", NULL, NULL);
+        my += row_h;
+        draw_row_lr(cx, my, inner_right, COL_FADED,
+                    "Repeated receipt-backed routes will appear here.",
+                    NULL, NULL);
+        return;
+    }
+
+    if (filter != 3) {
+        draw_row_lr(cx, my, inner_right, COL_FADED,
+                    "Read-only summary of station-signed memory.",
+                    NULL, NULL);
+        my += row_h + (compact ? 2.0f : 4.0f);
+
+        int shown = 0;
+        for (int i = 0; i < aggregate_count && shown < 4; i++) {
+            const route_history_aggregate_row_t *row = &aggregate[i];
+            if (!history_filter_matches_aggregate(row, filter, station_idx))
+                continue;
+            char title[96];
+            char evidence[112];
+            char freshness[96];
+            route_history_aggregate_fields(row->memory_kind,
+                                           row->origin_station,
+                                           row->destination_station,
+                                           row->commodity,
+                                           row->action,
+                                           row->event_count,
+                                           row->evidence_sum,
+                                           row->confidence_peak,
+                                           row->salience_peak,
+                                           row->latest_tick,
+                                           title, sizeof(title),
+                                           evidence, sizeof(evidence),
+                                           freshness, sizeof(freshness));
+            char title_fit[96];
+            char evidence_fit[112];
+            char freshness_fit[96];
+            int chars = (int)floorf((inner_right - cx) / 8.0f);
+            ui_fit_text(title, chars, title_fit, sizeof(title_fit));
+            ui_fit_text(evidence, chars, evidence_fit, sizeof(evidence_fit));
+            ui_fit_text(freshness, chars, freshness_fit, sizeof(freshness_fit));
+
+            draw_row_lr(cx, my, inner_right, COL_HISTORY, title_fit, NULL, NULL);
+            my += row_h;
+            draw_row_lr(cx + 16.0f, my, inner_right, COL_DIM, evidence_fit, NULL, NULL);
+            my += row_h;
+            draw_row_lr(cx + 16.0f, my, inner_right, COL_FADED, freshness_fit, NULL, NULL);
+            my += row_h + (compact ? 4.0f : 6.0f);
+            shown++;
+        }
+        if (shown == 0) {
+            draw_row_lr(cx, my, inner_right, COL_DIM,
+                        "No matching aggregate route memory yet.",
+                        NULL, NULL);
+            my += row_h;
+            draw_row_lr(cx, my, inner_right, COL_FADED,
+                        "Try all routes or wait for more signed receipts.",
+                        NULL, NULL);
+            my += row_h + (compact ? 4.0f : 6.0f);
+        }
+    }
+
+    if (filter == 0 || filter == 3) {
+        my += compact ? 2.0f : 4.0f;
+        my += draw_section_header(cx, my, inner_right, "RECENT SIGNED EVENTS", HDR_TRADE);
+    } else {
+        return;
+    }
+
+    chain_route_history_tail_t rows[8];
+    int count = chain_log_read_route_history_tail(st, rows, 8);
+    if (count <= 0) {
+        draw_row_lr(cx, my, inner_right, COL_DIM,
+                    "This station has no local signed rows yet.", NULL, NULL);
+        my += row_h;
+        draw_row_lr(cx, my, inner_right, COL_FADED,
+                    "Other stations may still contribute aggregate memory.",
+                    NULL, NULL);
+        return;
+    }
+
+    draw_row_lr(cx, my, inner_right, COL_FADED,
+                "Newest route-history rows signed by this station.",
+                NULL, NULL);
+    my += row_h + (compact ? 2.0f : 4.0f);
+
+    for (int i = count - 1; i >= 0; i--) {
+        const chain_route_history_tail_t *row = &rows[i];
+        const chain_payload_route_history_t *p = &row->payload;
+        char title[96];
+        char evidence[112];
+        char meta[96];
+        route_history_detail_fields(row->event_id,
+                                    row->epoch,
+                                    p->memory_kind,
+                                    p->origin_station,
+                                    p->destination_station,
+                                    p->commodity,
+                                    p->action,
+                                    p->evidence_count,
+                                    p->confidence,
+                                    p->salience,
+                                    p->value_hint,
+                                    p->observed_tick,
+                                    title, sizeof(title),
+                                    evidence, sizeof(evidence),
+                                    meta, sizeof(meta));
+        char title_fit[96];
+        char evidence_fit[112];
+        char meta_fit[96];
+        int chars = (int)floorf((inner_right - cx) / 8.0f);
+        ui_fit_text(title, chars, title_fit, sizeof(title_fit));
+        ui_fit_text(evidence, chars, evidence_fit, sizeof(evidence_fit));
+        ui_fit_text(meta, chars, meta_fit, sizeof(meta_fit));
+
+        draw_row_lr(cx, my, inner_right, COL_HISTORY, title_fit, NULL, NULL);
+        my += row_h;
+        draw_row_lr(cx + 16.0f, my, inner_right, COL_DIM, evidence_fit, NULL, NULL);
+        my += row_h;
+        draw_row_lr(cx + 16.0f, my, inner_right, COL_FADED, meta_fit, NULL, NULL);
+        my += row_h + (compact ? 4.0f : 6.0f);
+    }
+}
+
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -1427,6 +1813,11 @@ static void draw_trade_view(const station_ui_state_t *ui,
     const uint8_t COL_FLOW_BAD[3]  = { 235, 110, 110 };
     char flow_line[96] = "";
     const uint8_t *flow_rgb = NULL;
+    float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
+    get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
+    (void)panel_x;
+    (void)panel_w;
+    float content_bottom = panel_y + panel_h - 42.0f;
 
     my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
@@ -1499,6 +1890,15 @@ static void draw_trade_view(const station_ui_state_t *ui,
      * rows render their number dimmed; pressing it is a no-op. */
     for (int ri = first; ri < last; ri++) {
         const trade_row_t *r = &rows[ri];
+        float min_row_h = compact ? (row_h * 2.0f + 4.0f) : row_h;
+        if (my + min_row_h > content_bottom) {
+            if (my + row_h <= content_bottom) {
+                sdtx_color3b(PAL_TEXT_FADED);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_puts(total_pages > 1 ? "[F] more market rows" : "more rows hidden");
+            }
+            break;
+        }
         int slot = (ri - first) + 1;
         char key_buf[16];
         if (r->actionable) snprintf(key_buf, sizeof(key_buf), "[%d]", slot);
@@ -1647,7 +2047,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_lr(cx + 32.0f, my, inner_right,
                         info_rgb, status_buf, row_rgb, total_buf);
             my += row_h;
-            if (job_note[0]) {
+            if (job_note[0] && my + row_h <= content_bottom) {
                 char note_fit[64];
                 int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
                 ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
@@ -1659,7 +2059,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             }
             /* Optional third line — lineage flavor. Drawn dim so it
              * reads as background context, not actionable state. */
-            if (lineage_buf[0]) {
+            if (lineage_buf[0] && my + row_h <= content_bottom) {
                 char lineage_fit[112];
                 int lineage_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
                 ui_fit_text(lineage_buf, lineage_chars, lineage_fit,
@@ -1682,7 +2082,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_cells(cx, my, row, 4);
             draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, total_buf);
             my += row_h;
-            if (job_note[0]) {
+            if (job_note[0] && my + row_h <= content_bottom) {
                 char note_fit[64];
                 int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
                 ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
@@ -1694,7 +2094,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             }
             /* Wide mode also gets a lineage line beneath the row.
              * Same dim styling, indented under the commodity label. */
-            if (lineage_buf[0]) {
+            if (lineage_buf[0] && my + row_h <= content_bottom) {
                 char lineage_fit[112];
                 int lineage_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
                 ui_fit_text(lineage_buf, lineage_chars, lineage_fit,
@@ -1754,7 +2154,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                     right_buf);
         my += row_h * 1.5f;
         if (held > 0) {
-            snprintf(left_buf, sizeof(left_buf), "[S] deliver %s",
+            snprintf(left_buf, sizeof(left_buf), "carry %s",
                      commodity_short_label(material));
             snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
                      held, remaining);
@@ -2019,7 +2419,6 @@ static void draw_contracts_view(const station_ui_state_t *ui,
     const uint8_t COL_HDR[3]      = { PAL_TEXT_FADED };
     const uint8_t COL_READY[3]    = { PAL_CONTRACT_READY };
     const uint8_t COL_STATUS[3]   = { PAL_CONTRACT_STATUS };
-    const uint8_t COL_SELECTED[3] = { PAL_CONTRACT_PENDING };
     const uint8_t COL_DIM[3]      = { PAL_CONTRACT_HINT };
     const uint8_t COL_TEXT[3]     = { PAL_TEXT_SECONDARY };
     const uint8_t COL_FADED[3]    = { PAL_TEXT_FADED };
@@ -2052,6 +2451,9 @@ static void draw_contracts_view(const station_ui_state_t *ui,
 
     if (slot_count == 0) {
         draw_row_lr(cx, my, inner_right, COL_DIM, "No active contracts.", NULL, NULL);
+        my += row_h;
+        my = draw_station_gossip_rows(ui->station, cx, my, inner_right, compact);
+        draw_station_route_history_rows(ui->station, cx, my, inner_right, compact);
         return;
     }
 
@@ -2060,9 +2462,11 @@ static void draw_contracts_view(const station_ui_state_t *ui,
         float cprice = ct->base_price * (1.0f + fminf(ct->age / 300.0f, 1.0f) * 0.2f);
         bool tracked = (g.tracked_contract == slots[s]);
         bool selected = (g.selected_contract == slots[s]);
+        const char *type_txt = contract_panel_type_label(ct);
+        const uint8_t *type_rgb = contract_panel_type_color(ct);
 
         const uint8_t *row_rgb;
-        if (selected)               row_rgb = COL_SELECTED;
+        if (selected)                 row_rgb = type_rgb;
         else if (slot_fulfillable[s]) row_rgb = COL_READY;
         else if (tracked)            row_rgb = COL_STATUS;
         else                         row_rgb = COL_DIM;
@@ -2081,8 +2485,6 @@ static void draw_contracts_view(const station_ui_state_t *ui,
         char key_buf[8], cargo_buf[32], pay_buf[64]; /* 64 = room for "+%d %s" with 31-char currency name */
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
-        const char *type_txt = contract_panel_type_label(ct);
-        const uint8_t *type_rgb = contract_panel_type_color(ct);
 
         /* Step column doubles as the immediate next-step verb. The shared
          * objective resolver also drives SIGNAL copy and world markers, so
@@ -2141,6 +2543,15 @@ static void draw_contracts_view(const station_ui_state_t *ui,
             snprintf(pay_buf, sizeof(pay_buf), "+%d %s",
                      (int)lroundf(cprice), pay_cur);
         }
+        char job_note[64];
+        bool has_job_note = contract_row_tracked_note(here_idx, slots[s],
+                                                      slot_fulfillable[s],
+                                                      selected,
+                                                      job_note,
+                                                      sizeof(job_note));
+        bool job_note_action = contract_row_note_is_action(job_note);
+        if (has_job_note && !job_note_action)
+            snprintf(pay_buf, sizeof(pay_buf), "%s", job_note);
 
         const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
         /* Grade tint for the entire row when the contract is for a
@@ -2171,16 +2582,6 @@ static void draw_contracts_view(const station_ui_state_t *ui,
             draw_row_lr(cx + 32.0f, my, inner_right,
                         cargo_rgb, cargo_buf, row_rgb, pay_buf);
             my += row_h;
-            char job_note[64];
-            if (contract_row_tracked_note(here_idx, slots[s],
-                                          slot_fulfillable[s],
-                                          job_note, sizeof(job_note))) {
-                cell_t note[] = {
-                    { 14, job_note, COL_TRACKED_JOB },
-                };
-                draw_row_cells(cx, my, note, 1);
-                my += row_h;
-            }
             /* Group separator between multi-line rows. Without it the
              * pay line of row N hugs the key line of row N+1 visually
              * because they share the same row_h spacing. */
@@ -2195,21 +2596,11 @@ static void draw_contracts_view(const station_ui_state_t *ui,
             };
             draw_row_cells(cx, my, row, 5);
             my += row_h;
-            char job_note[64];
-            if (contract_row_tracked_note(here_idx, slots[s],
-                                          slot_fulfillable[s],
-                                          job_note, sizeof(job_note))) {
-                char note_fit[64];
-                int note_chars = (int)floorf((inner_right - (cx + 32.0f)) / 8.0f);
-                ui_fit_text(job_note, note_chars, note_fit, sizeof(note_fit));
-                cell_t note[] = {
-                    {  4, note_fit, COL_TRACKED_JOB },
-                };
-                draw_row_cells(cx, my, note, 1);
-                my += row_h;
-            }
         }
     }
+
+    my = draw_station_gossip_rows(ui->station, cx, my, inner_right, compact);
+    draw_station_route_history_rows(ui->station, cx, my, inner_right, compact);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2239,11 +2630,46 @@ static void draw_yard_view(const station_ui_state_t *ui,
         return;
     }
 
+    /* -------- SHIP COMMISSIONS -------- */
+    my += draw_section_header(cx, my, inner_right, "SHIP COMMISSIONS", HDR_YARD);
+    sdtx_color3b(PAL_STATION_HINT);
+    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+    sdtx_puts("[Z/X/V] commission frame loadout");
+    my += 16.0f;
+
+    static const struct {
+        const char *key;
+        hull_class_t hull;
+    } hull_rows[] = {
+        { "U", HULL_CLASS_DRONE_TRACTOR },
+        { "I", HULL_CLASS_DRONE_LASER },
+        { "O", HULL_CLASS_DRONE_CARGO },
+        { "Z", HULL_CLASS_NPC_MINER },
+        { "X", HULL_CLASS_HAULER },
+        { "V", HULL_CLASS_MINER },
+    };
+    for (size_t i = 0; i < sizeof(hull_rows) / sizeof(hull_rows[0]); i++) {
+        int frames = 0, lasers = 0, tractors = 0;
+        (void)shipyard_hull_cost(hull_rows[i].hull, &frames, &lasers, &tractors);
+        bool ready = shipyard_can_commission_hull(st, hull_rows[i].hull);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+        sdtx_color3b(ready ? PAL_TEXT_SECONDARY : PAL_CANNOT_AFFORD);
+        sdtx_printf("[%s] %-22s %df %dl %dt",
+                    hull_rows[i].key,
+                    ship_loadout_name(hull_rows[i].hull),
+                    frames, lasers, tractors);
+        my += 14.0f;
+    }
+    my += 10.0f;
+
     /* -------- SCAFFOLD KITS -------- */
     my += draw_section_header(cx, my, inner_right, "SCAFFOLD KITS", HDR_YARD);
     sdtx_color3b(PAL_STATION_HINT);
     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-    sdtx_puts("[1-9] order a scaffold kit");
+    if (station_active_shipyard_count(st) >= 2)
+        sdtx_puts("[1-9] order a scaffold kit");
+    else
+        sdtx_puts("Add a second shipyard to fabricate station modules.");
 
     float ly = my + 16.0f;
     int credits = (int)lroundf(player_current_balance());
@@ -2253,7 +2679,7 @@ static void draw_yard_view(const station_ui_state_t *ui,
     for (int t = 0; t < MODULE_COUNT && shown < 9; t++) {
         module_type_t kit = (module_type_t)t;
         if (module_kind(kit) == MODULE_KIND_NONE) continue;
-        if (!station_has_module(ui->station, kit)) continue;
+        if (!station_can_order_scaffold(ui->station, kit)) continue;
         any = true;
         bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit);
         if (!unlocked) { locked++; continue; }
@@ -2293,9 +2719,31 @@ static void draw_yard_view(const station_ui_state_t *ui,
     }
 
     /* -------- QUEUE — pending construction orders -------- */
-    if (ui->station->pending_scaffold_count > 0) {
+    if (ui->station->pending_ship_build_count > 0 ||
+        ui->station->pending_scaffold_count > 0) {
         ly += 10.0f;
         ly += draw_section_header(cx, ly, inner_right, "QUEUE", HDR_YARD);
+    }
+    if (ui->station->pending_ship_build_count > 0) {
+        for (int p = 0; p < ui->station->pending_ship_build_count; p++) {
+            const hull_class_t hull = ui->station->pending_ship_builds[p].hull_class;
+            float progress = ui->station->pending_ship_builds[p].build_progress;
+            if (progress < 0.0f) progress = 0.0f;
+            if (progress > 1.0f) progress = 1.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            if (p == 0) {
+                sdtx_color3b(PAL_DELIVERY_BLUE);
+                sdtx_printf("  ship %d. %s  %.0f%%", p + 1,
+                            ship_loadout_name(hull), progress * 100.0f);
+            } else {
+                sdtx_color3b(PAL_SUPPLY_DIM);
+                sdtx_printf("  ship %d. %s  queued", p + 1,
+                            ship_loadout_name(hull));
+            }
+            ly += 14.0f;
+        }
+    }
+    if (ui->station->pending_scaffold_count > 0) {
         const scaffold_t *nascent = NULL;
         int station_idx = station_index_of(ui->station);
         int nascent_idx = (station_idx >= 0 && station_idx < MAX_STATIONS)
@@ -2360,11 +2808,24 @@ static bool station_panel_visible_shipyard(const station_t *station)
     return station && station_has_module(station, MODULE_SHIPYARD);
 }
 
+static bool station_panel_visible_history(const station_t *station)
+{
+    (void)station;
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        chain_route_history_tail_t row;
+        if (chain_log_read_route_history_tail(&g.world.stations[si],
+                                              &row, 1) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_DOCK] = {
         .view = STATION_VIEW_DOCK,
         .label = "SHIP",
-        .legend = "[R] repair  [M/C/T] refit  [TAB]",
+        .legend = "[R] repair  [M/C/T] refit  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_verbs_view,
         .input_fn = station_panel_input_dock,
@@ -2372,7 +2833,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_TRADE] = {
         .view = STATION_VIEW_TRADE,
         .label = "TRADE",
-        .legend = "[1-5] rows [F] page [S] all [TAB]",
+        .legend = "[F] scroll  [S] sell all  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_trade_view,
         .input_fn = station_panel_input_trade,
@@ -2380,15 +2841,23 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
         .label = "CONTRACTS",
-        .legend = "[1-3] track  [S] deliver  [TAB]",
+        .legend = "[S] accept  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_contracts_view,
         .input_fn = station_panel_input_work,
     },
+    [STATION_VIEW_HISTORY] = {
+        .view = STATION_VIEW_HISTORY,
+        .label = "HISTORY",
+        .legend = "[TAB] panel",
+        .visible_fn = station_panel_visible_history,
+        .draw_fn = draw_history_view,
+        .input_fn = station_panel_input_history,
+    },
     [STATION_VIEW_YARD] = {
         .view = STATION_VIEW_YARD,
         .label = "YARD",
-        .legend = "[1-9] order kit  [TAB]",
+        .legend = "[TAB] panel",
         .visible_fn = station_panel_visible_shipyard,
         .draw_fn = draw_yard_view,
         .input_fn = station_panel_input_yard,
@@ -2521,7 +2990,7 @@ void draw_station_services(const station_ui_state_t* ui) {
      *   CONTRACTS — active contracts and routing
      *   YARD  — fabrication (kits + construction queue, shipyard stations only)
      * Active tab: station-role tint + a short underline latch. Inactive:
-     * muted. The active panel's key legend sits against the panel right edge. */
+     * muted. The active panel's key legend sits at the bottom of the panel. */
     {
         const float cell_w = 8.0f;
         float ty = content_top + 2.0f;
@@ -2560,16 +3029,6 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts(cell);
             tx += w + (tight_tabs ? 4.0f : 10.0f);
         }
-        const char *hint = (active_panel && active_panel->legend)
-            ? active_panel->legend
-            : "[TAB] cycle";
-        float hint_w = (float)strlen(hint) * cell_w;
-        float hint_x = panel_x + panel_w - 20.0f - hint_w;
-        if (!tight_tabs && tx + 12.0f < hint_x) {
-            sdtx_color3b(PAL_TEXT_FADED);
-            sdtx_pos(ui_text_pos(hint_x), ui_text_pos(ty));
-            sdtx_puts(hint);
-        }
 
         /* Latch underline beneath active tab — diegetic "channel selected"
          * affordance in the station-role tint. */
@@ -2589,5 +3048,14 @@ void draw_station_services(const station_ui_state_t* ui) {
     if (active_panel && active_panel->draw_fn)
         active_panel->draw_fn(ui, cx, cy, inner_w, compact);
 
-    (void)panel_h;
+    const char *hint = (active_panel && active_panel->legend)
+        ? active_panel->legend
+        : "[TAB] panels";
+    char hint_fit[96];
+    int hint_chars = (int)floorf((panel_w - 40.0f) / 8.0f);
+    ui_fit_text(hint, hint_chars, hint_fit, sizeof(hint_fit));
+    sdtx_color3b(PAL_TEXT_FADED);
+    sdtx_pos(ui_text_pos(panel_x + 20.0f),
+             ui_text_pos(panel_y + panel_h - (compact ? 56.0f : 62.0f)));
+    sdtx_puts(hint_fit);
 }

@@ -311,6 +311,9 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     setup_two_players(&w);
     server_player_t *thrower = &w.players[0];
 
+    int seeded_hauler = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
+
     /* Find an active hauler — they always run the collision path
      * (vs miners, where it's gated on state). Move it far from any
      * station so the asteroid doesn't bounce off a module mid-flight. */

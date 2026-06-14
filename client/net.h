@@ -83,6 +83,8 @@ typedef struct {
     int target_asteroid;    /* mining target (-1 for none) */
     int towed_fragment;     /* towed fragment (-1 for none) */
     uint8_t tint_r, tint_g, tint_b; /* manifest rarity display tint */
+    uint8_t session_token[8];       /* worker identity for custody labels */
+    uint8_t home_station;           /* 0xFF = unknown */
 } NetNpcState;
 
 /* Callbacks — set these before calling net_init(). */
@@ -177,6 +179,12 @@ typedef struct {
         module_type_t type;
         int8_t owner;
     } pending_scaffolds[STATION_PENDING_SCAFFOLD_RECORD_COUNT];
+    int pending_ship_build_count;
+    struct {
+        hull_class_t hull_class;
+        int8_t owner;
+        float build_progress;
+    } pending_ship_builds[STATION_PENDING_SHIP_RECORD_COUNT];
     char hail_message[STATION_IDENTITY_HAIL_MESSAGE_LEN];
     char miner_chatter[STATION_IDENTITY_CHATTER_LINES][STATION_IDENTITY_CHATTER_LINE_LEN];
     char hauler_chatter[STATION_IDENTITY_CHATTER_LINES][STATION_IDENTITY_CHATTER_LINE_LEN];

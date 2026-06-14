@@ -11,6 +11,10 @@ float             hull_max_for_class(hull_class_t hc);
 
 const hull_def_t* ship_hull_def(const ship_t* ship);
 const hull_def_t* npc_hull_def(const npc_ship_t* npc);
+uint8_t           ship_module_socket_count(const ship_t *ship);
+uint8_t           ship_module_mask(const ship_t *ship);
+bool              ship_has_module(const ship_t *ship, ship_module_flags_t module);
+const char*       ship_loadout_name(hull_class_t hull_class);
 
 vec2 ship_forward(float angle);
 vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship);

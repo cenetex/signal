@@ -104,7 +104,9 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 62  /* v62: station player ledgers expand from 16 to
+#define SAVE_VERSION 63  /* v63: station session data persists pending
+                          * shipyard hull commissions.
+                          * v62: station player ledgers expand from 16 to
                           * STATION_LEDGER_MAX entries. v61 and older saves
                           * still read their historical 16-entry table.
                           * v61: contracts persist target_pub so fracture
@@ -494,6 +496,9 @@ static bool write_station_session(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->pending_scaffold_count);
     for (int p = 0; p < 4; p++)
         WRITE_FIELD(f, s->pending_scaffolds[p]);
+    WRITE_FIELD(f, s->pending_ship_build_count);
+    for (int p = 0; p < 4; p++)
+        WRITE_FIELD(f, s->pending_ship_builds[p]);
     /* Placement plans */
     WRITE_FIELD(f, s->placement_plan_count);
     for (int p = 0; p < 8; p++)
@@ -627,6 +632,25 @@ static bool read_station_session(FILE *f, station_t *s) {
     if (s->pending_scaffold_count > 4) s->pending_scaffold_count = 4;
     for (int p = 0; p < 4; p++)
         READ_FIELD(f, s->pending_scaffolds[p]);
+    if (g_loaded_save_version >= 63) {
+        READ_FIELD(f, s->pending_ship_build_count);
+        if (s->pending_ship_build_count < 0) s->pending_ship_build_count = 0;
+        if (s->pending_ship_build_count > 4) s->pending_ship_build_count = 4;
+        for (int p = 0; p < 4; p++) {
+            READ_FIELD(f, s->pending_ship_builds[p]);
+            if (s->pending_ship_builds[p].hull_class < 0 ||
+                s->pending_ship_builds[p].hull_class >= HULL_CLASS_COUNT) {
+                s->pending_ship_builds[p].hull_class = HULL_CLASS_DRONE_TRACTOR;
+            }
+            if (s->pending_ship_builds[p].build_progress < 0.0f)
+                s->pending_ship_builds[p].build_progress = 0.0f;
+            if (s->pending_ship_builds[p].build_progress > 1.0f)
+                s->pending_ship_builds[p].build_progress = 1.0f;
+        }
+    } else {
+        s->pending_ship_build_count = 0;
+        memset(s->pending_ship_builds, 0, sizeof(s->pending_ship_builds));
+    }
     /* Placement plans */
     READ_FIELD(f, s->placement_plan_count);
     if (s->placement_plan_count < 0) s->placement_plan_count = 0;
@@ -1037,6 +1061,11 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
          * had a token to credit anyway) are not retroactive. */
         memset(n->session_token, 0, sizeof(n->session_token));
     }
+    n->pickup_station = -1;
+    n->pickup_commodity = COMMODITY_COUNT;
+    n->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+    n->hnn_market_station = 0xffu;
+    n->hnn_market_decay_tick = 0;
     /* Validate after the full record is read so the file pointer is
      * always past this NPC's bytes. An active slot with garbage role
      * used to crashloop the server on first sim step (despawn check
@@ -1945,10 +1974,9 @@ bool world_load(world_t *w, const char *path) {
                                      : "verified chain tail matches save");
         }
     }
-    /* Gossip pools are ephemeral (not serialized). Re-bootstrap
-     * stations' known_contracts from the loaded contract array so
-     * post-load NPCs aren't stuck idling against empty pools until
-     * a player happens to dock somewhere. Same shape as world_reset. */
+    /* Gossip pools are ephemeral (not serialized). Rebuild each
+     * station's local view from loaded station/contract state so
+     * reset/load does not invent peer-station radio. */
     gossip_bootstrap_world_stations(w);
     return true;
 }

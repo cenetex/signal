@@ -167,7 +167,7 @@ and defended routes.
 ### 4.2 Tractor & Physics-Based PvP
 - **Towing:** Hold `Space` to tractor fragments or scaffolds. Players can tow up to 10 fragments (with upgrades); NPCs tow one.
 - **The Throw:** Tapping `Space` releases the tow. The fragment retains the ship's velocity vector + a release impulse. This is the game's only offensive mechanic. Damage is calculated as `(impact_velocity - threshold) * scale`.
-- **Attribution:** Released fragments carry the releasing ship's `session_token` for 30 seconds, enabling kill attribution (`DEATH_CAUSE_THROWN_ROCK`).
+- **Attribution:** Released fragments carry the releasing ship's `session_token` for 6 seconds, enabling kill attribution (`DEATH_CAUSE_THROWN_ROCK`) during the ballistic combat window.
 
 ### 4.3 The Three-State Cargo Model
 Matter exists in three distinct states, enforcing a strict provenance boundary at the smelter:
@@ -213,11 +213,32 @@ The long-term game is built from five primitives:
 
 ## 5. AI & NPCs
 
-NPCs operate via state machines, augmented by experimental neural/holographic brains:
-- **Miners:** Exit station → navigate to belt → fracture → tow fragment → return to smelter.
-- **Haulers:** Scan known contracts → pick up cargo at source → navigate to destination → present receipt chain → return.
-- **Tow Drones:** Autonomous scaffold delivery from shipyards to planned outposts.
-- **Frontier Director:** A virtual logistics system that ranks expansion candidates, auto-plans outposts, and manages "virtual pilot" budgets to drive network growth without consuming physical network slots.
+NPCs are moving toward a neural worker model: workers exchange contract gossip
+and market memory when they dock, score job offers from local pressure, then
+resolve any chosen work against exact station authority. "Miner," "hauler," and
+"tow" are assignment outcomes, not permanent identities.
+
+Current worker assignment families:
+
+- **Mining:** Exit station -> navigate to belt -> fracture -> tow fragment ->
+  return to smelter.
+- **Hauling:** Hear demand/supply/route pressure -> pick up cargo at source ->
+  deliver to destination -> present receipt chain.
+- **Delivery proof:** Carry already-bound shipment proof through the delivery
+  ledger, clear debt at the origin, and emit receipt-backed route memory.
+- **Scaffold tow:** Acquire scaffold work from shipyard/construction pressure
+  and tow it to the planned slot or outpost.
+- **Scout/fracture:** Respond to fracture demand, route danger, or stuck-worker
+  pressure.
+- **Repair:** Bias toward repair work when repair-kit supply and damaged-worker
+  signals make it worthwhile.
+- **Frontier Director:** A virtual logistics system that ranks expansion
+  candidates, auto-plans outposts, and manages "virtual pilot" budgets to drive
+  network growth without consuming physical network slots.
+
+Holographic memory is advisory here: it can make a kind of work feel familiar
+to a worker, but contracts, manifests, receipt chains, station ledgers, and
+chain logs decide what is actually true.
 
 Stations should become semi-autonomous institutions with memory, policy, and
 voice. Station AI should not invent drama; it should interpret the drama already
@@ -235,7 +256,7 @@ dark-sector discoveries, debt crises, outpost abandonment, and gate progress.
 ### 6.2 Target Architecture (P2P Browser Mesh)
 - **Goal:** Decentralize the simulation authority to browser peers.
 - **Current determinism ratchet:** `signal_replay` now hashes exact IEEE-754 bits, runs native↔WASM replay gates, and includes long-horizon probes for settlement-critical scenarios.
-- **Remaining blocker:** #588 still owns the durable answer for cross-platform authority: either complete `q32.32` migration for sim state or explicitly graduate the strict-float ratchet into the accepted deterministic substrate with a wider platform matrix.
+- **Remaining blocker:** #588 still owns the durable answer for cross-platform authority. The shipped path is strict IEEE-754 replay with native/WASM comparison; a full `q32.32` sim-state migration is not built. The project needs an explicit decision to either graduate the strict-float ratchet with a wider platform/scenario matrix or resume fixed-point migration for settlement-critical state.
 - **Mesh dependency order:** deterministic replay → canonical settlement events → client state-root comparison → Arweave/permaweb bootstrap → WebRTC quorum mesh.
 
 ---
@@ -263,7 +284,7 @@ Arweave/permaweb anchoring is the core long-term persistence direction for settl
 Priority is ordered by metaproduct leverage: first make object history unavoidable, then make settlement canonical, then make that history portable.
 
 1. **Metaproduct alignment:** Keep this PRD, [ENG.md](ENG.md), [docs/metaproduct.md](docs/metaproduct.md), and [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) aligned around "physical play produces verifiable history."
-2. **#588 determinism acceptance:** Decide whether the strict native↔WASM replay ratchet is the staged acceptance path or whether full `q32.32` remains mandatory before P2P work can proceed.
+2. **#588 determinism acceptance:** Decide whether the strict native↔WASM replay ratchet is the accepted substrate after broader platform/scenario coverage, or whether full `q32.32` remains mandatory before P2P work can proceed.
 3. **#340 / #339 manifest authority:** Make buy, sell, deliver, and production paths move concrete `cargo_unit_t` rows by default, then retire finished-goods float authority.
 4. **Lineage view:** Make rock -> fragment -> ingot -> frame -> outpost/gate contribution inspectable as the killer demo.
 5. **#587 typed provenance contracts:** Add explicit target pubkeys and fracture/death fulfillment so contracts can price witnessed events, not only aggregate commodities.

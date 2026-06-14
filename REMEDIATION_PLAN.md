@@ -44,17 +44,24 @@ and [`ENG.md`](ENG.md) as the canonical framing:
 ## 1. Determinism Acceptance (#588)
 
 **Problem:** P2P and quorum authority require cross-platform deterministic state.
-The original #588 calls for replacing float sim state with `q32.32`. Recent
-work added a stricter replay ratchet: exact IEEE-754 bit hashing, native↔WASM
-replay gates, fracture/thrown-rock coverage, and long-horizon probes.
+The original #588 calls for replacing float sim state with `q32.32`, but that
+rewrite is not what is currently built. Recent work added a stricter replay
+ratchet instead: exact IEEE-754 bit hashing, native↔WASM replay gates,
+fracture/thrown-rock coverage, and long-horizon probes.
 
 **Fix:** Decide and document the acceptance path:
 
 - **Durable path:** migrate settlement-critical sim state and step functions to
   `q32.32`.
-- **Staged path:** promote strict native↔WASM replay gates as the interim
-  acceptance criterion, then add Linux x86 and broader replay scenarios before
-  P2P work depends on it.
+- **Staged path:** promote strict native↔WASM replay gates as the acceptance
+  criterion, then add Linux x86, PR-triggered gates, and broader replay
+  scenarios before P2P work depends on it.
+
+Open coverage gap: the current long-horizon replay setup disables NPC ships
+after world construction, so it stresses flight, physics, production, and
+settlement accumulation but not the neural-worker/gossip/HNN economy over
+10k-100k ticks. Add a long-horizon scenario with active neural workers,
+contract gossip, and HNN exchange before treating the staged path as complete.
 
 Either path must keep render-only math separate from authoritative sim math.
 

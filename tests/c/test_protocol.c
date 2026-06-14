@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "cargo_receipt_issue.h"
 
 TEST(test_roundtrip_player_state) {
     server_player_t sp;
@@ -247,6 +248,8 @@ TEST(test_roundtrip_npcs) {
     npcs[0].ship.angle = 1.57f;
     npcs[0].target_asteroid = 512;
     npcs[0].towed_fragment = 1024;
+    npcs[0].home_station = 2;
+    memcpy(npcs[0].session_token, "NPC\002\000\005\064\022", 8);
 
     npcs[0].tint_r = 0.55f;
     npcs[0].tint_g = 0.25f;
@@ -270,6 +273,8 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(read_u16_le(&p[22]), 512);       /* target_asteroid */
     ASSERT_EQ_INT(read_u16_le(&p[24]), 1024);      /* towed_fragment */
     ASSERT_EQ_INT(p[26], (int)(0.55f * 255.0f));
+    ASSERT(memcmp(&p[29], npcs[0].session_token, 8) == 0);
+    ASSERT_EQ_INT(p[37], 2);
 }
 
 TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
@@ -338,6 +343,196 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     ship_cleanup(&ship);
 }
 
+TEST(test_inspect_snapshot_npc_expands_matching_receipt_chain) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_DOCKED;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    cargo_unit_t unit;
+    memset(&unit, 0, sizeof(unit));
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[31] = 0x67;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_pub, 9, &unit));
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_H;
+
+    cargo_receipt_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.len = 2;
+    memcpy(chain.links[0].cargo_pub, unit.pub, 32);
+    memcpy(chain.links[1].cargo_pub, unit.pub, 32);
+    memset(chain.links[0].authoring_station, 0xA4, 32);
+    memset(chain.links[1].authoring_station, 0xB5, 32);
+    memset(chain.links[0].recipient_pubkey, 0xC6, 32);
+    memset(chain.links[1].recipient_pubkey, 0xD7, 32);
+    chain.links[0].event_id = 7101;
+    chain.links[1].event_id = 7102;
+    ASSERT(ship_manifest_push_with_chain(&ship, &unit, &chain));
+
+    uint8_t expected_head[32];
+    cargo_receipt_hash(&chain.links[1], expected_head);
+    npc.job_diag_count = 1;
+    npc.job_diag_kind[0] = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    npc.job_diag_score[0] = 190;
+    npc.job_diag_selected[0] = 255;
+    npc.job_diag_source[0] = 0;
+    npc.job_diag_dest[0] = 1;
+    npc.job_diag_commodity[0] = (uint8_t)COMMODITY_FERRITE_INGOT;
+    npc.job_diag_reason[0] = (uint8_t)INSPECT_JOB_REASON_RECEIPT_PROOF;
+    npc.job_diag_proof_kind[0] = (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    memcpy(npc.job_diag_proof_hash[0], expected_head, 32);
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[8], 4);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 1);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 4 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *job = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(job[0], INSPECT_DIAG_JOB_HAUL);
+    ASSERT(job[3] & INSPECT_ROW_DIAGNOSTIC);
+
+    uint8_t *receipt = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(receipt[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(receipt[1], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(receipt[2], 2);
+    ASSERT(receipt[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT(!(receipt[3] & INSPECT_ROW_DIAGNOSTIC));
+    ASSERT_EQ_INT(read_u16_le(&receipt[12]), 1);
+    ASSERT(memcmp(&receipt[14], unit.pub, 32) == 0);
+    ASSERT(memcmp(&receipt[46], expected_head, 32) == 0);
+    ASSERT(memcmp(&receipt[78], chain.links[0].authoring_station, 32) == 0);
+    ASSERT(memcmp(&receipt[110], chain.links[1].authoring_station, 32) == 0);
+
+    uint8_t *link0 = receipt + INSPECT_SNAPSHOT_ROW;
+    ASSERT_EQ_INT(link0[0], INSPECT_DIAG_RECEIPT_LINK);
+    ASSERT_EQ_INT(link0[1], 1);
+    ASSERT_EQ_INT(link0[2], 2);
+    ASSERT(link0[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT(link0[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT_EQ_INT((int)read_u64_le(&link0[4]), 7101);
+    ASSERT_EQ_INT(read_u16_le(&link0[12]), 1);
+    ASSERT(memcmp(&link0[14], unit.pub, 32) == 0);
+    uint8_t link0_hash[32];
+    cargo_receipt_hash(&chain.links[0], link0_hash);
+    ASSERT(memcmp(&link0[46], link0_hash, 32) == 0);
+    ASSERT(memcmp(&link0[78], chain.links[0].authoring_station, 32) == 0);
+    ASSERT(memcmp(&link0[110], chain.links[0].recipient_pubkey, 32) == 0);
+
+    uint8_t *link1 = link0 + INSPECT_SNAPSHOT_ROW;
+    ASSERT_EQ_INT(link1[0], INSPECT_DIAG_RECEIPT_LINK);
+    ASSERT_EQ_INT(link1[1], 2);
+    ASSERT_EQ_INT(link1[2], 2);
+    ASSERT(link1[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT(link1[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT_EQ_INT((int)read_u64_le(&link1[4]), 7102);
+    ASSERT_EQ_INT(read_u16_le(&link1[12]), 2);
+    ASSERT(memcmp(&link1[14], unit.pub, 32) == 0);
+    ASSERT(memcmp(&link1[46], expected_head, 32) == 0);
+    ASSERT(memcmp(&link1[78], chain.links[1].authoring_station, 32) == 0);
+    ASSERT(memcmp(&link1[110], chain.links[1].recipient_pubkey, 32) == 0);
+
+    ship_cleanup(&ship);
+}
+
+TEST(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_DOCKED;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    WORLD_DECL;
+    world_reset(&w);
+
+    cargo_unit_t unit;
+    memset(&unit, 0, sizeof(unit));
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[31] = 0x91;
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_COMMON,
+                      fragment_pub, 14, &unit));
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_K;
+
+    cargo_receipt_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    uint8_t recipient[32];
+    uint8_t origin_pin[32];
+    for (int i = 0; i < 32; i++) {
+        recipient[i] = (uint8_t)(0x53 + i);
+        origin_pin[i] = (uint8_t)(0x91 + i);
+    }
+    ASSERT(cargo_receipt_issue(&w.stations[1], 1, 7201, unit.pub,
+                               recipient, origin_pin, &chain.links[0]));
+    chain.len = 1;
+    ASSERT(cargo_receipt_chain_verify(chain.links, chain.len, unit.pub) ==
+           CARGO_RECEIPT_OK);
+    ASSERT(station_manifest_push_with_chain(&w.stations[1], &unit, &chain));
+
+    uint8_t expected_head[32];
+    cargo_receipt_hash(&chain.links[0], expected_head);
+    npc.job_diag_count = 1;
+    npc.job_diag_kind[0] = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    npc.job_diag_score[0] = 190;
+    npc.job_diag_selected[0] = 255;
+    npc.job_diag_source[0] = 0;
+    npc.job_diag_dest[0] = 1;
+    npc.job_diag_commodity[0] = (uint8_t)COMMODITY_CUPRITE_INGOT;
+    npc.job_diag_reason[0] = (uint8_t)INSPECT_JOB_REASON_RECEIPT_PROOF;
+    npc.job_diag_proof_kind[0] = (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    memcpy(npc.job_diag_proof_hash[0], expected_head, 32);
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc_with_station_receipts(
+        buf, 3, &npc, &ship, w.stations, MAX_STATIONS);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[8], 3);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 0);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 3 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *job = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(job[0], INSPECT_DIAG_JOB_HAUL);
+    ASSERT(job[3] & INSPECT_ROW_DIAGNOSTIC);
+
+    uint8_t *receipt = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(receipt[0], COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(receipt[1], MINING_GRADE_COMMON);
+    ASSERT_EQ_INT(receipt[2], 1);
+    ASSERT(receipt[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT(receipt[3] & INSPECT_ROW_STATION_RECEIPT);
+    ASSERT(!(receipt[3] & INSPECT_ROW_DIAGNOSTIC));
+    ASSERT(memcmp(&receipt[14], unit.pub, 32) == 0);
+    ASSERT(memcmp(&receipt[46], expected_head, 32) == 0);
+
+    uint8_t *link0 = receipt + INSPECT_SNAPSHOT_ROW;
+    ASSERT_EQ_INT(link0[0], INSPECT_DIAG_RECEIPT_LINK);
+    ASSERT_EQ_INT(link0[1], 1);
+    ASSERT_EQ_INT(link0[2], 1);
+    ASSERT(link0[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT(link0[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT_EQ_INT((int)read_u64_le(&link0[4]), 7201);
+
+    ship_cleanup(&ship);
+}
+
 TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     server_player_t player;
     memset(&player, 0, sizeof(player));
@@ -388,6 +583,285 @@ TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     ASSERT(memcmp(&p[14], unit.pub, 32) == 0);
 
     ship_cleanup(&player.ship);
+}
+
+TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_DOCKED;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+    npc.knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
+    npc.knowledge.count = 1;
+
+    market_memory_t memory;
+    memset(&memory, 0, sizeof(memory));
+    memory.active = true;
+    memory.memory_kind = (uint8_t)MARKET_MEMORY_DELIVERY_RECEIPT;
+    memory.station_a = 3;
+    memory.station_b = 1;
+    memory.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    memory.action = (uint8_t)CONTRACT_DELIVERY;
+    memory.confidence = 210;
+    memory.salience = 180;
+    memory.quantity_hint = 2;
+    memory.value_hint = 77;
+
+    knowledge_item_t *item = &npc.knowledge.items[0];
+    memset(item, 0, sizeof(*item));
+    item->kind = (uint8_t)KNOW_MARKET;
+    item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+    item->confidence = memory.confidence;
+    item->salience = memory.salience;
+    for (int b = 0; b < 32; b++) {
+        item->subject_hash[b] = (uint8_t)(0x10 + b);
+        item->chain_anchor[b] = (uint8_t)(0x40 + b);
+        item->source_hash[b] = (uint8_t)(0x70 + b);
+        item->witness_hash[b] = (uint8_t)(0xA0 + b);
+    }
+    memcpy(item->payload, &memory, sizeof(memory));
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[8], 1);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 0);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *row = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(row[0], INSPECT_DIAG_DELIVERY_RECEIPT);
+    ASSERT_EQ_INT(row[1], 210);
+    ASSERT_EQ_INT(row[2], 180);
+    ASSERT(row[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT(!(row[3] & INSPECT_ROW_GROUPED));
+    ASSERT_EQ_INT(read_u16_le(&row[12]), 77);
+    ASSERT_EQ_INT(row[4], 3);
+    ASSERT_EQ_INT(row[5], 1);
+    ASSERT_EQ_INT(row[6], CONTRACT_DELIVERY);
+    ASSERT_EQ_INT(row[7], COMMODITY_FERRITE_INGOT);
+    for (int b = 0; b < 32; b++) {
+        ASSERT_EQ_INT(row[14 + b], (uint8_t)(0x10 + b));
+        ASSERT_EQ_INT(row[46 + b], (uint8_t)(0x40 + b));
+        ASSERT_EQ_INT(row[78 + b], (uint8_t)(0x70 + b));
+        ASSERT_EQ_INT(row[110 + b], (uint8_t)(0xA0 + b));
+    }
+
+    ship_cleanup(&ship);
+}
+
+TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_DOCKED;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+    npc.job_diag_count = 1;
+    npc.job_diag_kind[0] = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    npc.job_diag_score[0] = 180;
+    npc.job_diag_selected[0] = 255;
+    npc.job_diag_source[0] = 0;
+    npc.job_diag_dest[0] = 1;
+    npc.job_diag_commodity[0] = (uint8_t)COMMODITY_FERRITE_INGOT;
+    npc.job_diag_reason[0] = (uint8_t)INSPECT_JOB_REASON_ROUTE_MEMORY;
+    npc.job_diag_memory_kind[0] = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
+    npc.job_diag_proof_kind[0] = (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    for (int b = 0; b < 32; b++)
+        npc.job_diag_proof_hash[0][b] = (uint8_t)(0xC0 + b);
+
+    npc.knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
+    npc.knowledge.count = 2;
+    market_memory_t first;
+    memset(&first, 0, sizeof(first));
+    first.active = true;
+    first.memory_kind = (uint8_t)MARKET_MEMORY_DEMAND;
+    first.station_a = 2;
+    first.station_b = 0xffu;
+    first.commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
+    first.action = (uint8_t)CONTRACT_TRACTOR;
+    first.confidence = 120;
+    first.salience = 90;
+    first.value_hint = 11;
+    knowledge_item_t *item = &npc.knowledge.items[0];
+    memset(item, 0, sizeof(*item));
+    item->kind = (uint8_t)KNOW_MARKET;
+    item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+    item->confidence = first.confidence;
+    item->salience = first.salience;
+    memcpy(item->payload, &first, sizeof(first));
+
+    market_memory_t route;
+    memset(&route, 0, sizeof(route));
+    route.active = true;
+    route.memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
+    route.station_a = 1;
+    route.station_b = 0;
+    route.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    route.action = (uint8_t)CONTRACT_TRACTOR;
+    route.confidence = 230;
+    route.salience = 210;
+    route.quantity_hint = 3;
+    route.value_hint = 88;
+    item = &npc.knowledge.items[1];
+    memset(item, 0, sizeof(*item));
+    item->kind = (uint8_t)KNOW_MARKET;
+    item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+    item->confidence = route.confidence;
+    item->salience = route.salience;
+    for (int b = 0; b < 32; b++) {
+        item->subject_hash[b] = (uint8_t)(0x20 + b);
+        item->chain_anchor[b] = (uint8_t)(0xC0 + b);
+        item->source_hash[b] = (uint8_t)(0x60 + b);
+        item->witness_hash[b] = (uint8_t)(0x90 + b);
+    }
+    memcpy(item->payload, &route, sizeof(route));
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[8], 3);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 3 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *job = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(job[0], INSPECT_DIAG_JOB_HAUL);
+
+    uint8_t *source = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(source[0], INSPECT_DIAG_ROUTE_SUCCESS);
+    ASSERT_EQ_INT(source[1], 230);
+    ASSERT_EQ_INT(source[2], 210);
+    ASSERT_EQ_INT(source[4], 1);
+    ASSERT_EQ_INT(source[5], 0);
+    ASSERT_EQ_INT(source[6], CONTRACT_TRACTOR);
+    ASSERT_EQ_INT(source[7], COMMODITY_FERRITE_INGOT);
+    for (int b = 0; b < 32; b++) {
+        ASSERT_EQ_INT(source[14 + b], (uint8_t)(0x20 + b));
+        ASSERT_EQ_INT(source[46 + b], (uint8_t)(0xC0 + b));
+        ASSERT_EQ_INT(source[78 + b], (uint8_t)(0x60 + b));
+        ASSERT_EQ_INT(source[110 + b], (uint8_t)(0x90 + b));
+    }
+
+    uint8_t *general = &buf[INSPECT_SNAPSHOT_HEADER + 2 * INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(general[0], INSPECT_DIAG_MARKET_DEMAND);
+
+    ship_cleanup(&ship);
+}
+
+TEST(test_inspect_snapshot_npc_includes_job_offer_diagnostics) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_DOCKED;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+    npc.job_diag_count = 2;
+    npc.job_diag_kind[0] = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    npc.job_diag_score[0] = 212;
+    npc.job_diag_selected[0] = 255;
+    npc.job_diag_source[0] = 0;
+    npc.job_diag_dest[0] = 1;
+    npc.job_diag_commodity[0] = (uint8_t)COMMODITY_FERRITE_INGOT;
+    npc.job_diag_hint[0] = 25;
+    npc.job_diag_factor_value[0] = 201;
+    npc.job_diag_factor_demand[0] = 202;
+    npc.job_diag_factor_supply[0] = 203;
+    npc.job_diag_factor_route[0] = 204;
+    npc.job_diag_factor_freshness[0] = 205;
+    npc.job_diag_factor_capability[0] = 206;
+    npc.job_diag_factor_proof[0] = 207;
+    npc.job_diag_factor_hologram[0] = 208;
+    npc.job_diag_reason[0] = (uint8_t)INSPECT_JOB_REASON_REMOTE_SUPPLY;
+    npc.job_diag_memory_kind[0] = (uint8_t)MARKET_MEMORY_SUPPLY;
+    npc.job_diag_memory_hops[0] = 3;
+    npc.job_diag_memory_age[0] = 12;
+    npc.job_diag_memory_station[0] = 1;
+    npc.job_diag_proof_kind[0] = (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    npc.job_diag_proof_prefix[0][0] = 0xA1;
+    npc.job_diag_proof_prefix[0][1] = 0xB2;
+    npc.job_diag_proof_prefix[0][2] = 0xC3;
+    npc.job_diag_proof_prefix[0][3] = 0xD4;
+    for (int b = 0; b < 32; b++)
+        npc.job_diag_proof_hash[0][b] = (uint8_t)(0x80 + b);
+    npc.job_diag_kind[1] = (uint8_t)INSPECT_DIAG_JOB_MINE;
+    npc.job_diag_score[1] = 118;
+    npc.job_diag_selected[1] = 96;
+    npc.job_diag_source[1] = 0;
+    npc.job_diag_dest[1] = 0;
+    npc.job_diag_commodity[1] = (uint8_t)COMMODITY_FERRITE_ORE;
+    npc.job_diag_hint[1] = 6;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[8], 2);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 0);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 2 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *haul = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(haul[0], INSPECT_DIAG_JOB_HAUL);
+    ASSERT_EQ_INT(haul[1], 212);
+    ASSERT_EQ_INT(haul[2], 255);
+    ASSERT(haul[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT_EQ_INT(read_u16_le(&haul[12]), 25);
+    ASSERT_EQ_INT(haul[4], 0);
+    ASSERT_EQ_INT(haul[5], 1);
+    ASSERT_EQ_INT(haul[6], INSPECT_DIAG_JOB_HAUL);
+    ASSERT_EQ_INT(haul[7], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_VALUE], 201);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_DEMAND], 202);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_SUPPLY], 203);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_ROUTE], 204);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_FRESHNESS], 205);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_CAPABILITY], 206);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_PROOF], 207);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_FACTOR_HOLOGRAM], 208);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_REASON],
+                  INSPECT_JOB_REASON_REMOTE_SUPPLY);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_MEMORY_KIND],
+                  MARKET_MEMORY_SUPPLY);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_HOPS], 3);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_AGE], 12);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_SOURCE_STATION], 1);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_PROOF_KIND],
+                  INSPECT_JOB_PROOF_CHAIN_ANCHOR);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_PROOF0], 0xA1);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_PROOF1], 0xB2);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_PROOF2], 0xC3);
+    ASSERT_EQ_INT(haul[14 + INSPECT_JOB_META_PROOF3], 0xD4);
+    for (int b = 0; b < 32; b++)
+        ASSERT_EQ_INT(haul[46 + b], (uint8_t)(0x80 + b));
+
+    uint8_t *mine = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(mine[0], INSPECT_DIAG_JOB_MINE);
+    ASSERT_EQ_INT(mine[1], 118);
+    ASSERT_EQ_INT(mine[2], 96);
+    ASSERT(mine[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT_EQ_INT(read_u16_le(&mine[12]), 6);
+    ASSERT_EQ_INT(mine[4], 0);
+    ASSERT_EQ_INT(mine[5], 0);
+    ASSERT_EQ_INT(mine[6], INSPECT_DIAG_JOB_MINE);
+    ASSERT_EQ_INT(mine[7], COMMODITY_FERRITE_ORE);
+
+    ship_cleanup(&ship);
 }
 
 TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
@@ -692,7 +1166,8 @@ TEST(test_station_identity_serializes_operator_text) {
         + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
         + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4
         + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE
-        + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+        + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE
+        + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE;
 
     ASSERT(memcmp(&buf[moff], "station motd", strlen("station motd")) == 0);
     moff += STATION_IDENTITY_HAIL_MESSAGE_LEN;
@@ -705,6 +1180,38 @@ TEST(test_station_identity_serializes_operator_text) {
     ASSERT(memcmp(&buf[moff], "rati line", strlen("rati line")) == 0);
     moff += STATION_IDENTITY_RATI_HAIL_LEN;
     ASSERT(memcmp(&buf[moff], "voice scrip", strlen("voice scrip")) == 0);
+}
+
+TEST(test_station_identity_serializes_pending_ship_builds) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    st.pending_ship_build_count = 2;
+    st.pending_ship_builds[0].hull_class = HULL_CLASS_HAULER;
+    st.pending_ship_builds[0].owner = 3;
+    st.pending_ship_builds[0].build_progress = 0.25f;
+    st.pending_ship_builds[1].hull_class = HULL_CLASS_DRONE_TRACTOR;
+    st.pending_ship_builds[1].owner = -1;
+    st.pending_ship_builds[1].build_progress = 0.0f;
+
+    uint8_t buf[STATION_IDENTITY_SIZE] = {0};
+    int len = serialize_station_identity(buf, 2, &st);
+    ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
+
+    int moff = 59 + COMMODITY_COUNT * 4 + 4
+        + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
+        + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4
+        + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE
+        + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+
+    ASSERT_EQ_INT(buf[moff], 2);
+    moff++;
+    ASSERT_EQ_INT(buf[moff + 0], HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(buf[moff + 1], 3);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[moff + 2]), 0.25f, 0.001f);
+    moff += STATION_PENDING_SHIP_RECORD_SIZE;
+    ASSERT_EQ_INT(buf[moff + 0], HULL_CLASS_DRONE_TRACTOR);
+    ASSERT_EQ_INT(buf[moff + 1], 0xFF);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[moff + 2]), 0.0f, 0.001f);
 }
 
 TEST(test_bug92_station_record_size_matches_buffer) {
@@ -1284,6 +1791,15 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT(read_u16_le(&players[6]), PLAYER_RECORD_SIZE);
     ASSERT_EQ_INT(read_u16_le(&players[10]), 50);
 
+    const uint8_t *npcs = find_protocol_stream(buf, NET_MSG_WORLD_NPCS);
+    ASSERT(npcs != NULL);
+    ASSERT_EQ_INT(npcs[1], PROTOCOL_STREAM_CLASS_LIVE);
+    ASSERT(read_u16_le(&npcs[2]) & PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER);
+    ASSERT_EQ_INT(read_u16_le(&npcs[4]), 2);
+    ASSERT_EQ_INT(read_u16_le(&npcs[6]), NPC_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&npcs[8]), MAX_NPC_SHIPS);
+    ASSERT_EQ_INT(read_u16_le(&npcs[10]), 100);
+
     const uint8_t *input = find_protocol_stream(buf, NET_MSG_INPUT);
     ASSERT(input != NULL);
     ASSERT_EQ_INT(read_u16_le(&input[4]), NET_INPUT_MSG_SIZE);
@@ -1400,13 +1916,19 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
+    RUN(test_inspect_snapshot_npc_expands_matching_receipt_chain);
+    RUN(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain);
     RUN(test_roundtrip_inspect_snapshot_player_manifest_chain);
+    RUN(test_inspect_snapshot_npc_includes_market_memory_diagnostics);
+    RUN(test_inspect_snapshot_npc_expands_matching_job_source_memory);
+    RUN(test_inspect_snapshot_npc_includes_job_offer_diagnostics);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
     RUN(test_inspect_snapshot_groups_finished_goods_by_grade);
     RUN(test_inspect_snapshot_keeps_named_ingots_individual);
     RUN(test_roundtrip_stations);
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_station_identity_serializes_operator_text);
+    RUN(test_station_identity_serializes_pending_ship_builds);
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
     RUN(test_delivery_contract_action_serializes);

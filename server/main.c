@@ -17,6 +17,7 @@
 #include "sim_autopilot.h"
 #include "signal_brain.h"
 #include "signal_contract_brain.h"
+#include "signal_npc_worker_brain.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
@@ -25,6 +26,7 @@
 #include "sha256.h"
 #include "station_authority.h"
 #include "base64.h"
+#include "route_history_labels.h"
 #include "station_policy.h"
 #include "station_util.h"
 #include <math.h>       /* lroundf */
@@ -67,6 +69,7 @@ static int server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
 static const char *server_bot_brain_mode_name = "autopilot";
 static const char *server_bot_brain_checkpoint = NULL;
 static const char *server_bot_contract_brain_checkpoint = NULL;
+static const char *server_bot_npc_worker_brain_checkpoint = NULL;
 static int frontier_virtual_pilot_target = 0;
 static uint32_t fresh_world_seed_override = 0;
 static uint32_t fresh_world_seq_override = 0;
@@ -408,6 +411,10 @@ static void merge_one_shot_input(input_intent_t *dst,
         dst->buy_scaffold_kit = true;
         dst->scaffold_kit_module = src->scaffold_kit_module;
     }
+    if (src->commission_ship) {
+        dst->commission_ship = true;
+        dst->commission_hull_class = src->commission_hull_class;
+    }
     if (src->buy_product) {
         dst->buy_product = true;
         dst->buy_commodity = src->buy_commodity;
@@ -659,6 +666,13 @@ static int action_result_station_pending_count(const server_player_t *sp) {
     return world.stations[st].pending_scaffold_count;
 }
 
+static int action_result_station_pending_ship_build_count(const server_player_t *sp) {
+    int st = sp->pending_action_before_station;
+    if (st < 0 || st >= MAX_STATIONS) return -1;
+    (void)sp;
+    return world.stations[st].pending_ship_build_count;
+}
+
 static void begin_pending_action_result(server_player_t *sp,
                                         uint16_t action_id,
                                         uint16_t input_seq,
@@ -683,6 +697,8 @@ static void begin_pending_action_result(server_player_t *sp,
     sp->pending_action_before_towed_scaffold = sp->ship.towed_scaffold;
     sp->pending_action_before_station_pending_scaffold_count =
         (st >= 0 && st < MAX_STATIONS) ? world.stations[st].pending_scaffold_count : -1;
+    sp->pending_action_before_station_pending_ship_build_count =
+        (st >= 0 && st < MAX_STATIONS) ? world.stations[st].pending_ship_build_count : -1;
     sp->pending_action_before_station_balance = player_station_balance(sp);
 }
 
@@ -702,6 +718,10 @@ static bool pending_action_state_changed(const server_player_t *sp) {
     if (sp->pending_action_before_towed_scaffold != sp->ship.towed_scaffold) return true;
     if (sp->pending_action_before_station_pending_scaffold_count !=
         action_result_station_pending_count(sp)) {
+        return true;
+    }
+    if (sp->pending_action_before_station_pending_ship_build_count !=
+        action_result_station_pending_ship_build_count(sp)) {
         return true;
     }
     if (fabsf(sp->pending_action_before_station_balance -
@@ -2403,6 +2423,71 @@ static void append_callsign_json(char *buf, int *pos, int bufsz,
     json_escape_append(buf, pos, bufsz, cs);
 }
 
+static int collect_route_history_api_aggregates(
+    route_history_aggregate_row_t *out,
+    int cap)
+{
+    if (!out || cap <= 0) return 0;
+    memset(out, 0, (size_t)cap * sizeof(out[0]));
+
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        chain_route_history_tail_t tail[16];
+        int count = chain_log_read_route_history_tail(&world.stations[si],
+                                                      tail, 16);
+        for (int i = 0; i < count; i++) {
+            const chain_payload_route_history_t *p = &tail[i].payload;
+            route_history_aggregate_add_fields(out,
+                                               cap,
+                                               p->memory_kind,
+                                               p->origin_station,
+                                               p->destination_station,
+                                               p->commodity,
+                                               p->action,
+                                               p->evidence_count,
+                                               p->confidence,
+                                               p->salience,
+                                               p->observed_tick);
+        }
+    }
+
+    return route_history_aggregate_sort(out, cap);
+}
+
+static const char *route_history_api_filter_name(uint8_t filter)
+{
+    switch (filter) {
+    case 1:  return "outbound";
+    case 2:  return "inbound";
+    case 3:  return "local";
+    case 0:
+    default: return "all";
+    }
+}
+
+static uint8_t route_history_api_parse_filter(const char *s)
+{
+    if (!s || !*s) return 0;
+    if (strcmp(s, "outbound") == 0 || strcmp(s, "origin") == 0) return 1;
+    if (strcmp(s, "inbound") == 0 || strcmp(s, "destination") == 0) return 2;
+    if (strcmp(s, "local") == 0 || strcmp(s, "events") == 0) return 3;
+    return 0;
+}
+
+static bool route_history_api_filter_matches_aggregate(
+    const route_history_aggregate_row_t *row,
+    uint8_t filter,
+    int station_idx)
+{
+    if (!row || !row->used) return false;
+    switch (filter) {
+    case 1: return station_idx >= 0 && row->origin_station == (uint8_t)station_idx;
+    case 2: return station_idx >= 0 && row->destination_station == (uint8_t)station_idx;
+    case 3: return false;
+    case 0:
+    default: return true;
+    }
+}
+
 static void reply_bot_trace_weights(struct mg_connection *c) {
     enum { BUFSZ = 16384 };
     char *buf = (char *)malloc(BUFSZ);
@@ -2664,10 +2749,15 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     /* Parse query params */
     int include_activity = 0;
     int include_chain_history = 0;
+    uint8_t route_history_filter = 0;
     char tmp[96];
     if (hm && mg_http_get_var(&hm->query, "include", tmp, sizeof(tmp)) > 0) {
         include_activity = strstr(tmp, "activity_history") != NULL || strcmp(tmp, "all") == 0;
         include_chain_history = strstr(tmp, "chain_history") != NULL || strcmp(tmp, "all") == 0;
+    }
+    if (hm && mg_http_get_var(&hm->query, "history_filter",
+                              tmp, sizeof(tmp)) > 0) {
+        route_history_filter = route_history_api_parse_filter(tmp);
     }
     /* Heap-allocated so we aren't bound by the event-loop thread's
      * stack (alpine musl main stack is ~80KB by default). */
@@ -2993,7 +3083,13 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     if (include_chain_history) {
         operator_post_tail_t posts[16];
         int post_count = read_operator_post_tail(st, posts);
-        BUF_APPEND(pos, buf, BUFSZ, ",\"chain_history\":{\"operator_posts\":[");
+        chain_route_history_tail_t route_history[16];
+        int route_count = chain_log_read_route_history_tail(st, route_history,
+                                                            16);
+        BUF_APPEND(pos, buf, BUFSZ,
+                   ",\"chain_history\":{\"history_filter\":\"%s\","
+                   "\"operator_posts\":[",
+                   route_history_api_filter_name(route_history_filter));
         for (int i = 0; i < post_count; i++) {
             if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
             BUF_APPEND(pos, buf, BUFSZ,
@@ -3005,6 +3101,135 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
                 (unsigned)posts[i].tier,
                 (unsigned)posts[i].ref_id);
             json_escape_append(buf, &pos, BUFSZ, posts[i].text);
+            BUF_APPEND(pos, buf, BUFSZ, "\"}");
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "],\"route_history_aggregate\":[");
+        route_history_aggregate_row_t aggregate[8];
+        int aggregate_count = collect_route_history_api_aggregates(
+            aggregate, (int)(sizeof(aggregate) / sizeof(aggregate[0])));
+        int aggregate_written = 0;
+        for (int i = 0; i < aggregate_count; i++) {
+            const route_history_aggregate_row_t *row = &aggregate[i];
+            if (!row->used) continue;
+            if (!route_history_api_filter_matches_aggregate(
+                    row, route_history_filter, sid)) {
+                continue;
+            }
+            char origin_name[24];
+            char destination_name[24];
+            char title[96];
+            char evidence[112];
+            char freshness[96];
+            route_history_station_label(row->origin_station,
+                                        origin_name, sizeof(origin_name));
+            route_history_station_label(row->destination_station,
+                                        destination_name,
+                                        sizeof(destination_name));
+            route_history_aggregate_fields(row->memory_kind,
+                                           row->origin_station,
+                                           row->destination_station,
+                                           row->commodity,
+                                           row->action,
+                                           row->event_count,
+                                           row->evidence_sum,
+                                           row->confidence_peak,
+                                           row->salience_peak,
+                                           row->latest_tick,
+                                           title, sizeof(title),
+                                           evidence, sizeof(evidence),
+                                           freshness, sizeof(freshness));
+            if (aggregate_written++ > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ,
+                "{\"memory_kind\":%u,\"memory_kind_name\":\"%s\","
+                "\"origin_station\":%u,\"origin_station_name\":\"",
+                (unsigned)row->memory_kind,
+                route_history_memory_kind_label(row->memory_kind),
+                (unsigned)row->origin_station);
+            json_escape_append(buf, &pos, BUFSZ, origin_name);
+            BUF_APPEND(pos, buf, BUFSZ,
+                "\",\"destination_station\":%u,"
+                "\"destination_station_name\":\"",
+                (unsigned)row->destination_station);
+            json_escape_append(buf, &pos, BUFSZ, destination_name);
+            BUF_APPEND(pos, buf, BUFSZ,
+                "\",\"commodity\":%u,\"commodity_code\":\"%s\","
+                "\"action\":%u,\"action_name\":\"%s\","
+                "\"signed_row_count\":%u,\"evidence_sum\":%u,"
+                "\"confidence_peak\":%u,\"salience_peak\":%u,"
+                "\"latest_tick\":%u,\"title\":\"",
+                (unsigned)row->commodity,
+                row->commodity < COMMODITY_COUNT
+                    ? commodity_code((commodity_t)row->commodity)
+                    : "UNK",
+                (unsigned)row->action,
+                route_history_action_label(row->action),
+                (unsigned)row->event_count,
+                (unsigned)row->evidence_sum,
+                (unsigned)row->confidence_peak,
+                (unsigned)row->salience_peak,
+                (unsigned)row->latest_tick);
+            json_escape_append(buf, &pos, BUFSZ, title);
+            BUF_APPEND(pos, buf, BUFSZ, "\",\"evidence\":\"");
+            json_escape_append(buf, &pos, BUFSZ, evidence);
+            BUF_APPEND(pos, buf, BUFSZ, "\",\"freshness\":\"");
+            json_escape_append(buf, &pos, BUFSZ, freshness);
+            BUF_APPEND(pos, buf, BUFSZ, "\"}");
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "],\"route_history\":[");
+        for (int i = 0; i < route_count; i++) {
+            const chain_route_history_tail_t *row = &route_history[i];
+            const chain_payload_route_history_t *p = &row->payload;
+            char origin_name[24];
+            char destination_name[24];
+            char summary[160];
+            route_history_station_label(p->origin_station,
+                                        origin_name, sizeof(origin_name));
+            route_history_station_label(p->destination_station,
+                                        destination_name, sizeof(destination_name));
+            route_history_summary_fields(p->memory_kind,
+                                         p->origin_station,
+                                         p->destination_station,
+                                         p->commodity,
+                                         p->action,
+                                         p->evidence_count,
+                                         p->confidence,
+                                         summary, sizeof(summary));
+            if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ,
+                "{\"event_id\":%llu,\"epoch\":%llu,"
+                "\"memory_kind\":%u,\"memory_kind_name\":\"%s\","
+                "\"origin_station\":%u,\"origin_station_name\":\"",
+                (unsigned long long)row->event_id,
+                (unsigned long long)row->epoch,
+                (unsigned)p->memory_kind,
+                route_history_memory_kind_label(p->memory_kind),
+                (unsigned)p->origin_station);
+            json_escape_append(buf, &pos, BUFSZ, origin_name);
+            BUF_APPEND(pos, buf, BUFSZ,
+                "\",\"destination_station\":%u,"
+                "\"destination_station_name\":\"",
+                (unsigned)p->destination_station);
+            json_escape_append(buf, &pos, BUFSZ, destination_name);
+            BUF_APPEND(pos, buf, BUFSZ,
+                "\",\"commodity\":%u,\"commodity_code\":\"%s\","
+                "\"action\":%u,\"action_name\":\"%s\","
+                "\"confidence\":%u,\"salience\":%u,"
+                "\"evidence_count\":%u,\"value_hint\":%u,"
+                "\"observed_tick\":%u,\"subject_nonce\":%llu,"
+                "\"summary\":\"",
+                (unsigned)p->commodity,
+                p->commodity < COMMODITY_COUNT
+                    ? commodity_code((commodity_t)p->commodity)
+                    : "UNK",
+                (unsigned)p->action,
+                route_history_action_label(p->action),
+                (unsigned)p->confidence,
+                (unsigned)p->salience,
+                (unsigned)p->evidence_count,
+                (unsigned)p->value_hint,
+                (unsigned)p->observed_tick,
+                (unsigned long long)p->subject_nonce);
+            json_escape_append(buf, &pos, BUFSZ, summary);
             BUF_APPEND(pos, buf, BUFSZ, "\"}");
         }
         BUF_APPEND(pos, buf, BUFSZ, "]}");
@@ -3031,6 +3256,284 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     }
     BUF_APPEND(pos, buf, BUFSZ, "]}");
 
+    mg_http_reply(c, 200, api_headers, "%s", buf);
+    free(buf);
+}
+
+static const char *api_npc_role_label(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return "miner";
+    case NPC_ROLE_HAULER: return "hauler";
+    case NPC_ROLE_TOW:    return "tow";
+    default:              return "worker";
+    }
+}
+
+static const char *api_npc_state_label(npc_state_t state) {
+    switch (state) {
+    case NPC_STATE_IDLE:               return "idle";
+    case NPC_STATE_TRAVEL_TO_ASTEROID: return "travel_to_asteroid";
+    case NPC_STATE_MINING:             return "mining";
+    case NPC_STATE_RETURN_TO_STATION:  return "return_to_station";
+    case NPC_STATE_DOCKED:             return "docked";
+    case NPC_STATE_TRAVEL_TO_DEST:     return "travel_to_destination";
+    case NPC_STATE_UNLOADING:          return "unloading";
+    default:                           return "unknown";
+    }
+}
+
+static int api_parse_npc_role(const char *text) {
+    if (!text || text[0] == '\0' || strcmp(text, "any") == 0) return -1;
+    if (strcmp(text, "miner") == 0) return (int)NPC_ROLE_MINER;
+    if (strcmp(text, "hauler") == 0) return (int)NPC_ROLE_HAULER;
+    if (strcmp(text, "tow") == 0) return (int)NPC_ROLE_TOW;
+    return -2;
+}
+
+static void api_append_station_ref(char *buf, int *pos, int bufsz,
+                                   const char *key, int station_idx) {
+    BUF_APPEND(*pos, buf, bufsz, "\"%s\":%d,\"%s_name\":\"",
+               key, station_idx, key);
+    if (station_idx >= 0 && station_idx < MAX_STATIONS &&
+        station_exists(&world.stations[station_idx])) {
+        json_escape_append(buf, pos, bufsz, world.stations[station_idx].name);
+    }
+    BUF_APPEND(*pos, buf, bufsz, "\"");
+}
+
+static void api_append_npc_contracts(char *buf, int *pos, int bufsz,
+                                     const npc_ship_t *npc) {
+    BUF_APPEND(*pos, buf, bufsz, "\"known_contracts\":[");
+    int count = npc->known_contract_count;
+    if (count > SHIP_KNOWN_CONTRACT_CAP) count = SHIP_KNOWN_CONTRACT_CAP;
+    for (int i = 0; i < count; i++) {
+        const contract_summary_t *cs = &npc->known_contracts[i];
+        if (i > 0) BUF_APPEND(*pos, buf, bufsz, ",");
+        BUF_APPEND(*pos, buf, bufsz,
+                   "{\"action\":%u,\"action_name\":\"%s\","
+                   "\"station\":%u,\"station_name\":\"",
+                   (unsigned)cs->action,
+                   route_history_action_label(cs->action),
+                   (unsigned)cs->station_index);
+        if (cs->station_index < MAX_STATIONS &&
+            station_exists(&world.stations[cs->station_index])) {
+            json_escape_append(buf, pos, bufsz,
+                               world.stations[cs->station_index].name);
+        }
+        BUF_APPEND(*pos, buf, bufsz,
+                   "\",\"commodity\":%u,\"commodity_code\":\"%s\","
+                   "\"quantity\":%u,\"price\":%u,\"age\":%u}",
+                   (unsigned)cs->commodity,
+                   cs->commodity < COMMODITY_COUNT
+                       ? commodity_code((commodity_t)cs->commodity)
+                       : "UNK",
+                   (unsigned)cs->quantity_needed,
+                   (unsigned)cs->base_price,
+                   (unsigned)cs->age_at_copy);
+    }
+    BUF_APPEND(*pos, buf, bufsz, "]");
+}
+
+static void api_append_npc_market_memories(char *buf, int *pos, int bufsz,
+                                           const npc_ship_t *npc) {
+    BUF_APPEND(*pos, buf, bufsz, "\"market_memories\":[");
+    int written = 0;
+    int item_count = npc->knowledge.count;
+    if (item_count > KNOWLEDGE_VIEW_MAX_CAP) item_count = KNOWLEDGE_VIEW_MAX_CAP;
+    for (int i = 0; i < item_count; i++) {
+        const knowledge_item_t *item = &npc->knowledge.items[i];
+        market_memory_t memory;
+        memset(&memory, 0, sizeof(memory));
+        if (!inspect_snapshot_market_memory_from_item(item, &memory))
+            continue;
+        if (written++ > 0) BUF_APPEND(*pos, buf, bufsz, ",");
+        BUF_APPEND(*pos, buf, bufsz,
+                   "{\"kind\":%u,\"kind_name\":\"%s\","
+                   "\"station_a\":%u,\"station_a_name\":\"",
+                   (unsigned)memory.memory_kind,
+                   route_history_memory_kind_label(memory.memory_kind),
+                   (unsigned)memory.station_a);
+        if (memory.station_a < MAX_STATIONS &&
+            station_exists(&world.stations[memory.station_a])) {
+            json_escape_append(buf, pos, bufsz,
+                               world.stations[memory.station_a].name);
+        }
+        BUF_APPEND(*pos, buf, bufsz,
+                   "\",\"station_b\":%u,\"station_b_name\":\"",
+                   (unsigned)memory.station_b);
+        if (memory.station_b < MAX_STATIONS &&
+            station_exists(&world.stations[memory.station_b])) {
+            json_escape_append(buf, pos, bufsz,
+                               world.stations[memory.station_b].name);
+        }
+        BUF_APPEND(*pos, buf, bufsz,
+                   "\",\"commodity\":%u,\"commodity_code\":\"%s\","
+                   "\"action\":%u,\"action_name\":\"%s\","
+                   "\"confidence\":%u,\"salience\":%u,"
+                   "\"quantity_hint\":%u,\"value_hint\":%u,"
+                   "\"observed_tick\":%u,\"learned_tick\":%llu,"
+                   "\"hops\":%u,\"subject_nonce\":%llu}",
+                   (unsigned)memory.commodity,
+                   memory.commodity < COMMODITY_COUNT
+                       ? commodity_code((commodity_t)memory.commodity)
+                       : "UNK",
+                   (unsigned)memory.action,
+                   route_history_action_label(memory.action),
+                   (unsigned)memory.confidence,
+                   (unsigned)memory.salience,
+                   (unsigned)memory.quantity_hint,
+                   (unsigned)memory.value_hint,
+                   (unsigned)memory.observed_tick,
+                   (unsigned long long)item->learned_tick,
+                   (unsigned)item->hops,
+                   (unsigned long long)memory.subject_nonce);
+    }
+    BUF_APPEND(*pos, buf, bufsz, "]");
+}
+
+static void api_append_npc_job_diagnostics(char *buf, int *pos, int bufsz,
+                                           const npc_ship_t *npc) {
+    BUF_APPEND(*pos, buf, bufsz, "\"job_diagnostics\":[");
+    int count = npc->job_diag_count;
+    int cap = (int)(sizeof(npc->job_diag_kind) / sizeof(npc->job_diag_kind[0]));
+    if (count > cap) count = cap;
+    for (int i = 0; i < count; i++) {
+        if (i > 0) BUF_APPEND(*pos, buf, bufsz, ",");
+        BUF_APPEND(*pos, buf, bufsz,
+                   "{\"kind\":%u,\"score\":%u,\"selected\":%s,"
+                   "\"source\":%u,\"source_name\":\"",
+                   (unsigned)npc->job_diag_kind[i],
+                   (unsigned)npc->job_diag_score[i],
+                   npc->job_diag_selected[i] ? "true" : "false",
+                   (unsigned)npc->job_diag_source[i]);
+        if (npc->job_diag_source[i] < MAX_STATIONS &&
+            station_exists(&world.stations[npc->job_diag_source[i]])) {
+            json_escape_append(buf, pos, bufsz,
+                               world.stations[npc->job_diag_source[i]].name);
+        }
+        BUF_APPEND(*pos, buf, bufsz,
+                   "\",\"dest\":%u,\"dest_name\":\"",
+                   (unsigned)npc->job_diag_dest[i]);
+        if (npc->job_diag_dest[i] < MAX_STATIONS &&
+            station_exists(&world.stations[npc->job_diag_dest[i]])) {
+            json_escape_append(buf, pos, bufsz,
+                               world.stations[npc->job_diag_dest[i]].name);
+        }
+        BUF_APPEND(*pos, buf, bufsz,
+                   "\",\"commodity\":%u,\"commodity_code\":\"%s\","
+                   "\"hint\":%u,\"reason\":%u,"
+                   "\"memory_kind\":%u,\"memory_kind_name\":\"%s\","
+                   "\"memory_hops\":%u,\"memory_age\":%u,"
+                   "\"memory_station\":%u}",
+                   (unsigned)npc->job_diag_commodity[i],
+                   npc->job_diag_commodity[i] < COMMODITY_COUNT
+                       ? commodity_code((commodity_t)npc->job_diag_commodity[i])
+                       : "UNK",
+                   (unsigned)npc->job_diag_hint[i],
+                   (unsigned)npc->job_diag_reason[i],
+                   (unsigned)npc->job_diag_memory_kind[i],
+                   route_history_memory_kind_label(npc->job_diag_memory_kind[i]),
+                   (unsigned)npc->job_diag_memory_hops[i],
+                   (unsigned)npc->job_diag_memory_age[i],
+                   (unsigned)npc->job_diag_memory_station[i]);
+    }
+    BUF_APPEND(*pos, buf, bufsz, "]");
+}
+
+static void api_append_npc_chatter_record(char *buf, int *pos, int bufsz,
+                                          int slot, const npc_ship_t *npc) {
+    float cargo_total = 0.0f;
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        cargo_total += npc->cargo[c];
+
+    BUF_APPEND(*pos, buf, bufsz,
+               "{\"slot\":%d,\"role\":\"%s\",\"state\":\"%s\",",
+               slot, api_npc_role_label(npc->role),
+               api_npc_state_label(npc->state));
+    api_append_station_ref(buf, pos, bufsz, "home_station", npc->home_station);
+    BUF_APPEND(*pos, buf, bufsz, ",");
+    api_append_station_ref(buf, pos, bufsz, "dest_station", npc->dest_station);
+    BUF_APPEND(*pos, buf, bufsz, ",");
+    api_append_station_ref(buf, pos, bufsz, "pickup_station", npc->pickup_station);
+    BUF_APPEND(*pos, buf, bufsz,
+               ",\"position\":{\"x\":%.1f,\"y\":%.1f},"
+               "\"velocity\":{\"x\":%.2f,\"y\":%.2f},"
+               "\"hull\":%.1f,\"cargo_total\":%.1f,"
+               "\"target_asteroid\":%d,\"towed_fragment\":%d,"
+               "\"towed_scaffold\":%d,\"cargo\":[",
+               npc->ship.pos.x, npc->ship.pos.y,
+               npc->ship.vel.x, npc->ship.vel.y,
+               npc->hull, cargo_total, npc->target_asteroid,
+               npc->towed_fragment, npc->towed_scaffold);
+    int cargo_written = 0;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (npc->cargo[c] <= 0.0f) continue;
+        if (cargo_written++ > 0) BUF_APPEND(*pos, buf, bufsz, ",");
+        BUF_APPEND(*pos, buf, bufsz,
+                   "{\"commodity\":%d,\"commodity_code\":\"%s\",\"amount\":%.1f}",
+                   c, commodity_code((commodity_t)c), npc->cargo[c]);
+    }
+    BUF_APPEND(*pos, buf, bufsz, "],");
+    api_append_npc_job_diagnostics(buf, pos, bufsz, npc);
+    BUF_APPEND(*pos, buf, bufsz, ",");
+    api_append_npc_market_memories(buf, pos, bufsz, npc);
+    BUF_APPEND(*pos, buf, bufsz, ",");
+    api_append_npc_contracts(buf, pos, bufsz, npc);
+    BUF_APPEND(*pos, buf, bufsz, "}");
+}
+
+static void handle_npc_chatter_context(struct mg_connection *c,
+                                       struct mg_http_message *hm) {
+    char tmp[64];
+    long slot_filter = -1;
+    long station_filter = -1;
+    long limit = 3;
+    int role_filter = -1;
+
+    if (hm && mg_http_get_var(&hm->query, "slot", tmp, sizeof(tmp)) > 0)
+        slot_filter = strtol(tmp, NULL, 10);
+    if (hm && mg_http_get_var(&hm->query, "station", tmp, sizeof(tmp)) > 0)
+        station_filter = strtol(tmp, NULL, 10);
+    if (hm && mg_http_get_var(&hm->query, "limit", tmp, sizeof(tmp)) > 0)
+        limit = strtol(tmp, NULL, 10);
+    if (hm && mg_http_get_var(&hm->query, "role", tmp, sizeof(tmp)) > 0)
+        role_filter = api_parse_npc_role(tmp);
+
+    if (role_filter == -2) {
+        mg_http_reply(c, 400, api_headers, "{\"error\":\"invalid role\"}");
+        return;
+    }
+    if (limit <= 0) limit = 1;
+    if (limit > 16) limit = 16;
+
+    enum { BUFSZ = 131072 };
+    char *buf = (char *)malloc(BUFSZ);
+    if (!buf) {
+        mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+        return;
+    }
+    int pos = 0;
+    int written = 0;
+
+    BUF_APPEND(pos, buf, BUFSZ,
+               "{\"world\":{\"tick\":%u,\"time\":%.3f,"
+               "\"belt_seed\":%u,\"world_seq\":%u},\"npcs\":[",
+               world.tick, world.time, world.belt_seed, world.world_seq);
+    for (int i = 0; i < MAX_NPC_SHIPS && written < limit; i++) {
+        const npc_ship_t *npc = &world.npc_ships[i];
+        if (!npc->active) continue;
+        if (slot_filter >= 0 && slot_filter != i) continue;
+        if (role_filter >= 0 && (int)npc->role != role_filter) continue;
+        if (station_filter >= 0 &&
+            npc->home_station != station_filter &&
+            npc->dest_station != station_filter &&
+            npc->pickup_station != station_filter) {
+            continue;
+        }
+        if (written++ > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        api_append_npc_chatter_record(buf, &pos, BUFSZ, i, npc);
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "]}");
     mg_http_reply(c, 200, api_headers, "%s", buf);
     free(buf);
 }
@@ -3278,6 +3781,12 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             } else {
                 handle_protocol_info_http(c);
             }
+        } else if (mg_match(hm->uri, mg_str("/api/npc_chatter_context"), NULL)) {
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else {
+                handle_npc_chatter_context(c, hm);
+            }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/state"), NULL)) {
             if (!api_rate_check()) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
@@ -3460,6 +3969,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"server_contract_brain_inferences\":%llu,"
                        "\"server_contract_brain_decisions\":%llu,"
                        "\"server_contract_brain_teacher_decisions\":%llu,"
+                       "\"server_npc_worker_brain_loaded\":%s,"
+                       "\"server_npc_worker_brain_inferences\":%llu,"
+                       "\"server_npc_worker_brain_decisions\":%llu,"
+                       "\"server_npc_worker_brain_teacher_decisions\":%llu,"
                        "\"version\":\"%s\","
                        "\"persistence\":{\"mode\":\"%s\","
                        "\"load_enabled\":%s,\"save_enabled\":%s,"
@@ -3481,6 +3994,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        (unsigned long long)signal_contract_brain_inference_count(),
                        (unsigned long long)signal_contract_brain_decision_count(),
                        (unsigned long long)signal_contract_brain_teacher_decision_count(),
+                       signal_npc_worker_brain_loaded() ? "true" : "false",
+                       (unsigned long long)signal_npc_worker_brain_inference_count(),
+                       (unsigned long long)signal_npc_worker_brain_decision_count(),
+                       (unsigned long long)signal_npc_worker_brain_teacher_decision_count(),
                        version,
                        "local",
                        true ? "true" : "false",
@@ -3821,6 +4338,8 @@ static void broadcast_world(void) {
                 q[26] = (uint8_t)(n->tint_r * 255.0f);
                 q[27] = (uint8_t)(n->tint_g * 255.0f);
                 q[28] = (uint8_t)(n->tint_b * 255.0f);
+                memcpy(&q[29], n->session_token, sizeof(n->session_token));
+                q[37] = (uint8_t)(n->home_station & 0xFF);
                 count++;
             }
             nbuf[0] = NET_MSG_WORLD_NPCS;
@@ -3906,8 +4425,9 @@ static int send_inspect_snapshot(uint8_t *buf, const server_player_t *sp) {
         sp->scan_target_index < MAX_NPC_SHIPS) {
         const npc_ship_t *npc = &world.npc_ships[sp->scan_target_index];
         ship_t *ship = world_npc_ship_for(&world, sp->scan_target_index);
-        return serialize_inspect_snapshot_npc(buf, (uint8_t)sp->scan_target_index,
-                                              npc, ship);
+        return serialize_inspect_snapshot_npc_with_station_receipts(
+            buf, (uint8_t)sp->scan_target_index, npc, ship,
+            world.stations, MAX_STATIONS);
     }
 
     if (sp->scan_target_type == INSPECT_TARGET_PLAYER &&
@@ -4279,6 +4799,8 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         }
         server_bot_brain_checkpoint = getenv("SIGNAL_BOT_BRAIN_CHECKPOINT");
         server_bot_contract_brain_checkpoint = getenv("SIGNAL_BOT_CONTRACT_BRAIN_CHECKPOINT");
+        server_bot_npc_worker_brain_checkpoint =
+            getenv("SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT");
         if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
             (!server_bot_brain_checkpoint || server_bot_brain_checkpoint[0] == '\0')) {
             fprintf(stderr, "[FATAL] SIGNAL_BOT_BRAIN_MODE=neural requires "
@@ -4293,6 +4815,11 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
                        server_bot_contract_brain_checkpoint);
             } else if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
                 printf("[server] Server bot contract brain: teacher fallback\n");
+            }
+            if (server_bot_npc_worker_brain_checkpoint &&
+                server_bot_npc_worker_brain_checkpoint[0] != '\0') {
+                printf("[server] Server bot NPC worker brain checkpoint: %s\n",
+                       server_bot_npc_worker_brain_checkpoint);
             }
         }
     }
@@ -4779,6 +5306,21 @@ int main(void) {
             printf("[server] loaded neural contract brain checkpoint: %s\n",
                    server_bot_contract_brain_checkpoint);
         }
+    }
+    if (server_bot_npc_worker_brain_checkpoint &&
+        server_bot_npc_worker_brain_checkpoint[0] != '\0') {
+        char worker_err[256];
+        if (!signal_npc_worker_brain_load_checkpoint(
+                server_bot_npc_worker_brain_checkpoint,
+                worker_err,
+                sizeof(worker_err))) {
+            fprintf(stderr, "[FATAL] failed to load "
+                            "SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT=%s: %s\n",
+                    server_bot_npc_worker_brain_checkpoint, worker_err);
+            return 1;
+        }
+        printf("[server] loaded NPC worker brain checkpoint: %s\n",
+               server_bot_npc_worker_brain_checkpoint);
     }
 
     /* ── aws-swarm avatar keypair import ────────────────────────────

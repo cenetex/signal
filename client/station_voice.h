@@ -46,6 +46,6 @@ static STATION_VOICE_UNUSED const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_CO
     "on schedule",
 };
 
-/* Tow drones: silent. The silence is characterization. */
+/* Legacy non-worker NPC roles stay silent. The silence is characterization. */
 
 #endif /* STATION_VOICE_H */

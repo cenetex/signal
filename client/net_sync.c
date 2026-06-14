@@ -534,6 +534,9 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
         n->tint_b = (float)npcs[i].tint_b / 255.0f;
+        memcpy(n->session_token, npcs[i].session_token, sizeof(n->session_token));
+        n->home_station = (npcs[i].home_station == 0xFFu)
+            ? -1 : (int)npcs[i].home_station;
     }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -763,6 +766,12 @@ void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot) {
             g.inspect_was_active = false;
         }
     } else {
+        if (g.inspect_snapshot.target_type != snapshot->target_type ||
+            g.inspect_snapshot.target_index != snapshot->target_index ||
+            g.inspect_snapshot.module_index != snapshot->module_index) {
+            g.inspect_receipt_page = 0;
+            g.inspect_receipt_browser = false;
+        }
         g.inspect_snapshot = *snapshot;
         g.inspect_snapshot_timer = 0.60f;
         g.inspect_was_active = true;
@@ -936,6 +945,16 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     for (int p = 0; p < st->pending_scaffold_count; p++) {
         st->pending_scaffolds[p].type  = si->pending_scaffolds[p].type;
         st->pending_scaffolds[p].owner = si->pending_scaffolds[p].owner;
+    }
+    st->pending_ship_build_count = si->pending_ship_build_count;
+    if (st->pending_ship_build_count > 4) st->pending_ship_build_count = 4;
+    for (int p = 0; p < st->pending_ship_build_count; p++) {
+        st->pending_ship_builds[p].hull_class =
+            si->pending_ship_builds[p].hull_class;
+        st->pending_ship_builds[p].owner =
+            si->pending_ship_builds[p].owner;
+        st->pending_ship_builds[p].build_progress =
+            si->pending_ship_builds[p].build_progress;
     }
     snprintf(st->hail_message, sizeof(st->hail_message), "%s", si->hail_message);
     for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {

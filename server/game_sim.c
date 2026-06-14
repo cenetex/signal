@@ -285,9 +285,11 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .tractor_range = 150.0f,
         .ship_radius   = 16.0f,
         .render_scale  = 1.0f,
+        .module_slots  = 3,
+        .module_mask   = SHIP_MODULE_TRACTOR | SHIP_MODULE_LASER | SHIP_MODULE_CARGO,
     },
     [HULL_CLASS_HAULER] = {
-        .name          = "Cargo Hauler",
+        .name          = "Frame-2 Cargo Hauler",
         .max_hull      = 150.0f,
         .accel         = 140.0f,
         .turn_speed    = 1.6f,
@@ -298,9 +300,11 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .tractor_range = 0.0f,
         .ship_radius   = 22.0f,
         .render_scale  = 1.15f,
+        .module_slots  = 2,
+        .module_mask   = SHIP_MODULE_TRACTOR | SHIP_MODULE_CARGO,
     },
     [HULL_CLASS_NPC_MINER] = {
-        .name          = "Mining Drone",
+        .name          = "Frame-2 Mining Workboat",
         .max_hull      = 100.0f,
         .accel         = 300.0f,
         .turn_speed    = 2.75f,
@@ -311,6 +315,53 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .tractor_range = 150.0f,
         .ship_radius   = 16.0f,
         .render_scale  = 0.7f,
+        .module_slots  = 2,
+        .module_mask   = SHIP_MODULE_TRACTOR | SHIP_MODULE_LASER,
+    },
+    [HULL_CLASS_DRONE_TRACTOR] = {
+        .name          = "Frame-1 Tractor Drone",
+        .max_hull      = 55.0f,
+        .accel         = 340.0f,
+        .turn_speed    = 3.1f,
+        .drag          = 0.50f,
+        .cargo_capacity  = 0.0f,
+        .ingot_capacity= 0.0f,
+        .mining_rate   = 0.0f,
+        .tractor_range = 145.0f,
+        .ship_radius   = 11.0f,
+        .render_scale  = 0.58f,
+        .module_slots  = 1,
+        .module_mask   = SHIP_MODULE_TRACTOR,
+    },
+    [HULL_CLASS_DRONE_LASER] = {
+        .name          = "Frame-1 Laser Drone",
+        .max_hull      = 55.0f,
+        .accel         = 350.0f,
+        .turn_speed    = 3.2f,
+        .drag          = 0.48f,
+        .cargo_capacity  = 0.0f,
+        .ingot_capacity= 0.0f,
+        .mining_rate   = 18.0f,
+        .tractor_range = 0.0f,
+        .ship_radius   = 11.0f,
+        .render_scale  = 0.55f,
+        .module_slots  = 1,
+        .module_mask   = SHIP_MODULE_LASER,
+    },
+    [HULL_CLASS_DRONE_CARGO] = {
+        .name          = "Frame-1 Cargo Drone",
+        .max_hull      = 65.0f,
+        .accel         = 260.0f,
+        .turn_speed    = 2.5f,
+        .drag          = 0.54f,
+        .cargo_capacity  = 0.0f,
+        .ingot_capacity= 12.0f,
+        .mining_rate   = 0.0f,
+        .tractor_range = 0.0f,
+        .ship_radius   = 12.0f,
+        .render_scale  = 0.62f,
+        .module_slots  = 1,
+        .module_mask   = SHIP_MODULE_CARGO,
     },
 };
 
@@ -1611,6 +1662,155 @@ static bool delivery_shipment_has_pub(const delivery_shipment_t *shipment,
     return false;
 }
 
+static uint64_t delivery_receipt_nonce(const delivery_shipment_t *shipment) {
+    if (!shipment) return 0;
+    return (uint64_t)shipment->shipment_id
+         | ((uint64_t)shipment->origin_station << 16)
+         | ((uint64_t)shipment->destination_station << 24)
+         | ((uint64_t)shipment->commodity << 32);
+}
+
+static void delivery_receipt_anchor(const delivery_shipment_t *shipment,
+                                    uint8_t out[32]) {
+    if (!out) return;
+    uint8_t buf[16 + MAX_DELIVERY_BOUND_CARGO * 32] = {0};
+    if (!shipment) {
+        sha256_bytes(buf, sizeof(buf), out);
+        return;
+    }
+    buf[0] = (uint8_t)(shipment->shipment_id & 0xffu);
+    buf[1] = (uint8_t)((shipment->shipment_id >> 8) & 0xffu);
+    buf[2] = shipment->origin_station;
+    buf[3] = shipment->destination_station;
+    buf[4] = shipment->contract_index;
+    buf[5] = shipment->commodity;
+    buf[6] = (uint8_t)(shipment->quantity_total & 0xffu);
+    buf[7] = (uint8_t)((shipment->quantity_total >> 8) & 0xffu);
+    buf[8] = (uint8_t)(shipment->quantity_delivered & 0xffu);
+    buf[9] = (uint8_t)((shipment->quantity_delivered >> 8) & 0xffu);
+    uint16_t n = shipment->quantity_bound < MAX_DELIVERY_BOUND_CARGO
+        ? shipment->quantity_bound
+        : MAX_DELIVERY_BOUND_CARGO;
+    for (uint16_t i = 0; i < n; i++)
+        memcpy(&buf[16 + i * 32], shipment->cargo_pub[i], 32);
+    sha256_bytes(buf, sizeof(buf), out);
+}
+
+static void delivery_emit_receipt_memory(world_t *w,
+                                         server_player_t *sp,
+                                         station_t *dest,
+                                         const delivery_shipment_t *shipment,
+                                         float payout) {
+    if (!w || !sp || !dest || !shipment) return;
+    if (shipment->quantity_delivered == 0) return;
+    market_memory_t memory = {0};
+    if (!market_memory_from_delivery_receipt(
+            shipment->origin_station,
+            shipment->destination_station,
+            (commodity_t)shipment->commodity,
+            shipment->quantity_delivered,
+            payout,
+            w->tick,
+            delivery_receipt_nonce(shipment),
+            &memory)) {
+        return;
+    }
+
+    knowledge_item_t item;
+    if (!knowledge_item_from_market_memory(&memory, &item)) return;
+    delivery_receipt_anchor(shipment, item.chain_anchor);
+
+    knowledge_view_configure(&dest->knowledge, STATION_KNOWN_ITEM_CAP);
+    knowledge_view_insert(&dest->knowledge, &item);
+    market_memory_t reputation = {0};
+    if (market_memory_from_route_reputation(
+            shipment->origin_station,
+            shipment->destination_station,
+            (commodity_t)shipment->commodity,
+            shipment->quantity_delivered,
+            payout,
+            w->tick,
+            false,
+            &reputation)) {
+        knowledge_view_reinforce_route_reputation(&dest->knowledge, &reputation);
+    }
+    market_memory_t trust = {0};
+    if (market_memory_from_station_trust(
+            shipment->destination_station,
+            (uint8_t)CONTRACT_DELIVERY,
+            (commodity_t)shipment->commodity,
+            shipment->quantity_delivered,
+            payout,
+            w->tick,
+            &trust)) {
+        knowledge_view_reinforce_station_trust(&dest->knowledge, &trust);
+    }
+    knowledge_view_forget_contract(&dest->knowledge,
+                                   (uint8_t)CONTRACT_DELIVERY,
+                                   shipment->destination_station,
+                                   (commodity_t)shipment->commodity);
+
+    knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_insert(&sp->ship.knowledge, &item);
+    if (reputation.active)
+        knowledge_view_reinforce_route_reputation(&sp->ship.knowledge, &reputation);
+    if (trust.active)
+        knowledge_view_reinforce_station_trust(&sp->ship.knowledge, &trust);
+    knowledge_view_forget_contract(&sp->ship.knowledge,
+                                   (uint8_t)CONTRACT_DELIVERY,
+                                   shipment->destination_station,
+                                   (commodity_t)shipment->commodity);
+}
+
+static void delivery_emit_default_memory(world_t *w,
+                                         server_player_t *sp,
+                                         station_t *observer,
+                                         const delivery_shipment_t *shipment,
+                                         float value_hint) {
+    if (!w || !shipment) return;
+    if (shipment->destination_station >= MAX_STATIONS) return;
+    commodity_t commodity = (commodity_t)shipment->commodity;
+    if (commodity >= COMMODITY_COUNT) return;
+
+    market_memory_t risk = {0};
+    if (!market_memory_from_station_risk(
+            shipment->destination_station,
+            (uint8_t)CONTRACT_DELIVERY,
+            commodity,
+            1,
+            value_hint,
+            w->tick,
+            &risk)) {
+        return;
+    }
+
+    station_t *dest = &w->stations[shipment->destination_station];
+    if (station_exists(dest)) {
+        knowledge_view_configure(&dest->knowledge, STATION_KNOWN_ITEM_CAP);
+        knowledge_view_reinforce_station_trust(&dest->knowledge, &risk);
+        knowledge_view_forget_contract(&dest->knowledge,
+                                       (uint8_t)CONTRACT_DELIVERY,
+                                       shipment->destination_station,
+                                       commodity);
+    }
+    if (observer && observer != dest && station_exists(observer)) {
+        knowledge_view_configure(&observer->knowledge, STATION_KNOWN_ITEM_CAP);
+        knowledge_view_reinforce_station_trust(&observer->knowledge, &risk);
+        knowledge_view_forget_contract(&observer->knowledge,
+                                       (uint8_t)CONTRACT_DELIVERY,
+                                       shipment->destination_station,
+                                       commodity);
+    }
+    if (sp) {
+        knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+        knowledge_view_reinforce_station_trust(&sp->ship.knowledge, &risk);
+        knowledge_view_forget_contract(&sp->ship.knowledge,
+                                       (uint8_t)CONTRACT_DELIVERY,
+                                       shipment->destination_station,
+                                       commodity);
+    }
+}
+
 static delivery_shipment_t *delivery_shipment_for_cargo(
     world_t *w, int player_id, const uint8_t pub[32])
 {
@@ -1863,6 +2063,7 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
         uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
             ? (uint16_t)(shipment->quantity_total - shipment->quantity_delivered)
             : 0;
+        float shipment_payout = 0.0f;
         while (remaining > 0) {
             int idx = delivery_find_bound_ship_unit(w, sp, shipment, c,
                                                     MINING_GRADE_COUNT);
@@ -1879,6 +2080,7 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
                 ? shipment->destination_payout / (float)shipment->quantity_total
                 : 0.0f;
             payout += unit_pay;
+            shipment_payout += unit_pay;
             sync_ship_finished_cargo(&sp->ship, c);
             sync_station_finished_inventory(st, c);
         }
@@ -1890,6 +2092,7 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
                 w->contracts[ci].action == CONTRACT_DELIVERY) {
                 w->contracts[ci].quantity_needed = 0.0f;
             }
+            delivery_emit_receipt_memory(w, sp, st, shipment, shipment_payout);
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
                 .player_id = sp->id,
                 .contract_complete.action = CONTRACT_DELIVERY});
@@ -1951,6 +2154,8 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
             unit_price = station_buy_price(st, c);
         payout += unit_price * DELIVERY_BLACK_MARKET_MARKDOWN;
         shipment->quantity_black_market_sold++;
+        delivery_emit_default_memory(w, sp, st, shipment,
+                                     shipment->destination_payout);
         shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
         int ci = shipment->contract_index;
         if (ci >= 0 && ci < MAX_CONTRACTS &&
@@ -2014,6 +2219,12 @@ static void step_delivery_shipments(world_t *w) {
         if (!shipment->active) continue;
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
         if (shipment->due_tick != 0 && w->tick > shipment->due_tick) {
+            int pid = shipment->debtor_player;
+            server_player_t *sp =
+                (pid >= 0 && pid < MAX_PLAYERS && w->players[pid].connected)
+                    ? &w->players[pid] : NULL;
+            delivery_emit_default_memory(w, sp, NULL, shipment,
+                                         shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
             int ci = shipment->contract_index;
             if (ci >= 0 && ci < MAX_CONTRACTS &&
@@ -2033,6 +2244,8 @@ static void step_delivery_shipments(world_t *w) {
                 carried++;
         }
         if (carried == 0 && shipment->quantity_delivered == 0) {
+            delivery_emit_default_memory(w, &w->players[pid], NULL, shipment,
+                                         shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
             int ci = shipment->contract_index;
             if (ci >= 0 && ci < MAX_CONTRACTS &&
@@ -3849,12 +4062,15 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
  * could "ask" for a random ferrite rock near the player, then the client would
  * paint it yellow as if it were intentional work. Hail now only returns real
  * station-authored work that already exists on the board. */
-static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int issuer_station) {
+static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
+                                           int issuer_station,
+                                           bool allow_delivery_pickup) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *c = &w->contracts[i];
         if (c->active && c->claimed_by == (int8_t)sp->id) {
             if (c->action == CONTRACT_DELIVERY &&
-                issuer_station == c->target_index) {
+                issuer_station == c->target_index &&
+                allow_delivery_pickup) {
                 (void)delivery_pickup_from_origin(w, sp, c, i);
             }
             return i;
@@ -3933,7 +4149,8 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int 
         contract_t *ct = &w->contracts[best_contract];
         if (ct->action == CONTRACT_DELIVERY &&
             issuer_station == ct->target_index) {
-            (void)delivery_pickup_from_origin(w, sp, ct, best_contract);
+            if (allow_delivery_pickup)
+                (void)delivery_pickup_from_origin(w, sp, ct, best_contract);
         } else if (ct->claimed_by < 0) {
             ct->claimed_by = (int8_t)sp->id;
         }
@@ -3970,7 +4187,10 @@ static void emit_station_hail_response(world_t *w, server_player_t *sp, int stat
     float balance = server_player_can_use_pubkey_persistence(sp)
         ? ledger_balance_by_pubkey(&w->stations[station_idx], sp->pubkey)
         : ledger_balance(&w->stations[station_idx], sp->session_token);
-    int contract_idx = hail_find_station_work_contract(w, sp, station_idx);
+    bool allow_delivery_pickup = sp->docked &&
+        sp->current_station == station_idx;
+    int contract_idx = hail_find_station_work_contract(
+        w, sp, station_idx, allow_delivery_pickup);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_HAIL_RESPONSE,
         .player_id = sp->id,
@@ -4095,6 +4315,10 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                         sp->id, module_type_name(kit_type), sp->current_station);
             }
         }
+    }
+    if (intent->commission_ship && sp->docked && !w->player_only_mode) {
+        (void)shipyard_queue_ship_commission(w, sp->current_station, sp->id,
+                                             intent->commission_hull_class);
     }
     /* Outpost / module placement via towed scaffold + reticle. */
     if (intent->place_outpost && !sp->docked && sp->ship.towed_scaffold >= 0) {
@@ -4822,6 +5046,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_tractor = false;
     sp->input.place_outpost = false;
     sp->input.buy_scaffold_kit = false;
+    sp->input.commission_ship = false;
     sp->input.buy_product = false;
     sp->input.hail = false;
     sp->input.release_tow = false;
@@ -5437,6 +5662,118 @@ static bool construction_area_blocked(const world_t *w, int station_idx) {
     return station_construction_area_blocked(&w->stations[station_idx],
                                              w->scaffolds,
                                              MAX_SCAFFOLDS);
+}
+
+bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
+                        int *out_lasers, int *out_tractors) {
+    if ((unsigned)hull_class >= HULL_CLASS_COUNT) return false;
+    const hull_def_t *def = hull_def_for_class(hull_class);
+    int frames = 2 * (int)def->module_slots;
+    if (def->module_mask & SHIP_MODULE_CARGO) frames += 2;
+    int lasers = (def->module_mask & SHIP_MODULE_LASER) ? 1 : 0;
+    int tractors = (def->module_mask & SHIP_MODULE_TRACTOR) ? 1 : 0;
+    if (out_frames) *out_frames = frames;
+    if (out_lasers) *out_lasers = lasers;
+    if (out_tractors) *out_tractors = tractors;
+    return true;
+}
+
+static float shipyard_hull_credit_cost(const station_t *st,
+                                       hull_class_t hull_class) {
+    int frames = 0, lasers = 0, tractors = 0;
+    if (!st || !shipyard_hull_cost(hull_class, &frames, &lasers, &tractors))
+        return 0.0f;
+    float cost = 0.0f;
+    cost += (float)frames * station_sell_price(st, COMMODITY_FRAME);
+    cost += (float)lasers * station_sell_price(st, COMMODITY_LASER_MODULE);
+    cost += (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE);
+    return cost;
+}
+
+bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) {
+    if (!st || station_active_shipyard_count(st) < 1) return false;
+    int frames = 0, lasers = 0, tractors = 0;
+    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
+    return station_finished_count(st, COMMODITY_FRAME) >= frames &&
+           station_finished_count(st, COMMODITY_LASER_MODULE) >= lasers &&
+           station_finished_count(st, COMMODITY_TRACTOR_MODULE) >= tractors;
+}
+
+bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
+                                    hull_class_t hull_class) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    station_t *st = &w->stations[station_idx];
+    if (st->pending_ship_build_count >= 4) return false;
+    if (!shipyard_can_commission_hull(st, hull_class)) return false;
+
+    int frames = 0, lasers = 0, tractors = 0;
+    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
+    float commission_cost = shipyard_hull_credit_cost(st, hull_class);
+    if (station_finished_drain(st, COMMODITY_FRAME, frames) != frames) return false;
+    if (lasers > 0 &&
+        station_finished_drain(st, COMMODITY_LASER_MODULE, lasers) != lasers) {
+        (void)station_finished_mint(st, COMMODITY_FRAME, frames, NULL);
+        return false;
+    }
+    if (tractors > 0 &&
+        station_finished_drain(st, COMMODITY_TRACTOR_MODULE, tractors) != tractors) {
+        (void)station_finished_mint(st, COMMODITY_FRAME, frames, NULL);
+        (void)station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL);
+        return false;
+    }
+
+    if (owner >= 0 && owner < MAX_PLAYERS) {
+        server_player_t *sp = &w->players[owner];
+        if (sp->connected && sp->docked && sp->current_station == station_idx)
+            player_ledger_force_debit_at(sp, st, commission_cost);
+    }
+
+    int idx = st->pending_ship_build_count++;
+    st->pending_ship_builds[idx].hull_class = hull_class;
+    st->pending_ship_builds[idx].owner = (int8_t)owner;
+    st->pending_ship_builds[idx].build_progress = 0.0f;
+    return true;
+}
+
+static float shipyard_hull_build_time(hull_class_t hull_class) {
+    const hull_def_t *def = hull_def_for_class(hull_class);
+    return 10.0f + 5.0f * (float)def->module_slots;
+}
+
+static void shipyard_install_hull_for_player(world_t *w, int station_idx,
+                                             int owner, hull_class_t hull_class) {
+    if (!w || owner < 0 || owner >= MAX_PLAYERS) return;
+    server_player_t *sp = &w->players[owner];
+    if (!sp->connected || !sp->docked || sp->current_station != station_idx) return;
+    float old_max = ship_max_hull(&sp->ship);
+    float ratio = old_max > 0.0f ? sp->ship.hull / old_max : 1.0f;
+    if (ratio < 0.25f) ratio = 0.25f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    sp->ship.hull_class = hull_class;
+    sp->ship.hull = ship_max_hull(&sp->ship) * ratio;
+}
+
+static void step_shipyard_shipbuilding(world_t *w, float dt) {
+    if (!w) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        if (station_active_shipyard_count(st) < 1) continue;
+        if (st->pending_ship_build_count <= 0) continue;
+
+        st->pending_ship_builds[0].build_progress +=
+            dt / shipyard_hull_build_time(st->pending_ship_builds[0].hull_class);
+        if (st->pending_ship_builds[0].build_progress < 1.0f) continue;
+
+        hull_class_t hull_class = st->pending_ship_builds[0].hull_class;
+        int owner = st->pending_ship_builds[0].owner;
+        shipyard_install_hull_for_player(w, s, owner, hull_class);
+        for (int i = 0; i < st->pending_ship_build_count - 1; i++)
+            st->pending_ship_builds[i] = st->pending_ship_builds[i + 1];
+        st->pending_ship_build_count--;
+        SIM_LOG("[sim] station %d completed %s commission\n",
+                s, ship_loadout_name(hull_class));
+    }
 }
 
 /* Production layer v1: a nascent scaffold appears at the station center
@@ -6416,6 +6753,7 @@ void world_sim_step(world_t *w, float dt) {
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
     step_dock_repair_kit_fab(w, dt);
+    step_shipyard_shipbuilding(w, dt);
     step_module_flow(w, dt);
 
     /* Manifest-as-truth reconciliation: snap floor(inventory[c]) ==
@@ -6942,8 +7280,12 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[1], 2, 3, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
     add_hopper_for(&w->stations[1], 2, 4, COMMODITY_FRAME);          /* frame output + shipyard input */
     add_hopper_for(&w->stations[1], 2, 5, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
-    /* Ring 3: just the ferrite-ingot hopper feeding the frame press. */
+    /* Ring 3: ferrite-ingot hopper feeding the frame press, plus the
+     * second shipyard gantry that unlocks station-module scaffold
+     * fabrication. A single yard is enough for hull commissions; two
+     * active yards mean Kepler can build external station modules. */
     add_hopper_for(&w->stations[1], 3, 0, COMMODITY_FERRITE_INGOT);
+    add_module_at(&w->stations[1], MODULE_SHIPYARD, 3, 4);
     w->stations[1].arm_count = 3;
     w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[1]);
@@ -7001,8 +7343,11 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
     /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
      * crystal-ingot / laser / tractor module hoppers for the ring-2 fabs
-     * and shipyard. The two crystal furnaces share the ring-2 crystal
+     * and shipyard. The second shipyard gantry gives Helios enough
+     * industrial capacity to fabricate station-module scaffolds under
+     * the two-yard rule. The two crystal furnaces share the ring-2 crystal
      * ore intake; the ring-3 cuprite furnace uses the cuprite intake. */
+    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 1);
     add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output + shipyard input */
     add_hopper_for(&w->stations[2], 3, 3, COMMODITY_FRAME);          /* feeds SHIPYARD */
     add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);
@@ -7063,31 +7408,19 @@ void world_reset(world_t *w) {
         }
     }
 
-    /* --- NPC ships: seed haulers at every station so the inter-station
-     * trade chain has a carrier on every hop. Without a Kepler-homed
-     * hauler, frames pile up at Kepler with nobody to deliver them to
-     * Helios; without a Helios-homed hauler, repair kits can't reach
-     * Prospect's dock. The contract dispatcher in step_hauler picks
-     * the best fillable contract from the home station's inventory,
-     * so spawning the right home is the only seeding step needed.
-     *
-     * Miners also spread: Helios's CU/CR furnaces need their own
-     * feed (Prospect-homed miners only deliver to Prospect's hopper).
-     *
-     * Tow drones stay at the two shipyards (Kepler, Helios). --- */
+    /* --- NPC ships: seed resident station drones.
+     * Prospect and Helios get one LM miner plus one TM tug because they
+     * have raw-ore work. Kepler is a yard, so it starts with only the tug;
+     * seeding a miner there leaves a visible idle hull with no ore loop. */
     /* Seed the starter industrial roster immediately. The respawn loop
      * drip-fills losses later, but reset must start with the documented
      * inter-station chain online so tests and fresh worlds do not wait
      * through staggered replacement timers. */
     {
         (void)spawn_npc(w, 0, NPC_ROLE_MINER);
-        (void)spawn_npc(w, 0, NPC_ROLE_MINER);
-        (void)spawn_npc(w, 0, NPC_ROLE_HAULER);
-        (void)spawn_npc(w, 0, NPC_ROLE_HAULER);
-        (void)spawn_npc(w, 1, NPC_ROLE_HAULER);
+        (void)spawn_npc(w, 0, NPC_ROLE_TOW);
         (void)spawn_npc(w, 1, NPC_ROLE_TOW);
         (void)spawn_npc(w, 2, NPC_ROLE_MINER);
-        (void)spawn_npc(w, 2, NPC_ROLE_HAULER);
         (void)spawn_npc(w, 2, NPC_ROLE_TOW);
     }
 
@@ -7106,11 +7439,9 @@ void world_reset(world_t *w) {
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
 
-    /* Cold-start gossip bootstrap — see gossip.h for the long-form
-     * rationale. Without this, fresh-world haulers idle forever
-     * because the picker filters out their home station's own
-     * contracts and gossip can't propagate cross-station intel
-     * before any ship has moved. */
+    /* Cold-start local gossip bootstrap — see gossip.h for the
+     * long-form rationale. This refreshes station-local pressure
+     * without broadcasting peer-station contracts. */
     gossip_bootstrap_world_stations(w);
 
     SIM_LOG("[sim] world reset complete (%d asteroids, starter NPC roster seeded)\n",

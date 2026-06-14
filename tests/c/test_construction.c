@@ -377,6 +377,90 @@ TEST(test_docked_buy_one_unit_per_intent) {
     ASSERT(bal_delta < 100.0f);
 }
 
+TEST(test_one_shipyard_builds_ships_two_shipyards_build_station_modules) {
+    station_t st = {0};
+    strcpy(st.name, "Test Yard");
+    st.signal_range = 1000.0f;
+    add_module_at(&st, MODULE_SHIPYARD, 2, 0);
+    add_module_at(&st, MODULE_FURNACE, 2, 1);
+
+    ASSERT_EQ_INT(station_active_shipyard_count(&st), 1);
+    ASSERT(station_can_order_scaffold(&st, MODULE_SHIPYARD));
+    ASSERT(!station_can_order_scaffold(&st, MODULE_FURNACE));
+
+    add_module_at(&st, MODULE_SHIPYARD, 2, 2);
+    ASSERT_EQ_INT(station_active_shipyard_count(&st), 2);
+    ASSERT(station_can_order_scaffold(&st, MODULE_FURNACE));
+    station_cleanup(&st);
+}
+
+TEST(test_shipyard_commission_completes_onto_docked_player) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->ship.hull_class = HULL_CLASS_NPC_MINER;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+
+    ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
+
+    for (int i = 0; i < 4000; i++) world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT_EQ_INT(st->pending_ship_build_count, 0);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_MINER);
+    ASSERT_EQ_INT(ship_module_socket_count(&sp->ship), 3);
+}
+
+TEST(test_shipyard_commission_debits_player_ledger) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = true;
+    sp->current_station = 1;
+    memset(sp->session_token, 0xC1, sizeof(sp->session_token));
+
+    float expected =
+        (float)frames * station_sell_price(st, COMMODITY_FRAME) +
+        (float)lasers * station_sell_price(st, COMMODITY_LASER_MODULE) +
+        (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE);
+    float before = ledger_balance(st, sp->session_token);
+
+    ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
+
+    float after = ledger_balance(st, sp->session_token);
+    ASSERT_EQ_FLOAT(before - after, expected, 0.01f);
+}
+
 /* Regression: world_seed_station_manifests populates each active
  * station's manifest from its float inventory so the manifest-only
  * TRADE picker has rows to surface. The singleplayer init path must
@@ -417,10 +501,19 @@ TEST(test_module_activation_spawns_npc) {
     /* Run sim long enough for construction to complete (~60 frames / 4 per sec = 15s) */
     for (int i = 0; i < (int)(20.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    /* A miner should have been spawned on activation */
+    /* The neural worker pool is now station-targeted rather than one
+     * permanent NPC role per module. Activation should leave Kepler with
+     * active workers available, not necessarily increase the global count
+     * if the seeded pool already satisfies the target. */
     int npc_after = 0;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
-    ASSERT(npc_after > npc_before);
+    int kepler_workers = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!w.npc_ships[i].active) continue;
+        npc_after++;
+        if (w.npc_ships[i].home_station == 1) kepler_workers++;
+    }
+    ASSERT(npc_after >= npc_before);
+    ASSERT(kepler_workers > 0);
 }
 
 TEST(test_238_station_core_blocks_player) {
@@ -1532,39 +1625,40 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
     w.scaffolds[sc_idx].towed_by = -1;
 
-    /* Find Kepler's tow drone */
-    int drone_idx = -1;
+    /* Find Kepler's tug worker to take the scaffold tow contract. */
+    int worker_idx = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_TOW
             && w.npc_ships[i].home_station == 1) {
-            drone_idx = i; break;
+            worker_idx = i; break;
         }
     }
-    ASSERT(drone_idx >= 0);
-    w.npc_ships[drone_idx].state = NPC_STATE_DOCKED;
-    w.npc_ships[drone_idx].state_timer = 0.0f;
-    w.npc_ships[drone_idx].ship.pos = w.stations[1].pos;
+    ASSERT(worker_idx >= 0);
+    w.npc_ships[worker_idx].state = NPC_STATE_DOCKED;
+    w.npc_ships[worker_idx].state_timer = 0.0f;
+    w.npc_ships[worker_idx].ship.pos = w.stations[1].pos;
     /* Slice 13: also seed the paired ship_t so the pre-mirror at the
-     * top of step_npc_ships doesn't drag the drone back to its
+     * top of step_npc_ships doesn't drag the worker back to its
      * spawn position next tick. */
     {
-        ship_t *drone_ship = world_npc_ship_for(&w, drone_idx);
-        ASSERT(drone_ship != NULL);
-        drone_ship->pos = w.stations[1].pos;
+        ship_t *worker_ship = world_npc_ship_for(&w, worker_idx);
+        ASSERT(worker_ship != NULL);
+        worker_ship->pos = w.stations[1].pos;
     }
 
-    /* Run up to 30s — wait for drone to grab the scaffold */
-    npc_ship_t *drone = &w.npc_ships[drone_idx];
-    for (int i = 0; i < 120 * 30 && drone->towed_scaffold < 0; i++)
+    /* Run up to 30s — wait for the worker to grab the scaffold */
+    npc_ship_t *worker = &w.npc_ships[worker_idx];
+    for (int i = 0; i < 120 * 30 && worker->towed_scaffold < 0; i++)
         world_sim_step(&w, SIM_DT);
 
-    /* Drone must have grabbed the scaffold */
-    ASSERT(drone->towed_scaffold >= 0);
+    /* Worker must have accepted the tow contract and grabbed the scaffold. */
+    ASSERT_EQ_INT(worker->role, NPC_ROLE_HAULER);
+    ASSERT(worker->towed_scaffold >= 0);
     /* Destination must be the planned outpost, not a starter station */
-    ASSERT(drone->dest_station >= SIGNAL_FIRST_OUTPOST_INDEX);
-    ASSERT_EQ_INT(drone->dest_station, plan_slot);
+    ASSERT(worker->dest_station >= SIGNAL_FIRST_OUTPOST_INDEX);
+    ASSERT_EQ_INT(worker->dest_station, plan_slot);
 
-    /* Run long enough for the tow drone to cross the larger Sector One
+    /* Run long enough for the worker to cross the larger Sector One
      * starter basin. */
     for (int i = 0; i < 120 * 360; i++) world_sim_step(&w, SIM_DT);
 
@@ -1584,6 +1678,10 @@ TEST(test_save_preserves_pending_scaffolds) {
     w->stations[1].pending_scaffolds[0].type = MODULE_FURNACE;
     w->stations[1].pending_scaffolds[0].owner = 0;
     w->stations[1].pending_scaffold_count = 1;
+    w->stations[1].pending_ship_builds[0].hull_class = HULL_CLASS_HAULER;
+    w->stations[1].pending_ship_builds[0].owner = 0;
+    w->stations[1].pending_ship_builds[0].build_progress = 0.5f;
+    w->stations[1].pending_ship_build_count = 1;
     /* Some module buffer state */
     w->stations[1].module_input[3] = 42.5f;
     w->stations[1].module_output[5] = 17.0f;
@@ -1605,6 +1703,12 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded->stations[1].pending_scaffold_count, 1);
     ASSERT_EQ_INT(loaded->stations[1].pending_scaffolds[0].type, MODULE_FURNACE);
     ASSERT_EQ_INT(loaded->stations[1].pending_scaffolds[0].owner, 0);
+    ASSERT_EQ_INT(loaded->stations[1].pending_ship_build_count, 1);
+    ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].hull_class,
+                  HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].owner, 0);
+    ASSERT_EQ_FLOAT(loaded->stations[1].pending_ship_builds[0].build_progress,
+                    0.5f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[1].module_input[3], 42.5f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[1].module_output[5], 17.0f, 0.01f);
 
@@ -2630,6 +2734,9 @@ void register_construction_modules_tests(void) {
     RUN(test_construction_consumes_manifest_units);
     RUN(test_module_delivery_emits_construction_chain_event);
     RUN(test_docked_buy_one_unit_per_intent);
+    RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
+    RUN(test_shipyard_commission_completes_onto_docked_player);
+    RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_world_seed_station_manifests_matches_float);
     RUN(test_module_activation_spawns_npc);
 }
@@ -2880,8 +2987,9 @@ TEST(test_seeded_kepler_shipyard_inner_ring_layout) {
 
     const station_t *st = &w->stations[1];
     ASSERT_EQ_INT(station_module_at(st, 1, 2), MODULE_SHIPYARD);
+    ASSERT_EQ_INT(station_module_at(st, 3, 4), MODULE_SHIPYARD);
     ASSERT_EQ_INT(station_module_at(st, 2, 0), MODULE_FRAME_PRESS);
-    ASSERT_EQ_INT(ring_module_count(st, 3), 1);
+    ASSERT_EQ_INT(ring_module_count(st, 3), 2);
 
     int frame_hopper = station_find_hopper_for(st, COMMODITY_FRAME);
     int laser_hopper = station_find_hopper_for(st, COMMODITY_LASER_MODULE);
@@ -2898,6 +3006,7 @@ TEST(test_seeded_kepler_shipyard_inner_ring_layout) {
     ASSERT_EQ_INT(st->modules[tractor_hopper].ring, 2);
     ASSERT_EQ_INT(st->modules[ferrite_hopper].ring, 3);
     ASSERT(station_pair_satisfied(st, 1, 2, MODULE_SHIPYARD));
+    ASSERT(station_pair_satisfied(st, 3, 4, MODULE_SHIPYARD));
     ASSERT(station_pair_satisfied(st, 2, 0, MODULE_FRAME_PRESS));
 }
 

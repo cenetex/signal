@@ -105,3 +105,10 @@ make replay-native-wasm-long
 
 The long set includes two 10,000-tick probes and one 100,000-tick probe. A
 cross-build mismatch prints the first differing JSON row plus both output paths.
+
+Known coverage gap: the current `signal_replay` world setup disables NPC ships
+after `world_reset()`. That keeps long-horizon probes focused on flight,
+physics, production, settlement state, and replay hashing, but it does not yet
+stress neural workers, contract gossip, or HNN market exchange over a long
+horizon. Add an active-worker scenario before treating the replay gate as full
+coverage for the gossip economy.

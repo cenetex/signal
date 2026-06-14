@@ -790,6 +790,8 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].tint_r           = p[26];
                     arr[i].tint_g           = p[27];
                     arr[i].tint_b           = p[28];
+                    memcpy(arr[i].session_token, &p[29], sizeof(arr[i].session_token));
+                    arr[i].home_station     = p[37];
                 }
                 net_state.callbacks.on_npcs(arr, decoded);
             }
@@ -932,6 +934,17 @@ static void handle_message(const uint8_t* data, int len) {
                 int8_t owner = (int8_t)data[moff + 1];
                 si.pending_scaffolds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
                 moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+            }
+            si.pending_ship_build_count = data[moff];
+            if (si.pending_ship_build_count > STATION_PENDING_SHIP_RECORD_COUNT)
+                si.pending_ship_build_count = STATION_PENDING_SHIP_RECORD_COUNT;
+            moff++;
+            for (int p = 0; p < STATION_PENDING_SHIP_RECORD_COUNT; p++) {
+                si.pending_ship_builds[p].hull_class = (hull_class_t)data[moff + 0];
+                int8_t owner = (int8_t)data[moff + 1];
+                si.pending_ship_builds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
+                si.pending_ship_builds[p].build_progress = read_f32_le(&data[moff + 2]);
+                moff += STATION_PENDING_SHIP_RECORD_SIZE;
             }
             memcpy(si.hail_message, &data[moff], STATION_IDENTITY_HAIL_MESSAGE_LEN - 1);
             si.hail_message[STATION_IDENTITY_HAIL_MESSAGE_LEN - 1] = '\0';

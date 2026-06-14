@@ -4,6 +4,35 @@
 #include "sim_ship.h"
 #include "sim_asteroid.h"
 #include "cargo_receipt_issue.h"
+#include "contract_fit.h"
+#include "gossip.h"
+
+static int test_spawn_hauler_at(world_t *w, int station_idx) {
+    return spawn_npc(w, station_idx, NPC_ROLE_HAULER);
+}
+
+static bool test_view_has_market_memory(const knowledge_view_t *view,
+                                        uint8_t kind,
+                                        int station_a,
+                                        int station_b,
+                                        uint8_t commodity,
+                                        market_memory_t *out) {
+    if (!view) return false;
+    int count = view->count;
+    if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
+    for (int i = 0; i < count; i++) {
+        market_memory_t memory;
+        if (!market_memory_from_knowledge_item(&view->items[i], &memory))
+            continue;
+        if (memory.memory_kind != kind) continue;
+        if (station_a >= 0 && memory.station_a != (uint8_t)station_a) continue;
+        if (station_b >= 0 && memory.station_b != (uint8_t)station_b) continue;
+        if (memory.commodity != commodity) continue;
+        if (out) *out = memory;
+        return true;
+    }
+    return false;
+}
 
 static bool test_issue_world_station_receipt(station_t *st,
                                              const uint8_t cargo_pub[32],
@@ -50,15 +79,12 @@ TEST(test_world_reset_spawns_asteroids) {
 }
 
 TEST(test_world_reset_spawns_npcs) {
-    /* Starter NPC roster covers the inter-station chain:
-     *   Prospect: 2 miners (ferrite), 2 haulers (ferrite -> Kepler)
-     *   Helios:   1 miner  (CU/CR),   1 hauler  (kits / modules out)
-     *   Kepler:                       1 hauler  (frames -> Helios)
-     * Plus a tow drone at each shipyard (Kepler, Helios). */
+    /* Starter NPC roster is a neural worker pool. Workers begin as miner
+     * hulls, then specialize into hauler hulls for shipment or scaffold
+     * tow contracts. */
     WORLD_DECL;
     world_reset(&w);
     int miners = 0, haulers = 0, tows = 0;
-    int kepler_tows = 0, helios_tows = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!w.npc_ships[i].active) continue;
         if (w.npc_ships[i].role == NPC_ROLE_MINER) {
@@ -71,15 +97,112 @@ TEST(test_world_reset_spawns_npcs) {
         }
         if (w.npc_ships[i].role == NPC_ROLE_TOW) {
             tows++;
-            if (w.npc_ships[i].home_station == 1) kepler_tows++;
-            if (w.npc_ships[i].home_station == 2) helios_tows++;
         }
     }
-    ASSERT_EQ_INT(miners, 3);
-    ASSERT_EQ_INT(haulers, 4);
-    ASSERT_EQ_INT(tows, 2);
-    ASSERT_EQ_INT(kepler_tows, 1);
-    ASSERT_EQ_INT(helios_tows, 1);
+    ASSERT_EQ_INT(miners, 2);
+    ASSERT_EQ_INT(haulers, 0);
+    ASSERT_EQ_INT(tows, 3);
+}
+
+TEST(test_world_reset_prospect_workers_leave_idle) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    for (int i = 0; i < 480; i++)
+        world_sim_step(&w, SIM_DT);
+
+    int prospect_workers = 0;
+    int active_assignments = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &w.npc_ships[i];
+        if (!npc->active || npc->home_station != 0) continue;
+        if (npc->role != NPC_ROLE_MINER &&
+            npc->role != NPC_ROLE_HAULER &&
+            npc->role != NPC_ROLE_TOW)
+            continue;
+        prospect_workers++;
+        if (npc->state != NPC_STATE_DOCKED &&
+            npc->state != NPC_STATE_IDLE) {
+            active_assignments++;
+        }
+    }
+    ASSERT_EQ_INT(prospect_workers, 2);
+    ASSERT(active_assignments > 0);
+}
+
+TEST(test_neural_worker_refits_only_from_home_credit_and_modules) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *worker = &w.npc_ships[slot];
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    worker->state = NPC_STATE_DOCKED;
+    worker->state_timer = 0.0f;
+    worker->ship.mining_level = 0;
+    ship->mining_level = 0;
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_LASER_MODULE, 8));
+    ledger_earn(&w.stations[0], worker->session_token, 1000.0f);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(ship->mining_level, 1);
+    ASSERT_EQ_INT(worker->ship.mining_level, 1);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_LASER_MODULE), 0);
+    ASSERT(ledger_balance(&w.stations[0], worker->session_token) < 1000.0f);
+}
+
+TEST(test_neural_worker_posts_home_refit_import_contract) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_LASER_MODULE, 16));
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *worker = &w.npc_ships[slot];
+    worker->state = NPC_STATE_DOCKED;
+    worker->state_timer = 0.0f;
+    worker->known_contract_count = 0;
+    memset(worker->known_contracts, 0, sizeof(worker->known_contracts));
+    memset(&worker->knowledge, 0, sizeof(worker->knowledge));
+    knowledge_view_configure(&worker->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    int found = 0;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w.contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index != 0) continue;
+        if (ct->commodity != COMMODITY_LASER_MODULE) continue;
+        ASSERT(ct->quantity_needed >= 8.0f);
+        found++;
+    }
+    ASSERT_EQ_INT(found, 1);
 }
 
 TEST(test_ship_death_drops_cargo_pods) {
@@ -327,19 +450,19 @@ TEST(test_hail_reports_no_station_in_range) {
     ASSERT(ev->hail_response.credits < 0.0f);
 }
 
-TEST(test_dead_hauler_auto_respawns) {
+TEST(test_dead_neural_worker_auto_respawns) {
     /* Confirm replenish_npc_roster fires from step_npc_ships: kill a
-     * Kepler-homed hauler, run sim past the respawn cooldown, expect
+     * Kepler-homed tug, run sim past the respawn cooldown, expect
      * a replacement to appear at the same home with full hull.
      * Without this loop, hostile players could permanently sabotage
      * a station's chain by repeatedly sniping its drones. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Find the Kepler-homed hauler. */
+    /* Find the Kepler-homed tug. */
     int target_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
         if (w->npc_ships[n].home_station != 1) continue;
         target_slot = n;
         break;
@@ -354,30 +477,33 @@ TEST(test_dead_hauler_auto_respawns) {
     /* One sim step lets the despawn check at top of step_npc_ships
      * notice and free the slot. */
     world_sim_step(w, SIM_DT);
-    int kepler_haulers = 0;
+    int kepler_workers = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
-        if (w->npc_ships[n].home_station == 1) kepler_haulers++;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].home_station == 1) kepler_workers++;
     }
-    ASSERT_EQ_INT(kepler_haulers, 0);
+    ASSERT_EQ_INT(kepler_workers, 0);
 
     /* Run past the 15 s respawn cooldown. SIM_DT = 1/120 s so 1900
      * ticks ≈ 15.83 s — comfortable margin. */
     for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
 
-    int kepler_haulers_after = 0;
+    int kepler_workers_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
-        if (w->npc_ships[n].home_station == 1) kepler_haulers_after++;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].home_station == 1) kepler_workers_after++;
     }
-    ASSERT_EQ_INT(kepler_haulers_after, 1);
+    ASSERT_EQ_INT(kepler_workers_after, 1);
 }
 
 TEST(test_hauler_preserves_cargo_identity_in_transit) {
     WORLD_DECL;
     world_reset(&w);
+
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -527,6 +653,45 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[1].pub), -1);
     ASSERT_EQ_FLOAT(dest->_inventory_cache[COMMODITY_FERRITE_INGOT],
                     (float)EXPECTED_MOVED, 0.001f);
+    market_memory_t route_success = {0};
+    ASSERT(test_view_has_market_memory(&hauler->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &route_success));
+    ASSERT_EQ_INT(route_success.quantity_hint, EXPECTED_MOVED);
+    ASSERT(route_success.confidence >= 200);
+    ASSERT(test_view_has_market_memory(&dest->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    market_memory_t reputation = {0};
+    ASSERT(test_view_has_market_memory(&hauler->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &reputation));
+    ASSERT_EQ_INT(reputation.quantity_hint, EXPECTED_MOVED);
+    ASSERT(reputation.confidence >= 200);
+    ASSERT(test_view_has_market_memory(&dest->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    market_memory_t station_trust = {0};
+    ASSERT(test_view_has_market_memory(&hauler->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_TRUST,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &station_trust));
+    ASSERT_EQ_INT(station_trust.action, CONTRACT_TRACTOR);
+    ASSERT_EQ_INT(station_trust.quantity_hint, EXPECTED_MOVED);
+    ASSERT(test_view_has_market_memory(&dest->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_TRUST,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
     for (uint16_t i = 0; i < dest->manifest.count; i++) {
         ASSERT(dest->manifest.units[i].recipe_id != RECIPE_LEGACY_MIGRATE);
     }
@@ -535,6 +700,9 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
 TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     WORLD_DECL;
     world_reset(&w);
+
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -597,13 +765,13 @@ TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     ASSERT_EQ_INT(dest->manifest.units[1].recipe_id, RECIPE_LEGACY_MIGRATE);
 }
 
-TEST(test_dead_tow_auto_respawns_at_shipyard) {
+TEST(test_station_roster_respawns_resident_miner_and_tug_drones) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     int target_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_MINER) continue;
         if (w->npc_ships[n].home_station != 2) continue;
         target_slot = n;
         break;
@@ -620,17 +788,120 @@ TEST(test_dead_tow_auto_respawns_at_shipyard) {
         if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
         if (w->npc_ships[n].home_station == 2) helios_tows++;
     }
-    ASSERT_EQ_INT(helios_tows, 0);
+    ASSERT_EQ_INT(helios_tows, 1);
 
     for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
 
     int helios_tows_after = 0;
+    int helios_miners_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
-        if (w->npc_ships[n].home_station == 2) helios_tows_after++;
+        if (w->npc_ships[n].home_station != 2) continue;
+        if (w->npc_ships[n].role == NPC_ROLE_TOW) {
+            helios_tows_after++;
+            ASSERT_EQ_INT(w->npc_ships[n].ship.hull_class,
+                          HULL_CLASS_DRONE_TRACTOR);
+        }
+        if (w->npc_ships[n].role == NPC_ROLE_MINER) {
+            helios_miners_after++;
+            ASSERT(ship_has_module(&w->npc_ships[n].ship,
+                                   SHIP_MODULE_LASER));
+        }
     }
     ASSERT_EQ_INT(helios_tows_after, 1);
+    ASSERT_EQ_INT(helios_miners_after, 1);
+}
+
+TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+
+    frontier_virtual_pilots_set(w, 0);
+    int zero_budget_station = SIGNAL_FIRST_OUTPOST_INDEX;
+    station_t *zero_budget = &w->stations[zero_budget_station];
+    memset(zero_budget, 0, sizeof(*zero_budget));
+    snprintf(zero_budget->name, sizeof(zero_budget->name),
+             "Zero Budget Outpost");
+    zero_budget->pos = v2(5200.0f, 2500.0f);
+    zero_budget->radius = 80.0f;
+    zero_budget->dock_radius = 140.0f;
+    zero_budget->signal_range = OUTPOST_SIGNAL_RANGE;
+    add_module_at(zero_budget, MODULE_DOCK, 1, 0);
+    add_module_at(zero_budget, MODULE_FURNACE, 2, 0);
+    add_module_at(zero_budget, MODULE_SIGNAL_RELAY, 1, 1);
+    rebuild_station_services(zero_budget);
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        zero_budget->_inventory_cache[c] = 0.0f;
+    rebuild_signal_chain(w);
+
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w->npc_ships[n].active &&
+            w->npc_ships[n].home_station >= SIGNAL_FIRST_OUTPOST_INDEX) {
+            w->npc_ships[n].active = false;
+        }
+    }
+    for (int i = 0; i < 6; i++) {
+        w->npc_respawn_timer = 0.001f;
+        world_sim_step(w, SIM_DT);
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        ASSERT(!w->npc_ships[n].active ||
+               w->npc_ships[n].home_station < SIGNAL_FIRST_OUTPOST_INDEX);
+    }
+
+    frontier_virtual_pilots_set(w, 1000);
+    int budget = 1 + w->frontier_virtual_pilots / 250;
+    if (budget > 8) budget = 8;
+    ASSERT_EQ_INT(budget, 5);
+
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX;
+         s < SIGNAL_FIRST_OUTPOST_INDEX + 7 && s < MAX_STATIONS;
+         s++) {
+        station_t *st = &w->stations[s];
+        memset(st, 0, sizeof(*st));
+        snprintf(st->name, sizeof(st->name), "Budget Outpost %d", s);
+        st->pos = v2(6000.0f + (float)(s - SIGNAL_FIRST_OUTPOST_INDEX) * 900.0f,
+                     3000.0f);
+        st->radius = 80.0f;
+        st->dock_radius = 140.0f;
+        st->signal_range = OUTPOST_SIGNAL_RANGE;
+        add_module_at(st, MODULE_DOCK, 1, 0);
+        add_module_at(st, MODULE_SIGNAL_RELAY, 1, 1);
+        rebuild_station_services(st);
+    }
+    rebuild_signal_chain(w);
+
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w->npc_ships[n].active &&
+            w->npc_ships[n].home_station >= SIGNAL_FIRST_OUTPOST_INDEX) {
+            w->npc_ships[n].active = false;
+        }
+    }
+
+    for (int i = 0; i < budget * 2 + 6; i++) {
+        w->npc_respawn_timer = 0.001f;
+        world_sim_step(w, SIM_DT);
+    }
+
+    int frontier_workers = 0;
+    int frontier_station_workers[8] = {0};
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        int home = w->npc_ships[n].home_station;
+        if (home < SIGNAL_FIRST_OUTPOST_INDEX) continue;
+        frontier_workers++;
+        int local = home - SIGNAL_FIRST_OUTPOST_INDEX;
+        if (local >= 0 && local < 8) frontier_station_workers[local]++;
+    }
+
+    ASSERT_EQ_INT(frontier_workers, budget * 2);
+    for (int i = 0; i < 7; i++) {
+        if (i < budget) {
+            ASSERT_EQ_INT(frontier_station_workers[i], 2);
+        } else {
+            ASSERT_EQ_INT(frontier_station_workers[i], 0);
+        }
+    }
 }
 
 TEST(test_player_init_ship_docked) {
@@ -1691,6 +1962,9 @@ TEST(test_hauler_exits_non_home_station_before_return) {
     WORLD_DECL;
     world_reset(&w);
 
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
+
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
@@ -1805,6 +2079,9 @@ TEST(test_hauler_near_station_does_not_post_distress_contract) {
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
 
+    int seeded_hauler = test_spawn_hauler_at(&w, 2);
+    ASSERT(seeded_hauler >= 0);
+
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
@@ -1849,6 +2126,9 @@ TEST(test_hauler_distress_requires_sustained_stall) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
+
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -1908,6 +2188,9 @@ TEST(test_hauler_docks_when_reaching_station_lane) {
     WORLD_DECL;
     world_reset(&w);
 
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
+
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
@@ -1947,6 +2230,9 @@ TEST(test_hauler_docks_when_reaching_station_lane) {
 TEST(test_hauler_does_not_dock_from_outer_station_ring) {
     WORLD_DECL;
     world_reset(&w);
+
+    int seeded_hauler = test_spawn_hauler_at(&w, 0);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -1992,6 +2278,9 @@ TEST(test_hauler_does_not_dock_from_outer_station_ring) {
 TEST(test_kepler_frame_hauler_reaches_helios_dock) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+
+    int seeded_hauler = test_spawn_hauler_at(w, 1);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -2450,13 +2739,1937 @@ TEST(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work) {
     ASSERT_EQ_INT(npc->dest_station, 1);
 }
 
+TEST(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 2));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 1.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 1.0f,
+    };
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
+    ASSERT_EQ_FLOAT(npc->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+}
+
+TEST(test_neural_npc_assignment_switches_worker_to_hauler_for_scaffold_tow) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        w.stations[0]._inventory_cache[c] = MAX_PRODUCT_STOCK;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++)
+        w.stations[0]._inventory_cache[c] = REFINERY_HOPPER_CAPACITY;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int plan_slot = SIGNAL_FIRST_OUTPOST_INDEX;
+    w.stations[plan_slot].planned = true;
+    w.stations[plan_slot].pos = v2_add(w.stations[1].pos, v2(4000.0f, 0.0f));
+
+    vec2 near_kepler = v2_add(w.stations[1].pos, v2(200.0f, 0.0f));
+    int sc_idx = spawn_scaffold(&w, MODULE_SIGNAL_RELAY, near_kepler, 0);
+    ASSERT(sc_idx >= 0);
+    w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
+    w.scaffolds[sc_idx].towed_by = -1;
+
+    int slot = spawn_npc(&w, 1, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+    npc->ship.pos = w.stations[1].pos;
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    ship->pos = npc->ship.pos;
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_ASTEROID);
+    ASSERT_EQ_INT(npc->target_asteroid, sc_idx);
+    ASSERT_EQ_INT(npc->pickup_action, 0xfe);
+    bool selected_tow = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_TOW &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_hint[i] == (uint16_t)sc_idx) {
+            ASSERT(npc->job_diag_factor_hologram[i] > 0);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_SCAFFOLD_PRESSURE);
+            ASSERT(npc->job_diag_memory_station[i] < MAX_STATIONS);
+            selected_tow = true;
+            break;
+        }
+    }
+    ASSERT(selected_tow);
+}
+
+TEST(test_neural_npc_assignment_switches_worker_to_scout_for_fracture_work) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int asteroid = 0;
+    memset(&w.asteroids[asteroid], 0, sizeof(w.asteroids[asteroid]));
+    w.asteroids[asteroid].active = true;
+    w.asteroids[asteroid].tier = ASTEROID_TIER_M;
+    w.asteroids[asteroid].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[asteroid].ore = 40.0f;
+    w.asteroids[asteroid].max_ore = 40.0f;
+    w.asteroids[asteroid].radius = 48.0f;
+    w.asteroids[asteroid].pos = v2_add(w.stations[0].pos, v2(800.0f, 0.0f));
+    w.asteroids[asteroid].rock_pub[30] = 0x5c;
+    w.asteroids[asteroid].rock_pub[31] = 0x01;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_FRACTURE,
+        .station_index = 0,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .quantity_needed = 1.0f,
+        .base_price = 250.0f,
+        .target_index = asteroid,
+        .target_pos = w.asteroids[asteroid].pos,
+        .claimed_by = -1,
+    };
+    contract_set_target_pub_from_asteroid(&w.contracts[0],
+                                          &w.asteroids[asteroid]);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_ASTEROID);
+    ASSERT_EQ_INT(npc->target_asteroid, asteroid);
+    bool selected_scout = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_SCOUT &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_hint[i] == (uint16_t)asteroid) {
+            selected_scout = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_DISTRESS_SIGNAL);
+            ASSERT(npc->job_diag_factor_proof[i] > 0);
+        }
+    }
+    ASSERT(selected_scout);
+}
+
+TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_REPAIR_KIT, 20));
+    int before_kits = station_finished_count(&w.stations[0],
+                                             COMMODITY_REPAIR_KIT);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    ship->hull_class = HULL_CLASS_NPC_MINER;
+    ship->hull = npc_max_hull(npc) - 12.0f;
+    npc->hull = ship->hull;
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[0],
+                                             0,
+                                             COMMODITY_REPAIR_KIT,
+                                             12,
+                                             &supply));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT(ship->hull > npc_max_hull(npc) - 12.0f);
+    ASSERT(npc->hnn_market_mem.experience_count > 0);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT),
+                  before_kits - 12);
+    bool selected_repair = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_REPAIR &&
+            npc->job_diag_selected[i] >= 200) {
+            selected_repair = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_REPAIR_NEED);
+            ASSERT_EQ_INT(npc->job_diag_commodity[i], COMMODITY_REPAIR_KIT);
+            ASSERT(npc->job_diag_factor_hologram[i] > 0);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_SUPPLY);
+            ASSERT_EQ_INT(npc->job_diag_memory_station[i], 0);
+        }
+    }
+    ASSERT(selected_repair);
+}
+
+TEST(test_neural_npc_assignment_executes_delivery_proof_offer) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 2));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 1.0f,
+        .base_price = 500.0f,
+        .claimed_by = -1,
+    };
+    w.contracts[0].proof_flags = CONTRACT_PROOF_REQUIRE_PROOF;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    ASSERT(contract_fit_manifest_count(&w.contracts[0], &ship->manifest) > 0);
+
+    delivery_shipment_t *shipment = NULL;
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        if (w.delivery_shipments[i].active &&
+            w.delivery_shipments[i].contract_index == 0 &&
+            w.delivery_shipments[i].debtor_player == (uint8_t)(MAX_PLAYERS + slot)) {
+            shipment = &w.delivery_shipments[i];
+            break;
+        }
+    }
+    ASSERT(shipment != NULL);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    ASSERT_EQ_INT(shipment->origin_station, 0);
+    ASSERT_EQ_INT(shipment->destination_station, 2);
+    ASSERT_EQ_INT(shipment->quantity_bound, 1);
+
+    bool selected_proof = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] ==
+                (uint8_t)INSPECT_DIAG_JOB_DELIVER_PROOF &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_source[i] == 0 &&
+            npc->job_diag_dest[i] == 2) {
+            selected_proof = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_DELIVERY_PROOF);
+            ASSERT_EQ_INT(npc->job_diag_commodity[i],
+                          COMMODITY_FERRITE_INGOT);
+            ASSERT(npc->job_diag_factor_proof[i] > 0);
+        }
+    }
+    ASSERT(selected_proof);
+
+    npc->dest_station = 2;
+    npc->state = NPC_STATE_UNLOADING;
+    npc->state_timer = 0.0f;
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
+    ASSERT_EQ_INT(shipment->quantity_delivered, 1);
+    ASSERT_EQ_INT(contract_fit_manifest_count(&w.contracts[0],
+                                              &w.stations[2].manifest), 1);
+    ASSERT_EQ_INT(w.contracts[0].active, true);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 0.0f, 0.001f);
+
+    npc->dest_station = 0;
+    npc->state = NPC_STATE_UNLOADING;
+    npc->state_timer = 0.0f;
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_CLEARED);
+    ASSERT_EQ_INT(w.contracts[0].active, false);
+}
+
+TEST(test_neural_npc_assignment_uses_market_memory_demand) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 2));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 25.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    market_memory_t memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[0].action,
+            .station_index = w.contracts[0].station_index,
+            .commodity = (uint8_t)w.contracts[0].commodity,
+            .quantity_needed = w.contracts[0].quantity_needed,
+            .base_price = w.contracts[0].base_price,
+            .age_at_copy = w.contracts[0].age,
+        },
+        &memory));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 1);
+    ASSERT(npc->known_contract_count >= 1);
+    ASSERT(npc->cargo[COMMODITY_FERRITE_INGOT] > 0.0f);
+}
+
+TEST(test_hauler_assignment_weights_route_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    /* Equalize distance so the route memories, not map geometry, decide. */
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    for (int i = 0; i < 2; i++) {
+        int dest = i == 0 ? 1 : 2;
+        w.contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+        npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+        };
+    }
+
+    const market_memory_t danger = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 20,
+        .observed_tick = 10,
+        .subject_nonce = 0xA1,
+    };
+    const market_memory_t success = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS,
+        .station_a = 2,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 2,
+        .observed_tick = 11,
+        .subject_nonce = 0xB2,
+    };
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&danger, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(knowledge_item_from_market_memory(&success, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+    bool found_route_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_dest[i] == 2) {
+            found_route_diag = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_ROUTE_MEMORY);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_ROUTE_SUCCESS);
+            ASSERT_EQ_INT(npc->job_diag_proof_kind[i],
+                          INSPECT_JOB_PROOF_SUBJECT_HASH);
+        }
+    }
+    ASSERT(found_route_diag);
+}
+
+TEST(test_hauler_assignment_explains_selected_route_risk_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+    };
+
+    const market_memory_t danger = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 20,
+        .observed_tick = 10,
+        .subject_nonce = 0xE1,
+    };
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&danger, &item));
+    item.witness_hash[0] = 0x44;
+    item.witness_hash[1] = 0x55;
+    item.witness_hash[2] = 0x66;
+    item.witness_hash[3] = 0x77;
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 1);
+    bool found_risk_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_dest[i] == 1) {
+            found_risk_diag = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_ROUTE_RISK);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_ROUTE_DANGER);
+            ASSERT_EQ_INT(npc->job_diag_proof_kind[i],
+                          INSPECT_JOB_PROOF_WITNESS_HASH);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][0], 0x44);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][1], 0x55);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][2], 0x66);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][3], 0x77);
+        }
+    }
+    ASSERT(found_risk_diag);
+}
+
+TEST(test_hauler_assignment_weights_delivery_receipt_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    for (int i = 0; i < 2; i++) {
+        int dest = i == 0 ? 1 : 2;
+        w.contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+        npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+        };
+    }
+
+    const market_memory_t danger = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 20,
+        .observed_tick = 10,
+        .subject_nonce = 0xC1,
+    };
+    const market_memory_t receipt = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_DELIVERY_RECEIPT,
+        .station_a = 2,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_DELIVERY,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 2,
+        .observed_tick = 11,
+        .subject_nonce = 0xD2,
+    };
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&danger, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(knowledge_item_from_market_memory(&receipt, &item));
+    item.chain_anchor[0] = 0xA7;
+    item.chain_anchor[1] = 0xB8;
+    item.chain_anchor[2] = 0xC9;
+    item.chain_anchor[3] = 0xDA;
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+    bool found_receipt_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_dest[i] == 2) {
+            found_receipt_diag = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_RECEIPT_PROOF);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_DELIVERY_RECEIPT);
+            ASSERT_EQ_INT(npc->job_diag_proof_kind[i],
+                          INSPECT_JOB_PROOF_CHAIN_ANCHOR);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][0], 0xA7);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][1], 0xB8);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][2], 0xC9);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][3], 0xDA);
+        }
+    }
+    ASSERT(found_receipt_diag);
+}
+
+TEST(test_hauler_assignment_weights_route_reputation_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    for (int i = 0; i < 2; i++) {
+        int dest = i == 0 ? 1 : 2;
+        w.contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+        npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+        };
+    }
+
+    market_memory_t memory = {0};
+    knowledge_item_t item;
+    ASSERT(market_memory_from_route_reputation(0, 1,
+                                               COMMODITY_FERRITE_INGOT,
+                                               4,
+                                               40.0f,
+                                               12,
+                                               true,
+                                               &memory));
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(market_memory_from_route_reputation(0, 2,
+                                               COMMODITY_FERRITE_INGOT,
+                                               4,
+                                               80.0f,
+                                               13,
+                                               false,
+                                               &memory));
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+}
+
+TEST(test_hauler_assignment_weights_station_trust_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    for (int i = 0; i < 2; i++) {
+        int dest = i == 0 ? 1 : 2;
+        w.contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+        npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = (uint8_t)dest,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 2.0f,
+            .base_price = 25.0f,
+        };
+    }
+
+    market_memory_t trust = {0};
+    ASSERT(market_memory_from_station_trust(2,
+                                            (uint8_t)CONTRACT_TRACTOR,
+                                            COMMODITY_FERRITE_INGOT,
+                                            8,
+                                            200.0f,
+                                            15,
+                                            &trust));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&trust, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+    bool found_trust_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_dest[i] == 2) {
+            found_trust_diag = true;
+            ASSERT(npc->job_diag_factor_proof[i] > 0);
+        }
+    }
+    ASSERT(found_trust_diag);
+}
+
+TEST(test_hauler_assignment_weights_supply_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_REPAIR_KIT,
+                                           (int)HAULER_RESERVE + 1));
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 8));
+
+    const commodity_t commodities[2] = {
+        COMMODITY_REPAIR_KIT,
+        COMMODITY_FERRITE_INGOT,
+    };
+    for (int i = 0; i < 2; i++) {
+        w.contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = 1,
+            .commodity = commodities[i],
+            .quantity_needed = 1.0f,
+            .base_price = 25.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+        npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = 1,
+            .commodity = (uint8_t)commodities[i],
+            .quantity_needed = 1.0f,
+            .base_price = 25.0f,
+        };
+    }
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT(npc->cargo[COMMODITY_FERRITE_INGOT] > 0.0f);
+    ASSERT_EQ_FLOAT(npc->cargo[COMMODITY_REPAIR_KIT], 0.0f, 0.001f);
+}
+
+TEST(test_hauler_uses_remote_supply_memory_for_pickup) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 3));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 400.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    market_memory_t demand = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[0].action,
+            .station_index = w.contracts[0].station_index,
+            .commodity = (uint8_t)w.contracts[0].commodity,
+            .quantity_needed = w.contracts[0].quantity_needed,
+            .base_price = w.contracts[0].base_price,
+            .age_at_copy = w.contracts[0].age,
+        },
+        &demand));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&demand, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[1],
+                                             1,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    item.hops = 2;
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->pickup_station, 1);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+    ASSERT_EQ_INT(npc->pickup_commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_FLOAT(npc->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+    bool found_remote_pickup_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_source[i] == 1 &&
+            npc->job_diag_dest[i] == 2) {
+            found_remote_pickup_diag = true;
+            ASSERT(npc->job_diag_factor_value[i] > 0);
+            ASSERT(npc->job_diag_factor_demand[i] > 0);
+            ASSERT(npc->job_diag_factor_supply[i] > 0);
+            ASSERT(npc->job_diag_factor_route[i] > 0);
+            ASSERT(npc->job_diag_factor_freshness[i] > 0);
+            ASSERT(npc->job_diag_factor_capability[i] > 0);
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_REMOTE_SUPPLY);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_SUPPLY);
+            ASSERT_EQ_INT(npc->job_diag_memory_hops[i], 2);
+            ASSERT_EQ_INT(npc->job_diag_memory_station[i], 1);
+        }
+    }
+    ASSERT(found_remote_pickup_diag);
+
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    npc->ship.pos = station_approach_target(&w.stations[1], npc->ship.pos);
+    ship->pos = npc->ship.pos;
+    npc->ship.vel = v2(0.0f, 0.0f);
+    ship->vel = npc->ship.vel;
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_UNLOADING);
+    npc->state_timer = 0.0f;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->pickup_station, -1);
+    ASSERT(npc->cargo[COMMODITY_FERRITE_INGOT] > 0.0f);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[1], COMMODITY_FERRITE_INGOT),
+                  (int)HAULER_RESERVE);
+}
+
+TEST(test_remote_supply_route_starts_from_current_ship_position) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(10000.0f, 0.0f);
+    w.stations[2].pos = v2(0.0f, 100.0f);
+    w.stations[3].pos = v2(0.0f, 1000.0f);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 3));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 3));
+    ASSERT(test_set_station_finished_units(&w.stations[3],
+                                           COMMODITY_FERRITE_INGOT, 0));
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 3,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 400.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    npc->state = NPC_STATE_IDLE;
+    npc->state_timer = 0.0f;
+    npc->ship.pos = w.stations[1].pos;
+    npc->ship.vel = v2(0.0f, 0.0f);
+    ship->pos = npc->ship.pos;
+    ship->vel = npc->ship.vel;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    knowledge_item_t item;
+    market_memory_t demand = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[0].action,
+            .station_index = w.contracts[0].station_index,
+            .commodity = (uint8_t)w.contracts[0].commodity,
+            .quantity_needed = w.contracts[0].quantity_needed,
+            .base_price = w.contracts[0].base_price,
+            .age_at_copy = w.contracts[0].age,
+        },
+        &demand));
+    ASSERT(knowledge_item_from_market_memory(&demand, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[1],
+                                             1,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(market_memory_from_station_supply(&w.stations[2],
+                                             2,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->pickup_station, 1);
+    ASSERT_EQ_INT(npc->dest_station, 3);
+}
+
+TEST(test_failed_remote_pickup_emits_station_risk_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 2));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 400.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    market_memory_t demand = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[0].action,
+            .station_index = w.contracts[0].station_index,
+            .commodity = (uint8_t)w.contracts[0].commodity,
+            .quantity_needed = w.contracts[0].quantity_needed,
+            .base_price = w.contracts[0].base_price,
+            .age_at_copy = w.contracts[0].age,
+        },
+        &demand));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&demand, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[1],
+                                             1,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(npc->pickup_station, 1);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT, 0));
+
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    npc->ship.pos = station_approach_target(&w.stations[1], npc->ship.pos);
+    ship->pos = npc->ship.pos;
+    npc->ship.vel = v2(0.0f, 0.0f);
+    ship->vel = npc->ship.vel;
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_UNLOADING);
+    npc->state_timer = 0.0f;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_RETURN_TO_STATION);
+    ASSERT(test_view_has_market_memory(&npc->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(test_view_has_market_memory(&w.stations[1].knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+}
+
+TEST(test_hauler_assignment_avoids_station_risk_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 3));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 3));
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 3,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 400.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    knowledge_item_t item;
+    market_memory_t demand = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[0].action,
+            .station_index = w.contracts[0].station_index,
+            .commodity = (uint8_t)w.contracts[0].commodity,
+            .quantity_needed = w.contracts[0].quantity_needed,
+            .base_price = w.contracts[0].base_price,
+            .age_at_copy = w.contracts[0].age,
+        },
+        &demand));
+    ASSERT(knowledge_item_from_market_memory(&demand, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[1],
+                                             1,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(market_memory_from_station_supply(&w.stations[2],
+                                             2,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t risk = {0};
+    ASSERT(market_memory_from_station_risk(1,
+                                           (uint8_t)CONTRACT_TRACTOR,
+                                           COMMODITY_FERRITE_INGOT,
+                                           6,
+                                           50.0f,
+                                           20,
+                                           &risk));
+    ASSERT(knowledge_item_from_market_memory(&risk, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->pickup_station, 2);
+    ASSERT_EQ_INT(npc->dest_station, 3);
+}
+
+TEST(test_hauler_assignment_avoids_destination_station_risk_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 6));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FERRITE_INGOT, 0));
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+    w.stations[2].pos = v2(1000.0f, 0.0f);
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 400.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    w.contracts[1] = w.contracts[0];
+    w.contracts[1].station_index = 2;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    knowledge_item_t item;
+    for (int i = 0; i < 2; i++) {
+        market_memory_t demand = {0};
+        ASSERT(market_memory_from_contract_summary(
+            &(contract_summary_t){
+                .active = true,
+                .action = (uint8_t)w.contracts[i].action,
+                .station_index = w.contracts[i].station_index,
+                .commodity = (uint8_t)w.contracts[i].commodity,
+                .quantity_needed = w.contracts[i].quantity_needed,
+                .base_price = w.contracts[i].base_price,
+                .age_at_copy = w.contracts[i].age,
+            },
+            &demand));
+        ASSERT(knowledge_item_from_market_memory(&demand, &item));
+        knowledge_view_insert(&npc->knowledge, &item);
+    }
+
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[0],
+                                             0,
+                                             COMMODITY_FERRITE_INGOT,
+                                             12,
+                                             &supply));
+    ASSERT(knowledge_item_from_market_memory(&supply, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    market_memory_t risk = {0};
+    ASSERT(market_memory_from_station_risk(1,
+                                           (uint8_t)CONTRACT_TRACTOR,
+                                           COMMODITY_FERRITE_INGOT,
+                                           6,
+                                           50.0f,
+                                           20,
+                                           &risk));
+    ASSERT(knowledge_item_from_market_memory(&risk, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->pickup_station, -1);
+    ASSERT_EQ_INT(npc->dest_station, 2);
+}
+
+TEST(test_neural_worker_dock_encodes_market_memory_into_hnn) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    memset(&npc->hnn_market_mem, 0, sizeof(npc->hnn_market_mem));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    market_memory_t memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = 2,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 3.0f,
+            .base_price = 90.0f,
+            .age_at_copy = 12.0f,
+        },
+        &memory));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    gossip_hnn_exchange(&w, 0, npc);
+
+    ASSERT(npc->hnn_market_mem.experience_count > 0);
+    ASSERT(w.stations[0].hnn_market_memory.experience_count > 0);
+    ASSERT(gossip_hnn_market_resonance(&npc->hnn_market_mem,
+                                       &memory,
+                                       GOSSIP_HNN_JOB_HAUL) > 0.05f);
+}
+
+TEST(test_neural_worker_transports_market_hnn_between_stations) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+        memset(&w.stations[s].hnn_market_memory, 0,
+               sizeof(w.stations[s].hnn_market_memory));
+        w.stations[s].hnn_market_version = 0;
+    }
+
+    int courier_slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int listener_slot = spawn_npc(&w, 1, NPC_ROLE_MINER);
+    ASSERT(courier_slot >= 0);
+    ASSERT(listener_slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[courier_slot];
+    npc_ship_t *listener = &w.npc_ships[listener_slot];
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    memset(&courier->hnn_market_mem, 0, sizeof(courier->hnn_market_mem));
+    memset(&listener->knowledge, 0, sizeof(listener->knowledge));
+    memset(&listener->hnn_market_mem, 0, sizeof(listener->hnn_market_mem));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_configure(&listener->knowledge, SHIP_KNOWN_ITEM_CAP);
+    courier->hnn_market_station = 0xffu;
+    listener->hnn_market_station = 0xffu;
+
+    market_memory_t memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_FRACTURE,
+            .station_index = 2,
+            .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+            .quantity_needed = 1.0f,
+            .base_price = 180.0f,
+            .age_at_copy = 10.0f,
+        },
+        &memory));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&courier->knowledge, &item);
+
+    gossip_hnn_exchange(&w, 0, courier);
+    ASSERT(courier->hnn_market_mem.experience_count > 0);
+    ASSERT(w.stations[0].hnn_market_memory.experience_count > 0);
+    ASSERT_EQ_INT(w.stations[1].hnn_market_memory.experience_count, 0);
+
+    gossip_hnn_exchange(&w, 1, courier);
+    ASSERT(w.stations[1].hnn_market_memory.experience_count > 0);
+    ASSERT(gossip_hnn_market_resonance(&w.stations[1].hnn_market_memory,
+                                       &memory,
+                                       GOSSIP_HNN_JOB_SCOUT) > 0.05f);
+
+    gossip_hnn_exchange(&w, 1, listener);
+    ASSERT(listener->hnn_market_mem.experience_count > 0);
+    ASSERT(gossip_hnn_market_resonance(&listener->hnn_market_mem,
+                                       &memory,
+                                       GOSSIP_HNN_JOB_SCOUT) > 0.05f);
+}
+
+TEST(test_neural_worker_physically_transports_contract_memory_between_stations) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 3.0f,
+        .base_price = 90.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    gossip_bootstrap_world_stations(&w);
+    ASSERT_EQ_INT(w.stations[2].known_contract_count, 1);
+    ASSERT_EQ_INT(w.stations[0].known_contract_count, 0);
+    ASSERT(!test_view_has_market_memory(&w.stations[0].knowledge,
+                                        (uint8_t)MARKET_MEMORY_DEMAND,
+                                        2, 0xff,
+                                        (uint8_t)COMMODITY_FERRITE_INGOT,
+                                        NULL));
+
+    int slot = spawn_npc(&w, 2, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    courier->role = NPC_ROLE_HAULER;
+    courier->state = NPC_STATE_DOCKED;
+    courier->state_timer = 0.0f;
+    courier->known_contract_count = 0;
+    memset(courier->known_contracts, 0, sizeof(courier->known_contracts));
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    gossip_dock_handshake(&w, 2,
+                          courier->known_contracts,
+                          &courier->known_contract_count,
+                          SHIP_KNOWN_CONTRACT_CAP,
+                          &courier->knowledge);
+    ASSERT_EQ_INT(courier->known_contract_count, 1);
+    ASSERT(test_view_has_market_memory(&courier->knowledge,
+                                       (uint8_t)MARKET_MEMORY_DEMAND,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+
+    courier->dest_station = 0;
+    courier->pickup_station = -1;
+    courier->pickup_commodity = COMMODITY_COUNT;
+    courier->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+    courier->state = NPC_STATE_UNLOADING;
+    courier->state_timer = 0.0f;
+    courier->ship.pos = station_approach_target(&w.stations[0],
+                                                courier->ship.pos);
+    courier->ship.vel = v2(0.0f, 0.0f);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT(test_view_has_market_memory(&w.stations[0].knowledge,
+                                       (uint8_t)MARKET_MEMORY_DEMAND,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT_EQ_INT(w.stations[0].known_contract_count, 1);
+    ASSERT_EQ_INT(w.stations[0].known_contracts[0].station_index, 2);
+}
+
+TEST(test_idle_neural_worker_runs_gossip_courier_trip) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) w.scaffolds[i].active = false;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FRAME,
+        .quantity_needed = 2.0f,
+        .base_price = 110.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    gossip_bootstrap_world_stations(&w);
+    ASSERT_EQ_INT(w.stations[1].known_contract_count, 1);
+    ASSERT_EQ_INT(w.stations[2].known_contract_count, 0);
+
+    int slot = spawn_npc(&w, 1, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    courier->state = NPC_STATE_DOCKED;
+    courier->state_timer = 0.0f;
+    courier->known_contract_count = 0;
+    memset(courier->known_contracts, 0, sizeof(courier->known_contracts));
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(courier->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(courier->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(courier->dest_station, 2);
+    ASSERT_EQ_INT(courier->pickup_station, -1);
+    ASSERT_EQ_INT(courier->pickup_commodity, COMMODITY_COUNT);
+    ASSERT(test_view_has_market_memory(&courier->knowledge,
+                                       (uint8_t)MARKET_MEMORY_DEMAND,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FRAME,
+                                       NULL));
+    bool selected_courier = false;
+    for (int i = 0; i < courier->job_diag_count && i < 4; i++) {
+        if (courier->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            courier->job_diag_selected[i] >= 200 &&
+            courier->job_diag_dest[i] == 2) {
+            selected_courier = true;
+            ASSERT_EQ_INT(courier->job_diag_reason[i],
+                          INSPECT_JOB_REASON_GOSSIP_COURIER);
+            ASSERT_EQ_INT(courier->job_diag_commodity[i], COMMODITY_COUNT);
+        }
+    }
+    ASSERT(selected_courier);
+
+    courier->state = NPC_STATE_UNLOADING;
+    courier->state_timer = 0.0f;
+    courier->ship.pos = station_approach_target(&w.stations[2],
+                                                courier->ship.pos);
+    courier->ship.vel = v2(0.0f, 0.0f);
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT(test_view_has_market_memory(&w.stations[2].knowledge,
+                                       (uint8_t)MARKET_MEMORY_DEMAND,
+                                       1, 0xff,
+                                       (uint8_t)COMMODITY_FRAME,
+                                       NULL));
+    bool station2_heard_station1_contract = false;
+    for (int i = 0; i < w.stations[2].known_contract_count; i++) {
+        if (w.stations[2].known_contracts[i].station_index == 1 &&
+            w.stations[2].known_contracts[i].commodity == COMMODITY_FRAME) {
+            station2_heard_station1_contract = true;
+            break;
+        }
+    }
+    ASSERT(station2_heard_station1_contract);
+}
+
+TEST(test_idle_neural_worker_runs_baseline_gossip_without_contracts) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        w.stations[0]._inventory_cache[c] = MAX_PRODUCT_STOCK;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++)
+        w.stations[0]._inventory_cache[c] = REFINERY_HOPPER_CAPACITY;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) w.scaffolds[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    courier->state = NPC_STATE_DOCKED;
+    courier->state_timer = 0.0f;
+    courier->known_contract_count = 0;
+    memset(courier->known_contracts, 0, sizeof(courier->known_contracts));
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(courier->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(courier->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(courier->dest_station, 1);
+    ASSERT_EQ_INT(courier->pickup_station, -1);
+    ASSERT_EQ_INT(courier->pickup_commodity, COMMODITY_COUNT);
+
+    bool selected_courier = false;
+    for (int i = 0; i < courier->job_diag_count && i < 4; i++) {
+        if (courier->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            courier->job_diag_selected[i] >= 200 &&
+            courier->job_diag_reason[i] == INSPECT_JOB_REASON_GOSSIP_COURIER) {
+            selected_courier = true;
+            ASSERT_EQ_INT(courier->job_diag_commodity[i], COMMODITY_COUNT);
+            break;
+        }
+    }
+    ASSERT(selected_courier);
+}
+
+TEST(test_neural_worker_runs_gossip_when_ore_target_unavailable) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) w.scaffolds[i].active = false;
+
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FRAME] = 0.0f;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    courier->state = NPC_STATE_DOCKED;
+    courier->state_timer = 0.0f;
+    courier->known_contract_count = 0;
+    memset(courier->known_contracts, 0, sizeof(courier->known_contracts));
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(courier->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(courier->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(courier->dest_station, 1);
+    bool selected_courier = false;
+    for (int i = 0; i < courier->job_diag_count && i < 4; i++) {
+        if (courier->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            courier->job_diag_selected[i] >= 200 &&
+            courier->job_diag_reason[i] == INSPECT_JOB_REASON_GOSSIP_COURIER) {
+            selected_courier = true;
+            break;
+        }
+    }
+    ASSERT(selected_courier);
+}
+
+TEST(test_neural_worker_market_hnn_pool_decays_under_new_attention) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
+    memset(&w.stations[0].hnn_market_memory, 0,
+           sizeof(w.stations[0].hnn_market_memory));
+    w.stations[0].hnn_market_version = 0;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    memset(&courier->hnn_market_mem, 0, sizeof(courier->hnn_market_mem));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+    courier->hnn_market_station = 0xffu;
+    courier->hnn_market_version = 0;
+
+    market_memory_t haul_memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = 2,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 3.0f,
+            .base_price = 90.0f,
+            .age_at_copy = 12.0f,
+        },
+        &haul_memory));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&haul_memory, &item));
+    knowledge_view_insert(&courier->knowledge, &item);
+    gossip_hnn_exchange(&w, 0, courier);
+
+    float haul_before = gossip_hnn_market_resonance(
+        &w.stations[0].hnn_market_memory, &haul_memory, GOSSIP_HNN_JOB_HAUL);
+    ASSERT(haul_before > 0.05f);
+
+    market_memory_t proof_memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_DELIVERY,
+            .station_index = 3,
+            .commodity = (uint8_t)COMMODITY_LASER_MODULE,
+            .quantity_needed = 1.0f,
+            .base_price = 180.0f,
+            .age_at_copy = 2.0f,
+        },
+        &proof_memory));
+
+    for (int i = 0; i < 10; i++) {
+        memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+        knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+        hnn_memory_init(&courier->hnn_market_mem);
+        courier->hnn_market_station = 0xffu;
+        courier->hnn_market_version = 0;
+        ASSERT(knowledge_item_from_market_memory(&proof_memory, &item));
+        knowledge_view_insert(&courier->knowledge, &item);
+        gossip_hnn_exchange(&w, 0, courier);
+    }
+
+    ASSERT(w.stations[0].hnn_market_memory.experience_count <= 16);
+    float haul_after = gossip_hnn_market_resonance(
+        &w.stations[0].hnn_market_memory, &haul_memory, GOSSIP_HNN_JOB_HAUL);
+    float proof_after = gossip_hnn_market_resonance(
+        &w.stations[0].hnn_market_memory,
+        &proof_memory,
+        GOSSIP_HNN_JOB_DELIVER_PROOF);
+    ASSERT(proof_after > 0.05f);
+    ASSERT(haul_after < haul_before);
+    ASSERT(proof_after > haul_after);
+}
+
+TEST(test_neural_worker_market_hnn_pool_decays_when_idle) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
+    memset(&w.stations[0].hnn_market_memory, 0,
+           sizeof(w.stations[0].hnn_market_memory));
+    w.stations[0].hnn_market_version = 0;
+    w.stations[0].hnn_market_decay_tick = 0;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *courier = &w.npc_ships[slot];
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    memset(&courier->hnn_market_mem, 0, sizeof(courier->hnn_market_mem));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+    courier->hnn_market_station = 0xffu;
+    courier->hnn_market_version = 0;
+    courier->hnn_market_decay_tick = 0;
+
+    market_memory_t memory = {0};
+    ASSERT(market_memory_from_contract_summary(
+        &(contract_summary_t){
+            .active = true,
+            .action = (uint8_t)CONTRACT_TRACTOR,
+            .station_index = 2,
+            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 3.0f,
+            .base_price = 90.0f,
+            .age_at_copy = 12.0f,
+        },
+        &memory));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    knowledge_view_insert(&courier->knowledge, &item);
+    gossip_hnn_exchange(&w, 0, courier);
+
+    ASSERT(w.stations[0].hnn_market_memory.experience_count > 0);
+    ASSERT(gossip_hnn_market_resonance(&w.stations[0].hnn_market_memory,
+                                       &memory,
+                                       GOSSIP_HNN_JOB_HAUL) > 0.05f);
+
+    memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
+    knowledge_view_configure(&w.stations[0].knowledge, STATION_KNOWN_ITEM_CAP);
+    memset(&courier->knowledge, 0, sizeof(courier->knowledge));
+    knowledge_view_configure(&courier->knowledge, SHIP_KNOWN_ITEM_CAP);
+    hnn_memory_init(&courier->hnn_market_mem);
+    courier->hnn_market_station = 0xffu;
+    courier->hnn_market_version = 0;
+    courier->hnn_market_decay_tick = 0;
+
+    w.tick += 120u * 60u;
+    gossip_hnn_exchange(&w, 0, courier);
+
+    ASSERT_EQ_INT(w.stations[0].hnn_market_memory.experience_count, 0);
+    ASSERT(gossip_hnn_market_resonance(&w.stations[0].hnn_market_memory,
+                                       &memory,
+                                       GOSSIP_HNN_JOB_HAUL) == 0.0f);
+}
+
 TEST(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_TRACTOR_MODULE, 0));
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    int slot = spawn_npc(&w, 2, NPC_ROLE_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -2468,7 +4681,86 @@ TEST(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work) {
     step_npc_ships(&w, SIM_DT);
 
     ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
-    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_MINER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
+    bool selected_mine = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_MINE &&
+            npc->job_diag_selected[i] >= 200) {
+            ASSERT(npc->job_diag_factor_hologram[i] > 0);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_ORE_PRESSURE);
+            ASSERT_EQ_INT(npc->job_diag_memory_station[i], 2);
+            selected_mine = true;
+            break;
+        }
+    }
+    ASSERT(selected_mine);
+}
+
+TEST(test_hauler_damage_emits_route_danger_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->role = NPC_ROLE_HAULER;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->cargo[COMMODITY_FERRITE_INGOT] = 1.0f;
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    ship->hull = 100.0f;
+    apply_npc_ship_damage_attributed(&w, slot, 12.0f, NULL,
+                                     DEATH_CAUSE_ASTEROID);
+
+    market_memory_t danger = {0};
+    ASSERT(test_view_has_market_memory(&npc->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &danger));
+    ASSERT_EQ_INT(danger.action, CONTRACT_TRACTOR);
+    ASSERT(danger.salience >= 120);
+    ASSERT_EQ_INT(danger.quantity_hint, 12);
+    market_memory_t risk = {0};
+    ASSERT(test_view_has_market_memory(&npc->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_RISK,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &risk));
+    ASSERT_EQ_INT(risk.action, CONTRACT_TRACTOR);
+    ASSERT_EQ_INT(risk.quantity_hint, 1);
+}
+
+TEST(test_legacy_hauler_brain_mode_upgrades_before_assignment) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_TRACTOR_MODULE, 0));
+
+    int slot = spawn_npc(&w, 2, NPC_ROLE_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->brain_mode = SERVER_BRAIN_MODE_NONE;
+    npc->known_contract_count = 0;
+    memset(npc->cargo, 0, sizeof(npc->cargo));
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
 }
 
 TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
@@ -3132,7 +5424,8 @@ TEST(test_npc_miner_idles_when_refined_output_is_full) {
     step_npc_ships(&w, SIM_DT);
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, -1);
     ASSERT_EQ_INT(w.npc_ships[0].towed_fragment, -1);
-    ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_IDLE);
+    ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT(w.npc_ships[0].dest_station != w.npc_ships[0].home_station);
 }
 
 TEST(test_field_respawn_starts_beyond_signal_edge) {
@@ -3485,6 +5778,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
+    RUN(test_world_reset_prospect_workers_leave_idle);
+    RUN(test_neural_worker_refits_only_from_home_credit_and_modules);
+    RUN(test_neural_worker_posts_home_refit_import_contract);
     RUN(test_ship_death_drops_cargo_pods);
     RUN(test_towed_cargo_pod_sells_at_dock);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
@@ -3494,12 +5790,13 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
     RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
-    RUN(test_dead_hauler_auto_respawns);
+    RUN(test_dead_neural_worker_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
     RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_hauler_does_not_dock_from_outer_station_ring);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
-    RUN(test_dead_tow_auto_respawns_at_shipyard);
+    RUN(test_station_roster_respawns_resident_miner_and_tug_drones);
+    RUN(test_frontier_outpost_roster_respects_virtual_logistics_budget);
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);
     RUN(test_world_sim_step_moves_ship_with_thrust);
@@ -3549,7 +5846,34 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
     RUN(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work);
+    RUN(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer);
+    RUN(test_neural_npc_assignment_switches_worker_to_hauler_for_scaffold_tow);
+    RUN(test_neural_npc_assignment_switches_worker_to_scout_for_fracture_work);
+    RUN(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer);
+    RUN(test_neural_npc_assignment_executes_delivery_proof_offer);
+    RUN(test_neural_npc_assignment_uses_market_memory_demand);
+    RUN(test_hauler_assignment_weights_route_memory);
+    RUN(test_hauler_assignment_explains_selected_route_risk_memory);
+    RUN(test_hauler_assignment_weights_delivery_receipt_memory);
+    RUN(test_hauler_assignment_weights_route_reputation_memory);
+    RUN(test_hauler_assignment_weights_station_trust_memory);
+    RUN(test_hauler_assignment_weights_supply_memory);
+    RUN(test_hauler_uses_remote_supply_memory_for_pickup);
+    RUN(test_remote_supply_route_starts_from_current_ship_position);
+    RUN(test_failed_remote_pickup_emits_station_risk_memory);
+    RUN(test_hauler_assignment_avoids_station_risk_memory);
+    RUN(test_hauler_assignment_avoids_destination_station_risk_memory);
+    RUN(test_neural_worker_dock_encodes_market_memory_into_hnn);
+    RUN(test_neural_worker_transports_market_hnn_between_stations);
+    RUN(test_neural_worker_physically_transports_contract_memory_between_stations);
+    RUN(test_idle_neural_worker_runs_gossip_courier_trip);
+    RUN(test_idle_neural_worker_runs_baseline_gossip_without_contracts);
+    RUN(test_neural_worker_runs_gossip_when_ore_target_unavailable);
+    RUN(test_neural_worker_market_hnn_pool_decays_under_new_attention);
+    RUN(test_neural_worker_market_hnn_pool_decays_when_idle);
     RUN(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work);
+    RUN(test_hauler_damage_emits_route_danger_memory);
+    RUN(test_legacy_hauler_brain_mode_upgrades_before_assignment);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
     RUN(test_miner_drops_fragment_without_matching_smelt_endpoint);
     RUN(test_scenario_upgrade_requires_products);

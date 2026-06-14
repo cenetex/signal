@@ -73,7 +73,6 @@
 
 
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
-
     <script>
       var canvas = document.getElementById('canvas');
 
@@ -84,6 +83,9 @@
       };
 
       window.SignalGameModule = Module;
+    </script>
+    <script src="./signal-hail-llm.js"></script>
+    <script>
 
       /* ?singleplayer=1 forces the in-process server.
        * ?server=ws://... connects to an explicit multiplayer relay.

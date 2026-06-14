@@ -38,6 +38,26 @@ bool station_has_module(const station_t *st, module_type_t type) {
     return false;
 }
 
+int station_active_module_count(const station_t *st, module_type_t type) {
+    if (!st) return 0;
+    int count = 0;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == type && !st->modules[i].scaffold) count++;
+    }
+    return count;
+}
+
+int station_active_shipyard_count(const station_t *st) {
+    return station_active_module_count(st, MODULE_SHIPYARD);
+}
+
+bool station_can_order_scaffold(const station_t *st, module_type_t type) {
+    int yards = station_active_shipyard_count(st);
+    if (yards <= 0) return false;
+    if (type != MODULE_SHIPYARD && yards < 2) return false;
+    return station_has_module(st, type);
+}
+
 int station_nascent_scaffold_index(const scaffold_t *scaffolds,
                                    int scaffold_count,
                                    int station_idx) {

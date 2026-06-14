@@ -34,8 +34,85 @@ bool knowledge_item_from_contract_summary(const contract_summary_t *s,
                                           knowledge_item_t *out);
 bool contract_summary_from_knowledge_item(const knowledge_item_t *item,
                                           contract_summary_t *out);
+bool knowledge_item_from_market_memory(const market_memory_t *memory,
+                                       knowledge_item_t *out);
+bool market_memory_from_knowledge_item(const knowledge_item_t *item,
+                                       market_memory_t *out);
+bool market_memory_from_contract_summary(const contract_summary_t *s,
+                                         market_memory_t *out);
+bool market_memory_from_station_supply(const station_t *st,
+                                       int station_index,
+                                       commodity_t commodity,
+                                       uint32_t observed_tick,
+                                       market_memory_t *out);
+bool market_memory_from_ore_pressure(const station_t *st,
+                                     int station_index,
+                                     commodity_t ore,
+                                     uint32_t observed_tick,
+                                     market_memory_t *out);
+bool market_memory_from_scaffold_pressure(int destination_station,
+                                          int source_station,
+                                          module_type_t module_type,
+                                          uint32_t observed_tick,
+                                          uint64_t scaffold_nonce,
+                                          market_memory_t *out);
+bool market_memory_from_delivery_receipt(int origin_station,
+                                         int destination_station,
+                                         commodity_t commodity,
+                                         uint16_t units,
+                                         float value_hint,
+                                         uint32_t observed_tick,
+                                         uint64_t receipt_nonce,
+                                         market_memory_t *out);
+bool market_memory_from_route_reputation(int origin_station,
+                                         int destination_station,
+                                         commodity_t commodity,
+                                         uint16_t evidence_count,
+                                         float value_hint,
+                                         uint32_t observed_tick,
+                                         bool risk,
+                                         market_memory_t *out);
+bool market_memory_from_station_trust(int station_index,
+                                      uint8_t action,
+                                      commodity_t commodity,
+                                      uint16_t evidence_count,
+                                      float value_hint,
+                                      uint32_t observed_tick,
+                                      market_memory_t *out);
+bool market_memory_from_station_risk(int station_index,
+                                     uint8_t action,
+                                     commodity_t commodity,
+                                     uint16_t evidence_count,
+                                     float value_hint,
+                                     uint32_t observed_tick,
+                                     market_memory_t *out);
+typedef enum {
+    GOSSIP_HNN_JOB_HAUL = 1,
+    GOSSIP_HNN_JOB_MINE,
+    GOSSIP_HNN_JOB_TOW,
+    GOSSIP_HNN_JOB_SCOUT,
+    GOSSIP_HNN_JOB_DELIVER_PROOF,
+    GOSSIP_HNN_JOB_REPAIR,
+} gossip_hnn_job_t;
+bool gossip_hnn_store_market_memory(hnn_memory_t *mem,
+                                    const market_memory_t *memory);
+float gossip_hnn_market_resonance(const hnn_memory_t *mem,
+                                  const market_memory_t *memory,
+                                  gossip_hnn_job_t job);
+void knowledge_view_reinforce_route_reputation(knowledge_view_t *view,
+                                               const market_memory_t *memory);
+void knowledge_view_reinforce_station_trust(knowledge_view_t *view,
+                                            const market_memory_t *memory);
+void knowledge_view_decay(knowledge_view_t *view,
+                          uint8_t confidence_decay,
+                          uint8_t salience_decay);
 void knowledge_view_forget_contract(knowledge_view_t *view, uint8_t action,
                                     int station_idx, commodity_t commodity);
+
+/* Nearby ship contact exchange. This is bounded in-flight gossip: ships that
+ * pass close enough exchange structured knowledge, and neural workers also
+ * blend carried market HNN traces. Returns the number of ship pairs touched. */
+int gossip_ship_contact_exchange(world_t *w);
 
 /* Run the bidirectional handshake at `station_index` between the station
  * and the ship pool passed in. The world is needed only for reading the
@@ -47,46 +124,32 @@ void gossip_dock_handshake(world_t *w, int station_index,
                            uint8_t *ship_count, int ship_cap,
                            knowledge_view_t *ship_knowledge);
 
-/* Cold-start bootstrap: seed every active station's known_contracts pool
- * with every currently-active contract in w->contracts[]. Called once at
- * world_reset and once after save-load completes — never at runtime.
+/* Cold-start bootstrap: refresh every active station's own situated
+ * pressure from local state. This seeds local stock supply, ore pressure,
+ * scaffold pressure, and contracts visible at that station; it does not
+ * copy contracts from peer stations. Called once at world_reset and once
+ * after save-load completes — never at runtime.
  *
- * Why this is needed: contracts use station_index = destination, and the
- * hauler picker filters out contracts whose station_index == own home
- * (no self-delivery). So a hauler at home Prospect can only act on
- * contracts to OTHER stations. Those contracts only enter Prospect's
- * gossip pool via dock contact from a ship that has previously visited
- * the issuing station. With no traffic at world_reset, no ship has been
- * anywhere yet — Prospect's pool only contains Prospect-as-destination
- * contracts (which the picker ignores), so haulers idle forever. The
- * bootstrap breaks this deadlock by injecting an initial "everyone
- * knows everyone's demands" state — equivalent to "every station heard
- * about every contract at world creation."
- *
- * Why this is a bounded violation rather than ongoing radio: it runs
- * once per world-state-event (reset or load), not on every tick. New
- * contracts spawned at runtime — e.g. when a player plants an outpost
- * and a new SUPPLY contract spawns at the outpost's station_index —
- * land only in their issuer's pool and propagate purely via ship dock
- * contact. The bootstrap is initial conditions, not steady-state radio.
- *
- * Proper fix (TODO, post-v0): replace with pressure-driven contract
- * issuance that produces local contracts at every station as a function
- * of local state (modules awaiting supply, scaffolds in progress, hopper
- * pressure). Each station's pool fills from its own demands without
- * needing this cross-pollination; cold-start NPCs find work at their
- * home pool's locally-issued contracts (after picker semantics evolve to
- * allow some of them) or via early ship traffic. */
+ * Why this is needed: gossip pools are bounded, ephemeral memory, while
+ * station state and contracts are authoritative. Reset/load must rebuild
+ * the local view so docked players and workers can see the work and
+ * pressure physically present at their station before fresh dock contact
+ * occurs. Cross-station knowledge still has to move by ship dock contact
+ * or nearby in-flight contact. */
 void gossip_bootstrap_world_stations(world_t *w);
 
-#endif
-
-/* Holographic experience exchange: when a holographic pilot docks at a
- * station, their accumulated memory is bundled into the station's pool,
- * and the station's pool is bundled into the pilot's memory. This lets
- * experience propagate through the station network as ships travel.
+/* Holographic experience exchange: when a neural worker docks, structured
+ * market memories are encoded into the worker's HNN trace as advisory job
+ * resonance. When a holographic pilot docks, their accumulated flight memory
+ * is also bundled into the station's pool, and the station's pool is bundled
+ * into the pilot's memory. This lets experience propagate through the station
+ * network as ships travel.
  *
  * Called alongside gossip_dock_handshake during dock events.
- * Only activates for ships with brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC. */
+ * HNN market memories never pay, verify, or mutate station authority. */
+void gossip_hnn_decay_market_memory(hnn_memory_t *mem,
+                                    uint32_t *last_decay_tick,
+                                    uint32_t now_tick);
 void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc);
 
+#endif

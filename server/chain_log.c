@@ -383,6 +383,60 @@ bool chain_log_verify(const station_t *s,
     return chain_log_verify_station(s, out_event_count, out_last_hash, NULL);
 }
 
+int chain_log_read_route_history_tail(const station_t *s,
+                                      chain_route_history_tail_t *out,
+                                      int cap) {
+    if (!s || !out || cap <= 0) return 0;
+    enum { ROUTE_HISTORY_TAIL_MAX = 64 };
+    if (cap > ROUTE_HISTORY_TAIL_MAX) cap = ROUTE_HISTORY_TAIL_MAX;
+    char path[256];
+    if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    int count = 0;
+    for (;;) {
+        uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
+        size_t got = fread(hdr_bytes, 1, sizeof(hdr_bytes), f);
+        if (got == 0 && feof(f)) break;
+        if (got != sizeof(hdr_bytes)) break;
+
+        chain_event_header_t hdr;
+        if (!chain_event_header_unpack(hdr_bytes, &hdr)) break;
+
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+
+        if (hdr.type == CHAIN_EVT_ROUTE_HISTORY &&
+            plen == sizeof(chain_payload_route_history_t)) {
+            chain_route_history_tail_t item;
+            memset(&item, 0, sizeof(item));
+            item.event_id = hdr.event_id;
+            item.epoch = hdr.epoch;
+            if (fread(&item.payload, 1, sizeof(item.payload), f) !=
+                sizeof(item.payload)) {
+                break;
+            }
+            out[count % cap] = item;
+            count++;
+        } else {
+            if (fseek(f, plen, SEEK_CUR) != 0) break;
+        }
+    }
+
+    fclose(f);
+    int n = count < cap ? count : cap;
+    if (count > cap) {
+        chain_route_history_tail_t ordered[ROUTE_HISTORY_TAIL_MAX];
+        int start = count % cap;
+        for (int i = 0; i < cap; i++)
+            ordered[i] = out[(start + i) % cap];
+        memcpy(out, ordered, (size_t)cap * sizeof(out[0]));
+        n = cap;
+    }
+    return n;
+}
+
 void chain_log_reset(const station_t *s) {
     static const uint8_t zero_pub[32] = {0};
     if (!s) return;

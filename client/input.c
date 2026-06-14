@@ -25,13 +25,14 @@
  *   [1-5] TRADE tab → buy/sell visible row.
  *   [1-3] CONTRACTS tab → track/select contract row.
  *   [1-9] SHIPYARD tab → order scaffold kit row.
- *   [S]   TRADE tab → sell accepted cargo; CONTRACTS tab → deliver selected
- *         contract or all matching contract cargo.
+ *   [S]   TRADE tab → sell accepted cargo; CONTRACTS tab → load/unload/proof
+ *         selected delivery-credit cargo, or deliver matching contract cargo.
  *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
  *   [R]   SHIP panel → repair; plan mode → cycle module type.
  *   [M]   SHIP panel → upgrade mining laser; undocked → mining laser.
  *   [C]   SHIP panel → upgrade cargo hold.
- *   [H]   Hail ping + collect pending credits.
+ *   [H]   Hail ping + collect pending credits. Undocked hail can reveal
+ *         contracts, but cargo pickup requires docking and [S].
  *   [T]   SHIP panel → upgrade tractor.
  *
  *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
@@ -43,7 +44,9 @@
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
  *               (NOT bound in docked UI — use [Tab] to switch views.)
  *   [Tab]       Docked → cycle station panels (SHIP / TRADE / CONTRACTS / YARD).
- *               Shift+Tab reverses. Visibility comes from station panels.
+ *               Shift+Tab reverses. Undocked scan pane → open/page receipt
+ *               relay view; Shift+Tab closes it. No scan pane → scoreboard.
+ *               Visibility comes from station panels.
  *
  * If adding a new overloaded key, update this table FIRST so the
  * precedence is visible before the code diverges.
@@ -58,6 +61,7 @@
 #include "signal_model.h"
 #include "mining.h"
 #include "contract_fit.h"
+#include "npc_radio.h"
 
 static float action_predict_window_sec(void) {
     float window = 0.5f;
@@ -437,11 +441,33 @@ static void sample_station_tab(void) {
 void station_panel_input_yard(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_YARD) return;
     const station_t *st = current_station_ptr();
+    static const struct {
+        sapp_keycode key;
+        hull_class_t hull;
+    } ship_keys[] = {
+        { SAPP_KEYCODE_U, HULL_CLASS_DRONE_TRACTOR },
+        { SAPP_KEYCODE_I, HULL_CLASS_DRONE_LASER },
+        { SAPP_KEYCODE_O, HULL_CLASS_DRONE_CARGO },
+        { SAPP_KEYCODE_Z, HULL_CLASS_NPC_MINER },
+        { SAPP_KEYCODE_X, HULL_CLASS_HAULER },
+        { SAPP_KEYCODE_V, HULL_CLASS_MINER },
+    };
+    for (size_t i = 0; i < sizeof(ship_keys) / sizeof(ship_keys[0]); i++) {
+        if (!is_key_pressed(ship_keys[i].key)) continue;
+        if (!shipyard_can_commission_hull(st, ship_keys[i].hull)) {
+            set_notice("Ship commission needs yard stock.");
+        } else {
+            intent->commission_ship = true;
+            intent->commission_hull_class = ship_keys[i].hull;
+            set_notice("Commissioned %s.", ship_loadout_name(ship_keys[i].hull));
+        }
+        return;
+    }
     int shown = 0;
     for (int t = 0; t < MODULE_COUNT && shown < 9; t++) {
         module_type_t kit = (module_type_t)t;
         if (module_kind(kit) == MODULE_KIND_NONE) continue;
-        if (!station_has_module(st, kit)) continue;
+        if (!station_can_order_scaffold(st, kit)) continue;
         if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit)) continue;
         if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
             if (st->pending_scaffold_count >= 4) {
@@ -460,9 +486,27 @@ void station_panel_input_yard(input_intent_t *intent) {
     }
 }
 
+void station_panel_input_history(input_intent_t *intent) {
+    (void)intent;
+    if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_HISTORY) return;
+
+    static const char *names[4] = {
+        "all route memory",
+        "outbound route memory",
+        "inbound route memory",
+        "local signed events",
+    };
+    for (int k = 0; k < 4; k++) {
+        if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+        g.history_filter = (uint8_t)k;
+        set_notice("History filter: %s.", names[k]);
+        return;
+    }
+}
+
 /* CONTRACTS panel keys:
  *   [1/2/3] select a contract slot for selective delivery
- *   [S]     deliver — selective if a slot is selected, else all
+ *   [S]     load/unload/proof delivery credit, or deliver matching cargo
  * The display in station_ui.c sorts deliverable contracts first so [1]
  * usually picks "the contract you can fulfill right now". */
 void station_panel_input_work(input_intent_t *intent) {
@@ -524,14 +568,14 @@ void station_panel_input_work(input_intent_t *intent) {
                     intent->hail = true;
                     int qty = input_contract_quantity_goal(ct);
                     if (qty > source_stock) qty = source_stock;
-                    set_notice("Taking %s x%d on credit...",
+                    set_notice("Loading %s x%d on credit...",
                                commodity_short_name(ct->commodity), qty);
                 } else if (at_dest && ledger &&
                            ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
                            held > 0) {
                     intent->service_sell = true;
                     intent->service_sell_only = ct->commodity;
-                    set_notice("Delivering %s...",
+                    set_notice("Unloading %s...",
                                commodity_short_name(ct->commodity));
                 } else {
                     intent->hail = true;
@@ -674,7 +718,7 @@ static void sample_trade_picker(input_intent_t *intent) {
         if (!g.multiplayer_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
             int idx = input_local_ledger_index(mst);
-            if (idx < 0 && mst->ledger_count < 16) {
+            if (idx < 0 && mst->ledger_count < STATION_LEDGER_MAX) {
                 idx = mst->ledger_count++;
                 client_session_pseudo_pubkey(LOCAL_PLAYER.session_token,
                                              mst->ledger[idx].player_pubkey);
@@ -993,6 +1037,25 @@ static void sample_hail(input_intent_t *intent) {
     g.hail_ping_origin = LOCAL_PLAYER.ship.pos;
     g.hail_ping_range  = (LOCAL_PLAYER.ship.comm_range > 0.0f)
                          ? LOCAL_PLAYER.ship.comm_range : 1500.0f;
+    g.hail_conversation_count = npc_radio_build_hail_conversation(
+        g.world.stations, g.world.npc_ships,
+        g.hail_ping_origin, g.hail_ping_range,
+        g.hail_conversation);
+    if (!npc_radio_player_line(g.hail_player_line,
+                               sizeof(g.hail_player_line))) {
+        g.hail_player_line[0] = '\0';
+    }
+    g.hail_choice_request_id++;
+    if (g.hail_choice_request_id == 0) g.hail_choice_request_id = 1;
+    size_t prompt_len = npc_radio_build_choice_prompt_for_hail(
+        g.world.stations, g.world.npc_ships,
+        g.hail_conversation, g.hail_conversation_count,
+        g.hail_choice_request_id,
+        g.hail_choice_prompt, sizeof(g.hail_choice_prompt));
+    g.hail_choice_prompt_len = prompt_len < sizeof(g.hail_choice_prompt)
+        ? (uint16_t)prompt_len
+        : (uint16_t)(sizeof(g.hail_choice_prompt) - 1);
+    g.hail_choice_applied_count = 0;
 }
 
 /* O: toggle mining autopilot. Server-side AI runs the mining loop on
@@ -1171,6 +1234,8 @@ void submit_input(const input_intent_t *intent, float dt) {
         }
         else if (intent->buy_scaffold_kit && (uint8_t)intent->scaffold_kit_module < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUY_SCAFFOLD_TYPED + (uint8_t)intent->scaffold_kit_module;
+        else if (intent->commission_ship && (uint8_t)intent->commission_hull_class < HULL_CLASS_COUNT)
+            g.pending_net_action = NET_ACTION_COMMISSION_SHIP + (uint8_t)intent->commission_hull_class;
         else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
             g.pending_net_buy_grade = (uint8_t)intent->buy_grade;

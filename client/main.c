@@ -20,6 +20,7 @@
 #include "contract_objective.h"
 #include "palette.h"
 #include "signal_brain.h"
+#include "gossip.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -230,6 +231,8 @@ static void reset_world(void) {
     g.inspect_snapshot.home_station = 0xFFu;
     g.inspect_snapshot.dest_station = 0xFFu;
     g.inspect_snapshot_timer = 0.0f;
+    g.inspect_receipt_page = 0;
+    g.inspect_receipt_browser = false;
     g.inspect_was_active = false;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
@@ -611,7 +614,7 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
      * always the killer. */
     const char *role = (ev->npc_kill.npc_role == NPC_ROLE_MINER) ? "Miner"
                      : (ev->npc_kill.npc_role == NPC_ROLE_HAULER) ? "Hauler"
-                     : "Tow drone";
+                     : "Worker";
     const char *weapon = (ev->npc_kill.cause == DEATH_CAUSE_THROWN_ROCK) ? "thrown rock"
                        : (ev->npc_kill.cause == DEATH_CAUSE_RAM) ? "ramming"
                        : "collision";
@@ -976,6 +979,8 @@ static void sim_step(float dt) {
              * true and re-bump the timer. */
             g.inspect_snapshot.target_type = INSPECT_TARGET_NONE;
             g.inspect_snapshot.target_index = 0xFFu;
+            g.inspect_receipt_browser = false;
+            g.inspect_receipt_page = 0;
         }
     }
     /* Station chain-event heartbeats: ~1s decay so a single delta reads
@@ -1259,10 +1264,25 @@ static void sim_step(float dt) {
         if (now_towed > prev_towed) audio_play_tractor_lock(&g.audio);
         prev_towed = now_towed;
     }
-    /* Tab while undocked toggles the session scoreboard. Docked Tab is
-     * already taken (cycle station tabs); the gating mirrors that. */
+    /* Tab while undocked opens/pages visible inspect provenance first. Without
+     * an active scan pane it keeps its older session-scoreboard behavior.
+     * Docked Tab is already taken for station panels. */
     if (!LOCAL_PLAYER.docked && g.input.key_pressed[SAPP_KEYCODE_TAB]) {
-        g.scoreboard.show = !g.scoreboard.show;
+        if (g.inspect_snapshot_timer > 0.0f &&
+            g.inspect_snapshot.target_type != INSPECT_TARGET_NONE) {
+            bool shift = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
+                         g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
+            if (shift && g.inspect_receipt_browser) {
+                g.inspect_receipt_browser = false;
+            } else if (!g.inspect_receipt_browser) {
+                g.inspect_receipt_browser = true;
+                g.inspect_receipt_page = 0;
+            } else {
+                g.inspect_receipt_page++;
+            }
+        } else {
+            g.scoreboard.show = !g.scoreboard.show;
+        }
     }
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
@@ -1333,9 +1353,10 @@ static void init(void) {
         server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
+            "  const server = p.get('server') || window.SIGNAL_SERVER || '';"
+            "  if (!server || p.has('neural')) { Module._neural_singleplayer_init(); }"
             "  if (p.has('singleplayer')) return '';"
-            "  if (p.has('neural')) { Module._neural_singleplayer_init(); }"
-            "  return p.get('server') || window.SIGNAL_SERVER || '';"
+            "  return server;"
             "})()");
 #else
         /* Native: check SIGNAL_SERVER environment variable or command line */
@@ -1918,6 +1939,178 @@ float get_signal_strength(void) {
     if (g.local_player_slot < 0) return 0.0f;
     return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int signal_hail_llm_apply_response(const char *response) {
+    if (!response || !response[0]) return 0;
+    bool player_applied = npc_radio_apply_player_choice_response_for_hail(
+        response, g.hail_choice_request_id,
+        g.hail_player_line, sizeof(g.hail_player_line));
+    uint8_t npc_applied = npc_radio_apply_choice_response_for_hail(
+        g.world.stations, g.world.npc_ships, response,
+        g.hail_choice_request_id,
+        g.hail_conversation, g.hail_conversation_count);
+    g.hail_choice_applied_count = npc_applied;
+    if (player_applied || npc_applied > 0)
+        set_notice("Hail chatter resolved.");
+    return (player_applied ? 1 : 0) + (int)npc_applied;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+uint32_t signal_hail_llm_request_id(void) {
+    return g.hail_choice_request_id;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int signal_hail_llm_prompt_len(void) {
+    return (int)g.hail_choice_prompt_len;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+const char *signal_hail_llm_prompt(void) {
+    return g.hail_choice_prompt;
+}
+
+#ifdef __EMSCRIPTEN__
+static void signal_hail_debug_add_memory(npc_ship_t *npc,
+                                         market_memory_kind_t kind,
+                                         uint8_t station_a,
+                                         uint8_t station_b,
+                                         commodity_t commodity,
+                                         uint16_t quantity_hint) {
+    if (!npc) return;
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+    if (npc->knowledge.count >= SHIP_KNOWN_ITEM_CAP) return;
+
+    market_memory_t memory = {0};
+    memory.active = true;
+    memory.memory_kind = (uint8_t)kind;
+    memory.station_a = station_a;
+    memory.station_b = station_b;
+    memory.commodity = (uint8_t)commodity;
+    memory.action = (uint8_t)CONTRACT_TRACTOR;
+    memory.confidence = 230;
+    memory.salience = 210;
+    memory.quantity_hint = quantity_hint;
+
+    knowledge_item_t *item = &npc->knowledge.items[npc->knowledge.count++];
+    memset(item, 0, sizeof(*item));
+    item->kind = (uint8_t)KNOW_MARKET;
+    item->confidence = memory.confidence;
+    item->salience = memory.salience;
+    item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+    memcpy(item->payload, &memory, sizeof(memory));
+}
+
+static void signal_hail_debug_add_contract(npc_ship_t *npc,
+                                           uint8_t station_index,
+                                           commodity_t commodity,
+                                           float quantity_needed) {
+    if (!npc || npc->known_contract_count >= SHIP_KNOWN_CONTRACT_CAP) return;
+    contract_summary_t *contract =
+        &npc->known_contracts[npc->known_contract_count++];
+    memset(contract, 0, sizeof(*contract));
+    contract->active = true;
+    contract->action = (uint8_t)CONTRACT_TRACTOR;
+    contract->station_index = station_index;
+    contract->commodity = (uint8_t)commodity;
+    contract->quantity_needed = quantity_needed;
+}
+
+static void signal_hail_debug_seed_world(world_t *world, int player_slot) {
+    if (!world || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    vec2 origin = world->players[player_slot].ship.pos;
+    static const vec2 offsets[4] = {
+        { 520.0f, -260.0f },
+        { -620.0f, 300.0f },
+        { 740.0f, 260.0f },
+        { -820.0f, -360.0f },
+    };
+    for (int i = 0; i < 4 && i < MAX_NPC_SHIPS; i++) {
+        npc_ship_t *npc = &world->npc_ships[i];
+        memset(npc, 0, sizeof(*npc));
+        npc->active = true;
+        npc->role = (i < 2) ? NPC_ROLE_MINER : NPC_ROLE_HAULER;
+        npc->state = (i == 0) ? NPC_STATE_TRAVEL_TO_ASTEROID :
+                     (i == 1) ? NPC_STATE_MINING :
+                     NPC_STATE_IDLE;
+        npc->home_station = (i < 2) ? 0 : 1;
+        npc->dest_station = (i < 2) ? 0 : 2;
+        npc->ship.pos = v2_add(origin, offsets[i]);
+        npc->ship.vel = v2(0.0f, 0.0f);
+        npc->ship.angle = 0.0f;
+        npc->ship.hull_class = (i < 2) ? HULL_CLASS_NPC_MINER : HULL_CLASS_HAULER;
+        npc->ship.hull = ship_max_hull(&npc->ship);
+        npc->hull = npc->ship.hull;
+        npc->tint_r = (i < 2) ? 0.52f : 0.90f;
+        npc->tint_g = (i < 2) ? 0.82f : 0.68f;
+        npc->tint_b = (i < 2) ? 1.00f : 0.36f;
+        npc->towed_fragment = -1;
+        npc->towed_scaffold = -1;
+
+        if (i < 2) {
+            signal_hail_debug_add_memory(
+                npc, MARKET_MEMORY_ORE_PRESSURE, 0, 0xff,
+                COMMODITY_FERRITE_ORE, (uint16_t)(84 + i * 8));
+        } else {
+            signal_hail_debug_add_contract(
+                npc, 1, COMMODITY_FERRITE_INGOT, 108.0f);
+            signal_hail_debug_add_memory(
+                npc, MARKET_MEMORY_DEMAND, 1, 0xff,
+                COMMODITY_FERRITE_INGOT, 108);
+        }
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hail_llm_debug_seed_nearby(void) {
+    int slot = g.local_player_slot >= 0 ? g.local_player_slot : 0;
+    if (slot < 0 || slot >= MAX_PLAYERS) return 0;
+    if (g.local_server.active)
+        signal_hail_debug_seed_world(&g.local_server.world, slot);
+    signal_hail_debug_seed_world(&g.world, slot);
+    return 4;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hail_llm_debug_trigger_hail(void) {
+    int slot = g.local_player_slot >= 0 ? g.local_player_slot : 0;
+    if (slot < 0 || slot >= MAX_PLAYERS) return 0;
+
+    const server_player_t *player = &g.world.players[slot];
+    g.hail_ping_timer = 0.001f;
+    g.hail_ping_origin = player->ship.pos;
+    g.hail_ping_range = fmaxf(player->ship.comm_range, 1500.0f);
+    g.hail_conversation_count = npc_radio_build_hail_conversation(
+        g.world.stations, g.world.npc_ships,
+        g.hail_ping_origin, g.hail_ping_range,
+        g.hail_conversation);
+    if (!npc_radio_player_line(g.hail_player_line,
+                               sizeof(g.hail_player_line))) {
+        g.hail_player_line[0] = '\0';
+    }
+    g.hail_choice_request_id++;
+    if (g.hail_choice_request_id == 0) g.hail_choice_request_id = 1;
+    size_t prompt_len = npc_radio_build_choice_prompt_for_hail(
+        g.world.stations, g.world.npc_ships,
+        g.hail_conversation, g.hail_conversation_count,
+        g.hail_choice_request_id,
+        g.hail_choice_prompt, sizeof(g.hail_choice_prompt));
+    g.hail_choice_prompt_len = prompt_len < sizeof(g.hail_choice_prompt)
+        ? (uint16_t)prompt_len
+        : (uint16_t)(sizeof(g.hail_choice_prompt) - 1);
+    g.hail_choice_applied_count = 0;
+    return (int)g.hail_conversation_count;
+}
+#endif
 
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
@@ -2790,7 +2983,12 @@ static void event(const sapp_event* event) {
                     g.input.key_pressed[kc] = true;
                 }
             }
-            if (event->key_code == SAPP_KEYCODE_ESCAPE) {
+            if (event->key_code == SAPP_KEYCODE_ESCAPE &&
+                !g.plan_mode_active &&
+                !episode_is_active(&g.episode) &&
+                !LOCAL_PLAYER.docked &&
+                !g.death_cinematic.active &&
+                g.death_cinematic.menu_alpha <= 0.001f) {
                 sapp_request_quit();
             }
             break;
@@ -2871,6 +3069,9 @@ int signal_mobile_control_flags(void) {
                                        MOBILE_CTRL_CAN_DIGITS; break;
         case STATION_VIEW_YARD:  flags |= MOBILE_CTRL_STATION_YARD |
                                        MOBILE_CTRL_CAN_DIGITS; break;
+        case STATION_VIEW_HISTORY:
+            flags |= MOBILE_CTRL_CAN_DIGITS;
+            break;
         case STATION_VIEW_COUNT: break;
         }
 
@@ -2999,6 +3200,8 @@ int signal_station_panel_digit_slot_count(void) {
         }
         return shown;
     }
+    case STATION_VIEW_HISTORY:
+        return 4;
     case STATION_VIEW_DOCK:
     case STATION_VIEW_COUNT:
         break;
@@ -3057,6 +3260,9 @@ int signal_mobile_digit_mask(void) {
         }
         break;
     }
+    case STATION_VIEW_HISTORY:
+        mask = 0x0F;
+        break;
     case STATION_VIEW_DOCK:
     case STATION_VIEW_COUNT:
         break;

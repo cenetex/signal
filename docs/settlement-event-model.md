@@ -9,10 +9,11 @@ It is the design artifact for issue #350 and serves as the reference for #351
 
 ## Status
 
-Draft. Not yet implemented. The existing `chain_event_header_t` and
-per-station signed log (Layer C of #479) are the foundation; this document
-extends them with P2P quorum signing, segment checkpoints, and a
-forward-apply model that works without a dedicated server.
+Draft. Not yet implemented. The existing dedicated server (`signal_server`),
+`chain_event_header_t`, and per-station signed log (Layer C of #479) are the
+foundation; this document extends them toward P2P quorum signing, segment
+checkpoints, and a future forward-apply model that can be verified without
+trusting one dedicated server.
 
 ## Design principles
 
@@ -413,4 +414,3 @@ quorum certificates, and segment boundaries.
 | Version | Date | Changes |
 |---------|------|---------|
 | 0 | 2026-05-30 | Initial draft |
-

@@ -316,6 +316,7 @@ typedef struct {
     int pending_action_before_towed_count;
     int pending_action_before_towed_scaffold;
     int pending_action_before_station_pending_scaffold_count;
+    int pending_action_before_station_pending_ship_build_count;
     float pending_action_before_station_balance;
     /* Last damage attribution. Set by apply_ship_damage_attributed and
      * read by emergency_recover_ship when populating SIM_EVENT_DEATH so
@@ -712,6 +713,11 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
  * picker surfaces the seed stock. */
 void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
+bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
+                        int *out_lasers, int *out_tractors);
+bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class);
+bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
+                                    hull_class_t hull_class);
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind);
 bool world_save(const world_t *w, const char *path);

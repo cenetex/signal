@@ -85,8 +85,17 @@ typedef enum {
     HULL_CLASS_MINER,
     HULL_CLASS_HAULER,
     HULL_CLASS_NPC_MINER,
+    HULL_CLASS_DRONE_TRACTOR,
+    HULL_CLASS_DRONE_LASER,
+    HULL_CLASS_DRONE_CARGO,
     HULL_CLASS_COUNT,
 } hull_class_t;
+
+typedef enum {
+    SHIP_MODULE_TRACTOR = 1 << 0,
+    SHIP_MODULE_LASER   = 1 << 1,
+    SHIP_MODULE_CARGO   = 1 << 2,
+} ship_module_flags_t;
 
 typedef enum {
     CHAIN_HEALTH_UNKNOWN = 0,
@@ -110,6 +119,8 @@ typedef struct {
     float tractor_range;
     float ship_radius;
     float render_scale;
+    uint8_t module_slots;
+    uint8_t module_mask; /* ship_module_flags_t */
 } hull_def_t;
 
 extern const hull_def_t HULL_DEFS[HULL_CLASS_COUNT];
@@ -238,6 +249,40 @@ typedef struct {
 } contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
 
 typedef enum {
+    MARKET_MEMORY_NONE = 0,
+    MARKET_MEMORY_DEMAND,
+    MARKET_MEMORY_SUPPLY,
+    MARKET_MEMORY_ROUTE_DANGER,
+    MARKET_MEMORY_ROUTE_SUCCESS,
+    MARKET_MEMORY_DELIVERY_RECEIPT,
+    MARKET_MEMORY_ROUTE_REPUTATION,
+    MARKET_MEMORY_ROUTE_RISK,
+    MARKET_MEMORY_STATION_TRUST,
+    MARKET_MEMORY_STATION_RISK,
+    MARKET_MEMORY_ORE_PRESSURE,
+    MARKET_MEMORY_SCAFFOLD_PRESSURE,
+} market_memory_kind_t;
+
+/* Fuzzy, portable market impression. This is not an authoritative
+ * contract or ledger row; it is the small structured payload that lets
+ * stations and ships exchange decaying economic pressure through the
+ * generic knowledge_view_t path. */
+typedef struct {
+    bool active;
+    uint8_t memory_kind;      /* market_memory_kind_t */
+    uint8_t station_a;        /* primary station: demand/danger endpoint */
+    uint8_t station_b;        /* secondary station/source, 0xff if none */
+    uint8_t commodity;        /* commodity_t, COMMODITY_COUNT if generic */
+    uint8_t action;           /* contract_action_t or 0xff if generic */
+    uint8_t confidence;       /* 0..255 trust in the memory */
+    uint8_t salience;         /* 0..255 decision pressure */
+    uint16_t quantity_hint;   /* compact units, 0 = unknown */
+    uint16_t value_hint;      /* compact payout/value, 0 = unknown */
+    uint32_t observed_tick;   /* source observation tick, if known */
+    uint64_t subject_nonce;   /* optional caller-provided disambiguator */
+} market_memory_t;
+
+typedef enum {
     KNOW_NONE = 0,
     KNOW_CONTRACT,
     KNOW_CARGO,
@@ -256,6 +301,7 @@ typedef enum {
 typedef enum {
     KNOW_PAYLOAD_NONE = 0,
     KNOW_PAYLOAD_CONTRACT_SUMMARY = 1,
+    KNOW_PAYLOAD_MARKET_MEMORY = 2,
 } knowledge_payload_kind_t;
 
 enum {
@@ -290,6 +336,8 @@ typedef struct {
 
 _Static_assert(sizeof(contract_summary_t) <= KNOWLEDGE_PAYLOAD_BYTES,
                "contract_summary_t must fit in knowledge payload");
+_Static_assert(sizeof(market_memory_t) <= KNOWLEDGE_PAYLOAD_BYTES,
+               "market_memory_t must fit in knowledge payload");
 
 typedef struct {
     recipe_id_t   id;
@@ -540,6 +588,15 @@ typedef struct {
         int8_t owner;  /* player id who placed the order, -1 = NPC/anyone */
     } pending_scaffolds[4];
     int pending_scaffold_count;
+    /* Shipyard: hull/frame commissions. Ships are built by one active
+     * shipyard from finished goods; station-module scaffolds are the
+     * heavier two-shipyard fabrication path above. */
+    struct {
+        hull_class_t hull_class;
+        int8_t owner;
+        float build_progress;
+    } pending_ship_builds[4];
+    int pending_ship_build_count;
     /* Placement plans: slots the player has reserved for a specific
      * module type. When a matching scaffold is towed near, the reticle
      * locks to the planned slot. Filled by planning-mode reticle. */
@@ -676,6 +733,14 @@ typedef struct {
     uint64_t chain_verified_event_count;
     uint8_t  chain_verified_last_hash[32];
     char     chain_health_message[128];
+    /* Holographic market-memory pool — accumulated from structured market
+     * memories carried by neural workers who dock. Runtime-only, not
+     * serialized. Kept separate from flight-control HNN experience so fuzzy
+     * economic attention cannot cross-talk with pilot state->action memory. */
+    hnn_memory_t hnn_market_memory;
+    uint32_t hnn_market_version;
+    uint32_t hnn_market_decay_tick;
+
     /* Holographic experience pool — accumulated from pilots who dock.
      * Runtime-only, not serialized. Bundled via VSA addition; every
      * docking holographic pilot contributes their memory to this pool.
@@ -840,12 +905,9 @@ typedef struct {
 typedef enum {
     NPC_ROLE_MINER,
     NPC_ROLE_HAULER,
-    /* NPC_ROLE_TOW: reserved for autonomous scaffold delivery (#277 step 6).
-     * Picks up loose scaffolds near a shipyard and tows them to placement
-     * targets. Not yet wired in step_npc_ships — currently never spawned.
-     * The wire protocol packs role into 2 bits so adding a value here is
-     * forward-compatible: clients that don't recognize the role render it
-     * as a hauler. */
+    /* NPC_ROLE_TOW: legacy save/network role. New scaffold delivery work is
+     * selected as a neural worker tow contract and executed by hauler-class
+     * workers. */
     NPC_ROLE_TOW,
 } npc_role_t;
 
@@ -921,6 +983,8 @@ typedef struct {
     int8_t cancel_plan_sl;
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
+    bool commission_ship;
+    hull_class_t commission_hull_class;
     bool buy_product;
     commodity_t buy_commodity;
     /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
@@ -961,11 +1025,17 @@ typedef struct {
     int target_asteroid;
     int home_station;
     int dest_station;
+    /* Runtime-only hauler route. Home remains the owner/maintenance station;
+     * pickup_station can temporarily point at a remote source learned through
+     * supply gossip before final delivery to dest_station. Not serialized. */
+    int pickup_station;
+    commodity_t pickup_commodity;
+    uint8_t pickup_action;
     float state_timer;
     bool thrusting;
     float tint_r, tint_g, tint_b;  /* manifest rarity display tint */
     int towed_fragment;             /* asteroid index being towed, -1 = none */
-    int towed_scaffold;             /* scaffold index being towed (NPC_ROLE_TOW), -1 = none */
+    int towed_scaffold;             /* scaffold index being towed by a worker, -1 = none */
     /* Hull HP. Decrements on collision (asteroid / station / ship). When
      * the NPC docks at home, the dock auto-repairs by consuming repair
      * kits from station inventory (1 kit per HP). If hull <= 0 the
@@ -993,10 +1063,47 @@ typedef struct {
      * KNOW_CONTRACT payloads without changing the hauler picker yet. */
     knowledge_view_t knowledge;
 
+    /* Runtime-only inspect diagnostics for the latest job-offer comparison.
+     * kind is inspect_diag_kind_t; score/selected are compact UI values.
+     * These are not authority and are not serialized. */
+    uint8_t job_diag_count;
+    uint8_t job_diag_kind[4];
+    uint8_t job_diag_score[4];
+    uint8_t job_diag_selected[4];
+    uint8_t job_diag_source[4];
+    uint8_t job_diag_dest[4];
+    uint8_t job_diag_commodity[4];
+    uint16_t job_diag_hint[4];
+    uint8_t job_diag_factor_value[4];
+    uint8_t job_diag_factor_demand[4];
+    uint8_t job_diag_factor_supply[4];
+    uint8_t job_diag_factor_route[4];
+    uint8_t job_diag_factor_freshness[4];
+    uint8_t job_diag_factor_capability[4];
+    uint8_t job_diag_factor_proof[4];
+    uint8_t job_diag_factor_hologram[4];
+    uint8_t job_diag_reason[4];
+    uint8_t job_diag_memory_kind[4];
+    uint8_t job_diag_memory_hops[4];
+    uint8_t job_diag_memory_age[4];
+    uint8_t job_diag_memory_station[4];
+    uint8_t job_diag_proof_kind[4];
+    uint8_t job_diag_proof_prefix[4][4];
+    uint8_t job_diag_proof_hash[4][32];
+
     /* Neural brain mode: 0 = heuristic (legacy), 1 = neural flight.
      * When set, the step_npc_ships loop delegates flight control to
      * signal_brain_drive_npc instead of the role-specific state machine. */
     uint8_t brain_mode;
+
+    /* Holographic market-memory trace for worker economic resonance.
+     * Runtime-only and separate from hnn_mem so market pressure cannot
+     * interfere with flight-control state->action associations. */
+    hnn_memory_t hnn_market_mem;
+    uint32_t hnn_market_version; /* station market version last synced */
+    uint8_t hnn_market_station;  /* station index of the synced version */
+    uint8_t hnn_market_pad[3];
+    uint32_t hnn_market_decay_tick;
 
     /* Holographic associative memory for VSA-based flight control.
      * Stores bundled (state -> action) associations in a 1024-dim

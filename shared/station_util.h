@@ -24,6 +24,9 @@ bool          station_collides(const station_t *st);
 
 /* ----- Module queries ----- */
 bool          station_has_module(const station_t *st, module_type_t type);
+int           station_active_module_count(const station_t *st, module_type_t type);
+int           station_active_shipyard_count(const station_t *st);
+bool          station_can_order_scaffold(const station_t *st, module_type_t type);
 int           station_max_ring(const station_t *st);
 int           station_spawn_fee(const station_t *st);
 bool          station_consumes(const station_t *st, commodity_t c);

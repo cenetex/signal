@@ -300,16 +300,21 @@ normal trade without adding a debug screen or new keybinding. Full tree
 walks, station-root freshness, credit-note panels, and on-demand proof
 fetching remain future proof-surface work.
 
+The same receipt substrate now feeds the gossip economy. Completed delivery
+shipments can emit receipt-backed market memories, reinforcing successful
+routes and collapsing matching demand memories without letting gossip mutate
+the authoritative contract ledger directly.
+
 ## Recommended next moves
 
 Ranked by value-per-effort after the fragment-chain coverage pass.
 
 **1. Extend inspection beyond the shipped inspect slices.** Trade rows
 now surface representative serial, recipe, parent, origin, epoch, and
-receipt count from local manifests, and NPC/hauler inspect snapshots carry
-the same cargo identity rows. The next useful slice is scan-to-inspect for
-player-held cargo, station stock, and tracked contract matching using the
-same player-facing vocabulary.
+receipt count from local manifests, and worker hauling-assignment inspect
+snapshots carry the same cargo identity rows. The next useful slice is
+scan-to-inspect for player-held cargo, station stock, and tracked contract
+matching using the same player-facing vocabulary.
 
 **2. Group manifest presentation before showing every hash.** Common
 anonymous stock should compress into commodity/grade buckets, while
@@ -397,7 +402,7 @@ batch compression of finished goods). The rest of the slices (1-5)
 targeted "ore as crate," a problem that doesn't exist. The new
 roadmap is now:
 
-1. Player-visible lineage display for cargo and inspected haulers.
+1. Player-visible lineage display for cargo and inspected worker hauls.
 2. Group common manifest rows while keeping named/receipt-bearing units
    individually visible.
 3. Deeper heritage contract templates that filter on `parent_merkle` chains.

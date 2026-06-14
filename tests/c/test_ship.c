@@ -16,9 +16,46 @@ TEST(test_ship_hull_def_hauler) {
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_HAULER;
     const hull_def_t* hull = ship_hull_def(&ship);
-    ASSERT_STR_EQ(hull->name, "Cargo Hauler");
+    ASSERT_STR_EQ(hull->name, "Frame-2 Cargo Hauler");
     ASSERT_EQ_FLOAT(hull->ingot_capacity, 40.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->mining_rate, 0.0f, 0.01f);
+}
+
+TEST(test_ship_loadout_metadata_tracks_module_sockets) {
+    ship_t player = {0};
+    player.hull_class = HULL_CLASS_MINER;
+    ASSERT_EQ_INT(ship_module_socket_count(&player), 3);
+    ASSERT(ship_has_module(&player, SHIP_MODULE_TRACTOR));
+    ASSERT(ship_has_module(&player, SHIP_MODULE_LASER));
+    ASSERT(ship_has_module(&player, SHIP_MODULE_CARGO));
+
+    ship_t worker = {0};
+    worker.hull_class = HULL_CLASS_NPC_MINER;
+    ASSERT_EQ_INT(ship_module_socket_count(&worker), 2);
+    ASSERT(ship_has_module(&worker, SHIP_MODULE_TRACTOR));
+    ASSERT(ship_has_module(&worker, SHIP_MODULE_LASER));
+    ASSERT(!ship_has_module(&worker, SHIP_MODULE_CARGO));
+
+    ship_t tug = {0};
+    tug.hull_class = HULL_CLASS_DRONE_TRACTOR;
+    ASSERT_EQ_INT(ship_module_socket_count(&tug), 1);
+    ASSERT(ship_has_module(&tug, SHIP_MODULE_TRACTOR));
+    ASSERT(!ship_has_module(&tug, SHIP_MODULE_LASER));
+    ASSERT(!ship_has_module(&tug, SHIP_MODULE_CARGO));
+
+    ship_t cutter = {0};
+    cutter.hull_class = HULL_CLASS_DRONE_LASER;
+    ASSERT_EQ_INT(ship_module_socket_count(&cutter), 1);
+    ASSERT(!ship_has_module(&cutter, SHIP_MODULE_TRACTOR));
+    ASSERT(ship_has_module(&cutter, SHIP_MODULE_LASER));
+    ASSERT(!ship_has_module(&cutter, SHIP_MODULE_CARGO));
+
+    ship_t courier = {0};
+    courier.hull_class = HULL_CLASS_DRONE_CARGO;
+    ASSERT_EQ_INT(ship_module_socket_count(&courier), 1);
+    ASSERT(!ship_has_module(&courier, SHIP_MODULE_TRACTOR));
+    ASSERT(!ship_has_module(&courier, SHIP_MODULE_LASER));
+    ASSERT(ship_has_module(&courier, SHIP_MODULE_CARGO));
 }
 
 TEST(test_ship_max_hull) {
@@ -87,7 +124,7 @@ TEST(test_npc_hull_def) {
     npc_ship_t npc = {0};
     npc.ship.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
-    ASSERT_STR_EQ(hull->name, "Mining Drone");
+    ASSERT_STR_EQ(hull->name, "Frame-2 Mining Workboat");
     ASSERT_EQ_FLOAT(hull->cargo_capacity, 24.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->mining_rate, 28.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->tractor_range, 150.0f, 0.01f);
@@ -204,6 +241,7 @@ void register_ship_tests(void) {
     TEST_SECTION("\nShip tests:\n");
     RUN(test_ship_hull_def_miner);
     RUN(test_ship_hull_def_hauler);
+    RUN(test_ship_loadout_metadata_tracks_module_sockets);
     RUN(test_ship_max_hull);
     RUN(test_ship_cargo_capacity_with_upgrades);
     RUN(test_ship_mining_rate_with_upgrades);

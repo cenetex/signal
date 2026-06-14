@@ -2,6 +2,7 @@
 #include "contract_fit.h"
 #include "station_policy.h"
 #include "chain_log.h"
+#include "gossip.h"
 
 static void economy_chain_test_setup(const char *suffix) {
     char path[256];
@@ -49,6 +50,28 @@ static delivery_shipment_t *test_find_delivery_shipment(world_t *w,
         }
     }
     return NULL;
+}
+
+static bool test_view_has_market_memory(const knowledge_view_t *view,
+                                        uint8_t memory_kind,
+                                        uint8_t station_a,
+                                        uint8_t station_b,
+                                        uint8_t commodity,
+                                        market_memory_t *out) {
+    if (!view) return false;
+    for (int i = 0; i < view->count && i < KNOWLEDGE_VIEW_MAX_CAP; i++) {
+        market_memory_t memory;
+        if (!market_memory_from_knowledge_item(&view->items[i], &memory))
+            continue;
+        if (memory.memory_kind == memory_kind &&
+            memory.station_a == station_a &&
+            memory.station_b == station_b &&
+            memory.commodity == commodity) {
+            if (out) *out = memory;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void test_setup_delivery_player(world_t *w, server_player_t **out_sp) {
@@ -175,6 +198,7 @@ TEST(test_contract_generated_from_hopper_deficit) {
     /* A refinery with low ore_buffer should generate an ore contract */
     WORLD_DECL;
     world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     /* Make ferrite the biggest deficit by filling the others */
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 10.0f;
     w.stations[0]._inventory_cache[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
@@ -734,14 +758,14 @@ TEST(test_hauler_fills_highest_value_contract) {
                                            COMMODITY_FERRITE_INGOT, 20));
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_CUPRITE_INGOT, 20));
-    /* Find the first hauler */
-    npc_ship_t *hauler = NULL;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
-            hauler = &w.npc_ships[i]; break;
-        }
-    }
+
+    int seeded_hauler = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
+
+    npc_ship_t *hauler = &w.npc_ships[seeded_hauler];
     ASSERT(hauler != NULL);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        if (i != seeded_hauler) w.npc_ships[i].active = false;
     hauler->state = NPC_STATE_DOCKED;
     hauler->state_timer = 0.0f; /* ready to act */
     hauler->home_station = 0;
@@ -801,6 +825,9 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
                                            COMMODITY_CRYSTAL_INGOT, 20));
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_CUPRITE_INGOT, 20));
+
+    int seeded_hauler = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler_slot = -1;
     npc_ship_t *hauler = NULL;
@@ -887,6 +914,9 @@ TEST(test_hauler_ignores_float_only_finished_stock) {
         .claimed_by = -1,
     };
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
+
+    int seeded_hauler = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(seeded_hauler >= 0);
 
     int hauler_slot = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -1232,6 +1262,23 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
         .base_price = 50.0f,
         .claimed_by = -1,
     };
+    knowledge_view_configure(&helios->knowledge, STATION_KNOWN_ITEM_CAP);
+    market_memory_t stale_demand = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_DEMAND,
+        .station_a = 2,
+        .station_b = 0xff,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_DELIVERY,
+        .confidence = 210,
+        .salience = 180,
+        .quantity_hint = 2,
+        .value_hint = 50,
+        .observed_tick = 1,
+    };
+    knowledge_item_t stale_item;
+    ASSERT(knowledge_item_from_market_memory(&stale_demand, &stale_item));
+    knowledge_view_insert(&helios->knowledge, &stale_item);
 
     sp->docked = true;
     sp->current_station = 0;
@@ -1264,6 +1311,19 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     ASSERT_EQ_INT(shipment->quantity_delivered, 2);
     ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
     ASSERT(w.contracts[0].active);
+    market_memory_t receipt = {0};
+    ASSERT(test_view_has_market_memory(&helios->knowledge,
+                                       (uint8_t)MARKET_MEMORY_DELIVERY_RECEIPT,
+                                       2, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &receipt));
+    ASSERT_EQ_INT(receipt.quantity_hint, 2);
+    ASSERT(receipt.value_hint > 0);
+    ASSERT(!test_view_has_market_memory(&helios->knowledge,
+                                        (uint8_t)MARKET_MEMORY_DEMAND,
+                                        2, 0xff,
+                                        (uint8_t)COMMODITY_FERRITE_INGOT,
+                                        NULL));
 
     sp->docked = true;
     sp->current_station = 0;
@@ -1325,6 +1385,56 @@ TEST(test_delivery_credit_hail_ignores_empty_origin) {
     ASSERT(found_hail);
 }
 
+TEST(test_delivery_credit_hail_requires_docking_to_pick_up) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 3));
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_FERRITE_INGOT, 0));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    helios->base_price[COMMODITY_FERRITE_INGOT] = 30.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->ship.pos = prospect->pos;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT(test_find_delivery_shipment(&w, 0) == NULL);
+    ASSERT_EQ_INT(w.contracts[0].claimed_by, -1);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 3);
+
+    bool found_hail = false;
+    for (int i = 0; i < w.events.count; i++) {
+        const sim_event_t *ev = &w.events.events[i];
+        if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
+            found_hail = true;
+            ASSERT_EQ_INT(ev->hail_response.station, 0);
+            ASSERT_EQ_INT(ev->hail_response.contract_index, 0);
+        }
+    }
+    ASSERT(found_hail);
+}
+
 TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     WORLD_DECL;
     world_reset(&w);
@@ -1332,6 +1442,7 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     test_setup_delivery_player(&w, &sp);
 
     station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
     station_t *pirate = &w.stations[3];
     snprintf(pirate->name, sizeof(pirate->name), "Freeport");
     pirate->signal_range = 0.0f;
@@ -1344,6 +1455,23 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
 
     ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 1));
     prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    knowledge_view_configure(&helios->knowledge, STATION_KNOWN_ITEM_CAP);
+    market_memory_t stale_demand = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_DEMAND,
+        .station_a = 2,
+        .station_b = 0xff,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_DELIVERY,
+        .confidence = 210,
+        .salience = 180,
+        .quantity_hint = 1,
+        .value_hint = 50,
+        .observed_tick = 1,
+    };
+    knowledge_item_t stale_item;
+    ASSERT(knowledge_item_from_market_memory(&stale_demand, &stale_item));
+    knowledge_view_insert(&helios->knowledge, &stale_item);
 
     w.contracts[0] = (contract_t){
         .active = true,
@@ -1385,6 +1513,102 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
                     prospect_after_pickup, 0.001f);
     ASSERT(!w.contracts[0].active);
+    ASSERT(test_view_has_market_memory(&helios->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(test_view_has_market_memory(&pirate->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(test_view_has_market_memory(&sp->ship.knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(!test_view_has_market_memory(&helios->knowledge,
+                                        (uint8_t)MARKET_MEMORY_DEMAND,
+                                        2, 0xff,
+                                        (uint8_t)COMMODITY_FERRITE_INGOT,
+                                        NULL));
+}
+
+TEST(test_delivery_credit_timeout_emits_station_risk_memory) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 1));
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_FERRITE_INGOT, 0));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    helios->base_price[COMMODITY_FERRITE_INGOT] = 30.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 1.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    knowledge_view_configure(&helios->knowledge, STATION_KNOWN_ITEM_CAP);
+    market_memory_t stale_demand = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_DEMAND,
+        .station_a = 2,
+        .station_b = 0xff,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_DELIVERY,
+        .confidence = 210,
+        .salience = 180,
+        .quantity_hint = 1,
+        .value_hint = 50,
+        .observed_tick = 1,
+    };
+    knowledge_item_t stale_item;
+    ASSERT(knowledge_item_from_market_memory(&stale_demand, &stale_item));
+    knowledge_view_insert(&helios->knowledge, &stale_item);
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
+    ASSERT(shipment != NULL);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    shipment->due_tick = w.tick;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DEFAULTED);
+    ASSERT(!w.contracts[0].active);
+    ASSERT(test_view_has_market_memory(&helios->knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(test_view_has_market_memory(&sp->ship.knowledge,
+                                       (uint8_t)MARKET_MEMORY_STATION_RISK,
+                                       2, 0xff,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+    ASSERT(!test_view_has_market_memory(&helios->knowledge,
+                                        (uint8_t)MARKET_MEMORY_DEMAND,
+                                        2, 0xff,
+                                        (uint8_t)COMMODITY_FERRITE_INGOT,
+                                        NULL));
 }
 
 TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
@@ -1670,6 +1894,7 @@ TEST(test_kit_fab_requires_shipyard) {
      * commodities should never produce kits. */
     WORLD_DECL;
     world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     /* Prospect (station 0) has a dock but no shipyard. Kepler and Helios
      * both have shipyards. Pre-fill all three with kit-fab inputs. */
     ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
@@ -2330,7 +2555,9 @@ void register_economy_mixed_cargo_tests(void) {
     RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_delivery_credit_contract_pickup_deliver_and_clear);
     RUN(test_delivery_credit_hail_ignores_empty_origin);
+    RUN(test_delivery_credit_hail_requires_docking_to_pick_up);
     RUN(test_delivery_credit_black_market_sale_defaults_origin_debt);
+    RUN(test_delivery_credit_timeout_emits_station_risk_memory);
     RUN(test_prospect_pubkey_buy_debits_pubkey_ledger);
     RUN(test_deliver_ingots_full_payout_to_pubkey_player);
     RUN(test_deliver_ingots_pending_pubkey_uses_session_ledger);

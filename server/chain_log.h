@@ -87,6 +87,11 @@ typedef enum {
      * infrastructure. This is the provenance bridge from "cargo existed"
      * to "cargo became signal/station/gate capacity." */
     CHAIN_EVT_CONSTRUCTION     = 11,
+    /* Route-history summary: a station observed enough distinct
+     * receipt-backed gossip for a route to summarize it as local durable
+     * history. This records reputation only; payouts and cargo movement still
+     * resolve through exact contracts, ledgers, manifests, and receipts. */
+    CHAIN_EVT_ROUTE_HISTORY    = 12,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -259,6 +264,23 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_construction_t;
 SIGNAL_PACK_POP
 
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  memory_kind;         /* market_memory_kind_t; reputation/risk */
+    uint8_t  origin_station;
+    uint8_t  destination_station;
+    uint8_t  commodity;           /* commodity_t */
+    uint8_t  action;              /* contract_action_t */
+    uint8_t  confidence;
+    uint8_t  salience;
+    uint8_t  _pad;                /* MUST be zero */
+    uint16_t evidence_count;      /* distinct receipt-backed units heard */
+    uint16_t value_hint;          /* compact value carried by reputation */
+    uint32_t observed_tick;
+    uint64_t subject_nonce;       /* route/memory subject key */
+} SIGNAL_PACKED chain_payload_route_history_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
@@ -271,6 +293,7 @@ _Static_assert(sizeof(chain_payload_fragment_tow_t)     == 80,  "fragment_tow pa
 _Static_assert(sizeof(chain_payload_fragment_release_t) == 88,  "fragment_release payload size");
 _Static_assert(sizeof(chain_payload_death_t)            == 96,  "death payload size");
 _Static_assert(sizeof(chain_payload_construction_t)     == 56,  "construction payload size");
+_Static_assert(sizeof(chain_payload_route_history_t)    == 24,  "route_history payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");
@@ -396,6 +419,20 @@ bool chain_log_verify_station(const station_t *s,
                               uint64_t *out_event_count,
                               uint8_t out_last_hash[32],
                               chain_log_verify_report_t *out_report);
+
+typedef struct {
+    uint64_t event_id;
+    uint64_t epoch;
+    chain_payload_route_history_t payload;
+} chain_route_history_tail_t;
+
+/* Read the most recent route-history summaries from a station chain. This is
+ * a read model only: it verifies neither payouts nor inventory, and callers
+ * must still use chain_log_verify/chain_log_verify_with_pubkey when they need
+ * proof that the whole log is valid. Returns the number of rows copied. */
+int chain_log_read_route_history_tail(const station_t *s,
+                                      chain_route_history_tail_t *out,
+                                      int cap);
 
 /* Compute the SHA-256 of a chain_event_header_t (all 184 bytes,
  * including the signature — this is the full record hash that gets

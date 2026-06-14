@@ -789,6 +789,55 @@ TEST(test_chain_log_operator_post_text_tamper) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_route_history_tail_reader) {
+    chain_test_setup("route_history_tail");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9093u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t unrelated[] = "not-route-history";
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          unrelated, sizeof(unrelated)) == 1);
+
+    for (int i = 0; i < 3; i++) {
+        chain_payload_route_history_t payload = {0};
+        payload.memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION;
+        payload.origin_station = (uint8_t)(1 + i);
+        payload.destination_station = 3;
+        payload.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+        payload.action = (uint8_t)CONTRACT_TRACTOR;
+        payload.confidence = (uint8_t)(210 + i);
+        payload.salience = (uint8_t)(200 + i);
+        payload.evidence_count = (uint16_t)(4 + i);
+        payload.value_hint = (uint16_t)(100 + i);
+        payload.observed_tick = (uint32_t)(77 + i);
+        payload.subject_nonce = 9000u + (uint64_t)i;
+        ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_ROUTE_HISTORY,
+                              &payload, sizeof(payload)) == (uint64_t)(i + 2));
+    }
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 4);
+
+    chain_route_history_tail_t tail[2];
+    memset(tail, 0, sizeof(tail));
+    int count = chain_log_read_route_history_tail(&w->stations[0], tail, 2);
+    ASSERT_EQ_INT(count, 2);
+    ASSERT_EQ_INT((int)tail[0].event_id, 3);
+    ASSERT_EQ_INT((int)tail[1].event_id, 4);
+    ASSERT_EQ_INT(tail[0].payload.origin_station, 2);
+    ASSERT_EQ_INT(tail[1].payload.origin_station, 3);
+    ASSERT_EQ_INT(tail[1].payload.evidence_count, 6);
+    ASSERT_EQ_INT(tail[1].payload.value_hint, 102);
+
+    chain_test_teardown();
+}
+
 TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
     /* Regression guard: world_reset's tier seed events must carry real
      * flavor text bound by SHA, not the literal placeholder strings
@@ -1081,6 +1130,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_all_kinds);
     RUN(test_chain_log_operator_post_replay_determinism);
     RUN(test_chain_log_operator_post_text_tamper);
+    RUN(test_chain_log_route_history_tail_reader);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
     RUN(test_world_reset_does_not_emit_to_chain_log);
     RUN(test_chain_log_fragment_tow_payload_size);

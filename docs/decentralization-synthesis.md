@@ -103,6 +103,13 @@ Same primitive, different governance:
 The economic story (per-station credits, hauler-as-FX, no global wallet,
 sovereign issuance) is identical in both.
 
+The gossip story is identical too: information should move through the same
+physical and protocol paths as goods. In federation, docked ships carry
+contract summaries, market memories, and receipt evidence between station
+authorities. In a pure-P2P endpoint, those memories can ride the same
+inputs-only gossip substrate that already needs tick-addressed, idempotent
+player actions.
+
 ## What just shipped that matters
 
 The 39 commits between when `decentralization.md` was last updated and

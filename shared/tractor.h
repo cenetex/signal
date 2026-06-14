@@ -30,7 +30,7 @@
  * MIGRATED SITES:
  *   server/game_sim.c::apply_band_force         (player tow)
  *   server/sim_ai.c   step_npc_ships RETURN     (NPC fragment tow)
- *   server/sim_ai.c   step_tow_drone TRAVEL     (scaffold tow)
+ *   server/sim_ai.c   step_scaffold_tow_contract (worker scaffold tow)
  *   server/sim_production.c::step_furnace_smelting   (smelt beam pull)
  *   server/game_sim.c::step_scaffolds LOOSE     (planned blueprint pull)
  *   server/game_sim.c::step_scaffolds SNAPPING  (module slot snap)

@@ -452,7 +452,7 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
 
     if (ledger && ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
         out->kind = CONTRACT_OBJECTIVE_PICKUP;
-        objective_set_job(out, "clear");
+        objective_set_job(out, "proof");
         objective_set_station_target(out, ct->target_index,
                                      CONTRACT_OBJECTIVE_TARGET_DESTINATION);
         objective_set_copy(out, "SIGNAL // CONTRACT",
@@ -467,11 +467,11 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
             int deliver = held < qty ? held : qty;
             out->kind = CONTRACT_OBJECTIVE_DELIVER;
             out->quantity = deliver;
-            objective_set_job(out, "deliver");
+            objective_set_job(out, "unload");
             objective_set_station_target(out, ct->station_index,
                                          CONTRACT_OBJECTIVE_TARGET_DESTINATION);
             objective_set_copy(out, "SIGNAL // CONTRACT",
-                               "DELIVER CREDIT %s x%d TO %s",
+                               "UNLOAD %s x%d AT %s",
                                commodity_short_name(ct->commodity),
                                deliver, dest);
             return true;
@@ -500,12 +500,27 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
     }
 
     out->kind = CONTRACT_OBJECTIVE_PICKUP;
-    objective_set_job(out, "credit");
+    objective_set_job(out, "load");
     objective_set_station_target(out, ct->target_index,
                                  CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
-    objective_set_copy(out, "SIGNAL // CONTRACT",
-                       "TAKE %s x%d ON CREDIT AT %s, DELIVER TO %s",
-                       commodity_short_name(ct->commodity), qty, origin, dest);
+    if (LOCAL_PLAYER.docked &&
+        LOCAL_PLAYER.current_station == ct->target_index) {
+        if (g.station_view == STATION_VIEW_WORK) {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "LOAD %s x%d AT %s [S], DELIVER TO %s",
+                               commodity_short_name(ct->commodity), qty,
+                               origin, dest);
+        } else {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "OPEN CONTRACTS [TAB] TO LOAD %s x%d AT %s",
+                               commodity_short_name(ct->commodity), qty,
+                               origin);
+        }
+    } else {
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "DOCK AT %s TO ACCEPT CONTRACTS",
+                           origin);
+    }
     return true;
 }
 
