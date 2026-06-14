@@ -909,6 +909,13 @@ vec2 station_exit_target(const station_t *st, vec2 from) {
 /* try_spend_credits removed — all spending goes through ledger_spend */
 
 void anchor_ship_in_station(server_player_t *sp, world_t *w) {
+    if (!sp) return;
+    if (!w || sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
+        !station_exists(&w->stations[sp->current_station])) {
+        sp->dock_berth = 0;
+        sp->ship.vel = v2(0.0f, 0.0f);
+        return;
+    }
     const station_t *st = &w->stations[sp->current_station];
     /* Assign a dock berth and position ship there */
     int nberths = station_berth_count(st);
@@ -8066,8 +8073,9 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
 /* ================================================================== */
 
 void player_init_ship(server_player_t *sp, world_t *w) {
+    if (!sp) return;
     int player_slot = player_slot_for_ptr(w, sp);
-    uint32_t prior_asset_id = sp ? sp->ship_asset_id : SHIP_ASSET_ID_NONE;
+    uint32_t prior_asset_id = sp->ship_asset_id;
     ship_cleanup(&sp->ship);
     memset(&sp->ship, 0, sizeof(sp->ship));
     (void)ship_manifest_bootstrap(&sp->ship);
@@ -8119,7 +8127,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     /* Stack-only harness players are not backed by world player slots,
      * so they keep the old direct bootstrap. Real players must bind a
      * durable ship_asset_t above. */
-    if (sp->docked && sp->current_station >= 0 &&
+    if (w && sp->docked && sp->current_station >= 0 &&
         sp->current_station < MAX_STATIONS) {
         gossip_dock_handshake(w, sp->current_station,
                               sp->ship.known_contracts,

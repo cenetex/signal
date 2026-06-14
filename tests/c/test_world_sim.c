@@ -153,6 +153,25 @@ TEST(test_player_init_claims_station_loaner_asset) {
     ASSERT_EQ_INT(asset->operator_slot, 0);
 }
 
+TEST(test_player_init_ship_null_context_safe) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(NULL, &w);
+
+    SERVER_PLAYER_DECL(sp);
+    player_init_ship(&sp, NULL);
+    ASSERT_EQ_INT(sp.ship.hull_class, HULL_CLASS_MINER);
+    ASSERT(sp.ship.hull > 0.0f);
+    ASSERT(sp.docked);
+    ASSERT_EQ_INT(sp.current_station, 0);
+
+    anchor_ship_in_station(NULL, &w);
+    sp.ship.vel = v2(12.0f, -7.0f);
+    anchor_ship_in_station(&sp, NULL);
+    ASSERT_EQ_FLOAT(sp.ship.vel.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp.ship.vel.y, 0.0f, 0.001f);
+}
+
 TEST(test_player_respawn_retires_asset_and_claims_loaner) {
     WORLD_DECL;
     world_reset(&w);
@@ -5932,6 +5951,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_npcs);
     RUN(test_world_reset_ship_assets_back_active_hulls);
     RUN(test_player_init_claims_station_loaner_asset);
+    RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
     RUN(test_shipyard_keeps_completed_build_when_asset_registry_full);
