@@ -14,6 +14,7 @@
 #include "sim_mining.h"
 #include "sim_construction.h"
 #include "signal_model.h"
+#include "signal_contract_brain.h"
 #include "manifest.h"
 #include "commodity.h"
 #include "contract_fit.h"
@@ -635,6 +636,46 @@ static bool station_accepts_hauler_commodity(const station_t *st,
         if (module_build_material_lookup(m->type) == c) return true;
     }
     return station_consumes(st, c);
+}
+
+static bool npc_finished_good(commodity_t c) {
+    return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
+}
+
+static float npc_hull_ratio(const ship_t *ship) {
+    if (!ship) return 1.0f;
+    float max_hull = ship_max_hull(ship);
+    if (max_hull <= 0.0f) return 1.0f;
+    float ratio = ship->hull / max_hull;
+    return clampf(ratio, 0.0f, 1.0f);
+}
+
+static void npc_contract_shadow_player(const npc_ship_t *npc,
+                                       const ship_t *ship,
+                                       server_player_t *sp) {
+    memset(sp, 0, sizeof(*sp));
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    sp->docked = npc && npc->state == NPC_STATE_DOCKED;
+    sp->current_station = npc ? npc->home_station : -1;
+    sp->nearby_station = sp->current_station;
+    sp->server_brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    sp->autopilot_mode = 1;
+    if (npc) memcpy(sp->session_token, npc->session_token, sizeof(sp->session_token));
+    if (ship) {
+        ship_copy(&sp->ship, ship);
+    } else if (npc) {
+        sp->ship = npc->ship;
+        (void)ship_manifest_bootstrap(&sp->ship);
+    } else {
+        (void)ship_manifest_bootstrap(&sp->ship);
+    }
+}
+
+static void npc_contract_shadow_cleanup(server_player_t *sp) {
+    if (!sp) return;
+    ship_cleanup(&sp->ship);
 }
 
 static float station_finished_fraction_for_hauler(const station_t *st,
@@ -1295,6 +1336,7 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
     if (idx < 0) return;
     const npc_ship_t *npc = &w->npc_ships[npc_slot];
     character_t *c = &w->characters[idx];
+    c->kind = character_kind_from_role(npc->role);
     c->state = npc->state;
     c->target_asteroid = npc->target_asteroid;
     c->home_station = npc->home_station;
@@ -1322,30 +1364,62 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
  * a small local roster only when their modules expose useful work, so
  * frontier expansion can become self-supporting without inflating the
  * physical NPC pool beyond MAX_NPC_SHIPS. */
-static void station_target_npc_counts(int station_idx, const station_t *st,
+static bool station_has_raw_ore_work(const station_t *st) {
+    if (!st || !station_is_active(st) || !station_has_module(st, MODULE_FURNACE))
+        return false;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+        if (station_raw_ore_need_score(st, (commodity_t)c) > 0.0f)
+            return true;
+    }
+    return false;
+}
+
+static bool station_has_finished_delivery_work(const world_t *w, int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *src = &w->stations[station_idx];
+    if (!station_is_active(src) || !station_has_module(src, MODULE_DOCK))
+        return false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index == station_idx) continue;
+        if (!npc_finished_good(ct->commodity)) continue;
+        if (ct->quantity_needed <= 0.01f) continue;
+        int stock = contract_fit_manifest_count(ct, &src->manifest);
+        if (stock > hauler_reserve_units()) return true;
+    }
+    return false;
+}
+
+static void station_target_npc_counts(const world_t *w, int station_idx,
+                                      const station_t *st,
                                       int *miners, int *haulers, int *tows) {
     *miners = 0;
     *haulers = 0;
     *tows = 0;
     if (!st || !station_is_active(st)) return;
     switch (station_idx) {
-    case 0: *miners = 2; *haulers = 2; return;  /* Prospect */
+    case 0: *miners = 2; *haulers = 2; break;  /* Prospect */
     case 1: /* Kepler */
         *miners = 0;
         *haulers = 1;
         *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
-        return;
+        break;
     case 2: /* Helios */
         *miners = 1;
         *haulers = 1;
         *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
-        return;
+        break;
     default:
         *miners = station_has_module(st, MODULE_FURNACE) ? 1 : 0;
         *haulers = station_has_module(st, MODULE_DOCK) ? 1 : 0;
         *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
-        return;
+        break;
     }
+    if (station_has_raw_ore_work(st) && station_has_module(st, MODULE_DOCK))
+        *miners = (*miners > 0) ? *miners : 1;
+    if (station_has_finished_delivery_work(w, station_idx))
+        *haulers = (*haulers > 0) ? *haulers : 1;
 }
 
 /* Walk the active NPC pool and count active members per home station,
@@ -1386,7 +1460,7 @@ static bool replenish_npc_roster(world_t *w) {
     int best_shortfall = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
         int target_m = 0, target_h = 0, target_t = 0;
-        station_target_npc_counts(s, &w->stations[s], &target_m, &target_h, &target_t);
+        station_target_npc_counts(w, s, &w->stations[s], &target_m, &target_h, &target_t);
         /* Sovereign station can run negative; pool is informational. */
         int short_m = target_m - miners[s];
         int short_h = target_h - haulers[s];
@@ -1478,6 +1552,9 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->dest_station = station_idx;
     npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
     npc->hull = npc_max_hull(npc);
+    npc->brain_mode = (role == NPC_ROLE_MINER || role == NPC_ROLE_HAULER)
+        ? SERVER_BRAIN_MODE_NEURAL_FLIGHT
+        : SERVER_BRAIN_MODE_NONE;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     /* Tow drones get a distinct yellow-amber tint */
     if (role == NPC_ROLE_TOW) {
@@ -1693,6 +1770,183 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     return best;
 }
 
+static float npc_finished_cargo_total(const npc_ship_t *npc, const ship_t *ship) {
+    float total = 0.0f;
+    if (ship && ship->manifest.count > 0) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            total += (float)ship_finished_count(ship, (commodity_t)c);
+        return total;
+    }
+    if (!npc) return 0.0f;
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+        total += npc->cargo[c];
+    return total;
+}
+
+static int npc_append_hauler_contract_candidates(
+    const world_t *w,
+    const npc_ship_t *npc,
+    const ship_t *ship,
+    signal_contract_candidate_t *candidates,
+    contract_t **candidate_contracts,
+    int cap) {
+    if (!w || !npc || !candidates || !candidate_contracts || cap <= 0)
+        return 0;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS)
+        return 0;
+    const station_t *home = &w->stations[npc->home_station];
+    if (!station_is_active(home)) return 0;
+
+    ship_t haul_view = {0};
+    if (ship) {
+        haul_view = *ship;
+    } else {
+        haul_view = npc->ship;
+    }
+    haul_view.hull_class = HULL_CLASS_HAULER;
+    float carried = npc_finished_cargo_total(npc, ship);
+    float space = ship_hull_def(&haul_view)->ingot_capacity - carried;
+    if (space + 0.0001f < 1.0f) return 0;
+
+    int count = 0;
+    for (int k = 0; k < npc->known_contract_count && count < cap; k++) {
+        const contract_summary_t *cs = &npc->known_contracts[k];
+        if (!cs->active) continue;
+        if (cs->action != CONTRACT_TRACTOR) continue;
+        if (cs->station_index >= MAX_STATIONS) continue;
+        if (cs->station_index == npc->home_station) continue;
+        commodity_t c = (commodity_t)cs->commodity;
+        if (!npc_finished_good(c)) continue;
+        contract_t *ct = hauler_pickup_contract_from_summary(
+            (world_t *)w, cs, &home->manifest);
+        if (!ct) continue;
+        int fit_stock = contract_fit_manifest_count(ct, &home->manifest);
+        int takeable = fit_stock - hauler_reserve_units();
+        if (takeable <= 0) continue;
+        float dist = fmaxf(1.0f,
+            v2_len(v2_sub(w->stations[cs->station_index].pos, home->pos)));
+        signal_contract_candidate_t *cand = &candidates[count];
+        memset(cand, 0, sizeof(*cand));
+        cand->action = SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER;
+        cand->source_station = npc->home_station;
+        cand->dest_station = cs->station_index;
+        cand->commodity = c;
+        cand->quantity_needed = ct->quantity_needed;
+        cand->contract_price = contract_price(ct);
+        cand->source_price = station_sell_price(home, c);
+        cand->source_stock = (float)station_finished_count(home, c);
+        cand->dest_stock = (float)station_finished_count(&w->stations[cs->station_index], c);
+        cand->ledger_balance = ledger_balance(home, npc->session_token);
+        cand->free_cargo = space;
+        cand->distance = dist;
+        cand->age = ct->age;
+        cand->hull_ratio = npc_hull_ratio(ship ? ship : &haul_view);
+        cand->teacher_score = contract_price(ct) / fmaxf(1.0f, dist / 1000.0f);
+        candidate_contracts[count] = ct;
+        count++;
+    }
+    return count;
+}
+
+static contract_t *npc_choose_hauler_contract(const world_t *w,
+                                              const npc_ship_t *npc,
+                                              const ship_t *ship,
+                                              float *out_score) {
+    if (out_score) *out_score = 0.0f;
+    signal_contract_candidate_t candidates[SHIP_KNOWN_CONTRACT_CAP];
+    contract_t *candidate_contracts[SHIP_KNOWN_CONTRACT_CAP] = {0};
+    int candidate_count = npc_append_hauler_contract_candidates(
+        w, npc, ship, candidates, candidate_contracts, SHIP_KNOWN_CONTRACT_CAP);
+    if (candidate_count <= 0) return NULL;
+
+    server_player_t shadow;
+    npc_contract_shadow_player(npc, ship, &shadow);
+    int choice = signal_contract_brain_choose(w, &shadow, candidates, candidate_count);
+    npc_contract_shadow_cleanup(&shadow);
+    if (choice < 0 || choice >= candidate_count) return NULL;
+    if (out_score) *out_score = candidates[choice].teacher_score;
+    return candidate_contracts[choice];
+}
+
+static float npc_mining_assignment_score(const world_t *w, const npc_ship_t *npc) {
+    if (!w || !npc) return 0.0f;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return 0.0f;
+    const station_t *home = &w->stations[npc->home_station];
+    if (!station_has_raw_ore_work(home)) return 0.0f;
+
+    int loose = npc_find_loose_fragment(w, npc, 0.0f);
+    if (loose >= 0) return 120.0f;
+
+    int target = npc_find_mineable_asteroid(w, npc);
+    if (target < 0) return 0.0f;
+    const asteroid_t *a = &w->asteroids[target];
+    float need = station_raw_ore_need_score(home, a->commodity);
+    float dist = fmaxf(1.0f, v2_len(v2_sub(a->pos, npc->ship.pos)));
+    float mining_rate = ship_hull_def(&(ship_t){ .hull_class = HULL_CLASS_MINER })->mining_rate;
+    return (need * 95.0f) + (mining_rate * 0.4f) + (2000.0f / dist);
+}
+
+static bool npc_can_reassign(const npc_ship_t *npc, const ship_t *ship) {
+    if (!npc || !npc->active) return false;
+    if (npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) return false;
+    if (npc->role != NPC_ROLE_MINER && npc->role != NPC_ROLE_HAULER) return false;
+    if (npc->state != NPC_STATE_DOCKED && npc->state != NPC_STATE_IDLE) return false;
+    if (npc->towed_fragment >= 0 || npc->towed_scaffold >= 0) return false;
+    if (npc_finished_cargo_total(npc, ship) > 0.01f) return false;
+    return true;
+}
+
+static void npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
+                               npc_role_t role) {
+    if (!w || !npc || npc->role == role) return;
+    ship_t *ship = npc_ship_for(w, npc_slot);
+    float old_max = npc_max_hull(npc);
+    float live_hull = ship ? ship->hull : npc->hull;
+    float hull_ratio = old_max > 0.0f ? clampf(live_hull / old_max, 0.0f, 1.0f) : 1.0f;
+    npc->role = role;
+    npc->ship.hull_class = npc_hull_class_for_role(role);
+    npc->hull = hull_ratio * npc_max_hull(npc);
+    npc->dest_station = npc->home_station;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = -1;
+    npc->towed_scaffold = -1;
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->input = (input_intent_t){0};
+    *nav_npc_path(npc_slot) = (nav_path_t){0};
+    if (ship) {
+        ship->hull_class = npc->ship.hull_class;
+        ship->hull = npc->hull;
+        ship->pos = npc->ship.pos;
+        ship->vel = npc->ship.vel;
+        ship->angle = npc->ship.angle;
+    }
+    mirror_npc_to_character(w, npc_slot);
+}
+
+static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
+    ship_t *ship = npc_ship_for(w, npc_slot);
+    if (!npc_can_reassign(npc, ship)) return;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return;
+    if (npc->state == NPC_STATE_DOCKED && npc->state_timer > 0.0f) return;
+
+    gossip_dock_handshake(w, npc->home_station,
+                          npc->known_contracts,
+                          &npc->known_contract_count,
+                          SHIP_KNOWN_CONTRACT_CAP,
+                          &npc->knowledge);
+    gossip_hnn_exchange(w, npc->home_station, npc);
+
+    contract_t *haul = npc_choose_hauler_contract(w, npc, ship, NULL);
+    float mine_score = npc_mining_assignment_score(w, npc);
+
+    if (haul) {
+        npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER);
+    } else if (mine_score > 0.0f) {
+        npc_set_assignment(w, npc_slot, npc, NPC_ROLE_MINER);
+    }
+}
+
 /* Forward decl — definition below; npc_steer_toward routes through it. */
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt);
 static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p);
@@ -1742,8 +1996,7 @@ static void npc_set_intent(npc_ship_t *npc, flight_cmd_t cmd) {
     npc->input.thrust = cmd.thrust;
 }
 
-static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
-    npc_set_intent(npc, cmd);
+static void npc_apply_current_intent(npc_ship_t *npc, float dt) {
     step_ship_rotation(&npc->ship, dt, npc->input.turn);
 
     vec2 fwd = ship_forward(npc->ship.angle);
@@ -1751,6 +2004,11 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
                      /*reverse_allowed=*/false);
 
     npc->thrusting = npc->input.thrust > 0.0f;
+}
+
+static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
+    npc_set_intent(npc, cmd);
+    npc_apply_current_intent(npc, dt);
 }
 
 /* A*-guided NPC steering via the shared flight controller. Creates a
@@ -1762,6 +2020,13 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
  * for tow paths (was hull->accel * scale before). */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float thrust_scale, float dt) {
+    if (npc->brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
+        signal_brain_drive_npc_to((world_t *)w, npc, final_target)) {
+        npc->input.thrust *= thrust_scale;
+        npc_apply_current_intent(npc, dt);
+        return;
+    }
+
     nav_path_t *path = nav_npc_path(npc_idx);
     bool station_local = false;
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -2078,7 +2343,6 @@ static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
 }
 
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
-    const hull_def_t *hull = npc_hull_def(npc);
     ship_t *hauler_ship = npc_ship_for(w, n);
     if (hauler_ship && hauler_ship->manifest.count > 0)
         hauler_sync_cargo_from_manifest(npc, hauler_ship);
@@ -2099,9 +2363,6 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             gossip_hnn_exchange(w, npc->home_station, npc);
 
             station_t *home = &w->stations[npc->home_station];
-            float carried = 0.0f;
-            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) carried += npc->cargo[c];
-            float space = hull->ingot_capacity - carried;
 
             /* Contract-driven routing: scan only the NPC's own bounded
              * memory of contract summaries — no peer-station radio.
@@ -2112,41 +2373,16 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * for itself; Prospect haulers loaded local stock and
              * "delivered" it back to Prospect, never carrying ferrite
              * ingots out to Kepler. */
-            int best_known = -1;
-            contract_t *best_contract = NULL;
-            float best_score = 0.0f;
-            for (int k = 0; k < npc->known_contract_count; k++) {
-                const contract_summary_t *cs = &npc->known_contracts[k];
-                if (!cs->active) continue;
-                if (cs->action != CONTRACT_TRACTOR) continue;
-                if (cs->station_index >= MAX_STATIONS) continue;
-                if (cs->station_index == npc->home_station) continue;
-                commodity_t c = (commodity_t)cs->commodity;
-                if (c < COMMODITY_RAW_ORE_COUNT) continue; /* raw ore moves as fragments */
-                contract_t *ct = hauler_pickup_contract_from_summary(
-                    w, cs, &home->manifest);
-                if (!ct) continue;
-                int fit_stock = contract_fit_manifest_count(ct, &home->manifest);
-                int takeable = fit_stock - hauler_reserve_units();
-                if (takeable <= 0)
-                    continue; /* no manifest-backed stock at home to fill */
-                /* Stations are physical landmarks visible via the signal
-                 * grid — position lookup is the legal infrastructure
-                 * gossip channel, not radio. */
-                float dist = fmaxf(1.0f,
-                    v2_len(v2_sub(w->stations[cs->station_index].pos, home->pos)));
-                float score = contract_price(ct) / dist;
-                if (score > best_score) {
-                    best_score = score;
-                    best_known = k;
-                    best_contract = ct;
-                }
-            }
+            contract_t *best_contract = npc_choose_hauler_contract(w, npc,
+                                                                   hauler_ship,
+                                                                   NULL);
 
-            if (best_known >= 0 && best_contract) {
+            if (best_contract) {
                 /* Load the commodity for this contract (leave reserve for players) */
                 commodity_t ingot = best_contract->commodity;
                 npc->dest_station = best_contract->station_index;
+                float carried = npc_finished_cargo_total(npc, hauler_ship);
+                float space = npc_hull_def(npc)->ingot_capacity - carried;
                 int take_units = contract_fit_manifest_count(best_contract,
                                                              &home->manifest);
                 take_units -= hauler_reserve_units();
@@ -2676,15 +2912,12 @@ void step_npc_ships(world_t *w, float dt) {
         npc_enforce_role_hull(npc);
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
+        npc_choose_assignment(w, n, npc);
 
-        /* Neural / holographic brain control: when brain_mode is set,
-         * the brain handles flight. Physics + collision are still
-         * applied by the caller.
-         *
-         * Holographic NPCs run their DOCKED state through the normal
-         * state machine so dock gossip still fires; only flight is
-         * delegated. Neural NPCs skip the state machine entirely
-         * (legacy behavior). */
+        /* Holographic pilots own their flight controller outside the
+         * role-specific state machines. Neural checkpoint pilots keep
+         * the normal miner/hauler contract state machine; their steering
+         * is swapped in inside npc_steer_with_path when a model is loaded. */
         if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
             if (npc->state != NPC_STATE_DOCKED) {
                 signal_brain_drive_npc(w, npc, dt);
@@ -2702,10 +2935,6 @@ void step_npc_ships(world_t *w, float dt) {
                 continue;
             }
             /* DOCKED: fall through to state machine for dock gossip */
-        } else if (npc->brain_mode == 1 && signal_brain_loaded()) {
-            signal_brain_drive_npc(w, npc, dt);
-            mirror_ship_to_npc(w, n);
-            continue;
         }
 
         if (npc->role == NPC_ROLE_HAULER) {

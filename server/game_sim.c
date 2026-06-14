@@ -613,6 +613,41 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
+static int manifest_find_first_commodity_local(const manifest_t *manifest,
+                                               commodity_t c) {
+    if (!manifest || !manifest->units) return -1;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (manifest->units[i].commodity == (uint8_t)c)
+            return (int)i;
+    }
+    return -1;
+}
+
+static bool cargo_unit_pub_nonzero(const cargo_unit_t *unit) {
+    static const uint8_t zero[32] = {0};
+    return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
+}
+
+static void emit_station_construction_contribution(world_t *w, station_t *st,
+                                                   int station_idx,
+                                                   const cargo_unit_t *unit,
+                                                   float progress_after) {
+    if (!w || !st || !cargo_unit_pub_nonzero(unit)) return;
+    chain_payload_construction_t payload = {0};
+    memcpy(payload.cargo_pub, unit->pub, sizeof(payload.cargo_pub));
+    payload.target_kind = CONSTRUCTION_TARGET_STATION;
+    payload.station_index = (station_idx >= 0 && station_idx <= 255)
+        ? (uint8_t)station_idx : 0xff;
+    payload.module_index = 0xff;
+    payload.module_type = 0xff;
+    payload.commodity = COMMODITY_FRAME;
+    payload.target_id = (station_idx >= 0) ? (uint64_t)station_idx : 0u;
+    payload.contributed_units = 1.0f;
+    payload.progress_after = progress_after;
+    (void)chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION,
+                         &payload, sizeof(payload));
+}
+
 /* add_module_at, activate_outpost, begin_module_construction*,
  * step_module_delivery, step_module_activation → sim_construction.c
  * module_build_material, module_build_cost, station_sells_scaffold
@@ -628,7 +663,25 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     int needed = (int)ceilf(needed_f - 0.0001f);
     if (needed <= 0) return;
     int request = held < needed ? held : needed;
-    int accepted = ship_finished_drain(&sp->ship, COMMODITY_FRAME, request);
+    int accepted = 0;
+    while (accepted < request) {
+        int idx = manifest_find_first_commodity_local(&sp->ship.manifest,
+                                                      COMMODITY_FRAME);
+        if (idx < 0) break;
+        cargo_unit_t unit = {0};
+        if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)idx,
+                                             &unit, NULL)) {
+            break;
+        }
+        float progress_after = st->scaffold_progress +
+            (float)(accepted + 1) / SCAFFOLD_MATERIAL_NEEDED;
+        if (progress_after > 1.0f) progress_after = 1.0f;
+        emit_station_construction_contribution(w, st, sp->current_station,
+                                               &unit, progress_after);
+        accepted++;
+    }
+    if (accepted > 0)
+        ship_finished_sync(&sp->ship, COMMODITY_FRAME);
     if (accepted <= 0) return;
     st->scaffold_progress += (float)accepted / SCAFFOLD_MATERIAL_NEEDED;
     SIM_LOG("[sim] player %d delivered %d frames to scaffold %d (progress %.0f%%)\n",
@@ -6596,8 +6649,8 @@ void world_ensure_seeded_freeport(world_t *w) {
 
     if (w->next_station_id == 0) w->next_station_id = 1;
     st->id = w->next_station_id++;
-    snprintf(st->name, sizeof(st->name), "%s", "Freeport");
-    st->pos = v2(0.0f, 8200.0f);
+    snprintf(st->name, sizeof(st->name), "%s", "Blackglass Freeport");
+    st->pos = v2(1200.0f, 11000.0f);
     st->radius = 34.0f;
     st->dock_radius = 220.0f;
     st->signal_range = 0.0f;
@@ -6611,12 +6664,12 @@ void world_ensure_seeded_freeport(world_t *w) {
     add_module_at(st, MODULE_DOCK, 1, 0);
     st->arm_count = 1;
     rebuild_station_services(st);
-    snprintf(st->station_slug, sizeof(st->station_slug), "freeport");
-    snprintf(st->currency_name, sizeof(st->currency_name), "freeport scrip");
+    snprintf(st->station_slug, sizeof(st->station_slug), "blackglass");
+    snprintf(st->currency_name, sizeof(st->currency_name), "blackglass chits");
     snprintf(st->hail_message, sizeof(st->hail_message),
-             "Freeport. Local traffic only. Cargo bought as-is.");
+             "Blackglass Freeport. No relay, no questions. Cargo bought as-is.");
     snprintf(st->rati_hail_message, sizeof(st->rati_hail_message),
-             "Freeport recognizes the mark. No questions over open relay.");
+             "Blackglass recognizes the mark. Keep it off the open relay.");
     if (w->station_count <= SIGNAL_FREEPORT_STATION_INDEX)
         w->station_count = SIGNAL_FREEPORT_STATION_INDEX + 1;
 }
@@ -6674,17 +6727,17 @@ static const char *const DEFAULT_STATION_TIER_TEXT[3][4] = {
     },
     /* Kepler Yard (1) — engineer, talks to machines, perks up for construction. */
     {
-        "Kepler Yard, machinist on duty. Frames pressing on schedule. Drop your specs.",
-        "Foreman Kepler used to tell apprentices: a frame is just slow ferrite.",
-        "Our archive holds a frame stamped 'do not press.' The stamp predates the seal.",
-        "You shouldn't be hearing this. Yard signal is gated to dock range. Step closer.",
+        "Kepler Yard, machinist on duty. Frames pressing on schedule. Corridor work takes priority.",
+        "Foreman Kepler used to tell apprentices: a relay is just a promise with mass.",
+        "The Helios corridor failed in sections. The logs say damaged. The crews said deliberate.",
+        "You shouldn't be hearing this. Yard signal is bleeding into the old booster line.",
     },
     /* Helios Works (2) — ambitious, enthusiastic, "we" meaning "I". */
     {
-        "Helios Works. Prestige fabrication. Bring quality, take quality.",
+        "Helios Works. Prestige fabrication. Corridor degraded; docking lane remains live.",
         "The Director walked the smelting floor at dawn. She left a coin on the cold furnace.",
-        "Helios was built atop another Helios. Three layers down, the foundation talks.",
-        "We received a transmission. The signature was authentic. The author is dead.",
+        "The corridor was safe when the boosters stacked. Now Blackglass hears the gaps first.",
+        "We received a transmission from the broken relay. The signature was authentic. The author is dead.",
     },
 };
 
@@ -6828,7 +6881,7 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_FRAME]          = 2.0f;
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 16.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
-    w->stations[0].signal_range = 18000.0f;
+    w->stations[0].signal_range = 9000.0f;
     /* Ring 1: dock + relay + ferrite furnace (tagged FERRITE_INGOT). */
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
@@ -6853,7 +6906,7 @@ void world_reset(world_t *w) {
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
-             "Prospect Refinery. Ferrite smelting. Tow fragments to the furnace.");
+             "Prospect Refinery. Inner basin smelting. Tow ferrite to the furnace.");
     snprintf(w->stations[0].miner_chatter[0], sizeof(w->stations[0].miner_chatter[0]), "Prospect says keep it small.");
     snprintf(w->stations[0].miner_chatter[1], sizeof(w->stations[0].miner_chatter[1]), "Furnace wants ferrite.");
     snprintf(w->stations[0].hauler_chatter[0], sizeof(w->stations[0].hauler_chatter[0]), "Prospect load secured.");
@@ -6863,10 +6916,10 @@ void world_reset(world_t *w) {
 
     w->stations[1].id = w->next_station_id++;
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
-    w->stations[1].pos         = v2(-3200.0f, 2300.0f);
+    w->stations[1].pos         = v2(0.0f, 2400.0f);
     w->stations[1].radius      = 36.0f;
     w->stations[1].dock_radius = 240.0f;
-    w->stations[1].signal_range = 15000.0f;
+    w->stations[1].signal_range = 8500.0f;
     /* Smelt-payout floor (see Prospect comment above). */
     w->stations[1].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[1].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
@@ -6897,7 +6950,7 @@ void world_reset(world_t *w) {
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
-             "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
+             "Kepler Yard. Fabrication and scaffold kits. Rebuild the Helios corridor.");
     snprintf(w->stations[1].miner_chatter[0], sizeof(w->stations[1].miner_chatter[0]), "Kepler wants clean ingots.");
     snprintf(w->stations[1].miner_chatter[1], sizeof(w->stations[1].miner_chatter[1]), "Frame stock running low.");
     snprintf(w->stations[1].hauler_chatter[0], sizeof(w->stations[1].hauler_chatter[0]), "Frames inbound.");
@@ -6907,10 +6960,13 @@ void world_reset(world_t *w) {
 
     w->stations[2].id = w->next_station_id++;
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
-    w->stations[2].pos         = v2(3200.0f, 2300.0f);
+    w->stations[2].pos         = v2(0.0f, 15000.0f);
     w->stations[2].radius      = 36.0f;
     w->stations[2].dock_radius = 240.0f;
-    w->stations[2].signal_range = 15000.0f;
+    /* Helios used to sit at the far end of a boosted relay corridor.
+     * The local station still works, but the intervening boosters are
+     * gone, leaving a low-signal run through Blackglass territory. */
+    w->stations[2].signal_range = 4500.0f;
     /* Smelt-payout floor (see Prospect comment above). */
     w->stations[2].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[2].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
@@ -6961,11 +7017,11 @@ void world_reset(world_t *w) {
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
-             "Helios Works. Advanced smelting. Copper and crystal refined here.");
+             "Helios Works. Advanced smelting beyond the broken corridor.");
     snprintf(w->stations[2].miner_chatter[0], sizeof(w->stations[2].miner_chatter[0]), "Helios wants premium ore.");
-    snprintf(w->stations[2].miner_chatter[1], sizeof(w->stations[2].miner_chatter[1]), "Director is watching yields.");
+    snprintf(w->stations[2].miner_chatter[1], sizeof(w->stations[2].miner_chatter[1]), "Corridor signal is still failing.");
     snprintf(w->stations[2].hauler_chatter[0], sizeof(w->stations[2].hauler_chatter[0]), "Helios shipment bright.");
-    snprintf(w->stations[2].hauler_chatter[1], sizeof(w->stations[2].hauler_chatter[1]), "Prestige cargo inbound.");
+    snprintf(w->stations[2].hauler_chatter[1], sizeof(w->stations[2].hauler_chatter[1]), "Crossing Blackglass gap.");
     snprintf(w->stations[2].rati_hail_message, sizeof(w->stations[2].rati_hail_message),
              "RATi-grade delivery received. Helios will remember the callsign.");
 
@@ -7024,17 +7080,13 @@ void world_reset(world_t *w) {
      * inter-station chain online so tests and fresh worlds do not wait
      * through staggered replacement timers. */
     {
-        int slot;
-        slot = spawn_npc(w, 0, NPC_ROLE_MINER);
-        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_NONE;
-        slot = spawn_npc(w, 0, NPC_ROLE_MINER);
-        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+        (void)spawn_npc(w, 0, NPC_ROLE_MINER);
+        (void)spawn_npc(w, 0, NPC_ROLE_MINER);
         (void)spawn_npc(w, 0, NPC_ROLE_HAULER);
         (void)spawn_npc(w, 0, NPC_ROLE_HAULER);
         (void)spawn_npc(w, 1, NPC_ROLE_HAULER);
         (void)spawn_npc(w, 1, NPC_ROLE_TOW);
-        slot = spawn_npc(w, 2, NPC_ROLE_MINER);
-        if (slot >= 0) w->npc_ships[slot].brain_mode = SERVER_BRAIN_MODE_NONE;
+        (void)spawn_npc(w, 2, NPC_ROLE_MINER);
         (void)spawn_npc(w, 2, NPC_ROLE_HAULER);
         (void)spawn_npc(w, 2, NPC_ROLE_TOW);
     }

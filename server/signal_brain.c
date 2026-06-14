@@ -686,27 +686,10 @@ static void fill_npc_features(const npc_ship_t *npc, const vec2 target,
 
 static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc);
 
-void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
-    (void)dt;
-    if (!w || !npc || !npc->active) return;
-    if (npc->state == NPC_STATE_DOCKED) return;
-
-    if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
-        signal_brain_drive_npc_holographic(w, npc);
-        return;
-    }
-
-    /* Legacy neural brain path */
-    if (!g_brain.loaded || npc->brain_mode != 1) return;
-
-    /* Target: asteroid if assigned, otherwise home station */
-    vec2 target = {0};
-    if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
-        target = w->asteroids[npc->target_asteroid].pos;
-    } else {
-        int home = npc->home_station;
-        target = (home >= 0 && home < MAX_STATIONS) ? w->stations[home].pos : v2(0,0);
-    }
+bool signal_brain_drive_npc_to(world_t *w, npc_ship_t *npc, vec2 target) {
+    if (!w || !npc || !npc->active) return false;
+    if (!g_brain.loaded || npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT)
+        return false;
 
     double row[SB_FEATURE_COUNT];
     double best_score = -1e300;
@@ -724,6 +707,33 @@ void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
     npc->input.turn = (float)SB_ACTIONS[best].turn;
     npc->input.thrust = (float)SB_ACTIONS[best].thrust;
     npc->thrusting = (SB_ACTIONS[best].thrust > 0);
+    return true;
+}
+
+void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt) {
+    (void)dt;
+    if (!w || !npc || !npc->active) return;
+    if (npc->state == NPC_STATE_DOCKED) return;
+
+    if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
+        signal_brain_drive_npc_holographic(w, npc);
+        return;
+    }
+
+    /* Target: asteroid if assigned, destination station while hauling,
+     * otherwise home station. */
+    vec2 target = {0};
+    if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
+        target = w->asteroids[npc->target_asteroid].pos;
+    } else if (npc->state == NPC_STATE_TRAVEL_TO_DEST &&
+               npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS) {
+        target = w->stations[npc->dest_station].pos;
+    } else {
+        int home = npc->home_station;
+        target = (home >= 0 && home < MAX_STATIONS) ? w->stations[home].pos : v2(0,0);
+    }
+
+    (void)signal_brain_drive_npc_to(w, npc, target);
 }
 
 /* ---- Holographic pilot brain ---- */

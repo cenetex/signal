@@ -143,6 +143,8 @@ replay-native-wasm-long: build-signal-replay build-signal-replay-wasm
 CHAIN_ASSETS_FORMAT ?= json
 CHAIN_ASSETS_INPUT ?= chain
 CHAIN_ASSETS_OUT ?=
+CHAIN_ASSETS_LINEAGE ?=
+CHAIN_ASSETS_BUILT_FROM ?=
 
 build-chain-assets:
 	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
@@ -153,6 +155,8 @@ chain-assets: build-chain-assets
 	./build/signal_chain_assets \
 		--format=$(CHAIN_ASSETS_FORMAT) \
 		$(if $(CHAIN_ASSETS_OUT),--out=$(CHAIN_ASSETS_OUT),) \
+		$(if $(CHAIN_ASSETS_LINEAGE),--lineage=$(CHAIN_ASSETS_LINEAGE),) \
+		$(if $(CHAIN_ASSETS_BUILT_FROM),--built-from=$(CHAIN_ASSETS_BUILT_FROM),) \
 		$(CHAIN_ASSETS_INPUT)
 
 # --- Live bot behavior A/B gap harness ---

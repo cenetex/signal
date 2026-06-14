@@ -38,6 +38,15 @@ typedef struct {
     output_format_t format;
     const char *out_path;
     const char *station_pubkey_b58;
+    const char *lineage_text;
+    uint8_t lineage_pub[32];
+    bool lineage_mode;
+    const char *built_from_text;
+    bool built_from_mode;
+    uint8_t built_from_target_kind;
+    uint8_t built_from_station_index;
+    uint8_t built_from_module_index;
+    uint64_t built_from_target_id;
     bool verify_signatures;
 } cli_opts_t;
 
@@ -112,6 +121,20 @@ typedef struct {
     bool has_parent_fragment;
     uint8_t input_pubs[RECIPE_INPUT_MAX][32];
     uint8_t input_count;
+
+    uint64_t construction_count;
+    int construction_file_index;
+    uint64_t construction_event_id;
+    uint64_t construction_epoch;
+    uint8_t construction_station_pubkey[32];
+    uint8_t construction_target_kind;
+    uint8_t construction_station_index;
+    uint8_t construction_module_index;
+    uint8_t construction_module_type;
+    int construction_commodity;
+    uint64_t construction_target_id;
+    float construction_units;
+    float construction_progress_after;
 } asset_row_t;
 
 typedef struct {
@@ -131,6 +154,10 @@ static void print_usage(FILE *out) {
         "  --format=<json|csv>         Output format (default: json)\n"
         "  --out=<path>                Write output to file instead of stdout\n"
         "  --station-pubkey=<base58>   Override expected pubkey for all logs\n"
+        "  --lineage=<cargo_pub>       Print a human lineage tree for one cargo pub\n"
+        "  --built-from=<selector>     Print cargo that built infrastructure\n"
+        "                              selectors: module:<station>:<module>,\n"
+        "                              station:<station>, gate:<target_id>\n"
         "  --no-signatures             Skip Ed25519 signature checks\n"
         "  -h, --help                  This message\n"
         "\n"
@@ -155,6 +182,13 @@ static uint16_t read_le16(const uint8_t *p) {
     return (uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8);
 }
 
+static float read_le_float(const uint8_t *p) {
+    uint32_t bits = read_le32(p);
+    float v = 0.0f;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
 static void hex_bytes(const uint8_t *in, size_t len, char *out, size_t cap) {
     static const char h[] = "0123456789abcdef";
     if (!out || cap == 0) return;
@@ -167,6 +201,92 @@ static void hex_bytes(const uint8_t *in, size_t len, char *out, size_t cap) {
         out[i * 2u + 1u] = h[in[i] & 0x0F];
     }
     out[len * 2u] = '\0';
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
+}
+
+static bool parse_hex32(const char *text, uint8_t out[32]) {
+    if (!text) return false;
+    size_t n = strlen(text);
+    if (n != 64u) return false;
+    for (size_t i = 0; i < 32u; i++) {
+        int hi = hex_nibble(text[i * 2u]);
+        int lo = hex_nibble(text[i * 2u + 1u]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static bool parse_pub_arg(const char *text, uint8_t out[32]) {
+    if (parse_hex32(text, out)) return true;
+    return base58_decode(text, out, 32) == 32;
+}
+
+static bool parse_u8_token(const char *start, const char *end, uint8_t *out) {
+    if (!start || !end || start >= end || !out) return false;
+    unsigned long v = 0;
+    for (const char *p = start; p < end; p++) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10ul + (unsigned long)(*p - '0');
+        if (v > 255ul) return false;
+    }
+    *out = (uint8_t)v;
+    return true;
+}
+
+static bool parse_u64_token(const char *start, const char *end, uint64_t *out) {
+    if (!start || !end || start >= end || !out) return false;
+    uint64_t v = 0;
+    for (const char *p = start; p < end; p++) {
+        if (*p < '0' || *p > '9') return false;
+        uint64_t d = (uint64_t)(*p - '0');
+        if (v > (UINT64_MAX - d) / 10u) return false;
+        v = v * 10u + d;
+    }
+    *out = v;
+    return true;
+}
+
+static bool parse_built_from_arg(cli_opts_t *opts, const char *text) {
+    if (!opts || !text) return false;
+    if (strncmp(text, "module:", 7) == 0) {
+        const char *a = text + 7;
+        const char *colon = strchr(a, ':');
+        uint8_t station = 0, module = 0;
+        if (!colon || strchr(colon + 1, ':')) return false;
+        if (!parse_u8_token(a, colon, &station)) return false;
+        if (!parse_u8_token(colon + 1, text + strlen(text), &module)) return false;
+        opts->built_from_target_kind = CONSTRUCTION_TARGET_MODULE;
+        opts->built_from_station_index = station;
+        opts->built_from_module_index = module;
+        opts->built_from_target_id = station;
+        return true;
+    }
+    if (strncmp(text, "station:", 8) == 0) {
+        uint8_t station = 0;
+        if (!parse_u8_token(text + 8, text + strlen(text), &station)) return false;
+        opts->built_from_target_kind = CONSTRUCTION_TARGET_STATION;
+        opts->built_from_station_index = station;
+        opts->built_from_module_index = 0xff;
+        opts->built_from_target_id = station;
+        return true;
+    }
+    if (strncmp(text, "gate:", 5) == 0) {
+        uint64_t target_id = 0;
+        if (!parse_u64_token(text + 5, text + strlen(text), &target_id)) return false;
+        opts->built_from_target_kind = CONSTRUCTION_TARGET_GATE;
+        opts->built_from_station_index = 0xff;
+        opts->built_from_module_index = 0xff;
+        opts->built_from_target_id = target_id;
+        return true;
+    }
+    return false;
 }
 
 static void pub_hex(const uint8_t pub[32], char out[65]) {
@@ -190,7 +310,17 @@ static const char *event_type_name(uint8_t type) {
     case CHAIN_EVT_FRAGMENT_TOW: return "FRAGMENT_TOW";
     case CHAIN_EVT_FRAGMENT_RELEASE: return "FRAGMENT_RELEASE";
     case CHAIN_EVT_DEATH: return "DEATH";
+    case CHAIN_EVT_CONSTRUCTION: return "CONSTRUCTION";
     default: return "UNKNOWN";
+    }
+}
+
+static const char *construction_target_name(uint8_t target) {
+    switch (target) {
+    case CONSTRUCTION_TARGET_STATION: return "station";
+    case CONSTRUCTION_TARGET_MODULE: return "module";
+    case CONSTRUCTION_TARGET_GATE: return "gate";
+    default: return "unknown";
     }
 }
 
@@ -397,6 +527,8 @@ static asset_row_t *analysis_upsert_asset(analysis_t *a, const uint8_t cargo_pub
     row->commodity = -1;
     row->recipe_id = -1;
     row->prefix_class = -1;
+    row->construction_file_index = -1;
+    row->construction_commodity = -1;
     return row;
 }
 
@@ -553,6 +685,33 @@ static void record_transfer_asset(analysis_t *analysis,
     }
 }
 
+static void record_construction_asset(analysis_t *analysis, int file_index,
+                                      const parsed_header_t *hdr,
+                                      const uint8_t *payload,
+                                      uint16_t payload_len) {
+    if (payload_len < sizeof(chain_payload_construction_t)) return;
+    const uint8_t *cargo_pub = &payload[0];
+    asset_row_t *row = analysis_upsert_asset(analysis, cargo_pub);
+    if (!row) return;
+    row->construction_count++;
+    row->construction_file_index = file_index;
+    row->construction_event_id = hdr->event_id;
+    row->construction_epoch = hdr->epoch;
+    memcpy(row->construction_station_pubkey, hdr->authority, 32);
+    row->construction_target_kind = payload[32];
+    row->construction_station_index = payload[33];
+    row->construction_module_index = payload[34];
+    row->construction_module_type = payload[35];
+    row->construction_commodity = payload[36];
+    row->construction_target_id = read_le64(&payload[40]);
+    row->construction_units = read_le_float(&payload[48]);
+    row->construction_progress_after = read_le_float(&payload[52]);
+    if (row->source == ASSET_SOURCE_UNKNOWN_TRANSFER &&
+        row->source_file_index < 0) {
+        memcpy(row->source_station_pubkey, hdr->authority, 32);
+    }
+}
+
 static bool analyze_file(analysis_t *analysis, const cli_opts_t *opts,
                          const char *path) {
     file_summary_t summary;
@@ -701,6 +860,9 @@ static bool analyze_file(analysis_t *analysis, const cli_opts_t *opts,
                                segment_id, strict_ok, world_id, world_seq);
         else if (hdr.type == CHAIN_EVT_TRANSFER)
             record_transfer_asset(analysis, &hdr, payload, payload_len);
+        else if (hdr.type == CHAIN_EVT_CONSTRUCTION)
+            record_construction_asset(analysis, file_index, &hdr,
+                                      payload, payload_len);
 
         header_hash(&hdr, expected_prev);
         expected_event_id = hdr.event_id + 1u;
@@ -834,6 +996,7 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
                      "\"source_segment_id\":%llu,\"source_strict_ok\":%s,"
                      "\"world_id\":%llu,\"world_seq\":%llu,"
                      "\"mint_count\":%llu,\"transfer_count\":%llu,"
+                     "\"construction_count\":%llu,"
                      "\"kind\":%d,\"commodity\":%d,\"commodity_code\":",
                 (unsigned long long)a->source_event_id,
                 (unsigned long long)a->source_epoch,
@@ -843,6 +1006,7 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
                 (unsigned long long)a->source_world_seq,
                 (unsigned long long)a->mint_count,
                 (unsigned long long)a->transfer_count,
+                (unsigned long long)a->construction_count,
                 a->kind,
                 a->commodity);
         json_string(out, commodity_code_for(a->commodity));
@@ -860,7 +1024,24 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
             if (j) fprintf(out, ",");
             json_hex32(out, a->input_pubs[j]);
         }
-        fprintf(out, "]}%s\n", i + 1u == analysis->asset_count ? "" : ",");
+        fprintf(out, "],\"construction\":{"
+                     "\"target_kind\":");
+        json_string(out, construction_target_name(a->construction_target_kind));
+        fprintf(out, ",\"station_index\":%u,\"module_index\":%u,"
+                     "\"module_type\":%u,\"commodity\":%d,"
+                     "\"target_id\":%llu,\"event_id\":%llu,"
+                     "\"epoch\":%llu,\"units\":%.3f,"
+                     "\"progress_after\":%.3f}}%s\n",
+                (unsigned)a->construction_station_index,
+                (unsigned)a->construction_module_index,
+                (unsigned)a->construction_module_type,
+                a->construction_commodity,
+                (unsigned long long)a->construction_target_id,
+                (unsigned long long)a->construction_event_id,
+                (unsigned long long)a->construction_epoch,
+                a->construction_units,
+                a->construction_progress_after,
+                i + 1u == analysis->asset_count ? "" : ",");
     }
     fprintf(out, "  ]\n}\n");
 }
@@ -878,7 +1059,11 @@ static void emit_csv(const analysis_t *analysis, FILE *out) {
     fprintf(out, "cargo_pub_hex,cargo_pub_b58,source_type,source_file,"
                  "source_station_b58,source_event_id,source_epoch,"
                  "source_segment_id,source_strict_ok,world_id,world_seq,"
-                 "mint_count,transfer_count,kind,commodity,commodity_code,"
+                 "mint_count,transfer_count,construction_count,construction_target,"
+                 "construction_station_index,construction_module_index,"
+                 "construction_module_type,construction_commodity,"
+                 "construction_event_id,construction_units,"
+                 "construction_progress_after,kind,commodity,commodity_code,"
                  "recipe_id,recipe_name,prefix_class,prefix_label,mined_block,"
                  "parent_fragment_pub_hex,input_pub_1_hex,input_pub_2_hex,input_pub_3_hex\n");
     for (size_t i = 0; i < analysis->asset_count; i++) {
@@ -904,7 +1089,7 @@ static void emit_csv(const analysis_t *analysis, FILE *out) {
             csv_string(out, "");
         fprintf(out, ",");
         csv_string(out, station_b58);
-        fprintf(out, ",%llu,%llu,%llu,%s,%llu,%llu,%llu,%llu,%d,%d,",
+        fprintf(out, ",%llu,%llu,%llu,%s,%llu,%llu,%llu,%llu,%llu,",
                 (unsigned long long)a->source_event_id,
                 (unsigned long long)a->source_epoch,
                 (unsigned long long)a->source_segment_id,
@@ -913,6 +1098,16 @@ static void emit_csv(const analysis_t *analysis, FILE *out) {
                 (unsigned long long)a->source_world_seq,
                 (unsigned long long)a->mint_count,
                 (unsigned long long)a->transfer_count,
+                (unsigned long long)a->construction_count);
+        csv_string(out, construction_target_name(a->construction_target_kind));
+        fprintf(out, ",%u,%u,%u,%d,%llu,%.3f,%.3f,%d,%d,",
+                (unsigned)a->construction_station_index,
+                (unsigned)a->construction_module_index,
+                (unsigned)a->construction_module_type,
+                a->construction_commodity,
+                (unsigned long long)a->construction_event_id,
+                a->construction_units,
+                a->construction_progress_after,
                 a->kind,
                 a->commodity);
         csv_string(out, commodity_code_for(a->commodity)); fprintf(out, ",");
@@ -926,6 +1121,230 @@ static void emit_csv(const analysis_t *analysis, FILE *out) {
         csv_string(out, input_hex[1]); fprintf(out, ",");
         csv_string(out, input_hex[2]); fprintf(out, "\n");
     }
+}
+
+static void emit_indent(FILE *out, unsigned depth) {
+    for (unsigned i = 0; i < depth; i++) fputs("  ", out);
+}
+
+static const char *asset_label(const asset_row_t *a) {
+    if (!a) return "cargo";
+    if (a->source == ASSET_SOURCE_SMELT) return "ingot";
+    switch (a->kind) {
+    case CARGO_KIND_FRAME: return "frame";
+    case CARGO_KIND_LASER: return "laser";
+    case CARGO_KIND_TRACTOR: return "tractor";
+    case CARGO_KIND_REPAIR_KIT: return "repair_kit";
+    case CARGO_KIND_INGOT: return "ingot";
+    default: return "cargo";
+    }
+}
+
+static bool lineage_stack_contains(const asset_row_t *const *stack,
+                                   size_t stack_len,
+                                   const asset_row_t *asset) {
+    for (size_t i = 0; i < stack_len; i++) {
+        if (stack[i] == asset) return true;
+    }
+    return false;
+}
+
+static void emit_lineage_missing(FILE *out, const uint8_t pub[32],
+                                 unsigned depth, const char *why) {
+    char hex[65], b58[64];
+    pub_hex(pub, hex);
+    pub_b58(pub, b58);
+    emit_indent(out, depth);
+    fprintf(out, "- unobserved cargo %s", hex);
+    if (b58[0]) fprintf(out, " (%s)", b58);
+    if (why && why[0]) fprintf(out, " — %s", why);
+    fputc('\n', out);
+}
+
+static void emit_lineage_asset(const analysis_t *analysis,
+                               const asset_row_t *asset,
+                               FILE *out,
+                               unsigned depth,
+                               const asset_row_t **stack,
+                               size_t stack_len) {
+    char cargo_hex[65], cargo_b58[64], station_b58[64];
+    pub_hex(asset->cargo_pub, cargo_hex);
+    pub_b58(asset->cargo_pub, cargo_b58);
+    pub_b58(asset->source_station_pubkey, station_b58);
+
+    emit_indent(out, depth);
+    fprintf(out, "- %s %s", asset_label(asset), cargo_hex);
+    if (cargo_b58[0]) fprintf(out, " (%s)", cargo_b58);
+    fputc('\n', out);
+
+    emit_indent(out, depth + 1u);
+    fprintf(out, "source: %s", source_name(asset->source));
+    if (asset->source == ASSET_SOURCE_CRAFT && asset->recipe_id >= 0) {
+        const char *recipe = recipe_name_for(asset->recipe_id);
+        fprintf(out, " recipe=%d", asset->recipe_id);
+        if (recipe && recipe[0]) fprintf(out, ":%s", recipe);
+    } else if (asset->source == ASSET_SOURCE_SMELT) {
+        fprintf(out, " prefix=%s mined_block=%llu",
+                prefix_name(asset->prefix_class),
+                (unsigned long long)asset->mined_block);
+    }
+    if (station_b58[0]) fprintf(out, " station=%s", station_b58);
+    if (asset->source_event_id) {
+        fprintf(out, " event=%llu tick=%llu segment=%llu",
+                (unsigned long long)asset->source_event_id,
+                (unsigned long long)asset->source_epoch,
+                (unsigned long long)asset->source_segment_id);
+    }
+    fprintf(out, " strict=%s\n", asset->source_strict_ok ? "true" : "false");
+
+    if (asset->transfer_count > 0) {
+        emit_indent(out, depth + 1u);
+        fprintf(out, "transfers: %llu first_event=%llu last_event=%llu\n",
+                (unsigned long long)asset->transfer_count,
+                (unsigned long long)asset->first_transfer_event_id,
+                (unsigned long long)asset->last_transfer_event_id);
+    }
+
+    if (asset->construction_count > 0) {
+        emit_indent(out, depth + 1u);
+        fprintf(out,
+                "construction: target=%s station_index=%u module_index=%u "
+                "module_type=%u commodity=%d event=%llu tick=%llu "
+                "units=%.3f progress_after=%.3f\n",
+                construction_target_name(asset->construction_target_kind),
+                (unsigned)asset->construction_station_index,
+                (unsigned)asset->construction_module_index,
+                (unsigned)asset->construction_module_type,
+                asset->construction_commodity,
+                (unsigned long long)asset->construction_event_id,
+                (unsigned long long)asset->construction_epoch,
+                asset->construction_units,
+                asset->construction_progress_after);
+    }
+
+    if (lineage_stack_contains(stack, stack_len, asset)) {
+        emit_indent(out, depth + 1u);
+        fputs("cycle: already visited this cargo pub\n", out);
+        return;
+    }
+
+    const asset_row_t **next_stack =
+        (const asset_row_t **)malloc((stack_len + 1u) * sizeof(*next_stack));
+    if (!next_stack) {
+        emit_indent(out, depth + 1u);
+        fputs("error: out of memory while walking lineage\n", out);
+        return;
+    }
+    if (stack_len > 0) memcpy(next_stack, stack, stack_len * sizeof(*next_stack));
+    next_stack[stack_len] = asset;
+
+    if (asset->source == ASSET_SOURCE_SMELT && asset->has_parent_fragment) {
+        char parent_hex[65], parent_b58[64];
+        pub_hex(asset->parent_fragment_pub, parent_hex);
+        pub_b58(asset->parent_fragment_pub, parent_b58);
+        emit_indent(out, depth + 1u);
+        fprintf(out, "from fragment %s", parent_hex);
+        if (parent_b58[0]) fprintf(out, " (%s)", parent_b58);
+        fputc('\n', out);
+    } else if (asset->source == ASSET_SOURCE_CRAFT) {
+        for (uint8_t i = 0; i < asset->input_count; i++) {
+            const asset_row_t *input =
+                analysis_find_asset((analysis_t *)analysis, asset->input_pubs[i]);
+            if (input) {
+                emit_lineage_asset(analysis, input, out, depth + 1u,
+                                   next_stack, stack_len + 1u);
+            } else {
+                emit_lineage_missing(out, asset->input_pubs[i], depth + 1u,
+                                     "input pub not present in scanned logs");
+            }
+        }
+    }
+    free(next_stack);
+}
+
+static bool emit_lineage(const analysis_t *analysis, const uint8_t cargo_pub[32],
+                         FILE *out) {
+    const asset_row_t *asset = analysis_find_asset((analysis_t *)analysis, cargo_pub);
+    char hex[65], b58[64];
+    pub_hex(cargo_pub, hex);
+    pub_b58(cargo_pub, b58);
+    fprintf(out, "Signal lineage\n");
+    fprintf(out, "target: %s", hex);
+    if (b58[0]) fprintf(out, " (%s)", b58);
+    fputc('\n', out);
+    fprintf(out, "scanned_assets: %zu\n\n", analysis->asset_count);
+    if (!asset) {
+        emit_lineage_missing(out, cargo_pub, 0, "target not present in scanned logs");
+        return false;
+    }
+    emit_lineage_asset(analysis, asset, out, 0, NULL, 0);
+    return true;
+}
+
+static bool asset_matches_built_from(const asset_row_t *asset,
+                                     const cli_opts_t *opts) {
+    if (!asset || !opts || asset->construction_count == 0) return false;
+    if (asset->construction_target_kind != opts->built_from_target_kind)
+        return false;
+    switch (opts->built_from_target_kind) {
+    case CONSTRUCTION_TARGET_MODULE:
+        return asset->construction_station_index == opts->built_from_station_index &&
+               asset->construction_module_index == opts->built_from_module_index;
+    case CONSTRUCTION_TARGET_STATION:
+        return asset->construction_station_index == opts->built_from_station_index;
+    case CONSTRUCTION_TARGET_GATE:
+        return asset->construction_target_id == opts->built_from_target_id;
+    default:
+        return false;
+    }
+}
+
+static void emit_built_from_target(FILE *out, const cli_opts_t *opts) {
+    fprintf(out, "target: %s", construction_target_name(opts->built_from_target_kind));
+    switch (opts->built_from_target_kind) {
+    case CONSTRUCTION_TARGET_MODULE:
+        fprintf(out, " station_index=%u module_index=%u",
+                (unsigned)opts->built_from_station_index,
+                (unsigned)opts->built_from_module_index);
+        break;
+    case CONSTRUCTION_TARGET_STATION:
+        fprintf(out, " station_index=%u",
+                (unsigned)opts->built_from_station_index);
+        break;
+    case CONSTRUCTION_TARGET_GATE:
+        fprintf(out, " target_id=%llu",
+                (unsigned long long)opts->built_from_target_id);
+        break;
+    default:
+        break;
+    }
+    fputc('\n', out);
+}
+
+static bool emit_built_from(const analysis_t *analysis, const cli_opts_t *opts,
+                            FILE *out) {
+    size_t contributors = 0;
+    for (size_t i = 0; i < analysis->asset_count; i++) {
+        if (asset_matches_built_from(&analysis->assets[i], opts))
+            contributors++;
+    }
+
+    fprintf(out, "Signal infrastructure lineage\n");
+    emit_built_from_target(out, opts);
+    fprintf(out, "scanned_assets: %zu\n", analysis->asset_count);
+    fprintf(out, "contributors: %zu\n\n", contributors);
+
+    if (contributors == 0) {
+        fputs("- no named cargo contributions found for target\n", out);
+        return false;
+    }
+
+    for (size_t i = 0; i < analysis->asset_count; i++) {
+        const asset_row_t *asset = &analysis->assets[i];
+        if (!asset_matches_built_from(asset, opts)) continue;
+        emit_lineage_asset(analysis, asset, out, 0, NULL, 0);
+    }
+    return true;
 }
 
 static bool parse_args(int argc, char **argv, cli_opts_t *opts, path_list_t *paths) {
@@ -949,6 +1368,20 @@ static bool parse_args(int argc, char **argv, cli_opts_t *opts, path_list_t *pat
             opts->out_path = arg + 6;
         } else if (strncmp(arg, "--station-pubkey=", 17) == 0) {
             opts->station_pubkey_b58 = arg + 17;
+        } else if (strncmp(arg, "--lineage=", 10) == 0) {
+            opts->lineage_text = arg + 10;
+            opts->lineage_mode = true;
+            if (!parse_pub_arg(opts->lineage_text, opts->lineage_pub)) {
+                fprintf(stderr, "signal_chain_assets: bad --lineage cargo pub\n");
+                return false;
+            }
+        } else if (strncmp(arg, "--built-from=", 13) == 0) {
+            opts->built_from_text = arg + 13;
+            opts->built_from_mode = true;
+            if (!parse_built_from_arg(opts, opts->built_from_text)) {
+                fprintf(stderr, "signal_chain_assets: bad --built-from selector\n");
+                return false;
+            }
         } else if (strcmp(arg, "--no-signatures") == 0) {
             opts->verify_signatures = false;
         } else if (arg[0] == '-') {
@@ -960,6 +1393,10 @@ static bool parse_args(int argc, char **argv, cli_opts_t *opts, path_list_t *pat
     }
     if (paths->count == 0) {
         print_usage(stderr);
+        return false;
+    }
+    if (opts->lineage_mode && opts->built_from_mode) {
+        fprintf(stderr, "signal_chain_assets: choose one of --lineage or --built-from\n");
         return false;
     }
     qsort(paths->items, paths->count, sizeof(paths->items[0]), path_cmp);
@@ -994,7 +1431,11 @@ int main(int argc, char **argv) {
         }
     }
     if (ok) {
-        if (opts.format == FORMAT_CSV) emit_csv(&analysis, out);
+        if (opts.lineage_mode) {
+            ok = emit_lineage(&analysis, opts.lineage_pub, out);
+        } else if (opts.built_from_mode) {
+            ok = emit_built_from(&analysis, &opts, out);
+        } else if (opts.format == FORMAT_CSV) emit_csv(&analysis, out);
         else emit_json(&analysis, out);
     }
     if (out && out != stdout) fclose(out);

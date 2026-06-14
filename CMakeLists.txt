@@ -266,6 +266,13 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+        if(APPLE)
+            # world_t is intentionally large (~11 MiB after provenance/replay
+            # state grew). Many legacy tests use WORLD_DECL stack allocation,
+            # so give the macOS test runner a main-thread stack that can hold
+            # one world plus normal test frames.
+            target_link_options(signal_test PRIVATE -Wl,-stack_size,0x4000000)
+        endif()
     else()
         target_compile_options(signal_test PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)

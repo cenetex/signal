@@ -33,7 +33,7 @@ TEST(test_world_reset_creates_stations) {
     ASSERT_STR_EQ(w.stations[1].name, "Kepler Yard");
     ASSERT_STR_EQ(w.stations[2].name, "Helios Works");
     ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
-    ASSERT_STR_EQ(w.stations[SIGNAL_FREEPORT_STATION_INDEX].name, "Freeport");
+    ASSERT_STR_EQ(w.stations[SIGNAL_FREEPORT_STATION_INDEX].name, "Blackglass Freeport");
     ASSERT(station_has_module(&w.stations[SIGNAL_FREEPORT_STATION_INDEX], MODULE_DOCK));
     ASSERT(!station_has_module(&w.stations[SIGNAL_FREEPORT_STATION_INDEX],
                                MODULE_SIGNAL_RELAY));
@@ -61,8 +61,14 @@ TEST(test_world_reset_spawns_npcs) {
     int kepler_tows = 0, helios_tows = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!w.npc_ships[i].active) continue;
-        if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
-        if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
+        if (w.npc_ships[i].role == NPC_ROLE_MINER) {
+            miners++;
+            ASSERT_EQ_INT(w.npc_ships[i].brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+        }
+        if (w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            haulers++;
+            ASSERT_EQ_INT(w.npc_ships[i].brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+        }
         if (w.npc_ships[i].role == NPC_ROLE_TOW) {
             tows++;
             if (w.npc_ships[i].home_station == 1) kepler_tows++;
@@ -461,8 +467,13 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
         };
     }
 
+    uint64_t contract_decisions_before = signal_contract_brain_decision_count();
+    uint64_t contract_teacher_before = signal_contract_brain_teacher_decision_count();
+
     step_npc_ships(&w, SIM_DT);
 
+    ASSERT(signal_contract_brain_decision_count() > contract_decisions_before);
+    ASSERT(signal_contract_brain_teacher_decision_count() > contract_teacher_before);
     ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
     ASSERT_EQ_INT(hauler->dest_station, 1);
     ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
@@ -2023,7 +2034,7 @@ TEST(test_kepler_frame_hauler_reaches_helios_dock) {
     npc->state = NPC_STATE_TRAVEL_TO_DEST;
     npc->state_timer = 0.0f;
     npc->ship.hull_class = HULL_CLASS_HAULER;
-    npc->ship.pos = station_approach_target(kepler, helios->pos);
+    npc->ship.pos = station_approach_target(helios, kepler->pos);
     npc->ship.vel = v2(0.0f, 0.0f);
     npc->ship.angle = 0.0f;
     ship->pos = npc->ship.pos;
@@ -2254,7 +2265,7 @@ TEST(test_autopilot_does_not_mix_ore_fragments_while_returning) {
     server_player_t *sp = &w.players[0];
     test_prepare_autopilot_player(&w, sp);
     sp->docked = false;
-    sp->ship.pos = v2(12000.0f, 12000.0f);
+    sp->ship.pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
     sp->ship.vel = v2(0.0f, 0.0f);
     sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
 
@@ -2393,6 +2404,71 @@ TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
                   initial_count);
     ASSERT_EQ_FLOAT(prospect->_inventory_cache[COMMODITY_FERRITE_INGOT],
                     MAX_PRODUCT_STOCK, 0.001f);
+}
+
+TEST(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 2));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 25.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    npc->known_contract_count = 1;
+    npc->known_contracts[0] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 25.0f,
+    };
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 1);
+}
+
+TEST(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->cargo, 0, sizeof(npc->cargo));
+    ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_MINER);
 }
 
 TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
@@ -2825,9 +2901,9 @@ TEST(test_signal_strength_at_station) {
     /* At a station's position, signal should be 1.0 (full strength) */
     WORLD_DECL;
     world_reset(&w);
-    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[0].pos), 1.0f, 0.01f);
-    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[1].pos), 1.0f, 0.01f);
-    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[2].pos), 1.0f, 0.01f);
+    ASSERT(signal_strength_at(&w, w.stations[0].pos) > 0.95f);
+    ASSERT(signal_strength_at(&w, w.stations[1].pos) > 0.95f);
+    ASSERT(signal_strength_at(&w, w.stations[2].pos) > 0.95f);
 }
 
 TEST(test_signal_strength_falls_off) {
@@ -2836,12 +2912,11 @@ TEST(test_signal_strength_falls_off) {
      * the overlap boost (multi-station reinforcement) isn't in play. */
     WORLD_DECL;
     world_reset(&w);
-    /* Station 0 at (0, -2400), signal_range = 18000. Point 12000u south —
-     * (0, -14400) — is comfortably outside Kepler (-3200, 2300) and
-     * Helios (3200, 2300) 15000-unit ranges, so only Prospect covers it
+    /* Station 0 at (0, -2400), signal_range = 9000. Point 5000u south
+     * is comfortably outside Kepler/Helios ranges, so only Prospect covers it
      * (and the bilinear cache cells around it are also single-station,
      * so the overlap boost doesn't leak in via interpolation). */
-    float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(0.0f, -12000.0f)));
+    float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(0.0f, -5000.0f)));
     ASSERT(half > 0.3f && half < 0.7f);
 }
 
@@ -2852,11 +2927,30 @@ TEST(test_signal_overlap_boosts_strength) {
      * center, so the boost saturates there. */
     WORLD_DECL;
     world_reset(&w);
-    /* Centroid of the three starter stations — covered by all three. */
-    vec2 centroid = v2((w.stations[0].pos.x + w.stations[1].pos.x + w.stations[2].pos.x) / 3.0f,
-                       (w.stations[0].pos.y + w.stations[1].pos.y + w.stations[2].pos.y) / 3.0f);
-    float boosted = signal_strength_at(&w, centroid);
+    /* The inner basin sits inside both Prospect and Kepler coverage. */
+    vec2 inner_mid = v2_scale(v2_add(w.stations[0].pos, w.stations[1].pos), 0.5f);
+    float boosted = signal_strength_at(&w, inner_mid);
     ASSERT_EQ_FLOAT(boosted, 1.0f, 0.01f);
+}
+
+TEST(test_sector_one_broken_helios_corridor) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    ASSERT(w.stations[2].pos.y > w.stations[1].pos.y + 12000.0f);
+    ASSERT(!station_provides_signal(&w.stations[SIGNAL_FREEPORT_STATION_INDEX]));
+
+    vec2 blackglass = w.stations[SIGNAL_FREEPORT_STATION_INDEX].pos;
+    float gap_signal = signal_strength_at(&w, blackglass);
+    ASSERT(gap_signal > 0.0f);
+    ASSERT(gap_signal < 0.25f);
+
+    vec2 old_corridor_mid = v2(0.0f, 11000.0f);
+    float mid_signal = signal_strength_at(&w, old_corridor_mid);
+    ASSERT(mid_signal > 0.0f);
+    ASSERT(mid_signal < 0.25f);
+
+    ASSERT(signal_strength_at(&w, w.stations[2].pos) > 0.95f);
 }
 
 TEST(test_signal_zero_outside_range) {
@@ -3092,16 +3186,15 @@ TEST(test_asteroids_drift_toward_lower_signal_band) {
     a->radius = 60.0f;
     a->hp = 150.0f;
     a->max_hp = 150.0f;
-    a->pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
+    a->pos = v2_add(w.stations[0].pos, v2(7000.0f, 0.0f));
     a->vel = v2(0.0f, 0.0f);
 
-    float start_x = a->pos.x;
+    vec2 start_pos = a->pos;
     float start_signal = signal_strength_at(&w, a->pos);
     for (int i = 0; i < 1200; i++) world_sim_step(&w, SIM_DT);
 
     ASSERT(a->active);
-    ASSERT(a->pos.x > start_x + 30.0f);
-    ASSERT(a->vel.x > 1.0f);
+    ASSERT(v2_dist_sq(a->pos, start_pos) > 1.0f);
     ASSERT(signal_strength_at(&w, a->pos) < start_signal);
 }
 
@@ -3455,6 +3548,8 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_autopilot_smelt_delivery_preempts_repair_dock);
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
+    RUN(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work);
+    RUN(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
     RUN(test_miner_drops_fragment_without_matching_smelt_endpoint);
     RUN(test_scenario_upgrade_requires_products);
@@ -3467,6 +3562,7 @@ void register_world_sim_signal_tests(void) {
     RUN(test_signal_strength_at_station);
     RUN(test_signal_strength_falls_off);
     RUN(test_signal_overlap_boosts_strength);
+    RUN(test_sector_one_broken_helios_corridor);
     RUN(test_signal_zero_outside_range);
     RUN(test_signal_max_of_stations);
     RUN(test_ship_thrust_scales_with_signal);

@@ -83,6 +83,10 @@ typedef enum {
      * out of the chain log at server boot. Carries the run summary
      * (credits/ore/asteroids) plus victim+killer tokens for attribution. */
     CHAIN_EVT_DEATH            = 10,
+    /* Construction contribution: a named manifest unit was consumed into
+     * infrastructure. This is the provenance bridge from "cargo existed"
+     * to "cargo became signal/station/gate capacity." */
+    CHAIN_EVT_CONSTRUCTION     = 11,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -234,6 +238,27 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_death_t;
 SIGNAL_PACK_POP
 
+typedef enum {
+    CONSTRUCTION_TARGET_STATION = 1,
+    CONSTRUCTION_TARGET_MODULE  = 2,
+    CONSTRUCTION_TARGET_GATE    = 3,
+} construction_target_kind_t;
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  cargo_pub[32];       /* manifest unit consumed */
+    uint8_t  target_kind;         /* construction_target_kind_t */
+    uint8_t  station_index;       /* local station/outpost slot */
+    uint8_t  module_index;        /* station_module_t index, 0xff if N/A */
+    uint8_t  module_type;         /* module_type_t, 0xff if N/A */
+    uint8_t  commodity;           /* commodity_t */
+    uint8_t  _pad[3];             /* MUST be zero */
+    uint64_t target_id;           /* reserved for gate/project ids */
+    float    contributed_units;   /* normally 1.0 for manifest units */
+    float    progress_after;      /* module/station supply fraction after consume */
+} SIGNAL_PACKED chain_payload_construction_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
@@ -245,6 +270,7 @@ _Static_assert(sizeof(chain_payload_rock_destroy_t)     == 96,  "rock_destroy pa
 _Static_assert(sizeof(chain_payload_fragment_tow_t)     == 80,  "fragment_tow payload size");
 _Static_assert(sizeof(chain_payload_fragment_release_t) == 88,  "fragment_release payload size");
 _Static_assert(sizeof(chain_payload_death_t)            == 96,  "death payload size");
+_Static_assert(sizeof(chain_payload_construction_t)     == 56,  "construction payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");

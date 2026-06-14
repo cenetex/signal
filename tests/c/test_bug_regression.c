@@ -178,8 +178,8 @@ TEST(test_bug18_emergency_recover_nearest_station) {
     w.players[0].input.interact = true;
     world_sim_step(&w, SIM_DT);
     w.players[0].input.interact = false;
-    /* Position near station 2 (Helios Works at 3200, 2300), far from station 0 */
-    w.players[0].ship.pos = v2(3200.0f, 2200.0f);
+    /* Position near station 2 (Helios Works), far from station 0 */
+    w.players[0].ship.pos = v2_add(w.stations[2].pos, v2(0.0f, -100.0f));
     w.players[0].nearby_station = 2;
     w.players[0].current_station = 0;  /* last docked at 0, but 2 is closer */
     w.players[0].ship.hull = 0.5f;

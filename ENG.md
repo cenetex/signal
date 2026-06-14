@@ -1,7 +1,7 @@
 # Signal: Sector One — Engineering Design Document
 
-**Version:** 1.0
-**Date:** 2026-06-08
+**Version:** 1.1
+**Date:** 2026-06-13
 **Status:** Shipped / Live (Sector One)
 **Live:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 
@@ -56,6 +56,11 @@ make test-san           # ASan+UBSan
 make test-tsan          # ThreadSanitizer
 make smoke              # Playwright browser smoke
 make smoke-latency-suite # Full latency proxy + smoke
+make replay-repeatability # Native deterministic replay matrix
+make replay-cross-build   # Debug/native cross-build replay matrix
+make replay-native-wasm   # Native vs WASM replay hash gate
+make replay-native-wasm-long # Long-horizon native vs WASM replay probes
+make chain-assets CHAIN_ASSETS_LINEAGE=<cargo_pub> # Human cargo lineage tree
 ```
 
 Build type defaults to `RelWithDebInfo`; `BUILD_TYPE` overrideable. Test build uses `-O2 -g` even in Debug mode (cuts suite from ~180s to ~56s).
@@ -249,7 +254,62 @@ signal/
 
 ---
 
-## 4. Simulation Tick Pipeline
+## 4. Metaproduct Architecture
+
+The engineering contract follows the product stack in [docs/metaproduct.md](docs/metaproduct.md):
+
+```
+rock
+  -> fragment
+  -> ingot
+  -> frame
+  -> outpost
+  -> station
+  -> route
+  -> sector
+  -> civilization
+```
+
+The engineering north star is that every large-scale social structure must be
+made out of physical actions players actually performed. The sim should not try
+to settle every twitch of ship motion. It should settle transformations the
+economy can reason about: fracture claims, smelts, crafts, transfers,
+deliveries, construction milestones, station hail/work publication,
+signal-channel continuity, deaths, gate contributions, route maintenance, and
+future RATi vessel-birth events.
+
+### 4.1 Layer Map
+
+| Layer | Engineering surface | Status |
+|---|---|---|
+| Physics game | `server/sim_*.c`, `shared/types.h`, `client/world_draw.c` | Shipped, authoritative relay |
+| Provenance product | `shared/manifest.*`, `shared/asteroid.*`, receipt chains | Shipped core; manifest authority still being tightened |
+| Station sovereignty | `station_t.ledger[]`, `server/station_authority.*`, `server/chain_log.*` | Shipped |
+| Verification product | `tools/signal_verify.c`, `tools/signal_chain_assets.c`, `tools/signal_replay.c` | Shipped and actively expanding; CLI cargo lineage tree exists |
+| Settlement substrate | `shared/settlement_engine.*`, handoff tickets, checkpoint roots | Draft/shipped pieces; canonical event bridge still open |
+| Permaweb/P2P persistence | Arweave deploy tooling, future client reads/anchor service/WebRTC mesh | Backlog, gated by determinism and settlement events |
+| External-chain adapters | `tools/packnft/`, Solana bridge docs | Adapter path, not core authority |
+| Civilization memory | lineage views, route health, contribution ledgers, gate manifests | Backlog; product-defining surface |
+
+### 4.2 Backlog Dependency Graph
+
+The active backlog is ordered by dependency, not by excitement:
+
+1. **#588 determinism acceptance:** full `q32.32` migration or explicit promotion of the strict native↔WASM replay ratchet with broader platform coverage.
+2. **#340 / #339 manifest authority:** make trade, delivery, and production move concrete `cargo_unit_t` rows by default and retire finished-goods float authority.
+3. **Lineage view:** CLI cargo lineage exists; next expose rock -> fragment -> ingot -> frame -> outpost/gate contribution as a first-class UI query over manifests, receipts, and chain logs.
+4. **#587 typed provenance contracts:** contract targets become explicit object/event pubkeys, including fracture/death fulfillment.
+5. **#354 / #355 / #356 settlement bridge:** game-sim validation emits canonical settlement events and signal-channel roots.
+6. **Player-facing legibility:** cargo lineage and station history become first-class UI surfaces.
+7. **Institution tooling:** shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
+8. **#294 unified ship/controller model:** NPC and player cargo semantics converge on the same `ship_t`/`character_t` substrate.
+9. **#590 / #591 / #589 permaweb/P2P:** client Arweave reads, peer anchoring, and WebRTC quorum behavior.
+10. **#496 RATi vessel identity:** RATi-bearing vessels become substrate-born identities after manifest and settlement semantics are canonical.
+11. **#285 streaming entity pool:** cap lifting and `game_sim.c` extraction once economic/provenance invariants are stable.
+
+---
+
+## 5. Simulation Tick Pipeline
 
 The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
 
@@ -318,7 +378,7 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
    └── Payload caching: hash-suppressed re-broadcast (force on action result)
 ```
 
-### 4.1 Singleplayer vs Multiplayer
+### 5.1 Singleplayer vs Multiplayer
 
 | Mode | Sim Location | Input Path |
 |---|---|---|
@@ -329,9 +389,9 @@ The simulation code (`world_sim_step()`) is identical in both modes. Singleplaye
 
 ---
 
-## 5. Entity Data Model
+## 6. Entity Data Model
 
-### 5.1 Entity Pool Architecture
+### 6.1 Entity Pool Architecture
 
 All world entities live in fixed-cap arrays on `world_t` (see `shared/types.h`):
 
@@ -355,7 +415,7 @@ typedef struct {
 
 Capacity constraints are pinned by the v1 wire protocol (entity ids are `uint8` per type, asteroids are `uint16` since #285 Phase 3). Lifting any cap requires a wire protocol revision (tracked as #285).
 
-### 5.2 Asteroid Lifecycle
+### 6.2 Asteroid Lifecycle
 
 ```
 BELT NOISE (deterministic, per-seed)
@@ -373,9 +433,9 @@ BELT NOISE (deterministic, per-seed)
                 → CLEANUP → auto-despawn after age 30s + distance 4000u
 ```
 
-The destroyed-rock ledger is identity-keyed (32-byte rock_pub), sorted for O(log n) bsearch. Slice 2+ targets a four-tier model: in-memory Binary Fuse filter → signed chain-log → Merkle Mountain Range root (on-chain) → MMR inclusion proof.
+The destroyed-rock ledger is identity-keyed (32-byte rock_pub), sorted for O(log n) bsearch. Slice 2+ targets a four-tier model: in-memory Binary Fuse filter → signed chain-log → Merkle Mountain Range/checkpoint root → permaweb artifact or external-chain adapter proof.
 
-### 5.3 Cargo Lifecycle
+### 6.3 Cargo Lifecycle
 
 See [docs/cargo-architecture.md](docs/cargo-architecture.md) for the canonical three-state model.
 
@@ -395,7 +455,7 @@ CRATE (cargo_unit_t, in manifest)
   → quantity = 1 for live production; >1 reserved for future anonymous batches
 ```
 
-### 5.4 Station Ring + Module Model
+### 6.4 Station Ring + Module Model
 
 ```
 station_t
@@ -420,9 +480,9 @@ Stations have 3 outer rings (3/6/9 slots) plus an inner core slot. Total module 
 
 ---
 
-## 6. Binary Wire Protocol
+## 7. Binary Wire Protocol
 
-### 6.1 Protocol Discovery
+### 7.1 Protocol Discovery
 
 On connect, the server sends `NET_MSG_PROTOCOL_INFO` (0x41) with:
 - Protocol version (uint16)
@@ -441,7 +501,7 @@ SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS  = 1 << 6
 SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS = 1 << 7
 ```
 
-### 6.2 Input Packet
+### 7.2 Input Packet
 
 ```
 NET_MSG_INPUT (0x04): 18 bytes
@@ -453,7 +513,7 @@ Movement flags: `THRUST | LEFT | RIGHT | FIRE | BRAKE | TRACTOR | BOOST | REVERS
 Actions: one-shot state changes (dock, launch, buy, sell, hail, etc.) — idempotent via `action_id`.
 Input tick: client's predicted sim tick for application. Server accepts future-dated movement within `[2, 12]` ticks ahead.
 
-### 6.3 Signed Actions
+### 7.3 Signed Actions
 
 For persistent state changes (buy, sell, deliver, place outpost, claim contract), the client sends `NET_MSG_SIGNED_ACTION` (0x33):
 
@@ -463,7 +523,7 @@ For persistent state changes (buy, sell, deliver, place outpost, claim contract)
 
 The server validates: pubkey registered, nonce > last_signed_nonce, Ed25519 signature over `(nonce || action_type || payload_len || payload)`. Movement inputs remain unsigned to avoid per-frame signing overhead.
 
-### 6.4 World State Snapshots
+### 7.4 World State Snapshots
 
 | Message | Record Size | Max Records | Compression |
 |---|---|---|---|
@@ -475,7 +535,7 @@ The server validates: pubkey registered, nonce > last_signed_nonce, Ed25519 sign
 | `STATION_IDENTITY` (0x17) | ~1,400 bytes | 128 | On-join, on-change |
 | `STATION_DIAG` (0x40) | 19 bytes | 128 | Per-tick live telemetry |
 
-### 6.5 Client Prediction & Reconciliation
+### 7.5 Client Prediction & Reconciliation
 
 ```
 Client side:
@@ -499,9 +559,9 @@ Dead reckoning for remote asteroids and NPCs uses bounded extrapolation windows.
 
 ---
 
-## 7. Signal Grid Implementation
+## 8. Signal Grid Implementation
 
-### 7.1 Cached Grid
+### 8.1 Cached Grid
 
 ```c
 #define SIGNAL_GRID_DIM  256
@@ -516,7 +576,7 @@ typedef struct {
 
 The grid covers a 51,200×51,200 unit area centered on the origin (expandable). Each cell stores the max signal strength from any connected station covering that cell. Lookups are O(1): clamp world position to grid bounds, index into flat array.
 
-### 7.2 Signal Chain Rebuild
+### 8.2 Signal Chain Rebuild
 
 ```
 rebuild_signal_chain(world_t *w):
@@ -538,9 +598,9 @@ Rebuild runs every tick. Connected stations form a spanning tree from roots. Iso
 
 ---
 
-## 8. Economy Model
+## 9. Economy Model
 
-### 8.1 Per-Station Ledgers
+### 9.1 Per-Station Ledgers
 
 ```c
 station_t.ledger[STATION_LEDGER_MAX] = {
@@ -551,7 +611,7 @@ station_t.ledger[STATION_LEDGER_MAX] = {
 
 Credits are `(station_id, player_pubkey) → balance`. Stations are sovereign currency issuers — `station_credit_pool()` = `-Σ(ledger balances)` and can go arbitrarily negative.
 
-### 8.2 Dynamic Pricing
+### 9.2 Dynamic Pricing
 
 ```c
 station_buy_price(station, commodity):
@@ -565,7 +625,7 @@ station_sell_price(station, commodity):
 
 Per-unit pricing for named cargo applies `prefix_class_price_multiplier(unit.prefix_class)`.
 
-### 8.3 Supply/Demand
+### 9.3 Supply/Demand
 
 - Raw ore smelt gives player 65% of the fragment's value (35% station cut). The station gets the ingot.
 - Finished goods are sold at `base_price * station_sell_price()`.
@@ -573,9 +633,9 @@ Per-unit pricing for named cargo applies `prefix_class_price_multiplier(unit.pre
 
 ---
 
-## 9. Decentralization Stack
+## 10. Decentralization Stack
 
-### 9.1 Identity Derivation
+### 10.1 Identity Derivation
 
 **Seeded stations (Prospect, Kepler, Helios):**
 ```
@@ -591,7 +651,7 @@ keypair = Ed25519_keypair_from_seed(seed)
 
 Derivation is deterministic: any server with the operator secret can rederive all station keypairs. Private keys are never serialized — `station_secret` is the last field and guarded by `_Static_assert(offsetof(station_t, station_secret) == sizeof(station_t) - 64)`.
 
-### 9.2 Chain Log Format
+### 10.2 Chain Log Format
 
 ```
 Per-station file: chain/<base58(station_pubkey)>.log
@@ -611,7 +671,7 @@ Each entry:
 
 Verification: walk entry by entry, verifying signature, prev_hash linkage, and payload_hash. New segments (`event_id == 1, prev_hash == 0`) are accepted. Missing/broken linkage = FAILED.
 
-### 9.3 Cargo Receipt Chains (Layer D)
+### 10.3 Cargo Receipt Chains (Layer D)
 
 When a cargo unit crosses a zone boundary, the source station issues a signed transfer receipt:
 
@@ -631,9 +691,9 @@ The destination verifies: signature valid, authority known, head receipt names t
 
 ---
 
-## 10. NPC AI Architecture
+## 11. NPC AI Architecture
 
-### 10.1 State Machines
+### 11.1 State Machines
 
 ```
 NPC_ROLE_MINER:
@@ -657,7 +717,7 @@ NPC_ROLE_TOW:
   PLACE → snap scaffold to slot, trigger supply phase
 ```
 
-### 10.2 Frontier Director
+### 11.2 Frontier Director
 
 The frontier director (`step_frontier_director()`) is a virtual logistics system:
 - Tracks a configurable pool of virtual pilots (up to 1,000,000).
@@ -666,7 +726,7 @@ The frontier director (`step_frontier_director()`) is a virtual logistics system
 - Virtual scaffolds "manufacture" instantly (skip physics) and are "delivered" by virtual tow drones.
 - Drives NPC expansion without consuming physical ship slots or network bandwidth.
 
-### 10.3 Neural Flight
+### 11.3 Neural Flight
 
 - **Checkpoint scorer:** `signal_brain_drive()` loads a `signal-flight-live-v2` trained model, runs inference per tick, and outputs thrust/turn decisions.
 - **Holographic VSA:** `signal_brain_drive_npc()` uses 1024-dim hyperdimensional vectors. Each tick's (state vector) is associated with (action vector) via circular convolution binding. Recall = unbind + threshold + consensus sum.
@@ -674,9 +734,9 @@ The frontier director (`step_frontier_director()`) is a virtual logistics system
 
 ---
 
-## 11. Render Pipeline
+## 12. Render Pipeline
 
-### 11.1 World Rendering
+### 12.1 World Rendering
 
 ```
 world_draw() per frame:
@@ -706,7 +766,7 @@ world_draw() per frame:
      - Scan tags (short-lived nearby object labels)
 ```
 
-### 11.2 Signal-Driven Saturation
+### 12.2 Signal-Driven Saturation
 
 The renderer accepts a per-pixel saturation query:
 ```c
@@ -715,7 +775,7 @@ void render_set_saturation_sampler(render_saturation_sample_fn fn, void *user);
 
 Each draw call multiplies its color saturation by the sample at its world position. The sampler reads from `signal_cache`. Critical cues (signal borders, beams, navigation marks) use `signal_visual_cue_saturation()` which clamps minimum saturation to 0.72. The player's own ship uses `signal_visual_player_saturation()` with minimum 0.92.
 
-### 11.3 Docked Station UI
+### 12.3 Docked Station UI
 
 ```
 Tab-cycled panels:
@@ -733,9 +793,9 @@ Tab-cycled panels:
 
 ---
 
-## 12. Persistence Format
+## 13. Persistence Format
 
-### 12.1 World Save (`world.sav`)
+### 13.1 World Save (`world.sav`)
 
 Binary format, little-endian. Versioned (currently v62; minimum accepted v49).
 Sections:
@@ -763,7 +823,7 @@ state; v60 persists active fracture-child throw ownership; v61 persists
 contract `target_pub`; v62 expands each station's player ledger from 16 to
 `STATION_LEDGER_MAX` entries while older saves still read the 16-entry table.
 
-### 12.2 Player Save
+### 13.2 Player Save
 
 ```
 [HEADER] version:u32
@@ -776,9 +836,9 @@ Keyed by `saves/pubkey/<base58(pubkey)>.sav` (canonical) or `saves/legacy/<token
 
 ---
 
-## 13. Testing Architecture
+## 14. Testing Architecture
 
-### 13.1 C Test Framework
+### 14.1 C Test Framework
 
 Custom lightweight harness (`tests/c/test_harness.h`):
 ```c
@@ -797,7 +857,7 @@ int main(int argc, char **argv) {
 
 Tests declare `RUN_FAST` or `RUN_SOAK` macros for filtering. Sharding splits the test list across N parallel processes. Aggregate reporting merges per-shard logs.
 
-### 13.2 Key Test Files
+### 14.2 Key Test Files
 
 | File | Lines | Focus |
 |---|---|---|
@@ -810,7 +870,7 @@ Tests declare `RUN_FAST` or `RUN_SOAK` macros for filtering. Sharding splits the
 | `test_navigation.c` | ~400 | A* pathfinding, signal-connected routing, obstacle avoidance |
 | `test_autopilot.c` | ~400 | Autopilot mining→dock→sell cycle (soak) |
 
-### 13.3 Browser Smoke
+### 14.3 Browser Smoke
 
 Playwright test (`tests/browser-smoke.spec.ts`):
 - Build WASM client, serve via local HTTP.
@@ -820,18 +880,18 @@ Playwright test (`tests/browser-smoke.spec.ts`):
 - Read wasm-side telemetry for correctness.
 - Latency smoke: inject delay via `ws-latency-proxy.mjs`, verify ping/ack/gap metrics.
 
-### 13.4 CI Pipeline (Current)
+### 14.4 CI Pipeline (Current)
 
 | Workflow | Trigger | What |
 |---|---|---|
 | `release.yml` | Push to main, tag `v*` | Native build + test + Arweave deploy |
 | `valgrind.yml` | Manual / schedule | Valgrind memcheck on full test suite |
 
-Remediation targets: add Windows native build, Emscripten build check, ASan+UBSan, clang-tidy, and fuzzing harnesses to CI.
+Remediation targets: keep native/WASM replay gates on the blocking path, add Linux x86 and Windows coverage for determinism-critical targets, add ASan+UBSan and clang-tidy to CI, and add fuzzing harnesses for protocol decode, save load, and chain-log parsing.
 
 ---
 
-## 14. Key Constants & Tuning
+## 15. Key Constants & Tuning
 
 | Constant | Value | Notes |
 |---|---|---|
@@ -863,7 +923,7 @@ Remediation targets: add Windows native build, Emscripten build check, ASan+UBSa
 
 ---
 
-## 15. C Safety Policy
+## 16. C Safety Policy
 
 From [docs/c_safety_policy.md](docs/c_safety_policy.md):
 
@@ -880,7 +940,7 @@ Enforced by `scripts/check_banned_apis.py` in `make banned-apis`.
 
 ---
 
-## 16. Docs Cross-Reference
+## 17. Docs Cross-Reference
 
 | Document | Path | Role |
 |---|---|---|
@@ -890,6 +950,7 @@ Enforced by `scripts/check_banned_apis.py` in `make banned-apis`.
 | AI Context | [CLAUDE.md](CLAUDE.md) | AI-oriented build commands, codebase navigation |
 | Construction Plan | [CONSTRUCTION_PLAN.md](CONSTRUCTION_PLAN.md) | Construction loop design + status |
 | Remediation Plan | [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) | Active improvement priorities |
+| Metaproduct | [docs/metaproduct.md](docs/metaproduct.md) | Product stack, settlement framing, and groomed backlog |
 | Cargo Architecture | [docs/cargo-architecture.md](docs/cargo-architecture.md) | Three-state cargo model (fragment/float/crate) |
 | Decentralization | [docs/decentralization.md](docs/decentralization.md) | Federation architecture, identity stack, chain log |
 | Decentralization Synthesis | [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) | Bridge between federation and P2P |

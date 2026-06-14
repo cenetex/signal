@@ -19,6 +19,10 @@ bool signal_brain_loaded(void);
 uint64_t signal_brain_inference_count(void);
 void signal_brain_drive(world_t *w, server_player_t *sp, float dt);
 
+/* Score NPC flight toward an explicit target. Returns true when a loaded
+ * neural checkpoint produced turn/thrust intent for this tick. */
+bool signal_brain_drive_npc_to(world_t *w, npc_ship_t *npc, vec2 target);
+
 /* NPC holographic brain: uses VSA associative memory to select flight
  * actions. Initializes per-NPC memory on first call and stores
  * state->action associations into a bundled holographic trace.

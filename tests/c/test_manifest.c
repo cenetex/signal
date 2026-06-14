@@ -485,23 +485,24 @@ TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
 }
 
 TEST(test_fracture_claim_resolves_best_verified_grade) {
-    WORLD_DECL;
-    asteroid_t *a = &w.asteroids[0];
-    fracture_claim_state_t *state = &w.fracture_claims[0];
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    asteroid_t *a = &w->asteroids[0];
+    fracture_claim_state_t *state = &w->fracture_claims[0];
     uint8_t player_pub[32];
     uint8_t expected_pub[32];
     uint8_t zero_pub[32] = {0};
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
 
-    world_reset(&w);
+    world_reset(w);
     clear_asteroid(a);
     memset(state, 0, sizeof(*state));
 
-    w.players[0].connected = true;
-    w.players[0].session_ready = true;
-    memset(w.players[0].session_token, 0x5A, sizeof(w.players[0].session_token));
-    w.players[0].ship.pos = w.stations[0].pos;
+    w->players[0].connected = true;
+    w->players[0].session_ready = true;
+    memset(w->players[0].session_token, 0x5A, sizeof(w->players[0].session_token));
+    w->players[0].ship.pos = w->stations[0].pos;
 
     a->active = true;
     a->tier = ASTEROID_TIER_S;
@@ -509,7 +510,7 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     a->ore = 1.0f;
     a->max_ore = 1.0f;
     a->radius = 8.0f;
-    a->pos = w.stations[0].pos;
+    a->pos = w->stations[0].pos;
     memset(a->fracture_seed, 0, sizeof(a->fracture_seed));
 
     state->active = true;
@@ -517,14 +518,14 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     state->deadline_ms = 500;
     state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
 
-    sha256_bytes(w.players[0].session_token, 8, player_pub);
+    sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
     ASSERT(best_grade > MINING_GRADE_COMMON);
 
-    ASSERT(!submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(!submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)(best_grade + 1)));
-    ASSERT(submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                  (uint8_t)best_grade));
     ASSERT_EQ_INT(state->best_nonce, best_nonce);
     ASSERT_EQ_INT(state->best_grade, best_grade);
@@ -532,10 +533,10 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     ASSERT(memcmp(state->best_player_pub, zero_pub, 32) != 0);
     ASSERT_EQ_INT(state->seen_claimant_count, 1);
     ASSERT(memcmp(state->seen_claimant_tokens[0],
-                  w.players[0].session_token, 8) == 0);
+                  w->players[0].session_token, 8) == 0);
 
-    w.time = 1.0f;
-    step_fracture_claims(&w);
+    w->time = 1.0f;
+    step_fracture_claims(w);
     mining_fragment_pub_compute(a->fracture_seed, player_pub, best_nonce, expected_pub);
 
     ASSERT(!state->active);
@@ -545,15 +546,16 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
 }
 
 TEST(test_fracture_claim_fallback_resolves_without_claims) {
-    WORLD_DECL;
-    asteroid_t *a = &w.asteroids[0];
-    fracture_claim_state_t *state = &w.fracture_claims[0];
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    asteroid_t *a = &w->asteroids[0];
+    fracture_claim_state_t *state = &w->fracture_claims[0];
     uint8_t zero_pub[32] = {0};
     uint8_t expected_pub[32];
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
 
-    world_reset(&w);
+    world_reset(w);
     clear_asteroid(a);
     memset(state, 0, sizeof(*state));
 
@@ -563,7 +565,7 @@ TEST(test_fracture_claim_fallback_resolves_without_claims) {
     a->ore = 1.0f;
     a->max_ore = 1.0f;
     a->radius = 8.0f;
-    a->pos = w.stations[0].pos;
+    a->pos = w->stations[0].pos;
     for (int i = 0; i < 32; i++) a->fracture_seed[i] = (uint8_t)(0x50 + i);
 
     state->active = true;
@@ -573,8 +575,8 @@ TEST(test_fracture_claim_fallback_resolves_without_claims) {
 
     mining_find_best_claim(a->fracture_seed, zero_pub, MINING_BURST_PER_FRAGMENT,
                            &best_nonce, &best_grade);
-    w.time = 1.0f;
-    step_fracture_claims(&w);
+    w->time = 1.0f;
+    step_fracture_claims(w);
     mining_fragment_pub_compute(a->fracture_seed, zero_pub, best_nonce, expected_pub);
 
     ASSERT(!state->active);
@@ -679,13 +681,14 @@ TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
      * challenge_dirty at FRACTURE_CHALLENGE_REBROADCAST_MS cadence
      * while the window is open so subsequent ticks push the challenge
      * to anyone who entered range in the meantime. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     asteroid_t *a;
     fracture_claim_state_t *state;
 
-    world_reset(&w);
-    a = &w.asteroids[0];
-    state = &w.fracture_claims[0];
+    world_reset(w);
+    a = &w->asteroids[0];
+    state = &w->fracture_claims[0];
     clear_asteroid(a);
     memset(state, 0, sizeof(*state));
     a->active = true;
@@ -694,7 +697,7 @@ TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
     a->ore = 1.0f;
     a->max_ore = 1.0f;
     a->radius = 8.0f;
-    a->pos = w.stations[0].pos;
+    a->pos = w->stations[0].pos;
     state->active = true;
     state->fracture_id = 501;
     /* Window still open. */
@@ -705,14 +708,14 @@ TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
     state->challenge_last_ms = 0;
 
     /* Tick shortly after — cadence not elapsed yet, no re-arm. */
-    w.time = 0.05f; /* 50ms */
-    step_fracture_claims(&w);
+    w->time = 0.05f; /* 50ms */
+    step_fracture_claims(w);
     ASSERT(!state->challenge_dirty);
 
     /* After REBROADCAST_MS elapses, dirty must be re-armed so transport
      * retransmits to anyone who entered range since the initial send. */
-    w.time = 0.2f; /* 200ms — past the 100ms rebroadcast period */
-    step_fracture_claims(&w);
+    w->time = 0.2f; /* 200ms — past the 100ms rebroadcast period */
+    step_fracture_claims(w);
     ASSERT(state->challenge_dirty);
     /* Timestamp must advance so the next tick doesn't re-arm again
      * until another 100ms passes (cadence is monotonic, not spammy). */
@@ -725,32 +728,33 @@ TEST(test_fracture_resolve_pushes_to_pending_queue) {
      * that happens in the same tick (the gnarly resolve-then-smelt
      * race). Verify the queue entry carries the final fragment_pub
      * and winner identity regardless of asteroid lifecycle. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     asteroid_t *a;
     fracture_claim_state_t *state;
     uint8_t player_pub[32];
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
 
-    setup_fracture_claim_scenario(&w, 0, 0, 0x70, 0x7E, 777);
-    state = &w.fracture_claims[0];
-    a = &w.asteroids[0];
-    sha256_bytes(w.players[0].session_token, 8, player_pub);
+    setup_fracture_claim_scenario(w, 0, 0, 0x70, 0x7E, 777);
+    state = &w->fracture_claims[0];
+    a = &w->asteroids[0];
+    sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
 
-    ASSERT(submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                  (uint8_t)best_grade));
 
     /* Advance past deadline and resolve. */
-    w.time = 1.0f;
-    step_fracture_claims(&w);
+    w->time = 1.0f;
+    step_fracture_claims(w);
     ASSERT(state->resolved);
 
     /* The queue must now carry this resolve. */
     bool found = false;
     for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
-        const pending_resolve_t *pr = &w.pending_resolves[p];
+        const pending_resolve_t *pr = &w->pending_resolves[p];
         if (!pr->active) continue;
         if (pr->fracture_id != state->fracture_id) continue;
         ASSERT(memcmp(pr->fragment_pub, a->fragment_pub, 32) == 0);
@@ -769,7 +773,7 @@ TEST(test_fracture_resolve_pushes_to_pending_queue) {
 
     found = false;
     for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
-        const pending_resolve_t *pr = &w.pending_resolves[p];
+        const pending_resolve_t *pr = &w->pending_resolves[p];
         if (!pr->active) continue;
         if (pr->fracture_id != 777) continue;
         /* Still have the fragment_pub and winner_pub even though the
@@ -820,22 +824,23 @@ TEST(test_fracture_claim_rejects_past_deadline) {
      * refuse the claim — even before step_fracture_claims runs. This
      * guards against timing-race ordering between wire delivery and
      * the server's per-tick claim sweep. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     uint8_t player_pub[32];
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
     fracture_claim_state_t *state;
     asteroid_t *a;
 
-    setup_fracture_claim_scenario(&w, 0, 0, 0x30, 0x5A, 77);
-    state = &w.fracture_claims[0];
-    a = &w.asteroids[0];
-    sha256_bytes(w.players[0].session_token, 8, player_pub);
+    setup_fracture_claim_scenario(w, 0, 0, 0x30, 0x5A, 77);
+    state = &w->fracture_claims[0];
+    a = &w->asteroids[0];
+    sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
 
-    w.time = (float)(state->deadline_ms + 1u) / 1000.0f;
-    ASSERT(!submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    w->time = (float)(state->deadline_ms + 1u) / 1000.0f;
+    ASSERT(!submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)best_grade));
     /* State should still be pristine (no best recorded, no seen claimants). */
     ASSERT_EQ_INT(state->seen_claimant_count, 0);
@@ -846,26 +851,27 @@ TEST(test_fracture_claim_rejects_out_of_signal_range) {
     /* Signal-range gating is the "dark space can't claim" invariant.
      * Park the player beyond every station's signal radius and verify
      * the claim bounces even with a correctly-verified grade. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     uint8_t player_pub[32];
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
     fracture_claim_state_t *state;
     asteroid_t *a;
 
-    setup_fracture_claim_scenario(&w, 0, 0, 0x31, 0x5B, 78);
-    state = &w.fracture_claims[0];
-    a = &w.asteroids[0];
+    setup_fracture_claim_scenario(w, 0, 0, 0x31, 0x5B, 78);
+    state = &w->fracture_claims[0];
+    a = &w->asteroids[0];
     /* Push the player far enough from every station that signal_radius
      * at the asteroid excludes them. 1e6 world-units is well past any
      * station's signal_range in test setup. */
-    w.players[0].ship.pos = v2(w.stations[0].pos.x + 1.0e6f,
-                                w.stations[0].pos.y + 1.0e6f);
-    sha256_bytes(w.players[0].session_token, 8, player_pub);
+    w->players[0].ship.pos = v2(w->stations[0].pos.x + 1.0e6f,
+                                w->stations[0].pos.y + 1.0e6f);
+    sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
 
-    ASSERT(!submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(!submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)best_grade));
     ASSERT_EQ_INT(state->seen_claimant_count, 0);
 }
@@ -873,26 +879,27 @@ TEST(test_fracture_claim_rejects_out_of_signal_range) {
 TEST(test_fracture_claim_rejects_duplicate_token) {
     /* One claim per player per fracture. Submitting again from the
      * same session_token must bounce even with a better nonce. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     uint8_t player_pub[32];
     uint32_t best_nonce = 0;
     mining_grade_t best_grade = MINING_GRADE_COMMON;
     fracture_claim_state_t *state;
     asteroid_t *a;
 
-    setup_fracture_claim_scenario(&w, 0, 0, 0x32, 0x5C, 79);
-    state = &w.fracture_claims[0];
-    a = &w.asteroids[0];
-    sha256_bytes(w.players[0].session_token, 8, player_pub);
+    setup_fracture_claim_scenario(w, 0, 0, 0x32, 0x5C, 79);
+    state = &w->fracture_claims[0];
+    a = &w->asteroids[0];
+    sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
 
-    ASSERT(submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                  (uint8_t)best_grade));
     ASSERT_EQ_INT(state->seen_claimant_count, 1);
     /* Second submission from same token — even an identical (nonce,grade)
      * must return false rather than touching state. */
-    ASSERT(!submit_fracture_claim(&w, 0, state->fracture_id, best_nonce,
+    ASSERT(!submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)best_grade));
     ASSERT_EQ_INT(state->seen_claimant_count, 1);
 }
@@ -901,7 +908,8 @@ TEST(test_fracture_claim_tie_break_prefers_first_claimant) {
     /* Two players submit claims at the same grade. The first valid
      * submission wins — later equal-grade claims must not overwrite
      * best_player_pub, because that would churn the fragment_pub. */
-    WORLD_DECL;
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     uint8_t pub_a[32];
     uint8_t pub_b[32];
     uint32_t nonce_a = 0, nonce_b = 0;
@@ -909,26 +917,26 @@ TEST(test_fracture_claim_tie_break_prefers_first_claimant) {
     fracture_claim_state_t *state;
     asteroid_t *a;
 
-    setup_fracture_claim_scenario(&w, 0, 0, 0x33, 0x5D, 80);
-    state = &w.fracture_claims[0];
-    a = &w.asteroids[0];
+    setup_fracture_claim_scenario(w, 0, 0, 0x33, 0x5D, 80);
+    state = &w->fracture_claims[0];
+    a = &w->asteroids[0];
     /* Add a second player, also in range. */
-    w.players[1].connected = true;
-    w.players[1].session_ready = true;
-    memset(w.players[1].session_token, 0x6E, sizeof(w.players[1].session_token));
-    w.players[1].ship.pos = w.stations[0].pos;
+    w->players[1].connected = true;
+    w->players[1].session_ready = true;
+    memset(w->players[1].session_token, 0x6E, sizeof(w->players[1].session_token));
+    w->players[1].ship.pos = w->stations[0].pos;
 
-    sha256_bytes(w.players[0].session_token, 8, pub_a);
-    sha256_bytes(w.players[1].session_token, 8, pub_b);
+    sha256_bytes(w->players[0].session_token, 8, pub_a);
+    sha256_bytes(w->players[1].session_token, 8, pub_b);
     mining_find_best_claim(a->fracture_seed, pub_a, state->burst_cap, &nonce_a, &grade_a);
     mining_find_best_claim(a->fracture_seed, pub_b, state->burst_cap, &nonce_b, &grade_b);
 
     /* Clamp both to the same grade (COMMON) to force a tie. */
-    ASSERT(submit_fracture_claim(&w, 0, state->fracture_id, nonce_a,
+    ASSERT(submit_fracture_claim(w, 0, state->fracture_id, nonce_a,
                                  (uint8_t)MINING_GRADE_COMMON));
     ASSERT(memcmp(state->best_player_pub, pub_a, 32) == 0);
 
-    ASSERT(submit_fracture_claim(&w, 1, state->fracture_id, nonce_b,
+    ASSERT(submit_fracture_claim(w, 1, state->fracture_id, nonce_b,
                                  (uint8_t)MINING_GRADE_COMMON));
     /* best_grade must not regress, and best_player_pub must still be A's
      * — tie goes to first-seen so the fragment_pub doesn't churn. */

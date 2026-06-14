@@ -387,6 +387,34 @@ static const char *sv_find_signal_verify_bin(void) {
     return NULL;
 }
 
+static const char *sv_find_signal_chain_assets_bin(void) {
+    static const char *candidates[] = {
+        "build-test/signal_chain_assets",
+        "build-coverage/signal_chain_assets",
+        "build/signal_chain_assets",
+        "./signal_chain_assets",
+        "../build-test/signal_chain_assets",
+        "../build-coverage/signal_chain_assets",
+        "../build/signal_chain_assets",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        fclose(f);
+        return candidates[i];
+    }
+    return NULL;
+}
+
+static void sv_hex32(const uint8_t in[32], char out[65]) {
+    static const char h[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = h[in[i] >> 4];
+        out[i * 2 + 1] = h[in[i] & 0x0F];
+    }
+    out[64] = '\0';
+}
+
 TEST(test_signal_verify_tower_chain_invariant_detects_orphan) {
     /* End-to-end test of the new tower_chain_consistent invariant in
      * the signal_verify CLI: emit a chain log containing
@@ -479,6 +507,138 @@ TEST(test_signal_verify_tower_chain_invariant_detects_orphan) {
 
     sv_teardown();
 }
+
+TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
+    sv_setup("chain_assets_lineage");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 52000u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_smelt_t smelt_a = {0};
+    chain_payload_smelt_t smelt_b = {0};
+    chain_payload_craft_t craft = {0};
+    for (int b = 0; b < 32; b++) {
+        smelt_a.fragment_pub[b] = (uint8_t)(0x10 + b);
+        smelt_a.ingot_pub[b] = (uint8_t)(0x40 + b);
+        smelt_b.fragment_pub[b] = (uint8_t)(0x80 + b);
+        smelt_b.ingot_pub[b] = (uint8_t)(0xB0 + b);
+        craft.output_pub[b] = (uint8_t)(0xE0 + b);
+    }
+    smelt_a.prefix_class = INGOT_PREFIX_RATI;
+    smelt_a.mined_block = 111;
+    smelt_b.prefix_class = INGOT_PREFIX_K;
+    smelt_b.mined_block = 222;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt_a, sizeof(smelt_a)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt_b, sizeof(smelt_b)) == 2);
+
+    craft.recipe_id = RECIPE_FRAME_BASIC;
+    craft.input_count = 2;
+    memcpy(craft.input_pubs[0], smelt_a.ingot_pub, 32);
+    memcpy(craft.input_pubs[1], smelt_b.ingot_pub, 32);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) == 3);
+
+    chain_payload_construction_t construction = {0};
+    memcpy(construction.cargo_pub, craft.output_pub, 32);
+    construction.target_kind = CONSTRUCTION_TARGET_MODULE;
+    construction.station_index = 0;
+    construction.module_index = 7;
+    construction.module_type = MODULE_SIGNAL_RELAY;
+    construction.commodity = COMMODITY_FRAME;
+    construction.target_id = 0;
+    construction.contributed_units = 1.0f;
+    construction.progress_after = 0.25f;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CONSTRUCTION,
+                          &construction, sizeof(construction)) == 4);
+
+    chain_payload_construction_t station_construction = {0};
+    memcpy(station_construction.cargo_pub, smelt_b.ingot_pub, 32);
+    station_construction.target_kind = CONSTRUCTION_TARGET_STATION;
+    station_construction.station_index = 0;
+    station_construction.module_index = 0xff;
+    station_construction.module_type = 0xff;
+    station_construction.commodity = COMMODITY_FRAME;
+    station_construction.target_id = 0;
+    station_construction.contributed_units = 1.0f;
+    station_construction.progress_after = 0.50f;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CONSTRUCTION,
+                          &station_construction, sizeof(station_construction)) == 5);
+
+    const char *asset_bin = sv_find_signal_chain_assets_bin();
+    if (!asset_bin) {
+        TEST_WARN("signal_chain_assets binary not built; skipping CLI lineage subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    char output_hex[65];
+    char input_hex[65];
+    char fragment_hex[65];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, log_path, sizeof(log_path)));
+    sv_hex32(craft.output_pub, output_hex);
+    sv_hex32(smelt_a.ingot_pub, input_hex);
+    sv_hex32(smelt_a.fragment_pub, fragment_hex);
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --no-signatures --lineage=%s %s 2>/dev/null",
+             asset_bin, output_hex, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[8192] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    pclose(p);
+    ASSERT(got > 0);
+
+    ASSERT(strstr(output, "Signal lineage") != NULL);
+    ASSERT(strstr(output, "frame ") != NULL);
+    ASSERT(strstr(output, "recipe=1:frame_basic") != NULL);
+    ASSERT(strstr(output, input_hex) != NULL);
+    ASSERT(strstr(output, fragment_hex) != NULL);
+    ASSERT(strstr(output, "prefix=RATi") != NULL);
+    ASSERT(strstr(output, "construction:") != NULL);
+    ASSERT(strstr(output, "target=module") != NULL);
+    ASSERT(strstr(output, "module_index=7") != NULL);
+    ASSERT(strstr(output, "progress_after=0.250") != NULL);
+
+    snprintf(cmd, sizeof(cmd), "%s --no-signatures --built-from=module:0:7 %s 2>/dev/null",
+             asset_bin, log_path);
+    p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    memset(output, 0, sizeof(output));
+    got = fread(output, 1, sizeof(output) - 1, p);
+    pclose(p);
+    ASSERT(got > 0);
+
+    ASSERT(strstr(output, "Signal infrastructure lineage") != NULL);
+    ASSERT(strstr(output, "target: module station_index=0 module_index=7") != NULL);
+    ASSERT(strstr(output, "contributors: 1") != NULL);
+    ASSERT(strstr(output, output_hex) != NULL);
+    ASSERT(strstr(output, "recipe=1:frame_basic") != NULL);
+    ASSERT(strstr(output, input_hex) != NULL);
+    ASSERT(strstr(output, "prefix=RATi") != NULL);
+
+    snprintf(cmd, sizeof(cmd), "%s --no-signatures --built-from=station:0 %s 2>/dev/null",
+             asset_bin, log_path);
+    p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    memset(output, 0, sizeof(output));
+    got = fread(output, 1, sizeof(output) - 1, p);
+    pclose(p);
+    ASSERT(got > 0);
+
+    ASSERT(strstr(output, "Signal infrastructure lineage") != NULL);
+    ASSERT(strstr(output, "target: station station_index=0") != NULL);
+    ASSERT(strstr(output, "contributors: 1") != NULL);
+    ASSERT(strstr(output, "prefix=K") != NULL);
+    sv_teardown();
+}
 #endif
 
 void register_signal_verify_tests(void);
@@ -494,5 +654,6 @@ void register_signal_verify_tests(void) {
     RUN(test_signal_verify_committed_fixture);
 #ifndef _WIN32
     RUN(test_signal_verify_tower_chain_invariant_detects_orphan);
+    RUN(test_signal_chain_assets_lineage_cli_prints_craft_tree);
 #endif
 }

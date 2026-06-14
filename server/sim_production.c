@@ -1034,13 +1034,49 @@ void step_module_flow(world_t *w, float dt) {
 /* Module delivery (docked ship -> scaffold)                           */
 /* ------------------------------------------------------------------ */
 
+static int manifest_find_first_commodity(const manifest_t *manifest, commodity_t c) {
+    if (!manifest || !manifest->units) return -1;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (manifest->units[i].commodity == (uint8_t)c)
+            return (int)i;
+    }
+    return -1;
+}
+
+static bool cargo_pub_nonzero(const cargo_unit_t *unit) {
+    static const uint8_t zero[32] = {0};
+    return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
+}
+
+static void emit_construction_contribution(world_t *w, station_t *st,
+                                           int station_idx, int module_idx,
+                                           const station_module_t *module,
+                                           commodity_t commodity,
+                                           const cargo_unit_t *unit,
+                                           float progress_after) {
+    if (!w || !st || !module || !cargo_pub_nonzero(unit)) return;
+    chain_payload_construction_t payload = {0};
+    memcpy(payload.cargo_pub, unit->pub, sizeof(payload.cargo_pub));
+    payload.target_kind = CONSTRUCTION_TARGET_MODULE;
+    payload.station_index = (station_idx >= 0 && station_idx <= 255)
+        ? (uint8_t)station_idx : 0xff;
+    payload.module_index = (module_idx >= 0 && module_idx <= 255)
+        ? (uint8_t)module_idx : 0xff;
+    payload.module_type = (uint8_t)module->type;
+    payload.commodity = (uint8_t)commodity;
+    payload.target_id = (station_idx >= 0) ? (uint64_t)station_idx : 0u;
+    payload.contributed_units = 1.0f;
+    payload.progress_after = progress_after;
+    (void)chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION,
+                         &payload, sizeof(payload));
+}
+
 /* Deliver materials directly to scaffold modules. Materials are consumed
  * immediately from cargo but build progress advances at a fixed rate --
  * delivery fills the module's internal hopper (tracked via build_progress
  * vs the total cost), construction ticks over time in step_module_activation. */
 float step_module_delivery(world_t *w, station_t *st, int station_idx,
                            ship_t *ship, commodity_t filter) {
-    (void)w; (void)station_idx;
     /* Total credit owed for materials this ship donated to construction.
      * The caller (player path: pay via ledger_earn + SELL event; NPC
      * path: credit via the hauler's economic identity) decides what to
@@ -1076,25 +1112,31 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
                 /* Sum prefix-class multipliers across the units we're
-                 * about to consume so high-grade ingots pay the player
+                 * actually consuming so high-grade ingots pay the player
                  * proportionally. Same per-unit accounting as
                  * try_sell_station_cargo's grade-bonus loop. */
                 float price = station_buy_price(st, mat);
-                int counted = 0;
-                for (uint16_t u = 0; u < ship->manifest.count && counted < whole; u++) {
-                    const cargo_unit_t *cu = &ship->manifest.units[u];
-                    if (cu->commodity != mat) continue;
-                    float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+                int removed = 0;
+                float progress_after = module_supply_fraction(m);
+                while (removed < whole) {
+                    int idx = manifest_find_first_commodity(&ship->manifest, mat);
+                    if (idx < 0) break;
+                    cargo_unit_t unit = {0};
+                    if (!ship_manifest_remove_with_chain(ship, (uint16_t)idx,
+                                                         &unit, NULL)) {
+                        break;
+                    }
+                    float mult = mining_payout_multiplier((mining_grade_t)unit.grade);
                     payout += mult * price;
-                    counted++;
+                    emit_construction_contribution(w, st, station_idx, i, m,
+                                                   mat, &unit, progress_after);
+                    removed++;
                 }
-                if (counted < whole)
-                    payout += (float)(whole - counted) * price;
+                if (removed < whole)
+                    payout += (float)(whole - removed) * price;
                 /* Fractional remainder (sub-unit float) priced at base. */
                 float frac = deliver - (float)whole;
                 if (frac > 0.0f) payout += frac * price;
-                if (manifest_count_by_commodity(&ship->manifest, mat) > 0)
-                    (void)ship_manifest_consume_by_commodity(ship, mat, whole);
             } else {
                 payout += deliver * station_buy_price(st, mat);
             }
@@ -1113,7 +1155,20 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
-                (void)station_manifest_consume_by_commodity(st, mat, whole);
+                int removed = 0;
+                float progress_after = module_supply_fraction(m);
+                while (removed < whole) {
+                    int idx = manifest_find_first_commodity(&st->manifest, mat);
+                    if (idx < 0) break;
+                    cargo_unit_t unit = {0};
+                    if (!station_manifest_remove_with_chain(st, (uint16_t)idx,
+                                                            &unit, NULL)) {
+                        break;
+                    }
+                    emit_construction_contribution(w, st, station_idx, i, m,
+                                                   mat, &unit, progress_after);
+                    removed++;
+                }
             }
         }
 

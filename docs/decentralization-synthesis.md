@@ -1,8 +1,9 @@
 # Signal — Decentralization Synthesis
 
 **Status:** synthesis of [`decentralization.md`](./decentralization.md) (the
-federation design that is mostly shipped) and
-[`p2p-design.md`](./p2p-design.md) (the pure-P2P design that is speculative).
+federation design that is mostly shipped), [`metaproduct.md`](./metaproduct.md)
+(the product-stack framing), and the open permaweb/P2P issues (#590, #591,
+#589).
 **Audience:** anyone deciding what hardening work to ship next on the
 decentralization stack and wanting to understand how today's federation
 relates to a possible pure-P2P endpoint.
@@ -151,7 +152,7 @@ longer fully accurate. Clients *also run* the sim, predict their own
 state, and reconcile. The remaining federation property is that the
 server's reconciliation is currently treated as ground truth. Replacing
 that with "shard quorum reconciliation" is a smaller change than the
-`p2p-design.md` writeup implied.
+older pure-P2P sketches implied.
 
 ## The practical synthesis
 
@@ -247,21 +248,22 @@ These are the corners where pulling federation and pure-P2P together
 
 ## What this document is not
 
-- **Not a roadmap.** No milestones, no team allocation, no dates.
+- **Not the primary roadmap.** The groomed backlog now lives in
+  [`metaproduct.md`](./metaproduct.md), [`../PRD.md`](../PRD.md), and
+  [`../REMEDIATION_PLAN.md`](../REMEDIATION_PLAN.md).
 - **Not a replacement for either source doc.** `decentralization.md`
-  remains the reference for what's shipped. `p2p-design.md` remains the
-  reference for the speculative endpoint. This document is the bridge.
-- **Not an endorsement of the P2P endpoint.** A pure-P2P Signal is one
-  possible end state. A hardened federation with verifying mirrors and
-  cross-shard quorum signatures is another, and is probably enough for
-  the goals players actually care about.
+  remains the reference for what's shipped. This document explains how
+  federation, permaweb persistence, and possible P2P authority converge.
+- **Not a claim that P2P must replace federation.** A pure-P2P Signal is one
+  possible end state. A hardened federation with permaweb snapshots, verifying
+  mirrors, and cross-shard quorum signatures is another.
 
 ## Reading list
 
 - [`docs/decentralization.md`](./decentralization.md) — the federation
   reference doc. Authoritative for what's shipped.
-- [`docs/p2p-design.md`](./p2p-design.md) — the pure-P2P endpoint sketch.
-  Authoritative for the speculative direction.
+- [`docs/metaproduct.md`](./metaproduct.md) — the product-stack and groomed
+  backlog framing.
 - [`docs/cargo-architecture.md`](./cargo-architecture.md) — the three-
   state cargo model both designs reuse.
 - [`/CLAUDE.md`](../CLAUDE.md) — the per-station credits text both
@@ -274,4 +276,5 @@ These are the corners where pulling federation and pure-P2P together
 - [`client/net_sync.c`](../client/net_sync.c) — the replay buffer and
   reconciliation logic that turn the client into a prediction peer.
 - Issue #479 — off-chain decentralization umbrella.
-- Issue #480 — on-chain anchoring follow-on.
+- Issues #590, #591, #589 — Arweave reads, peer anchoring, and WebRTC mesh.
+- Issue #480 — external-chain anchoring adapter history.

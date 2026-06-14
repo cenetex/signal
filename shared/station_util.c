@@ -1366,7 +1366,7 @@ const char *station_short_name(int station_idx) {
     case 0: return "Prospect";
     case 1: return "Kepler";
     case 2: return "Helios";
-    case SIGNAL_FREEPORT_STATION_INDEX: return "Freeport";
+    case SIGNAL_FREEPORT_STATION_INDEX: return "Blackglass";
     default:
         if (station_idx < 0 || station_idx >= MAX_STATIONS) return "?";
         snprintf(outpost_buf, sizeof(outpost_buf), "Outpost %d", station_idx);

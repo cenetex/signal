@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "chain_log.h"
 #include "sim_physics.h"
 
 TEST(test_outpost_requires_signal_range) {
@@ -16,7 +17,7 @@ TEST(test_outpost_extends_signal_range) {
     WORLD_DECL;
     world_reset(&w);
     /* Place point at edge of refinery signal — within range but far */
-    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(16000.0f, 0.0f));
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(8000.0f, 0.0f));
     /* Verify the point is in signal before placing */
     ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
 
@@ -29,10 +30,8 @@ TEST(test_outpost_extends_signal_range) {
 
     int slot = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= SIGNAL_FIRST_OUTPOST_INDEX);
-    /* Scaffold doesn't provide signal — only the parent refinery + a sliver
-     * of Helios cover this far-east fringe point. The overlap boost applies
-     * (2 stations), so the effective strength can reach ~0.2-0.3 even though
-     * each individual contribution is near the edge. */
+    /* Scaffold doesn't provide signal — only Prospect's fringe covers this
+     * point before activation. */
     ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
     ASSERT(signal_strength_at(&w, outpost_pos) < 0.3f);
     /* Complete construction to activate signal */
@@ -194,9 +193,18 @@ TEST(test_module_construction_and_delivery) {
  * Without the consume, the named frame stays in the ship's manifest
  * and could be sold or transferred again. */
 TEST(test_construction_consumes_manifest_units) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_scaffold_lineage", TMP("clog"));
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(dir);
+
     WORLD_DECL;
     world_reset(&w);
+    for (int s = 0; s < MAX_STATIONS; s++)
+        chain_log_reset(&w.stations[s]);
     station_t *st = &w.stations[0];
+    st->chain_event_count = 0;
+    memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
     st->scaffold = true;
     st->scaffold_progress = 0.0f;
 
@@ -227,6 +235,109 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT_EQ_INT(cargo_left, frames_left);
     /* Some frames consumed by the scaffold (it needs them). */
     ASSERT(frames_left < 5);
+    int consumed = 5 - frames_left;
+    ASSERT_EQ_INT((int)st->chain_event_count, consumed);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, consumed);
+
+    char path[256];
+    ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f != NULL);
+    uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+    ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
+    ASSERT_EQ_INT(header[16], CHAIN_EVT_CONSTRUCTION);
+    uint8_t len_bytes[2];
+    ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
+    uint16_t payload_len = (uint16_t)len_bytes[0] |
+                           (uint16_t)((uint16_t)len_bytes[1] << 8);
+    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
+    chain_payload_construction_t payload = {0};
+    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    fclose(f);
+
+    ASSERT_EQ_INT(payload.target_kind, CONSTRUCTION_TARGET_STATION);
+    ASSERT_EQ_INT(payload.station_index, 0);
+    ASSERT_EQ_INT(payload.module_index, 0xff);
+    ASSERT_EQ_INT(payload.module_type, 0xff);
+    ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
+    ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
+    chain_log_set_dir(NULL);
+}
+
+TEST(test_module_delivery_emits_construction_chain_event) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_construction_lineage", TMP("clog"));
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(dir);
+
+    WORLD_DECL;
+    world_reset(&w);
+    for (int s = 0; s < MAX_STATIONS; s++)
+        chain_log_reset(&w.stations[s]);
+    station_t *st = &w.stations[0];
+    st->chain_event_count = 0;
+    memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
+
+    ASSERT(st->module_count < MAX_MODULES_PER_STATION);
+    int module_idx = st->module_count++;
+    station_module_t *m = &st->modules[module_idx];
+    memset(m, 0, sizeof(*m));
+    m->type = MODULE_SIGNAL_RELAY;
+    m->ring = 1;
+    m->slot = 7;
+    m->scaffold = true;
+    m->build_progress = 0.0f;
+
+    ship_t ship = {0};
+    ASSERT(manifest_init(&ship.manifest, 4));
+    ship.cargo[COMMODITY_FRAME] = 1.0f;
+    cargo_unit_t unit = {0};
+    unit.kind = CARGO_KIND_FRAME;
+    unit.commodity = COMMODITY_FRAME;
+    unit.recipe_id = RECIPE_FRAME_BASIC;
+    for (int b = 0; b < 32; b++)
+        unit.pub[b] = (uint8_t)(0xA0 + b);
+    ASSERT(manifest_push(&ship.manifest, &unit));
+
+    float payout = step_module_delivery(&w, st, 0, &ship, COMMODITY_FRAME);
+    ASSERT(payout > 0.0f);
+    ASSERT_EQ_INT(manifest_count_by_commodity(&ship.manifest, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 1);
+
+    char path[256];
+    ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f != NULL);
+    uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+    ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
+    ASSERT_EQ_INT(header[16], CHAIN_EVT_CONSTRUCTION);
+    uint8_t len_bytes[2];
+    ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
+    uint16_t payload_len = (uint16_t)len_bytes[0] |
+                           (uint16_t)((uint16_t)len_bytes[1] << 8);
+    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
+    chain_payload_construction_t payload = {0};
+    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    fclose(f);
+
+    ASSERT(memcmp(payload.cargo_pub, unit.pub, sizeof(unit.pub)) == 0);
+    ASSERT_EQ_INT(payload.target_kind, CONSTRUCTION_TARGET_MODULE);
+    ASSERT_EQ_INT(payload.station_index, 0);
+    ASSERT_EQ_INT(payload.module_index, module_idx);
+    ASSERT_EQ_INT(payload.module_type, MODULE_SIGNAL_RELAY);
+    ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
+    ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(payload.progress_after,
+                    1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
+                    0.001f);
+    chain_log_set_dir(NULL);
 }
 
 /* Regression: a single buy_product intent must purchase exactly one
@@ -1400,8 +1511,9 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     w.players[0].docked = false;
     /* credits are station-local (ledger) — no ship.credits field */
 
-    /* Create a planned outpost within signal range of station 0 */
-    vec2 plan_pos = v2_add(w.stations[0].pos, v2(4000.0f, 0.0f));
+    /* Create a planned outpost within Kepler's signal range. This test
+     * isolates tow-drone materialization, not long-route corridor travel. */
+    vec2 plan_pos = v2_add(w.stations[1].pos, v2(4000.0f, 0.0f));
     w.players[0].input.create_planned_outpost = true;
     w.players[0].input.planned_outpost_pos = plan_pos;
     world_sim_step(&w, SIM_DT);
@@ -1452,8 +1564,9 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     ASSERT(drone->dest_station >= SIGNAL_FIRST_OUTPOST_INDEX);
     ASSERT_EQ_INT(drone->dest_station, plan_slot);
 
-    /* Run 4 minutes — drone tows at 60 u/s, distance is ~8500u ≈ 142s */
-    for (int i = 0; i < 120 * 240; i++) world_sim_step(&w, SIM_DT);
+    /* Run long enough for the tow drone to cross the larger Sector One
+     * starter basin. */
+    for (int i = 0; i < 120 * 360; i++) world_sim_step(&w, SIM_DT);
 
     station_t *outpost = &w.stations[plan_slot];
     bool materialized = (!outpost->planned && outpost->scaffold) ||
@@ -2515,6 +2628,7 @@ void register_construction_modules_tests(void) {
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_construction_consumes_manifest_units);
+    RUN(test_module_delivery_emits_construction_chain_event);
     RUN(test_docked_buy_one_unit_per_intent);
     RUN(test_world_seed_station_manifests_matches_float);
     RUN(test_module_activation_spawns_npc);

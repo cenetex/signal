@@ -1,302 +1,257 @@
 # Signal Remediation Plan
 
-Derived from a full-codebase review on 2026-05-29. Items are ordered by
-impact-to-effort ratio, not strictly by severity.
+Derived from full-codebase reviews on 2026-05-29 and 2026-06-09, then
+re-groomed on 2026-06-13 around the metaproduct thesis in
+[`docs/metaproduct.md`](docs/metaproduct.md).
+
+Items are ordered by leverage against Signal's core product stack:
+
+```text
+rock
+  -> fragment
+  -> ingot
+  -> frame
+  -> outpost
+  -> station
+  -> route
+  -> sector
+  -> civilization
+```
 
 ---
 
-## 1. Docs cleanup (in progress)
+## 0. Metaproduct Alignment
 
-**Problem:** 40+ files in `docs/` with no organization. Half are design-exploration
-SVGs and whitepapers that don't reflect the shipped game. `memory/` has three
-stub files that duplicate content from other docs. No human-facing architecture
-overview exists.
+**Problem:** Product, engineering, decentralization, bridge, and remediation
+docs have described adjacent futures: server federation, pure P2P, Solana
+bridging, Arweave deployment, provenance, RATi identity, and station
+civilization. Without one hierarchy, backlog items look like competing
+products.
+
+**Fix:** Treat [`docs/metaproduct.md`](docs/metaproduct.md), [`PRD.md`](PRD.md),
+and [`ENG.md`](ENG.md) as the canonical framing:
+
+- lead with the rock game
+- preserve the rule that large social structures come from physical actions
+- make object history visible
+- keep station sovereignty local
+- verify station history offline
+- anchor portable artifacts to Arweave/permaweb
+- keep Solana-style wrapping as an adapter over native Signal history
+
+---
+
+## 1. Determinism Acceptance (#588)
+
+**Problem:** P2P and quorum authority require cross-platform deterministic state.
+The original #588 calls for replacing float sim state with `q32.32`. Recent
+work added a stricter replay ratchet: exact IEEE-754 bit hashing, native↔WASM
+replay gates, fracture/thrown-rock coverage, and long-horizon probes.
+
+**Fix:** Decide and document the acceptance path:
+
+- **Durable path:** migrate settlement-critical sim state and step functions to
+  `q32.32`.
+- **Staged path:** promote strict native↔WASM replay gates as the interim
+  acceptance criterion, then add Linux x86 and broader replay scenarios before
+  P2P work depends on it.
+
+Either path must keep render-only math separate from authoritative sim math.
+
+---
+
+## 2. Manifest Authority (#340 / #339)
+
+**Problem:** The metaproduct depends on concrete cargo identity, but some
+economy paths still treat finished goods as aggregate floats. That weakens the
+claim that value moves as physical/provenanced matter.
+
+**Fix:** Make buy, sell, deliver, production, and NPC hauling move concrete
+`cargo_unit_t` rows by default. Retire finished-goods float authority once
+compatibility migrations are complete.
+
+Acceptance:
+
+- trades preserve `cargo_unit_t.pub`, `parent_merkle`, origin, and receipt state
+- delivery consumes the exact unit it validated
+- station stock and player inventory can be audited from manifests
+- aggregate floats remain only for raw ore/bulk compatibility
+
+---
+
+## 3. Lineage View
+
+**Problem:** The substrate can already remember objects, receipts, and signed
+events, and `signal_chain_assets --lineage=<cargo_pub>` can now print a
+command-line cargo tree. The player-facing killer demo is still not yet one
+inspectable in-game artifact. Signal needs to show the ladder from one rock to
+shared infrastructure.
+
+**Fix:** Add a lineage query/view that can walk:
+
+```text
+rock -> fragment -> ingot -> frame -> outpost/module/gate contribution
+```
+
+Acceptance:
+
+- cargo inspection can show parent fragment/rock identity where available
+- crafted products expose input cargo roots
+- construction contributions preserve consumed frame/product pubkeys
+- verifier/export tooling can emit a human-readable lineage tree (shipped for
+  cargo SMELT/CRAFT chains)
+- docked UI can show the same story without requiring command-line tools
+
+---
+
+## 4. Typed Provenance Contracts (#587)
+
+**Problem:** Contracts can reference provenance classes, but the next product
+step is contracts that price explicit witnessed events: this fragment, this
+death, this fracture, this vessel, this route.
+
+**Fix:** Add a typed contract target surface:
+
+- explicit 32-byte target pubkey
+- contract type enum for cargo, fracture, death, vessel, construction, and route
+- fulfillment paths for fracture/death events
+- UI row classification so players can read why a contract accepts or rejects
+  their cargo/event
+
+---
+
+## 5. Settlement Event Bridge (#354 / #355 / #356)
+
+**Problem:** Chain logs and the settlement engine exist, but not every validated
+gameplay fact is distilled into canonical settlement events.
+
+**Fix:** Bridge authoritative sim validation into settlement facts:
+
+- smelt/craft/transfer/delivery events
+- construction and outpost milestones
+- station-authored hail/work signal roots
+- fracture/death facts where they affect contracts or identity
+- checkpoint roots that can be verified forward from the prior checkpoint
+
+Non-goal: settlement does not track every frame of ship movement.
+
+---
+
+## 6. Player-Facing Lineage
+
+**Problem:** The provenance substrate is strong, but it is still too invisible
+to normal players. The game should feel like a rock economy first, and the
+history should appear naturally when the player sells, delivers, inspects, or
+builds with cargo.
+
+**Fix:** Add UI surfaces for:
+
+- cargo provenance inspection
+- station-local ledger/history rows
+- contract lineage requirements and rejection reasons
+- RATi-grade delivery context
+- construction milestones as station-signed history
+
+This pairs with #586, #242, #337, #243, and #575 first-session clarity work.
+
+---
+
+## 7. Institution Tools
+
+**Problem:** The bigger game is cooperative infrastructure drama, but player
+groups still lack mechanics that make them institutions rather than labels.
+
+**Fix:** Add tools that make social work legible:
+
+- shared contracts
+- escrowed cargo
+- signed delivery obligations
+- station-endorsed bounties
+- route health dashboards
+- public construction manifests
+- verified contribution ledgers
+
+Each tool must attach to real station/cargo/receipt history rather than a
+detached social menu.
+
+---
+
+## 8. Unified Ship/Controller Model (#294)
+
+**Problem:** NPC haulers and players still have parallel state paths. Any
+parallel cargo path risks provenance divergence.
+
+**Fix:** Retire remaining `npc_ship_t` cargo authority in favor of the unified
+`ship_t` + `character_t` substrate. NPCs and players should move manifests,
+receipts, and cargo identities through the same mechanics.
+
+---
+
+## 9. Permaweb and P2P (#590 / #591 / #589)
+
+**Problem:** Client Arweave reads, peer anchoring, and WebRTC mesh behavior are
+well scoped but should not outrun determinism or canonical settlement events.
+
+**Fix order:**
+
+1. client reads discovery manifest, chain-log tip, and snapshot txids from
+   Arweave
+2. client verifies station pubkeys and chain-log continuity before bootstrap
+3. peers compare state roots over WebRTC data channels
+4. peer anchor service uploads events/snapshots and updates discovery manifests
+5. quorum behavior replaces operator-only authority for selected shards
+
+---
+
+## 10. RATi Vessel Identity (#496)
+
+**Problem:** Player identity persists today as local Ed25519 keys and saves.
+The stronger lore/product frame is that RATi persists across worlds and a
+RATi-bearing vessel is the local embodiment of that cross-world identity.
+
+**Fix:** Implement substrate-attached vessel birth after manifest authority and
+settlement events are canonical:
+
+- station witnesses vessel birth
+- physical materials fund the identity embodiment
+- RATi namespace binds to the vessel event
+- death can destroy embodiment without destroying cross-world identity
+- verification tools can prove the vessel's lineage
+
+---
+
+## 11. Streaming Entity Pool (#285)
+
+**Problem:** Hard caps still shape world scale and make some subsystem splits
+awkward.
+
+**Fix:** Lift protocol/entity caps after economic/provenance invariants are
+stable. Then extract bounded subsystems from `server/game_sim.c`: signal grid,
+docking/trading, scaffold lifecycle, cargo pods, and station logistics.
+
+---
+
+## 12. CI, Fuzzing, and Safety Breadth
+
+**Problem:** The local harness is strong, but malformed protocol/save inputs and
+platform drift need broader automated coverage.
 
 **Fix:**
-- Remove all SVG design mockups, old screenshots, `design/`, and `belt_samples/`
-- Remove speculative docs: `p2p-design.md`, `p2p-mesh-gap-analysis.md`,
-  `sector-x-whitepaper.md`, `anime-framework.md`
-- Collapse `memory/` into root-level `ARCHITECTURE.md`
-- Keep only docs that describe shipped systems
+
+- keep replay gates on the blocking path
+- add Linux x86 and Windows coverage for determinism-critical targets
+- run ASan/UBSan and clang-tidy in CI
+- add libFuzzer harnesses for protocol decode, save load, and chain-log parsing
 
 ---
 
-## 2. `game_sim.c` split (blocked on #285)
-
-**Problem:** 7,236 lines. The spatial hash, signal chain rebuild, dock/launch
-logic, commodity transfers, cargo pod management, scaffold delivery, and mining
-target finding share a single file. The file itself carries a banner warning
-against mechanical splitting because the entity-pool refactor (#285) would
-invalidate any split done against the current `MAX_STATIONS=8`-style assumptions.
-
-**Fix:** Once #285 Phase 3 lands (streaming entity pool), extract bounded
-subsystems into their own files: signal grid, docking, trading, scaffold
-lifecycle, cargo pods.
-
----
-
-## 3. `sim_ai.c` frontier director extraction
-
-**Problem:** The frontier director — which auto-plans outposts, manages virtual
-logistics budgets, and tracks scaffold work — lives inside the NPC AI file
-alongside miner/hauler state machines and steering. At 3,083 lines, the file is
-hard to navigate, and the frontier subsystem has no dedicated tests.
-
-**Fix:** Extract `sim_frontier.c` from `sim_ai.c`. Give it its own header and
-test file. This can happen independently of #285.
-
----
-
-## 4. `hud.c` decomposition
-
-**Problem:** 3,396 lines mixing layout primitives, relay debug JS interop,
-balance helpers, hail/scan display, contract-fit rendering, inspect anim, and
-onboarding overlay. Not structurally blocking, but UI iteration is slower than
-it should be.
-
-**Fix:** Pull hail/scan panel, station UI chrome, and onboarding overlay into
-separate client files.
-
----
-
-## 5. Test suite balance
-
-**Problem:** `test_world_sim.c` (3,627 lines) and `test_construction.c` (2,855
-lines) are 26% of all test code. These are broad integration tests — valuable
-but slow and hard to debug. Subsystems like the frontier director, scaffold
-state transitions, signal grid rebuild, and trade paging have no unit-level
-coverage.
-
-**Fix:** Add focused unit tests for:
-- Frontier director planning and virtual logistics
-- Scaffold state machine transitions
-- Signal grid rebuild correctness
-- Trade paging pagination and edge cases
-
----
-
-## 6. Fuzzing harnesses
-
-**Problem:** The game parses binary wire protocol packets and save files in C
-with no fuzz coverage. A single malformed `NET_MSG_WORLD_ASTEROIDS` or corrupt
-`world.sav` could crash the server.
-
-**Fix:** Add libFuzzer harnesses targeting:
-- `net.c` deserialization of world snapshots
-- `sim_save.c` world-load and player-save paths
-- `chain_log.c` log parsing
-
-Wire these into CI as a periodic job.
-
----
-
-## 7. Memory allocator strategy
-
-**Problem:** 570 `malloc`/`free` calls across production code with no arena or
-pool allocator. Every scaffold, cargo pod, manifest row, and spatial grid bucket
-hits the general allocator at 120 Hz. On the server this adds GC pressure; on
-the client it adds frame-time jitter.
-
-**Fix:** Introduce a per-frame bump allocator or fixed-size object pools for
-hot-path allocations (spatial grid cells, manifest rows, sim events). The entity
-pool caps make this a good fit.
-
----
-
-## 8. CI breadth
-
-**Problem:** Two workflow files (release, Valgrind) but no Windows
-build, no Emscripten build check, no clang-tidy, no sanitizer CI run. The
-Makefile has `test-san` and `test-tsan` targets that nothing calls automatically.
-
-**Fix:** Add CI jobs for:
-- Windows native build
-- Emscripten build
-- ASan+UBSan test run
-- clang-tidy on PRs
-
----
-
-## 9. A* nav graph ceiling
-
-**Problem:** The A* pathfinding graph caps at 96 nodes (`NAV_MAX_NODES`) with
-no fallback. As outposts multiply, pathfinding silently breaks when the graph
-overflows.
-
-**Fix:** Add a fallback (direct-line navigation) when graph insertion fails, or
-bump the cap with a logged warning. The cap can stay for now but the failure
-mode should be visible.
-
----
-
-## 10. Docs that stay
-
-| File | Why |
-|------|-----|
-| `cargo-architecture.md` | Authoritative three-state cargo model |
-| `c_safety_policy.md` | Actively enforced C safety rules |
-| `protocol-telemetry.md` | Wire protocol stream reference |
-| `replay-harness.md` | Shipped tool documentation |
-| `operator-onboarding.md` | Station operator guide |
-| `anime-integration-plan.md` | Shipped episode playback architecture |
-| `decentralization.md` | Federation architecture reference |
-| `decentralization-synthesis.md` | Bridge between federation and P2P designs |
-| `cloudwatch-dashboard-signal-relay.json` | Production config |
-# Signal Remediation Plan
-
-Derived from a full-codebase review on 2026-05-29 and re-scoped on 2026-05-30
-after the dedicated server was removed to force the P2P/browser-peer
-architecture. Items are ordered by impact-to-effort ratio, not strictly by
-severity.
-
----
-
-## 0. Fixed-point sim rewrite (priority:now — #588)
-
-**Problem:** ~567 `float` occurrences across 10 sim files produce subtly
-different results between native and WASM builds. Without cross-platform
-determinism, browser peers running `world_sim_step` diverge, and quorum
-signatures on chain-log events are meaningless. This is the single blocker for
-the entire P2P stack.
-
-**Fix:** Replace all `float` in sim state structs and step functions with q32.32
-fixed-point (32-bit integer, 32-bit fractional in `int64_t`). Provide
-add/sub/mul/div/sqrt/sin/cos/atan2/exp in integer arithmetic. Render path stays
-float. All 340+ tests must pass identically on native and WASM.
-
----
-
-## 1. `game_sim.c` split (blocked on #285)
-
-**Problem:** 7,236 lines. The spatial hash, signal chain rebuild, dock/launch
-logic, commodity transfers, cargo pod management, scaffold delivery, and mining
-target finding share a single file. The file itself carries a banner warning
-against mechanical splitting because the entity-pool refactor (#285) would
-invalidate any split done against the current `MAX_STATIONS=8`-style assumptions.
-
-**Fix:** Once #285 Phase 3 lands (streaming entity pool), extract bounded
-subsystems into their own files: signal grid, docking, trading, scaffold
-lifecycle, cargo pods.
-
----
-
-## 2. `sim_ai.c` frontier director extraction
-
-**Problem:** The frontier director — which auto-plans outposts, manages virtual
-logistics budgets, and tracks scaffold work — lives inside the NPC AI file
-alongside miner/hauler state machines and steering. At 3,083 lines, the file is
-hard to navigate, and the frontier subsystem has no dedicated tests.
-
-**Fix:** Extract `sim_frontier.c` from `sim_ai.c`. Give it its own header and
-test file. This can happen independently of #285.
-
----
-
-## 3. `hud.c` decomposition
-
-**Problem:** 3,396 lines mixing layout primitives, relay debug JS interop,
-balance helpers, hail/scan display, contract-fit rendering, inspect anim, and
-onboarding overlay. Not structurally blocking, but UI iteration is slower than
-it should be.
-
-**Fix:** Pull hail/scan panel, station UI chrome, and onboarding overlay into
-separate client files.
-
----
-
-## 4. Test suite balance
-
-**Problem:** `test_world_sim.c` (3,627 lines) and `test_construction.c` (2,855
-lines) are 26% of all test code. These are broad integration tests — valuable
-but slow and hard to debug. Subsystems like the frontier director, scaffold
-state transitions, signal grid rebuild, and trade paging have no unit-level
-coverage.
-
-**Fix:** Add focused unit tests for:
-- Frontier director planning and virtual logistics
-- Scaffold state machine transitions
-- Signal grid rebuild correctness
-- Trade paging pagination and edge cases
-
----
-
-## 5. Fuzzing harnesses
-
-**Problem:** The game parses binary wire protocol packets and save files in C
-with no fuzz coverage. A single malformed `NET_MSG_WORLD_ASTEROIDS` or corrupt
-`world.sav` could crash the server.
-
-**Fix:** Add libFuzzer harnesses targeting:
-- `net.c` deserialization of world snapshots
-- `sim_save.c` world-load and player-save paths
-- `chain_log.c` log parsing
-
-Wire these into CI as a periodic job.
-
----
-
-## 6. Memory allocator strategy
-
-**Problem:** 570 `malloc`/`free` calls across production code with no arena or
-pool allocator. Every scaffold, cargo pod, manifest row, and spatial grid bucket
-hits the general allocator at 120 Hz.
-
-**Fix:** Introduce a per-frame bump allocator or fixed-size object pools for
-hot-path allocations (spatial grid cells, manifest rows, sim events). The entity
-pool caps make this a good fit.
-
----
-
-## 7. CI breadth
-
-**Problem:** Two workflow files (release, Valgrind) but no Windows build, no
-Emscripten build check, no clang-tidy, no sanitizer CI run. The Makefile has
-`test-san` and `test-tsan` targets that nothing calls automatically.
-
-**Fix:** Add CI jobs for Windows native build, Emscripten build, ASan+UBSan test
-run, and clang-tidy on PRs.
-
----
-
-## 8. A* nav graph ceiling
-
-**Problem:** The A* pathfinding graph caps at 96 nodes (`NAV_MAX_NODES`) with
-no fallback. As outposts multiply, pathfinding silently breaks when the graph
-overflows.
-
-**Fix:** Add a fallback (direct-line navigation) when graph insertion fails, or
-bump the cap with a logged warning.
-
----
-
-## P2P architecture docs (retained)
-
-The following docs were previously flagged for removal but are now the target
-architecture and stay:
-
-| File | Why |
-|------|-----|
-| `docs/p2p-design.md` | Target architecture for browser-peer mesh |
-| `docs/p2p-mesh-gap-analysis.md` | Gap analysis for the P2P transition |
-| `docs/decentralization-synthesis.md` | Bridge between federation and P2P designs |
-
-## Docs that stay (unchanged)
-
-| File | Why |
-|------|-----|
-| `cargo-architecture.md` | Authoritative three-state cargo model |
-| `c_safety_policy.md` | Actively enforced C safety rules |
-| `protocol-telemetry.md` | Wire protocol stream reference |
-| `replay-harness.md` | Shipped tool documentation |
-| `operator-onboarding.md` | Station operator guide (federation fallback) |
-| `anime-integration-plan.md` | Shipped episode playback architecture |
-| `decentralization.md` | Federation architecture reference |
-
-## Docs to remove
-
-- All SVG design mockups, old screenshots, `design/`, `belt_samples/`
-- `sector-x-whitepaper.md` (post-MVP vision, not current target)
-- `anime-framework.md` (milestone-video scope doc, superseded by anime-integration-plan)
-- `cloudwatch-dashboard-signal-relay.json` (AWS CloudWatch, infra removed)
-- `memory/` directory (stub files that duplicate content from other docs)
-
+## 13. Maintenance Backlog
+
+These are still valuable, but no longer outrank the metaproduct substrate:
+
+- `sim_ai.c` frontier director extraction
+- `hud.c` decomposition
+- focused unit tests for scaffold, signal grid, trade paging, and frontier
+  planning
+- A* nav graph overflow visibility/fallback
+- memory allocator strategy for hot-path pools and frame arenas

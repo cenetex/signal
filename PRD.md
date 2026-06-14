@@ -1,7 +1,7 @@
 # Signal: Sector One — Product Requirements Document
 
-**Version:** 1.1
-**Date:** 2026-06-08
+**Version:** 1.2
+**Date:** 2026-06-13
 **Status:** Shipped / Live (Sector One MVP)
 **Live:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 **Owner:** Signal Development Team
@@ -10,7 +10,21 @@
 
 ## 1. Executive Summary
 
-**Signal** is a multiplayer space mining and construction sandbox about frontier economies, signal coverage, and the slow work of building an outpost network at the edge of charted space. Oh yeah, and you kill each other with rocks.
+**Signal** is a physics-native civilization network disguised as an arcade
+space-mining game. Players mine matter, stations sign history, communities
+build signal, and the universe expands only when the network earns it. Oh yeah,
+and you kill each other with rocks.
+
+The visible product is the game loop: launch, fracture rocks, tow fragments, smelt, haul, build outposts, defend routes, and expand signal. The metaproduct is the machine underneath that turns meaningful physical play into verifiable history: content-addressed cargo, station-signed events, receipt chains, replayable state roots, and eventually portable permaweb settlement artifacts.
+
+Signal is not "space mining," "blockchain Asteroids," or "procedural MMO."
+Those are surfaces. The real product is a persistent frontier where matter,
+labor, trust, infrastructure, and memory are all simulated.
+
+North star: **every large-scale social structure in the game must be made out
+of physical actions the players actually performed.** No abstract guild bases,
+no global wallet teleporting value, no land-claim button, and no fake settlement
+layer outside the play loop.
 
 Unlike traditional space MMOs with global wallets and dedicated combat weapons, Signal enforces strict physical and economic constraints:
 1. **The rock is the core interaction.** The mining laser is strictly a mining tool. There are no lasers, missiles, or turrets. The only weapon is a physical rock fragment gathered under tractor tension and released as a ballistic projectile.
@@ -18,6 +32,39 @@ Unlike traditional space MMOs with global wallets and dedicated combat weapons, 
 3. **Signal is the map.** Coverage determines mining speed, ship control responsiveness, and NPC logistics viability. Expansion literally means extending the signal network.
 
 The game ships asset-light: procedural geometry, code-driven HUDs, and runtime-loaded media (MP3 music, PNG avatars, MPEG-1 episode cutscenes).
+
+### 1.1 Product Stack
+
+Signal should be understood as five product layers sharing one interface:
+
+1. **Physics game:** rocks, thrust, tractor tension, signal, construction, and PvP.
+2. **Provenance product:** fragments become named cargo at the smelt/craft boundary, carrying `pub`, `parent_merkle`, origin, and receipt state.
+3. **Station-sovereignty product:** stations issue local credits, sign local history, and decide which cargo/contracts they recognize.
+4. **Verification product:** `signal_verify`, `signal_chain_assets`, and `signal_replay` let auditors prove what happened after the fact.
+5. **Settlement substrate:** per-station history becomes portable checkpoints, permaweb snapshots, federation/P2P manifests, and optional external-chain adapters.
+
+The public hierarchy must stay in that order. Lead with rocks and stations; let proofs, settlement, and tokens emerge from play.
+
+### 1.2 Civilization Ladder
+
+The whole product scales from one primitive:
+
+```text
+rock
+  -> fragment
+  -> ingot
+  -> frame
+  -> outpost
+  -> station
+  -> route
+  -> sector
+  -> civilization
+```
+
+A station exists because someone hauled frames. A route exists because haulers
+kept it alive. A currency has credibility because the station issuing it has
+inventory, labor, history, and a signed record. A gate opens because a whole
+region coordinated enough matter, risk, and trust to cross a threshold.
 
 ---
 
@@ -53,6 +100,60 @@ The game ships asset-light: procedural geometry, code-driven HUDs, and runtime-l
 2. Fulfill high-tier heritage contracts requiring specific cargo provenance (e.g., "RATi-grade cuprite ingots not originating from Station X").
 3. Defend your haul route from privateers using rock-ballistics and superior tractor maneuvering.
 4. Die, pay the respawn fee (which can drive your ledger into debt), and rebuild.
+
+### 3.4 The Metaproduct Loop
+1. Play produces a physical transformation.
+2. The transformation crosses a boundary the system cares about: fracture, smelt, craft, transfer, delivery, construction, or death.
+3. The resulting object or milestone receives content identity.
+4. A station signs the local event into its append-only history.
+5. Receipts and checkpoints make that history portable to other stations, auditors, peers, and eventually permaweb anchors.
+
+The strongest player-facing promise is: **your labor leaves durable traces in the world.**
+
+### 3.5 The Civilization Arc
+
+The player fantasy is not "you are a hero in a vast universe." It is: **you are
+a worker in a fragile universe that only becomes vast if everyone builds it.**
+
+The emotional progression:
+
+1. I am surviving.
+2. I am earning.
+3. I am hauling.
+4. I am building.
+5. I am trusted.
+6. I am part of a route.
+7. I am part of a station.
+8. I am part of a sector.
+9. I am part of the network.
+10. We can cross the dark.
+
+### 3.6 Sector One Level Design
+
+Sector One should read as a damaged network, not a neutral starter triangle.
+The first map exists to teach that civilization is built from signal, routes,
+matter, and local trust.
+
+The starting topology:
+
+1. **Prospect Basin:** safe inner refinery space with reliable signal, ferrite
+   work, early mining, and first smelting.
+2. **Kepler Yard:** the industrial shelf above Prospect, where frames,
+   scaffolds, and corridor repair become the player's first infrastructure
+   responsibility.
+3. **Broken Helios Corridor:** the old boosted relay lane to Helios. Fully
+   repaired, the route should be straightforward; damaged, it creates a
+   low-signal gap that makes hauling, patrols, and reconstruction matter.
+4. **Blackglass Freeport:** an off-relay pirate station in the gap. It buys
+   cargo as-is, creates risk and temptation, and proves that low-signal space
+   is a political biome, not just empty distance.
+5. **Helios Fringe:** advanced production beyond the broken corridor. Helios
+   is reachable, but its isolation gives the player a reason to care about
+   restoring signal instead of merely optimizing travel.
+
+The first map objective is therefore not "visit all stations." It is: restore
+the Helios corridor through physical construction, verified cargo deliveries,
+and defended routes.
 
 ---
 
@@ -98,6 +199,16 @@ Signal quality (`0.0` to `1.0`) dictates operational viability:
 5. **Activate:** Placed modules enter a 10-second supply/commissioning timer. New outposts require frame delivery to activate.
 - *Constraint:* Outposts can only be placed in signal quality `< 0.80` (FRINGE/FRONTIER) to force network expansion, not stacking.
 
+### 4.7 World Primitives
+
+The long-term game is built from five primitives:
+
+1. **Matter:** rocks, fragments, ingots, frames, modules, crystals, scaffolds.
+2. **Signal:** the civilizational boundary where control, communication, NPC support, visibility, and safety exist.
+3. **Stations:** sovereign local institutions that issue credits, maintain ledgers, sign history, price goods, and express personality.
+4. **Receipts:** portable trust attached to custody, origin, and transformation.
+5. **Memory:** permanent consequence: destroyed rocks stay destroyed, chain logs remember events, and player labor becomes historical texture.
+
 ---
 
 ## 5. AI & NPCs
@@ -107,6 +218,11 @@ NPCs operate via state machines, augmented by experimental neural/holographic br
 - **Haulers:** Scan known contracts → pick up cargo at source → navigate to destination → present receipt chain → return.
 - **Tow Drones:** Autonomous scaffold delivery from shipyards to planned outposts.
 - **Frontier Director:** A virtual logistics system that ranks expansion candidates, auto-plans outposts, and manages "virtual pilot" budgets to drive network growth without consuming physical network slots.
+
+Stations should become semi-autonomous institutions with memory, policy, and
+voice. Station AI should not invent drama; it should interpret the drama already
+produced by shortages, route failures, trusted haulers, privateer attacks,
+dark-sector discoveries, debt crises, outpost abandonment, and gate progress.
 
 ---
 
@@ -118,8 +234,9 @@ NPCs operate via state machines, augmented by experimental neural/holographic br
 
 ### 6.2 Target Architecture (P2P Browser Mesh)
 - **Goal:** Decentralize the simulation authority to browser peers.
-- **Blocker:** Floating-point non-determinism between native (x86/ARM) and WASM builds. 
-- **Solution:** Complete rewrite of sim state and step functions to `q32.32` fixed-point arithmetic (Tracked as #588).
+- **Current determinism ratchet:** `signal_replay` now hashes exact IEEE-754 bits, runs native↔WASM replay gates, and includes long-horizon probes for settlement-critical scenarios.
+- **Remaining blocker:** #588 still owns the durable answer for cross-platform authority: either complete `q32.32` migration for sim state or explicitly graduate the strict-float ratchet into the accepted deterministic substrate with a wider platform matrix.
+- **Mesh dependency order:** deterministic replay → canonical settlement events → client state-root comparison → Arweave/permaweb bootstrap → WebRTC quorum mesh.
 
 ---
 
@@ -133,22 +250,36 @@ Signal implements a robust off-chain identity and audit stack:
 5. **Cargo Receipts (Layer D):** Portable, station-signed transfer chains accompany cargo across zone boundaries, verified by the destination authority.
 6. **Handoff Tickets:** Signed envelopes binding ship state + cargo roots for seamless cross-zone authority transfer.
 
-*(Note: On-chain state-root anchoring and bounty payouts are deferred to Post-Sector One / Issue #480).*
+RATi is treated as a cross-world identity and provenance namespace, not a normal in-world wallet. A RATi-bearing vessel is the local embodiment of a persistent bearer identity: worlds can reset or fork, but the identity primitive and its recognized provenance survive as portable history.
+
+Arweave/permaweb anchoring is the core long-term persistence direction for settlement artifacts. Solana-style state-root commitments, burn-to-mint programs, and bounty payouts remain valid external adapters, but they do not define the core product contract.
 
 ---
 
 ## 8. Roadmap & Future Vision
 
-### 8.1 Immediate Priorities (Sector One Hardening)
-1. **#588 Fixed-Point Sim Rewrite:** Unblock P2P determinism.
-2. **#285 Streaming Entity Pool:** Lift wire protocol caps (MAX_ASTEROIDS 2048 → unbounded, MAX_STATIONS 128 → unbounded).
-3. **CI Expansion:** Add Windows, Emscripten, ASan/UBSan, and clang-tidy to GitHub Actions.
-4. **Fuzzing:** Add libFuzzer harnesses for wire deserialization and save loading.
+### 8.1 Groomed Backlog
+
+Priority is ordered by metaproduct leverage: first make object history unavoidable, then make settlement canonical, then make that history portable.
+
+1. **Metaproduct alignment:** Keep this PRD, [ENG.md](ENG.md), [docs/metaproduct.md](docs/metaproduct.md), and [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) aligned around "physical play produces verifiable history."
+2. **#588 determinism acceptance:** Decide whether the strict native↔WASM replay ratchet is the staged acceptance path or whether full `q32.32` remains mandatory before P2P work can proceed.
+3. **#340 / #339 manifest authority:** Make buy, sell, deliver, and production paths move concrete `cargo_unit_t` rows by default, then retire finished-goods float authority.
+4. **Lineage view:** Make rock -> fragment -> ingot -> frame -> outpost/gate contribution inspectable as the killer demo.
+5. **#587 typed provenance contracts:** Add explicit target pubkeys and fracture/death fulfillment so contracts can price witnessed events, not only aggregate commodities.
+6. **#354 / #355 / #356 settlement bridge:** Emit canonical settlement events for validated game actions, construction milestones, and signal-channel continuity.
+7. **Player-facing legibility:** Surface cargo lineage, local ledger history, and station-authored provenance in the docked UI so the player can see what the substrate remembers.
+8. **Institution tools:** Add shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
+9. **#294 unified ship/controller model:** Retire parallel NPC cargo paths that can drift from player manifest semantics.
+10. **#590 / #591 / #589 permaweb + mesh:** Bootstrap clients from Arweave snapshots/logs, then add WebRTC state-root comparison and quorum behavior.
+11. **#496 RATi vessel identity:** Bind cross-world RATi identity to substrate-born vessels once manifest transfers and settlement events are canonical.
+12. **#285 streaming entity pool:** Lift hard caps after the core economic/provenance path is settled.
 
 ### 8.2 Post-Sector One Vision (Sector X)
-- **Dark-Sector Battery Runs:** High-risk, high-yield zones beyond the mapped network.
-- **Megastructures & Jump Gates:** Cosmic events that reassign chunk coordinates, requiring MMR (Merkle Mountain Range) provenance proofs.
-- **On-Chain Bridging:** Solana smart contracts for state-root commitments, asset wrapping, and RATi Foundation bounty payouts.
+- **Dark-Sector Battery Runs:** High-risk zones beyond institutional reality: no easy comms, no instant market quote, no NPC safety net, no station guarantee, no complete telemetry, and no automatic trust.
+- **Megastructures & Jump Gates:** Shared infrastructure projects requiring massive frame production, rare dark-sector crystal runs, multi-station contracts, verified provenance, defended routes, and public contribution history.
+- **Permaweb Settlement:** Station histories, checkpoint roots, and discovery manifests become durable Arweave artifacts that clients can verify and replay from.
+- **External-Chain Adapters:** Solana smart contracts can wrap state roots, assets, and RATi Foundation bounty payouts, but remain adapters over Signal's native per-station history.
 - **Neural Scorers:** Replace deterministic baseline station policy with trained neural contract scorers, auditable via `/training/v1/station-policy-trace`.
 
 ---
@@ -162,7 +293,8 @@ Signal implements a robust off-chain identity and audit stack:
 | [CLAUDE.md](CLAUDE.md) | AI-oriented context, build commands, working style |
 | [CONSTRUCTION_PLAN.md](CONSTRUCTION_PLAN.md) | Construction loop design and implementation status |
 | [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) | Active improvement plan, ranked by impact/effort |
+| [docs/metaproduct.md](docs/metaproduct.md) | Canonical product-stack and backlog framing |
 | [docs/cargo-architecture.md](docs/cargo-architecture.md) | Canonical three-state cargo model |
 | [docs/decentralization.md](docs/decentralization.md) | Federation architecture, identity stack, chain log |
-| [docs/operator-onboarding.md](docs/operator-on and the rest of the docs | ... |
-
+| [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) | Federation/P2P synthesis and authority model |
+| [docs/operator-onboarding.md](docs/operator-onboarding.md) | Station operator guide |
