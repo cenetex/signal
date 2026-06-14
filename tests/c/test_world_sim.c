@@ -11,6 +11,13 @@ static int test_spawn_hauler_at(world_t *w, int station_idx) {
     return spawn_npc(w, station_idx, NPC_ROLE_HAULER);
 }
 
+static int test_active_ship_asset_count(const world_t *w) {
+    int count = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (w->ship_assets[i].active) count++;
+    return count;
+}
+
 static bool test_view_has_market_memory(const knowledge_view_t *view,
                                         uint8_t kind,
                                         int station_a,
@@ -102,6 +109,76 @@ TEST(test_world_reset_spawns_npcs) {
     ASSERT_EQ_INT(miners, 2);
     ASSERT_EQ_INT(haulers, 0);
     ASSERT_EQ_INT(tows, 3);
+}
+
+TEST(test_world_reset_ship_assets_back_active_hulls) {
+    WORLD_DECL;
+    world_reset(&w);
+    int assigned_assets = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        npc_ship_t *npc = &w.npc_ships[i];
+        if (!npc->active) continue;
+        ASSERT(npc->ship_asset_id != SHIP_ASSET_ID_NONE);
+        const ship_asset_t *asset =
+            world_ship_asset_by_id_const(&w, npc->ship_asset_id);
+        ASSERT(asset != NULL);
+        ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_GENESIS);
+        ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+        ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+        ASSERT_EQ_INT(asset->operator_slot, i);
+        assigned_assets++;
+    }
+    ASSERT_EQ_INT(assigned_assets, 5);
+    ASSERT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER) >= MAX_PLAYERS);
+}
+
+TEST(test_player_init_claims_station_loaner_asset) {
+    WORLD_DECL;
+    world_reset(&w);
+    int asset_count_before = test_active_ship_asset_count(&w);
+    int stored_before = world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER);
+
+    player_init_ship(&w.players[0], &w);
+
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER),
+                  stored_before - 1);
+    ASSERT(w.players[0].ship_asset_id != SHIP_ASSET_ID_NONE);
+    ship_asset_t *asset = world_ship_asset_by_id(&w, w.players[0].ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->owner_kind, SHIP_ASSET_OWNER_STATION);
+    ASSERT(asset->loaner);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(asset->operator_slot, 0);
+}
+
+TEST(test_player_respawn_retires_asset_and_claims_loaner) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    uint32_t old_asset_id = w.players[0].ship_asset_id;
+    ASSERT(old_asset_id != SHIP_ASSET_ID_NONE);
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
+    w.players[0].docked = false;
+    w.players[0].in_dock_range = false;
+    w.players[0].input.reset = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.players[0].ship_asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT(w.players[0].ship_asset_id != old_asset_id);
+    const ship_asset_t *old_asset =
+        world_ship_asset_by_id_const(&w, old_asset_id);
+    ASSERT(old_asset != NULL);
+    ASSERT(old_asset->destroyed);
+    ASSERT_EQ_INT(old_asset->status, SHIP_ASSET_STATUS_DESTROYED);
+    const ship_asset_t *new_asset =
+        world_ship_asset_by_id_const(&w, w.players[0].ship_asset_id);
+    ASSERT(new_asset != NULL);
+    ASSERT(new_asset->loaner);
+    ASSERT_EQ_INT(new_asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
 }
 
 TEST(test_world_reset_prospect_workers_leave_idle) {
@@ -451,13 +528,15 @@ TEST(test_hail_reports_no_station_in_range) {
 }
 
 TEST(test_dead_neural_worker_auto_respawns) {
-    /* Confirm replenish_npc_roster fires from step_npc_ships: kill a
-     * Kepler-homed tug, run sim past the respawn cooldown, expect
-     * a replacement to appear at the same home with full hull.
-     * Without this loop, hostile players could permanently sabotage
-     * a station's chain by repeatedly sniping its drones. */
+    /* Contract-origin hulls mean a dead worker is not replaced by a
+     * free spawn. With yard materials available, replenishment first
+     * queues a shipyard-local hull build, then claims the completed
+     * stored hull on a later roster tick. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+    station_t *kepler = &w->stations[1];
+    ASSERT(station_finished_mint(kepler, COMMODITY_FRAME, 2, NULL) == 2);
+    ASSERT(station_finished_mint(kepler, COMMODITY_TRACTOR_MODULE, 1, NULL) == 1);
     /* Find the Kepler-homed tug. */
     int target_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -485,14 +564,21 @@ TEST(test_dead_neural_worker_auto_respawns) {
     }
     ASSERT_EQ_INT(kepler_workers, 0);
 
-    /* Run past the 15 s respawn cooldown. SIM_DT = 1/120 s so 1900
-     * ticks ≈ 15.83 s — comfortable margin. */
+    /* First cooldown: demand is converted to a pending shipyard build,
+     * not an instant worker. */
     for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_INT(kepler->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(kepler->pending_ship_builds[0].hull_class,
+                  HULL_CLASS_DRONE_TRACTOR);
+    ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_TRACTOR_MODULE), 0);
+
+    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
 
     int kepler_workers_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
         if (w->npc_ships[n].home_station == 1) kepler_workers_after++;
     }
     ASSERT_EQ_INT(kepler_workers_after, 1);
@@ -765,9 +851,12 @@ TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     ASSERT_EQ_INT(dest->manifest.units[1].recipe_id, RECIPE_LEGACY_MIGRATE);
 }
 
-TEST(test_station_roster_respawns_resident_miner_and_tug_drones) {
+TEST(test_station_roster_uses_shipyard_contract_for_resident_drones) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+    station_t *helios = &w->stations[2];
+    ASSERT(station_finished_mint(helios, COMMODITY_FRAME, 2, NULL) == 2);
+    ASSERT(station_finished_mint(helios, COMMODITY_LASER_MODULE, 1, NULL) == 1);
     int target_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
@@ -792,24 +881,21 @@ TEST(test_station_roster_respawns_resident_miner_and_tug_drones) {
 
     for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
 
-    int helios_tows_after = 0;
-    int helios_miners_after = 0;
+    ASSERT_EQ_INT(helios->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(helios->pending_ship_builds[0].hull_class,
+                  HULL_CLASS_DRONE_LASER);
+
+    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
+
+    int helios_workers_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
         if (w->npc_ships[n].home_station != 2) continue;
-        if (w->npc_ships[n].role == NPC_ROLE_TOW) {
-            helios_tows_after++;
-            ASSERT_EQ_INT(w->npc_ships[n].ship.hull_class,
-                          HULL_CLASS_DRONE_TRACTOR);
-        }
-        if (w->npc_ships[n].role == NPC_ROLE_MINER) {
-            helios_miners_after++;
-            ASSERT(ship_has_module(&w->npc_ships[n].ship,
-                                   SHIP_MODULE_LASER));
-        }
+        helios_workers_after++;
+        ASSERT(w->npc_ships[n].ship_asset_id != SHIP_ASSET_ID_NONE);
     }
-    ASSERT_EQ_INT(helios_tows_after, 1);
-    ASSERT_EQ_INT(helios_miners_after, 1);
+    ASSERT_EQ_INT(helios_workers_after, 1);
+    ASSERT(world_station_stored_hull_count(w, 2, HULL_CLASS_DRONE_LASER) >= 1);
 }
 
 TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
@@ -868,6 +954,14 @@ TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
         add_module_at(st, MODULE_DOCK, 1, 0);
         add_module_at(st, MODULE_SIGNAL_RELAY, 1, 1);
         rebuild_station_services(st);
+        ASSERT(world_ship_asset_mint(w, HULL_CLASS_DRONE_LASER,
+                                     SHIP_ASSET_OWNER_STATION,
+                                     s, s, SHIP_ASSET_PROVENANCE_GENESIS,
+                                     false, s, NULL, NULL) != NULL);
+        ASSERT(world_ship_asset_mint(w, HULL_CLASS_DRONE_TRACTOR,
+                                     SHIP_ASSET_OWNER_STATION,
+                                     s, s, SHIP_ASSET_PROVENANCE_GENESIS,
+                                     false, s, NULL, NULL) != NULL);
     }
     rebuild_signal_chain(w);
 
@@ -5778,6 +5872,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
+    RUN(test_world_reset_ship_assets_back_active_hulls);
+    RUN(test_player_init_claims_station_loaner_asset);
+    RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_world_reset_prospect_workers_leave_idle);
     RUN(test_neural_worker_refits_only_from_home_credit_and_modules);
     RUN(test_neural_worker_posts_home_refit_import_contract);
@@ -5795,7 +5892,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_hauler_does_not_dock_from_outer_station_ring);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
-    RUN(test_station_roster_respawns_resident_miner_and_tug_drones);
+    RUN(test_station_roster_uses_shipyard_contract_for_resident_drones);
     RUN(test_frontier_outpost_roster_respects_virtual_logistics_budget);
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);

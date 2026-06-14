@@ -411,6 +411,55 @@ typedef struct {
     knowledge_view_t knowledge;
 } ship_t;
 
+enum {
+    SHIP_ASSET_ID_NONE = 0,
+};
+
+typedef enum {
+    SHIP_ASSET_OWNER_NONE = 0,
+    SHIP_ASSET_OWNER_STATION,
+    SHIP_ASSET_OWNER_PLAYER_PUBKEY,
+    SHIP_ASSET_OWNER_PLAYER_SESSION,
+} ship_asset_owner_kind_t;
+
+typedef enum {
+    SHIP_ASSET_STATUS_STORED = 0,
+    SHIP_ASSET_STATUS_ASSIGNED,
+    SHIP_ASSET_STATUS_DESTROYED,
+} ship_asset_status_t;
+
+typedef enum {
+    SHIP_ASSET_OPERATOR_NONE = 0,
+    SHIP_ASSET_OPERATOR_PLAYER,
+    SHIP_ASSET_OPERATOR_NPC,
+} ship_asset_operator_kind_t;
+
+typedef enum {
+    SHIP_ASSET_PROVENANCE_GENESIS = 0,
+    SHIP_ASSET_PROVENANCE_SHIPYARD,
+    SHIP_ASSET_PROVENANCE_LEGACY,
+} ship_asset_provenance_t;
+
+typedef struct {
+    bool active;
+    uint32_t asset_id;
+    hull_class_t hull_class;
+    ship_t ship;
+    uint8_t owner_kind;      /* ship_asset_owner_kind_t */
+    uint8_t status;          /* ship_asset_status_t */
+    uint8_t operator_kind;   /* ship_asset_operator_kind_t */
+    uint8_t provenance;      /* ship_asset_provenance_t */
+    int16_t owner_station;
+    int16_t custody_station;
+    int16_t operator_slot;
+    int16_t build_station;
+    bool loaner;
+    bool destroyed;
+    uint8_t _pad[2];
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} ship_asset_t;
+
 typedef enum {
     PRODUCT_FRAME,
     PRODUCT_LASER_MODULE,
@@ -1006,6 +1055,7 @@ typedef struct {
     bool active;
     npc_role_t role;
     npc_state_t state;
+    uint32_t ship_asset_id;
     /* Physics body. Sim_ship primitives mutate this directly so NPCs
      * and players run through the same code with the same shape.
      * Slice 5 of #294 dropped the npc-side duplicate fields (pos, vel,

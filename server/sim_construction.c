@@ -3,7 +3,6 @@
  * and outpost founding.  Extracted from game_sim.c.
  */
 #include "sim_construction.h"
-#include "sim_ai.h"
 #include "sim_nav.h"
 
 /* ------------------------------------------------------------------ */
@@ -280,12 +279,6 @@ void step_module_activation(world_t *w, float dt) {
                 m->build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
-                if (st->modules[i].type == MODULE_FURNACE)
-                    spawn_npc(w, s, NPC_ROLE_MINER);
-                if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
-                    spawn_npc(w, s, NPC_ROLE_HAULER);
-                if (st->modules[i].type == MODULE_SHIPYARD)
-                    spawn_npc(w, s, NPC_ROLE_MINER);
                 /* Close any construction supply contracts that targeted
                  * this module's build material, unless another scaffold
                  * at this station still needs it. */

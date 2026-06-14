@@ -825,11 +825,6 @@ static vec2 dock_berth_pos(const station_t *st, int berth);
 static float dock_berth_angle(const station_t *st, int berth);
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
 
-/* Repair pricing lives inline in try_repair_ship now. The standalone
- * helper used to be kept around speculatively but it's dead in every
- * TU and MSVC chokes on __attribute__((unused)) — drop it. Bring it
- * back as a real function the moment a caller materializes. */
-
 /* Asteroid lifecycle, dynamics, fracture → sim_asteroid.c
  * sim_can_smelt_ore, sim_step_refinery_production, sim_step_station_production,
  * step_furnace_smelting, step_module_flow, step_module_delivery
@@ -960,6 +955,351 @@ static void dock_ship(world_t *w, server_player_t *sp) {
                               &sp->ship.knowledge);
     }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
+}
+
+/* ================================================================== */
+/* Contract-origin ship assets                                        */
+/* ================================================================== */
+
+static bool ship_asset_session_nonzero(const uint8_t token[8]) {
+    if (!token) return false;
+    for (int i = 0; i < 8; i++) if (token[i]) return true;
+    return false;
+}
+
+static int player_slot_for_ptr(const world_t *w, const server_player_t *sp) {
+    if (!w || !sp) return -1;
+    if (sp < &w->players[0] || sp >= &w->players[MAX_PLAYERS]) return -1;
+    return (int)(sp - &w->players[0]);
+}
+
+static int shipyard_station_request_owner_code(int station_idx) {
+    if (station_idx < 0) station_idx = 0;
+    if (station_idx == 0) return INT8_MIN;
+    if (station_idx >= 127) return -1; /* int8 pending owner cannot encode 127+ */
+    return -1 - station_idx;
+}
+
+static bool shipyard_owner_code_is_station_request(int owner_code) {
+    return owner_code == INT8_MIN || owner_code <= -2;
+}
+
+static int shipyard_owner_code_station(int owner_code) {
+    if (owner_code == INT8_MIN) return 0;
+    if (owner_code <= -2) return -1 - owner_code;
+    return -1;
+}
+
+static void ship_asset_init_ship(ship_t *ship, hull_class_t hull_class) {
+    if (!ship) return;
+    ship_cleanup(ship);
+    memset(ship, 0, sizeof(*ship));
+    (void)ship_manifest_bootstrap(ship);
+    ship->hull_class = ((unsigned)hull_class < HULL_CLASS_COUNT)
+        ? hull_class
+        : HULL_CLASS_MINER;
+    ship->hull = hull_max_for_class(ship->hull_class);
+    ship->angle = PI_F * 0.5f;
+    ship->comm_range = 1500.0f;
+    memset(ship->towed_fragments, -1, sizeof(ship->towed_fragments));
+    memset(ship->towed_pods, -1, sizeof(ship->towed_pods));
+    ship->towed_scaffold = -1;
+}
+
+ship_asset_t *world_ship_asset_by_id(world_t *w, uint32_t asset_id) {
+    if (!w || asset_id == SHIP_ASSET_ID_NONE) return NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w->ship_assets[i];
+        if (asset->active && asset->asset_id == asset_id) return asset;
+    }
+    return NULL;
+}
+
+const ship_asset_t *world_ship_asset_by_id_const(const world_t *w, uint32_t asset_id) {
+    if (!w || asset_id == SHIP_ASSET_ID_NONE) return NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        if (asset->active && asset->asset_id == asset_id) return asset;
+    }
+    return NULL;
+}
+
+static ship_asset_t *world_ship_asset_free_slot(world_t *w) {
+    if (!w) return NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (!w->ship_assets[i].active) return &w->ship_assets[i];
+    }
+    return NULL;
+}
+
+static uint32_t world_ship_asset_next_id(world_t *w) {
+    if (!w) return SHIP_ASSET_ID_NONE;
+    if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
+        w->next_ship_asset_id = 1;
+    uint32_t id = w->next_ship_asset_id++;
+    if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
+        w->next_ship_asset_id = 1;
+    return id;
+}
+
+ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
+                                    ship_asset_owner_kind_t owner_kind,
+                                    int owner_station, int custody_station,
+                                    ship_asset_provenance_t provenance,
+                                    bool loaner, int build_station,
+                                    const uint8_t owner_pubkey[32],
+                                    const uint8_t owner_session[8]) {
+    ship_asset_t *asset = world_ship_asset_free_slot(w);
+    if (!asset) return NULL;
+    ship_cleanup(&asset->ship);
+    memset(asset, 0, sizeof(*asset));
+    asset->active = true;
+    asset->asset_id = world_ship_asset_next_id(w);
+    asset->hull_class = ((unsigned)hull_class < HULL_CLASS_COUNT)
+        ? hull_class
+        : HULL_CLASS_MINER;
+    asset->owner_kind = (uint8_t)owner_kind;
+    asset->status = SHIP_ASSET_STATUS_STORED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+    asset->operator_slot = -1;
+    asset->owner_station = (int16_t)owner_station;
+    asset->custody_station = (int16_t)custody_station;
+    asset->build_station = (int16_t)build_station;
+    asset->provenance = (uint8_t)provenance;
+    asset->loaner = loaner;
+    asset->destroyed = false;
+    if (owner_pubkey) memcpy(asset->owner_pubkey, owner_pubkey, 32);
+    if (owner_session) memcpy(asset->owner_session, owner_session, 8);
+    ship_asset_init_ship(&asset->ship, asset->hull_class);
+    return asset;
+}
+
+static bool ship_asset_copy_ship(ship_t *dst, const ship_t *src) {
+    if (!dst || !src) return false;
+    if (src->manifest.units || src->receipts_opaque)
+        return ship_copy(dst, src);
+    ship_cleanup(dst);
+    *dst = *src;
+    dst->manifest = (manifest_t){0};
+    dst->receipts_opaque = NULL;
+    return ship_manifest_bootstrap(dst);
+}
+
+int world_station_stored_hull_count(const world_t *w, int station_idx,
+                                    hull_class_t hull_class) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return 0;
+    int count = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active || asset->destroyed) continue;
+        if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (asset->custody_station != station_idx) continue;
+        if ((unsigned)hull_class < HULL_CLASS_COUNT &&
+            asset->hull_class != hull_class) continue;
+        count++;
+    }
+    return count;
+}
+
+bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp) {
+    if (!w || !sp || sp->ship_asset_id == SHIP_ASSET_ID_NONE) return false;
+    ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
+    if (!asset || asset->destroyed ||
+        asset->status != SHIP_ASSET_STATUS_ASSIGNED ||
+        asset->operator_kind != SHIP_ASSET_OPERATOR_PLAYER) {
+        return false;
+    }
+    if (!ship_asset_copy_ship(&asset->ship, &sp->ship)) return false;
+    asset->hull_class = sp->ship.hull_class;
+    asset->operator_slot = (int16_t)player_slot_for_ptr(w, sp);
+    if (sp->docked && sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
+        asset->custody_station = (int16_t)sp->current_station;
+    return true;
+}
+
+bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return false;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active || npc->ship_asset_id == SHIP_ASSET_ID_NONE) return false;
+    ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
+    if (!asset || asset->destroyed ||
+        asset->status != SHIP_ASSET_STATUS_ASSIGNED ||
+        asset->operator_kind != SHIP_ASSET_OPERATOR_NPC) {
+        return false;
+    }
+    const ship_t *src = world_npc_ship_for(w, npc_slot);
+    if (!src) src = &npc->ship;
+    if (!ship_asset_copy_ship(&asset->ship, src)) return false;
+    asset->hull_class = asset->ship.hull_class;
+    asset->operator_slot = (int16_t)npc_slot;
+    if (npc->state == NPC_STATE_DOCKED &&
+        npc->home_station >= 0 && npc->home_station < MAX_STATIONS) {
+        asset->custody_station = (int16_t)npc->home_station;
+    }
+    return true;
+}
+
+static bool ship_asset_player_matches_owner(const ship_asset_t *asset,
+                                            const server_player_t *sp) {
+    if (!asset || !sp) return false;
+    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY &&
+        server_player_can_use_pubkey_persistence(sp)) {
+        return memcmp(asset->owner_pubkey, sp->pubkey, 32) == 0;
+    }
+    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION &&
+        ship_asset_session_nonzero(sp->session_token)) {
+        return memcmp(asset->owner_session, sp->session_token, 8) == 0;
+    }
+    return false;
+}
+
+static bool ship_asset_assign_to_player(world_t *w, int player_slot,
+                                        ship_asset_t *asset, int station_idx) {
+    if (!w || !asset || player_slot < 0 || player_slot >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_slot];
+    if (asset->destroyed || asset->status == SHIP_ASSET_STATUS_DESTROYED)
+        return false;
+    if (asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+        !(asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+          asset->operator_slot == player_slot)) {
+        return false;
+    }
+    if (sp->ship_asset_id != SHIP_ASSET_ID_NONE &&
+        sp->ship_asset_id != asset->asset_id) {
+        ship_asset_t *old_asset = world_ship_asset_by_id(w, sp->ship_asset_id);
+        if (old_asset && !old_asset->destroyed &&
+            old_asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            old_asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+            old_asset->operator_slot == player_slot) {
+            (void)ship_asset_copy_ship(&old_asset->ship, &sp->ship);
+            old_asset->status = SHIP_ASSET_STATUS_STORED;
+            old_asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+            old_asset->operator_slot = -1;
+            if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
+                old_asset->custody_station = (int16_t)sp->current_station;
+        }
+    }
+    if (!ship_asset_copy_ship(&sp->ship, &asset->ship)) return false;
+    sp->ship_asset_id = asset->asset_id;
+    if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
+        sp->ship.hull_class = asset->hull_class;
+    if (!(sp->ship.hull > 0.0f))
+        sp->ship.hull = ship_max_hull(&sp->ship);
+    if (sp->ship.comm_range <= 0.0f)
+        sp->ship.comm_range = 1500.0f;
+    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+    sp->ship.towed_count = 0;
+    sp->ship.towed_pod_count = 0;
+    sp->ship.towed_scaffold = -1;
+    sp->ship.tractor_active = false;
+    sp->current_station = (station_idx >= 0 && station_idx < MAX_STATIONS)
+        ? station_idx
+        : asset->custody_station;
+    if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
+        !station_exists(&w->stations[sp->current_station])) {
+        sp->current_station = 0;
+    }
+    sp->nearby_station = sp->current_station;
+    sp->docked = true;
+    sp->in_dock_range = true;
+    sp->docking_approach = false;
+    anchor_ship_in_station(sp, w);
+    asset->hull_class = sp->ship.hull_class;
+    asset->status = SHIP_ASSET_STATUS_ASSIGNED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;
+    asset->operator_slot = (int16_t)player_slot;
+    asset->custody_station = (int16_t)sp->current_station;
+    (void)world_ship_asset_sync_from_player(w, sp);
+    gossip_dock_handshake(w, sp->current_station,
+                          sp->ship.known_contracts,
+                          &sp->ship.known_contract_count,
+                          SHIP_KNOWN_CONTRACT_CAP,
+                          &sp->ship.knowledge);
+    return true;
+}
+
+bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+    server_player_t *sp = &w->players[player_slot];
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx])) {
+        station_idx = 0;
+    }
+
+    ship_asset_t *bound = world_ship_asset_by_id(w, sp->ship_asset_id);
+    if (bound && !bound->destroyed &&
+        (bound->status == SHIP_ASSET_STATUS_STORED ||
+         (bound->status == SHIP_ASSET_STATUS_ASSIGNED &&
+          bound->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+          bound->operator_slot == player_slot))) {
+        return ship_asset_assign_to_player(w, player_slot, bound, station_idx);
+    }
+
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+            ship_asset_t *asset = &w->ship_assets[i];
+            if (!asset->active || asset->destroyed) continue;
+            if (asset->status != SHIP_ASSET_STATUS_STORED &&
+                !(asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+                  asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+                  asset->operator_slot == player_slot)) {
+                continue;
+            }
+            if (!ship_asset_player_matches_owner(asset, sp)) continue;
+            if (pass == 0 && asset->custody_station != station_idx) continue;
+            return ship_asset_assign_to_player(w, player_slot, asset,
+                                               asset->custody_station);
+        }
+    }
+
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active || asset->destroyed) continue;
+        if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (asset->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
+        if (!asset->loaner) continue;
+        if (asset->custody_station != station_idx) continue;
+        return ship_asset_assign_to_player(w, player_slot, asset, station_idx);
+    }
+
+    (void)shipyard_queue_station_hull_request(w, station_idx, HULL_CLASS_MINER);
+    return false;
+}
+
+static void ship_asset_retire_player_asset(world_t *w, server_player_t *sp) {
+    if (!w || !sp || sp->ship_asset_id == SHIP_ASSET_ID_NONE) return;
+    ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
+    if (!asset) return;
+    (void)ship_asset_copy_ship(&asset->ship, &sp->ship);
+    asset->destroyed = true;
+    asset->status = SHIP_ASSET_STATUS_DESTROYED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+    asset->operator_slot = -1;
+    sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+}
+
+bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
+    if (!w) return false;
+    bool ok = true;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active || npc->ship_asset_id != SHIP_ASSET_ID_NONE) continue;
+        ship_asset_t *asset = world_ship_asset_mint(
+            w, npc->ship.hull_class, SHIP_ASSET_OWNER_STATION,
+            npc->home_station, npc->home_station,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
+        if (!asset) { ok = false; continue; }
+        const ship_t *src = world_npc_ship_for(w, n);
+        if (!src) src = &npc->ship;
+        (void)ship_asset_copy_ship(&asset->ship, src);
+        asset->status = SHIP_ASSET_STATUS_ASSIGNED;
+        asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
+        asset->operator_slot = (int16_t)n;
+        npc->ship_asset_id = asset->asset_id;
+    }
+    return ok;
 }
 
 static bool is_finished_good(commodity_t c);
@@ -1153,6 +1493,7 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     };
     memcpy(death_ev.death.killer_token, sp->last_damage_killer_token, 8);
     emit_event(w, death_ev);
+    ship_asset_retire_player_asset(w, sp);
     drop_ship_cargo_pods(w, sp);
     /* Reset attribution for next life. */
     memset(sp->last_damage_killer_token, 0, 8);
@@ -1168,25 +1509,28 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     }
     sp->ship.towed_pod_count = 0;
     memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-    sp->ship.hull = ship_max_hull(&sp->ship);
-    sp->ship.angle = PI_F * 0.5f;
-    sp->ship.stat_ore_mined = 0.0f;
-    sp->ship.stat_credits_earned = 0.0f;
-    sp->ship.stat_credits_spent = 0.0f;
-    sp->ship.stat_asteroids_fractured = 0;
-    /* Reset upgrades on death -- ship comes back stock. The modules
-     * (laser/hold/tractor) the player accumulated are part of the
-     * progression loop they need to re-earn through trade. */
-    sp->ship.mining_level  = 0;
-    sp->ship.hold_level    = 0;
-    sp->ship.tractor_level = 0;
     sp->current_station = best;
     sp->nearby_station = best;
     sp->dock_berth = 0;
-    sp->ship.pos = dock_berth_pos(&w->stations[best], 0);
-    dock_ship(w, sp);
-    SIM_LOG("[sim] player %d emergency recovered at station %d (fee %d)\n",
-            sp->id, best, fee);
+    sp->docked = true;
+    sp->in_dock_range = true;
+    sp->docking_approach = false;
+    if (!ship_asset_claim_for_player(w, sp->id, best)) {
+        ship_cleanup(&sp->ship);
+        memset(&sp->ship, 0, sizeof(sp->ship));
+        (void)ship_manifest_bootstrap(&sp->ship);
+        sp->ship.hull_class = HULL_CLASS_MINER;
+        sp->ship.hull = 0.0f;
+        sp->ship.angle = PI_F * 0.5f;
+        sp->ship.comm_range = 1500.0f;
+        memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+        memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+        sp->ship.towed_scaffold = -1;
+        sp->ship.pos = dock_berth_pos(&w->stations[best], 0);
+        sp->ship.vel = v2(0.0f, 0.0f);
+    }
+    SIM_LOG("[sim] player %d emergency recovered at station %d (fee %d, asset %u)\n",
+            sp->id, best, fee, sp->ship_asset_id);
 }
 
 /* Apply hull damage with optional kill attribution. killer_token=NULL or
@@ -5699,8 +6043,9 @@ bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) 
            station_finished_count(st, COMMODITY_TRACTOR_MODULE) >= tractors;
 }
 
-bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
-                                    hull_class_t hull_class) {
+static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
+                                      hull_class_t hull_class,
+                                      bool debit_player) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
     station_t *st = &w->stations[station_idx];
     if (st->pending_ship_build_count >= 4) return false;
@@ -5722,7 +6067,7 @@ bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
         return false;
     }
 
-    if (owner >= 0 && owner < MAX_PLAYERS) {
+    if (debit_player && owner >= 0 && owner < MAX_PLAYERS) {
         server_player_t *sp = &w->players[owner];
         if (sp->connected && sp->docked && sp->current_station == station_idx)
             player_ledger_force_debit_at(sp, st, commission_cost);
@@ -5735,22 +6080,54 @@ bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
     return true;
 }
 
+bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
+                                    hull_class_t hull_class) {
+    return shipyard_queue_hull_build(w, station_idx, owner, hull_class, true);
+}
+
+bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
+                                         hull_class_t hull_class) {
+    if (!w || requester_station < 0 || requester_station >= MAX_STATIONS)
+        return false;
+    if (!station_exists(&w->stations[requester_station])) return false;
+    int owner_code = shipyard_station_request_owner_code(requester_station);
+    if (!shipyard_owner_code_is_station_request(owner_code)) return false;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int p = 0; p < st->pending_ship_build_count; p++) {
+            if (st->pending_ship_builds[p].owner == (int8_t)owner_code &&
+                st->pending_ship_builds[p].hull_class == hull_class) {
+                return true;
+            }
+        }
+    }
+
+    int best_station = -1;
+    float best_d = 1e18f;
+    vec2 requester_pos = w->stations[requester_station].pos;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        if (st->pending_ship_build_count >= 4) continue;
+        if (!shipyard_can_commission_hull(st, hull_class)) continue;
+        float d = (s == requester_station)
+            ? -1.0f
+            : v2_dist_sq(requester_pos, st->pos);
+        if (d < best_d) {
+            best_d = d;
+            best_station = s;
+        }
+    }
+    if (best_station < 0) return false;
+    return shipyard_queue_hull_build(w, best_station, owner_code,
+                                     hull_class, false);
+}
+
 static float shipyard_hull_build_time(hull_class_t hull_class) {
     const hull_def_t *def = hull_def_for_class(hull_class);
     return 10.0f + 5.0f * (float)def->module_slots;
-}
-
-static void shipyard_install_hull_for_player(world_t *w, int station_idx,
-                                             int owner, hull_class_t hull_class) {
-    if (!w || owner < 0 || owner >= MAX_PLAYERS) return;
-    server_player_t *sp = &w->players[owner];
-    if (!sp->connected || !sp->docked || sp->current_station != station_idx) return;
-    float old_max = ship_max_hull(&sp->ship);
-    float ratio = old_max > 0.0f ? sp->ship.hull / old_max : 1.0f;
-    if (ratio < 0.25f) ratio = 0.25f;
-    if (ratio > 1.0f) ratio = 1.0f;
-    sp->ship.hull_class = hull_class;
-    sp->ship.hull = ship_max_hull(&sp->ship) * ratio;
 }
 
 static void step_shipyard_shipbuilding(world_t *w, float dt) {
@@ -5767,7 +6144,35 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
 
         hull_class_t hull_class = st->pending_ship_builds[0].hull_class;
         int owner = st->pending_ship_builds[0].owner;
-        shipyard_install_hull_for_player(w, s, owner, hull_class);
+        if (owner >= 0 && owner < MAX_PLAYERS) {
+            server_player_t *sp = &w->players[owner];
+            ship_asset_owner_kind_t owner_kind =
+                server_player_can_use_pubkey_persistence(sp)
+                    ? SHIP_ASSET_OWNER_PLAYER_PUBKEY
+                    : SHIP_ASSET_OWNER_PLAYER_SESSION;
+            const uint8_t *owner_pubkey =
+                owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
+            const uint8_t *owner_session =
+                owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
+            ship_asset_t *asset = world_ship_asset_mint(
+                w, hull_class, owner_kind, -1, s,
+                SHIP_ASSET_PROVENANCE_SHIPYARD, false, s,
+                owner_pubkey, owner_session);
+            if (asset && sp->connected && sp->docked && sp->current_station == s) {
+                (void)ship_asset_assign_to_player(w, owner, asset, s);
+            }
+        } else {
+            int target_station = shipyard_owner_code_station(owner);
+            if (target_station < 0 || target_station >= MAX_STATIONS ||
+                !station_exists(&w->stations[target_station])) {
+                target_station = s;
+            }
+            (void)world_ship_asset_mint(
+                w, hull_class, SHIP_ASSET_OWNER_STATION,
+                target_station, target_station,
+                SHIP_ASSET_PROVENANCE_SHIPYARD,
+                hull_class == HULL_CLASS_MINER, s, NULL, NULL);
+        }
         for (int i = 0; i < st->pending_ship_build_count - 1; i++)
             st->pending_ship_builds[i] = st->pending_ship_builds[i + 1];
         st->pending_ship_build_count--;
@@ -6924,6 +7329,15 @@ void world_sim_step(world_t *w, float dt) {
             sync_npc_paired_ship_physics(w, n);
         }
     }
+
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (w->players[p].connected)
+            (void)world_ship_asset_sync_from_player(w, &w->players[p]);
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w->npc_ships[n].active)
+            (void)world_ship_asset_sync_from_npc(w, n);
+    }
 }
 
 /* ================================================================== */
@@ -6939,6 +7353,7 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->player_only_mode = true;  /* suppress mining HP and world RNG mutation */
     step_player(w, sp, dt);
     w->player_only_mode = false;
+    (void)world_ship_asset_sync_from_player(w, sp);
 }
 
 /* ================================================================== */
@@ -6948,6 +7363,8 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 void world_cleanup(world_t *w) {
     for (int i = 0; i < MAX_PLAYERS; i++)
         ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        ship_cleanup(&w->ship_assets[i].ship);
     for (int i = 0; i < MAX_SHIPS; i++)
         ship_cleanup(&w->ships[i]);
     for (int i = 0; i < MAX_STATIONS; i++)
@@ -7124,12 +7541,49 @@ void world_seed_station_chain_genesis(world_t *w) {
     }
 }
 
+static void world_seed_genesis_ship_assets(world_t *w) {
+    if (!w) return;
+    if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
+        w->next_ship_asset_id = 1;
+
+    (void)world_ship_asset_mint(
+        w, HULL_CLASS_DRONE_LASER, SHIP_ASSET_OWNER_STATION,
+        0, 0, SHIP_ASSET_PROVENANCE_GENESIS, false, 0, NULL, NULL);
+    (void)world_ship_asset_mint(
+        w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
+        0, 0, SHIP_ASSET_PROVENANCE_GENESIS, false, 0, NULL, NULL);
+    (void)world_ship_asset_mint(
+        w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
+        1, 1, SHIP_ASSET_PROVENANCE_GENESIS, false, 1, NULL, NULL);
+    (void)world_ship_asset_mint(
+        w, HULL_CLASS_DRONE_LASER, SHIP_ASSET_OWNER_STATION,
+        2, 2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2, NULL, NULL);
+    (void)world_ship_asset_mint(
+        w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
+        2, 2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2, NULL, NULL);
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        (void)world_ship_asset_mint(
+            w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
+            0, 0, SHIP_ASSET_PROVENANCE_GENESIS, true, 0, NULL, NULL);
+    }
+    for (int s = 1; s < SIGNAL_ROOT_STATION_COUNT; s++) {
+        for (int i = 0; i < 2; i++) {
+            (void)world_ship_asset_mint(
+                w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
+                s, s, SHIP_ASSET_PROVENANCE_GENESIS, true, s, NULL, NULL);
+        }
+    }
+}
+
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
     sparse_cell_entry_t *grid_entries = w->asteroid_grid.entries;
     for (int i = 0; i < MAX_PLAYERS; i++)
         ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        ship_cleanup(&w->ship_assets[i].ship);
     for (int i = 0; i < MAX_SHIPS; i++)
         ship_cleanup(&w->ships[i]);
     for (int i = 0; i < MAX_STATIONS; i++)
@@ -7417,11 +7871,12 @@ void world_reset(world_t *w) {
      * inter-station chain online so tests and fresh worlds do not wait
      * through staggered replacement timers. */
     {
-        (void)spawn_npc(w, 0, NPC_ROLE_MINER);
-        (void)spawn_npc(w, 0, NPC_ROLE_TOW);
-        (void)spawn_npc(w, 1, NPC_ROLE_TOW);
-        (void)spawn_npc(w, 2, NPC_ROLE_MINER);
-        (void)spawn_npc(w, 2, NPC_ROLE_TOW);
+        world_seed_genesis_ship_assets(w);
+        (void)ship_asset_claim_for_npc(w, 0, NPC_ROLE_MINER);
+        (void)ship_asset_claim_for_npc(w, 0, NPC_ROLE_TOW);
+        (void)ship_asset_claim_for_npc(w, 1, NPC_ROLE_TOW);
+        (void)ship_asset_claim_for_npc(w, 2, NPC_ROLE_MINER);
+        (void)ship_asset_claim_for_npc(w, 2, NPC_ROLE_TOW);
     }
 
     /* Bootstrap each station's per-ring angular velocity to its drift
@@ -7583,17 +8038,12 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
 /* ================================================================== */
 
 void player_init_ship(server_player_t *sp, world_t *w) {
+    int player_slot = player_slot_for_ptr(w, sp);
+    uint32_t prior_asset_id = sp ? sp->ship_asset_id : SHIP_ASSET_ID_NONE;
     ship_cleanup(&sp->ship);
     memset(&sp->ship, 0, sizeof(sp->ship));
     (void)ship_manifest_bootstrap(&sp->ship);
-    sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull       = hull_max_for_class(HULL_CLASS_MINER);
-    sp->ship.angle      = PI_F * 0.5f;
-    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-    sp->ship.towed_scaffold = -1;
-    sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
-    sp->ship.comm_range     = 1500.0f; /* H-ping reach — roughly one screen */
+    sp->ship_asset_id = prior_asset_id;
     sp->docked          = true;
     sp->current_station = 0;
     /* Seed credits are granted by player_seed_credits() AFTER session_token is set.
@@ -7612,11 +8062,35 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->autopilot_station_target = -1;
     sp->autopilot_cargo = COMMODITY_COUNT;
     sp->autopilot_timer = 0.0f;
+
+    if (player_slot >= 0 && ship_asset_claim_for_player(w, player_slot, 0)) {
+        return;
+    }
+
+    if (player_slot >= 0) {
+        sp->ship.hull_class = HULL_CLASS_MINER;
+        sp->ship.hull = 0.0f;
+        sp->ship.angle = PI_F * 0.5f;
+        sp->ship.comm_range = 1500.0f;
+        memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+        memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+        sp->ship.towed_scaffold = -1;
+        anchor_ship_in_station(sp, w);
+        return;
+    }
+
+    sp->ship.hull_class = HULL_CLASS_MINER;
+    sp->ship.hull       = hull_max_for_class(HULL_CLASS_MINER);
+    sp->ship.angle      = PI_F * 0.5f;
+    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+    sp->ship.towed_scaffold = -1;
+    sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
+    sp->ship.comm_range     = 1500.0f; /* H-ping reach — roughly one screen */
     anchor_ship_in_station(sp, w);
-    /* The player spawns docked but doesn't go through dock_ship() —
-     * run the gossip handshake here so their known_contracts is
-     * populated from the home station's pool right away. Otherwise
-     * the contract menu is empty until their first launch + redock. */
+    /* Stack-only harness players are not backed by world player slots,
+     * so they keep the old direct bootstrap. Real players must bind a
+     * durable ship_asset_t above. */
     if (sp->docked && sp->current_station >= 0 &&
         sp->current_station < MAX_STATIONS) {
         gossip_dock_handshake(w, sp->current_station,

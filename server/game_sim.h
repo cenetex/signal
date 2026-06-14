@@ -28,6 +28,7 @@ enum {
     /* #294 Slice 8: unified NPC ship_t pool. Sized for NPCs only today;
      * widening to include players is a later slice. */
     MAX_SHIPS = MAX_NPC_SHIPS,
+    MAX_SHIP_ASSETS = 128,
     MAX_DELIVERY_SHIPMENTS = 24,
     MAX_DELIVERY_BOUND_CARGO = 16,
     MAX_DESTROYED_ROCKS = 4096,
@@ -223,6 +224,7 @@ typedef struct {
     bool session_ready;       /* true once client sends SESSION message */
     bool grace_period;        /* true while waiting for reconnect after disconnect */
     float grace_timer;        /* seconds remaining in grace window */
+    uint32_t ship_asset_id;   /* SHIP_ASSET_ID_NONE until bound to a hull asset */
     ship_t ship;
     input_intent_t input;
     float boost_hold_timer;    /* seconds SHIFT has been held — drives "takeoff" burst */
@@ -493,6 +495,11 @@ typedef struct {
     } destroyed_rocks[MAX_DESTROYED_ROCKS];
     uint16_t destroyed_rock_count;
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
+    /* Contract-origin hull assets. These are the durable economic
+     * records that say a physical hull exists; player/NPC ship fields
+     * mirror the assigned asset for protocol compatibility in v1. */
+    ship_asset_t ship_assets[MAX_SHIP_ASSETS];
+    uint32_t next_ship_asset_id;
     /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
      * here; the paired character_t.ship_idx points to it. Players still
      * carry an inline ship_t in server_player_t — converging is a later
@@ -718,6 +725,24 @@ bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class);
 bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
                                     hull_class_t hull_class);
+ship_asset_t *world_ship_asset_by_id(world_t *w, uint32_t asset_id);
+const ship_asset_t *world_ship_asset_by_id_const(const world_t *w, uint32_t asset_id);
+ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
+                                    ship_asset_owner_kind_t owner_kind,
+                                    int owner_station, int custody_station,
+                                    ship_asset_provenance_t provenance,
+                                    bool loaner, int build_station,
+                                    const uint8_t owner_pubkey[32],
+                                    const uint8_t owner_session[8]);
+int world_station_stored_hull_count(const world_t *w, int station_idx,
+                                    hull_class_t hull_class);
+bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp);
+bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot);
+bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
+int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
+bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
+                                         hull_class_t hull_class);
+bool world_ship_assets_ensure_legacy_bindings(world_t *w);
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind);
 bool world_save(const world_t *w, const char *path);

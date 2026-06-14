@@ -75,5 +75,10 @@ uint64_t signal_npc_worker_brain_teacher_decision_count(void);
 const char *signal_npc_worker_option_name(signal_npc_worker_option_t option);
 int signal_npc_worker_brain_choose(const signal_npc_worker_candidate_t *candidates,
                                    int count);
+int signal_npc_worker_brain_choose_with_scores(
+    const signal_npc_worker_candidate_t *candidates,
+    int count,
+    double *scores,
+    int score_count);
 
 #endif /* SIGNAL_NPC_WORKER_BRAIN_H */

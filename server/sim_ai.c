@@ -30,6 +30,7 @@
 #include "station_authority.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Remove up to `n` cargo units of `c` from a station's manifest.
@@ -1514,7 +1515,7 @@ static bool replenish_npc_roster(world_t *w) {
         }
     }
     if (best_station < 0) return false;
-    int slot = spawn_npc(w, best_station, best_role);
+    int slot = ship_asset_claim_for_npc(w, best_station, best_role);
     return slot >= 0;
 }
 
@@ -1579,28 +1580,64 @@ void rebuild_characters_from_npcs(world_t *w) {
     }
 }
 
-/* Spawn an NPC at a station. Returns slot index or -1 if full. */
-int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
+static int npc_alloc_free_slot(const world_t *w) {
+    if (!w) return -1;
     int slot = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!w->npc_ships[i].active) { slot = i; break; }
     }
-    if (slot < 0) return -1;
+    return slot;
+}
+
+int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
     station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return -1;
     hull_class_t hc = npc_resident_hull_class_for_role(role);
+    ship_asset_t *asset = NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *candidate = &w->ship_assets[i];
+        if (!candidate->active || candidate->destroyed) continue;
+        if (candidate->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (candidate->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
+        if (candidate->loaner) continue;
+        if (candidate->custody_station != station_idx) continue;
+        if (candidate->hull_class != hc) continue;
+        asset = candidate;
+        break;
+    }
+    if (!asset) {
+        (void)shipyard_queue_station_hull_request(w, station_idx, hc);
+        return -1;
+    }
+
+    int slot = npc_alloc_free_slot(w);
+    if (slot < 0) return -1;
     npc_ship_t *npc = &w->npc_ships[slot];
+    ship_cleanup(&npc->ship);
     memset(npc, 0, sizeof(*npc));
     /* Clear stale path from previous occupant of this slot. */
     *nav_npc_path(slot) = (nav_path_t){0};
     npc->active = true;
     npc->role = role;
-    npc->ship.hull_class = hc;
+    if (!ship_copy(&npc->ship, &asset->ship)) {
+        memset(&npc->ship, 0, sizeof(npc->ship));
+        (void)ship_manifest_bootstrap(&npc->ship);
+        npc->ship.hull_class = hc;
+        npc->ship.hull = hull_max_for_class(hc);
+    }
+    if (npc->ship.hull_class != hc)
+        npc->ship.hull_class = hc;
     npc->state = NPC_STATE_DOCKED;
     npc->ship.pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + hull_def_for_class(hc)->ship_radius + 50.0f)));
     npc->ship.angle = PI_F * 0.5f;
+    npc->ship.vel = v2(0.0f, 0.0f);
     npc->target_asteroid = -1;
     npc->towed_fragment = -1;
     npc->towed_scaffold = -1;
+    npc->ship.towed_scaffold = -1;
+    memset(npc->ship.towed_fragments, -1, sizeof(npc->ship.towed_fragments));
+    memset(npc->ship.towed_pods, -1, sizeof(npc->ship.towed_pods));
     npc->home_station = station_idx;
     npc->dest_station = station_idx;
     npc->pickup_station = -1;
@@ -1610,13 +1647,14 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->hnn_market_decay_tick = 0;
     npc->state_timer = (role == NPC_ROLE_MINER || role == NPC_ROLE_TOW)
         ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
-    npc->hull = npc_max_hull(npc);
+    npc->hull = npc->ship.hull > 0.0f ? npc->ship.hull : npc_max_hull(npc);
     npc->brain_mode = (role == NPC_ROLE_MINER ||
                        role == NPC_ROLE_HAULER ||
                        role == NPC_ROLE_TOW)
         ? SERVER_BRAIN_MODE_NEURAL_FLIGHT
         : SERVER_BRAIN_MODE_NONE;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
+    npc->ship_asset_id = asset->asset_id;
     /* Per-NPC economic identity. Bytes:
      *   [0..2] 'NPC' magic (distinguishes from player session_tokens
      *          which are 8 random bytes from the session handshake)
@@ -1645,6 +1683,11 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
      * it yet (#294 Slice 6). If the pool is somehow exhausted we still
      * spawn the NPC; this is best-effort during the transition. */
     (void)character_alloc_for_npc(w, slot, npc);
+    asset->status = SHIP_ASSET_STATUS_ASSIGNED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
+    asset->operator_slot = (int16_t)slot;
+    asset->custody_station = (int16_t)station_idx;
+    (void)world_ship_asset_sync_from_npc(w, slot);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_NPC_SPAWNED,
         .npc_spawned = { .slot = slot, .role = role, .home_station = station_idx },
@@ -1654,6 +1697,21 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
             role == NPC_ROLE_HAULER ? "hauler" : "npc",
             station_idx, slot);
     return slot;
+}
+
+/* Test/bootstrap shim. Production roster replenishment claims existing
+ * assets; this helper mints a legacy asset first so older harness code
+ * and explicit worker-trace fixtures still create an observable NPC. */
+int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
+    int slot = ship_asset_claim_for_npc(w, station_idx, role);
+    if (slot >= 0) return slot;
+    hull_class_t hc = npc_resident_hull_class_for_role(role);
+    ship_asset_t *asset = world_ship_asset_mint(
+        w, hc, SHIP_ASSET_OWNER_STATION,
+        station_idx, station_idx,
+        SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
+    if (!asset) return -1;
+    return ship_asset_claim_for_npc(w, station_idx, role);
 }
 
 static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
@@ -3618,6 +3676,159 @@ static signal_npc_worker_option_t npc_worker_import_option_for_commodity(commodi
     }
 }
 
+static const char *npc_worker_role_name(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER: return "miner";
+    case NPC_ROLE_HAULER: return "hauler";
+    case NPC_ROLE_TOW: return "tow";
+    default: return "worker";
+    }
+}
+
+static signal_npc_worker_option_t npc_worker_option_for_offer(
+    const npc_job_offer_t *offer) {
+    if (!offer) return SIGNAL_NPC_WORKER_OPTION_WAIT;
+    if (offer->kind == NPC_JOB_MINE)
+        return SIGNAL_NPC_WORKER_OPTION_MINE_HOME;
+    if (offer->kind == NPC_JOB_HAUL &&
+        offer->reason == INSPECT_JOB_REASON_GOSSIP_COURIER)
+        return SIGNAL_NPC_WORKER_OPTION_GOSSIP_COURIER;
+    if (offer->kind == NPC_JOB_HAUL)
+        return SIGNAL_NPC_WORKER_OPTION_HAUL_CONTRACT;
+    return SIGNAL_NPC_WORKER_OPTION_WAIT;
+}
+
+typedef enum {
+    NPC_WORKER_BRAIN_MODE_SHADOW = 0,
+    NPC_WORKER_BRAIN_MODE_MIXED,
+    NPC_WORKER_BRAIN_MODE_ACTIVE,
+} npc_worker_brain_mode_t;
+
+static npc_worker_brain_mode_t npc_worker_brain_mode(void) {
+    static int initialized = 0;
+    static npc_worker_brain_mode_t mode = NPC_WORKER_BRAIN_MODE_SHADOW;
+    if (initialized) return mode;
+    initialized = 1;
+    const char *name = getenv("SIGNAL_NPC_WORKER_BRAIN_MODE");
+    if (!name || name[0] == '\0' || strcmp(name, "shadow") == 0) {
+        mode = NPC_WORKER_BRAIN_MODE_SHADOW;
+    } else if (strcmp(name, "mixed") == 0) {
+        mode = NPC_WORKER_BRAIN_MODE_MIXED;
+    } else if (strcmp(name, "active") == 0) {
+        mode = NPC_WORKER_BRAIN_MODE_ACTIVE;
+    } else {
+        fprintf(stderr, "[WARN] invalid SIGNAL_NPC_WORKER_BRAIN_MODE=%s "
+                        "(use shadow, mixed, or active); using shadow\n",
+                name);
+        mode = NPC_WORKER_BRAIN_MODE_SHADOW;
+    }
+    return mode;
+}
+
+static const char *npc_worker_brain_mode_name(npc_worker_brain_mode_t mode) {
+    switch (mode) {
+    case NPC_WORKER_BRAIN_MODE_MIXED: return "mixed";
+    case NPC_WORKER_BRAIN_MODE_ACTIVE: return "active";
+    case NPC_WORKER_BRAIN_MODE_SHADOW:
+    default: return "shadow";
+    }
+}
+
+static double npc_worker_activation_margin_threshold(void) {
+    static int initialized = 0;
+    static double threshold = 1.0;
+    if (initialized) return threshold;
+    initialized = 1;
+    const char *raw = getenv("SIGNAL_NPC_WORKER_BRAIN_MARGIN");
+    if (raw && raw[0] != '\0') {
+        char *end = NULL;
+        double parsed = strtod(raw, &end);
+        if (end != raw && *end == '\0' && isfinite(parsed) && parsed >= 0.0)
+            threshold = parsed;
+        else
+            fprintf(stderr, "[WARN] invalid SIGNAL_NPC_WORKER_BRAIN_MARGIN=%s; "
+                            "using %.3f\n",
+                    raw, threshold);
+    }
+    return threshold;
+}
+
+static FILE *npc_worker_trace_file(void) {
+    static int initialized = 0;
+    static FILE *fp = NULL;
+    if (initialized) return fp;
+    initialized = 1;
+    const char *path = getenv("SIGNAL_NPC_WORKER_TRACE");
+    if (!path || path[0] == '\0') return NULL;
+    fp = fopen(path, "ab");
+    if (!fp) {
+        fprintf(stderr, "[WARN] failed to open SIGNAL_NPC_WORKER_TRACE=%s\n",
+                path);
+    }
+    return fp;
+}
+
+static void npc_worker_write_trace(
+    const world_t *w,
+    int npc_slot,
+    const npc_ship_t *npc,
+    const signal_npc_worker_candidate_t *candidates,
+    const double *scores,
+    int count,
+    int selected,
+    signal_npc_worker_option_t heuristic_option,
+    npc_worker_brain_mode_t mode,
+    double margin,
+    bool activated) {
+    FILE *fp = npc_worker_trace_file();
+    if (!fp || !w || !npc || !candidates || !scores || count <= 0) return;
+    fprintf(fp,
+            "{\"schema\":\"signal.npc_worker_shadow.v1\","
+            "\"tick\":%u,\"time\":%.3f,\"npc_slot\":%d,"
+            "\"home_station\":%d,\"role\":\"%s\","
+            "\"session_token\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
+            "\"heuristic_option\":\"%s\",\"neural_option\":\"%s\","
+            "\"selected_index\":%d,\"candidate_count\":%d,"
+            "\"mode\":\"%s\",\"margin\":%.9g,\"activated\":%s,"
+            "\"candidates\":[",
+            w->tick, w->time, npc_slot, npc->home_station,
+            npc_worker_role_name(npc->role),
+            npc->session_token[0], npc->session_token[1],
+            npc->session_token[2], npc->session_token[3],
+            npc->session_token[4], npc->session_token[5],
+            npc->session_token[6], npc->session_token[7],
+            signal_npc_worker_option_name(heuristic_option),
+            selected >= 0 && selected < count
+                ? signal_npc_worker_option_name(candidates[selected].option)
+                : "none",
+            selected, count,
+            npc_worker_brain_mode_name(mode),
+            margin,
+            activated ? "true" : "false");
+    for (int i = 0; i < count; i++) {
+        const signal_npc_worker_candidate_t *c = &candidates[i];
+        if (i > 0) fprintf(fp, ",");
+        fprintf(fp,
+                "{\"option\":\"%s\",\"score\":%.9g,"
+                "\"teacher_score\":%.9g,\"legal\":%s,\"travel\":%s,"
+                "\"self_upgrade\":%s,\"import_module\":%s,"
+                "\"contract_value\":%.3f,\"credit_delta\":%.3f,"
+                "\"refit_progress\":%.3f}",
+                signal_npc_worker_option_name(c->option),
+                scores[i],
+                c->teacher_score,
+                c->legal ? "true" : "false",
+                c->travel ? "true" : "false",
+                c->self_upgrade ? "true" : "false",
+                c->import_module ? "true" : "false",
+                c->contract_value,
+                c->credit_delta,
+                c->refit_progress);
+    }
+    fprintf(fp, "]}\n");
+    fflush(fp);
+}
+
 static float npc_worker_remote_refit_stock(const world_t *w,
                                            int home_station,
                                            commodity_t comm) {
@@ -3714,17 +3925,33 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
     return c;
 }
 
-static void npc_worker_score_assignment_shadow(const world_t *w,
-                                               const npc_ship_t *npc,
-                                               const ship_t *ship,
-                                               const npc_job_offer_t *haul_offer,
-                                               const npc_job_offer_t *mine_offer,
-                                               bool has_mine,
-                                               const npc_job_offer_t *courier_offer,
-                                               bool has_courier) {
-    if (!signal_npc_worker_brain_loaded()) return;
+static double npc_worker_selected_margin(const double *scores,
+                                         int count,
+                                         int selected) {
+    if (!scores || count <= 0 || selected < 0 || selected >= count) return 0.0;
+    double second = -1.0e300;
+    for (int i = 0; i < count; i++) {
+        if (i == selected) continue;
+        if (scores[i] > second) second = scores[i];
+    }
+    if (second < -1.0e200) return 0.0;
+    return scores[selected] - second;
+}
+
+static bool npc_worker_score_assignment(world_t *w,
+                                        int npc_slot,
+                                        npc_ship_t *npc,
+                                        ship_t *ship,
+                                        const npc_job_offer_t *haul_offer,
+                                        const npc_job_offer_t *mine_offer,
+                                        bool has_mine,
+                                        const npc_job_offer_t *courier_offer,
+                                        bool has_courier,
+                                        const npc_job_offer_t *best) {
+    if (!signal_npc_worker_brain_loaded()) return false;
 
     signal_npc_worker_candidate_t candidates[SIGNAL_NPC_WORKER_OPTION_COUNT];
+    double scores[SIGNAL_NPC_WORKER_OPTION_COUNT] = {0.0};
     int count = 0;
     signal_npc_worker_candidate_t base =
         npc_worker_base_candidate(w, npc, ship, haul_offer, has_mine);
@@ -3796,7 +4023,21 @@ static void npc_worker_score_assignment_shadow(const world_t *w,
         }
     }
 
-    (void)signal_npc_worker_brain_choose(candidates, count);
+    int selected = signal_npc_worker_brain_choose_with_scores(
+        candidates, count, scores, SIGNAL_NPC_WORKER_OPTION_COUNT);
+    double margin = npc_worker_selected_margin(scores, count, selected);
+    npc_worker_brain_mode_t mode = npc_worker_brain_mode();
+    bool activated = false;
+    if (selected >= 0 && selected < count &&
+        mode != NPC_WORKER_BRAIN_MODE_SHADOW &&
+        candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
+        margin + 1.0e-9 >= npc_worker_activation_margin_threshold()) {
+        activated = npc_try_self_upgrade(w, npc_slot, npc, ship);
+    }
+    npc_worker_write_trace(w, npc_slot, npc, candidates, scores, count,
+                           selected, npc_worker_option_for_offer(best),
+                           mode, margin, activated);
+    return activated;
 }
 
 static bool npc_can_reassign(const npc_ship_t *npc, const ship_t *ship) {
@@ -4463,7 +4704,8 @@ static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
         best = &proof_offer;
     if (has_repair && (!best || repair_offer.score > best->score * 1.05f))
         best = &repair_offer;
-    if (!best && has_mine &&
+    if (npc_worker_brain_mode() == NPC_WORKER_BRAIN_MODE_SHADOW &&
+        !best && has_mine &&
         npc_try_self_upgrade(w, npc_slot, npc, ship))
         return;
     if (has_mine && (!best || mine_offer.score > best->score * 1.05f))
@@ -4471,13 +4713,20 @@ static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
     if (has_courier && !best)
         best = &courier_offer;
 
-    npc_worker_score_assignment_shadow(
-        w, npc, ship,
+    if (npc_worker_score_assignment(
+        w, npc_slot, npc, ship,
         haul_choice >= 0 ? &haul_offers[haul_choice] : NULL,
         has_mine ? &mine_offer : NULL,
         has_mine,
         has_courier ? &courier_offer : NULL,
-        has_courier);
+        has_courier,
+        best))
+        return;
+
+    if (npc_worker_brain_mode() != NPC_WORKER_BRAIN_MODE_SHADOW &&
+        !best && has_mine &&
+        npc_try_self_upgrade(w, npc_slot, npc, ship))
+        return;
 
     npc_clear_job_diagnostics(npc);
     if (haul_choice >= 0)
@@ -5600,6 +5849,17 @@ void step_npc_ships(world_t *w, float dt) {
         float live_hull = paired_ship ? paired_ship->hull : npc->hull;
         if (live_hull <= 0.0f) {
             SIM_LOG("[npc] %d (role=%d) destroyed — hull 0\n", n, (int)npc->role);
+            if (npc->ship_asset_id != SHIP_ASSET_ID_NONE) {
+                (void)world_ship_asset_sync_from_npc(w, n);
+                ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
+                if (asset) {
+                    asset->destroyed = true;
+                    asset->status = SHIP_ASSET_STATUS_DESTROYED;
+                    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+                    asset->operator_slot = -1;
+                }
+                npc->ship_asset_id = SHIP_ASSET_ID_NONE;
+            }
             npc->active = false;
             character_free_for_npc(w, n);
             continue;
@@ -5633,6 +5893,7 @@ void step_npc_ships(world_t *w, float dt) {
                 npc_resolve_station_collisions(w, npc);
                 npc_resolve_asteroid_collisions(w, npc);
                 mirror_ship_to_npc(w, n);
+                (void)world_ship_asset_sync_from_npc(w, n);
                 continue;
             }
             /* DOCKED: fall through to state machine for dock gossip */
@@ -5646,6 +5907,7 @@ void step_npc_ships(world_t *w, float dt) {
                 npc_resolve_asteroid_collisions(w, npc);
             }
             mirror_ship_to_npc(w, n);
+            (void)world_ship_asset_sync_from_npc(w, n);
             continue;
         }
 
@@ -5656,6 +5918,7 @@ void step_npc_ships(world_t *w, float dt) {
                 npc_resolve_asteroid_collisions(w, npc);
             }
             mirror_ship_to_npc(w, n);
+            (void)world_ship_asset_sync_from_npc(w, n);
             continue;
         }
 
@@ -5980,6 +6243,7 @@ void step_npc_ships(world_t *w, float dt) {
         mirror_ship_to_npc(w, n);
 
         npc_update_manifest_rarity_tint(npc, npc_ship_for(w, n), dt);
+        (void)world_ship_asset_sync_from_npc(w, n);
     }
     if (w->tick % NPC_CONTACT_GOSSIP_INTERVAL_TICKS == 0u)
         (void)gossip_ship_contact_exchange(w);

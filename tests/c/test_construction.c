@@ -426,6 +426,13 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
     ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_MINER);
     ASSERT_EQ_INT(ship_module_socket_count(&sp->ship), 3);
+    ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
+    const ship_asset_t *asset = world_ship_asset_by_id_const(&w, sp->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_SHIPYARD);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT(world_station_stored_hull_count(&w, 1, HULL_CLASS_MINER) >= 1);
 }
 
 TEST(test_shipyard_commission_debits_player_ledger) {
@@ -1256,12 +1263,12 @@ TEST(test_build_outpost_full_economy) {
     ASSERT(!furn->scaffold);
     ASSERT_EQ_FLOAT(furn->build_progress, 1.0f, 0.01f);
 
-    /* Step 8 — activation should have spawned a worker NPC at the
-     * outpost (same invariant test_module_activation_spawns_npc proves
-     * for in-place builds). */
+    /* Step 8 — activation creates worker demand only. It must not mint
+     * a free hull; a later roster pass can satisfy demand from stored
+     * hulls or a shipyard-local build contract. */
     int npc_after = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
-    ASSERT(npc_after > npc_before);
+    ASSERT_EQ_INT(npc_after, npc_before);
 
     /* Step 9 — plant a HOPPER on the furnace's adjacent-ring pair slot.
      * The live fragment beam requires a real furnace/hopper pair, not

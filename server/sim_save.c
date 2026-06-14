@@ -104,8 +104,12 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 63  /* v63: station session data persists pending
-                          * shipyard hull commissions.
+#define SAVE_VERSION 64  /* v64: contract-origin ship assets persist as a
+                          * fixed registry tail after NPC ship manifests.
+                          * Older worlds mint legacy assets for active
+                          * inline NPC ships on load. v63: station
+                          * session data persists pending shipyard hull
+                          * commissions.
                           * v62: station player ledgers expand from 16 to
                           * STATION_LEDGER_MAX entries. v61 and older saves
                           * still read their historical 16-entry table.
@@ -1026,6 +1030,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->tint_b);
     WRITE_FIELD(f, n->hull); /* v32+ */
     WRITE_FIELD(f, n->session_token); /* v33+ */
+    WRITE_FIELD(f, n->ship_asset_id); /* v64+ */
     return true;
 }
 
@@ -1060,6 +1065,11 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
          * with no ledger entries; previous deliveries (which never
          * had a token to credit anyway) are not retroactive. */
         memset(n->session_token, 0, sizeof(n->session_token));
+    }
+    if (g_loaded_save_version >= 64) {
+        READ_FIELD(f, n->ship_asset_id);
+    } else {
+        n->ship_asset_id = SHIP_ASSET_ID_NONE;
     }
     n->pickup_station = -1;
     n->pickup_commodity = COMMODITY_COUNT;
@@ -1180,6 +1190,123 @@ static bool read_npc_ship_manifest_payload(FILE *f, ship_t *ship) {
             }
         }
     }
+    return true;
+}
+
+static bool write_asset_ship_payload(FILE *f, const ship_t *ship) {
+    ship_t empty = {0};
+    if (!ship) ship = &empty;
+    WRITE_FIELD(f, ship->pos);
+    WRITE_FIELD(f, ship->vel);
+    WRITE_FIELD(f, ship->angle);
+    WRITE_FIELD(f, ship->hull);
+    WRITE_FIELD(f, ship->cargo);
+    WRITE_FIELD(f, ship->hull_class);
+    WRITE_FIELD(f, ship->mining_level);
+    WRITE_FIELD(f, ship->hold_level);
+    WRITE_FIELD(f, ship->tractor_level);
+    WRITE_FIELD(f, ship->towed_fragments);
+    WRITE_FIELD(f, ship->towed_count);
+    WRITE_FIELD(f, ship->towed_scaffold);
+    WRITE_FIELD(f, ship->tractor_active);
+    WRITE_FIELD(f, ship->comm_range);
+    WRITE_FIELD(f, ship->unlocked_modules);
+    WRITE_FIELD(f, ship->stat_ore_mined);
+    WRITE_FIELD(f, ship->stat_credits_earned);
+    WRITE_FIELD(f, ship->stat_credits_spent);
+    WRITE_FIELD(f, ship->stat_asteroids_fractured);
+    return write_npc_ship_manifest_payload(f, ship);
+}
+
+static bool read_asset_ship_payload(FILE *f, ship_t *ship) {
+    if (!ship) return false;
+    ship_cleanup(ship);
+    memset(ship, 0, sizeof(*ship));
+    (void)ship_manifest_bootstrap(ship);
+    READ_FIELD(f, ship->pos);
+    READ_FIELD(f, ship->vel);
+    READ_FIELD(f, ship->angle);
+    READ_FIELD(f, ship->hull);
+    READ_FIELD(f, ship->cargo);
+    READ_FIELD(f, ship->hull_class);
+    READ_FIELD(f, ship->mining_level);
+    READ_FIELD(f, ship->hold_level);
+    READ_FIELD(f, ship->tractor_level);
+    READ_FIELD(f, ship->towed_fragments);
+    READ_FIELD(f, ship->towed_count);
+    READ_FIELD(f, ship->towed_scaffold);
+    READ_FIELD(f, ship->tractor_active);
+    READ_FIELD(f, ship->comm_range);
+    READ_FIELD(f, ship->unlocked_modules);
+    READ_FIELD(f, ship->stat_ore_mined);
+    READ_FIELD(f, ship->stat_credits_earned);
+    READ_FIELD(f, ship->stat_credits_spent);
+    READ_FIELD(f, ship->stat_asteroids_fractured);
+    if (ship->hull_class < 0 || ship->hull_class >= HULL_CLASS_COUNT)
+        ship->hull_class = HULL_CLASS_MINER;
+    if (!(ship->hull >= 0.0f) || ship->hull > ship_max_hull(ship))
+        ship->hull = ship_max_hull(ship);
+    if (ship->comm_range <= 0.0f) ship->comm_range = 1500.0f;
+    if (ship->towed_count > 10) ship->towed_count = 0;
+    return read_npc_ship_manifest_payload(f, ship);
+}
+
+static bool write_ship_asset(FILE *f, const ship_asset_t *asset) {
+    ship_asset_t empty = {0};
+    if (!asset) asset = &empty;
+    WRITE_FIELD(f, asset->active);
+    WRITE_FIELD(f, asset->asset_id);
+    WRITE_FIELD(f, asset->hull_class);
+    WRITE_FIELD(f, asset->owner_kind);
+    WRITE_FIELD(f, asset->status);
+    WRITE_FIELD(f, asset->operator_kind);
+    WRITE_FIELD(f, asset->provenance);
+    WRITE_FIELD(f, asset->owner_station);
+    WRITE_FIELD(f, asset->custody_station);
+    WRITE_FIELD(f, asset->operator_slot);
+    WRITE_FIELD(f, asset->build_station);
+    WRITE_FIELD(f, asset->loaner);
+    WRITE_FIELD(f, asset->destroyed);
+    WRITE_FIELD(f, asset->owner_pubkey);
+    WRITE_FIELD(f, asset->owner_session);
+    return write_asset_ship_payload(f, asset->active ? &asset->ship : NULL);
+}
+
+static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
+    if (!asset) return false;
+    ship_cleanup(&asset->ship);
+    memset(asset, 0, sizeof(*asset));
+    READ_FIELD(f, asset->active);
+    READ_FIELD(f, asset->asset_id);
+    READ_FIELD(f, asset->hull_class);
+    READ_FIELD(f, asset->owner_kind);
+    READ_FIELD(f, asset->status);
+    READ_FIELD(f, asset->operator_kind);
+    READ_FIELD(f, asset->provenance);
+    READ_FIELD(f, asset->owner_station);
+    READ_FIELD(f, asset->custody_station);
+    READ_FIELD(f, asset->operator_slot);
+    READ_FIELD(f, asset->build_station);
+    READ_FIELD(f, asset->loaner);
+    READ_FIELD(f, asset->destroyed);
+    READ_FIELD(f, asset->owner_pubkey);
+    READ_FIELD(f, asset->owner_session);
+    if (!read_asset_ship_payload(f, &asset->ship)) return false;
+    if (!asset->active) {
+        ship_cleanup(&asset->ship);
+        memset(asset, 0, sizeof(*asset));
+        return true;
+    }
+    if (asset->asset_id == SHIP_ASSET_ID_NONE)
+        asset->active = false;
+    if (asset->hull_class < 0 || asset->hull_class >= HULL_CLASS_COUNT)
+        asset->hull_class = asset->ship.hull_class;
+    if (asset->status > SHIP_ASSET_STATUS_DESTROYED)
+        asset->status = asset->destroyed
+            ? SHIP_ASSET_STATUS_DESTROYED
+            : SHIP_ASSET_STATUS_STORED;
+    if (asset->destroyed)
+        asset->status = SHIP_ASSET_STATUS_DESTROYED;
     return true;
 }
 
@@ -1407,6 +1534,16 @@ bool world_save(const world_t *w, const char *path) {
         }
     }
 
+    /* v64: durable contract-origin ship asset registry. */
+    WRITE_FIELD(f, w->next_ship_asset_id);
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (!write_ship_asset(f, &w->ship_assets[i])) {
+            fclose(f);
+            remove(tmp_path);
+            return false;
+        }
+    }
+
     fclose(f);
 
     /* Append CRC32 trailer: reopen to read data, compute CRC, then append */
@@ -1611,6 +1748,23 @@ bool world_load(world_t *w, const char *path) {
             }
             if (ship && ship->manifest.count > 0)
                 npc_ship_manifest_sync_cargo(&w->npc_ships[i], ship);
+        }
+    }
+
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_cleanup(&w->ship_assets[i].ship);
+        memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
+    }
+    w->next_ship_asset_id = 1;
+    if (version >= 64) {
+        READ_FIELD(f, w->next_ship_asset_id);
+        if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
+            w->next_ship_asset_id = 1;
+        for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+            if (!read_ship_asset(f, &w->ship_assets[i])) {
+                fclose(f);
+                return false;
+            }
         }
     }
 
@@ -1864,6 +2018,7 @@ bool world_load(world_t *w, const char *path) {
     rebuild_signal_chain(w);
     if (!characters_rebuilt)
         rebuild_characters_from_npcs(w);
+    (void)world_ship_assets_ensure_legacy_bindings(w);
     /* Layer B of #479: rederive every station's private key from the
      * operator-held station authority secret plus persisted provenance.
      * The secret was never written to disk — this is what makes a save
@@ -2727,6 +2882,62 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     return true;
 }
 
+static bool ship_asset_owner_matches_player_save(const ship_asset_t *asset,
+                                                 const server_player_t *sp) {
+    if (!asset || !sp) return false;
+    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY &&
+        server_player_can_use_pubkey_persistence(sp)) {
+        return memcmp(asset->owner_pubkey, sp->pubkey, 32) == 0;
+    }
+    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION) {
+        bool nonzero = false;
+        for (int i = 0; i < 8; i++) if (sp->session_token[i]) nonzero = true;
+        return nonzero && memcmp(asset->owner_session, sp->session_token, 8) == 0;
+    }
+    return false;
+}
+
+static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot) {
+    if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
+    if (sp != &w->players[slot]) return;
+    ship_asset_owner_kind_t owner_kind =
+        server_player_can_use_pubkey_persistence(sp)
+            ? SHIP_ASSET_OWNER_PLAYER_PUBKEY
+            : SHIP_ASSET_OWNER_PLAYER_SESSION;
+    const uint8_t *owner_pubkey =
+        owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
+    const uint8_t *owner_session =
+        owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
+
+    ship_asset_t *asset = NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *candidate = &w->ship_assets[i];
+        if (!candidate->active || candidate->destroyed) continue;
+        if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
+        if (candidate->status == SHIP_ASSET_STATUS_STORED ||
+            (candidate->status == SHIP_ASSET_STATUS_ASSIGNED &&
+             candidate->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+             candidate->operator_slot == slot)) {
+            asset = candidate;
+            break;
+        }
+    }
+    if (!asset) {
+        asset = world_ship_asset_mint(
+            w, sp->ship.hull_class, owner_kind, -1, sp->current_station,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1,
+            owner_pubkey, owner_session);
+    }
+    if (!asset) return;
+    (void)ship_copy(&asset->ship, &sp->ship);
+    asset->hull_class = sp->ship.hull_class;
+    asset->status = SHIP_ASSET_STATUS_ASSIGNED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;
+    asset->operator_slot = (int16_t)slot;
+    asset->custody_station = (int16_t)sp->current_station;
+    sp->ship_asset_id = asset->asset_id;
+}
+
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
     if (!sp || !w || !path) return false;
     server_player_t staged = *sp;
@@ -2738,6 +2949,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     }
     ship_cleanup(&sp->ship);
     *sp = staged;
+    player_bind_loaded_ship_asset(sp, w, slot);
     return true;
 }
 

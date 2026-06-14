@@ -1369,8 +1369,9 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
 	 * v62: station ledger table expands from 16 to STATION_LEDGER_MAX=64 entries.
 	 * v46+ ledger entries are 76B, so +48 entries × 76B × MAX_STATIONS=128.
 	 * v63: station session persists pending ship-build queue:
-	 * count int + 4 × 12B records per station, × MAX_STATIONS=128. */
-	#define EXPECTED_SAVE_SIZE 717732
+	 * count int + 4 × 12B records per station, × MAX_STATIONS=128.
+	 * v64: appends contract-origin ship asset registry tail. */
+	#define EXPECTED_SAVE_SIZE 742840
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1407,7 +1408,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 63);
+    ASSERT_EQ_INT((int)version, 64);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

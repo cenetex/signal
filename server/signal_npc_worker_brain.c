@@ -351,6 +351,15 @@ static double forward_model(const double input[SNWB_FEATURE_COUNT]) {
 
 int signal_npc_worker_brain_choose(const signal_npc_worker_candidate_t *candidates,
                                    int count) {
+    return signal_npc_worker_brain_choose_with_scores(candidates, count,
+                                                      NULL, 0);
+}
+
+int signal_npc_worker_brain_choose_with_scores(
+    const signal_npc_worker_candidate_t *candidates,
+    int count,
+    double *scores,
+    int score_count) {
     if (!candidates || count <= 0) return -1;
 
     g_worker_brain.decision_count++;
@@ -361,6 +370,7 @@ int signal_npc_worker_brain_choose(const signal_npc_worker_candidate_t *candidat
         g_worker_brain.teacher_decision_count++;
         for (int i = 0; i < count; i++) {
             double score = candidates[i].teacher_score;
+            if (scores && i < score_count) scores[i] = score;
             if (best < 0 || score > best_score) {
                 best = i;
                 best_score = score;
@@ -373,6 +383,7 @@ int signal_npc_worker_brain_choose(const signal_npc_worker_candidate_t *candidat
         double row[SNWB_FEATURE_COUNT];
         fill_features(&candidates[i], row);
         double score = forward_model(row);
+        if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {
             best = i;
             best_score = score;

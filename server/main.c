@@ -4911,6 +4911,108 @@ static bool enter_persistence_data_dir(void) {
 
 static void emit_world_identity_anchor(void);
 
+static void server_seed_worker_trace_contract(npc_ship_t *npc,
+                                              const contract_t *ct) {
+    if (!npc || !ct || !ct->active) return;
+    if (npc->known_contract_count >= SHIP_KNOWN_CONTRACT_CAP) return;
+    npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)ct->action,
+        .station_index = ct->station_index,
+        .commodity = (uint8_t)ct->commodity,
+        .required_grade = ct->required_grade,
+        .proof_flags = ct->proof_flags,
+        .required_prefix_class = ct->required_prefix_class,
+        .required_recipe_id = ct->required_recipe_id,
+        .quantity_needed = ct->quantity_needed,
+        .base_price = ct->base_price,
+        .age_at_copy = ct->age,
+        .forbidden_origin_mask = ct->forbidden_origin_mask,
+    };
+    memcpy(npc->known_contracts[npc->known_contract_count - 1].required_parent,
+           ct->required_parent,
+           sizeof(ct->required_parent));
+    memcpy(npc->known_contracts[npc->known_contract_count - 1].target_pub,
+           ct->target_pub,
+           sizeof(ct->target_pub));
+}
+
+static void server_seed_worker_trace_npc(int station_idx,
+                                         npc_role_t role,
+                                         const contract_t *ct0,
+                                         const contract_t *ct1) {
+    int slot = spawn_npc(&world, station_idx, role);
+    if (slot < 0) return;
+    npc_ship_t *npc = &world.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->dest_station = station_idx;
+    npc->pickup_station = -1;
+    npc->pickup_commodity = COMMODITY_COUNT;
+    npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    npc->known_contract_count = 0;
+    server_seed_worker_trace_contract(npc, ct0);
+    server_seed_worker_trace_contract(npc, ct1);
+    if (station_idx >= 0 && station_idx < MAX_STATIONS)
+        ledger_earn(&world.stations[station_idx], npc->session_token, 1200.0f);
+}
+
+static void server_apply_npc_worker_trace_fixture(void) {
+    const char *scenario = getenv("SIGNAL_NPC_WORKER_TRACE_SCENARIO");
+    if (!scenario || strcmp(scenario, "rich") != 0) return;
+
+    uint8_t origin[8] = { 'W','O','R','K','E','R','v','1' };
+    (void)station_finished_mint(&world.stations[0], COMMODITY_FERRITE_INGOT, 28, origin);
+    (void)station_finished_mint(&world.stations[0], COMMODITY_FRAME, 16, origin);
+    (void)station_finished_mint(&world.stations[2], COMMODITY_LASER_MODULE, 16, origin);
+    (void)station_finished_mint(&world.stations[2], COMMODITY_TRACTOR_MODULE, 16, origin);
+    world.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 80.0f;
+    world.stations[2]._inventory_cache[COMMODITY_CUPRITE_ORE] = 80.0f;
+    world.stations[2]._inventory_cache[COMMODITY_CRYSTAL_ORE] = 80.0f;
+
+    memset(world.contracts, 0, sizeof(world.contracts));
+    world.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 6.0f,
+        .base_price = 38.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    world.contracts[1] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_LASER_MODULE,
+        .quantity_needed = 4.0f,
+        .base_price = 72.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    world.contracts[2] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_TRACTOR_MODULE,
+        .quantity_needed = 4.0f,
+        .base_price = 78.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    server_seed_worker_trace_npc(0, NPC_ROLE_HAULER, &world.contracts[0], NULL);
+    server_seed_worker_trace_npc(1, NPC_ROLE_HAULER, &world.contracts[0],
+                                 &world.contracts[2]);
+    server_seed_worker_trace_npc(2, NPC_ROLE_HAULER, &world.contracts[1],
+                                 &world.contracts[2]);
+    server_seed_worker_trace_npc(0, NPC_ROLE_MINER, &world.contracts[0], NULL);
+    server_seed_worker_trace_npc(2, NPC_ROLE_MINER, &world.contracts[1], NULL);
+
+    printf("[server] seeded rich NPC worker trace scenario\n");
+}
+
 /* Layered persistence (#314):
  *   1. world_reset() seeds starter stations + belt field
  *   2. Catalog overwrites identity for any persisted stations
@@ -5281,6 +5383,7 @@ int main(void) {
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     load_world_state();
+    server_apply_npc_worker_trace_fixture();
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
     signal_brain_holographic_init();
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
