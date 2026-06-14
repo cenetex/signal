@@ -1029,6 +1029,29 @@ static ship_asset_t *world_ship_asset_free_slot(world_t *w) {
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         if (!w->ship_assets[i].active) return &w->ship_assets[i];
     }
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->destroyed ||
+            asset->status != SHIP_ASSET_STATUS_DESTROYED ||
+            asset->operator_kind != SHIP_ASSET_OPERATOR_NONE) {
+            continue;
+        }
+        bool referenced = false;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (w->players[p].ship_asset_id == asset->asset_id) {
+                referenced = true;
+                break;
+            }
+        }
+        for (int n = 0; !referenced && n < MAX_NPC_SHIPS; n++) {
+            if (w->npc_ships[n].active &&
+                w->npc_ships[n].ship_asset_id == asset->asset_id) {
+                referenced = true;
+                break;
+            }
+        }
+        if (!referenced) return asset;
+    }
     return NULL;
 }
 
@@ -6144,6 +6167,7 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
 
         hull_class_t hull_class = st->pending_ship_builds[0].hull_class;
         int owner = st->pending_ship_builds[0].owner;
+        ship_asset_t *completed_asset = NULL;
         if (owner >= 0 && owner < MAX_PLAYERS) {
             server_player_t *sp = &w->players[owner];
             ship_asset_owner_kind_t owner_kind =
@@ -6154,12 +6178,12 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
                 owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
             const uint8_t *owner_session =
                 owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
-            ship_asset_t *asset = world_ship_asset_mint(
+            completed_asset = world_ship_asset_mint(
                 w, hull_class, owner_kind, -1, s,
                 SHIP_ASSET_PROVENANCE_SHIPYARD, false, s,
                 owner_pubkey, owner_session);
-            if (asset && sp->connected && sp->docked && sp->current_station == s) {
-                (void)ship_asset_assign_to_player(w, owner, asset, s);
+            if (completed_asset && sp->connected && sp->docked && sp->current_station == s) {
+                (void)ship_asset_assign_to_player(w, owner, completed_asset, s);
             }
         } else {
             int target_station = shipyard_owner_code_station(owner);
@@ -6167,11 +6191,15 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
                 !station_exists(&w->stations[target_station])) {
                 target_station = s;
             }
-            (void)world_ship_asset_mint(
+            completed_asset = world_ship_asset_mint(
                 w, hull_class, SHIP_ASSET_OWNER_STATION,
                 target_station, target_station,
                 SHIP_ASSET_PROVENANCE_SHIPYARD,
                 hull_class == HULL_CLASS_MINER, s, NULL, NULL);
+        }
+        if (!completed_asset) {
+            st->pending_ship_builds[0].build_progress = 1.0f;
+            continue;
         }
         for (int i = 0; i < st->pending_ship_build_count - 1; i++)
             st->pending_ship_builds[i] = st->pending_ship_builds[i + 1];

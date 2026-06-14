@@ -181,6 +181,64 @@ TEST(test_player_respawn_retires_asset_and_claims_loaner) {
     ASSERT_EQ_INT(new_asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
 }
 
+TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
+    WORLD_DECL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = world_ship_asset_mint(
+            &w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
+            0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
+            false, 0, NULL, NULL);
+        ASSERT(asset != NULL);
+    }
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), MAX_SHIP_ASSETS);
+
+    uint32_t first_id = w.ship_assets[0].asset_id;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        w.ship_assets[i].destroyed = true;
+        w.ship_assets[i].status = SHIP_ASSET_STATUS_DESTROYED;
+        w.ship_assets[i].operator_kind = SHIP_ASSET_OPERATOR_NONE;
+        w.ship_assets[i].operator_slot = -1;
+    }
+
+    ship_asset_t *fresh = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_STATION,
+        0, 0, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 0, NULL, NULL);
+    ASSERT(fresh != NULL);
+    ASSERT(fresh->asset_id != first_id);
+    ASSERT(!fresh->destroyed);
+    ASSERT_EQ_INT(fresh->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(fresh->hull_class, HULL_CLASS_HAULER);
+}
+
+TEST(test_shipyard_keeps_completed_build_when_asset_registry_full) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+    ASSERT(shipyard_queue_station_hull_request(&w, 1, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+
+    while (test_active_ship_asset_count(&w) < MAX_SHIP_ASSETS) {
+        ship_asset_t *asset = world_ship_asset_mint(
+            &w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
+            0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
+            false, 0, NULL, NULL);
+        ASSERT(asset != NULL);
+    }
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), MAX_SHIP_ASSETS);
+
+    world_sim_step(&w, 120.0f);
+
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].hull_class, HULL_CLASS_MINER);
+    ASSERT(st->pending_ship_builds[0].build_progress >= 1.0f);
+}
+
 TEST(test_world_reset_prospect_workers_leave_idle) {
     WORLD_DECL;
     world_reset(&w);
@@ -5875,6 +5933,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_ship_assets_back_active_hulls);
     RUN(test_player_init_claims_station_loaner_asset);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
+    RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
+    RUN(test_shipyard_keeps_completed_build_when_asset_registry_full);
     RUN(test_world_reset_prospect_workers_leave_idle);
     RUN(test_neural_worker_refits_only_from_home_credit_and_modules);
     RUN(test_neural_worker_posts_home_refit_import_contract);
