@@ -19,8 +19,11 @@
 #include "fixpoint.h"
 #include "game_sim.h"
 #include "manifest.h"
+#include "protocol.h"
 #include "sha256.h"
 #include "sim_ai.h"
+#include "sim_asteroid.h"
+#include "sim_physics.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_ACTION_COUNT 9
@@ -37,6 +40,8 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_STATION_JOSTLE,
     SR_PROVENANCE_SCRIPT_PLAYER_RAM,
     SR_PROVENANCE_SCRIPT_NPC_RAM,
+    SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT,
+    SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -145,7 +150,7 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36; max 120000)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -306,12 +311,24 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_NPC_RAM;
         return true;
     }
+    if (strcmp(text, "thrown-rock-hit") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT;
+        return true;
+    }
+    if (strcmp(text, "fracture-claim") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM:
+        return "fracture-claim";
+    case SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT:
+        return "thrown-rock-hit";
     case SR_PROVENANCE_SCRIPT_NPC_RAM:
         return "npc-ram";
     case SR_PROVENANCE_SCRIPT_PLAYER_RAM:
@@ -797,6 +814,102 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         *b_ship = b->ship;
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT: {
+        server_player_t *target = &w->players[1];
+        asteroid_t *a = &w->asteroids[0];
+        vec2 center = v2_add(w->stations[0].pos, v2(1900.0f, 260.0f));
+
+        sr_reset_player(w, target);
+        target->id = 1;
+        memset(target->session_token, 0x62, sizeof(target->session_token));
+        memset(target->pubkey, 0xC2, sizeof(target->pubkey));
+
+        sp->ship.pos = v2_add(center, v2(-360.0f, 0.0f));
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship.angle = 0.0f;
+        sp->docked = false;
+        sp->in_dock_range = false;
+        sp->nearby_station = -1;
+
+        target->ship.pos = center;
+        target->ship.vel = v2(0.0f, 0.0f);
+        target->ship.angle = PI_F;
+        target->ship.hull = ship_max_hull(&target->ship);
+        target->docked = false;
+        target->in_dock_range = false;
+        target->nearby_station = -1;
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(a, 0, sizeof(*a));
+        a->active = true;
+        a->fracture_child = true;
+        a->tier = ASTEROID_TIER_L;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
+        a->vel = v2(500.0f, 0.0f);
+        a->radius = 50.0f;
+        a->hp = 1.0f;
+        a->max_hp = 1.0f;
+        a->ore = 1.0f;
+        a->max_ore = 1.0f;
+        a->rotation = 0.0f;
+        a->spin = 0.0f;
+        a->seed = 594.0f;
+        a->last_towed_by = (int8_t)sp->id;
+        memcpy(a->last_towed_token, sp->session_token,
+               sizeof(a->last_towed_token));
+        a->crystal_stage_station = 0xFF;
+        a->crystal_stage_module = 0xFF;
+        a->phase = ASTEROID_PHASE_SOLID;
+        asteroid_mark_thrown(a, sp->session_token,
+                             ROCK_THROW_BALLISTIC_SECONDS);
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM: {
+        const int asteroid_idx = 0;
+        asteroid_t *a = &w->asteroids[asteroid_idx];
+        fracture_claim_state_t *state = &w->fracture_claims[asteroid_idx];
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(a, 0, sizeof(*a));
+        memset(state, 0, sizeof(*state));
+
+        sp->ship.pos = w->stations[0].pos;
+        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->docked = false;
+        sp->in_dock_range = false;
+        sp->nearby_station = -1;
+
+        a->active = true;
+        a->fracture_child = true;
+        a->tier = ASTEROID_TIER_S;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->pos = v2_add(w->stations[0].pos, v2(64.0f, 0.0f));
+        a->vel = v2(0.0f, 0.0f);
+        a->radius = 8.0f;
+        a->hp = 1.0f;
+        a->max_hp = 1.0f;
+        a->ore = 1.0f;
+        a->max_ore = 1.0f;
+        a->grade = MINING_GRADE_COMMON;
+        a->phase = ASTEROID_PHASE_SOLID;
+        a->crystal_stage_station = 0xFF;
+        a->crystal_stage_module = 0xFF;
+        for (int i = 0; i < MINING_FRACTURE_SEED_BYTES; i++) {
+            a->fracture_seed[i] = (uint8_t)(0x41 + i);
+        }
+
+        state->active = true;
+        state->resolved = false;
+        state->challenge_dirty = true;
+        state->fracture_id = 5941;
+        state->deadline_ms = 500;
+        state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
+        state->challenge_last_ms = 0;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -973,6 +1086,30 @@ static void sr_hash_contracts(sha256_ctx_t *ctx, const world_t *w)
     }
 }
 
+static void sr_find_best_fracture_claim(const uint8_t seed[32],
+                                        const uint8_t player_pub[32],
+                                        uint16_t cap,
+                                        uint32_t *out_nonce,
+                                        mining_grade_t *out_grade)
+{
+    uint32_t best_nonce = 0;
+    mining_grade_t best_grade = MINING_GRADE_COMMON;
+    for (uint32_t n = 0; n < (uint32_t)cap; n++) {
+        mining_keypair_t kp;
+        char callsign[8];
+        mining_grade_t grade;
+        mining_keypair_derive(seed, player_pub, n, &kp);
+        mining_callsign_from_pubkey(kp.pub, callsign);
+        grade = mining_classify_base58(callsign);
+        if (grade > best_grade) {
+            best_grade = grade;
+            best_nonce = n;
+        }
+    }
+    if (out_nonce) *out_nonce = best_nonce;
+    if (out_grade) *out_grade = best_grade;
+}
+
 static float sr_player_station_balance(const world_t *w, const server_player_t *sp)
 {
     if (!w || !sp ||
@@ -1048,13 +1185,54 @@ static const ship_t *sr_npc_paired_ship_const(const world_t *w, int npc_slot)
     return NULL;
 }
 
+static void sr_hash_fracture_claims(sha256_ctx_t *ctx, const world_t *w)
+{
+    int active_claims = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w->fracture_claims[i].active ||
+            w->fracture_claims[i].resolved ||
+            w->fracture_claims[i].challenge_dirty ||
+            w->fracture_claims[i].resolved_dirty) {
+            active_claims++;
+        }
+    }
+    sr_hash_i32(ctx, active_claims);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const fracture_claim_state_t *state = &w->fracture_claims[i];
+        if (!state->active &&
+            !state->resolved &&
+            !state->challenge_dirty &&
+            !state->resolved_dirty) {
+            continue;
+        }
+        sr_hash_i32(ctx, i);
+        sr_hash_u8(ctx, state->active ? 1u : 0u);
+        sr_hash_u8(ctx, state->resolved ? 1u : 0u);
+        sr_hash_u8(ctx, state->challenge_dirty ? 1u : 0u);
+        sr_hash_u8(ctx, state->resolved_dirty ? 1u : 0u);
+        sr_hash_u32(ctx, state->fracture_id);
+        sr_hash_u32(ctx, state->deadline_ms);
+        sr_hash_u16(ctx, state->burst_cap);
+        sr_hash_u32(ctx, state->best_nonce);
+        sr_hash_u8(ctx, state->best_grade);
+        sha256_update(ctx, state->best_player_pub,
+                      sizeof(state->best_player_pub));
+        sr_hash_u8(ctx, state->seen_claimant_count);
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            sha256_update(ctx, state->seen_claimant_tokens[p],
+                          sizeof(state->seen_claimant_tokens[p]));
+        }
+        sr_hash_u32(ctx, state->challenge_last_ms);
+    }
+}
+
 static void sr_state_hash(const world_t *w,
                           const server_player_t *sp,
                           uint8_t out[32])
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v3-float-bits", 33);
+    sha256_update(&ctx, "signal-replay-state-v4-claims", 29);
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_bits(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
@@ -1095,6 +1273,7 @@ static void sr_state_hash(const world_t *w,
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
     }
     sr_hash_contracts(&ctx, w);
+    sr_hash_fracture_claims(&ctx, w);
 
     int active_asteroids = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++)
@@ -1519,6 +1698,65 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             right->hull >= right_hull ||
             v2_dist_sq(w->npc_ships[0].ship.pos,
                        w->npc_ships[1].ship.pos) <= 0.0f) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT: {
+        server_player_t *target = &w->players[1];
+        asteroid_t *a = &w->asteroids[0];
+        int damage_before = counts->damage_events;
+        float target_hull = target->ship.hull;
+        bool hit = false;
+
+        for (int i = 0; i < 60 && !hit; i++) {
+            world_sim_step(w, SIM_DT);
+            sr_accumulate_events(w, counts, event_hash);
+            hit = counts->damage_events > damage_before ||
+                  target->ship.hull < target_hull ||
+                  !asteroid_is_ballistic(a);
+        }
+
+        if (counts->damage_events <= damage_before ||
+            target->ship.hull >= target_hull ||
+            asteroid_is_ballistic(a)) {
+            return false;
+        }
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM: {
+        asteroid_t *a = &w->asteroids[0];
+        fracture_claim_state_t *state = &w->fracture_claims[0];
+        uint8_t player_pub[32];
+        uint8_t expected_pub[32];
+        uint32_t best_nonce = 0;
+        mining_grade_t best_grade = MINING_GRADE_COMMON;
+
+        if (!a->active || !state->active || state->resolved) return false;
+        sha256_bytes(sp->session_token, sizeof(sp->session_token), player_pub);
+        sr_find_best_fracture_claim(a->fracture_seed, player_pub,
+                                    state->burst_cap,
+                                    &best_nonce, &best_grade);
+        if (!submit_fracture_claim(w, sp->id, state->fracture_id,
+                                   best_nonce, (uint8_t)best_grade)) {
+            return false;
+        }
+        if (state->best_nonce != best_nonce ||
+            state->best_grade != (uint8_t)best_grade ||
+            state->seen_claimant_count != 1 ||
+            memcmp(state->seen_claimant_tokens[0], sp->session_token,
+                   sizeof(sp->session_token)) != 0) {
+            return false;
+        }
+
+        w->time = 1.0f;
+        step_fracture_claims(w);
+        mining_fragment_pub_compute(a->fracture_seed, player_pub,
+                                    best_nonce, expected_pub);
+        if (state->active ||
+            !state->resolved ||
+            a->grade != (uint8_t)best_grade ||
+            memcmp(a->fragment_pub, expected_pub, sizeof(expected_pub)) != 0) {
             return false;
         }
         return true;

@@ -70,12 +70,12 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
-manifest, station identity, station inventory cache, player ledger balance by
-session token and pubkey, and station chain tail. Float fields are hashed as
-their exact IEEE-754 bits, not rounded display values, so one-bit native/WASM
-or cross-build drift fails the diff. This makes repeated runs with the same
-seed and prefix cheap to diff and safe to ingest from CRLPLRIMES-style
-experiments.
+manifest, station identity, station inventory cache, fracture claim windows,
+player ledger balance by session token and pubkey, and station chain tail.
+Float fields are hashed as their exact IEEE-754 bits, not rounded display
+values, so one-bit native/WASM or cross-build drift fails the diff. This makes
+repeated runs with the same seed and prefix cheap to diff and safe to ingest
+from CRLPLRIMES-style experiments.
 
 ## Determinism Check
 

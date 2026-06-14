@@ -110,6 +110,20 @@ FAST_SCENARIOS = (
         "--candidates", "NONE",
         "--provenance-script", "npc-ram",
     ),
+    (
+        "--seed", "5940",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--provenance-script", "thrown-rock-hit",
+    ),
+    (
+        "--seed", "5941",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--provenance-script", "fracture-claim",
+    ),
 )
 
 LONG_SCENARIOS = (
