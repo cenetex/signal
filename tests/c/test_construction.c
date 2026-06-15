@@ -2,6 +2,22 @@
 #include "chain_log.h"
 #include "sim_physics.h"
 
+static int construction_count_active_npcs(const world_t *w) {
+    int count = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w->npc_ships[i].active) count++;
+    }
+    return count;
+}
+
+static int construction_count_active_ship_assets(const world_t *w) {
+    int count = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (w->ship_assets[i].active && !w->ship_assets[i].destroyed) count++;
+    }
+    return count;
+}
+
 TEST(test_outpost_requires_signal_range) {
     WORLD_DECL;
     world_reset(&w);
@@ -515,38 +531,36 @@ TEST(test_world_seed_station_manifests_matches_float) {
     }
 }
 
-TEST(test_module_activation_spawns_npc) {
+TEST(test_module_activation_does_not_spawn_free_worker_hull) {
     WORLD_DECL;
     world_reset(&w);
-    int npc_before = 0;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
+    int npc_before = construction_count_active_npcs(&w);
+    int asset_before = construction_count_active_ship_assets(&w);
     /* Build a furnace on Kepler. FURNACE accepts any ore — plant a
      * ferrite ore hopper to satisfy its input. */
     station_t *st = &w.stations[1];
     add_hopper_for(st, 3, 1, COMMODITY_FERRITE_ORE);
     begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, 4);
-    /* Deliver materials to station inventory */
-    ship_t ship = {0};
-    ship.cargo[COMMODITY_FRAME] = 200.0f;
-    step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
-    ASSERT_EQ_INT(ship.manifest.cap, 0);
-    ASSERT(ship.receipts_opaque == NULL);
-    /* Run sim long enough for construction to complete (~60 frames / 4 per sec = 15s) */
-    for (int i = 0; i < (int)(20.0f / SIM_DT); i++)
-        world_sim_step(&w, SIM_DT);
-    /* The neural worker pool is now station-targeted rather than one
-     * permanent NPC role per module. Activation should leave Kepler with
-     * active workers available, not necessarily increase the global count
-     * if the seeded pool already satisfies the target. */
-    int npc_after = 0;
-    int kepler_workers = 0;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (!w.npc_ships[i].active) continue;
-        npc_after++;
-        if (w.npc_ships[i].home_station == 1) kepler_workers++;
-    }
-    ASSERT(npc_after >= npc_before);
-    ASSERT(kepler_workers > 0);
+    station_module_t *furnace = &st->modules[st->module_count - 1];
+    ASSERT_EQ_INT(furnace->type, MODULE_FURNACE);
+    ASSERT(furnace->scaffold);
+    int pending_hulls_before = st->pending_ship_build_count;
+
+    /* Route station inventory into the scaffold, then finish the build timer
+     * by calling activation directly. This must activate the module but leave
+     * worker provisioning to the roster/shipyard pass. */
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    st->_inventory_cache[mat] = module_build_cost_lookup(MODULE_FURNACE);
+    step_module_activation(&w, SIM_DT);
+    ASSERT_EQ_INT(module_build_state(furnace), MODULE_BUILD_BUILDING);
+
+    step_module_activation(&w, MODULE_BUILD_TIME_SEC);
+
+    ASSERT(!furnace->scaffold);
+    ASSERT_EQ_FLOAT(furnace->build_progress, 1.0f, 0.001f);
+    ASSERT_EQ_INT(construction_count_active_npcs(&w), npc_before);
+    ASSERT_EQ_INT(construction_count_active_ship_assets(&w), asset_before);
+    ASSERT_EQ_INT(st->pending_ship_build_count, pending_hulls_before);
 }
 
 TEST(test_238_station_core_blocks_player) {
@@ -1153,7 +1167,7 @@ TEST(test_scaffold_full_pipeline) {
  * frame quota by docking and dumping cargo, sims through scaffold +
  * seed-module activation, then plants and supplies a second module
  * (furnace). Asserts no credits leak, the outpost becomes dockable, the
- * furnace activates, and the activation spawn loop produces an NPC. */
+ * furnace activates, and activation itself does not mint a worker hull. */
 TEST(test_build_outpost_full_economy) {
     WORLD_DECL;
     world_reset(&w);
@@ -1281,8 +1295,7 @@ TEST(test_build_outpost_full_economy) {
         sp->input.service_sell = true;
         world_sim_step(&w, SIM_DT);
     }
-    /* Build timer: ~10s, plus a comfortable runway for the activation
-     * spawn loop to drop in an NPC. */
+    /* Build timer: ~10s, with enough runway for activation to complete. */
     for (int i = 0; i < 30 * 120 && furn->scaffold; i++) {
         world_sim_step(&w, SIM_DT);
     }
@@ -2772,7 +2785,7 @@ void register_construction_modules_tests(void) {
     RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_shipyard_commission_rejects_invalid_owner_without_draining_materials);
     RUN(test_world_seed_station_manifests_matches_float);
-    RUN(test_module_activation_spawns_npc);
+    RUN(test_module_activation_does_not_spawn_free_worker_hull);
 }
 
 void register_construction_collision238_tests(void) {
