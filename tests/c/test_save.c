@@ -724,6 +724,64 @@ TEST(test_player_load_mints_owned_asset_instead_of_reusing_loaner) {
     ship_cleanup(&saved.ship);
 }
 
+TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t token[8];
+    memset(token, 0x8D, sizeof(token));
+
+    server_player_t *sp = &w->players[0];
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memcpy(sp->session_token, token, sizeof(token));
+    ship_asset_t *asset = world_ship_asset_mint(
+        w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, token);
+    ASSERT(asset != NULL);
+    ASSERT(ship_asset_claim_for_player(w, 0, 1));
+    ASSERT_EQ_INT(sp->ship_asset_id, asset->asset_id);
+    sp->ship.hull = 55.0f;
+    ASSERT(world_ship_asset_sync_from_player(w, sp));
+    ASSERT_EQ_INT(asset->custody_station, 1);
+
+    uint32_t asset_id = asset->asset_id;
+    int asset_count_before = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (w->ship_assets[i].active) asset_count_before++;
+    ASSERT(world_save(w, TMP("test_orphaned_player_asset.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, TMP("test_orphaned_player_asset.sav")));
+
+    ship_asset_t *loaded_asset = world_ship_asset_by_id(loaded, asset_id);
+    ASSERT(loaded_asset != NULL);
+    ASSERT_EQ_INT(loaded_asset->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(loaded_asset->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(loaded_asset->operator_slot, -1);
+    ASSERT_EQ_INT(loaded_asset->custody_station, 1);
+    ASSERT_EQ_FLOAT(loaded_asset->ship.hull, 55.0f, 0.01f);
+
+    server_player_t *reconnect = &loaded->players[2];
+    reconnect->id = 2;
+    reconnect->connected = true;
+    reconnect->session_ready = true;
+    memcpy(reconnect->session_token, token, sizeof(token));
+    player_init_ship(reconnect, loaded);
+
+    int asset_count_after = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (loaded->ship_assets[i].active) asset_count_after++;
+    ASSERT_EQ_INT(asset_count_after, asset_count_before);
+    ASSERT_EQ_INT(reconnect->ship_asset_id, asset_id);
+    ASSERT_EQ_FLOAT(reconnect->ship.hull, 55.0f, 0.01f);
+    ASSERT_EQ_INT(loaded_asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(loaded_asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(loaded_asset->operator_slot, 2);
+    remove(TMP("test_orphaned_player_asset.sav"));
+}
+
 TEST(test_player_save_uses_temp_then_atomic_rename) {
     WORLD_DECL;
     world_reset(&w);
@@ -1726,6 +1784,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_prefers_existing_bound_ship_asset);
     RUN(test_player_load_prefers_owned_asset_over_provisional_loaner);
     RUN(test_player_load_mints_owned_asset_instead_of_reusing_loaner);
+    RUN(test_world_load_stores_orphaned_player_ship_asset_for_reclaim);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_world_load_repairs_cache_only_station_finished_goods);

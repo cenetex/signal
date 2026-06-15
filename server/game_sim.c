@@ -1396,6 +1396,50 @@ static void ship_asset_retire_player_asset(world_t *w, server_player_t *sp) {
 bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
     if (!w) return false;
     bool ok = true;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active) continue;
+        if (asset->destroyed ||
+            asset->status == SHIP_ASSET_STATUS_DESTROYED) {
+            asset->destroyed = true;
+            asset->status = SHIP_ASSET_STATUS_DESTROYED;
+            asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+            asset->operator_slot = -1;
+            continue;
+        }
+        if (asset->status != SHIP_ASSET_STATUS_ASSIGNED) continue;
+
+        bool valid_operator = false;
+        int slot = asset->operator_slot;
+        if (asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER) {
+            valid_operator =
+                slot >= 0 && slot < MAX_PLAYERS &&
+                w->players[slot].connected &&
+                w->players[slot].ship_asset_id == asset->asset_id;
+        } else if (asset->operator_kind == SHIP_ASSET_OPERATOR_NPC) {
+            valid_operator =
+                slot >= 0 && slot < MAX_NPC_SHIPS &&
+                w->npc_ships[slot].active &&
+                w->npc_ships[slot].ship_asset_id == asset->asset_id;
+        }
+        if (valid_operator) continue;
+
+        asset->status = SHIP_ASSET_STATUS_STORED;
+        asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+        asset->operator_slot = -1;
+        if (asset->custody_station < 0 ||
+            asset->custody_station >= MAX_STATIONS) {
+            if (asset->owner_station >= 0 &&
+                asset->owner_station < MAX_STATIONS) {
+                asset->custody_station = asset->owner_station;
+            } else if (asset->build_station >= 0 &&
+                       asset->build_station < MAX_STATIONS) {
+                asset->custody_station = asset->build_station;
+            } else {
+                asset->custody_station = 0;
+            }
+        }
+    }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active || npc->ship_asset_id != SHIP_ASSET_ID_NONE) continue;
