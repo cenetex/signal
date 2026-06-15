@@ -7783,7 +7783,7 @@ static void world_seed_genesis_ship_assets(world_t *w) {
         w->next_ship_asset_id = 1;
 
     (void)world_ship_asset_mint(
-        w, HULL_CLASS_DRONE_LASER, SHIP_ASSET_OWNER_STATION,
+        w, HULL_CLASS_NPC_MINER, SHIP_ASSET_OWNER_STATION,
         0, 0, SHIP_ASSET_PROVENANCE_GENESIS, false, 0, NULL, NULL);
     (void)world_ship_asset_mint(
         w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
@@ -7792,7 +7792,7 @@ static void world_seed_genesis_ship_assets(world_t *w) {
         w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
         1, 1, SHIP_ASSET_PROVENANCE_GENESIS, false, 1, NULL, NULL);
     (void)world_ship_asset_mint(
-        w, HULL_CLASS_DRONE_LASER, SHIP_ASSET_OWNER_STATION,
+        w, HULL_CLASS_NPC_MINER, SHIP_ASSET_OWNER_STATION,
         2, 2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2, NULL, NULL);
     (void)world_ship_asset_mint(
         w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,

@@ -1122,7 +1122,7 @@ static hull_class_t npc_hull_class_for_role(npc_role_t role) {
 
 static hull_class_t npc_resident_hull_class_for_role(npc_role_t role) {
     switch (role) {
-    case NPC_ROLE_MINER:  return HULL_CLASS_DRONE_LASER;
+    case NPC_ROLE_MINER:  return HULL_CLASS_NPC_MINER;
     case NPC_ROLE_TOW:    return HULL_CLASS_DRONE_TRACTOR;
     case NPC_ROLE_HAULER: return HULL_CLASS_HAULER;
     default:              return npc_hull_class_for_role(role);

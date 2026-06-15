@@ -159,6 +159,8 @@ TEST(test_world_reset_ship_assets_back_active_hulls) {
         ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
         ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
         ASSERT_EQ_INT(asset->operator_slot, i);
+        ASSERT_EQ_INT(asset->hull_class, npc->ship.hull_class);
+        ASSERT_EQ_INT(asset->ship.hull_class, npc->ship.hull_class);
         assigned_assets++;
     }
     ASSERT_EQ_INT(assigned_assets, 5);
@@ -1251,12 +1253,15 @@ TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     ASSERT_EQ_INT(dest->manifest.units[1].recipe_id, RECIPE_LEGACY_MIGRATE);
 }
 
-TEST(test_station_roster_uses_shipyard_contract_for_resident_drones) {
+TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     station_t *helios = &w->stations[2];
-    ASSERT(station_finished_mint(helios, COMMODITY_FRAME, 2, NULL) == 2);
-    ASSERT(station_finished_mint(helios, COMMODITY_LASER_MODULE, 1, NULL) == 1);
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_NPC_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(helios, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(helios, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(helios, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
     int target_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
@@ -1283,7 +1288,7 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_drones) {
 
     ASSERT_EQ_INT(helios->pending_ship_build_count, 1);
     ASSERT_EQ_INT(helios->pending_ship_builds[0].hull_class,
-                  HULL_CLASS_DRONE_LASER);
+                  HULL_CLASS_NPC_MINER);
 
     for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
 
@@ -1295,7 +1300,7 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_drones) {
         ASSERT(w->npc_ships[n].ship_asset_id != SHIP_ASSET_ID_NONE);
     }
     ASSERT_EQ_INT(helios_workers_after, 1);
-    ASSERT(world_station_stored_hull_count(w, 2, HULL_CLASS_DRONE_LASER) >= 1);
+    ASSERT(world_station_stored_hull_count(w, 2, HULL_CLASS_NPC_MINER) >= 1);
 }
 
 TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
@@ -1354,7 +1359,7 @@ TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
         add_module_at(st, MODULE_DOCK, 1, 0);
         add_module_at(st, MODULE_SIGNAL_RELAY, 1, 1);
         rebuild_station_services(st);
-        ASSERT(world_ship_asset_mint(w, HULL_CLASS_DRONE_LASER,
+        ASSERT(world_ship_asset_mint(w, HULL_CLASS_NPC_MINER,
                                      SHIP_ASSET_OWNER_STATION,
                                      s, s, SHIP_ASSET_PROVENANCE_GENESIS,
                                      false, s, NULL, NULL) != NULL);
@@ -6302,7 +6307,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_hauler_does_not_dock_from_outer_station_ring);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
-    RUN(test_station_roster_uses_shipyard_contract_for_resident_drones);
+    RUN(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls);
     RUN(test_frontier_outpost_roster_respects_virtual_logistics_budget);
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);
