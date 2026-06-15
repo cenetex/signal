@@ -468,6 +468,32 @@ TEST(test_shipyard_commission_debits_player_ledger) {
     ASSERT_EQ_FLOAT(before - after, expected, 0.01f);
 }
 
+TEST(test_shipyard_commission_rejects_invalid_owner_without_draining_materials) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    int pending_before = st->pending_ship_build_count;
+    int frames_before = station_finished_count(st, COMMODITY_FRAME);
+    int lasers_before = station_finished_count(st, COMMODITY_LASER_MODULE);
+    int tractors_before = station_finished_count(st, COMMODITY_TRACTOR_MODULE);
+
+    ASSERT(!shipyard_queue_ship_commission(&w, 1, MAX_PLAYERS, HULL_CLASS_MINER));
+    ASSERT(!shipyard_queue_ship_commission(&w, 1, INT8_MAX + 1, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, pending_before);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), frames_before);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), lasers_before);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), tractors_before);
+}
+
 /* Regression: world_seed_station_manifests populates each active
  * station's manifest from its float inventory so the manifest-only
  * TRADE picker has rows to surface. The singleplayer init path must
@@ -2744,6 +2770,7 @@ void register_construction_modules_tests(void) {
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
     RUN(test_shipyard_commission_completes_onto_docked_player);
     RUN(test_shipyard_commission_debits_player_ledger);
+    RUN(test_shipyard_commission_rejects_invalid_owner_without_draining_materials);
     RUN(test_world_seed_station_manifests_matches_float);
     RUN(test_module_activation_spawns_npc);
 }

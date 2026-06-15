@@ -6073,10 +6073,17 @@ bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) 
            station_finished_count(st, COMMODITY_TRACTOR_MODULE) >= tractors;
 }
 
+static bool shipyard_build_owner_valid(int owner, bool debit_player) {
+    if (owner < INT8_MIN || owner > INT8_MAX) return false;
+    if (debit_player) return owner >= 0 && owner < MAX_PLAYERS;
+    return owner == -1 || shipyard_owner_code_is_station_request(owner);
+}
+
 static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
                                       hull_class_t hull_class,
                                       bool debit_player) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    if (!shipyard_build_owner_valid(owner, debit_player)) return false;
     station_t *st = &w->stations[station_idx];
     if (st->pending_ship_build_count >= 4) return false;
     if (!shipyard_can_commission_hull(st, hull_class)) return false;
