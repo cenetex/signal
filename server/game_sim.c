@@ -1183,6 +1183,20 @@ static bool ship_asset_player_matches_owner(const ship_asset_t *asset,
     return false;
 }
 
+static bool ship_asset_player_can_reclaim_bound(const ship_asset_t *asset,
+                                                const server_player_t *sp,
+                                                int player_slot) {
+    if (!asset || !sp || asset->destroyed ||
+        asset->status == SHIP_ASSET_STATUS_DESTROYED) {
+        return false;
+    }
+    if (ship_asset_player_matches_owner(asset, sp)) return true;
+    return asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
+           asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+           asset->operator_slot == player_slot;
+}
+
 static bool ship_asset_assign_to_player(world_t *w, int player_slot,
                                         ship_asset_t *asset, int station_idx) {
     if (!w || !asset || player_slot < 0 || player_slot >= MAX_PLAYERS)
@@ -1259,7 +1273,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
     }
 
     ship_asset_t *bound = world_ship_asset_by_id(w, sp->ship_asset_id);
-    if (bound && !bound->destroyed &&
+    if (bound && ship_asset_player_can_reclaim_bound(bound, sp, player_slot) &&
         (bound->status == SHIP_ASSET_STATUS_STORED ||
          (bound->status == SHIP_ASSET_STATUS_ASSIGNED &&
           bound->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&

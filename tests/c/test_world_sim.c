@@ -176,6 +176,40 @@ TEST(test_player_init_bound_asset_preserves_custody_station) {
     ASSERT_EQ_INT(asset->operator_slot, 0);
 }
 
+TEST(test_player_init_ignores_foreign_bound_asset) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    memset(sp->session_token, 0x11, sizeof(sp->session_token));
+    uint8_t other_token[8];
+    memset(other_token, 0x22, sizeof(other_token));
+    ship_asset_t *foreign = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, other_token);
+    ASSERT(foreign != NULL);
+    sp->ship_asset_id = foreign->asset_id;
+    int asset_count_before = test_active_ship_asset_count(&w);
+    int stored_before = world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER);
+
+    player_init_ship(sp, &w);
+
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER),
+                  stored_before - 1);
+    ASSERT(sp->ship_asset_id != foreign->asset_id);
+    ASSERT_EQ_INT(foreign->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(foreign->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(foreign->operator_slot, -1);
+    ship_asset_t *claimed = world_ship_asset_by_id(&w, sp->ship_asset_id);
+    ASSERT(claimed != NULL);
+    ASSERT_EQ_INT(claimed->owner_kind, SHIP_ASSET_OWNER_STATION);
+    ASSERT(claimed->loaner);
+    ASSERT_EQ_INT(claimed->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(claimed->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(claimed->operator_slot, 0);
+}
+
 TEST(test_player_init_ship_null_context_safe) {
     WORLD_DECL;
     world_reset(&w);
@@ -5975,6 +6009,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_ship_assets_back_active_hulls);
     RUN(test_player_init_claims_station_loaner_asset);
     RUN(test_player_init_bound_asset_preserves_custody_station);
+    RUN(test_player_init_ignores_foreign_bound_asset);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
