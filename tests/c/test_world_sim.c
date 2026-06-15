@@ -5,6 +5,7 @@
 #include "sim_asteroid.h"
 #include "cargo_receipt_issue.h"
 #include "contract_fit.h"
+#include "faction.h"
 #include "gossip.h"
 
 static int test_spawn_hauler_at(world_t *w, int station_idx) {
@@ -1417,6 +1418,88 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     for (uint16_t i = 0; i < dest->manifest.count; i++) {
         ASSERT(dest->manifest.units[i].recipe_id != RECIPE_LEGACY_MIGRATE);
     }
+}
+
+TEST(test_black_market_contract_accepts_npc_module_delivery) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    int hauler_slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                                HULL_CLASS_HAULER);
+    ASSERT(hauler_slot >= 0);
+    npc_ship_t *hauler = &w.npc_ships[hauler_slot];
+    ship_t *hauler_ship = world_npc_ship_for(&w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    ASSERT(ship_manifest_bootstrap(hauler_ship));
+    manifest_clear(&hauler_ship->manifest);
+    ship_receipts_t *hauler_receipts = ship_get_receipts(hauler_ship);
+    ASSERT(hauler_receipts != NULL);
+    ship_receipts_clear(hauler_receipts);
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler_ship->cargo, 0, sizeof(hauler_ship->cargo));
+
+    station_t *home = &w.stations[0];
+    station_t *freeport = &w.stations[SIGNAL_FREEPORT_STATION_INDEX];
+    ASSERT(station_exists(freeport));
+    ASSERT(station_faction_is_pirate_economy(freeport));
+    ASSERT(station_manifest_bootstrap(freeport));
+    manifest_clear(&freeport->manifest);
+    ship_receipts_t *freeport_receipts = station_get_receipts(freeport);
+    ASSERT(freeport_receipts != NULL);
+    ship_receipts_clear(freeport_receipts);
+    freeport->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 0.0f;
+
+    uint8_t origin[8] = {0};
+    origin[0] = 0x42;
+    origin[1] = (uint8_t)COMMODITY_TRACTOR_MODULE;
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_TRACTOR_MODULE, 0,
+                                    &unit));
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(test_issue_world_station_receipt(home, unit.pub, 910, &chain));
+    ASSERT(ship_manifest_push_with_chain(hauler_ship, &unit, &chain));
+    ship_finished_sync(hauler_ship, COMMODITY_TRACTOR_MODULE);
+    hauler->cargo[COMMODITY_TRACTOR_MODULE] = 1.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = SIGNAL_FREEPORT_STATION_INDEX,
+        .commodity = COMMODITY_TRACTOR_MODULE,
+        .quantity_needed = 1.0f,
+        .base_price = 800.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    ASSERT_EQ_INT(hauler_ship->manifest.count, 1);
+    ASSERT_EQ_INT(contract_fit_manifest_count(&w.contracts[0],
+                                              &hauler_ship->manifest), 1);
+    ASSERT_EQ_INT(station_finished_count(freeport,
+                                         COMMODITY_TRACTOR_MODULE), 0);
+
+    float ledger_before = ledger_balance(freeport, hauler->session_token);
+    hauler->state = NPC_STATE_UNLOADING;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = SIGNAL_FREEPORT_STATION_INDEX;
+    hauler->pickup_station = -1;
+    hauler->pickup_commodity = COMMODITY_COUNT;
+    hauler->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+    hauler_ship->pos = station_approach_target(freeport, hauler_ship->pos);
+    hauler_ship->vel = v2(0.0f, 0.0f);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(hauler_ship->manifest.count, 0);
+    ASSERT_EQ_INT((int)hauler_receipts->count, 0);
+    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_TRACTOR_MODULE], 0.0f, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(freeport,
+                                         COMMODITY_TRACTOR_MODULE), 1);
+    ASSERT(manifest_find(&freeport->manifest, unit.pub) >= 0);
+    ASSERT(!w.contracts[0].active);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 0.0f, 0.001f);
+    ASSERT(ledger_balance(freeport, hauler->session_token) > ledger_before);
 }
 
 TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
@@ -6758,6 +6841,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_dead_neural_worker_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
+    RUN(test_black_market_contract_accepts_npc_module_delivery);
     RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_hauler_does_not_dock_from_outer_station_ring);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);

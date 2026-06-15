@@ -5919,6 +5919,93 @@ static void delivery_maybe_post_credit_contracts(world_t *w) {
     }
 }
 
+static bool station_black_market_contract_commodity(const station_t *st,
+                                                    commodity_t c) {
+    if (!st || !station_policy_accepts_contract_bound_cargo(st))
+        return false;
+    switch (c) {
+        case COMMODITY_TRACTOR_MODULE:
+        case COMMODITY_LASER_MODULE:
+        case COMMODITY_CRYSTAL_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_FRAME:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool station_black_market_contract_need(const station_t *st,
+                                               int station_idx,
+                                               float pool_factor,
+                                               contract_t *out) {
+    if (!st || !out || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    if (!station_policy_accepts_contract_bound_cargo(st))
+        return false;
+
+    static const struct {
+        commodity_t commodity;
+        float target;
+    } wants[] = {
+        { COMMODITY_TRACTOR_MODULE, 6.0f },
+        { COMMODITY_LASER_MODULE,   6.0f },
+        { COMMODITY_CRYSTAL_INGOT, 10.0f },
+        { COMMODITY_CUPRITE_INGOT, 10.0f },
+        { COMMODITY_FERRITE_INGOT, 10.0f },
+        { COMMODITY_FRAME,         12.0f },
+    };
+
+    commodity_t best = COMMODITY_COUNT;
+    float best_score = 0.0f;
+    float best_deficit = 0.0f;
+    float best_base = 0.0f;
+    for (size_t i = 0; i < sizeof(wants) / sizeof(wants[0]); i++) {
+        commodity_t c = wants[i].commodity;
+        float target = wants[i].target;
+        float stock = (float)station_finished_count(st, c);
+        float deficit = target - stock;
+        if (deficit <= 0.5f) continue;
+        float base = st->base_price[c];
+        if (!isfinite(base) || base <= 0.0f)
+            base = station_buy_price(st, c);
+        if (!isfinite(base) || base <= 0.0f)
+            base = 1.0f;
+        float shortage = deficit / fmaxf(1.0f, target);
+        float score = base * (1.0f + shortage);
+        if (score > best_score) {
+            best_score = score;
+            best = c;
+            best_deficit = deficit;
+            best_base = base;
+        }
+    }
+
+    if (best == COMMODITY_COUNT)
+        return false;
+
+    int qty = (int)ceilf(best_deficit);
+    if (qty < 1) qty = 1;
+    if (qty > 12) qty = 12;
+
+    float price = best_base * (1.20f + 0.40f * pool_factor);
+    if (!isfinite(price) || price <= 0.0f)
+        price = best_base;
+
+    *out = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = (uint8_t)station_idx,
+        .commodity = best,
+        .quantity_needed = (float)qty,
+        .base_price = price,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    return true;
+}
+
 static void step_contracts(world_t *w, float dt) {
     /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -6046,6 +6133,7 @@ static void step_contracts(world_t *w, float dt) {
         bool has_ore_contract = false;
         bool has_production_contract = false;
         bool has_kit_input_contract = false;
+        bool has_black_market_contract = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             if (!w->contracts[k].active ||
                 w->contracts[k].action != CONTRACT_TRACTOR ||
@@ -6055,6 +6143,9 @@ static void step_contracts(world_t *w, float dt) {
             commodity_t cc = w->contracts[k].commodity;
             if (cc < COMMODITY_RAW_ORE_COUNT) {
                 has_ore_contract = true;
+            } else if (station_black_market_contract_commodity(st, cc)) {
+                has_black_market_contract = true;
+                has_production_contract = true;
             } else if (cc == COMMODITY_FRAME ||
                        cc == COMMODITY_LASER_MODULE ||
                        cc == COMMODITY_TRACTOR_MODULE) {
@@ -6196,7 +6287,18 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 5: shipyard kit-fab inputs. Lives in its own slot
+        /* Priority 5: black-market demand. Pirate/off-relay stations
+         * publish institutional "no questions" buy pressure for scarce
+         * high-value finished goods. This is still an ordinary station
+         * contract, so gossip, NPC haulers, player delivery, and station
+         * authority all use the same path. */
+        if (!need.active && !has_production_contract &&
+            !has_black_market_contract) {
+            (void)station_black_market_contract_need(
+                st, s, pool_factor, &need);
+        }
+
+        /* Priority 6: shipyard kit-fab inputs. Lives in its own slot
          * so an ongoing ingot/scaffold contract doesn't starve it.
          * Helios always has some CU/CR ingot deficit; without this
          * split, the frame contract for kit-fab never gets posted. */
@@ -6237,7 +6339,7 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 6: kit imports at consumer-only stations. A station
+        /* Priority 7: kit imports at consumer-only stations. A station
          * with a dock but no shipyard (Prospect, future outposts) can't
          * mint kits — it needs them hauled in. Issue a TRACTOR contract
          * for REPAIR_KIT when the station's kit inventory falls below

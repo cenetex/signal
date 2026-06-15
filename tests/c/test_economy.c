@@ -715,6 +715,50 @@ TEST(test_station_policy_black_market_requires_off_relay_station) {
         &off_relay_selection, STATION_POLICY_CARD_BLACK_MARKET));
 }
 
+TEST(test_blackglass_posts_black_market_buy_contract) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    station_t *freeport = &w.stations[SIGNAL_FREEPORT_STATION_INDEX];
+    ASSERT(station_exists(freeport));
+    ASSERT(station_faction_is_pirate_economy(freeport));
+
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_CRYSTAL_INGOT, 0));
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_CUPRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(
+        freeport, COMMODITY_FRAME, 0));
+
+    world_sim_step(&w, SIM_DT);
+
+    contract_t *found = NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *c = &w.contracts[k];
+        if (c->active && c->action == CONTRACT_TRACTOR &&
+            c->station_index == SIGNAL_FREEPORT_STATION_INDEX) {
+            found = c;
+            break;
+        }
+    }
+
+    ASSERT(found != NULL);
+    ASSERT_EQ_INT(found->commodity, COMMODITY_TRACTOR_MODULE);
+    ASSERT(found->quantity_needed > 0.0f);
+    ASSERT(found->base_price >
+           freeport->base_price[found->commodity]);
+    ASSERT_EQ_INT(found->proof_flags, 0);
+    ASSERT_EQ_INT(found->required_recipe_id, 0);
+    ASSERT_EQ_INT((int)found->forbidden_origin_mask, 0);
+}
+
 TEST(test_station_policy_cache_drives_trade_price_modifier) {
     WORLD_DECL;
     world_reset(&w);
@@ -2706,6 +2750,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_station_policy_preserves_seeded_supply_loop);
     RUN(test_station_policy_cards_rank_under_domain_budgets);
     RUN(test_station_policy_black_market_requires_off_relay_station);
+    RUN(test_blackglass_posts_black_market_buy_contract);
     RUN(test_station_policy_cache_drives_trade_price_modifier);
     RUN(test_cargo_legality_clean_chain_is_not_contraband);
     RUN(test_cargo_legality_missing_receipt_is_policy_contraband);

@@ -44,6 +44,8 @@ static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n)
     return station_manifest_consume_by_commodity(st, c, n);
 }
 
+static bool station_is_hauler_logistics_node(const station_t *st);
+
 #define FRONTIER_DIRECTOR_BASE_INTERVAL 30.0f
 #define FRONTIER_DIRECTOR_MIN_INTERVAL 1.0f
 #define FRONTIER_DIRECTOR_MAX_PLANNED 8
@@ -627,7 +629,7 @@ static bool append_station_transfer_receipt(world_t *w, station_t *author,
 
 static bool station_accepts_hauler_commodity(const station_t *st,
                                              commodity_t c) {
-    if (!st || !station_is_active(st)) return false;
+    if (!station_is_hauler_logistics_node(st)) return false;
     if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
 
     if (st->scaffold && c == COMMODITY_FRAME) return true;
@@ -635,6 +637,10 @@ static bool station_accepts_hauler_commodity(const station_t *st,
         const station_module_t *m = &st->modules[i];
         if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
         if (module_build_material_lookup(m->type) == c) return true;
+    }
+    if (station_policy_accepts_contract_bound_cargo(st) &&
+        c >= COMMODITY_RAW_ORE_COUNT) {
+        return true;
     }
     return station_consumes(st, c);
 }
@@ -2788,7 +2794,7 @@ static int npc_append_hauler_contract_candidates(
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS)
         return 0;
     const station_t *home = &w->stations[npc->home_station];
-    if (!station_is_active(home)) return 0;
+    if (!station_is_hauler_logistics_node(home)) return 0;
 
     ship_t haul_view = {0};
     if (ship) {
@@ -3018,7 +3024,7 @@ static int npc_append_hauler_offer_for_source(const world_t *w,
     if (ct->station_index < 0 || ct->station_index >= MAX_STATIONS) return count;
     if (source_station == ct->station_index) return count;
     const station_t *source = &w->stations[source_station];
-    if (!station_is_active(source)) return count;
+    if (!station_is_hauler_logistics_node(source)) return count;
     if (npc_candidate_has_contract(offers, count, ct, source_station))
         return count;
     if (npc_hauler_takeable_units_at_source(source, ct) <= 0) return count;
@@ -3136,7 +3142,7 @@ static int npc_append_hauler_market_candidates(
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS)
         return count;
     const station_t *home = &w->stations[npc->home_station];
-    if (!station_is_active(home)) return count;
+    if (!station_is_hauler_logistics_node(home)) return count;
 
     ship_t haul_view = {0};
     if (ship) haul_view = *ship;
@@ -4112,7 +4118,7 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
         if (w && haul_offer->dest_station >= 0 &&
             haul_offer->dest_station < MAX_STATIONS) {
             const station_t *dest = &w->stations[haul_offer->dest_station];
-            if (station_is_active(dest) &&
+            if (station_is_hauler_logistics_node(dest) &&
                 cargo_legality_station_tolerates_contraband(
                     dest, haul_offer->dest_station)) {
                 c.black_market_acceptance =
@@ -5521,19 +5527,24 @@ static int nearest_active_dock_station(const world_t *w, vec2 pos) {
     return best;
 }
 
+static bool station_is_hauler_logistics_node(const station_t *st) {
+    return st && station_exists(st) && !st->planned && !st->scaffold &&
+           station_provides_docking(st);
+}
+
 static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS ||
-        !station_is_active(&w->stations[npc->home_station]))
+        !station_is_hauler_logistics_node(&w->stations[npc->home_station]))
         npc->home_station = nearest_active_dock_station(w, npc->ship.pos);
     if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS)
         npc->dest_station = npc->home_station;
-    /* Scaffold-tow contracts can deliver to planned stations (blueprints)
-     * which are not active yet. Ordinary jobs must target active stations. */
+    /* Scaffold-tow contracts can deliver to planned stations (blueprints).
+     * Ordinary hauling may also target off-relay docks like Blackglass. */
     else if (npc->pickup_action != NPC_PICKUP_ACTION_SCAFFOLD_TOW &&
-             !station_is_active(&w->stations[npc->dest_station]))
+             !station_is_hauler_logistics_node(&w->stations[npc->dest_station]))
         npc->dest_station = npc->home_station;
     if (npc->pickup_station < 0 || npc->pickup_station >= MAX_STATIONS ||
-        !station_is_active(&w->stations[npc->pickup_station])) {
+        !station_is_hauler_logistics_node(&w->stations[npc->pickup_station])) {
         npc->pickup_station = -1;
         npc->pickup_commodity = COMMODITY_COUNT;
         npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
@@ -5669,7 +5680,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         int target_station = npc_hauler_current_target_station(npc, hauler_ship);
         if (target_station < 0 || target_station >= MAX_STATIONS ||
-            !station_is_active(&w->stations[target_station])) {
+            !station_is_hauler_logistics_node(&w->stations[target_station])) {
             npc->pickup_station = -1;
             npc->pickup_commodity = COMMODITY_COUNT;
             npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;

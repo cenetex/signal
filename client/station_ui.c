@@ -9,6 +9,7 @@
 #include "contract_objective.h"
 #include "manifest.h"
 #include "faction.h"
+#include "station_policy.h"
 #include "cargo_lineage.h"
 #include "station_authority.h"
 #include "contract_fit.h"
@@ -1357,6 +1358,27 @@ static bool contract_origin_ban_label(const contract_t *ct,
     return false;
 }
 
+static bool contract_black_market_label(const contract_t *ct,
+                                        char *out,
+                                        size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!ct || ct->action != CONTRACT_TRACTOR ||
+        ct->commodity < COMMODITY_RAW_ORE_COUNT ||
+        ct->station_index >= MAX_STATIONS) {
+        return false;
+    }
+    const station_t *dest = &g.world.stations[ct->station_index];
+    if (!station_exists(dest)) return false;
+    if (!station_faction_is_pirate_economy(dest) &&
+        !station_policy_cached_has(dest, STATION_POLICY_CARD_BLACK_MARKET)) {
+        return false;
+    }
+    snprintf(out, out_size, "black ");
+    return true;
+}
+
 static bool trade_row_tracked_note(const station_t *st,
                                    const trade_row_t *row,
                                    char *out,
@@ -2660,9 +2682,11 @@ static void draw_contracts_view(const station_ui_state_t *ui,
              * row (see the grade-tint override below). Keeps the cargo
              * cell short so payout doesn't collide with it. */
             char req_prefix[32];
-            if (!contract_origin_ban_label(ct, req_prefix, sizeof(req_prefix)))
+            if (!contract_origin_ban_label(ct, req_prefix, sizeof(req_prefix)) &&
+                !contract_black_market_label(ct, req_prefix, sizeof(req_prefix))) {
                 snprintf(req_prefix, sizeof(req_prefix), "%s",
                          ct->proof_flags ? "trace " : "");
+            }
             snprintf(cargo_buf, sizeof(cargo_buf), "%s%s x%d",
                      req_prefix,
                      commodity_short_name(ct->commodity), qty);
