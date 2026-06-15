@@ -229,8 +229,7 @@ TEST(test_construction_consumes_manifest_units) {
     sp->session_ready = true;
     sp->id = 0;
     memset(sp->session_token, 0xCC, sizeof(sp->session_token));
-    sp->docked = true;
-    sp->current_station = 0;
+    player_init_ship(sp, &w);
     ASSERT(manifest_init(&sp->ship.manifest, 16));
     sp->ship.cargo[COMMODITY_FRAME] = 5.0f;
     cargo_unit_t u = {0};

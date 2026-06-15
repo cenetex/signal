@@ -18,6 +18,39 @@ static int test_active_ship_asset_count(const world_t *w) {
     return count;
 }
 
+static int test_destroy_stored_station_loaners(world_t *w, int station_idx) {
+    int count = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active || asset->destroyed) continue;
+        if (!asset->loaner) continue;
+        if (asset->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
+        if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (asset->custody_station != station_idx) continue;
+        asset->destroyed = true;
+        asset->status = SHIP_ASSET_STATUS_DESTROYED;
+        asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+        asset->operator_slot = -1;
+        count++;
+    }
+    return count;
+}
+
+static bool test_has_station_hull_request(const world_t *w, int requester_station,
+                                          hull_class_t hull_class) {
+    int owner_code = requester_station == 0 ? INT8_MIN : -1 - requester_station;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        for (int p = 0; p < st->pending_ship_build_count; p++) {
+            if (st->pending_ship_builds[p].owner == (int8_t)owner_code &&
+                st->pending_ship_builds[p].hull_class == hull_class) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool test_view_has_market_memory(const knowledge_view_t *view,
                                         uint8_t kind,
                                         int station_a,
@@ -409,6 +442,62 @@ TEST(test_player_respawn_retires_asset_and_claims_loaner) {
     ASSERT(new_asset != NULL);
     ASSERT(new_asset->loaner);
     ASSERT_EQ_INT(new_asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+}
+
+TEST(test_player_respawn_without_loaner_waits_for_shipyard_asset) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    uint32_t old_asset_id = sp->ship_asset_id;
+    ASSERT(old_asset_id != SHIP_ASSET_ID_NONE);
+
+    ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER), 0);
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+    int active_before_death = test_active_ship_asset_count(&w);
+
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->input.reset = true;
+    world_sim_step(&w, SIM_DT);
+
+    const ship_asset_t *old_asset = world_ship_asset_by_id_const(&w, old_asset_id);
+    ASSERT(old_asset != NULL);
+    ASSERT(old_asset->destroyed);
+    ASSERT_EQ_INT(old_asset->status, SHIP_ASSET_STATUS_DESTROYED);
+    ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->current_station, 0);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), active_before_death);
+    ASSERT(test_has_station_hull_request(&w, 0, HULL_CLASS_MINER));
+
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
+
+    world_sim_step(&w, 120.0f);
+    ASSERT(sp->docked);
+    ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
+    const ship_asset_t *replacement =
+        world_ship_asset_by_id_const(&w, sp->ship_asset_id);
+    ASSERT(replacement != NULL);
+    ASSERT(replacement->loaner);
+    ASSERT_EQ_INT(replacement->provenance, SHIP_ASSET_PROVENANCE_SHIPYARD);
+    ASSERT_EQ_INT(replacement->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(replacement->operator_slot, 0);
+    ASSERT_EQ_INT(replacement->custody_station, 0);
+
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT_EQ_INT(sp->ship_asset_id, replacement->asset_id);
 }
 
 TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
@@ -6192,6 +6281,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_release_stores_owned_hull_for_reclaim);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
+    RUN(test_player_respawn_without_loaner_waits_for_shipyard_asset);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
     RUN(test_spawn_npc_bootstrap_does_not_queue_shipyard_build);
     RUN(test_shipyard_keeps_completed_build_when_asset_registry_full);

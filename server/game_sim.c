@@ -1381,6 +1381,34 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
     return false;
 }
 
+static bool player_has_assigned_ship_asset(const world_t *w,
+                                           const server_player_t *sp) {
+    int player_slot = player_slot_for_ptr(w, sp);
+    if (player_slot < 0 || !sp) return false;
+    const ship_asset_t *asset =
+        world_ship_asset_by_id_const(w, sp->ship_asset_id);
+    return asset && !asset->destroyed &&
+           asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+           asset->operator_slot == player_slot;
+}
+
+static bool player_claim_waiting_ship_asset(world_t *w, server_player_t *sp) {
+    if (player_has_assigned_ship_asset(w, sp)) return true;
+    int player_slot = player_slot_for_ptr(w, sp);
+    if (!w || !sp || player_slot < 0 || !sp->docked) return false;
+    int station_idx = sp->current_station;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx])) {
+        station_idx = sp->nearby_station;
+    }
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx])) {
+        station_idx = 0;
+    }
+    return ship_asset_claim_for_player(w, player_slot, station_idx);
+}
+
 static void ship_asset_retire_player_asset(world_t *w, server_player_t *sp) {
     if (!w || !sp || sp->ship_asset_id == SHIP_ASSET_ID_NONE) return;
     ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
@@ -1490,6 +1518,14 @@ static bool is_finished_good(commodity_t c);
 static void sync_station_finished_inventory(station_t *st, commodity_t c);
 
 static void launch_ship(world_t *w, server_player_t *sp) {
+    if (!player_claim_waiting_ship_asset(w, sp)) {
+        if (sp) {
+            sp->docked = true;
+            sp->in_dock_range = true;
+            sp->docking_approach = false;
+        }
+        return;
+    }
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
@@ -4793,6 +4829,10 @@ static bool try_dock_from_range(world_t *w, server_player_t *sp) {
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
+    if (sp->docked && !player_claim_waiting_ship_asset(w, sp)) {
+        return;
+    }
+
     /* Order scaffold from shipyard: queues build + generates material contract */
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
         module_type_t kit_type = intent->scaffold_kit_module;
