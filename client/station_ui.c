@@ -1185,10 +1185,14 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         int row_capacity = finished_good
             ? (int)lroundf(MAX_PRODUCT_STOCK)
             : (int)lroundf(REFINERY_HOPPER_CAPACITY);
-        int station_total_inv = finished_good
-            ? station_manifest_count_c(st, (commodity_t)c)
-            : (int)floorf(station_inventory_amount(st, (commodity_t)c) + 0.0001f);
-        bool station_full = finished_good && station_total_inv >= row_capacity;
+        float station_total_amount = finished_good
+            ? (float)station_manifest_count_c(st, (commodity_t)c)
+            : station_inventory_amount(st, (commodity_t)c);
+        int station_total_inv =
+            (int)floorf(station_total_amount + 0.0001f);
+        int station_space_units =
+            (int)floorf((float)row_capacity - station_total_amount + 0.0001f);
+        bool station_full = station_space_units <= 0;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int towed_g = (gi == MINING_GRADE_COMMON) ? towed_total : 0;
             int manifest_g = (finished_good && station_accepts_manifest)

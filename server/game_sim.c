@@ -1548,6 +1548,7 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
 
 static bool is_finished_good(commodity_t c);
 static void sync_station_finished_inventory(station_t *st, commodity_t c);
+static float station_cargo_space(const station_t *st, commodity_t c);
 
 static void launch_ship(world_t *w, server_player_t *sp) {
     if (!player_claim_waiting_ship_asset(w, sp)) {
@@ -1640,6 +1641,7 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
                                  bool single_unit) {
     if (!w || !sp || !st) return 0.0f;
     float payout = 0.0f;
+    bool blocked_full = false;
     if (single_unit &&
         grade_filter < MINING_GRADE_COUNT &&
         grade_filter != MINING_GRADE_COMMON) {
@@ -1664,13 +1666,22 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
             remove_towed_pod_slot(&sp->ship, t);
             continue;
         }
-        int sell_units = single_unit ? 1 : units;
-        if (sell_units > units) sell_units = units;
-
         float price = station_buy_price(st, c);
         if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
             price = st->base_price[c];
         if (price <= FLOAT_EPSILON) continue;
+
+        float space = station_cargo_space(st, c);
+        int space_units = (int)floorf(space + 0.0001f);
+        if (space_units <= 0) {
+            blocked_full = true;
+            continue;
+        }
+
+        int sell_units = single_unit ? 1 : units;
+        if (sell_units > units) sell_units = units;
+        if (sell_units > space_units) sell_units = space_units;
+        if (sell_units <= 0) continue;
 
         if (is_finished_good(c)) {
             uint8_t origin[8] = { 'C','R','A','T','E','v','1',' ' };
@@ -1711,6 +1722,13 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
         if (single_unit) break;
     }
 
+    if (payout < 0.01f && blocked_full) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_ORDER_REJECTED,
+            .player_id = sp->id,
+            .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
+        });
+    }
     return payout;
 }
 
@@ -2213,6 +2231,12 @@ static float station_finished_space(const station_t *st, commodity_t c) {
     float stock = (float)manifest_count_by_commodity(&st->manifest, c) +
                   station_finished_fraction(st, c);
     return fmaxf(0.0f, MAX_PRODUCT_STOCK - stock);
+}
+
+static float station_cargo_space(const station_t *st, commodity_t c) {
+    if (!st || c >= COMMODITY_COUNT) return 0.0f;
+    if (is_finished_good(c)) return station_finished_space(st, c);
+    return fmaxf(0.0f, REFINERY_HOPPER_CAPACITY - st->_inventory_cache[c]);
 }
 
 static void sync_ship_finished_cargo(ship_t *ship, commodity_t c) {
