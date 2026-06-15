@@ -76,6 +76,21 @@ typedef struct {
 static signal_brain_model_t g_brain;
 bool g_neural_singleplayer = false;
 
+static bool signal_hnn_debug_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("SIGNAL_HNN_DEBUG");
+        cached = (value && value[0] != '\0' &&
+                  strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+#define SIGNAL_HNN_DEBUG_LOG(...) \
+    do { \
+        if (signal_hnn_debug_enabled()) fprintf(stderr, __VA_ARGS__); \
+    } while (0)
+
 static const signal_brain_action_t SB_ACTIONS[SB_ACTION_COUNT] = {
     {"NONE", 0, 0},
     {"W", 0, 1},
@@ -743,9 +758,9 @@ static bool g_hnn_actions_initialized = false;
 
 void signal_brain_holographic_init(void) {
     if (g_hnn_actions_initialized) return;
-    fprintf(stderr, "[hnn] holographic init: generating action vectors...\n");
+    SIGNAL_HNN_DEBUG_LOG("[hnn] holographic init: generating action vectors...\n");
     hnn_action_table_init(&g_hnn_actions);
-    fprintf(stderr, "[hnn] holographic init: done\n");
+    SIGNAL_HNN_DEBUG_LOG("[hnn] holographic init: done\n");
     g_hnn_actions_initialized = true;
 }
 
@@ -863,13 +878,19 @@ static void hnn_fill_npc_features(const world_t *w,
  */
 static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
     if (!w || !npc) return;
-    static int debug_call_count = 0;
-    debug_call_count++;
-    if (debug_call_count == 1 || debug_call_count % 600 == 0)
-        fprintf(stderr, "[hnn] call #%d state=%d tgt=%d timer=%.1f exp=%d pos=(%.0f,%.0f)\n",
-                debug_call_count, npc->state, npc->target_asteroid,
-                npc->state_timer, npc->hnn_mem.experience_count,
-                npc->ship.pos.x, npc->ship.pos.y);
+    if (signal_hnn_debug_enabled()) {
+        static int debug_call_count = 0;
+        debug_call_count++;
+        if (debug_call_count == 1 || debug_call_count % 600 == 0)
+            SIGNAL_HNN_DEBUG_LOG("[hnn] call #%d state=%d tgt=%d timer=%.1f exp=%d pos=(%.0f,%.0f)\n",
+                                 debug_call_count,
+                                 npc->state,
+                                 npc->target_asteroid,
+                                 npc->state_timer,
+                                 npc->hnn_mem.experience_count,
+                                 npc->ship.pos.x,
+                                 npc->ship.pos.y);
+    }
 
     /* Dock-return cycle: after accumulating experience, head home to
      * share it via the gossip dock handshake. Use state_timer as a
@@ -903,9 +924,11 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         /* Close enough — transition to docked. The next tick the
          * state machine will handle the dock handshake including
          * holographic experience exchange. */
-        fprintf(stderr, "[hnn] slot=%ld ->DOCKED exp=%d t=%.1f dist=%.0f\n",
-                (long)(npc - w->npc_ships), npc->hnn_mem.experience_count,
-                npc->state_timer, dist_to_home);
+        SIGNAL_HNN_DEBUG_LOG("[hnn] slot=%ld ->DOCKED exp=%d t=%.1f dist=%.0f\n",
+                             (long)(npc - w->npc_ships),
+                             npc->hnn_mem.experience_count,
+                             npc->state_timer,
+                             dist_to_home);
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = NPC_DOCK_TIME;
         npc->target_asteroid = -1;
@@ -937,8 +960,10 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         }
         if (best_ast >= 0) {
             npc->target_asteroid = best_ast;
-            fprintf(stderr, "[hnn] slot=%ld exploring asteroid %d (dist=%.0f)\n",
-                    (long)(npc - w->npc_ships), best_ast, fixp_sqrtf(best_d));
+            SIGNAL_HNN_DEBUG_LOG("[hnn] slot=%ld exploring asteroid %d (dist=%.0f)\n",
+                                 (long)(npc - w->npc_ships),
+                                 best_ast,
+                                 fixp_sqrtf(best_d));
         }
     }
 
@@ -998,15 +1023,16 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
 
         /* Store bootstrap experience */
         hnn_pilot_features_t fs;
-        fprintf(stderr, "[hnn] bootstrap: filling features...\n");
+        SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: filling features...\n");
         hnn_fill_npc_features(w, npc, target, boot_turn, boot_thrust,
                               boot_action, &fs);
-        fprintf(stderr, "[hnn] bootstrap: encoding state...\n");
+        SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: encoding state...\n");
         float sv[HNN_DIM];
         hnn_encode_state(&fs, sv);
-        fprintf(stderr, "[hnn] bootstrap: storing in memory...\n");
+        SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: storing in memory...\n");
         hnn_memory_store(&npc->hnn_mem, sv, g_hnn_actions.vecs[boot_action]);
-        fprintf(stderr, "[hnn] bootstrap: done! exp=%d\n", npc->hnn_mem.experience_count);
+        SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: done! exp=%d\n",
+                             npc->hnn_mem.experience_count);
         return;
     }
 

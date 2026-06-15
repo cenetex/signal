@@ -1138,6 +1138,35 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
                                        GOSSIP_HNN_JOB_HAUL) > 0.05f);
 }
 
+TEST(test_holographic_pilot_uploads_experience_once) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    memset(npc, 0, sizeof(*npc));
+    npc->active = true;
+    npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    npc->home_station = 0;
+
+    hnn_memory_init(&npc->hnn_mem);
+    float key[HNN_DIM];
+    float value[HNN_DIM];
+    hnn_key_vector(0x1234u, key);
+    hnn_key_vector(0x5678u, value);
+    hnn_memory_store(&npc->hnn_mem, key, value);
+    ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
+
+    hnn_memory_init(&w.stations[0].hnn_experience);
+    w.stations[0].hnn_experience_version = 0;
+    npc->hnn_experience_version = 0;
+
+    gossip_hnn_exchange(&w, 0, npc);
+
+    ASSERT_EQ_INT(w.stations[0].hnn_experience.experience_count, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_version, 1);
+    ASSERT_EQ_INT((int)npc->hnn_experience_version, 1);
+}
+
 TEST(test_bootstrap_seeds_station_local_contracts_only) {
     WORLD_DECL;
     world_reset(&w);
@@ -1203,5 +1232,6 @@ void register_gossip_tests(void) {
     RUN(test_dock_gossip_decays_carried_market_memory);
     RUN(test_dock_gossip_dual_writes_station_supply_memory);
     RUN(test_ship_contact_gossip_exchanges_memory_and_holograms);
+    RUN(test_holographic_pilot_uploads_experience_once);
     RUN(test_bootstrap_seeds_station_local_contracts_only);
 }

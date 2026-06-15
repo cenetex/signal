@@ -5,7 +5,24 @@
 #include "../shared/holographic_nn.h"
 #include "../shared/station_util.h"
 #include "../shared/manifest.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static bool gossip_hnn_debug_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("SIGNAL_HNN_DEBUG");
+        cached = (value && value[0] != '\0' &&
+                  strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+#define GOSSIP_HNN_DEBUG_LOG(...) \
+    do { \
+        if (gossip_hnn_debug_enabled()) fprintf(stderr, __VA_ARGS__); \
+    } while (0)
 
 contract_summary_t contract_summary_make(const contract_t *ct) {
     contract_summary_t s = {0};
@@ -1401,9 +1418,11 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
 
     if (npc->brain_mode != SERVER_BRAIN_MODE_HOLOGRAPHIC) return;
 
-    fprintf(stderr, "[hnn] exchange called: slot=%ld mode=%d st=%d exp=%d\n",
-            (long)(npc - w->npc_ships), npc->brain_mode, station_idx,
-            npc->hnn_mem.experience_count);
+    GOSSIP_HNN_DEBUG_LOG("[hnn] exchange called: slot=%ld mode=%d st=%d exp=%d\n",
+                         (long)(npc - w->npc_ships),
+                         npc->brain_mode,
+                         station_idx,
+                         npc->hnn_mem.experience_count);
 
     /*
      * Upload: bundle the pilot's experience into the station's pool.
@@ -1411,16 +1430,16 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
      */
     if (npc->hnn_mem.experience_count > 0) {
         /* Bundle pilot's store into station's pool */
-        for (int i = 0; i < HNN_DIM; i++)
         gossip_hnn_bundle_memory(&st->hnn_experience, &npc->hnn_mem);
         st->hnn_experience_version++;
 
-        fprintf(stderr, "[hnn] pilot %d uploaded experience to station %d "
-                "(pilot_count=%d, station_total=%d, version=%u)\n",
-                (int)(npc - w->npc_ships), station_idx,
-                npc->hnn_mem.experience_count,
-                st->hnn_experience.experience_count,
-                st->hnn_experience_version);
+        GOSSIP_HNN_DEBUG_LOG("[hnn] pilot %d uploaded experience to station %d "
+                             "(pilot_count=%d, station_total=%d, version=%u)\n",
+                             (int)(npc - w->npc_ships),
+                             station_idx,
+                             npc->hnn_mem.experience_count,
+                             st->hnn_experience.experience_count,
+                             st->hnn_experience_version);
     }
 
     /*
@@ -1434,10 +1453,11 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
         gossip_hnn_bundle_memory(&npc->hnn_mem, &st->hnn_experience);
         npc->hnn_experience_version = st->hnn_experience_version;
 
-        fprintf(stderr, "[hnn] pilot %d downloaded experience from station %d "
-                "(station_version=%u, pilot_total=%d)\n",
-                (int)(npc - w->npc_ships), station_idx,
-                st->hnn_experience_version,
-                npc->hnn_mem.experience_count);
+        GOSSIP_HNN_DEBUG_LOG("[hnn] pilot %d downloaded experience from station %d "
+                             "(station_version=%u, pilot_total=%d)\n",
+                             (int)(npc - w->npc_ships),
+                             station_idx,
+                             st->hnn_experience_version,
+                             npc->hnn_mem.experience_count);
     }
 }
