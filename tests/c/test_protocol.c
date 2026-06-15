@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "cargo_receipt_issue.h"
 #include "faction.h"
+#include "station_policy.h"
 
 TEST(test_roundtrip_player_state) {
     server_player_t sp;
@@ -1172,7 +1173,8 @@ TEST(test_station_identity_serializes_operator_text) {
     int len = serialize_station_identity(buf, 2, &st);
     ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
     ASSERT_EQ_INT(STATION_IDENTITY_SIZE,
-                  STATION_IDENTITY_HULL_SIZE + STATION_IDENTITY_FACTION_SIZE);
+                  STATION_IDENTITY_HULL_SIZE + STATION_IDENTITY_FACTION_SIZE +
+                      STATION_IDENTITY_POLICY_SIZE);
 
     int moff = 59 + COMMODITY_COUNT * 4 + 4
         + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
@@ -1236,6 +1238,9 @@ TEST(test_station_identity_serializes_faction_trailer) {
     memset(&st, 0, sizeof(st));
     station_faction_seed_station(&st, 2);
     st.faction_relations[STATION_FACTION_BLACKGLASS_SYNDICATE] = -91;
+    st.policy_card_count = 2;
+    st.policy_card_ids[0] = (uint8_t)STATION_POLICY_CARD_PROVENANCE_SCREENING;
+    st.policy_card_ids[1] = (uint8_t)STATION_POLICY_CARD_BLACK_MARKET;
 
     uint8_t buf[STATION_IDENTITY_SIZE] = {0};
     int len = serialize_station_identity(buf, 2, &st);
@@ -1247,6 +1252,10 @@ TEST(test_station_identity_serializes_faction_trailer) {
     ASSERT_EQ_INT(buf[moff++], STATION_IDEOLOGY_EXPANSIONIST);
     ASSERT_EQ_INT((int)(int8_t)buf[moff + STATION_FACTION_BLACKGLASS_SYNDICATE],
                   -91);
+    moff = STATION_IDENTITY_FACTION_TRAILER_SIZE;
+    ASSERT_EQ_INT(buf[moff++], 2);
+    ASSERT_EQ_INT(buf[moff++], STATION_POLICY_CARD_PROVENANCE_SCREENING);
+    ASSERT_EQ_INT(buf[moff++], STATION_POLICY_CARD_BLACK_MARKET);
 }
 
 TEST(test_bug92_station_record_size_matches_buffer) {

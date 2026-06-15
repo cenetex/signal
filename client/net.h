@@ -197,6 +197,8 @@ typedef struct {
     uint8_t faction_allegiance;
     uint8_t faction_ideology;
     int8_t faction_relations[STATION_FACTION_COUNT];
+    uint8_t policy_card_count;
+    uint8_t policy_card_ids[STATION_IDENTITY_POLICY_CARD_COUNT];
 } NetStationIdentity;
 
 /* Station diagnostics callback: compact live flow state for modules. */

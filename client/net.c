@@ -974,12 +974,20 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int h = 0; h < HULL_CLASS_COUNT; h++)
                     si.stored_hull_count[h] = data[moff++];
             }
-            if (len >= STATION_IDENTITY_SIZE) {
+            if (len >= STATION_IDENTITY_FACTION_TRAILER_SIZE) {
                 si.faction_id = data[moff++];
                 si.faction_allegiance = data[moff++];
                 si.faction_ideology = data[moff++];
                 for (int f = 0; f < STATION_FACTION_COUNT; f++)
                     si.faction_relations[f] = (int8_t)data[moff++];
+            }
+            if (len >= STATION_IDENTITY_SIZE) {
+                uint8_t policy_n = data[moff++];
+                si.policy_card_count = policy_n > STATION_IDENTITY_POLICY_CARD_COUNT
+                    ? STATION_IDENTITY_POLICY_CARD_COUNT
+                    : policy_n;
+                for (int i = 0; i < STATION_IDENTITY_POLICY_CARD_COUNT; i++)
+                    si.policy_card_ids[i] = data[moff++];
             }
             (void)moff;
             net_state.callbacks.on_station_identity(&si);

@@ -1536,6 +1536,13 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     buf[moff++] = st->faction_ideology;
     for (int f = 0; f < STATION_FACTION_COUNT; f++)
         buf[moff++] = (uint8_t)st->faction_relations[f];
+    int policy_n = st->policy_card_count;
+    if (policy_n < 0) policy_n = 0;
+    if (policy_n > STATION_IDENTITY_POLICY_CARD_COUNT)
+        policy_n = STATION_IDENTITY_POLICY_CARD_COUNT;
+    buf[moff++] = (uint8_t)policy_n;
+    for (int i = 0; i < STATION_IDENTITY_POLICY_CARD_COUNT; i++)
+        buf[moff++] = (i < policy_n) ? st->policy_card_ids[i] : 0;
     (void)moff;
     return STATION_IDENTITY_SIZE;
 }

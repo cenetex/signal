@@ -975,6 +975,16 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     st->faction_ideology = si->faction_ideology;
     memcpy(st->faction_relations, si->faction_relations,
            sizeof(st->faction_relations));
+    st->policy_card_count = si->policy_card_count;
+    if (st->policy_card_count > STATION_IDENTITY_POLICY_CARD_COUNT)
+        st->policy_card_count = STATION_IDENTITY_POLICY_CARD_COUNT;
+    for (int i = 0; i < STATION_IDENTITY_POLICY_CARD_COUNT; i++) {
+        st->policy_card_ids[i] =
+            (i < st->policy_card_count) ? si->policy_card_ids[i] : 0;
+        st->policy_card_domains[i] = 0;
+        st->policy_card_costs[i] = 0;
+        st->policy_card_scores[i] = 0.0f;
+    }
 }
 
 void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,

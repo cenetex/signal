@@ -1704,6 +1704,53 @@ static float draw_station_route_history_rows(const station_t *st,
     return my;
 }
 
+static float draw_station_policy_rows(const station_t *st,
+                                      float cx, float my,
+                                      float inner_right,
+                                      bool compact)
+{
+    if (!st) return my;
+
+    const uint8_t COL_POLICY[3] = { 170, 210, 255 };
+    const uint8_t COL_DIM[3]    = { PAL_TEXT_FADED };
+    const float row_h = compact ? 14.0f : 15.0f;
+
+    my += draw_section_header(cx, my, inner_right, "POLICY", HDR_TRADE);
+
+    int blackglass_rel = station_faction_relation_to(
+        st, (uint8_t)STATION_FACTION_BLACKGLASS_SYNDICATE);
+    char left[96];
+    char right[64];
+    snprintf(left, sizeof(left), "%s // %s",
+             station_faction_name(st->faction_id),
+             station_ideology_name(st->faction_ideology));
+    snprintf(right, sizeof(right), "blackglass %s",
+             station_faction_relation_label(blackglass_rel));
+    draw_row_lr(cx, my, inner_right, COL_POLICY, left, COL_DIM, right);
+    my += row_h;
+
+    int count = st->policy_card_count;
+    if (count > STATION_IDENTITY_POLICY_CARD_COUNT)
+        count = STATION_IDENTITY_POLICY_CARD_COUNT;
+    if (count <= 0) {
+        draw_row_lr(cx, my, inner_right, COL_DIM, "policy cards pending",
+                    NULL, NULL);
+        return my + row_h;
+    }
+
+    char cards[160] = {0};
+    for (int i = 0; i < count; i++) {
+        uint8_t id = st->policy_card_ids[i];
+        if (id >= (uint8_t)STATION_POLICY_CARD_COUNT) continue;
+        const char *name = station_policy_card_name((station_policy_card_id_t)id);
+        if (cards[0]) strncat(cards, " / ", sizeof(cards) - strlen(cards) - 1);
+        strncat(cards, name, sizeof(cards) - strlen(cards) - 1);
+    }
+    draw_row_lr(cx, my, inner_right, COL_DIM, "active cards",
+                COL_POLICY, cards[0] ? cards : "unknown");
+    return my + row_h;
+}
+
 static int collect_route_history_aggregates(route_history_aggregate_row_t *out,
                                             int cap)
 {
@@ -2584,6 +2631,8 @@ static void draw_contracts_view(const station_ui_state_t *ui,
     const uint8_t COL_TEXT[3]     = { PAL_TEXT_SECONDARY };
     const uint8_t COL_FADED[3]    = { PAL_TEXT_FADED };
 
+    my = draw_station_policy_rows(ui->station, cx, my, inner_right, compact);
+    my += compact ? 6.0f : 8.0f;
     my += draw_section_header(cx, my, inner_right, "CONTRACTS", HDR_TRADE);
 
     /* Type is contract class; step is the immediate verb from the shared
