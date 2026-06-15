@@ -443,9 +443,15 @@ TEST(test_npc_radio_formats_real_simulated_npc_memories) {
         npc->state_timer = 0.0f;
         memset(&npc->knowledge, 0, sizeof(npc->knowledge));
         knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        add_memory(npc,
+                   i == 0 ? MARKET_MEMORY_ORE_PRESSURE :
+                   i == 1 ? MARKET_MEMORY_DEMAND :
+                            MARKET_MEMORY_ROUTE_DANGER,
+                   i == 0 ? 0 : (uint8_t)i,
+                   i == 2 ? 1 : 0xff,
+                   i == 0 ? COMMODITY_FERRITE_ORE : COMMODITY_FERRITE_INGOT,
+                   (uint16_t)(30 + i * 10));
     }
-
-    step_npc_ships(&w, SIM_DT);
 
     int grounded_npcs = 0;
     int radio_ready_npcs = 0;

@@ -11,6 +11,37 @@ static int test_spawn_hauler_at(world_t *w, int station_idx) {
     return spawn_npc(w, station_idx, NPC_ROLE_HAULER);
 }
 
+static int test_claim_fresh_npc_hull(world_t *w, int station_idx,
+                                     npc_role_t role,
+                                     hull_class_t hull_class) {
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        ship_cleanup(&w->npc_ships[n].ship);
+        memset(&w->npc_ships[n], 0, sizeof(w->npc_ships[n]));
+    }
+    int character_cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int c = 0; c < character_cap; c++)
+        w->characters[c].active = false;
+    for (int s = 0; s < MAX_SHIPS; s++) {
+        ship_cleanup(&w->ships[s]);
+        memset(&w->ships[s], 0, sizeof(w->ships[s]));
+    }
+    for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
+        ship_asset_t *asset = &w->ship_assets[a];
+        if (!asset->active || asset->owner_kind != SHIP_ASSET_OWNER_STATION ||
+            asset->loaner) {
+            continue;
+        }
+        ship_cleanup(&asset->ship);
+        memset(asset, 0, sizeof(*asset));
+    }
+    ship_asset_t *asset = world_ship_asset_mint(
+        w, hull_class, SHIP_ASSET_OWNER_STATION,
+        station_idx, station_idx, SHIP_ASSET_PROVENANCE_GENESIS,
+        false, station_idx, NULL, NULL);
+    if (!asset) return -1;
+    return ship_asset_claim_for_npc(w, station_idx, role);
+}
+
 static int test_active_ship_asset_count(const world_t *w) {
     int count = 0;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
@@ -652,9 +683,9 @@ TEST(test_neural_worker_refits_only_from_home_credit_and_modules) {
         w.stations[s].known_contract_count = 0;
         memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
     }
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *worker = &w.npc_ships[slot];
     ship_t *ship = world_npc_ship_for(&w, slot);
@@ -693,7 +724,8 @@ TEST(test_neural_worker_posts_home_refit_import_contract) {
     ASSERT(test_set_station_finished_units(&w.stations[2],
                                            COMMODITY_LASER_MODULE, 16));
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *worker = &w.npc_ships[slot];
     worker->state = NPC_STATE_DOCKED;
@@ -3227,15 +3259,19 @@ TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
                     MAX_PRODUCT_STOCK, 0.001f);
 }
 
-TEST(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work) {
+TEST(test_neural_npc_assignment_preserves_miner_hull_for_hauler_work) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
+    ship_asset_t *asset = world_ship_asset_by_id(&w, npc->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_NPC_MINER);
     npc->state = NPC_STATE_DOCKED;
     npc->state_timer = 0.0f;
     ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
@@ -3265,10 +3301,10 @@ TEST(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work) {
 
     step_npc_ships(&w, SIM_DT);
 
-    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
-    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
-    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
-    ASSERT_EQ_INT(npc->dest_station, 1);
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_NPC_MINER);
+    ASSERT_EQ_INT(asset->ship.hull_class, HULL_CLASS_NPC_MINER);
 }
 
 TEST(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer) {
@@ -3283,7 +3319,8 @@ TEST(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer) {
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3322,7 +3359,7 @@ TEST(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer) {
     ASSERT_EQ_FLOAT(npc->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
 }
 
-TEST(test_neural_npc_assignment_switches_worker_to_hauler_for_scaffold_tow) {
+TEST(test_neural_npc_assignment_uses_hauler_hull_for_scaffold_tow) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
@@ -3348,7 +3385,8 @@ TEST(test_neural_npc_assignment_switches_worker_to_hauler_for_scaffold_tow) {
     w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
     w.scaffolds[sc_idx].towed_by = -1;
 
-    int slot = spawn_npc(&w, 1, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 1, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3423,7 +3461,8 @@ TEST(test_neural_npc_assignment_switches_worker_to_scout_for_fracture_work) {
     contract_set_target_pub_from_asteroid(&w.contracts[0],
                                           &w.asteroids[asteroid]);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3456,6 +3495,7 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     for (int s = 0; s < MAX_STATIONS; s++) {
         memset(w.stations[s].known_contracts, 0,
                sizeof(w.stations[s].known_contracts));
@@ -3469,7 +3509,8 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     int before_kits = station_finished_count(&w.stations[0],
                                              COMMODITY_REPAIR_KIT);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_MINER,
+                                         HULL_CLASS_NPC_MINER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3545,7 +3586,8 @@ TEST(test_neural_npc_assignment_executes_delivery_proof_offer) {
     };
     w.contracts[0].proof_flags = CONTRACT_PROOF_REQUIRE_PROOF;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3625,7 +3667,8 @@ TEST(test_neural_npc_assignment_uses_market_memory_demand) {
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3692,7 +3735,8 @@ TEST(test_hauler_assignment_weights_route_memory) {
     w.stations[1].pos = v2(1000.0f, 0.0f);
     w.stations[2].pos = v2(1000.0f, 0.0f);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3796,7 +3840,8 @@ TEST(test_hauler_assignment_explains_selected_route_risk_memory) {
     w.stations[0].pos = v2(0.0f, 0.0f);
     w.stations[1].pos = v2(1000.0f, 0.0f);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -3891,7 +3936,8 @@ TEST(test_hauler_assignment_weights_delivery_receipt_memory) {
     w.stations[1].pos = v2(1000.0f, 0.0f);
     w.stations[2].pos = v2(1000.0f, 0.0f);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4004,7 +4050,8 @@ TEST(test_hauler_assignment_weights_route_reputation_memory) {
     w.stations[1].pos = v2(1000.0f, 0.0f);
     w.stations[2].pos = v2(1000.0f, 0.0f);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4083,7 +4130,8 @@ TEST(test_hauler_assignment_weights_station_trust_memory) {
     w.stations[1].pos = v2(1000.0f, 0.0f);
     w.stations[2].pos = v2(1000.0f, 0.0f);
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4159,7 +4207,8 @@ TEST(test_hauler_assignment_weights_supply_memory) {
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4242,7 +4291,8 @@ TEST(test_hauler_uses_remote_supply_memory_for_pickup) {
         .claimed_by = -1,
     };
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4366,7 +4416,8 @@ TEST(test_remote_supply_route_starts_from_current_ship_position) {
         .claimed_by = -1,
     };
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     ship_t *ship = world_npc_ship_for(&w, slot);
@@ -4455,7 +4506,8 @@ TEST(test_failed_remote_pickup_emits_station_risk_memory) {
         .claimed_by = -1,
     };
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4553,7 +4605,8 @@ TEST(test_hauler_assignment_avoids_station_risk_memory) {
         .claimed_by = -1,
     };
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4649,7 +4702,8 @@ TEST(test_hauler_assignment_avoids_destination_station_risk_memory) {
     w.contracts[1] = w.contracts[0];
     w.contracts[1].station_index = 2;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
@@ -4835,10 +4889,10 @@ TEST(test_neural_worker_physically_transports_contract_memory_between_stations) 
                                         (uint8_t)COMMODITY_FERRITE_INGOT,
                                         NULL));
 
-    int slot = spawn_npc(&w, 2, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 2, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *courier = &w.npc_ships[slot];
-    courier->role = NPC_ROLE_HAULER;
     courier->state = NPC_STATE_DOCKED;
     courier->state_timer = 0.0f;
     courier->known_contract_count = 0;
@@ -4906,7 +4960,8 @@ TEST(test_idle_neural_worker_runs_gossip_courier_trip) {
     ASSERT_EQ_INT(w.stations[1].known_contract_count, 1);
     ASSERT_EQ_INT(w.stations[2].known_contract_count, 0);
 
-    int slot = spawn_npc(&w, 1, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 1, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *courier = &w.npc_ships[slot];
     courier->state = NPC_STATE_DOCKED;
@@ -4981,7 +5036,8 @@ TEST(test_idle_neural_worker_runs_baseline_gossip_without_contracts) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     for (int i = 0; i < MAX_SCAFFOLDS; i++) w.scaffolds[i].active = false;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *courier = &w.npc_ships[slot];
     courier->state = NPC_STATE_DOCKED;
@@ -5030,7 +5086,8 @@ TEST(test_neural_worker_runs_gossip_when_ore_target_unavailable) {
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
     w.stations[0]._inventory_cache[COMMODITY_FRAME] = 0.0f;
 
-    int slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *courier = &w.npc_ships[slot];
     courier->state = NPC_STATE_DOCKED;
@@ -5192,18 +5249,21 @@ TEST(test_neural_worker_market_hnn_pool_decays_when_idle) {
                                        GOSSIP_HNN_JOB_HAUL) == 0.0f);
 }
 
-TEST(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work) {
+TEST(test_neural_npc_assignment_preserves_hauler_hull_for_ore_work) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_FRAME, 0));
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_TRACTOR_MODULE, 0));
 
-    int slot = spawn_npc(&w, 2, NPC_ROLE_HAULER);
+    int slot = test_claim_fresh_npc_hull(&w, 2, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
+    ship_asset_t *asset = world_ship_asset_by_id(&w, npc->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_HAULER);
     npc->state = NPC_STATE_DOCKED;
     npc->state_timer = 0.0f;
     npc->known_contract_count = 0;
@@ -5212,21 +5272,10 @@ TEST(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work) {
 
     step_npc_ships(&w, SIM_DT);
 
-    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
-    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
-    bool selected_mine = false;
-    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
-        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_MINE &&
-            npc->job_diag_selected[i] >= 200) {
-            ASSERT(npc->job_diag_factor_hologram[i] > 0);
-            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
-                          MARKET_MEMORY_ORE_PRESSURE);
-            ASSERT_EQ_INT(npc->job_diag_memory_station[i], 2);
-            selected_mine = true;
-            break;
-        }
-    }
-    ASSERT(selected_mine);
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(asset->ship.hull_class, HULL_CLASS_HAULER);
 }
 
 TEST(test_hauler_damage_emits_route_danger_memory) {
@@ -5274,14 +5323,17 @@ TEST(test_legacy_hauler_brain_mode_upgrades_before_assignment) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_FRAME, 0));
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_TRACTOR_MODULE, 0));
 
-    int slot = spawn_npc(&w, 2, NPC_ROLE_HAULER);
+    int slot = test_claim_fresh_npc_hull(&w, 2, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
+    ship_asset_t *asset = world_ship_asset_by_id(&w, npc->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_HAULER);
     npc->state = NPC_STATE_DOCKED;
     npc->state_timer = 0.0f;
     npc->brain_mode = SERVER_BRAIN_MODE_NONE;
@@ -5291,8 +5343,10 @@ TEST(test_legacy_hauler_brain_mode_upgrades_before_assignment) {
     step_npc_ships(&w, SIM_DT);
 
     ASSERT_EQ_INT(npc->brain_mode, SERVER_BRAIN_MODE_NEURAL_FLIGHT);
-    ASSERT_EQ_INT(npc->role, NPC_ROLE_MINER);
-    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_NPC_MINER);
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(npc->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(asset->hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(asset->ship.hull_class, HULL_CLASS_HAULER);
 }
 
 TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
@@ -5956,8 +6010,7 @@ TEST(test_npc_miner_idles_when_refined_output_is_full) {
     step_npc_ships(&w, SIM_DT);
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, -1);
     ASSERT_EQ_INT(w.npc_ships[0].towed_fragment, -1);
-    ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_TRAVEL_TO_DEST);
-    ASSERT(w.npc_ships[0].dest_station != w.npc_ships[0].home_station);
+    ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_IDLE);
 }
 
 TEST(test_field_respawn_starts_beyond_signal_edge) {
@@ -6391,9 +6444,9 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_autopilot_smelt_delivery_preempts_repair_dock);
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
-    RUN(test_neural_npc_assignment_switches_miner_to_hauler_for_contract_work);
+    RUN(test_neural_npc_assignment_preserves_miner_hull_for_hauler_work);
     RUN(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer);
-    RUN(test_neural_npc_assignment_switches_worker_to_hauler_for_scaffold_tow);
+    RUN(test_neural_npc_assignment_uses_hauler_hull_for_scaffold_tow);
     RUN(test_neural_npc_assignment_switches_worker_to_scout_for_fracture_work);
     RUN(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer);
     RUN(test_neural_npc_assignment_executes_delivery_proof_offer);
@@ -6417,7 +6470,7 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_neural_worker_runs_gossip_when_ore_target_unavailable);
     RUN(test_neural_worker_market_hnn_pool_decays_under_new_attention);
     RUN(test_neural_worker_market_hnn_pool_decays_when_idle);
-    RUN(test_neural_npc_assignment_switches_idle_hauler_to_miner_for_ore_work);
+    RUN(test_neural_npc_assignment_preserves_hauler_hull_for_ore_work);
     RUN(test_hauler_damage_emits_route_danger_memory);
     RUN(test_legacy_hauler_brain_mode_upgrades_before_assignment);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);

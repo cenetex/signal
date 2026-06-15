@@ -1640,7 +1640,7 @@ TEST(test_frontier_virtual_pilots_execute_growth_loop) {
     ASSERT(found_bootstrapped_outpost);
 }
 
-TEST(test_tow_drone_delivers_to_planned_outpost) {
+TEST(test_hauler_delivers_to_planned_outpost) {
     WORLD_DECL;
     world_reset(&w);
     w.field_spawn_timer = -9999.0f; /* suppress chunk re-materialization */
@@ -1650,7 +1650,7 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     /* credits are station-local (ledger) — no ship.credits field */
 
     /* Create a planned outpost within Kepler's signal range. This test
-     * isolates tow-drone materialization, not long-route corridor travel. */
+     * isolates scaffold materialization, not long-route corridor travel. */
     vec2 plan_pos = v2_add(w.stations[1].pos, v2(4000.0f, 0.0f));
     w.players[0].input.create_planned_outpost = true;
     w.players[0].input.planned_outpost_pos = plan_pos;
@@ -1670,14 +1670,18 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
     w.scaffolds[sc_idx].towed_by = -1;
 
-    /* Find Kepler's tug worker to take the scaffold tow contract. */
+    /* Find or seed Kepler's hauler-class worker to take the scaffold tow
+     * contract. Scaffold delivery work is executed by hauler hulls; tow
+     * drones are legacy tractor workers and must not morph classes. */
     int worker_idx = -1;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_TOW
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER
             && w.npc_ships[i].home_station == 1) {
             worker_idx = i; break;
         }
     }
+    if (worker_idx < 0)
+        worker_idx = spawn_npc(&w, 1, NPC_ROLE_HAULER);
     ASSERT(worker_idx >= 0);
     w.npc_ships[worker_idx].state = NPC_STATE_DOCKED;
     w.npc_ships[worker_idx].state_timer = 0.0f;
@@ -2823,7 +2827,7 @@ void register_construction_scaffold_tests(void) {
     RUN(test_frontier_virtual_pilots_plan_and_order_relay);
     RUN(test_frontier_virtual_pilots_scale_planned_queue);
     RUN(test_frontier_virtual_pilots_execute_growth_loop);
-    RUN(test_tow_drone_delivers_to_planned_outpost);
+    RUN(test_hauler_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
     RUN(test_shipyard_queue_waits_for_loose_scaffold_to_clear);
 }

@@ -1129,9 +1129,53 @@ static hull_class_t npc_resident_hull_class_for_role(npc_role_t role) {
     }
 }
 
-static void npc_enforce_role_hull(npc_ship_t *npc) {
+static bool npc_bound_asset_hull_class(const world_t *w, int npc_slot,
+                                       const npc_ship_t *npc,
+                                       hull_class_t *out) {
+    if (!w || !npc || npc->ship_asset_id == SHIP_ASSET_ID_NONE) return false;
+    const ship_asset_t *asset =
+        world_ship_asset_by_id_const(w, npc->ship_asset_id);
+    if (!asset || asset->destroyed ||
+        asset->status != SHIP_ASSET_STATUS_ASSIGNED ||
+        asset->operator_kind != SHIP_ASSET_OPERATOR_NPC ||
+        asset->operator_slot != npc_slot ||
+        (unsigned)asset->hull_class >= HULL_CLASS_COUNT) {
+        return false;
+    }
+    if (out) *out = (hull_class_t)asset->hull_class;
+    return true;
+}
+
+static bool npc_role_fits_physical_hull(const world_t *w, int npc_slot,
+                                        const npc_ship_t *npc,
+                                        npc_role_t role) {
+    if (!npc) return false;
+    hull_class_t physical = npc->ship.hull_class;
+    (void)npc_bound_asset_hull_class(w, npc_slot, npc, &physical);
+    if ((unsigned)physical >= HULL_CLASS_COUNT) return false;
+    return physical == npc_hull_class_for_role(role);
+}
+
+static npc_role_t npc_role_for_physical_hull(hull_class_t hull_class,
+                                             npc_role_t fallback) {
+    switch (hull_class) {
+    case HULL_CLASS_HAULER:        return NPC_ROLE_HAULER;
+    case HULL_CLASS_DRONE_TRACTOR: return NPC_ROLE_TOW;
+    case HULL_CLASS_MINER:
+    case HULL_CLASS_NPC_MINER:
+    case HULL_CLASS_DRONE_LASER:   return NPC_ROLE_MINER;
+    default:                       return fallback;
+    }
+}
+
+static void npc_enforce_role_hull(world_t *w, int npc_slot, npc_ship_t *npc) {
     if (!npc) return;
-    npc->ship.hull_class = npc_hull_class_for_role(npc->role);
+    hull_class_t physical = npc_hull_class_for_role(npc->role);
+    bool has_bound_asset =
+        npc_bound_asset_hull_class(w, npc_slot, npc, &physical);
+    if (has_bound_asset && npc_hull_class_for_role(npc->role) != physical)
+        npc->role = npc_role_for_physical_hull(physical, npc->role);
+    npc->ship.hull_class = physical;
 }
 
 /* Find a free ships[] slot — one not pointed to by any active character.
@@ -1575,7 +1619,7 @@ void rebuild_characters_from_npcs(world_t *w) {
             npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
         }
         npc_normalize_brain_mode(npc);
-        npc_enforce_role_hull(npc);
+        npc_enforce_role_hull(w, n, npc);
         (void)character_alloc_for_npc(w, n, npc);
     }
 }
@@ -4493,11 +4537,13 @@ static int npc_delivery_clear_origin_proofs(world_t *w,
     return cleared;
 }
 
-static void npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
+static bool npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
                                npc_role_t role) {
-    if (!w || !npc) return;
+    if (!w || !npc) return false;
     hull_class_t next_hull = npc_hull_class_for_role(role);
-    if (npc->role == role && npc->ship.hull_class == next_hull) return;
+    if (!npc_role_fits_physical_hull(w, npc_slot, npc, role))
+        return false;
+    if (npc->role == role && npc->ship.hull_class == next_hull) return true;
     ship_t *ship = npc_ship_for(w, npc_slot);
     float old_max = npc_max_hull(npc);
     float live_hull = ship ? ship->hull : npc->hull;
@@ -4524,6 +4570,7 @@ static void npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
         ship->angle = npc->ship.angle;
     }
     mirror_npc_to_character(w, npc_slot);
+    return true;
 }
 
 static void npc_begin_hauler_offer(world_t *w,
@@ -4625,33 +4672,36 @@ static int npc_apply_home_dock_repair(world_t *w,
     return drained;
 }
 
-static void npc_begin_scout_offer(world_t *w,
+static bool npc_begin_scout_offer(world_t *w,
                                   int npc_slot,
                                   npc_ship_t *npc,
                                   const npc_job_offer_t *offer) {
-    if (!w || !npc || !offer) return;
+    if (!w || !npc || !offer) return false;
     if (offer->target_index < 0 || offer->target_index >= MAX_ASTEROIDS)
-        return;
-    if (!w->asteroids[offer->target_index].active) return;
-    npc_set_assignment(w, npc_slot, npc, NPC_ROLE_MINER);
+        return false;
+    if (!w->asteroids[offer->target_index].active) return false;
+    if (!npc_set_assignment(w, npc_slot, npc, NPC_ROLE_MINER))
+        return false;
     npc->target_asteroid = offer->target_index;
     npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
     npc->state_timer = 0.0f;
+    return true;
 }
 
-static void npc_begin_scaffold_tow_offer(world_t *w,
+static bool npc_begin_scaffold_tow_offer(world_t *w,
                                          int npc_slot,
                                          npc_ship_t *npc,
                                          const npc_job_offer_t *offer) {
-    if (!w || !npc || !offer) return;
+    if (!w || !npc || !offer) return false;
     if (offer->target_index < 0 || offer->target_index >= MAX_SCAFFOLDS)
-        return;
+        return false;
     const scaffold_t *sc = &w->scaffolds[offer->target_index];
     if (!sc->active || sc->state != SCAFFOLD_LOOSE || sc->towed_by >= 0)
-        return;
+        return false;
     if (offer->dest_station < 0 || offer->dest_station >= MAX_STATIONS)
-        return;
-    npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER);
+        return false;
+    if (!npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER))
+        return false;
     npc->target_asteroid = offer->target_index;
     npc->dest_station = offer->dest_station;
     npc->pickup_station = npc->home_station;
@@ -4659,6 +4709,7 @@ static void npc_begin_scaffold_tow_offer(world_t *w,
     npc->pickup_action = NPC_PICKUP_ACTION_SCAFFOLD_TOW;
     npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
     npc->state_timer = 0.0f;
+    return true;
 }
 
 static void npc_begin_repair_offer(world_t *w,
@@ -4709,6 +4760,21 @@ static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
     npc_job_offer_t courier_offer;
     bool has_courier =
         npc_make_gossip_courier_job_offer(w, npc, ship, &courier_offer);
+
+    bool can_mine = npc_role_fits_physical_hull(w, npc_slot, npc,
+                                                NPC_ROLE_MINER);
+    bool can_haul = npc_role_fits_physical_hull(w, npc_slot, npc,
+                                                NPC_ROLE_HAULER);
+    if (!can_mine) {
+        has_mine = false;
+        has_scout = false;
+    }
+    if (!can_haul) {
+        haul_choice = -1;
+        has_tow = false;
+        has_proof = false;
+        has_courier = false;
+    }
 
     npc_job_offer_t *best = NULL;
     if (haul_choice >= 0) best = &haul_offers[haul_choice];
@@ -4768,21 +4834,23 @@ static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
             return;
         }
         if (best->kind == NPC_JOB_SCOUT) {
-            npc_begin_scout_offer(w, npc_slot, npc, best);
+            (void)npc_begin_scout_offer(w, npc_slot, npc, best);
             return;
         }
         if (best->kind == NPC_JOB_TOW) {
-            npc_begin_scaffold_tow_offer(w, npc_slot, npc, best);
+            (void)npc_begin_scaffold_tow_offer(w, npc_slot, npc, best);
             return;
         }
         if (best->kind == NPC_JOB_DELIVER_PROOF) {
-            npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER);
+            if (!npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER))
+                return;
             ship_t *updated_ship = npc_ship_for(w, npc_slot);
             npc_begin_delivery_proof_offer(w, npc_slot, npc, updated_ship,
                                            best);
             return;
         }
-        npc_set_assignment(w, npc_slot, npc, best->role);
+        if (!npc_set_assignment(w, npc_slot, npc, best->role))
+            return;
         if (best->kind == NPC_JOB_HAUL && npc->role == NPC_ROLE_HAULER) {
             ship_t *updated_ship = npc_ship_for(w, npc_slot);
             npc_begin_hauler_offer(w, npc_slot, npc, updated_ship, best);
@@ -5886,7 +5954,7 @@ void step_npc_ships(world_t *w, float dt) {
          * npc fields before physics integration this tick. */
         mirror_ship_pos_to_npc(w, n);
         npc_normalize_brain_mode(npc);
-        npc_enforce_role_hull(npc);
+        npc_enforce_role_hull(w, n, npc);
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
         npc_choose_assignment(w, n, npc);
