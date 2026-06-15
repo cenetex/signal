@@ -1264,7 +1264,8 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
          (bound->status == SHIP_ASSET_STATUS_ASSIGNED &&
           bound->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
           bound->operator_slot == player_slot))) {
-        return ship_asset_assign_to_player(w, player_slot, bound, station_idx);
+        return ship_asset_assign_to_player(w, player_slot, bound,
+                                           bound->custody_station);
     }
 
     for (int pass = 0; pass < 2; pass++) {

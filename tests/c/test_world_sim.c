@@ -153,6 +153,29 @@ TEST(test_player_init_claims_station_loaner_asset) {
     ASSERT_EQ_INT(asset->operator_slot, 0);
 }
 
+TEST(test_player_init_bound_asset_preserves_custody_station) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+    ship_asset_t *asset = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, sp->session_token);
+    ASSERT(asset != NULL);
+    sp->ship_asset_id = asset->asset_id;
+
+    player_init_ship(sp, &w);
+
+    ASSERT_EQ_INT(sp->ship_asset_id, asset->asset_id);
+    ASSERT_EQ_INT(sp->current_station, 1);
+    ASSERT_EQ_INT(sp->nearby_station, 1);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(asset->custody_station, 1);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(asset->operator_slot, 0);
+}
+
 TEST(test_player_init_ship_null_context_safe) {
     WORLD_DECL;
     world_reset(&w);
@@ -5951,6 +5974,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_npcs);
     RUN(test_world_reset_ship_assets_back_active_hulls);
     RUN(test_player_init_claims_station_loaner_asset);
+    RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
