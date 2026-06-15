@@ -4089,6 +4089,199 @@ TEST(test_hauler_assignment_explains_selected_route_risk_memory) {
     ASSERT(found_risk_diag);
 }
 
+TEST(test_risky_hauler_dispatch_emits_escort_route_reputation) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+    };
+
+    const market_memory_t danger = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 20,
+        .observed_tick = 10,
+        .subject_nonce = 0xE2,
+    };
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&danger, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 1);
+    market_memory_t escort = {0};
+    ASSERT(test_view_has_market_memory(&npc->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &escort));
+    ASSERT_EQ_INT(escort.action, CONTRACT_TRACTOR);
+    ASSERT(escort.quantity_hint >= 3);
+    ASSERT(test_view_has_market_memory(&w.stations[0].knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       NULL));
+}
+
+TEST(test_route_safety_proof_offsets_route_risk_diagnostic) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w.stations[s].known_contracts, 0,
+               sizeof(w.stations[s].known_contracts));
+        w.stations[s].known_contract_count = 0;
+        memset(&w.stations[s].knowledge, 0, sizeof(w.stations[s].knowledge));
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[1].pos = v2(1000.0f, 0.0f);
+
+    int slot = test_claim_fresh_npc_hull(&w, 0, NPC_ROLE_HAULER,
+                                         HULL_CLASS_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->known_contract_count = 0;
+    memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)HAULER_RESERVE + 4));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    npc->known_contracts[npc->known_contract_count++] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 45.0f,
+    };
+
+    const market_memory_t danger = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 20,
+        .observed_tick = 10,
+        .subject_nonce = 0xE3,
+    };
+    const market_memory_t patrol = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 255,
+        .salience = 255,
+        .quantity_hint = 24,
+        .observed_tick = 11,
+        .subject_nonce = 0xE4,
+    };
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&danger, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+    ASSERT(knowledge_item_from_market_memory(&patrol, &item));
+    item.chain_anchor[0] = 0x91;
+    item.chain_anchor[1] = 0x92;
+    item.chain_anchor[2] = 0x93;
+    item.chain_anchor[3] = 0x94;
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(npc->dest_station, 1);
+    bool found_safety_diag = false;
+    for (int i = 0; i < npc->job_diag_count && i < 4; i++) {
+        if (npc->job_diag_kind[i] == (uint8_t)INSPECT_DIAG_JOB_HAUL &&
+            npc->job_diag_selected[i] >= 200 &&
+            npc->job_diag_dest[i] == 1) {
+            found_safety_diag = true;
+            ASSERT_EQ_INT(npc->job_diag_reason[i],
+                          INSPECT_JOB_REASON_ROUTE_MEMORY);
+            ASSERT_EQ_INT(npc->job_diag_memory_kind[i],
+                          MARKET_MEMORY_ROUTE_REPUTATION);
+            ASSERT_EQ_INT(npc->job_diag_proof_kind[i],
+                          INSPECT_JOB_PROOF_CHAIN_ANCHOR);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][0], 0x91);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][1], 0x92);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][2], 0x93);
+            ASSERT_EQ_INT(npc->job_diag_proof_prefix[i][3], 0x94);
+        }
+    }
+    ASSERT(found_safety_diag);
+}
+
 TEST(test_hauler_assignment_weights_delivery_receipt_memory) {
     WORLD_DECL;
     world_reset(&w);
@@ -6627,6 +6820,8 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_neural_npc_assignment_uses_market_memory_demand);
     RUN(test_hauler_assignment_weights_route_memory);
     RUN(test_hauler_assignment_explains_selected_route_risk_memory);
+    RUN(test_risky_hauler_dispatch_emits_escort_route_reputation);
+    RUN(test_route_safety_proof_offsets_route_risk_diagnostic);
     RUN(test_hauler_assignment_weights_delivery_receipt_memory);
     RUN(test_hauler_assignment_weights_route_reputation_memory);
     RUN(test_hauler_assignment_weights_station_trust_memory);

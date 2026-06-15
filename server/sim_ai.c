@@ -2163,6 +2163,45 @@ static void npc_emit_route_danger_memory(world_t *w,
     }
 }
 
+static bool npc_emit_route_safety_memory(world_t *w,
+                                         npc_ship_t *npc,
+                                         station_t *station,
+                                         int source_station,
+                                         int dest_station,
+                                         commodity_t commodity,
+                                         float danger,
+                                         bool escort) {
+    if (!w || !npc) return false;
+    if (source_station < 0 || source_station >= MAX_STATIONS) return false;
+    if (dest_station < 0 || dest_station >= MAX_STATIONS) return false;
+    if (commodity < COMMODITY_RAW_ORE_COUNT || commodity >= COMMODITY_COUNT)
+        return false;
+    if (danger <= 0.03f) return false;
+
+    uint16_t evidence = (uint16_t)(escort ? 3u : 2u);
+    evidence = (uint16_t)(evidence +
+                          (uint16_t)ceilf(clampf(danger, 0.0f, 1.0f) * 5.0f));
+    if (evidence > 8u) evidence = 8u;
+
+    float value_hint = (escort ? 80.0f : 55.0f) +
+                       clampf(danger, 0.0f, 1.0f) * (escort ? 180.0f : 130.0f);
+    market_memory_t safety = {0};
+    if (!market_memory_from_route_reputation(source_station,
+                                             dest_station,
+                                             commodity,
+                                             evidence,
+                                             value_hint,
+                                             w->tick,
+                                             false,
+                                             &safety)) {
+        return false;
+    }
+    npc_reinforce_route_reputation(npc, station, &safety);
+    if (npc->brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT)
+        (void)gossip_hnn_store_market_memory(&npc->hnn_market_mem, &safety);
+    return true;
+}
+
 static float npc_route_memory_strength(const market_memory_t *memory,
                                        int source_station,
                                        int dest_station,
@@ -2265,7 +2304,12 @@ static bool npc_route_memory_best_evidence(const npc_ship_t *npc,
         }
         float strength = npc_route_memory_strength(&memory, source_station,
                                                    dest_station, commodity);
-        if (strength <= best) continue;
+        bool risk_memory = npc_route_memory_is_risk_kind(memory.memory_kind);
+        bool best_risk = best_item &&
+            npc_route_memory_is_risk_kind(best_memory.memory_kind);
+        if (strength < best - 0.0001f) continue;
+        if (strength <= best + 0.0001f && !(best_risk && !risk_memory))
+            continue;
         best = strength;
         best_item = &npc->knowledge.items[i];
         best_memory = memory;
@@ -2287,7 +2331,9 @@ static float npc_route_memory_multiplier(const npc_ship_t *npc,
     npc_route_memory_factors(npc, source_station, dest_station, commodity,
                              &success, &danger, &proof);
     float positive = fmaxf(success, proof);
-    float mult = 1.0f + positive * 0.45f - danger * 0.70f;
+    float safety_damp = clampf(1.0f - positive * 0.55f, 0.25f, 1.0f);
+    float effective_danger = danger * safety_damp;
+    float mult = 1.0f + positive * 0.45f - effective_danger * 0.70f;
     return clampf(mult, 0.25f, 1.45f);
 }
 
@@ -2436,6 +2482,13 @@ typedef struct {
     contract_t *contract;
     signal_contract_candidate_t contract_candidate;
 } npc_job_offer_t;
+
+static bool npc_activate_route_support(world_t *w,
+                                       int npc_slot,
+                                       npc_ship_t *npc,
+                                       ship_t *ship,
+                                       const npc_job_offer_t *route,
+                                       bool escort);
 
 static void npc_job_offer_init(npc_job_offer_t *offer,
                                npc_job_kind_t kind,
@@ -2917,7 +2970,7 @@ static void npc_fill_hauler_offer(const world_t *w,
                                     trust_strength),
                               0.0f);
     offer->diag_hologram = hnn_resonance;
-    if (route_danger > 0.35f && route_danger >= route_positive &&
+    if (route_danger > 0.35f && route_danger > route_positive + 0.05f &&
         has_route_evidence_memory &&
         npc_route_memory_is_risk_kind(route_evidence_memory.memory_kind)) {
         offer->reason = INSPECT_JOB_REASON_ROUTE_RISK;
@@ -4244,6 +4297,16 @@ static bool npc_worker_score_assignment(world_t *w,
         candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
         margin + 1.0e-9 >= npc_worker_activation_margin_threshold()) {
         activated = npc_try_self_upgrade(w, npc_slot, npc, ship);
+    } else if (selected >= 0 && selected < count &&
+               signal_npc_worker_brain_loaded() &&
+               mode != NPC_WORKER_BRAIN_MODE_SHADOW &&
+               (candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY ||
+                candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE) &&
+               margin + 1.0e-9 >= npc_worker_activation_margin_threshold()) {
+        bool escort =
+            candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY;
+        activated = npc_activate_route_support(w, npc_slot, npc, ship,
+                                               haul_offer, escort);
     }
     npc_worker_write_trace(w, npc_slot, npc, candidates, scores, count,
                            selected, npc_worker_option_for_offer(best),
@@ -4738,11 +4801,37 @@ static void npc_begin_hauler_offer(world_t *w,
     npc->pickup_station = -1;
     npc->pickup_commodity = COMMODITY_COUNT;
     npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+    commodity_t commodity = offer->commodity;
+    if (offer->contract)
+        commodity = offer->contract->commodity;
+    if (commodity >= COMMODITY_RAW_ORE_COUNT && commodity < COMMODITY_COUNT) {
+        float route_danger = 0.0f;
+        float route_proof = 0.0f;
+        npc_route_memory_factors(npc, offer->source_station,
+                                 offer->dest_station, commodity,
+                                 NULL, &route_danger, &route_proof);
+        station_t *support_station = NULL;
+        if (npc->home_station >= 0 && npc->home_station < MAX_STATIONS &&
+            station_is_active(&w->stations[npc->home_station])) {
+            support_station = &w->stations[npc->home_station];
+        } else if (offer->source_station >= 0 &&
+                   offer->source_station < MAX_STATIONS &&
+                   station_is_active(&w->stations[offer->source_station])) {
+            support_station = &w->stations[offer->source_station];
+        }
+        if (route_danger > route_proof + 0.03f) {
+            (void)npc_emit_route_safety_memory(w, npc, support_station,
+                                               offer->source_station,
+                                               offer->dest_station,
+                                               commodity,
+                                               route_danger,
+                                               true);
+        }
+    }
     if (!offer->contract) {
         npc->state = NPC_STATE_TRAVEL_TO_DEST;
         return;
     }
-    commodity_t commodity = offer->contract->commodity;
     if (offer->source_station != npc->home_station) {
         npc->pickup_station = offer->source_station;
         npc->pickup_commodity = commodity;
@@ -4757,6 +4846,51 @@ static void npc_begin_hauler_offer(world_t *w,
                                       offer->contract);
     if (npc_finished_cargo_total(npc, ship) > 0.01f)
         npc->state = NPC_STATE_TRAVEL_TO_DEST;
+}
+
+static bool npc_activate_route_support(world_t *w,
+                                       int npc_slot,
+                                       npc_ship_t *npc,
+                                       ship_t *ship,
+                                       const npc_job_offer_t *route,
+                                       bool escort) {
+    if (!w || !npc || !route) return false;
+    if (route->source_station < 0 || route->source_station >= MAX_STATIONS)
+        return false;
+    if (route->dest_station < 0 || route->dest_station >= MAX_STATIONS)
+        return false;
+    if (route->commodity < COMMODITY_RAW_ORE_COUNT ||
+        route->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+    if (npc_finished_cargo_total(npc, ship) > 0.01f) return false;
+    if (!npc_set_assignment(w, npc_slot, npc, NPC_ROLE_HAULER))
+        return false;
+
+    ship_t *updated_ship = npc_ship_for(w, npc_slot);
+    float route_danger = 0.0f;
+    float route_proof = 0.0f;
+    npc_route_memory_factors(npc, route->source_station,
+                             route->dest_station, route->commodity,
+                             NULL, &route_danger, &route_proof);
+    station_t *support_station = NULL;
+    if (npc->home_station >= 0 && npc->home_station < MAX_STATIONS &&
+        station_is_active(&w->stations[npc->home_station])) {
+        support_station = &w->stations[npc->home_station];
+    }
+    (void)npc_emit_route_safety_memory(w, npc, support_station,
+                                       route->source_station,
+                                       route->dest_station,
+                                       route->commodity,
+                                       fmaxf(route_danger, 0.09f),
+                                       escort);
+
+    npc_job_offer_t patrol = *route;
+    patrol.kind = NPC_JOB_HAUL;
+    patrol.role = NPC_ROLE_HAULER;
+    patrol.contract = NULL;
+    npc_begin_hauler_offer(w, npc_slot, npc, updated_ship, &patrol);
+    return npc->state == NPC_STATE_TRAVEL_TO_DEST;
 }
 
 static void npc_begin_delivery_proof_offer(world_t *w,
