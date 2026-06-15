@@ -4252,6 +4252,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     printf("[server] player %d disconnected, grace window 30s\n", i);
                 } else {
                     /* No session — immediate full disconnect */
+                    (void)world_player_release_ship_asset(&world, i);
                     world.players[i].connected = false;
                     uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                     broadcast(leave_msg, 2);
@@ -5246,6 +5247,7 @@ static void tick_session_timers(void) {
             if (sp->grace_timer <= 0.0f) {
                 printf("[server] player %d: session timeout, disconnecting\n", i);
                 mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                (void)world_player_release_ship_asset(&world, i);
                 sp->connected = false;
                 sp->conn = NULL;
                 uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };

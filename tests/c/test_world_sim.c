@@ -264,6 +264,45 @@ TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     ASSERT_EQ_INT(released->operator_slot, -1);
 }
 
+TEST(test_player_release_returns_provisional_loaner_to_storage) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = false;
+    int asset_count_before = test_active_ship_asset_count(&w);
+    int stored_before = world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER);
+
+    player_init_ship(sp, &w);
+
+    uint32_t asset_id = sp->ship_asset_id;
+    ASSERT(asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER),
+                  stored_before - 1);
+    const ship_asset_t *assigned = world_ship_asset_by_id_const(&w, asset_id);
+    ASSERT(assigned != NULL);
+    ASSERT_EQ_INT(assigned->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(assigned->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(assigned->operator_slot, 0);
+
+    ASSERT(world_player_release_ship_asset(&w, 0));
+
+    ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER),
+                  stored_before);
+    const ship_asset_t *released = world_ship_asset_by_id_const(&w, asset_id);
+    ASSERT(released != NULL);
+    ASSERT(released->loaner);
+    ASSERT_EQ_INT(released->owner_kind, SHIP_ASSET_OWNER_STATION);
+    ASSERT_EQ_INT(released->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(released->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(released->operator_slot, -1);
+    ASSERT_EQ_INT(released->custody_station, 0);
+}
+
 TEST(test_player_init_ship_null_context_safe) {
     WORLD_DECL;
     world_reset(&w);
@@ -6088,6 +6127,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ignores_foreign_bound_asset);
     RUN(test_player_reconnect_transfer_moves_ship_asset_binding);
+    RUN(test_player_release_returns_provisional_loaner_to_storage);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);

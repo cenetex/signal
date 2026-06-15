@@ -1131,9 +1131,10 @@ int world_station_stored_hull_count(const world_t *w, int station_idx,
     return count;
 }
 
-static void ship_asset_release_player_slot(world_t *w, int player_slot) {
-    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+bool world_player_release_ship_asset(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
     server_player_t *sp = &w->players[player_slot];
+    bool released = false;
     ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
     if (asset && !asset->destroyed &&
         asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
@@ -1148,8 +1149,10 @@ static void ship_asset_release_player_slot(world_t *w, int player_slot) {
             station_exists(&w->stations[custody])) {
             asset->custody_station = (int16_t)custody;
         }
+        released = true;
     }
     sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+    return released;
 }
 
 bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
@@ -1174,7 +1177,7 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
     uint32_t src_asset_id = src->ship_asset_id;
     if (dst->ship_asset_id != SHIP_ASSET_ID_NONE &&
         dst->ship_asset_id != src_asset_id) {
-        ship_asset_release_player_slot(w, dst_slot);
+        (void)world_player_release_ship_asset(w, dst_slot);
     }
 
     ship_cleanup(&dst->ship);
