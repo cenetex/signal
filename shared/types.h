@@ -48,6 +48,24 @@ enum {
     SIGNAL_FIRST_OUTPOST_INDEX = 4,
 };
 
+typedef enum {
+    STATION_FACTION_UNALIGNED = 0,
+    STATION_FACTION_PROSPECTOR_GUILD,
+    STATION_FACTION_KEPLER_COMPACT,
+    STATION_FACTION_HELIOS_CONSORTIUM,
+    STATION_FACTION_BLACKGLASS_SYNDICATE,
+    STATION_FACTION_COUNT,
+} station_faction_id_t;
+
+typedef enum {
+    STATION_IDEOLOGY_PRAGMATIC = 0,
+    STATION_IDEOLOGY_COOPERATIVE,
+    STATION_IDEOLOGY_INDUSTRIAL,
+    STATION_IDEOLOGY_EXPANSIONIST,
+    STATION_IDEOLOGY_OPPORTUNIST,
+    STATION_IDEOLOGY_COUNT,
+} station_ideology_t;
+
 enum {
     /* bit 0 was STATION_SERVICE_ORE_BUYER — removed in #259 */
     STATION_SERVICE_REPAIR = 1 << 1,
@@ -622,6 +640,14 @@ typedef struct {
     char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
     char currency_name[32];           /* station-local currency label, e.g. "helios credits".
                                        * Empty string → HUD falls back to "credits". */
+    /* Political identity. Factions are simulation state, not just lore:
+     * policy cards, provenance screening, and future patrol/war behavior
+     * read these compact fields. `faction_relations[faction]` is this
+     * station's stance toward that faction, -100..100. */
+    uint8_t faction_id;                /* station_faction_id_t */
+    uint8_t faction_allegiance;        /* station_faction_id_t; can differ for vassal/outpost */
+    uint8_t faction_ideology;          /* station_ideology_t */
+    int8_t  faction_relations[STATION_FACTION_COUNT];
     /* Economy ledger: per-player supply tracking for passive income.
      * Keyed by player_pubkey (Layer A.1/A.2 of #479); legacy session_token
      * entries are migrated to pubkey on load (see sim_save.c v45+ migration). */

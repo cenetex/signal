@@ -655,12 +655,18 @@ TEST(test_generated_heritage_contracts_require_source_recipe) {
 }
 
 TEST(test_station_policy_preserves_seeded_supply_loop) {
-    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
-                      0, COMMODITY_REPAIR_KIT), 0);
-    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
-                      1, COMMODITY_FERRITE_INGOT), 0);
-    ASSERT_EQ_INT((int)station_policy_forbidden_origin_mask(
-                      2, COMMODITY_FRAME), 0);
+    uint64_t prospect = station_policy_forbidden_origin_mask(
+        0, COMMODITY_REPAIR_KIT);
+    uint64_t kepler = station_policy_forbidden_origin_mask(
+        1, COMMODITY_FERRITE_INGOT);
+    uint64_t helios = station_policy_forbidden_origin_mask(
+        2, COMMODITY_FRAME);
+
+    ASSERT_EQ_INT((int)(prospect & ((1ULL << 1) | (1ULL << 2))), 0);
+    ASSERT_EQ_INT((int)(kepler & ((1ULL << 0) | (1ULL << 2))), 0);
+    ASSERT_EQ_INT((int)(helios & ((1ULL << 0) | (1ULL << 1))), 0);
+    ASSERT_EQ_INT((int)(prospect & (1ULL << SIGNAL_FREEPORT_STATION_INDEX)), 0);
+    ASSERT((helios & (1ULL << SIGNAL_FREEPORT_STATION_INDEX)) != 0);
 }
 
 TEST(test_station_policy_cards_rank_under_domain_budgets) {

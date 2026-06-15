@@ -193,6 +193,10 @@ typedef struct {
     char currency_name[32];   /* station-local scrip label, empty = "credits" */
     uint8_t station_pubkey[32]; /* Ed25519 identity (#479 B). Matching secret
                                  * stays server-side and is never wired here. */
+    uint8_t faction_id;
+    uint8_t faction_allegiance;
+    uint8_t faction_ideology;
+    int8_t faction_relations[STATION_FACTION_COUNT];
 } NetStationIdentity;
 
 /* Station diagnostics callback: compact live flow state for modules. */

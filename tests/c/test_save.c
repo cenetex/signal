@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "sim_physics.h"
 #include "cargo_receipt_issue.h"
+#include "faction.h"
 #include <stddef.h>
 
 static bool test_issue_station_receipt(station_t *st, const uint8_t cargo_pub[32],
@@ -266,6 +267,29 @@ TEST(test_world_save_load_preserves_stations) {
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_world.sav"));
+}
+
+TEST(test_world_save_load_preserves_station_factions) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    w->stations[2].faction_relations[STATION_FACTION_BLACKGLASS_SYNDICATE] = -99;
+    w->stations[2].faction_allegiance = STATION_FACTION_KEPLER_COMPACT;
+    ASSERT(world_save(w, TMP("test_station_factions.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("test_station_factions.sav")));
+
+    ASSERT_EQ_INT(loaded->stations[2].faction_id,
+                  STATION_FACTION_HELIOS_CONSORTIUM);
+    ASSERT_EQ_INT(loaded->stations[2].faction_allegiance,
+                  STATION_FACTION_KEPLER_COMPACT);
+    ASSERT_EQ_INT(loaded->stations[2].faction_ideology,
+                  STATION_IDEOLOGY_EXPANSIONIST);
+    ASSERT_EQ_INT(loaded->stations[2].faction_relations[
+                      STATION_FACTION_BLACKGLASS_SYNDICATE], -99);
+    remove(TMP("test_station_factions.sav"));
 }
 
 TEST(test_world_save_load_preserves_npcs) {
@@ -1650,8 +1674,10 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
 	 * count int + 4 × 12B records per station, × MAX_STATIONS=128.
 	 * v64: appends contract-origin ship asset registry tail.
 	 * v65: pending ship-build records expand from 12B to 52B so each
-	 * player commission captures the owner's pubkey/session identity. */
-	#define EXPECTED_SAVE_SIZE 763320
+	 * player commission captures the owner's pubkey/session identity.
+	 * v66: +8B per station for faction id/allegiance/ideology and
+	 * compact diplomacy relations. */
+	#define EXPECTED_SAVE_SIZE 764344
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1688,7 +1714,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 65);
+    ASSERT_EQ_INT((int)version, 66);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -1821,6 +1847,7 @@ void register_save_persistence_tests(void) {
     TEST_SECTION("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);
     RUN(test_world_save_load_preserves_stations);
+    RUN(test_world_save_load_preserves_station_factions);
     RUN(test_world_save_load_preserves_npcs);
     RUN(test_npc_ship_physics_in_sync_each_tick);
     RUN(test_world_load_rebuilds_character_pool);

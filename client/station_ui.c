@@ -8,6 +8,7 @@
 #include "mining_client.h"
 #include "contract_objective.h"
 #include "manifest.h"
+#include "faction.h"
 #include "cargo_lineage.h"
 #include "station_authority.h"
 #include "contract_fit.h"
@@ -625,9 +626,11 @@ static void draw_header_band(const station_ui_state_t *ui,
         }
     }
 
-    /* Line 3: ticker — most recent station chatter (replaces NETWORK tab). */
+    /* Line 3: ticker if present; otherwise station political identity. */
     {
         const signal_channel_t *ch = &g.world.signal_channel;
+        char line[200];
+        bool have_line = false;
         if (ch->count > 0) {
             int slot_idx = ch->count - 1;
             int start = (ch->head - ch->count + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
@@ -638,8 +641,18 @@ static void draw_header_band(const station_ui_state_t *ui,
                 && station_exists(&g.world.stations[m->sender_station])) {
                 sender = g.world.stations[m->sender_station].name;
             }
-            char line[200];
             snprintf(line, sizeof(line), "[%s] %s", sender, m->text);
+            have_line = true;
+        } else {
+            int blackglass_rel = station_faction_relation_to(
+                st, (uint8_t)STATION_FACTION_BLACKGLASS_SYNDICATE);
+            snprintf(line, sizeof(line), "%s // %s // blackglass %s",
+                     station_faction_name(st->faction_id),
+                     station_ideology_name(st->faction_ideology),
+                     station_faction_relation_label(blackglass_rel));
+            have_line = true;
+        }
+        if (have_line) {
             int line_chars = (int)floorf((panel_x + panel_w - right_margin - left_x) / cell_w);
             char line_fit[200];
             ui_fit_text(line, line_chars, line_fit, sizeof(line_fit));

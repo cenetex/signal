@@ -25,6 +25,7 @@
  *     crashes/restarts.
  */
 #include "game_sim.h"
+#include "faction.h"
 #include "gossip.h"
 #include "manifest.h"
 #include "ship.h"
@@ -104,7 +105,8 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 65  /* v65: pending shipyard hull builds persist captured
+#define SAVE_VERSION 66  /* v66: station faction identity/diplomacy persists.
+                          * v65: pending shipyard hull builds persist captured
                           * owner identity (pubkey/session) instead of only a
                           * mutable player slot. v64: contract-origin ship
                           * assets persist as a
@@ -565,6 +567,10 @@ static bool write_station_session(FILE *f, const station_t *s) {
     if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
     WRITE_FIELD(f, s->outpost_planted_tick);
     WRITE_FIELD(f, s->name);
+    WRITE_FIELD(f, s->faction_id);
+    WRITE_FIELD(f, s->faction_allegiance);
+    WRITE_FIELD(f, s->faction_ideology);
+    WRITE_FIELD(f, s->faction_relations);
     /* v41: Layer C of #479 — chain log state. The actual events live in
      * side files under chain/<base58(pubkey)>.log; only the
      * continuation pointers (last full-record hash + monotonic event
@@ -815,6 +821,18 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, saved_name);
         if (s->name[0] == '\0')
             memcpy(s->name, saved_name, sizeof(s->name));
+        if (g_loaded_save_version >= 66) {
+            READ_FIELD(f, s->faction_id);
+            READ_FIELD(f, s->faction_allegiance);
+            READ_FIELD(f, s->faction_ideology);
+            READ_FIELD(f, s->faction_relations);
+            if (s->faction_id >= (uint8_t)STATION_FACTION_COUNT)
+                s->faction_id = (uint8_t)STATION_FACTION_UNALIGNED;
+            if (s->faction_allegiance >= (uint8_t)STATION_FACTION_COUNT)
+                s->faction_allegiance = s->faction_id;
+            if (s->faction_ideology >= (uint8_t)STATION_IDEOLOGY_COUNT)
+                s->faction_ideology = (uint8_t)STATION_IDEOLOGY_PRAGMATIC;
+        }
     } else {
         memset(s->station_pubkey, 0, sizeof(s->station_pubkey));
         memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
@@ -1831,6 +1849,14 @@ bool world_load(world_t *w, const char *path) {
      */
     /* (v19 is the baseline — no migration needed yet) */
     /* if (version < 20) { ... migrate 19->20 ... } */
+
+    if (version < 66) {
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (i >= w->station_count && !station_exists(&w->stations[i]))
+                continue;
+            station_faction_seed_station(&w->stations[i], i);
+        }
+    }
 
     /* v22: dead module enum entries removed (INGOT_SELLER, CONTRACT_BOARD,
      * BLUEPRINT_DESK, RING). Remap surviving module type IDs and drop

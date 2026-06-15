@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <math.h>
 
-#include "types.h"
+#include "faction.h"
 
 typedef enum {
     STATION_POLICY_DOMAIN_TRADE = 0,
@@ -57,6 +57,8 @@ typedef struct {
 
 static inline uint64_t station_policy_forbidden_origin_mask(int station_idx,
                                                             commodity_t c);
+static inline uint64_t station_policy_forbidden_origin_mask_for_station(
+    const station_t *st, int station_idx, commodity_t c);
 
 static inline const station_policy_card_t *station_policy_card_library(int *count)
 {
@@ -204,12 +206,13 @@ static inline float station_policy_card_score(const station_t *st,
         case STATION_POLICY_CARD_PROVENANCE_SCREENING:
             return 0.30f;
         case STATION_POLICY_CARD_HOSTILE_ORIGIN_EMBARGO:
-            return station_policy_forbidden_origin_mask(station_idx,
-                                                        COMMODITY_REPAIR_KIT) != 0
+            return station_policy_forbidden_origin_mask_for_station(
+                       st, station_idx, COMMODITY_REPAIR_KIT) != 0
                 ? 0.70f
                 : 0.0f;
         case STATION_POLICY_CARD_BLACK_MARKET:
-            return station_policy_is_off_relay(st) ? 0.85f : 0.0f;
+            return (station_policy_is_off_relay(st) ||
+                    station_faction_is_pirate_economy(st)) ? 0.85f : 0.0f;
         case STATION_POLICY_CARD_REPAIR_STOCK_RESERVE:
             return has_dock ? (0.20f + kit_pressure * 0.70f) : 0.0f;
         case STATION_POLICY_CARD_EXPAND_PRODUCTION:
@@ -395,7 +398,8 @@ static inline float station_policy_trade_price_multiplier(const station_t *st,
 static inline bool station_policy_accepts_contract_bound_cargo(
     const station_t *st)
 {
-    return station_policy_cached_has(st, STATION_POLICY_CARD_BLACK_MARKET);
+    return station_faction_is_pirate_economy(st) ||
+           station_policy_cached_has(st, STATION_POLICY_CARD_BLACK_MARKET);
 }
 
 /* Baseline deterministic station policy.
@@ -412,9 +416,44 @@ static inline bool station_policy_accepts_contract_bound_cargo(
 static inline uint64_t station_policy_forbidden_origin_mask(int station_idx,
                                                             commodity_t c)
 {
-    (void)station_idx;
     (void)c;
-    return 0;
+    uint8_t self = station_faction_default_for_station(station_idx);
+    if (self == (uint8_t)STATION_FACTION_UNALIGNED ||
+        self == (uint8_t)STATION_FACTION_BLACKGLASS_SYNDICATE) {
+        return 0;
+    }
+    uint64_t mask = 0;
+    for (int origin = 0; origin < SIGNAL_SEEDED_STATION_COUNT &&
+                         origin < 64; origin++) {
+        if (origin == station_idx) continue;
+        uint8_t other = station_faction_default_for_station(origin);
+        if (station_faction_default_relation(self, other) <=
+            STATION_FACTION_REL_WAR) {
+            mask |= (1ULL << origin);
+        }
+    }
+    return mask;
+}
+
+static inline uint64_t station_policy_forbidden_origin_mask_for_station(
+    const station_t *st, int station_idx, commodity_t c)
+{
+    (void)c;
+    if (!st)
+        return station_policy_forbidden_origin_mask(station_idx, c);
+    if (station_faction_is_pirate_economy(st))
+        return 0;
+    uint64_t mask = 0;
+    for (int origin = 0; origin < SIGNAL_SEEDED_STATION_COUNT &&
+                         origin < 64; origin++) {
+        if (origin == station_idx) continue;
+        uint8_t other = station_faction_default_for_station(origin);
+        if (station_faction_relation_to(st, other) <=
+            STATION_FACTION_REL_WAR) {
+            mask |= (1ULL << origin);
+        }
+    }
+    return mask;
 }
 
 static inline void station_policy_apply_contract_origin_rules(const station_t *st,
@@ -433,8 +472,8 @@ static inline void station_policy_apply_contract_origin_rules(const station_t *s
     }
     if (!embargo) return;
 
-    uint64_t mask = station_policy_forbidden_origin_mask(
-        (int)c->station_index, c->commodity);
+    uint64_t mask = station_policy_forbidden_origin_mask_for_station(
+        st, (int)c->station_index, c->commodity);
     if (c->station_index < 64)
         mask &= ~(1ULL << c->station_index);
     if (mask == 0) return;

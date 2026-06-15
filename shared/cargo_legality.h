@@ -162,8 +162,8 @@ static inline cargo_legality_result_t cargo_legality_classify(
         out.status = screens ? CARGO_LEGALITY_CONTRABAND
                              : CARGO_LEGALITY_SUSPICIOUS;
     } else {
-        uint64_t forbidden = station_policy_forbidden_origin_mask(
-            evaluating_station, (commodity_t)unit->commodity);
+        uint64_t forbidden = station_policy_forbidden_origin_mask_for_station(
+            viewer, evaluating_station, (commodity_t)unit->commodity);
         if (out.origin_station < 64 &&
             (forbidden & (1ULL << out.origin_station)) != 0) {
             out.reasons |= CARGO_LEGALITY_REASON_BANNED_ORIGIN;

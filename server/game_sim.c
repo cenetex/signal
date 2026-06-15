@@ -24,6 +24,7 @@
 #include "tractor.h"
 #include "laser.h"
 #include "cargo_legality.h"
+#include "faction.h"
 #include "manifest.h"
 #include "contract_fit.h"
 #include "station_policy.h"
@@ -7828,6 +7829,7 @@ void world_ensure_seeded_freeport(world_t *w) {
     rebuild_station_services(st);
     snprintf(st->station_slug, sizeof(st->station_slug), "blackglass");
     snprintf(st->currency_name, sizeof(st->currency_name), "blackglass chits");
+    station_faction_seed_station(st, SIGNAL_FREEPORT_STATION_INDEX);
     snprintf(st->hail_message, sizeof(st->hail_message),
              "Blackglass Freeport. No relay, no questions. Cargo bought as-is.");
     snprintf(st->rati_hail_message, sizeof(st->rati_hail_message),
@@ -8104,6 +8106,7 @@ void world_reset(world_t *w) {
      * floats freely as miners get paid and players spend back. */
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
+    station_faction_seed_station(&w->stations[0], 0);
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. Inner basin smelting. Tow ferrite to the furnace.");
     snprintf(w->stations[0].miner_chatter[0], sizeof(w->stations[0].miner_chatter[0]), "Prospect says keep it small.");
@@ -8152,6 +8155,7 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[1]);
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
+    station_faction_seed_station(&w->stations[1], 1);
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Rebuild the Helios corridor.");
     snprintf(w->stations[1].miner_chatter[0], sizeof(w->stations[1].miner_chatter[0]), "Kepler wants clean ingots.");
@@ -8222,6 +8226,7 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[2]);
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
+    station_faction_seed_station(&w->stations[2], 2);
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting beyond the broken corridor.");
     snprintf(w->stations[2].miner_chatter[0], sizeof(w->stations[2].miner_chatter[0]), "Helios wants premium ore.");

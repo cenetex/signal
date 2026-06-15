@@ -1531,6 +1531,11 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     moff += STATION_IDENTITY_PUBKEY_LEN;
     for (int h = 0; h < HULL_CLASS_COUNT; h++)
         buf[moff++] = st->stored_hull_count[h];
+    buf[moff++] = st->faction_id;
+    buf[moff++] = st->faction_allegiance;
+    buf[moff++] = st->faction_ideology;
+    for (int f = 0; f < STATION_FACTION_COUNT; f++)
+        buf[moff++] = (uint8_t)st->faction_relations[f];
     (void)moff;
     return STATION_IDENTITY_SIZE;
 }

@@ -1,4 +1,28 @@
 #include "test_harness.h"
+#include "faction.h"
+
+TEST(test_station_factions_seed_identity_and_diplomacy) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    ASSERT_EQ_INT(w->stations[0].faction_id,
+                  STATION_FACTION_PROSPECTOR_GUILD);
+    ASSERT_EQ_INT(w->stations[1].faction_id,
+                  STATION_FACTION_KEPLER_COMPACT);
+    ASSERT_EQ_INT(w->stations[2].faction_id,
+                  STATION_FACTION_HELIOS_CONSORTIUM);
+    ASSERT_EQ_INT(w->stations[SIGNAL_FREEPORT_STATION_INDEX].faction_id,
+                  STATION_FACTION_BLACKGLASS_SYNDICATE);
+    ASSERT(station_faction_relation_between(&w->stations[0],
+                                            &w->stations[1]) >=
+           STATION_FACTION_REL_PACT);
+    ASSERT(station_faction_at_war_with(
+        &w->stations[2],
+        &w->stations[SIGNAL_FREEPORT_STATION_INDEX]));
+    ASSERT(station_faction_is_pirate_economy(
+        &w->stations[SIGNAL_FREEPORT_STATION_INDEX]));
+}
 
 TEST(test_relationship_dock_dock_ticking) {
     /* Verify dock events increment total_docks and set first/last dock ticks. */
@@ -151,6 +175,7 @@ TEST(test_relationship_anonymous_pubkey_ignored) {
 void register_relationship_tests(void);
 void register_relationship_tests(void) {
     TEST_SECTION("\n--- Station-player relationship (#257) ---\n");
+    RUN(test_station_factions_seed_identity_and_diplomacy);
     RUN(test_relationship_dock_dock_ticking);
     RUN(test_relationship_ore_tracking);
     RUN(test_relationship_credits_in_out);

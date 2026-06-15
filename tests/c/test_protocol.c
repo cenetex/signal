@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "cargo_receipt_issue.h"
+#include "faction.h"
 
 TEST(test_roundtrip_player_state) {
     server_player_t sp;
@@ -1171,7 +1172,7 @@ TEST(test_station_identity_serializes_operator_text) {
     int len = serialize_station_identity(buf, 2, &st);
     ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
     ASSERT_EQ_INT(STATION_IDENTITY_SIZE,
-                  STATION_IDENTITY_V1_SIZE + HULL_CLASS_COUNT);
+                  STATION_IDENTITY_HULL_SIZE + STATION_IDENTITY_FACTION_SIZE);
 
     int moff = 59 + COMMODITY_COUNT * 4 + 4
         + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
@@ -1228,6 +1229,24 @@ TEST(test_station_identity_serializes_pending_ship_builds) {
     moff = STATION_IDENTITY_V1_SIZE;
     ASSERT_EQ_INT(buf[moff + HULL_CLASS_MINER], 3);
     ASSERT_EQ_INT(buf[moff + HULL_CLASS_DRONE_TRACTOR], 2);
+}
+
+TEST(test_station_identity_serializes_faction_trailer) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    station_faction_seed_station(&st, 2);
+    st.faction_relations[STATION_FACTION_BLACKGLASS_SYNDICATE] = -91;
+
+    uint8_t buf[STATION_IDENTITY_SIZE] = {0};
+    int len = serialize_station_identity(buf, 2, &st);
+
+    ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
+    int moff = STATION_IDENTITY_HULL_SIZE;
+    ASSERT_EQ_INT(buf[moff++], STATION_FACTION_HELIOS_CONSORTIUM);
+    ASSERT_EQ_INT(buf[moff++], STATION_FACTION_HELIOS_CONSORTIUM);
+    ASSERT_EQ_INT(buf[moff++], STATION_IDEOLOGY_EXPANSIONIST);
+    ASSERT_EQ_INT((int)(int8_t)buf[moff + STATION_FACTION_BLACKGLASS_SYNDICATE],
+                  -91);
 }
 
 TEST(test_bug92_station_record_size_matches_buffer) {
@@ -1946,6 +1965,7 @@ void register_protocol_main_tests(void) {
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_station_identity_serializes_operator_text);
     RUN(test_station_identity_serializes_pending_ship_builds);
+    RUN(test_station_identity_serializes_faction_trailer);
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
     RUN(test_delivery_contract_action_serializes);

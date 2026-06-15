@@ -970,6 +970,11 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     /* Mirror the station's Ed25519 pubkey for client-side verification of
      * future signed events (#479 B). The secret stays server-side. */
     memcpy(st->station_pubkey, si->station_pubkey, sizeof(st->station_pubkey));
+    st->faction_id = si->faction_id;
+    st->faction_allegiance = si->faction_allegiance;
+    st->faction_ideology = si->faction_ideology;
+    memcpy(st->faction_relations, si->faction_relations,
+           sizeof(st->faction_relations));
 }
 
 void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
