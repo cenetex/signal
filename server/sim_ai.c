@@ -1738,6 +1738,7 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
     asset->operator_slot = (int16_t)slot;
     asset->custody_station = (int16_t)station_idx;
     (void)world_ship_asset_sync_from_npc(w, slot);
+    world_refresh_station_hull_inventories(w);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_NPC_SPAWNED,
         .npc_spawned = { .slot = slot, .role = role, .home_station = station_idx },
@@ -5938,6 +5939,7 @@ void step_npc_ships(world_t *w, float dt) {
                     asset->operator_slot = -1;
                 }
                 npc->ship_asset_id = SHIP_ASSET_ID_NONE;
+                world_refresh_station_hull_inventories(w);
             }
             npc->active = false;
             character_free_for_npc(w, n);

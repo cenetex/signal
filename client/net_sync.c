@@ -955,6 +955,8 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->pending_ship_builds[p].build_progress =
             si->pending_ship_builds[p].build_progress;
     }
+    memcpy(st->stored_hull_count, si->stored_hull_count,
+           sizeof(st->stored_hull_count));
     snprintf(st->hail_message, sizeof(st->hail_message), "%s", si->hail_message);
     for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
         snprintf(st->miner_chatter[i], sizeof(st->miner_chatter[i]), "%s",

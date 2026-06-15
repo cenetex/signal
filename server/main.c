@@ -119,6 +119,7 @@ static int live_player_connection_count(void) {
 
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
+static uint8_t station_hull_inventory_last[MAX_STATIONS][HULL_CLASS_COUNT];
 static bool station_diag_valid[MAX_STATIONS];
 static uint64_t station_diag_last_sent_ms[MAX_STATIONS];
 static uint8_t station_diag_last[MAX_STATIONS][MAX_MODULES_PER_STATION];
@@ -5188,6 +5189,23 @@ static void emit_world_identity_anchor(void) {
     }
 }
 
+static void mark_station_identity_dirty_for_hull_inventory_changes(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        uint8_t current[HULL_CLASS_COUNT] = {0};
+        if (station_exists(&world.stations[s])) {
+            memcpy(current, world.stations[s].stored_hull_count,
+                   sizeof(current));
+        }
+        if (memcmp(station_hull_inventory_last[s], current,
+                   sizeof(current)) == 0) {
+            continue;
+        }
+        memcpy(station_hull_inventory_last[s], current, sizeof(current));
+        if (station_exists(&world.stations[s]))
+            station_identity_dirty[s] = true;
+    }
+}
+
 /* Run as many fixed-step sim ticks as `sim_accum` covers, up to
  * MAX_SIM_STEPS, broadcasting per-event side effects after each tick.
  * Caller passes the running accumulator + the elapsed-since-last-call
@@ -5202,6 +5220,7 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
     bool input_ack_changed = false;
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
+        mark_station_identity_dirty_for_hull_inventory_changes();
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];
             if (!sp->connected || sp->grace_period) continue;

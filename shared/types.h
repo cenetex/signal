@@ -646,6 +646,9 @@ typedef struct {
         float build_progress;
     } pending_ship_builds[4];
     int pending_ship_build_count;
+    /* Transient/client-mirrored inventory summary. Derived from world_t
+     * ship_assets by custody station; not persisted. */
+    uint8_t stored_hull_count[HULL_CLASS_COUNT];
     /* Placement plans: slots the player has reserved for a specific
      * module type. When a matching scaffold is towed near, the reticle
      * locks to the planned slot. Filled by planning-mode reticle. */

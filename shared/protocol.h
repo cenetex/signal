@@ -807,6 +807,8 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
  * [arm_count:1][arm_speed:MAX_ARMS×f32][ring_offset:MAX_ARMS×f32]
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
  * [pending_count:1][pending:4 × (type:1, owner:1)]
+ * [pending_ship_count:1][pending_ship:4 × (hull:1, owner:1, progress:f32)]
+ * [stored_hull_count:HULL_CLASS_COUNT×u8]
  * [...text trailers...][station_pubkey:32]
  * flags: bit0=scaffold, bit1=planned */
 #define STATION_MODULE_RECORD_SIZE 9  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 + commodity:1 */
@@ -828,6 +830,7 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
     + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE \
+    + HULL_CLASS_COUNT \
     + STATION_IDENTITY_HAIL_MESSAGE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \

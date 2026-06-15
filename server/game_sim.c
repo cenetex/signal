@@ -1101,6 +1101,7 @@ ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
     if (owner_pubkey) memcpy(asset->owner_pubkey, owner_pubkey, 32);
     if (owner_session) memcpy(asset->owner_session, owner_session, 8);
     ship_asset_init_ship(&asset->ship, asset->hull_class);
+    world_refresh_station_hull_inventories(w);
     return asset;
 }
 
@@ -1131,6 +1132,26 @@ int world_station_stored_hull_count(const world_t *w, int station_idx,
     return count;
 }
 
+void world_refresh_station_hull_inventories(world_t *w) {
+    if (!w) return;
+    for (int s = 0; s < MAX_STATIONS; s++)
+        memset(w->stations[s].stored_hull_count, 0,
+               sizeof(w->stations[s].stored_hull_count));
+
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active || asset->destroyed) continue;
+        if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if ((unsigned)asset->hull_class >= HULL_CLASS_COUNT) continue;
+        int station_idx = asset->custody_station;
+        if (station_idx < 0 || station_idx >= MAX_STATIONS) continue;
+        if (!station_exists(&w->stations[station_idx])) continue;
+        uint8_t *count =
+            &w->stations[station_idx].stored_hull_count[asset->hull_class];
+        if (*count < UINT8_MAX) (*count)++;
+    }
+}
+
 bool world_player_release_ship_asset(world_t *w, int player_slot) {
     if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
     server_player_t *sp = &w->players[player_slot];
@@ -1152,6 +1173,7 @@ bool world_player_release_ship_asset(world_t *w, int player_slot) {
         released = true;
     }
     sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+    world_refresh_station_hull_inventories(w);
     return released;
 }
 
@@ -1196,6 +1218,7 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
     src->ship_asset_id = SHIP_ASSET_ID_NONE;
     ship_cleanup(&src->ship);
     memset(&src->ship, 0, sizeof(src->ship));
+    world_refresh_station_hull_inventories(w);
     return true;
 }
 
@@ -1329,6 +1352,7 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
                           &sp->ship.known_contract_count,
                           SHIP_KNOWN_CONTRACT_CAP,
                           &sp->ship.knowledge);
+    world_refresh_station_hull_inventories(w);
     return true;
 }
 
@@ -1419,6 +1443,7 @@ static void ship_asset_retire_player_asset(world_t *w, server_player_t *sp) {
     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
     asset->operator_slot = -1;
     sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+    world_refresh_station_hull_inventories(w);
 }
 
 bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
@@ -1511,6 +1536,7 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
         asset->operator_slot = (int16_t)n;
         npc->ship_asset_id = asset->asset_id;
     }
+    world_refresh_station_hull_inventories(w);
     return ok;
 }
 
@@ -7574,6 +7600,7 @@ void world_sim_step(world_t *w, float dt) {
         if (w->npc_ships[n].active)
             (void)world_ship_asset_sync_from_npc(w, n);
     }
+    world_refresh_station_hull_inventories(w);
 }
 
 /* ================================================================== */

@@ -2662,6 +2662,23 @@ static void draw_yard_view(const station_ui_state_t *ui,
     }
     my += 10.0f;
 
+    int stored_hulls = 0;
+    for (int h = 0; h < HULL_CLASS_COUNT; h++)
+        stored_hulls += st->stored_hull_count[h];
+    if (stored_hulls > 0) {
+        my += draw_section_header(cx, my, inner_right, "STORED HULLS", HDR_YARD);
+        for (int h = 0; h < HULL_CLASS_COUNT; h++) {
+            int count = st->stored_hull_count[h];
+            if (count <= 0) continue;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_printf("  %dx %s", count,
+                        ship_loadout_name((hull_class_t)h));
+            my += 14.0f;
+        }
+        my += 10.0f;
+    }
+
     /* -------- SCAFFOLD KITS -------- */
     my += draw_section_header(cx, my, inner_right, "SCAFFOLD KITS", HDR_YARD);
     sdtx_color3b(PAL_STATION_HINT);

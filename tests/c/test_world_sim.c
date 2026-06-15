@@ -198,6 +198,27 @@ TEST(test_world_reset_ship_assets_back_active_hulls) {
     ASSERT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER) >= MAX_PLAYERS);
 }
 
+TEST(test_station_hull_inventory_cache_tracks_asset_registry) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int initial = world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER);
+    ASSERT_EQ_INT(w.stations[0].stored_hull_count[HULL_CLASS_MINER], initial);
+    ASSERT(initial > 0);
+
+    player_init_ship(&w.players[0], &w);
+    ASSERT_EQ_INT(w.stations[0].stored_hull_count[HULL_CLASS_MINER],
+                  initial - 1);
+    ASSERT_EQ_INT(w.stations[0].stored_hull_count[HULL_CLASS_MINER],
+                  world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER));
+
+    ASSERT(world_player_release_ship_asset(&w, 0));
+    ASSERT_EQ_INT(w.stations[0].stored_hull_count[HULL_CLASS_MINER],
+                  initial);
+    ASSERT_EQ_INT(w.stations[0].stored_hull_count[HULL_CLASS_MINER],
+                  world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER));
+}
+
 TEST(test_player_init_claims_station_loaner_asset) {
     WORLD_DECL;
     world_reset(&w);
@@ -6364,6 +6385,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
     RUN(test_world_reset_ship_assets_back_active_hulls);
+    RUN(test_station_hull_inventory_cache_tracks_asset_registry);
     RUN(test_player_init_claims_station_loaner_asset);
     RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ignores_foreign_bound_asset);

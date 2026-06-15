@@ -185,6 +185,7 @@ typedef struct {
         int8_t owner;
         float build_progress;
     } pending_ship_builds[STATION_PENDING_SHIP_RECORD_COUNT];
+    uint8_t stored_hull_count[HULL_CLASS_COUNT];
     char hail_message[STATION_IDENTITY_HAIL_MESSAGE_LEN];
     char miner_chatter[STATION_IDENTITY_CHATTER_LINES][STATION_IDENTITY_CHATTER_LINE_LEN];
     char hauler_chatter[STATION_IDENTITY_CHATTER_LINES][STATION_IDENTITY_CHATTER_LINE_LEN];

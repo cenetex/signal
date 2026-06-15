@@ -1483,6 +1483,8 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         }
         moff += STATION_PENDING_SHIP_RECORD_SIZE;
     }
+    for (int h = 0; h < HULL_CLASS_COUNT; h++)
+        buf[moff++] = st->stored_hull_count[h];
     /* Operator-authored text trailers. Hail/MOTD is the normal station
      * response. Chatter arrays are station-specific NPC speech lines.
      * RATi hail is shown when the local player delivers RATi+ ore. */

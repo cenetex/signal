@@ -946,6 +946,8 @@ static void handle_message(const uint8_t* data, int len) {
                 si.pending_ship_builds[p].build_progress = read_f32_le(&data[moff + 2]);
                 moff += STATION_PENDING_SHIP_RECORD_SIZE;
             }
+            for (int h = 0; h < HULL_CLASS_COUNT; h++)
+                si.stored_hull_count[h] = data[moff++];
             memcpy(si.hail_message, &data[moff], STATION_IDENTITY_HAIL_MESSAGE_LEN - 1);
             si.hail_message[STATION_IDENTITY_HAIL_MESSAGE_LEN - 1] = '\0';
             moff += STATION_IDENTITY_HAIL_MESSAGE_LEN;
