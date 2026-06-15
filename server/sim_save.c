@@ -2950,14 +2950,14 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
         asset = candidate;
         break;
     }
-    if (!asset && ship_asset_is_station_loaner_for_slot(prior, slot)) {
-        asset = prior;
-    }
     if (!asset) {
         asset = world_ship_asset_mint(
             w, sp->ship.hull_class, owner_kind, -1, sp->current_station,
             SHIP_ASSET_PROVENANCE_LEGACY, false, -1,
             owner_pubkey, owner_session);
+    }
+    if (!asset && ship_asset_is_station_loaner_for_slot(prior, slot)) {
+        asset = prior;
     }
     if (!asset) return;
     if (prior && prior != asset)
