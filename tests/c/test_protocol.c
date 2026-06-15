@@ -277,6 +277,15 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(p[37], 2);
 }
 
+TEST(test_npc_role_default_hull_mapping_covers_tow) {
+    ASSERT_EQ_INT(npc_default_hull_class_for_role(NPC_ROLE_MINER),
+                  HULL_CLASS_NPC_MINER);
+    ASSERT_EQ_INT(npc_default_hull_class_for_role(NPC_ROLE_HAULER),
+                  HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(npc_default_hull_class_for_role(NPC_ROLE_TOW),
+                  HULL_CLASS_DRONE_TRACTOR);
+}
+
 TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     npc_ship_t npc;
     memset(&npc, 0, sizeof(npc));
@@ -1915,6 +1924,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_npcs);
+    RUN(test_npc_role_default_hull_mapping_covers_tow);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_npc_expands_matching_receipt_chain);
     RUN(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain);

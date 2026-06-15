@@ -2047,7 +2047,7 @@ static void signal_hail_debug_seed_world(world_t *world, int player_slot) {
         npc->ship.pos = v2_add(origin, offsets[i]);
         npc->ship.vel = v2(0.0f, 0.0f);
         npc->ship.angle = 0.0f;
-        npc->ship.hull_class = (i < 2) ? HULL_CLASS_NPC_MINER : HULL_CLASS_HAULER;
+        npc->ship.hull_class = npc_default_hull_class_for_role(npc->role);
         npc->ship.hull = ship_max_hull(&npc->ship);
         npc->hull = npc->ship.hull;
         npc->tint_r = (i < 2) ? 0.52f : 0.90f;

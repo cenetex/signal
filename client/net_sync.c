@@ -521,8 +521,7 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
-        n->ship.hull_class = (n->role == NPC_ROLE_HAULER)
-            ? HULL_CLASS_HAULER : HULL_CLASS_MINER;
+        n->ship.hull_class = npc_default_hull_class_for_role(n->role);
         n->ship.pos.x = npcs[i].x;
         n->ship.pos.y = npcs[i].y;
         n->ship.vel.x = npcs[i].vx;

@@ -960,6 +960,15 @@ typedef enum {
     NPC_ROLE_TOW,
 } npc_role_t;
 
+static inline hull_class_t npc_default_hull_class_for_role(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return HULL_CLASS_NPC_MINER;
+    case NPC_ROLE_HAULER: return HULL_CLASS_HAULER;
+    case NPC_ROLE_TOW:    return HULL_CLASS_DRONE_TRACTOR;
+    default:              return HULL_CLASS_DRONE_LASER;
+    }
+}
+
 typedef enum {
     NPC_STATE_IDLE,
     NPC_STATE_TRAVEL_TO_ASTEROID,
