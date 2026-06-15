@@ -782,6 +782,51 @@ TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
     remove(TMP("test_orphaned_player_asset.sav"));
 }
 
+TEST(test_world_load_repairs_stale_npc_ship_asset_binding) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+
+    int npc_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w->npc_ships[n].active &&
+            w->npc_ships[n].ship_asset_id != SHIP_ASSET_ID_NONE) {
+            npc_slot = n;
+            break;
+        }
+    }
+    ASSERT(npc_slot >= 0);
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
+    ASSERT(asset != NULL);
+    uint32_t asset_id = asset->asset_id;
+    int active_assets_before = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (w->ship_assets[i].active) active_assets_before++;
+
+    asset->operator_slot = (int16_t)((npc_slot + 1) % MAX_NPC_SHIPS);
+    ASSERT(world_save(w, TMP("test_stale_npc_asset.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, TMP("test_stale_npc_asset.sav")));
+
+    const npc_ship_t *loaded_npc = &loaded->npc_ships[npc_slot];
+    ASSERT(loaded_npc->active);
+    ASSERT_EQ_INT(loaded_npc->ship_asset_id, asset_id);
+    const ship_asset_t *loaded_asset =
+        world_ship_asset_by_id_const(loaded, asset_id);
+    ASSERT(loaded_asset != NULL);
+    ASSERT_EQ_INT(loaded_asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(loaded_asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT_EQ_INT(loaded_asset->operator_slot, npc_slot);
+    ASSERT_EQ_INT(loaded_asset->custody_station, loaded_npc->home_station);
+
+    int active_assets_after = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (loaded->ship_assets[i].active) active_assets_after++;
+    ASSERT_EQ_INT(active_assets_after, active_assets_before);
+    remove(TMP("test_stale_npc_asset.sav"));
+}
+
 TEST(test_player_save_uses_temp_then_atomic_rename) {
     WORLD_DECL;
     world_reset(&w);
@@ -1785,6 +1830,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_prefers_owned_asset_over_provisional_loaner);
     RUN(test_player_load_mints_owned_asset_instead_of_reusing_loaner);
     RUN(test_world_load_stores_orphaned_player_ship_asset_for_reclaim);
+    RUN(test_world_load_repairs_stale_npc_ship_asset_binding);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_world_load_repairs_cache_only_station_finished_goods);

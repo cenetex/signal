@@ -1442,6 +1442,33 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active || npc->ship_asset_id == SHIP_ASSET_ID_NONE) continue;
+        ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
+        if (asset && !asset->destroyed &&
+            asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            asset->operator_kind == SHIP_ASSET_OPERATOR_NPC &&
+            asset->operator_slot == n) {
+            continue;
+        }
+        if (asset && !asset->destroyed &&
+            asset->status == SHIP_ASSET_STATUS_STORED &&
+            asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
+            !asset->loaner) {
+            const ship_t *src = world_npc_ship_for(w, n);
+            if (!src) src = &npc->ship;
+            (void)ship_asset_copy_ship(&asset->ship, src);
+            asset->hull_class = asset->ship.hull_class;
+            asset->status = SHIP_ASSET_STATUS_ASSIGNED;
+            asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
+            asset->operator_slot = (int16_t)n;
+            if (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
+                asset->custody_station = (int16_t)npc->home_station;
+            continue;
+        }
+        npc->ship_asset_id = SHIP_ASSET_ID_NONE;
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active || npc->ship_asset_id != SHIP_ASSET_ID_NONE) continue;
         ship_asset_t *asset = world_ship_asset_mint(
             w, npc->ship.hull_class, SHIP_ASSET_OWNER_STATION,
