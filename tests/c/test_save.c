@@ -549,6 +549,48 @@ TEST(test_player_save_load_preserves_ship) {
     remove(TMP("player_99.sav"));
 }
 
+TEST(test_player_load_prefers_existing_bound_ship_asset) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    memset(sp->session_token, 0x5A, sizeof(sp->session_token));
+
+    ship_asset_t *miner = world_ship_asset_mint(
+        &w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 0, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 0, NULL, sp->session_token);
+    ship_asset_t *hauler = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, sp->session_token);
+    ASSERT(miner != NULL);
+    ASSERT(hauler != NULL);
+    ASSERT(ship_asset_claim_for_player(&w, 0, 1));
+    ASSERT_EQ_INT(sp->ship_asset_id, hauler->asset_id);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
+    sp->ship.hull = 88.0f;
+    ASSERT(player_save(sp, test_tmp_dir(), 0));
+
+    sp->ship.hull_class = HULL_CLASS_MINER;
+    sp->ship.hull = 1.0f;
+    sp->current_station = 0;
+    ASSERT(player_load(sp, &w, test_tmp_dir(), 0));
+
+    ASSERT_EQ_INT(sp->ship_asset_id, hauler->asset_id);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_FLOAT(sp->ship.hull, 88.0f, 0.01f);
+    ASSERT_EQ_INT(hauler->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(hauler->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(hauler->operator_slot, 0);
+    ASSERT_EQ_INT(miner->status, SHIP_ASSET_STATUS_STORED);
+
+    char path[256];
+    ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), sp, 0));
+    remove(path);
+}
+
 TEST(test_player_save_uses_temp_then_atomic_rename) {
     WORLD_DECL;
     world_reset(&w);
@@ -1548,6 +1590,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
+    RUN(test_player_load_prefers_existing_bound_ship_asset);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_world_load_repairs_cache_only_station_finished_goods);

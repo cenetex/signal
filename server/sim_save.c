@@ -2910,7 +2910,21 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
         owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
 
     ship_asset_t *asset = NULL;
+    ship_asset_t *prior = world_ship_asset_by_id(w, sp->ship_asset_id);
+    if (prior && !prior->destroyed &&
+        (prior->status == SHIP_ASSET_STATUS_STORED ||
+         (prior->status == SHIP_ASSET_STATUS_ASSIGNED &&
+          prior->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+          prior->operator_slot == slot)) &&
+        (ship_asset_owner_matches_player_save(prior, sp) ||
+         (prior->owner_kind == SHIP_ASSET_OWNER_STATION &&
+          prior->status == SHIP_ASSET_STATUS_ASSIGNED &&
+          prior->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+          prior->operator_slot == slot))) {
+        asset = prior;
+    }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (asset) break;
         ship_asset_t *candidate = &w->ship_assets[i];
         if (!candidate->active || candidate->destroyed) continue;
         if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
