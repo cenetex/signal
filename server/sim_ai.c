@@ -1685,10 +1685,15 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
      * as they complete deliveries. ledger_force_debit at the dock
      * lets the balance go negative; the chain self-balances over
      * time as the hauler ferries goods. */
-    /* Pair a character_t with the NPC. Lifecycle-only — nothing reads
-     * it yet (#294 Slice 6). If the pool is somehow exhausted we still
-     * spawn the NPC; this is best-effort during the transition. */
-    (void)character_alloc_for_npc(w, slot, npc);
+    /* Pair a character_t + ship_t with the NPC before the hull asset is
+     * marked assigned. An active NPC without this paired ship disappears
+     * from the unified controller/physics layer, so claim must be atomic. */
+    if (character_alloc_for_npc(w, slot, npc) < 0) {
+        ship_cleanup(&npc->ship);
+        memset(npc, 0, sizeof(*npc));
+        *nav_npc_path(slot) = (nav_path_t){0};
+        return -1;
+    }
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
     asset->operator_slot = (int16_t)slot;

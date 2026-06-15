@@ -555,6 +555,39 @@ TEST(test_spawn_npc_bootstrap_does_not_queue_shipyard_build) {
     ASSERT_EQ_INT(asset->operator_slot, slot);
 }
 
+TEST(test_npc_asset_claim_requires_paired_ship_slot) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!w.npc_ships[i].active) continue;
+        w.npc_ships[i].active = false;
+        w.npc_ships[i].ship_asset_id = SHIP_ASSET_ID_NONE;
+    }
+    for (int i = 0; i < MAX_SHIPS; i++) {
+        w.characters[i].active = true;
+        w.characters[i].kind = CHARACTER_KIND_PLAYER;
+        w.characters[i].ship_idx = i;
+        w.characters[i].npc_slot = -1;
+    }
+    ship_asset_t *asset = world_ship_asset_mint(
+        &w, HULL_CLASS_NPC_MINER, SHIP_ASSET_OWNER_STATION,
+        0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
+        false, 0, NULL, NULL);
+    ASSERT(asset != NULL);
+    int active_assets_before = test_active_ship_asset_count(&w);
+
+    int slot = ship_asset_claim_for_npc(&w, 0, NPC_ROLE_MINER);
+
+    ASSERT_EQ_INT(slot, -1);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), active_assets_before);
+    ASSERT(!asset->destroyed);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(asset->operator_slot, -1);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        ASSERT(!w.npc_ships[i].active);
+}
+
 TEST(test_shipyard_keeps_completed_build_when_asset_registry_full) {
     WORLD_DECL;
     world_reset(&w);
@@ -6289,6 +6322,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_respawn_without_loaner_waits_for_shipyard_asset);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
     RUN(test_spawn_npc_bootstrap_does_not_queue_shipyard_build);
+    RUN(test_npc_asset_claim_requires_paired_ship_slot);
     RUN(test_shipyard_keeps_completed_build_when_asset_registry_full);
     RUN(test_world_reset_prospect_workers_leave_idle);
     RUN(test_neural_worker_refits_only_from_home_credit_and_modules);
