@@ -341,6 +341,29 @@ TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
     ASSERT_EQ_INT(fresh->hull_class, HULL_CLASS_HAULER);
 }
 
+TEST(test_spawn_npc_bootstrap_does_not_queue_shipyard_build) {
+    WORLD_DECL;
+    world_reset(&w);
+    int active_before = test_active_ship_asset_count(&w);
+    int pending_before = w.stations[1].pending_ship_build_count;
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 1, HULL_CLASS_HAULER), 0);
+
+    int slot = spawn_npc(&w, 1, NPC_ROLE_HAULER);
+
+    ASSERT(slot >= 0);
+    ASSERT_EQ_INT(w.stations[1].pending_ship_build_count, pending_before);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), active_before + 1);
+    const npc_ship_t *npc = &w.npc_ships[slot];
+    ASSERT_EQ_INT(npc->role, NPC_ROLE_HAULER);
+    ASSERT(npc->ship_asset_id != SHIP_ASSET_ID_NONE);
+    const ship_asset_t *asset = world_ship_asset_by_id_const(&w, npc->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_LEGACY);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT_EQ_INT(asset->operator_slot, slot);
+}
+
 TEST(test_shipyard_keeps_completed_build_when_asset_registry_full) {
     WORLD_DECL;
     world_reset(&w);
@@ -6068,6 +6091,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
+    RUN(test_spawn_npc_bootstrap_does_not_queue_shipyard_build);
     RUN(test_shipyard_keeps_completed_build_when_asset_registry_full);
     RUN(test_world_reset_prospect_workers_leave_idle);
     RUN(test_neural_worker_refits_only_from_home_credit_and_modules);

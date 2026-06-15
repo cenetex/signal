@@ -1589,12 +1589,10 @@ static int npc_alloc_free_slot(const world_t *w) {
     return slot;
 }
 
-int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
-    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
-    station_t *st = &w->stations[station_idx];
-    if (!station_exists(st)) return -1;
-    hull_class_t hc = npc_resident_hull_class_for_role(role);
-    ship_asset_t *asset = NULL;
+static ship_asset_t *ship_asset_find_stored_npc_hull(world_t *w,
+                                                     int station_idx,
+                                                     hull_class_t hull_class) {
+    if (!w) return NULL;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *candidate = &w->ship_assets[i];
         if (!candidate->active || candidate->destroyed) continue;
@@ -1602,10 +1600,18 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
         if (candidate->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
         if (candidate->loaner) continue;
         if (candidate->custody_station != station_idx) continue;
-        if (candidate->hull_class != hc) continue;
-        asset = candidate;
-        break;
+        if (candidate->hull_class != hull_class) continue;
+        return candidate;
     }
+    return NULL;
+}
+
+int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
+    station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return -1;
+    hull_class_t hc = npc_resident_hull_class_for_role(role);
+    ship_asset_t *asset = ship_asset_find_stored_npc_hull(w, station_idx, hc);
     if (!asset) {
         (void)shipyard_queue_station_hull_request(w, station_idx, hc);
         return -1;
@@ -1703,14 +1709,19 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
  * assets; this helper mints a legacy asset first so older harness code
  * and explicit worker-trace fixtures still create an observable NPC. */
 int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
-    int slot = ship_asset_claim_for_npc(w, station_idx, role);
-    if (slot >= 0) return slot;
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx]) ||
+        npc_alloc_free_slot(w) < 0) {
+        return -1;
+    }
     hull_class_t hc = npc_resident_hull_class_for_role(role);
-    ship_asset_t *asset = world_ship_asset_mint(
-        w, hc, SHIP_ASSET_OWNER_STATION,
-        station_idx, station_idx,
-        SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
-    if (!asset) return -1;
+    if (!ship_asset_find_stored_npc_hull(w, station_idx, hc)) {
+        ship_asset_t *asset = world_ship_asset_mint(
+            w, hc, SHIP_ASSET_OWNER_STATION,
+            station_idx, station_idx,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
+        if (!asset) return -1;
+    }
     return ship_asset_claim_for_npc(w, station_idx, role);
 }
 
