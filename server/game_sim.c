@@ -2057,15 +2057,6 @@ static bool transfer_ship_unit_to_station(ship_t *src, station_t *dst, uint16_t 
     return true;
 }
 
-static void debug_manifest_remove_site(const char *site, const cargo_unit_t *unit) {
-    if (!site || !unit) return;
-    if (unit->commodity == (uint8_t)COMMODITY_FERRITE_INGOT &&
-        unit->pub[0] == 0x74) {
-        fprintf(stderr, "[debug-remove] %s ferrite pub0=0x%02x\n",
-                site, unit->pub[0]);
-    }
-}
-
 static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t idx) {
     cargo_unit_t unit = {0};
     cargo_receipt_chain_t chain = {0};
@@ -2108,7 +2099,6 @@ static int transfer_ship_to_station_by_contract(world_t *w, server_player_t *sp,
             break;
         }
         if (idx < 0) break;
-        debug_manifest_remove_site("contract", &src->manifest.units[idx]);
         if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
         moved++;
     }
@@ -2824,7 +2814,6 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
         if (idx < 0) break;
 
         cargo_unit_t unit = {0};
-        debug_manifest_remove_site("black_market", &sp->ship.manifest.units[idx]);
         if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
                                                    (uint16_t)idx, &unit)) {
             break;
