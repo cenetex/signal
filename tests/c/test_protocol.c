@@ -1170,14 +1170,15 @@ TEST(test_station_identity_serializes_operator_text) {
     uint8_t buf[STATION_IDENTITY_SIZE] = {0};
     int len = serialize_station_identity(buf, 2, &st);
     ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
+    ASSERT_EQ_INT(STATION_IDENTITY_SIZE,
+                  STATION_IDENTITY_V1_SIZE + HULL_CLASS_COUNT);
 
     int moff = 59 + COMMODITY_COUNT * 4 + 4
         + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
         + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4
         + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE
         + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE
-        + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE
-        + HULL_CLASS_COUNT;
+        + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE;
 
     ASSERT(memcmp(&buf[moff], "station motd", strlen("station motd")) == 0);
     moff += STATION_IDENTITY_HAIL_MESSAGE_LEN;
@@ -1224,8 +1225,7 @@ TEST(test_station_identity_serializes_pending_ship_builds) {
     ASSERT_EQ_INT(buf[moff + 0], HULL_CLASS_DRONE_TRACTOR);
     ASSERT_EQ_INT(buf[moff + 1], 0xFF);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[moff + 2]), 0.0f, 0.001f);
-    moff += STATION_PENDING_SHIP_RECORD_SIZE *
-        (STATION_PENDING_SHIP_RECORD_COUNT - 1);
+    moff = STATION_IDENTITY_V1_SIZE;
     ASSERT_EQ_INT(buf[moff + HULL_CLASS_MINER], 3);
     ASSERT_EQ_INT(buf[moff + HULL_CLASS_DRONE_TRACTOR], 2);
 }

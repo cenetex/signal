@@ -808,8 +808,8 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
  * [pending_count:1][pending:4 × (type:1, owner:1)]
  * [pending_ship_count:1][pending_ship:4 × (hull:1, owner:1, progress:f32)]
- * [stored_hull_count:HULL_CLASS_COUNT×u8]
  * [...text trailers...][station_pubkey:32]
+ * [stored_hull_count:HULL_CLASS_COUNT×u8] -- appended so v1 trailer offsets stay stable.
  * flags: bit0=scaffold, bit1=planned */
 #define STATION_MODULE_RECORD_SIZE 9  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 + commodity:1 */
 #define STATION_PLAN_RECORD_SIZE 4    /* type:1 + ring:1 + slot:1 + owner:1 */
@@ -824,19 +824,19 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 #define STATION_IDENTITY_RATI_HAIL_LEN 256
 #define STATION_IDENTITY_CURRENCY_NAME_LEN 32  /* trailer: per-station scrip label */
 #define STATION_IDENTITY_PUBKEY_LEN 32         /* Ed25519 station identity (#479 B) */
-#define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
+#define STATION_IDENTITY_V1_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
     + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE \
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
     + 1 + STATION_PENDING_SHIP_RECORD_COUNT * STATION_PENDING_SHIP_RECORD_SIZE \
-    + HULL_CLASS_COUNT \
     + STATION_IDENTITY_HAIL_MESSAGE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
     + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
     + STATION_IDENTITY_RATI_HAIL_LEN \
     + STATION_IDENTITY_CURRENCY_NAME_LEN \
     + STATION_IDENTITY_PUBKEY_LEN)
+#define STATION_IDENTITY_SIZE (STATION_IDENTITY_V1_SIZE + HULL_CLASS_COUNT)
 #define STATION_DIAG_SIZE (3 + MAX_MODULES_PER_STATION)
 /* The four "MAX_ARMS * 4" terms above are arm_speed[], ring_offset[],
  * arm_rotation[], and arm_omega[]. arm_omega is needed alongside

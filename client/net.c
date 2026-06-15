@@ -865,7 +865,7 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_STATION_IDENTITY:
-        if (len >= STATION_IDENTITY_SIZE && net_state.callbacks.on_station_identity) {
+        if (len >= STATION_IDENTITY_V1_SIZE && net_state.callbacks.on_station_identity) {
             NetStationIdentity si = {0};
             si.index = data[1];
             si.flags = data[2];
@@ -946,8 +946,6 @@ static void handle_message(const uint8_t* data, int len) {
                 si.pending_ship_builds[p].build_progress = read_f32_le(&data[moff + 2]);
                 moff += STATION_PENDING_SHIP_RECORD_SIZE;
             }
-            for (int h = 0; h < HULL_CLASS_COUNT; h++)
-                si.stored_hull_count[h] = data[moff++];
             memcpy(si.hail_message, &data[moff], STATION_IDENTITY_HAIL_MESSAGE_LEN - 1);
             si.hail_message[STATION_IDENTITY_HAIL_MESSAGE_LEN - 1] = '\0';
             moff += STATION_IDENTITY_HAIL_MESSAGE_LEN;
@@ -972,6 +970,10 @@ static void handle_message(const uint8_t* data, int len) {
              * pubkey; private material stays operator-side. */
             memcpy(si.station_pubkey, &data[moff], STATION_IDENTITY_PUBKEY_LEN);
             moff += STATION_IDENTITY_PUBKEY_LEN;
+            if (len >= STATION_IDENTITY_SIZE) {
+                for (int h = 0; h < HULL_CLASS_COUNT; h++)
+                    si.stored_hull_count[h] = data[moff++];
+            }
             (void)moff;
             net_state.callbacks.on_station_identity(&si);
         }
