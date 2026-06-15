@@ -303,6 +303,67 @@ TEST(test_player_release_returns_provisional_loaner_to_storage) {
     ASSERT_EQ_INT(released->custody_station, 0);
 }
 
+TEST(test_player_release_stores_owned_hull_for_reclaim) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    memset(sp->session_token, 0x41, sizeof(sp->session_token));
+    memset(sp->pubkey, 0x82, sizeof(sp->pubkey));
+
+    ship_asset_t *asset = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_PUBKEY,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, sp->pubkey, NULL);
+    ASSERT(asset != NULL);
+    int asset_count_before = test_active_ship_asset_count(&w);
+
+    player_init_ship(sp, &w);
+    ASSERT_EQ_INT(sp->ship_asset_id, asset->asset_id);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->docked = true;
+    sp->ship.hull = 37.5f;
+    sp->ship.angle = 0.75f;
+
+    ASSERT(world_player_release_ship_asset(&w, 0));
+
+    ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(asset->owner_kind, SHIP_ASSET_OWNER_PLAYER_PUBKEY);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(asset->operator_slot, -1);
+    ASSERT_EQ_INT(asset->custody_station, 1);
+    ASSERT_EQ_FLOAT(asset->ship.hull, 37.5f, 0.001f);
+    ASSERT_EQ_FLOAT(asset->ship.angle, 0.75f, 0.001f);
+
+    ship_cleanup(&sp->ship);
+    memset(sp, 0, sizeof(*sp));
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    memset(sp->session_token, 0x41, sizeof(sp->session_token));
+    memset(sp->pubkey, 0x82, sizeof(sp->pubkey));
+
+    player_init_ship(sp, &w);
+
+    ASSERT_EQ_INT(sp->ship_asset_id, asset->asset_id);
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(asset->operator_slot, 0);
+    ASSERT_EQ_INT(sp->current_station, 1);
+    ASSERT_EQ_FLOAT(sp->ship.hull, 37.5f, 0.001f);
+}
+
 TEST(test_player_init_ship_null_context_safe) {
     WORLD_DECL;
     world_reset(&w);
@@ -6128,6 +6189,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_ignores_foreign_bound_asset);
     RUN(test_player_reconnect_transfer_moves_ship_asset_binding);
     RUN(test_player_release_returns_provisional_loaner_to_storage);
+    RUN(test_player_release_stores_owned_hull_for_reclaim);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);

@@ -504,6 +504,14 @@ static int alloc_player(void) {
     return -1;
 }
 
+static void reset_player_slot_for_reuse(int pid) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    (void)world_player_release_ship_asset(&world, pid);
+    ship_cleanup(&sp->ship);
+    memset(sp, 0, sizeof(*sp));
+}
+
 static int server_bot_home_station_for(int bot_index) {
     int active[MAX_STATIONS];
     int n = 0;
@@ -525,9 +533,8 @@ static void spawn_server_bots(void) {
          server_bot_players_spawned < server_bot_player_target; i++) {
         if (world.players[i].connected) continue;
 
+        reset_player_slot_for_reuse(i);
         server_player_t *sp = &world.players[i];
-        ship_cleanup(&sp->ship);
-        memset(sp, 0, sizeof(*sp));
 
         sp->connected = true;
         sp->id = (uint8_t)i;
@@ -4110,7 +4117,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             return;
         }
         server_player_t *sp = &world.players[pid];
-        memset(sp, 0, sizeof(*sp));
+        reset_player_slot_for_reuse(pid);
         sp->connected = true;
         sp->id = (uint8_t)pid;
         sp->conn = c;
@@ -4242,7 +4249,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 analytics_log_player_event("player_disconnect", i,
                                            &world.players[i], now_ms,
                                            duration_ms);
-                if (true)
+                if (world.players[i].session_ready)
                     player_save(&world.players[i], PLAYER_SAVE_DIR, i);
                 world.players[i].conn = NULL;
                 if (world.players[i].session_ready) {
@@ -5234,8 +5241,12 @@ static void tick_session_timers(void) {
         if (sp->connected && sp->grace_period) {
             sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
             if (sp->grace_timer <= 0.0f) {
+                (void)world_player_release_ship_asset(&world, i);
                 sp->connected = false;
                 sp->grace_period = false;
+                sp->session_ready = false;
+                sp->pubkey_proof_ok = false;
+                sp->pubkey_identity_finalized = false;
                 uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                 broadcast(leave_msg, 2);
                 printf("[server] player %d grace expired, fully disconnected\n", i);
