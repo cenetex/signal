@@ -591,6 +591,74 @@ TEST(test_player_load_prefers_existing_bound_ship_asset) {
     remove(path);
 }
 
+TEST(test_player_load_prefers_owned_asset_over_provisional_loaner) {
+    WORLD_DECL;
+    world_reset(&w);
+    uint8_t token[8];
+    memset(token, 0x6B, sizeof(token));
+
+    SERVER_PLAYER_DECL(saved);
+    saved.id = 0;
+    saved.connected = true;
+    saved.session_ready = true;
+    memcpy(saved.session_token, token, sizeof(token));
+    ASSERT(ship_manifest_bootstrap(&saved.ship));
+    saved.ship.hull_class = HULL_CLASS_HAULER;
+    saved.ship.hull = 77.0f;
+    saved.current_station = 1;
+    ASSERT(player_save(&saved, test_tmp_dir(), 0));
+
+    ship_asset_t *owned = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, token);
+    ASSERT(owned != NULL);
+
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    player_init_ship(sp, &w);
+    uint32_t provisional_id = sp->ship_asset_id;
+    ASSERT(provisional_id != SHIP_ASSET_ID_NONE);
+    ASSERT(provisional_id != owned->asset_id);
+    ship_asset_t *provisional = world_ship_asset_by_id(&w, provisional_id);
+    ASSERT(provisional != NULL);
+    ASSERT_EQ_INT(provisional->owner_kind, SHIP_ASSET_OWNER_STATION);
+    ASSERT(provisional->loaner);
+    ASSERT_EQ_INT(provisional->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(provisional->operator_slot, 0);
+
+    memcpy(sp->session_token, token, sizeof(token));
+    sp->session_ready = true;
+    int asset_count_before = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (w.ship_assets[i].active) asset_count_before++;
+
+    ASSERT(player_load_by_token(sp, &w, test_tmp_dir(), token));
+
+    ASSERT_EQ_INT(sp->ship_asset_id, owned->asset_id);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_FLOAT(sp->ship.hull, 77.0f, 0.01f);
+    ASSERT_EQ_INT(sp->current_station, 1);
+    ASSERT_EQ_INT(owned->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(owned->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(owned->operator_slot, 0);
+    ASSERT_EQ_FLOAT(owned->ship.hull, 77.0f, 0.01f);
+    ASSERT_EQ_INT(provisional->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(provisional->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(provisional->operator_slot, -1);
+    ASSERT_EQ_INT(provisional->hull_class, HULL_CLASS_MINER);
+    int asset_count_after = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        if (w.ship_assets[i].active) asset_count_after++;
+    ASSERT_EQ_INT(asset_count_after, asset_count_before);
+
+    char path[256];
+    ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &saved, 0));
+    remove(path);
+    ship_cleanup(&saved.ship);
+}
+
 TEST(test_player_save_uses_temp_then_atomic_rename) {
     WORLD_DECL;
     world_reset(&w);
@@ -1591,6 +1659,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
     RUN(test_player_load_prefers_existing_bound_ship_asset);
+    RUN(test_player_load_prefers_owned_asset_over_provisional_loaner);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_world_load_repairs_cache_only_station_finished_goods);

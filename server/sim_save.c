@@ -2897,6 +2897,33 @@ static bool ship_asset_owner_matches_player_save(const ship_asset_t *asset,
     return false;
 }
 
+static bool ship_asset_load_candidate_assignable(const ship_asset_t *asset,
+                                                 int slot) {
+    if (!asset || !asset->active || asset->destroyed) return false;
+    if (asset->status == SHIP_ASSET_STATUS_STORED) return true;
+    return asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+           asset->operator_slot == slot;
+}
+
+static bool ship_asset_is_station_loaner_for_slot(const ship_asset_t *asset,
+                                                  int slot) {
+    return asset && asset->active && !asset->destroyed &&
+           asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
+           asset->loaner &&
+           asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+           asset->operator_slot == slot;
+}
+
+static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
+                                                  int slot) {
+    if (!ship_asset_is_station_loaner_for_slot(asset, slot)) return;
+    asset->status = SHIP_ASSET_STATUS_STORED;
+    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+    asset->operator_slot = -1;
+}
+
 static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
     if (sp != &w->players[slot]) return;
@@ -2911,30 +2938,20 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
 
     ship_asset_t *asset = NULL;
     ship_asset_t *prior = world_ship_asset_by_id(w, sp->ship_asset_id);
-    if (prior && !prior->destroyed &&
-        (prior->status == SHIP_ASSET_STATUS_STORED ||
-         (prior->status == SHIP_ASSET_STATUS_ASSIGNED &&
-          prior->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
-          prior->operator_slot == slot)) &&
-        (ship_asset_owner_matches_player_save(prior, sp) ||
-         (prior->owner_kind == SHIP_ASSET_OWNER_STATION &&
-          prior->status == SHIP_ASSET_STATUS_ASSIGNED &&
-          prior->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
-          prior->operator_slot == slot))) {
+    if (ship_asset_load_candidate_assignable(prior, slot) &&
+        ship_asset_owner_matches_player_save(prior, sp)) {
         asset = prior;
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         if (asset) break;
         ship_asset_t *candidate = &w->ship_assets[i];
-        if (!candidate->active || candidate->destroyed) continue;
+        if (!ship_asset_load_candidate_assignable(candidate, slot)) continue;
         if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
-        if (candidate->status == SHIP_ASSET_STATUS_STORED ||
-            (candidate->status == SHIP_ASSET_STATUS_ASSIGNED &&
-             candidate->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
-             candidate->operator_slot == slot)) {
-            asset = candidate;
-            break;
-        }
+        asset = candidate;
+        break;
+    }
+    if (!asset && ship_asset_is_station_loaner_for_slot(prior, slot)) {
+        asset = prior;
     }
     if (!asset) {
         asset = world_ship_asset_mint(
@@ -2943,6 +2960,8 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
             owner_pubkey, owner_session);
     }
     if (!asset) return;
+    if (prior && prior != asset)
+        ship_asset_release_loaded_provisional(prior, slot);
     (void)ship_copy(&asset->ship, &sp->ship);
     asset->hull_class = sp->ship.hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
