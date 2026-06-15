@@ -426,6 +426,8 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     player_init_ship(sp, &w);
     sp->id = 0;
     sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xA1, sizeof(sp->session_token));
     sp->docked = true;
     sp->current_station = 1;
     sp->ship.hull_class = HULL_CLASS_NPC_MINER;
@@ -448,6 +450,96 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT(world_station_stored_hull_count(&w, 1, HULL_CLASS_MINER) >= 1);
+}
+
+TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    uint8_t original_token[8];
+    memset(original_token, 0xD4, sizeof(original_token));
+    server_player_t *original = &w.players[0];
+    original->id = 0;
+    original->connected = true;
+    original->session_ready = true;
+    memcpy(original->session_token, original_token, sizeof(original_token));
+    player_init_ship(original, &w);
+    original->docked = true;
+    original->current_station = 1;
+    original->nearby_station = 1;
+    original->in_dock_range = true;
+
+    ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].owner_kind,
+                  SHIP_ASSET_OWNER_PLAYER_SESSION);
+    ASSERT(memcmp(st->pending_ship_builds[0].owner_session,
+                  original_token, sizeof(original_token)) == 0);
+
+    (void)world_player_release_ship_asset(&w, 0);
+    ship_cleanup(&original->ship);
+    memset(original, 0, sizeof(*original));
+
+    server_player_t *replacement = &w.players[0];
+    replacement->id = 0;
+    replacement->connected = true;
+    replacement->session_ready = true;
+    memset(replacement->session_token, 0xE5, sizeof(replacement->session_token));
+    player_init_ship(replacement, &w);
+    replacement->docked = true;
+    replacement->current_station = 1;
+    replacement->nearby_station = 1;
+    replacement->in_dock_range = true;
+
+    for (int i = 0; i < 4000; i++) world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT_EQ_INT(st->pending_ship_build_count, 0);
+
+    uint32_t commissioned_id = SHIP_ASSET_ID_NONE;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w.ship_assets[i];
+        if (!asset->active) continue;
+        if (asset->provenance != SHIP_ASSET_PROVENANCE_SHIPYARD) continue;
+        if (asset->owner_kind != SHIP_ASSET_OWNER_PLAYER_SESSION) continue;
+        if (memcmp(asset->owner_session, original_token,
+                   sizeof(original_token)) != 0) {
+            continue;
+        }
+        commissioned_id = asset->asset_id;
+        break;
+    }
+    ASSERT(commissioned_id != SHIP_ASSET_ID_NONE);
+    ASSERT(replacement->ship_asset_id != commissioned_id);
+
+    const ship_asset_t *stored =
+        world_ship_asset_by_id_const(&w, commissioned_id);
+    ASSERT(stored != NULL);
+    ASSERT_EQ_INT(stored->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(stored->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(stored->custody_station, 1);
+
+    server_player_t *rejoin = &w.players[1];
+    rejoin->id = 1;
+    rejoin->connected = true;
+    rejoin->session_ready = true;
+    memcpy(rejoin->session_token, original_token, sizeof(original_token));
+    player_init_ship(rejoin, &w);
+
+    ASSERT_EQ_INT(rejoin->ship_asset_id, commissioned_id);
+    const ship_asset_t *claimed =
+        world_ship_asset_by_id_const(&w, commissioned_id);
+    ASSERT(claimed != NULL);
+    ASSERT_EQ_INT(claimed->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(claimed->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(claimed->operator_slot, 1);
 }
 
 TEST(test_shipyard_commission_debits_player_ledger) {
@@ -2785,6 +2877,7 @@ void register_construction_modules_tests(void) {
     RUN(test_docked_buy_one_unit_per_intent);
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
     RUN(test_shipyard_commission_completes_onto_docked_player);
+    RUN(test_shipyard_commission_owner_survives_player_slot_reuse);
     RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_shipyard_commission_rejects_invalid_owner_without_draining_materials);
     RUN(test_world_seed_station_manifests_matches_float);

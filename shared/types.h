@@ -460,6 +460,16 @@ typedef struct {
     uint8_t owner_session[8];
 } ship_asset_t;
 
+typedef struct {
+    hull_class_t hull_class;
+    int8_t owner;
+    uint8_t owner_kind;  /* ship_asset_owner_kind_t */
+    uint8_t _pad[2];
+    float build_progress;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} pending_ship_build_t;
+
 typedef enum {
     PRODUCT_FRAME,
     PRODUCT_LASER_MODULE,
@@ -640,11 +650,7 @@ typedef struct {
     /* Shipyard: hull/frame commissions. Ships are built by one active
      * shipyard from finished goods; station-module scaffolds are the
      * heavier two-shipyard fabrication path above. */
-    struct {
-        hull_class_t hull_class;
-        int8_t owner;
-        float build_progress;
-    } pending_ship_builds[4];
+    pending_ship_build_t pending_ship_builds[4];
     int pending_ship_build_count;
     /* Transient/client-mirrored inventory summary. Derived from world_t
      * ship_assets by custody station; not persisted. */

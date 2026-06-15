@@ -835,6 +835,43 @@ TEST(test_towed_cargo_pod_sells_at_dock) {
     ASSERT(sp->ship.stat_credits_earned >= 70.0f);
 }
 
+TEST(test_towed_cargo_pod_row_sell_sells_one_unit) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x56, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+
+    int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
+                                  COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_ORE;
+    sp->input.service_sell_grade = MINING_GRADE_COMMON;
+    sp->input.service_sell_one = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 6);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    before + 1.0f, 0.01f);
+    ASSERT(sp->ship.stat_credits_earned >= 10.0f);
+}
+
 TEST(test_gas_rich_asteroid_emits_gas_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -6404,6 +6441,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_neural_worker_posts_home_refit_import_contract);
     RUN(test_ship_death_drops_cargo_pods);
     RUN(test_towed_cargo_pod_sells_at_dock);
+    RUN(test_towed_cargo_pod_row_sell_sells_one_unit);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
     RUN(test_hail_responds_while_docked);
     RUN(test_hail_does_not_spawn_nearest_rock_contract);

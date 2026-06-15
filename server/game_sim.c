@@ -974,6 +974,12 @@ static bool ship_asset_session_nonzero(const uint8_t token[8]) {
     return false;
 }
 
+static bool ship_asset_pubkey_nonzero(const uint8_t pubkey[32]) {
+    if (!pubkey) return false;
+    for (int i = 0; i < 32; i++) if (pubkey[i]) return true;
+    return false;
+}
+
 static int player_slot_for_ptr(const world_t *w, const server_player_t *sp) {
     if (!w || !sp) return -1;
     if (sp < &w->players[0] || sp >= &w->players[MAX_PLAYERS]) return -1;
@@ -1629,9 +1635,16 @@ static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
 
 static float try_sell_towed_pods(world_t *w, server_player_t *sp,
                                  station_t *st, int station_idx,
-                                 commodity_t filter) {
+                                 commodity_t filter,
+                                 mining_grade_t grade_filter,
+                                 bool single_unit) {
     if (!w || !sp || !st) return 0.0f;
     float payout = 0.0f;
+    if (single_unit &&
+        grade_filter < MINING_GRADE_COUNT &&
+        grade_filter != MINING_GRADE_COMMON) {
+        return 0.0f;
+    }
 
     for (int t = sp->ship.towed_pod_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_pods[t];
@@ -1651,6 +1664,8 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
             remove_towed_pod_slot(&sp->ship, t);
             continue;
         }
+        int sell_units = single_unit ? 1 : units;
+        if (sell_units > units) sell_units = units;
 
         float price = station_buy_price(st, c);
         if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
@@ -1659,18 +1674,18 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
 
         if (is_finished_good(c)) {
             uint8_t origin[8] = { 'C','R','A','T','E','v','1',' ' };
-            int minted = station_finished_mint(st, c, units, origin);
+            int minted = station_finished_mint(st, c, sell_units, origin);
             if (minted <= 0) continue;
-            units = minted;
+            sell_units = minted;
             sync_station_finished_inventory(st, c);
         } else {
-            st->_inventory_cache[c] += (float)units;
+            st->_inventory_cache[c] += (float)sell_units;
         }
 
-        float value = price * (float)units;
+        float value = price * (float)sell_units;
         if (server_player_can_use_pubkey_persistence(sp)) {
             ledger_earn_by_pubkey(st, sp->pubkey, value);
-            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)units, (uint8_t)c);
+            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)sell_units, (uint8_t)c);
         } else {
             ledger_earn(st, sp->session_token, value);
         }
@@ -1678,7 +1693,7 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
         payout += value;
 
         SIM_LOG("[sim] player %d sold towed %s pod (%d units) for %.0f cr at %s\n",
-                sp->id, commodity_short_name(c), units, value, st->name);
+                sp->id, commodity_short_name(c), sell_units, value, st->name);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_SELL, .player_id = sp->id,
             .sell = { .station = station_idx,
@@ -1686,9 +1701,14 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
                       .base_cr = (int)lroundf(value),
                       .bonus_cr = 0,
                       .by_contract = 0 }});
-        memset(pod, 0, sizeof(*pod));
-        pod->towed_by = -1;
-        remove_towed_pod_slot(&sp->ship, t);
+        if (pod->quantity > (uint16_t)sell_units) {
+            pod->quantity = (uint16_t)(pod->quantity - (uint16_t)sell_units);
+        } else {
+            memset(pod, 0, sizeof(*pod));
+            pod->towed_by = -1;
+            remove_towed_pod_slot(&sp->ship, t);
+        }
+        if (single_unit) break;
     }
 
     return payout;
@@ -4964,8 +4984,16 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             SIM_LOG("[sim] player %d delivered build materials for %.0f cr at %s\n",
                     sp->id, build_payout, docked_st->name);
         }
-        (void)try_sell_towed_pods(w, sp, docked_st, sp->current_station, filter);
-        try_sell_station_cargo(w, sp);
+        float towed_payout = try_sell_towed_pods(
+            w, sp, docked_st, sp->current_station, filter,
+            intent->service_sell_grade, intent->service_sell_one);
+        if (intent->service_sell_one && towed_payout > 0.01f) {
+            sp->input.service_sell_only = COMMODITY_COUNT;
+            sp->input.service_sell_grade = MINING_GRADE_COUNT;
+            sp->input.service_sell_one = false;
+        } else {
+            try_sell_station_cargo(w, sp);
+        }
     }
     else if (intent->service_repair) try_repair_ship(w, sp);
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
@@ -6299,6 +6327,38 @@ static bool shipyard_build_owner_valid(int owner, bool debit_player) {
     return owner == -1 || shipyard_owner_code_is_station_request(owner);
 }
 
+static bool shipyard_prepare_pending_ship_build(world_t *w,
+                                                pending_ship_build_t *build,
+                                                int owner,
+                                                hull_class_t hull_class,
+                                                bool debit_player) {
+    if (!w || !build) return false;
+    memset(build, 0, sizeof(*build));
+    build->hull_class = hull_class;
+    build->owner = (int8_t)owner;
+    build->build_progress = 0.0f;
+
+    if (!debit_player) {
+        build->owner_kind = (uint8_t)SHIP_ASSET_OWNER_STATION;
+        return true;
+    }
+
+    if (owner < 0 || owner >= MAX_PLAYERS) return false;
+    server_player_t *sp = &w->players[owner];
+    if (server_player_can_use_pubkey_persistence(sp)) {
+        build->owner_kind = (uint8_t)SHIP_ASSET_OWNER_PLAYER_PUBKEY;
+        memcpy(build->owner_pubkey, sp->pubkey, sizeof(build->owner_pubkey));
+        return true;
+    }
+    if (ship_asset_session_nonzero(sp->session_token)) {
+        build->owner_kind = (uint8_t)SHIP_ASSET_OWNER_PLAYER_SESSION;
+        memcpy(build->owner_session, sp->session_token,
+               sizeof(build->owner_session));
+        return true;
+    }
+    return false;
+}
+
 static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
                                       hull_class_t hull_class,
                                       bool debit_player) {
@@ -6307,6 +6367,11 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     station_t *st = &w->stations[station_idx];
     if (st->pending_ship_build_count >= 4) return false;
     if (!shipyard_can_commission_hull(st, hull_class)) return false;
+    pending_ship_build_t build;
+    if (!shipyard_prepare_pending_ship_build(w, &build, owner, hull_class,
+                                             debit_player)) {
+        return false;
+    }
 
     int frames = 0, lasers = 0, tractors = 0;
     if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
@@ -6331,9 +6396,7 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     }
 
     int idx = st->pending_ship_build_count++;
-    st->pending_ship_builds[idx].hull_class = hull_class;
-    st->pending_ship_builds[idx].owner = (int8_t)owner;
-    st->pending_ship_builds[idx].build_progress = 0.0f;
+    st->pending_ship_builds[idx] = build;
     return true;
 }
 
@@ -6399,24 +6462,33 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
             dt / shipyard_hull_build_time(st->pending_ship_builds[0].hull_class);
         if (st->pending_ship_builds[0].build_progress < 1.0f) continue;
 
-        hull_class_t hull_class = st->pending_ship_builds[0].hull_class;
-        int owner = st->pending_ship_builds[0].owner;
+        pending_ship_build_t build = st->pending_ship_builds[0];
+        hull_class_t hull_class = build.hull_class;
+        int owner = build.owner;
         ship_asset_t *completed_asset = NULL;
-        if (owner >= 0 && owner < MAX_PLAYERS) {
+        if (owner >= 0 && owner < MAX_PLAYERS &&
+            ((build.owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY &&
+              ship_asset_pubkey_nonzero(build.owner_pubkey)) ||
+             (build.owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION &&
+              ship_asset_session_nonzero(build.owner_session)))) {
             server_player_t *sp = &w->players[owner];
             ship_asset_owner_kind_t owner_kind =
-                server_player_can_use_pubkey_persistence(sp)
-                    ? SHIP_ASSET_OWNER_PLAYER_PUBKEY
-                    : SHIP_ASSET_OWNER_PLAYER_SESSION;
+                (ship_asset_owner_kind_t)build.owner_kind;
             const uint8_t *owner_pubkey =
-                owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
+                owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY
+                    ? build.owner_pubkey
+                    : NULL;
             const uint8_t *owner_session =
-                owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
+                owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION
+                    ? build.owner_session
+                    : NULL;
             completed_asset = world_ship_asset_mint(
                 w, hull_class, owner_kind, -1, s,
                 SHIP_ASSET_PROVENANCE_SHIPYARD, false, s,
                 owner_pubkey, owner_session);
-            if (completed_asset && sp->connected && sp->docked && sp->current_station == s) {
+            if (completed_asset && sp->connected && sp->docked &&
+                sp->current_station == s &&
+                ship_asset_player_matches_owner(completed_asset, sp)) {
                 (void)ship_asset_assign_to_player(w, owner, completed_asset, s);
             }
         } else {

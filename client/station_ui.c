@@ -975,6 +975,65 @@ static float ship_manifest_backed_cargo_volume(const ship_t *ship)
     return total;
 }
 
+static bool local_ship_lists_towed_pod(const ship_t *ship, int pod_idx)
+{
+    if (!ship || pod_idx < 0) return false;
+    for (int i = 0; i < ship->towed_pod_count && i < 10; i++) {
+        if (ship->towed_pods[i] == pod_idx) return true;
+    }
+    return false;
+}
+
+static bool local_player_tows_pod(const ship_t *ship, int pod_idx)
+{
+    if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
+    const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+    if (!pod->active || pod->quantity == 0 ||
+        pod->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+    if (pod->towed_by == (int8_t)LOCAL_PLAYER.id) return true;
+    return local_ship_lists_towed_pod(ship, pod_idx);
+}
+
+static int local_towed_cargo_count_c(const ship_t *ship, commodity_t commodity)
+{
+    if ((unsigned)commodity >= COMMODITY_COUNT) return 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!local_player_tows_pod(ship, i)) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        if (pod->commodity != commodity) continue;
+        total += (int)pod->quantity;
+    }
+    return total;
+}
+
+static float local_towed_cargo_volume(const ship_t *ship)
+{
+    float total = 0.0f;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!local_player_tows_pod(ship, i)) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        total += (float)pod->quantity *
+                 commodity_volume((commodity_t)pod->commodity);
+    }
+    return total;
+}
+
+static void local_towed_cargo_volume_by_commodity(const ship_t *ship,
+                                                  float out[COMMODITY_COUNT])
+{
+    if (!out) return;
+    for (int c = 0; c < COMMODITY_COUNT; c++) out[c] = 0.0f;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!local_player_tows_pod(ship, i)) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        out[pod->commodity] += (float)pod->quantity *
+                               commodity_volume((commodity_t)pod->commodity);
+    }
+}
+
 static bool can_afford_upgrade_manifest_ui(const station_t *station,
                                            const ship_t *ship,
                                            ship_upgrade_t upgrade,
@@ -1116,21 +1175,32 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     /* SELL rows -- every held commodity/grade this station consumes.
      * Cargo-free lines stay hidden; the CONTRACTS panel carries demand
      * browsing, while TRADE stays focused on immediate buy/sell actions. */
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
-        if (!station_consumes(st, (commodity_t)c)) continue;
+    for (int c = 0; c < COMMODITY_COUNT && row_count < max; c++) {
+        int towed_total = local_towed_cargo_count_c(ship, (commodity_t)c);
+        bool station_accepts_manifest = station_consumes(st, (commodity_t)c);
+        if (!station_accepts_manifest && towed_total <= 0) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_total_inv = station_manifest_count_c(st, (commodity_t)c);
-        bool station_full = station_total_inv >= capacity;
+        bool finished_good = c >= COMMODITY_RAW_ORE_COUNT;
+        int row_capacity = finished_good
+            ? (int)lroundf(MAX_PRODUCT_STOCK)
+            : (int)lroundf(REFINERY_HOPPER_CAPACITY);
+        int station_total_inv = finished_good
+            ? station_manifest_count_c(st, (commodity_t)c)
+            : (int)floorf(station_inventory_amount(st, (commodity_t)c) + 0.0001f);
+        bool station_full = finished_good && station_total_inv >= row_capacity;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-            if (manifest_g <= 0) continue;
-            int held = manifest_g;
+            int towed_g = (gi == MINING_GRADE_COMMON) ? towed_total : 0;
+            int manifest_g = (finished_good && station_accepts_manifest)
+                ? ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi)
+                : 0;
+            int held = manifest_g + towed_g;
+            if (held <= 0) continue;
             int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
                                                          (commodity_t)c,
                                                          (mining_grade_t)gi);
             int top_cls = (int)INGOT_PREFIX_ANONYMOUS;
-            if (rep_idx >= 0)
+            if (towed_g <= 0 && rep_idx >= 0)
                 top_cls = (int)ship->manifest.units[rep_idx].prefix_class;
             float prefix_mult = prefix_class_price_multiplier(top_cls);
             int price = (int)lroundf(price_base
@@ -1144,7 +1214,10 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
              * shelf at this grade, not the commodity total (which would
              * read identically across all grade rows of the same item). */
             int station_grade_count =
-                station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
+                finished_good
+                    ? station_manifest_count_cg(st, (commodity_t)c,
+                                                (mining_grade_t)gi)
+                    : station_total_inv;
             /* Lineage comes from the FIFO-first matching unit in the
              * SHIP manifest, but only when every unit in this row has a
              * provenance tag. In MP, any anonymous or non-wired unit is
@@ -1158,7 +1231,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             int lineage_count = manifest_lineage_count_cg(&ship->manifest,
                                                           (commodity_t)c,
                                                           (mining_grade_t)gi);
-            if (held > 0) {
+            if (held > 0 && towed_g <= 0) {
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
@@ -1176,8 +1249,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .stock = held, .quantity = held > 0 ? 1 : 0,
                 .unit_price = price, .total_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE),
-                .station_stock = station_grade_count, .station_capacity = capacity,
-                .held = held, .block_reason = blk,
+                .station_stock = station_grade_count, .station_capacity = row_capacity,
+                .held = held, .towed_held = towed_g, .block_reason = blk,
                 .prefix_class = (uint8_t)top_cls,
                 .has_lineage = has_lineage,
                 .origin_station_idx = origin_idx,
@@ -1928,8 +2001,18 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(status_buf, sizeof(status_buf), "%d/%d",
                      r->station_stock, r->station_capacity);
         } else if (r->held > 0) {
-            snprintf(status_buf, sizeof(status_buf), "%d/%d  (%d held)",
-                     r->station_stock, r->station_capacity, r->held);
+            int internal_held = r->held - r->towed_held;
+            if (internal_held > 0 && r->towed_held > 0) {
+                snprintf(status_buf, sizeof(status_buf), "%d/%d  (%d hold +%d tow)",
+                         r->station_stock, r->station_capacity,
+                         internal_held, r->towed_held);
+            } else if (r->towed_held > 0) {
+                snprintf(status_buf, sizeof(status_buf), "%d/%d  (%d tow)",
+                         r->station_stock, r->station_capacity, r->towed_held);
+            } else {
+                snprintf(status_buf, sizeof(status_buf), "%d/%d  (%d held)",
+                         r->station_stock, r->station_capacity, r->held);
+            }
         } else {
             snprintf(status_buf, sizeof(status_buf), "%d/%d",
                      r->station_stock, r->station_capacity);
@@ -2182,9 +2265,18 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         draw_row_lr(cx, my, inner_right, COL_TEXT, "hull", COL_TEXT, right_buf);
         my += row_h;
 
-        snprintf(right_buf, sizeof(right_buf), "%d / %d",
-                 (int)lroundf(ship_manifest_backed_cargo_volume(ship)),
-                 (int)lroundf(ship_cargo_capacity(ship)));
+        float internal_volume = ship_manifest_backed_cargo_volume(ship);
+        float towed_volume = local_towed_cargo_volume(ship);
+        if (towed_volume > 0.001f) {
+            snprintf(right_buf, sizeof(right_buf), "%d + tow %d / %d",
+                     (int)lroundf(internal_volume),
+                     (int)lroundf(towed_volume),
+                     (int)lroundf(ship_cargo_capacity(ship)));
+        } else {
+            snprintf(right_buf, sizeof(right_buf), "%d / %d",
+                     (int)lroundf(internal_volume),
+                     (int)lroundf(ship_cargo_capacity(ship)));
+        }
         draw_row_lr(cx, my, inner_right, COL_TEXT, "hold", COL_TEXT, right_buf);
         /* Grade-tinted cargo fill bar -- sits inside the cargo row, just
          * below the text baseline so it visually belongs to that row.
@@ -2196,7 +2288,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
             if (cap_v > 0.0f) {
                 float bar_x  = cx + 8.0f;
                 float bar_w  = inner_right - bar_x - 8.0f;
-                float bar_h  = 3.0f;
+                float bar_h  = towed_volume > 0.001f ? 6.0f : 3.0f;
                 float bar_y  = my + row_h - bar_h - 2.0f;
 
                 /* Background */
@@ -2208,7 +2300,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                 sgl_v2f(bar_x, bar_y + bar_h);
                 sgl_end();
 
-                /* Volume per grade. */
+                /* Internal-hold volume per grade. */
                 float vol_by_grade[MINING_GRADE_COUNT] = {0};
                 for (uint16_t u = 0; u < ship->manifest.count; u++) {
                     const cargo_unit_t *cu = &ship->manifest.units[u];
@@ -2235,11 +2327,41 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                     sgl_c4f(cr / 255.0f, cg / 255.0f, cb / 255.0f, 0.95f);
                     sgl_v2f(x, bar_y);
                     sgl_v2f(x + seg_w, bar_y);
-                    sgl_v2f(x + seg_w, bar_y + bar_h);
-                    sgl_v2f(x, bar_y + bar_h);
+                    sgl_v2f(x + seg_w, bar_y + (towed_volume > 0.001f ? 2.0f : bar_h));
+                    sgl_v2f(x, bar_y + (towed_volume > 0.001f ? 2.0f : bar_h));
                     x += seg_w;
                 }
                 sgl_end();
+
+                if (towed_volume > 0.001f) {
+                    float vol_by_commodity[COMMODITY_COUNT];
+                    local_towed_cargo_volume_by_commodity(ship, vol_by_commodity);
+                    x = bar_x;
+                    sgl_begin_quads();
+                    for (int c = 0; c < COMMODITY_COUNT; c++) {
+                        if (vol_by_commodity[c] < 0.001f) continue;
+                        uint8_t cr, cg, cb;
+                        commodity_color_u8((commodity_t)c, &cr, &cg, &cb);
+                        float seg_w = bar_w * (vol_by_commodity[c] / cap_v);
+                        if (seg_w < 0.0f) seg_w = 0.0f;
+                        if (x + seg_w > bar_x + bar_w) seg_w = (bar_x + bar_w) - x;
+                        sgl_c4f(cr / 255.0f, cg / 255.0f, cb / 255.0f, 0.82f);
+                        sgl_v2f(x, bar_y + 3.0f);
+                        sgl_v2f(x + seg_w, bar_y + 3.0f);
+                        sgl_v2f(x + seg_w, bar_y + bar_h);
+                        sgl_v2f(x, bar_y + bar_h);
+                        x += seg_w;
+                        if (x >= bar_x + bar_w) break;
+                    }
+                    if (internal_volume + towed_volume > cap_v + 0.001f) {
+                        sgl_c4f(1.0f, 0.82f, 0.28f, 0.95f);
+                        sgl_v2f(bar_x + bar_w - 2.0f, bar_y);
+                        sgl_v2f(bar_x + bar_w,        bar_y);
+                        sgl_v2f(bar_x + bar_w,        bar_y + bar_h);
+                        sgl_v2f(bar_x + bar_w - 2.0f, bar_y + bar_h);
+                    }
+                    sgl_end();
+                }
             }
         }
         my += row_h;

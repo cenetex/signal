@@ -104,7 +104,10 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 64  /* v64: contract-origin ship assets persist as a
+#define SAVE_VERSION 65  /* v65: pending shipyard hull builds persist captured
+                          * owner identity (pubkey/session) instead of only a
+                          * mutable player slot. v64: contract-origin ship
+                          * assets persist as a
                           * fixed registry tail after NPC ship manifests.
                           * Older worlds mint legacy assets for active
                           * inline NPC ships on load. v63: station
@@ -641,10 +644,34 @@ static bool read_station_session(FILE *f, station_t *s) {
         if (s->pending_ship_build_count < 0) s->pending_ship_build_count = 0;
         if (s->pending_ship_build_count > 4) s->pending_ship_build_count = 4;
         for (int p = 0; p < 4; p++) {
-            READ_FIELD(f, s->pending_ship_builds[p]);
+            if (g_loaded_save_version >= 65) {
+                READ_FIELD(f, s->pending_ship_builds[p]);
+            } else {
+                struct {
+                    hull_class_t hull_class;
+                    int8_t owner;
+                    float build_progress;
+                } legacy;
+                READ_FIELD(f, legacy);
+                memset(&s->pending_ship_builds[p], 0,
+                       sizeof(s->pending_ship_builds[p]));
+                s->pending_ship_builds[p].hull_class = legacy.hull_class;
+                s->pending_ship_builds[p].owner = legacy.owner;
+                s->pending_ship_builds[p].build_progress =
+                    legacy.build_progress;
+                if (legacy.owner < 0) {
+                    s->pending_ship_builds[p].owner_kind =
+                        (uint8_t)SHIP_ASSET_OWNER_STATION;
+                }
+            }
             if (s->pending_ship_builds[p].hull_class < 0 ||
                 s->pending_ship_builds[p].hull_class >= HULL_CLASS_COUNT) {
                 s->pending_ship_builds[p].hull_class = HULL_CLASS_DRONE_TRACTOR;
+            }
+            if (s->pending_ship_builds[p].owner_kind >
+                SHIP_ASSET_OWNER_PLAYER_SESSION) {
+                s->pending_ship_builds[p].owner_kind =
+                    (uint8_t)SHIP_ASSET_OWNER_NONE;
             }
             if (s->pending_ship_builds[p].build_progress < 0.0f)
                 s->pending_ship_builds[p].build_progress = 0.0f;

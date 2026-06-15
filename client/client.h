@@ -155,6 +155,7 @@ typedef struct {
     int            station_stock;   /* this commodity's inventory at station */
     int            station_capacity;/* MAX_PRODUCT_STOCK */
     int            held;            /* player's cargo of this (commodity,grade) */
+    int            towed_held;      /* subset of held riding in towed cargo pods */
     uint8_t        block_reason;    /* see TRADE_BLOCK_* below; 0 if actionable */
     uint8_t        prefix_class;    /* ingot_prefix_t for the row's representative
                                       * unit; INGOT_PREFIX_ANONYMOUS = bulk row. Drives
