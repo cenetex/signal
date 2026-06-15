@@ -253,6 +253,10 @@ const char *signal_npc_worker_option_name(signal_npc_worker_option_t option) {
     case SIGNAL_NPC_WORKER_OPTION_IMPORT_FRAME: return "import_frame_modules";
     case SIGNAL_NPC_WORKER_OPTION_IMPORT_LASER: return "import_laser_modules";
     case SIGNAL_NPC_WORKER_OPTION_IMPORT_TRACTOR: return "import_tractor_modules";
+    case SIGNAL_NPC_WORKER_OPTION_SUPPLY_FRONTIER: return "supply_frontier";
+    case SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY: return "escort_convoy";
+    case SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE: return "patrol_route";
+    case SIGNAL_NPC_WORKER_OPTION_TAKE_RISKY_PROFIT: return "take_risky_profit";
     case SIGNAL_NPC_WORKER_OPTION_COUNT:
     default: return "unknown";
     }
@@ -269,10 +273,14 @@ static void fill_features(const signal_npc_worker_candidate_t *c,
                           double row[SNWB_FEATURE_COUNT]) {
     memset(row, 0, SNWB_FEATURE_COUNT * sizeof(*row));
     int opt = (int)c->option;
+    int v1_opt = opt;
+    if (v1_opt < 0 || v1_opt >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
+        v1_opt = (int)SIGNAL_NPC_WORKER_OPTION_HAUL_CONTRACT;
     row[0] = 1.0;
-    row[1] = clip((double)opt / (double)(SIGNAL_NPC_WORKER_OPTION_COUNT - 1),
+    row[1] = clip((double)v1_opt /
+                      (double)(SIGNAL_NPC_WORKER_OPTION_V1_COUNT - 1),
                   0.0, 1.0);
-    if (opt >= 0 && opt < SIGNAL_NPC_WORKER_OPTION_COUNT)
+    if (opt >= 0 && opt < SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
         row[2 + opt] = 1.0;
     row[10] = c->role == NPC_ROLE_MINER ? 1.0 : 0.0;
     row[11] = c->role == NPC_ROLE_HAULER ? 1.0 : 0.0;
@@ -324,6 +332,40 @@ static void fill_features(const signal_npc_worker_candidate_t *c,
     row[55] = c->best_contract_commodity == COMMODITY_CRYSTAL_INGOT ? 1.0 : 0.0;
 }
 
+static double teacher_augmented_score(const signal_npc_worker_candidate_t *c) {
+    if (!c) return -1.0e300;
+    double score = c->teacher_score;
+    if (!c->legal) score -= 1000.0;
+    double route_positive = fmax((double)c->route_success_memory,
+                                 (double)c->route_proof_memory);
+    score += route_positive * 0.18;
+    score -= (double)c->route_danger_memory * 0.22;
+    score += (double)c->provenance_pressure * 0.08;
+    switch (c->option) {
+    case SIGNAL_NPC_WORKER_OPTION_SUPPLY_FRONTIER:
+        score += (double)c->frontier_pressure * (0.85 + 0.35 * c->persona_growth);
+        if (c->frontier_supply) score += 0.12;
+        break;
+    case SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY:
+        score += (double)c->route_danger_memory * (0.75 + 0.25 * c->persona_risk);
+        score += (double)c->escort_bonus;
+        break;
+    case SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE:
+        score += (double)c->route_danger_memory * 0.95;
+        score += (double)c->convoy_bonus * 0.35;
+        break;
+    case SIGNAL_NPC_WORKER_OPTION_TAKE_RISKY_PROFIT:
+        score += (double)c->black_market_acceptance * (0.65 + 0.45 * c->persona_risk);
+        if (c->contraband_opportunity) score += 0.22;
+        if (c->policy_screening && !c->black_market_station) score -= 0.45;
+        score -= (double)c->route_danger_memory * 0.18;
+        break;
+    default:
+        break;
+    }
+    return score;
+}
+
 static double forward_model(const double input[SNWB_FEATURE_COUNT]) {
     double hidden0[SNWB_HIDDEN0] = {0.0};
     double hidden1[SNWB_HIDDEN1] = {0.0};
@@ -369,7 +411,7 @@ int signal_npc_worker_brain_choose_with_scores(
     if (!signal_npc_worker_brain_loaded()) {
         g_worker_brain.teacher_decision_count++;
         for (int i = 0; i < count; i++) {
-            double score = candidates[i].teacher_score;
+            double score = teacher_augmented_score(&candidates[i]);
             if (scores && i < score_count) scores[i] = score;
             if (best < 0 || score > best_score) {
                 best = i;
@@ -383,6 +425,8 @@ int signal_npc_worker_brain_choose_with_scores(
         double row[SNWB_FEATURE_COUNT];
         fill_features(&candidates[i], row);
         double score = forward_model(row);
+        if (candidates[i].option >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
+            score = teacher_augmented_score(&candidates[i]);
         if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {
             best = i;

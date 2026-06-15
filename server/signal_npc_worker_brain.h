@@ -21,8 +21,17 @@ typedef enum {
     SIGNAL_NPC_WORKER_OPTION_IMPORT_FRAME,
     SIGNAL_NPC_WORKER_OPTION_IMPORT_LASER,
     SIGNAL_NPC_WORKER_OPTION_IMPORT_TRACTOR,
+    SIGNAL_NPC_WORKER_OPTION_SUPPLY_FRONTIER,
+    SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY,
+    SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE,
+    SIGNAL_NPC_WORKER_OPTION_TAKE_RISKY_PROFIT,
     SIGNAL_NPC_WORKER_OPTION_COUNT,
 } signal_npc_worker_option_t;
+
+enum {
+    SIGNAL_NPC_WORKER_OPTION_V1_COUNT =
+        SIGNAL_NPC_WORKER_OPTION_IMPORT_TRACTOR + 1,
+};
 
 typedef struct {
     signal_npc_worker_option_t option;
@@ -43,6 +52,14 @@ typedef struct {
     int best_contract_dest;
     commodity_t best_contract_commodity;
     bool mine_pressure;
+    float frontier_pressure;
+    float route_success_memory;
+    float route_danger_memory;
+    float route_proof_memory;
+    float provenance_pressure;
+    float black_market_acceptance;
+    float escort_bonus;
+    float convoy_bonus;
     float persona_risk;
     float persona_growth;
     float persona_patience;
@@ -57,6 +74,13 @@ typedef struct {
     bool travel;
     bool self_upgrade;
     bool import_module;
+    bool policy_screening;
+    bool black_market_station;
+    bool contraband_opportunity;
+    bool frontier_supply;
+    bool escort;
+    bool patrol;
+    bool risky_profit;
     float credit_delta;
     float refit_progress;
     float contract_value;

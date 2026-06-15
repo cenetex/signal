@@ -297,6 +297,43 @@ TEST(test_player_init_ignores_foreign_bound_asset) {
     ASSERT_EQ_INT(claimed->operator_slot, 0);
 }
 
+TEST(test_player_init_clears_stale_binding_when_waiting_for_hull) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    memset(sp->session_token, 0x12, sizeof(sp->session_token));
+    uint8_t other_token[8];
+    memset(other_token, 0x23, sizeof(other_token));
+    ship_asset_t *foreign = world_ship_asset_mint(
+        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
+        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
+        false, 1, NULL, other_token);
+    ASSERT(foreign != NULL);
+    sp->ship_asset_id = foreign->asset_id;
+    ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
+    ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER), 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(&w.stations[1], COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+    int asset_count_before = test_active_ship_asset_count(&w);
+
+    player_init_ship(sp, &w);
+
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->current_station, 0);
+    ASSERT_EQ_INT(sp->nearby_station, 0);
+    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_MINER);
+    ASSERT_EQ_FLOAT(sp->ship.hull, 0.0f, 0.001f);
+    ASSERT_EQ_INT(foreign->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(foreign->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT(test_has_station_hull_request(&w, 0, HULL_CLASS_MINER));
+}
+
 TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     WORLD_DECL;
     world_reset(&w);
@@ -6500,6 +6537,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_claims_station_loaner_asset);
     RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ignores_foreign_bound_asset);
+    RUN(test_player_init_clears_stale_binding_when_waiting_for_hull);
     RUN(test_player_reconnect_transfer_moves_ship_asset_binding);
     RUN(test_player_release_returns_provisional_loaner_to_storage);
     RUN(test_player_release_stores_owned_hull_for_reclaim);

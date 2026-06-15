@@ -8,6 +8,7 @@
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
+#include "cargo_legality.h"
 #include "mining.h"            /* grade roll at smelt time */
 #include "sha256.h"
 #include "chain_log.h"         /* signed event emission (#479 C) */
@@ -1043,6 +1044,56 @@ static int manifest_find_first_commodity(const manifest_t *manifest, commodity_t
     return -1;
 }
 
+static const cargo_receipt_chain_t *production_ship_receipt_chain_at(
+    const ship_t *ship, uint16_t index) {
+    const ship_receipts_t *receipts = ship_get_receipts_const(ship);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static bool ship_manifest_unit_legal_for_station(
+    const world_t *w, const ship_t *ship, uint16_t index, int station_idx) {
+    if (!w || !ship || !ship->manifest.units ||
+        index >= ship->manifest.count ||
+        station_idx < 0 || station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    cargo_legality_result_t result = cargo_legality_classify(
+        w->stations, MAX_STATIONS, station_idx, &ship->manifest.units[index],
+        production_ship_receipt_chain_at(ship, index));
+    return result.status != CARGO_LEGALITY_CONTRABAND;
+}
+
+static int ship_manifest_count_legal_commodity(const world_t *w,
+                                               const ship_t *ship,
+                                               int station_idx,
+                                               commodity_t c) {
+    if (!ship || !ship->manifest.units) return 0;
+    int count = 0;
+    for (uint16_t i = 0; i < ship->manifest.count; i++) {
+        if (ship->manifest.units[i].commodity != (uint8_t)c) continue;
+        if (!ship_manifest_unit_legal_for_station(w, ship, i, station_idx))
+            continue;
+        count++;
+    }
+    return count;
+}
+
+static int ship_manifest_find_first_legal_commodity(const world_t *w,
+                                                    const ship_t *ship,
+                                                    int station_idx,
+                                                    commodity_t c) {
+    if (!ship || !ship->manifest.units) return -1;
+    for (uint16_t i = 0; i < ship->manifest.count; i++) {
+        if (ship->manifest.units[i].commodity != (uint8_t)c) continue;
+        if (!ship_manifest_unit_legal_for_station(w, ship, i, station_idx))
+            continue;
+        return (int)i;
+    }
+    return -1;
+}
+
 static bool cargo_pub_nonzero(const cargo_unit_t *unit) {
     static const uint8_t zero[32] = {0};
     return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
@@ -1106,41 +1157,75 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
          * named identity can't be sold or transferred again). The ship
          * is paid the station's buy price for whatever it delivers. */
         if (ship->cargo[mat] > 0.01f) {
-            float deliver = fminf(ship->cargo[mat], needed);
-            ship->cargo[mat] -= deliver;
-            m->build_progress += deliver / cost;
-            int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0) {
+            int manifest_units =
+                manifest_count_by_commodity(&ship->manifest, mat);
+            if (manifest_units > 0) {
+                int legal_units = ship_manifest_count_legal_commodity(
+                    w, ship, station_idx, mat);
+                int whole = (int)ceilf(needed - 0.0001f);
+                if (whole > legal_units) whole = legal_units;
+                if (whole < 0) whole = 0;
+                if (whole > 0) {
                 /* Sum prefix-class multipliers across the units we're
                  * actually consuming so high-grade ingots pay the player
                  * proportionally. Same per-unit accounting as
                  * try_sell_station_cargo's grade-bonus loop. */
-                float price = station_buy_price(st, mat);
-                int removed = 0;
-                float progress_after = module_supply_fraction(m);
-                while (removed < whole) {
-                    int idx = manifest_find_first_commodity(&ship->manifest, mat);
-                    if (idx < 0) break;
-                    cargo_unit_t unit = {0};
-                    if (!ship_manifest_remove_with_chain(ship, (uint16_t)idx,
-                                                         &unit, NULL)) {
-                        break;
+                    float price = station_buy_price(st, mat);
+                    int removed = 0;
+                    while (removed < whole) {
+                        int idx = ship_manifest_find_first_legal_commodity(
+                            w, ship, station_idx, mat);
+                        if (idx < 0) break;
+                        cargo_unit_t unit = {0};
+                        if (!ship_manifest_remove_with_chain(ship, (uint16_t)idx,
+                                                             &unit, NULL)) {
+                            break;
+                        }
+                        m->build_progress += 1.0f / cost;
+                        float progress_after = module_supply_fraction(m);
+                        float mult = mining_payout_multiplier((mining_grade_t)unit.grade);
+                        payout += mult * price;
+                        emit_construction_contribution(w, st, station_idx, i, m,
+                                                       mat, &unit, progress_after);
+                        removed++;
                     }
-                    float mult = mining_payout_multiplier((mining_grade_t)unit.grade);
-                    payout += mult * price;
-                    emit_construction_contribution(w, st, station_idx, i, m,
-                                                   mat, &unit, progress_after);
-                    removed++;
+                    if (removed > 0) {
+                        ship_finished_sync(ship, mat);
+                        needed -= (float)removed;
+                    }
                 }
-                if (removed < whole)
-                    payout += (float)(whole - removed) * price;
-                /* Fractional remainder (sub-unit float) priced at base. */
-                float frac = deliver - (float)whole;
-                if (frac > 0.0f) payout += frac * price;
             } else {
-                payout += deliver * station_buy_price(st, mat);
+                float deliver = fminf(ship->cargo[mat], needed);
+                ship->cargo[mat] -= deliver;
+                m->build_progress += deliver / cost;
+                int whole = (int)floorf(deliver + 0.0001f);
+                if (whole > 0) {
+                    float price = station_buy_price(st, mat);
+                    int removed = 0;
+                    float progress_after = module_supply_fraction(m);
+                    while (removed < whole) {
+                        int idx = manifest_find_first_commodity(&ship->manifest, mat);
+                        if (idx < 0) break;
+                        cargo_unit_t unit = {0};
+                        if (!ship_manifest_remove_with_chain(ship, (uint16_t)idx,
+                                                             &unit, NULL)) {
+                            break;
+                        }
+                        float mult = mining_payout_multiplier((mining_grade_t)unit.grade);
+                        payout += mult * price;
+                        emit_construction_contribution(w, st, station_idx, i, m,
+                                                       mat, &unit, progress_after);
+                        removed++;
+                    }
+                    if (removed < whole)
+                        payout += (float)(whole - removed) * price;
+                    float frac = deliver - (float)whole;
+                    if (frac > 0.0f) payout += frac * price;
+                } else {
+                    payout += deliver * station_buy_price(st, mat);
+                }
+                needed -= deliver;
             }
-            needed -= deliver;
         }
 
         /* Also pull from station inventory (NPC deliveries land here).

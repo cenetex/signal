@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "contract_fit.h"
+#include "cargo_legality.h"
+#include "cargo_receipt_issue.h"
 #include "station_policy.h"
 #include "chain_log.h"
 #include "gossip.h"
@@ -24,6 +26,68 @@ static void economy_chain_test_wipe_logs(world_t *w) {
         memset(w->stations[s].chain_last_hash, 0,
                sizeof(w->stations[s].chain_last_hash));
     }
+}
+
+static void economy_fill_pubkey(uint8_t out[32], uint8_t seed) {
+    for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
+}
+
+static cargo_unit_t economy_test_cargo_unit(const uint8_t cargo_pub[32]) {
+    cargo_unit_t unit = {0};
+    unit.kind = CARGO_KIND_INGOT;
+    unit.commodity = COMMODITY_FERRITE_INGOT;
+    unit.grade = MINING_GRADE_COMMON;
+    unit.recipe_id = RECIPE_SMELT;
+    unit.prefix_class = INGOT_PREFIX_M;
+    unit.quantity = 1;
+    memcpy(unit.pub, cargo_pub, 32);
+    return unit;
+}
+
+static bool economy_issue_single_receipt(world_t *w,
+                                         int station_idx,
+                                         const uint8_t recipient[32],
+                                         const uint8_t cargo_pub[32],
+                                         cargo_receipt_chain_t *out) {
+    if (!w || !out || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    station_t *st = &w->stations[station_idx];
+    memset(out, 0, sizeof(*out));
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT, "legality", 8) == 0)
+        return false;
+    cargo_receipt_t receipt = {0};
+    if (cargo_receipt_emit_transfer(w, st, st->station_pubkey, recipient,
+                                    cargo_pub, (uint8_t)CARGO_KIND_INGOT,
+                                    st->chain_last_hash, &receipt) == 0) {
+        return false;
+    }
+    out->links[0] = receipt;
+    out->len = 1;
+    return true;
+}
+
+static void economy_force_provenance_screening(world_t *w, int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    station_t *st = &w->stations[station_idx];
+    st->policy_generation = 1;
+    st->policy_tick = w->tick + 1;
+    st->policy_card_count = 1;
+    st->policy_card_ids[0] = (uint8_t)STATION_POLICY_CARD_PROVENANCE_SCREENING;
+    st->policy_card_domains[0] = (uint8_t)STATION_POLICY_DOMAIN_TRADE;
+    st->policy_card_costs[0] = 25;
+    st->policy_card_scores[0] = 1.0f;
+}
+
+static void economy_force_black_market(world_t *w, int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    station_t *st = &w->stations[station_idx];
+    st->policy_generation = 1;
+    st->policy_tick = w->tick + 1;
+    st->policy_card_count = 1;
+    st->policy_card_ids[0] = (uint8_t)STATION_POLICY_CARD_BLACK_MARKET;
+    st->policy_card_domains[0] = (uint8_t)STATION_POLICY_DOMAIN_TRADE;
+    st->policy_card_costs[0] = 20;
+    st->policy_card_scores[0] = 1.0f;
 }
 
 static const cargo_unit_t *test_station_first_unit(const station_t *st,
@@ -669,6 +733,125 @@ TEST(test_station_policy_cache_drives_trade_price_modifier) {
     uint32_t generation = prospect->policy_generation;
     station_policy_refresh(prospect, 0, 7);
     ASSERT_EQ_INT((int)prospect->policy_generation, (int)generation);
+}
+
+TEST(test_cargo_legality_clean_chain_is_not_contraband) {
+    economy_chain_test_setup("legality_clean");
+    WORLD_DECL;
+    world_reset(&w);
+    economy_chain_test_wipe_logs(&w);
+
+    uint8_t player_pk[32];
+    uint8_t cargo_pk[32];
+    economy_fill_pubkey(player_pk, 0x31);
+    economy_fill_pubkey(cargo_pk, 0x71);
+    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(economy_issue_single_receipt(&w, 2, player_pk, cargo_pk, &chain));
+    economy_force_provenance_screening(&w, 0);
+
+    cargo_legality_result_t result = cargo_legality_classify(
+        w.stations, MAX_STATIONS, 0, &unit, &chain);
+    ASSERT_EQ_INT((int)result.status, CARGO_LEGALITY_CLEAN);
+    ASSERT(cargo_legality_station_accepts(result));
+    ASSERT_EQ_INT(result.origin_station, 2);
+    ASSERT((result.reasons & CARGO_LEGALITY_REASON_POLICY_SCREENS) != 0);
+
+    economy_chain_test_teardown();
+}
+
+TEST(test_cargo_legality_missing_receipt_is_policy_contraband) {
+    WORLD_DECL;
+    world_reset(&w);
+    uint8_t cargo_pk[32];
+    economy_fill_pubkey(cargo_pk, 0x72);
+    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    economy_force_provenance_screening(&w, 0);
+
+    cargo_legality_result_t result = cargo_legality_classify(
+        w.stations, MAX_STATIONS, 0, &unit, NULL);
+    ASSERT_EQ_INT((int)result.status, CARGO_LEGALITY_CONTRABAND);
+    ASSERT(!cargo_legality_station_accepts(result));
+    ASSERT((result.reasons & CARGO_LEGALITY_REASON_MISSING_RECEIPT) != 0);
+    ASSERT((result.reasons & CARGO_LEGALITY_REASON_POLICY_SCREENS) != 0);
+}
+
+TEST(test_cargo_legality_black_market_authority_is_local_policy) {
+    economy_chain_test_setup("legality_black_market");
+    WORLD_DECL;
+    world_reset(&w);
+    economy_chain_test_wipe_logs(&w);
+
+    uint8_t player_pk[32];
+    uint8_t cargo_pk[32];
+    economy_fill_pubkey(player_pk, 0x33);
+    economy_fill_pubkey(cargo_pk, 0x73);
+    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+
+    /* Make station 1 a black-market authority without changing the cargo. */
+    economy_force_black_market(&w, 1);
+
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(economy_issue_single_receipt(&w, 1, player_pk, cargo_pk, &chain));
+    economy_force_provenance_screening(&w, 0);
+
+    cargo_legality_result_t lawful = cargo_legality_classify(
+        w.stations, MAX_STATIONS, 0, &unit, &chain);
+    ASSERT_EQ_INT((int)lawful.status, CARGO_LEGALITY_CONTRABAND);
+    ASSERT(!cargo_legality_station_accepts(lawful));
+    ASSERT_EQ_INT(lawful.black_market_station, 1);
+    ASSERT((lawful.reasons &
+            CARGO_LEGALITY_REASON_BLACK_MARKET_AUTHORITY) != 0);
+
+    cargo_legality_result_t pirate = cargo_legality_classify(
+        w.stations, MAX_STATIONS, 1, &unit, &chain);
+    ASSERT_EQ_INT((int)pirate.status, CARGO_LEGALITY_CONTRABAND);
+    ASSERT(cargo_legality_station_accepts(pirate));
+    ASSERT((pirate.reasons & CARGO_LEGALITY_REASON_POLICY_TOLERATES) != 0);
+
+    economy_chain_test_teardown();
+}
+
+TEST(test_bulk_sell_refuses_black_market_origin_at_lawful_station) {
+    economy_chain_test_setup("bulk_sell_legality");
+    WORLD_DECL;
+    world_reset(&w);
+    economy_chain_test_wipe_logs(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    uint8_t player_pk[32];
+    uint8_t cargo_pk[32];
+    economy_fill_pubkey(player_pk, 0x34);
+    economy_fill_pubkey(cargo_pk, 0x74);
+    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    cargo_receipt_chain_t chain = {0};
+    economy_force_black_market(&w, 0);
+    economy_force_provenance_screening(&w, 1);
+    ASSERT(economy_issue_single_receipt(&w, 0, player_pk, cargo_pk, &chain));
+    ASSERT(ship_manifest_push_with_chain(&sp->ship, &unit, &chain));
+    ship_finished_sync(&sp->ship, COMMODITY_FERRITE_INGOT);
+
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_COUNT;
+    int kepler_before = station_finished_count(&w.stations[1],
+                                               COMMODITY_FERRITE_INGOT);
+    float balance_before = ledger_balance(&w.stations[1], sp->session_token);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[1],
+                                         COMMODITY_FERRITE_INGOT),
+                  kepler_before);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[1], sp->session_token),
+                    balance_before, 0.001f);
+
+    economy_chain_test_teardown();
 }
 
 TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
@@ -2518,6 +2701,10 @@ void register_economy_contracts_tests(void) {
     RUN(test_station_policy_cards_rank_under_domain_budgets);
     RUN(test_station_policy_black_market_requires_off_relay_station);
     RUN(test_station_policy_cache_drives_trade_price_modifier);
+    RUN(test_cargo_legality_clean_chain_is_not_contraband);
+    RUN(test_cargo_legality_missing_receipt_is_policy_contraband);
+    RUN(test_cargo_legality_black_market_authority_is_local_policy);
+    RUN(test_bulk_sell_refuses_black_market_origin_at_lawful_station);
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);

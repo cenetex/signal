@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "chain_log.h"
+#include "cargo_receipt_issue.h"
 #include "sim_physics.h"
 
 static int construction_count_active_npcs(const world_t *w) {
@@ -16,6 +17,39 @@ static int construction_count_active_ship_assets(const world_t *w) {
         if (w->ship_assets[i].active && !w->ship_assets[i].destroyed) count++;
     }
     return count;
+}
+
+static bool construction_attach_station_receipts(world_t *w,
+                                                 server_player_t *sp,
+                                                 int station_idx,
+                                                 commodity_t commodity) {
+    if (!w || !sp || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    station_t *issuer = &w->stations[station_idx];
+    if (!ship_manifest_bootstrap(&sp->ship)) return false;
+    for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
+        const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+        if (unit->commodity != (uint8_t)commodity) continue;
+        if (chain_log_emit(w, issuer, CHAIN_EVT_CRAFT,
+                           "test-frame", 10) == 0) {
+            return false;
+        }
+        cargo_receipt_t receipt = {0};
+        if (cargo_receipt_emit_transfer(w, issuer,
+                                        issuer->station_pubkey,
+                                        sp->pubkey,
+                                        unit->pub,
+                                        unit->kind,
+                                        issuer->chain_last_hash,
+                                        &receipt) == 0) {
+            return false;
+        }
+        if (cargo_receipt_present_to_ship(sp, unit->pub, &receipt, 1) !=
+            CARGO_RECEIPT_PRESENT_OK) {
+            return false;
+        }
+    }
+    return true;
 }
 
 TEST(test_outpost_requires_signal_range) {
@@ -1318,6 +1352,7 @@ TEST(test_build_outpost_full_economy) {
     ASSERT(test_set_ship_finished_units(&sp->ship, COMMODITY_FRAME,
                                         (int)ceilf(frame_budget),
                                         MINING_GRADE_COMMON));
+    ASSERT(construction_attach_station_receipts(&w, sp, 1, COMMODITY_FRAME));
 
     /* Step 3 — dock at the outpost and pour the frames in.
      * The outpost has an OUTPOST_DOCK module stamped on by
@@ -1415,6 +1450,7 @@ TEST(test_build_outpost_full_economy) {
         ship_finished_count(&sp->ship, COMMODITY_FRAME) +
             (int)ceilf(module_build_cost_lookup(MODULE_HOPPER)),
         MINING_GRADE_COMMON));
+    ASSERT(construction_attach_station_receipts(&w, sp, 1, COMMODITY_FRAME));
 
     station_slot_pair_t pair_slots[2];
     int pair_count = station_pair_neighbors((int)furn->ring, (int)furn->slot,

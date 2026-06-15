@@ -23,6 +23,7 @@
 #include "game_sim.h"
 #include "tractor.h"
 #include "laser.h"
+#include "cargo_legality.h"
 #include "manifest.h"
 #include "contract_fit.h"
 #include "station_policy.h"
@@ -664,15 +665,8 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
-static int manifest_find_first_commodity_local(const manifest_t *manifest,
-                                               commodity_t c) {
-    if (!manifest || !manifest->units) return -1;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        if (manifest->units[i].commodity == (uint8_t)c)
-            return (int)i;
-    }
-    return -1;
-}
+static cargo_legality_result_t classify_ship_manifest_unit_at_station(
+    const world_t *w, const ship_t *ship, uint16_t index, int station_index);
 
 static bool cargo_unit_pub_nonzero(const cargo_unit_t *unit) {
     static const uint8_t zero[32] = {0};
@@ -716,8 +710,19 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     int request = held < needed ? held : needed;
     int accepted = 0;
     while (accepted < request) {
-        int idx = manifest_find_first_commodity_local(&sp->ship.manifest,
-                                                      COMMODITY_FRAME);
+        int idx = -1;
+        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
+            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+            if (!unit || unit->commodity != (uint8_t)COMMODITY_FRAME)
+                continue;
+            cargo_legality_result_t legality =
+                classify_ship_manifest_unit_at_station(
+                    w, &sp->ship, i, sp->current_station);
+            if (legality.status == CARGO_LEGALITY_CONTRABAND)
+                continue;
+            idx = (int)i;
+            break;
+        }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
         if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)idx,
@@ -1407,6 +1412,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
         return ship_asset_assign_to_player(w, player_slot, asset, station_idx);
     }
 
+    sp->ship_asset_id = SHIP_ASSET_ID_NONE;
     (void)shipyard_queue_station_hull_request(w, station_idx, HULL_CLASS_MINER);
     return false;
 }
@@ -2051,6 +2057,15 @@ static bool transfer_ship_unit_to_station(ship_t *src, station_t *dst, uint16_t 
     return true;
 }
 
+static void debug_manifest_remove_site(const char *site, const cargo_unit_t *unit) {
+    if (!site || !unit) return;
+    if (unit->commodity == (uint8_t)COMMODITY_FERRITE_INGOT &&
+        unit->pub[0] == 0x74) {
+        fprintf(stderr, "[debug-remove] %s ferrite pub0=0x%02x\n",
+                site, unit->pub[0]);
+    }
+}
+
 static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t idx) {
     cargo_unit_t unit = {0};
     cargo_receipt_chain_t chain = {0};
@@ -2067,56 +2082,17 @@ static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t 
 static bool delivery_cargo_bound_to_player(world_t *w, int player_id,
                                            const cargo_unit_t *unit);
 
-static int transfer_ship_to_station_by_commodity_ex(world_t *w, int player_id,
-                                                    ship_t *src, station_t *dst,
-                                                    commodity_t commodity,
-                                                    mining_grade_t preferred_grade,
-                                                    int n) {
-    if (!src || !dst || n <= 0) return 0;
-    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
-    int moved = 0;
-    bool allow_any_grade = (preferred_grade >= MINING_GRADE_COUNT);
-    while (moved < n) {
-        int idx = -1;
-        if (!allow_any_grade)
-            idx = manifest_find_first_cg(&src->manifest, commodity, preferred_grade);
-        if (idx < 0) {
-            for (uint16_t i = 0; i < src->manifest.count; i++) {
-                if (src->manifest.units[i].commodity == (uint8_t)commodity) {
-                    if (delivery_cargo_bound_to_player(w, player_id,
-                                                       &src->manifest.units[i])) {
-                        continue;
-                    }
-                    idx = (int)i;
-                    break;
-                }
-            }
-        }
-        if (idx < 0) break;
-        if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
-        moved++;
-    }
-    return moved;
-}
-
-static int transfer_ship_to_station_by_commodity(world_t *w, int player_id,
-                                                 ship_t *src, station_t *dst,
-                                                 commodity_t commodity, int n) {
-    return transfer_ship_to_station_by_commodity_ex(w, player_id, src, dst, commodity,
-                                                    MINING_GRADE_COUNT, n);
-}
-
-static int transfer_ship_to_station_by_contract(world_t *w, int player_id,
+static int transfer_ship_to_station_by_contract(world_t *w, server_player_t *sp,
                                                 ship_t *src, station_t *dst,
                                                 const contract_t *contract,
                                                 int n) {
-    if (!src || !dst || !contract || n <= 0) return 0;
+    if (!w || !sp || !src || !dst || !contract || n <= 0) return 0;
     if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
     int moved = 0;
     while (moved < n) {
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (delivery_cargo_bound_to_player(w, player_id,
+            if (delivery_cargo_bound_to_player(w, sp->id,
                                                &src->manifest.units[i])) {
                 continue;
             }
@@ -2124,10 +2100,15 @@ static int transfer_ship_to_station_by_contract(world_t *w, int player_id,
                                                             &src->manifest.units[i]))) {
                 continue;
             }
+            cargo_legality_result_t legality =
+                classify_ship_manifest_unit_at_station(
+                    w, src, i, sp->current_station);
+            if (!cargo_legality_station_accepts(legality)) continue;
             idx = (int)i;
             break;
         }
         if (idx < 0) break;
+        debug_manifest_remove_site("contract", &src->manifest.units[idx]);
         if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
         moved++;
     }
@@ -2211,6 +2192,62 @@ static int manifest_find_top_sell_unit(world_t *w, int player_id,
         }
     }
     return top_idx;
+}
+
+static const cargo_receipt_chain_t *ship_receipt_chain_at(
+    const ship_t *ship, uint16_t index) {
+    const ship_receipts_t *receipts = ship_get_receipts_const(ship);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static cargo_legality_result_t classify_ship_manifest_unit_at_station(
+    const world_t *w, const ship_t *ship, uint16_t index, int station_index) {
+    cargo_legality_result_t result = {
+        .status = CARGO_LEGALITY_SUSPICIOUS,
+        .origin_station = -1,
+        .black_market_station = -1,
+    };
+    if (!w || !ship || !ship->manifest.units ||
+        index >= ship->manifest.count ||
+        station_index < 0 || station_index >= MAX_STATIONS) {
+        result.reasons = CARGO_LEGALITY_REASON_UNKNOWN_AUTHORITY;
+        return result;
+    }
+    return cargo_legality_classify(
+        w->stations, MAX_STATIONS, station_index, &ship->manifest.units[index],
+        ship_receipt_chain_at(ship, index));
+}
+
+static int transfer_ship_to_station_by_commodity_legal(
+    world_t *w, server_player_t *sp, station_t *dst,
+    commodity_t commodity, int n) {
+    if (!w || !sp || !dst || n <= 0) return 0;
+    if (!ship_manifest_bootstrap(&sp->ship) ||
+        !station_manifest_bootstrap(dst)) {
+        return 0;
+    }
+    int moved = 0;
+    while (moved < n) {
+        int idx = -1;
+        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
+            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+            if (unit->commodity != (uint8_t)commodity) continue;
+            if (delivery_cargo_bound_to_player(w, sp->id, unit)) continue;
+            cargo_legality_result_t legality =
+                classify_ship_manifest_unit_at_station(
+                    w, &sp->ship, i, sp->current_station);
+            if (legality.status == CARGO_LEGALITY_CONTRABAND) continue;
+            idx = (int)i;
+            break;
+        }
+        if (idx < 0) break;
+        if (!transfer_ship_unit_to_station(&sp->ship, dst, (uint16_t)idx))
+            break;
+        moved++;
+    }
+    return moved;
 }
 
 static bool is_finished_good(commodity_t c) {
@@ -2756,6 +2793,7 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
 
     float payout = 0.0f;
     bool sold_any = false;
+    bool sold_bound_any = false;
     while (true) {
         delivery_shipment_t *shipment = NULL;
         int idx = -1;
@@ -2774,10 +2812,19 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                 idx = (int)i;
                 break;
             }
+            cargo_legality_result_t legality =
+                classify_ship_manifest_unit_at_station(
+                    w, &sp->ship, i, sp->current_station);
+            if (legality.status == CARGO_LEGALITY_CONTRABAND &&
+                cargo_legality_station_accepts(legality)) {
+                idx = (int)i;
+                break;
+            }
         }
-        if (idx < 0 || !shipment) break;
+        if (idx < 0) break;
 
         cargo_unit_t unit = {0};
+        debug_manifest_remove_site("black_market", &sp->ship.manifest.units[idx]);
         if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
                                                    (uint16_t)idx, &unit)) {
             break;
@@ -2787,15 +2834,18 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
         if (unit_price <= 0.0f)
             unit_price = station_buy_price(st, c);
         payout += unit_price * DELIVERY_BLACK_MARKET_MARKDOWN;
-        shipment->quantity_black_market_sold++;
-        delivery_emit_default_memory(w, sp, st, shipment,
-                                     shipment->destination_payout);
-        shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
-        int ci = shipment->contract_index;
-        if (ci >= 0 && ci < MAX_CONTRACTS &&
-            w->contracts[ci].active &&
-            w->contracts[ci].action == CONTRACT_DELIVERY) {
-            w->contracts[ci].active = false;
+        if (shipment) {
+            shipment->quantity_black_market_sold++;
+            delivery_emit_default_memory(w, sp, st, shipment,
+                                         shipment->destination_payout);
+            shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
+            int ci = shipment->contract_index;
+            if (ci >= 0 && ci < MAX_CONTRACTS &&
+                w->contracts[ci].active &&
+                w->contracts[ci].action == CONTRACT_DELIVERY) {
+                w->contracts[ci].active = false;
+            }
+            sold_bound_any = true;
         }
         sync_ship_finished_cargo(&sp->ship, c);
         sync_station_finished_inventory(st, c);
@@ -2811,10 +2861,10 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                       .grade = (uint8_t)MINING_GRADE_COMMON,
                       .base_cr = (int)lroundf(payout),
                       .bonus_cr = 0,
-                      .by_contract = 1u }});
+                      .by_contract = sold_bound_any ? 1u : 0u }});
     }
     if (sold_any) {
-        SIM_LOG("[delivery] player %d black-market sold bound cargo for %.0f at %s\n",
+        SIM_LOG("[delivery] player %d black-market sold cargo for %.0f at %s\n",
                 sp->id, payout, st->name);
     }
     return payout;
@@ -2951,6 +3001,16 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     if (unit_idx < 0) return false;
 
     const cargo_unit_t *quoted = &sp->ship.manifest.units[unit_idx];
+    cargo_legality_result_t legality =
+        classify_ship_manifest_unit_at_station(
+            w, &sp->ship, (uint16_t)unit_idx, sp->current_station);
+    if (legality.status == CARGO_LEGALITY_CONTRABAND) {
+        if (cargo_legality_station_accepts(legality)) {
+            return delivery_try_black_market_sell(w, sp, st, commodity,
+                                                  grade, true) > 0.01f;
+        }
+        return false;
+    }
     mining_grade_t actual_grade = (mining_grade_t)quoted->grade;
     float price = station_buy_price(st, commodity);
     float mult = mining_payout_multiplier(actual_grade);
@@ -3069,7 +3129,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (deliver_units <= 0) continue;
         float price_per = contract_price(ct);
         uint16_t station_count_before = st->manifest.count;
-        int moved = transfer_ship_to_station_by_contract(w, sp->id, &sp->ship,
+        int moved = transfer_ship_to_station_by_contract(w, sp, &sp->ship,
                                                          st, ct, deliver_units);
         if (moved <= 0) continue;
         float bonus = manifest_grade_bonus_from_range(&st->manifest,
@@ -3117,9 +3177,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 if (accepted_units <= 0) continue;
                 float price = station_buy_price(st, buy);
                 uint16_t station_count_before = st->manifest.count;
-                int moved = transfer_ship_to_station_by_commodity(w, sp->id,
-                                                                  &sp->ship, st,
-                                                                  buy, accepted_units);
+                int moved = transfer_ship_to_station_by_commodity_legal(
+                    w, sp, st, buy, accepted_units);
                 if (moved <= 0) continue;
                 float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                               station_count_before,

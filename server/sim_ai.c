@@ -28,6 +28,7 @@
 #include "chain_log.h"
 #include "sha256.h"
 #include "station_authority.h"
+#include "cargo_legality.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3839,7 +3840,7 @@ static void npc_worker_write_trace(
     FILE *fp = npc_worker_trace_file();
     if (!fp || !w || !npc || !candidates || !scores || count <= 0) return;
     fprintf(fp,
-            "{\"schema\":\"signal.npc_worker_shadow.v1\","
+            "{\"schema\":\"signal.npc_worker_shadow.v2\","
             "\"tick\":%u,\"time\":%.3f,\"npc_slot\":%d,"
             "\"home_station\":%d,\"role\":\"%s\","
             "\"session_token\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
@@ -3868,6 +3869,17 @@ static void npc_worker_write_trace(
                 "{\"option\":\"%s\",\"score\":%.9g,"
                 "\"teacher_score\":%.9g,\"legal\":%s,\"travel\":%s,"
                 "\"self_upgrade\":%s,\"import_module\":%s,"
+                "\"policy_screening\":%s,\"black_market_station\":%s,"
+                "\"contraband_opportunity\":%s,"
+                "\"frontier_supply\":%s,\"escort\":%s,\"patrol\":%s,"
+                "\"risky_profit\":%s,"
+                "\"frontier_pressure\":%.3f,"
+                "\"route_success_memory\":%.3f,"
+                "\"route_danger_memory\":%.3f,"
+                "\"route_proof_memory\":%.3f,"
+                "\"provenance_pressure\":%.3f,"
+                "\"black_market_acceptance\":%.3f,"
+                "\"escort_bonus\":%.3f,\"convoy_bonus\":%.3f,"
                 "\"contract_value\":%.3f,\"credit_delta\":%.3f,"
                 "\"refit_progress\":%.3f}",
                 signal_npc_worker_option_name(c->option),
@@ -3877,6 +3889,21 @@ static void npc_worker_write_trace(
                 c->travel ? "true" : "false",
                 c->self_upgrade ? "true" : "false",
                 c->import_module ? "true" : "false",
+                c->policy_screening ? "true" : "false",
+                c->black_market_station ? "true" : "false",
+                c->contraband_opportunity ? "true" : "false",
+                c->frontier_supply ? "true" : "false",
+                c->escort ? "true" : "false",
+                c->patrol ? "true" : "false",
+                c->risky_profit ? "true" : "false",
+                c->frontier_pressure,
+                c->route_success_memory,
+                c->route_danger_memory,
+                c->route_proof_memory,
+                c->provenance_pressure,
+                c->black_market_acceptance,
+                c->escort_bonus,
+                c->convoy_bonus,
                 c->contract_value,
                 c->credit_delta,
                 c->refit_progress);
@@ -3909,6 +3936,50 @@ static float npc_worker_persona_byte(const npc_ship_t *npc, int idx) {
     return (float)npc->session_token[idx] / 255.0f;
 }
 
+static float npc_worker_frontier_pressure(const world_t *w, int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return 0.0f;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st)) return 0.0f;
+
+    float pressure = 0.0f;
+    station_construction_need_t need;
+    if (station_construction_material_need(st, &need)) {
+        pressure += clampf(need.remaining / fmaxf(1.0f, need.required),
+                           0.0f, 1.0f) * 0.65f;
+    }
+    if (st->placement_plan_count > 0)
+        pressure += clampf((float)st->placement_plan_count / 4.0f,
+                           0.0f, 1.0f) * 0.45f;
+    if (st->pending_scaffold_count > 0)
+        pressure += clampf((float)st->pending_scaffold_count / 4.0f,
+                           0.0f, 1.0f) * 0.30f;
+    if (st->planned) pressure += 0.20f;
+    station_demand_t demand = station_top_demand(st);
+    if (demand.severity > 0.0f)
+        pressure += clampf(demand.severity, 0.0f, 1.0f) * 0.25f;
+    return clampf(pressure, 0.0f, 1.0f);
+}
+
+static void npc_worker_fill_route_memory(signal_npc_worker_candidate_t *c,
+                                         const npc_ship_t *npc,
+                                         int source_station,
+                                         int dest_station,
+                                         commodity_t commodity) {
+    if (!c || !npc) return;
+    if (source_station < 0 || dest_station < 0) return;
+    float success = 0.0f;
+    float danger = 0.0f;
+    float proof = 0.0f;
+    npc_route_memory_factors(npc, source_station, dest_station, commodity,
+                             &success, &danger, &proof);
+    c->route_success_memory = success;
+    c->route_danger_memory = danger;
+    c->route_proof_memory = proof;
+    c->provenance_pressure = proof;
+    c->escort_bonus = danger * (0.35f + 0.35f * c->persona_risk);
+    c->convoy_bonus = fmaxf(success, proof) * 0.35f;
+}
+
 static signal_npc_worker_candidate_t npc_worker_base_candidate(
     const world_t *w,
     const npc_ship_t *npc,
@@ -3920,6 +3991,9 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
     c.option = SIGNAL_NPC_WORKER_OPTION_WAIT;
     c.role = npc ? npc->role : NPC_ROLE_MINER;
     c.home_station = npc ? npc->home_station : -1;
+    c.persona_risk = npc_worker_persona_byte(npc, 1);
+    c.persona_growth = npc_worker_persona_byte(npc, 3);
+    c.persona_patience = npc_worker_persona_byte(npc, 5);
     const ship_t *view = ship ? ship : (npc ? &npc->ship : NULL);
     if (view) {
         c.mining_level = view->mining_level;
@@ -3938,6 +4012,11 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
         c.home_has_frame_press = station_has_module(home, MODULE_FRAME_PRESS);
         c.home_has_laser_fab = station_has_module(home, MODULE_LASER_FAB);
         c.home_has_tractor_fab = station_has_module(home, MODULE_TRACTOR_FAB);
+        c.frontier_pressure = npc_worker_frontier_pressure(w, c.home_station);
+        c.policy_screening = cargo_legality_station_screens(home, c.home_station);
+        c.black_market_station =
+            cargo_legality_station_tolerates_contraband(home, c.home_station);
+        c.black_market_acceptance = c.black_market_station ? 1.0f : 0.0f;
         if (c.desired_commodity != COMMODITY_COUNT) {
             c.home_refit_stock =
                 (float)station_finished_count(home, c.desired_commodity);
@@ -3973,10 +4052,23 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
         c.best_contract_dest = -1;
         c.best_contract_commodity = COMMODITY_COUNT;
     }
+    if (haul_offer) {
+        npc_worker_fill_route_memory(&c, npc, haul_offer->source_station,
+                                     haul_offer->dest_station,
+                                     haul_offer->commodity);
+        if (w && haul_offer->dest_station >= 0 &&
+            haul_offer->dest_station < MAX_STATIONS) {
+            const station_t *dest = &w->stations[haul_offer->dest_station];
+            if (station_is_active(dest) &&
+                cargo_legality_station_tolerates_contraband(
+                    dest, haul_offer->dest_station)) {
+                c.black_market_acceptance =
+                    fmaxf(c.black_market_acceptance, 0.75f);
+                c.contraband_opportunity = true;
+            }
+        }
+    }
     c.mine_pressure = has_mine;
-    c.persona_risk = npc_worker_persona_byte(npc, 1);
-    c.persona_growth = npc_worker_persona_byte(npc, 3);
-    c.persona_patience = npc_worker_persona_byte(npc, 5);
     c.legal = true;
     return c;
 }
@@ -4004,7 +4096,8 @@ static bool npc_worker_score_assignment(world_t *w,
                                         const npc_job_offer_t *courier_offer,
                                         bool has_courier,
                                         const npc_job_offer_t *best) {
-    if (!signal_npc_worker_brain_loaded()) return false;
+    bool trace_enabled = npc_worker_trace_file() != NULL;
+    if (!signal_npc_worker_brain_loaded() && !trace_enabled) return false;
 
     signal_npc_worker_candidate_t candidates[SIGNAL_NPC_WORKER_OPTION_COUNT];
     double scores[SIGNAL_NPC_WORKER_OPTION_COUNT] = {0.0};
@@ -4048,6 +4141,10 @@ static bool npc_worker_score_assignment(world_t *w,
         candidates[count].route_km = courier_offer->route_cost / 1000.0f;
         candidates[count].contract_value = courier_offer->value;
         candidates[count].teacher_score = courier_offer->score;
+        npc_worker_fill_route_memory(&candidates[count], npc,
+                                     courier_offer->source_station,
+                                     courier_offer->dest_station,
+                                     courier_offer->commodity);
         count++;
     }
 
@@ -4079,12 +4176,70 @@ static bool npc_worker_score_assignment(world_t *w,
         }
     }
 
+    if (base.frontier_pressure > 0.05f) {
+        candidates[count] = base;
+        candidates[count].option = SIGNAL_NPC_WORKER_OPTION_SUPPLY_FRONTIER;
+        candidates[count].role = NPC_ROLE_HAULER;
+        candidates[count].travel = true;
+        candidates[count].frontier_supply = true;
+        candidates[count].credit_delta = 120.0f + base.frontier_pressure * 380.0f;
+        candidates[count].contract_value = candidates[count].credit_delta;
+        candidates[count].cargo_moved =
+            fmaxf(1.0f, base.frontier_pressure * 8.0f);
+        candidates[count].teacher_score =
+            0.35f + base.frontier_pressure * (1.10f + base.persona_growth * 0.35f);
+        count++;
+    }
+
+    if (haul_offer && base.route_danger_memory > 0.03f) {
+        candidates[count] = base;
+        candidates[count].option = SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY;
+        candidates[count].role = NPC_ROLE_HAULER;
+        candidates[count].travel = true;
+        candidates[count].escort = true;
+        candidates[count].contract_value = haul_offer->value;
+        candidates[count].credit_delta =
+            haul_offer->value * (0.20f + base.route_danger_memory * 0.45f);
+        candidates[count].teacher_score =
+            0.22f + base.route_danger_memory * (0.90f + base.persona_risk * 0.45f);
+        count++;
+    }
+
+    if (base.route_danger_memory > 0.08f) {
+        candidates[count] = base;
+        candidates[count].option = SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE;
+        candidates[count].role = NPC_ROLE_HAULER;
+        candidates[count].travel = true;
+        candidates[count].patrol = true;
+        candidates[count].credit_delta =
+            60.0f + base.route_danger_memory * 260.0f;
+        candidates[count].contract_value = candidates[count].credit_delta;
+        candidates[count].teacher_score =
+            0.18f + base.route_danger_memory * (0.80f + base.persona_patience * 0.25f);
+        count++;
+    }
+
+    if (base.black_market_acceptance > 0.0f || base.contraband_opportunity) {
+        candidates[count] = base;
+        candidates[count].option = SIGNAL_NPC_WORKER_OPTION_TAKE_RISKY_PROFIT;
+        candidates[count].role = NPC_ROLE_HAULER;
+        candidates[count].travel = true;
+        candidates[count].risky_profit = true;
+        candidates[count].contract_value =
+            haul_offer ? haul_offer->value * 1.25f : 160.0f;
+        candidates[count].credit_delta = candidates[count].contract_value;
+        candidates[count].teacher_score =
+            0.28f + base.black_market_acceptance * (0.85f + base.persona_risk * 0.45f);
+        count++;
+    }
+
     int selected = signal_npc_worker_brain_choose_with_scores(
         candidates, count, scores, SIGNAL_NPC_WORKER_OPTION_COUNT);
     double margin = npc_worker_selected_margin(scores, count, selected);
     npc_worker_brain_mode_t mode = npc_worker_brain_mode();
     bool activated = false;
     if (selected >= 0 && selected < count &&
+        signal_npc_worker_brain_loaded() &&
         mode != NPC_WORKER_BRAIN_MODE_SHADOW &&
         candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
         margin + 1.0e-9 >= npc_worker_activation_margin_threshold()) {
