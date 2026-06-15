@@ -738,6 +738,7 @@ int world_station_stored_hull_count(const world_t *w, int station_idx,
                                     hull_class_t hull_class);
 bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp);
 bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot);
+bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot);
 bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
 int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
 bool shipyard_queue_station_hull_request(world_t *w, int requester_station,

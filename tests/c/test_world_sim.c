@@ -210,6 +210,60 @@ TEST(test_player_init_ignores_foreign_bound_asset) {
     ASSERT_EQ_INT(claimed->operator_slot, 0);
 }
 
+TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *src = &w.players[0];
+    server_player_t *dst = &w.players[1];
+    src->id = 0;
+    dst->id = 1;
+    player_init_ship(src, &w);
+    player_init_ship(dst, &w);
+    uint32_t src_asset_id = src->ship_asset_id;
+    uint32_t dst_asset_id = dst->ship_asset_id;
+    ASSERT(src_asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT(dst_asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT(src_asset_id != dst_asset_id);
+    int asset_count_before = test_active_ship_asset_count(&w);
+
+    src->current_station = 1;
+    src->nearby_station = 1;
+    src->docked = true;
+    src->in_dock_range = true;
+    src->docking_approach = true;
+    src->dock_berth = 2;
+    src->ship.hull = 42.0f;
+    src->ship.angle = 1.25f;
+
+    ASSERT(world_player_transfer_ship_state(&w, 1, 0));
+
+    ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
+    ASSERT_EQ_INT(src->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT_EQ_INT(dst->ship_asset_id, src_asset_id);
+    ASSERT_EQ_INT(dst->current_station, 1);
+    ASSERT_EQ_INT(dst->nearby_station, 1);
+    ASSERT(dst->docked);
+    ASSERT(dst->in_dock_range);
+    ASSERT(dst->docking_approach);
+    ASSERT_EQ_INT(dst->dock_berth, 2);
+    ASSERT_EQ_FLOAT(dst->ship.hull, 42.0f, 0.001f);
+    ASSERT_EQ_FLOAT(dst->ship.angle, 1.25f, 0.001f);
+
+    const ship_asset_t *moved = world_ship_asset_by_id_const(&w, src_asset_id);
+    ASSERT(moved != NULL);
+    ASSERT_EQ_INT(moved->status, SHIP_ASSET_STATUS_ASSIGNED);
+    ASSERT_EQ_INT(moved->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
+    ASSERT_EQ_INT(moved->operator_slot, 1);
+    ASSERT_EQ_INT(moved->custody_station, 1);
+    ASSERT_EQ_FLOAT(moved->ship.hull, 42.0f, 0.001f);
+
+    const ship_asset_t *released = world_ship_asset_by_id_const(&w, dst_asset_id);
+    ASSERT(released != NULL);
+    ASSERT_EQ_INT(released->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(released->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT_EQ_INT(released->operator_slot, -1);
+}
+
 TEST(test_player_init_ship_null_context_safe) {
     WORLD_DECL;
     world_reset(&w);
@@ -6010,6 +6064,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_claims_station_loaner_asset);
     RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ignores_foreign_bound_asset);
+    RUN(test_player_reconnect_transfer_moves_ship_asset_binding);
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);

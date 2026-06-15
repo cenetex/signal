@@ -1094,12 +1094,7 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
     if (existing >= 0 && existing != pid) {
         server_player_t *old = &world.players[existing];
         if (memcmp(old->session_token, sp->session_token, 8) != 0) {
-            if (ship_copy(&sp->ship, &old->ship)) {
-                sp->current_station = old->current_station;
-                sp->nearby_station = old->nearby_station;
-                sp->docked = old->docked;
-                sp->in_dock_range = old->in_dock_range;
-
+            if (world_player_transfer_ship_state(&world, pid, existing)) {
                 uint8_t old_pseudo[32] = {0};
                 uint8_t new_pseudo[32] = {0};
                 memcpy(old_pseudo, old->session_token, 8);
@@ -1989,11 +1984,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 /* Reattach: copy state from grace slot to new slot */
                 server_player_t *old = &world.players[reattach];
                 server_player_t *sp = &world.players[pid];
-                if (!ship_copy(&sp->ship, &old->ship)) break;
-                sp->current_station = old->current_station;
-                sp->nearby_station = old->nearby_station;
-                sp->docked = old->docked;
-                sp->in_dock_range = old->in_dock_range;
+                if (!world_player_transfer_ship_state(&world, pid, reattach))
+                    break;
                 memcpy(sp->session_token, token, 8);
                 sp->session_ready = true;
                 /* Clear the grace slot and broadcast LEAVE so clients drop the ghost */
