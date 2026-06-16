@@ -95,6 +95,14 @@ static void npc_emit_route_danger_memory(world_t *w,
                                          npc_ship_t *npc,
                                          float damage,
                                          uint8_t cause);
+static commodity_t npc_primary_finished_cargo(const npc_ship_t *npc,
+                                              const ship_t *ship);
+static float npc_route_reputation_strength(const npc_ship_t *npc,
+                                           int source_station,
+                                           int dest_station,
+                                           commodity_t commodity);
+static float npc_route_safety_damage_multiplier(const npc_ship_t *npc,
+                                                const ship_t *ship);
 
 void frontier_virtual_pilots_set(world_t *w, int count) {
     if (!w) return;
@@ -1344,17 +1352,19 @@ void apply_npc_ship_damage_attributed(world_t *w, int npc_slot, float dmg,
     npc_ship_t *npc = &w->npc_ships[npc_slot];
     if (!npc->active) return;
     ship_t *s = npc_ship_for(w, npc_slot);
+    float effective_dmg = dmg * npc_route_safety_damage_multiplier(npc, s);
+    if (effective_dmg <= 0.0f) return;
     float prev_hull;
     if (!s) {
         prev_hull = npc->hull;
-        npc->hull -= dmg;
+        npc->hull -= effective_dmg;
         if (npc->hull < 0.0f) npc->hull = 0.0f;
     } else {
         prev_hull = s->hull;
-        s->hull -= dmg;
+        s->hull -= effective_dmg;
         if (s->hull < 0.0f) s->hull = 0.0f;
     }
-    npc_emit_route_danger_memory(w, npc, dmg, cause);
+    npc_emit_route_danger_memory(w, npc, effective_dmg, cause);
     /* Kill-feed: emit only on the lethal blow, only if attributed. */
     if (prev_hull > 0.0f) {
         float new_hull = s ? s->hull : npc->hull;
@@ -2228,6 +2238,49 @@ static float npc_route_memory_strength(const market_memory_t *memory,
     float strength = confidence * salience;
     if (generic_route) strength *= 0.55f;
     return strength;
+}
+
+static float npc_route_reputation_strength(const npc_ship_t *npc,
+                                           int source_station,
+                                           int dest_station,
+                                           commodity_t commodity) {
+    if (!npc) return 0.0f;
+    float best = 0.0f;
+    int count = npc->knowledge.count;
+    if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
+    for (int i = 0; i < count; i++) {
+        market_memory_t memory;
+        if (!market_memory_from_knowledge_item(&npc->knowledge.items[i],
+                                               &memory)) {
+            continue;
+        }
+        if (memory.memory_kind != (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION)
+            continue;
+        float strength = npc_route_memory_strength(&memory, source_station,
+                                                   dest_station, commodity);
+        if (strength > best) best = strength;
+    }
+    return best;
+}
+
+static float npc_route_safety_damage_multiplier(const npc_ship_t *npc,
+                                                const ship_t *ship) {
+    if (!npc || npc->role != NPC_ROLE_HAULER) return 1.0f;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS)
+        return 1.0f;
+    if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS)
+        return 1.0f;
+    commodity_t cargo = npc_primary_finished_cargo(npc, ship);
+    if (cargo < COMMODITY_RAW_ORE_COUNT || cargo >= COMMODITY_COUNT)
+        return 1.0f;
+
+    float proof = npc_route_reputation_strength(npc,
+                                                npc->home_station,
+                                                npc->dest_station,
+                                                cargo);
+    if (proof <= 0.0f) return 1.0f;
+    float reduction = clampf(proof * 0.35f, 0.0f, 0.45f);
+    return clampf(1.0f - reduction, 0.55f, 1.0f);
 }
 
 static void npc_route_memory_factors(const npc_ship_t *npc,

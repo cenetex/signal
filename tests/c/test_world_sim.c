@@ -5764,6 +5764,53 @@ TEST(test_hauler_damage_emits_route_danger_memory) {
     ASSERT_EQ_INT(risk.quantity_hint, 1);
 }
 
+TEST(test_route_reputation_reduces_hauler_damage) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    int slot = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(slot >= 0);
+    npc_ship_t *npc = &w.npc_ships[slot];
+    npc->role = NPC_ROLE_HAULER;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->cargo[COMMODITY_FERRITE_INGOT] = 1.0f;
+    memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    market_memory_t patrol = {0};
+    ASSERT(market_memory_from_route_reputation(0, 1,
+                                               COMMODITY_FERRITE_INGOT,
+                                               8,
+                                               180.0f,
+                                               42,
+                                               false,
+                                               &patrol));
+    knowledge_item_t item;
+    ASSERT(knowledge_item_from_market_memory(&patrol, &item));
+    knowledge_view_insert(&npc->knowledge, &item);
+
+    ship_t *ship = world_npc_ship_for(&w, slot);
+    ASSERT(ship != NULL);
+    ship->hull = 100.0f;
+    apply_npc_ship_damage_attributed(&w, slot, 20.0f, NULL,
+                                     DEATH_CAUSE_ASTEROID);
+
+    ASSERT(ship->hull > 80.0f);
+    ASSERT(ship->hull < 100.0f);
+
+    market_memory_t danger = {0};
+    ASSERT(test_view_has_market_memory(&npc->knowledge,
+                                       (uint8_t)MARKET_MEMORY_ROUTE_DANGER,
+                                       1, 0,
+                                       (uint8_t)COMMODITY_FERRITE_INGOT,
+                                       &danger));
+    ASSERT(danger.quantity_hint < 20);
+    ASSERT(danger.quantity_hint >= 12);
+}
+
 TEST(test_legacy_hauler_brain_mode_upgrades_before_assignment) {
     WORLD_DECL;
     world_reset(&w);
@@ -6925,6 +6972,7 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_neural_worker_market_hnn_pool_decays_when_idle);
     RUN(test_neural_npc_assignment_preserves_hauler_hull_for_ore_work);
     RUN(test_hauler_damage_emits_route_danger_memory);
+    RUN(test_route_reputation_reduces_hauler_damage);
     RUN(test_legacy_hauler_brain_mode_upgrades_before_assignment);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
     RUN(test_miner_drops_fragment_without_matching_smelt_endpoint);
