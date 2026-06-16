@@ -1480,6 +1480,10 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
 
     station_t *prospect = &w.stations[0];
     station_t *helios = &w.stations[2];
+    int helios_to_prospect_before =
+        station_faction_relation_to(helios, prospect->faction_id);
+    int prospect_to_helios_before =
+        station_faction_relation_to(prospect, helios->faction_id);
     ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 3));
     ASSERT(test_set_station_finished_units(helios, COMMODITY_FERRITE_INGOT, 0));
     prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -1544,6 +1548,10 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     ASSERT_EQ_INT(shipment->quantity_delivered, 2);
     ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
     ASSERT(w.contracts[0].active);
+    ASSERT(station_faction_relation_to(helios, prospect->faction_id) >
+           helios_to_prospect_before);
+    ASSERT(station_faction_relation_to(prospect, helios->faction_id) >
+           prospect_to_helios_before);
     market_memory_t receipt = {0};
     ASSERT(test_view_has_market_memory(&helios->knowledge,
                                        (uint8_t)MARKET_MEMORY_DELIVERY_RECEIPT,
@@ -1685,6 +1693,10 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     pirate->modules[0] = (station_module_t){ .type = MODULE_DOCK };
     pirate->base_price[COMMODITY_FERRITE_INGOT] = 18.0f;
     ASSERT(station_manifest_bootstrap(pirate));
+    int helios_to_pirate_before =
+        station_faction_relation_to(helios, pirate->faction_id);
+    int pirate_to_helios_before =
+        station_faction_relation_to(pirate, helios->faction_id);
 
     ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 1));
     prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -1746,6 +1758,10 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
                     prospect_after_pickup, 0.001f);
     ASSERT(!w.contracts[0].active);
+    ASSERT(station_faction_relation_to(helios, pirate->faction_id) <
+           helios_to_pirate_before);
+    ASSERT(station_faction_relation_to(pirate, helios->faction_id) <
+           pirate_to_helios_before);
     ASSERT(test_view_has_market_memory(&helios->knowledge,
                                        (uint8_t)MARKET_MEMORY_STATION_RISK,
                                        2, 0xff,

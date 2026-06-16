@@ -130,6 +130,24 @@ static inline int station_faction_relation_to(const station_t *st,
     return st->faction_relations[other_faction];
 }
 
+static inline int station_faction_adjust_relation_to(station_t *st,
+                                                     uint8_t other_faction,
+                                                     int delta)
+{
+    if (!st || other_faction >= (uint8_t)STATION_FACTION_COUNT) return 0;
+    if (st->faction_id >= (uint8_t)STATION_FACTION_COUNT) return 0;
+    if (st->faction_id == other_faction &&
+        st->faction_id != (uint8_t)STATION_FACTION_UNALIGNED) {
+        st->faction_relations[other_faction] = 100;
+        return 100;
+    }
+    int relation = st->faction_relations[other_faction] + delta;
+    if (relation > 100) relation = 100;
+    if (relation < -100) relation = -100;
+    st->faction_relations[other_faction] = (int8_t)relation;
+    return relation;
+}
+
 static inline int station_faction_relation_between(const station_t *from,
                                                    const station_t *to)
 {

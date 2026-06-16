@@ -2365,6 +2365,15 @@ static void delivery_emit_receipt_memory(world_t *w,
                                          float payout) {
     if (!w || !sp || !dest || !shipment) return;
     if (shipment->quantity_delivered == 0) return;
+    if (shipment->origin_station < MAX_STATIONS) {
+        station_t *origin = &w->stations[shipment->origin_station];
+        if (origin != dest && station_exists(origin)) {
+            station_faction_adjust_relation_to(
+                dest, origin->faction_id, 1);
+            station_faction_adjust_relation_to(
+                origin, dest->faction_id, 1);
+        }
+    }
     market_memory_t memory = {0};
     if (!market_memory_from_delivery_receipt(
             shipment->origin_station,
@@ -2455,7 +2464,14 @@ static void delivery_emit_default_memory(world_t *w,
                                        shipment->destination_station,
                                        commodity);
     }
-    if (observer && observer != dest && station_exists(observer)) {
+    if (observer && observer != dest && station_exists(observer) &&
+        station_exists(dest)) {
+        if (station_faction_is_pirate_economy(observer)) {
+            station_faction_adjust_relation_to(
+                dest, observer->faction_id, -5);
+            station_faction_adjust_relation_to(
+                observer, dest->faction_id, -2);
+        }
         knowledge_view_configure(&observer->knowledge, STATION_KNOWN_ITEM_CAP);
         knowledge_view_reinforce_station_trust(&observer->knowledge, &risk);
         knowledge_view_forget_contract(&observer->knowledge,
