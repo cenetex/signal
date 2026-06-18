@@ -207,6 +207,31 @@ static void hud_set_grade_color(uint8_t grade) {
     sdtx_color3b(r, g0, b);
 }
 
+static const char *hud_asteroid_usefulness(const asteroid_t *a) {
+    static char label[64];
+    label[0] = '\0';
+    if (!a || !a->active) return NULL;
+
+    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
+        const contract_t *ct = &g.world.contracts[g.tracked_contract];
+        if (ct->active &&
+            contract_fit_is_ok(contract_fit_asteroid(ct, a))) {
+            const char *station = (ct->station_index < MAX_STATIONS)
+                ? station_short_name(ct->station_index) : "station";
+            snprintf(label, sizeof(label), "fits %s work", station);
+            return label;
+        }
+    }
+
+    if (a->tier == ASTEROID_TIER_S &&
+        a->grade >= (uint8_t)MINING_GRADE_RARE) {
+        snprintf(label, sizeof(label), "%s grade",
+                 mining_grade_label((mining_grade_t)a->grade));
+        return label;
+    }
+    return NULL;
+}
+
 static const NetPlayerState *hud_net_player_state(int idx) {
     if (!g.multiplayer_enabled || idx < 0 || idx >= NET_MAX_PLAYERS)
         return NULL;
@@ -241,6 +266,7 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.tier = (int)a->tier;
         out.commodity = (int)a->commodity;
         out.grade = (int)a->grade;
+        out.str_a = hud_asteroid_usefulness(a);
         return out;
     }
     /* Scan results take precedence over towing/fragments — the player
@@ -282,6 +308,16 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.int_a = LOCAL_PLAYER.ship.towed_count;
         out.int_b = LOCAL_PLAYER.ship.tractor_active ? 1 : 0;
         out.grade = (int)hud_best_towed_fragment_grade();
+        for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+            int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+            if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+            const asteroid_t *a = &g.world.asteroids[idx];
+            const char *why = hud_asteroid_usefulness(a);
+            if (why) {
+                out.str_a = why;
+                break;
+            }
+        }
         return out;
     }
     if (LOCAL_PLAYER.nearby_fragments > 0) {
@@ -332,10 +368,17 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "%s CONSOLE", dock_role);
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        snprintf(out, out_size, "TGT %s // %s // %d HP",
-                 asteroid_tier_name((asteroid_tier_t)a->tier),
-                 commodity_code((commodity_t)a->commodity),
-                 a->int_a);
+        if (a->str_a) {
+            snprintf(out, out_size, "TGT %s // %s // %s",
+                     asteroid_tier_name((asteroid_tier_t)a->tier),
+                     commodity_code((commodity_t)a->commodity),
+                     a->str_a);
+        } else {
+            snprintf(out, out_size, "TGT %s // %s // %d HP",
+                     asteroid_tier_name((asteroid_tier_t)a->tier),
+                     commodity_code((commodity_t)a->commodity),
+                     a->int_a);
+        }
         return;
     case HUD_ACTION_SCAN_MODULE:
         if (a->str_b) snprintf(out, out_size, "SCAN %s // %s", a->str_a, a->str_b);
@@ -353,7 +396,8 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "MINING... // CLAIM WINDOW");
         return;
     case HUD_ACTION_TOWING:
-        if (a->int_b) snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
+        if (a->str_a) snprintf(out, out_size, "TOWING %d // %s", a->int_a, a->str_a);
+        else if (a->int_b) snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
         else          snprintf(out, out_size, "TOWING %d // tap [Space] release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
@@ -392,10 +436,17 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
                  current_station ? station_role_name(current_station) : "Station");
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        snprintf(out, out_size, "Target %s // %s // %d hp",
-                 asteroid_tier_kind((asteroid_tier_t)a->tier),
-                 commodity_short_name((commodity_t)a->commodity),
-                 a->int_a);
+        if (a->str_a) {
+            snprintf(out, out_size, "Target %s // %s // %s",
+                     asteroid_tier_kind((asteroid_tier_t)a->tier),
+                     commodity_short_name((commodity_t)a->commodity),
+                     a->str_a);
+        } else {
+            snprintf(out, out_size, "Target %s // %s // %d hp",
+                     asteroid_tier_kind((asteroid_tier_t)a->tier),
+                     commodity_short_name((commodity_t)a->commodity),
+                     a->int_a);
+        }
         return;
     case HUD_ACTION_SCAN_MODULE:
         if (a->str_b) snprintf(out, out_size, "Scan %s // %s", a->str_a, a->str_b);
@@ -416,7 +467,8 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         snprintf(out, out_size, "Mining... // claim window");
         return;
     case HUD_ACTION_TOWING:
-        if (a->int_b) snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
+        if (a->str_a) snprintf(out, out_size, "Towing %d // %s", a->int_a, a->str_a);
+        else if (a->int_b) snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
         else          snprintf(out, out_size, "Towing %d // tap [Space] to release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
@@ -639,9 +691,15 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
     char latency[80];
     hud_format_region_label(region, sizeof(region));
     hud_format_latency_label(latency, sizeof(latency));
-    snprintf(segment, sizeof(segment),
-             "ALPHA // v%s // region %s // %s // frequent server resets // ",
-             client_hash, region, latency);
+    if (g.multiplayer_enabled) {
+        snprintf(segment, sizeof(segment),
+                 "ALPHA // v%s // %s // %s // resets possible // ",
+                 client_hash, region, latency);
+    } else {
+        snprintf(segment, sizeof(segment),
+                 "ALPHA // v%s // solo // %s // ",
+                 client_hash, latency);
+    }
     int seg_len = (int)strlen(segment);
     int pos = 0;
     while (pos < cols && pos < (int)sizeof(banner) - 1) {
@@ -1404,10 +1462,19 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     float bg_h = 76.0f;
 
     int cycle = (int)floorf(g.world.time / 0.85f);
-    int row_idx = hud_inspect_ticker_pick_row(snap, cycle);
+    InspectJobCause cause;
+    bool has_job = inspect_label_find_job_cause(snap, &cause);
+    const NetInspectSnapshotRow *job = has_job ? cause.job : NULL;
+
+    int row_idx = has_job ? -1 : hud_inspect_ticker_pick_row(snap, cycle);
     char memory[96];
     ui_clarity_t clarity = hud_job_clarity(NULL);
-    if (row_idx >= 0) {
+    if (job) {
+        clarity = hud_job_clarity(job);
+        char why[48];
+        hud_job_reason_label(job, why, sizeof(why));
+        snprintf(memory, sizeof(memory), "%s", why);
+    } else if (row_idx >= 0) {
         hud_inspect_ticker_row_label(snap, &snap->rows[row_idx],
                                      memory, sizeof(memory), &clarity);
     } else {
@@ -1452,22 +1519,57 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
         ? g.world.stations[snap->home_station].name : "?";
     const char *dest = (snap->dest_station < MAX_STATIONS)
         ? g.world.stations[snap->dest_station].name : "?";
-    sdtx_printf("%s %s  %.10s > %.10s",
-                hud_npc_role_label(snap->role),
-                hud_npc_state_label(snap->state),
-                home, dest);
+    if (job) {
+        uint8_t commodity = (uint8_t)((job->event_id >> 24) & 0xFFu);
+        const char *comm = (commodity < COMMODITY_COUNT)
+            ? commodity_short_name((commodity_t)commodity) : "work";
+        sdtx_printf("%s %s  %s",
+                    hud_npc_role_label(snap->role),
+                    hud_npc_state_label(snap->state),
+                    comm);
+    } else {
+        sdtx_printf("%s %s  %.10s > %.10s",
+                    hud_npc_role_label(snap->role),
+                    hud_npc_state_label(snap->state),
+                    home, dest);
+    }
 
     sdtx_pos(px / cell, (py + 32.0f) / cell);
-    sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
-    sdtx_printf("%c MEMORY", stream);
+    sdtx_color3b(job ? clarity.fg[0] : clarity.dim[0],
+                 job ? clarity.fg[1] : clarity.dim[1],
+                 job ? clarity.fg[2] : clarity.dim[2]);
+    if (job) {
+        uint8_t source_idx = (uint8_t)(job->event_id & 0xFFu);
+        uint8_t dest_idx = (uint8_t)((job->event_id >> 8) & 0xFFu);
+        const char *job_source = (source_idx < MAX_STATIONS)
+            ? g.world.stations[source_idx].name : home;
+        const char *job_dest = (dest_idx < MAX_STATIONS)
+            ? g.world.stations[dest_idx].name : dest;
+        sdtx_printf("route %.10s > %.10s", job_source, job_dest);
+    } else {
+        sdtx_printf("%c MEMORY", stream);
+    }
 
     sdtx_pos(px / cell, (py + 46.0f) / cell);
-    sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
+    sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
     sdtx_puts(memory_seen);
 
     sdtx_pos(px / cell, (py + 60.0f) / cell);
     sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
-    sdtx_printf("%s %s", clarity.meter, clarity.word);
+    if (job) {
+        char source_chain[72];
+        if (hud_job_source_chain_label(job, source_chain, sizeof(source_chain))) {
+            char source_seen[72];
+            ui_clarity_degrade_text(source_chain, clarity.clarity,
+                                    (uint32_t)(job->event_id & 0xffffffffu),
+                                    source_seen, sizeof(source_seen));
+            sdtx_printf("%s", source_seen);
+        } else {
+            sdtx_printf("%s %s", clarity.meter, clarity.word);
+        }
+    } else {
+        sdtx_printf("%s %s", clarity.meter, clarity.word);
+    }
 }
 
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
@@ -2027,18 +2129,36 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
 
 static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float sig_quality) {
     if (LOCAL_PLAYER.docked) return;
-    if (sig_quality >= 0.01f) return;
     if (g.death_screen_timer > 0.0f || g.death_cinematic.active) return;
+
+    bool lost = sig_quality < 0.01f;
+    bool low = sig_quality < SIGNAL_BAND_OPERATIONAL;
+    if (!lost && !low) return;
+
     float blink = sinf(g.world.time * 3.0f);
-    if (blink <= 0.0f) return;
+    if (lost && blink <= 0.0f) return;
 
     float cell = 8.0f;
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
-    uint8_t ba = (uint8_t)(blink * 200.0f);
-    sdtx_color4b(255, 70, 50, ba);
+    if (lost) {
+        uint8_t ba = (uint8_t)(blink * 200.0f);
+        sdtx_color4b(255, 70, 50, ba);
+        sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.40f) / cell, cell,
+                           "[ SIGNAL LOST ]");
+        return;
+    }
+
+    float urgency = 1.0f - clampf(sig_quality / SIGNAL_BAND_OPERATIONAL,
+                                  0.0f, 1.0f);
+    uint8_t alpha = (uint8_t)(90.0f + urgency * 110.0f);
+    int ctrl_pct = (int)lroundf(signal_control_scale(sig_quality) * 100.0f);
+    const uint8_t frontier_rgb[3] = { PAL_SIGNAL_FRONTIER };
+    sdtx_color4b(frontier_rgb[0], frontier_rgb[1], frontier_rgb[2], alpha);
+    char text[64];
+    snprintf(text, sizeof(text), "[ LOW SIGNAL -- CTRL %d%% ]", ctrl_pct);
     sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.40f) / cell, cell,
-                       "[ SIGNAL LOST ]");
+                       text);
 }
 
 /* Render the post-classify shared panels common to compact + wide.
