@@ -501,6 +501,89 @@ static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
     snprintf(out, cap, "%.*s...", (int)(limit - 3), src);
 }
 
+static bool ui_local_player_pubkey(uint8_t out[32]) {
+    if (!out) return false;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return false;
+    if (g.multiplayer_enabled) {
+        memset(out, 0, 32);
+        return false;
+    }
+    client_session_pseudo_pubkey(
+        g.world.players[g.local_player_slot].session_token, out);
+    return true;
+}
+
+static bool ui_station_balance_for_pubkey(int station_idx,
+                                          const uint8_t pubkey[32],
+                                          float *out)
+{
+    if (out) *out = 0.0f;
+    if (!pubkey || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_exists(st)) return false;
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) == 0) {
+            if (out) *out = st->ledger[i].balance;
+            return true;
+        }
+    }
+    return false;
+}
+
+static int ui_build_ledger_strip(int current_station,
+                                 char *out,
+                                 size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+
+    const station_t *cur = (current_station >= 0 && current_station < MAX_STATIONS)
+        ? &g.world.stations[current_station] : NULL;
+    if (!cur || !station_exists(cur)) return 0;
+
+    char cur_name[16], cur_cur[8];
+    ui_station_name_short(current_station, cur_name, sizeof(cur_name));
+    ui_station_currency_short(cur, cur_cur, sizeof(cur_cur));
+    int cur_bal = (int)lroundf(player_current_balance());
+
+    int written = snprintf(out, cap, "%s %d %s", cur_name, cur_bal, cur_cur);
+    if (written < 0) {
+        out[0] = '\0';
+        return 0;
+    }
+    size_t used = (size_t)written < cap ? (size_t)written : cap - 1;
+    int rows = 1;
+
+    if (g.multiplayer_enabled)
+        return rows;
+
+    uint8_t pubkey[32];
+    if (!ui_local_player_pubkey(pubkey))
+        return rows;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (s == current_station) continue;
+        float bal = 0.0f;
+        if (!ui_station_balance_for_pubkey(s, pubkey, &bal)) continue;
+        if (fabsf(bal) < 0.5f) continue;
+        char name[16], cur_short[8], piece[48];
+        ui_station_name_short(s, name, sizeof(name));
+        ui_station_currency_short(&g.world.stations[s], cur_short,
+                                  sizeof(cur_short));
+        snprintf(piece, sizeof(piece), "   %s %d %s",
+                 name, (int)lroundf(bal), cur_short);
+        size_t need = strlen(piece);
+        if (used + need >= cap) break;
+        memcpy(out + used, piece, need + 1);
+        used += need;
+        rows++;
+        if (rows >= 4) break;
+    }
+    return rows;
+}
+
 /* ====================================================================
  * STATION DOCKED UI — redesigned (#redesign)
  *
@@ -627,12 +710,15 @@ static void draw_header_band(const station_ui_state_t *ui,
         }
     }
 
-    /* Line 3: ticker if present; otherwise station political identity. */
+    /* Line 3: current + known station-local balances. If there are no
+     * cross-station balances yet, fall back to ticker/political identity. */
     {
         const signal_channel_t *ch = &g.world.signal_channel;
         char line[200];
-        bool have_line = false;
-        if (ch->count > 0) {
+        bool have_line = ui_build_ledger_strip(
+            LOCAL_PLAYER.current_station, line, sizeof(line)) > 1;
+        bool ledger_line = have_line;
+        if (!have_line && ch->count > 0) {
             int slot_idx = ch->count - 1;
             int start = (ch->head - ch->count + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
             int slot = (start + slot_idx) % SIGNAL_CHANNEL_CAPACITY;
@@ -657,7 +743,10 @@ static void draw_header_band(const station_ui_state_t *ui,
             int line_chars = (int)floorf((panel_x + panel_w - right_margin - left_x) / cell_w);
             char line_fit[200];
             ui_fit_text(line, line_chars, line_fit, sizeof(line_fit));
-            sdtx_color3b(PAL_TEXT_FADED);
+            if (ledger_line)
+                sdtx_color3b(PAL_STATION_HINT);
+            else
+                sdtx_color3b(PAL_TEXT_FADED);
             sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L3));
             sdtx_puts(line_fit);
         }
@@ -751,6 +840,18 @@ static void draw_row_lr(float cx, float my, float inner_right,
         sdtx_pos(ui_text_pos(right_x), ui_text_pos(my));
         sdtx_puts(right_draw);
     }
+}
+
+static bool station_row_has_room(float my, float row_h, float content_bottom)
+{
+    return my + row_h <= content_bottom;
+}
+
+static void draw_more_rows_hint(float cx, float my, const char *label)
+{
+    sdtx_color3b(PAL_TEXT_FADED);
+    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+    sdtx_puts(label ? label : "more rows hidden");
 }
 
 /* Cell-grid row: writes each field at a fixed column offset (in chars)
@@ -1540,7 +1641,7 @@ static const uint8_t *contract_panel_type_color(const contract_t *ct)
 static const char *station_gossip_sentence_prefix(uint8_t kind)
 {
     switch ((market_memory_kind_t)kind) {
-    case MARKET_MEMORY_DEMAND:             return "wanted";
+    case MARKET_MEMORY_DEMAND:             return "needs";
     case MARKET_MEMORY_SUPPLY:             return "stock";
     case MARKET_MEMORY_ROUTE_DANGER:       return "danger";
     case MARKET_MEMORY_ROUTE_SUCCESS:      return "route";
@@ -1651,9 +1752,14 @@ static float draw_station_gossip_rows(const station_t *st,
                                 commodity_seen, sizeof(commodity_seen));
         char left[48];
         char right[48];
-        snprintf(left, sizeof(left), "%s %s",
-                 station_gossip_sentence_prefix(m->memory_kind),
-                 commodity_seen);
+        if (m->memory_kind == (uint8_t)MARKET_MEMORY_DEMAND ||
+            m->memory_kind == (uint8_t)MARKET_MEMORY_ORE_PRESSURE ||
+            m->memory_kind == (uint8_t)MARKET_MEMORY_SCAFFOLD_PRESSURE)
+            snprintf(left, sizeof(left), "%s wanted", commodity_seen);
+        else
+            snprintf(left, sizeof(left), "%s %s",
+                     station_gossip_sentence_prefix(m->memory_kind),
+                     commodity_seen);
         mining_grade_t rumor_grade =
             station_gossip_clarity_grade(clarity.clarity);
         uint8_t rumor_rgb[3];
@@ -1662,8 +1768,8 @@ static float draw_station_gossip_rows(const station_t *st,
         uint8_t rumor_dim[3];
         ui_clarity_mix_rgb(rumor_rgb, COL_DIM,
                            clarity.clarity * 0.70f, rumor_dim);
-        snprintf(right, sizeof(right), "%s %.10s",
-                 station_gossip_action_label(m->action), station_seen);
+        snprintf(right, sizeof(right), "%.10s %s",
+                 station_seen, station_gossip_action_label(m->action));
         draw_row_lr(cx, my, inner_right, rumor_rgb, left, rumor_dim, right);
         my += row_h;
     }
@@ -1778,6 +1884,105 @@ static int collect_route_history_aggregates(route_history_aggregate_row_t *out,
     }
 
     return route_history_aggregate_sort(out, cap);
+}
+
+static bool station_player_memory_line(const station_t *st,
+                                       char *out,
+                                       size_t cap)
+{
+    if (!st || !out || cap == 0) return false;
+    out[0] = '\0';
+    uint8_t pubkey[32];
+    if (!ui_local_player_pubkey(pubkey)) return false;
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) != 0)
+            continue;
+        if (st->ledger[i].total_docks == 0 &&
+            st->ledger[i].lifetime_credits_in == 0 &&
+            st->ledger[i].lifetime_ore_units == 0) {
+            return false;
+        }
+        const char *commodity = st->ledger[i].top_commodity < COMMODITY_COUNT
+            ? commodity_short_name((commodity_t)st->ledger[i].top_commodity)
+            : "cargo";
+        snprintf(out, cap, "You here: %u docks, %u earned, %u %s",
+                 (unsigned)st->ledger[i].total_docks,
+                 (unsigned)st->ledger[i].lifetime_credits_in,
+                 (unsigned)st->ledger[i].lifetime_ore_units,
+                 commodity);
+        return true;
+    }
+    return false;
+}
+
+static bool station_known_for_line(const station_t *st,
+                                   char *out,
+                                   size_t cap)
+{
+    if (!st || !out || cap == 0) return false;
+    out[0] = '\0';
+    int station_idx = station_index_of(st);
+    route_history_aggregate_row_t aggregate[8];
+    int count = collect_route_history_aggregates(
+        aggregate, (int)(sizeof(aggregate) / sizeof(aggregate[0])));
+    for (int i = 0; i < count; i++) {
+        const route_history_aggregate_row_t *row = &aggregate[i];
+        if (row->origin_station != station_idx &&
+            row->destination_station != station_idx) {
+            continue;
+        }
+        char title[96], evidence[112], freshness[96];
+        route_history_aggregate_fields(row->memory_kind,
+                                       row->origin_station,
+                                       row->destination_station,
+                                       row->commodity,
+                                       row->action,
+                                       row->event_count,
+                                       row->evidence_sum,
+                                       row->confidence_peak,
+                                       row->salience_peak,
+                                       row->latest_tick,
+                                       title, sizeof(title),
+                                       evidence, sizeof(evidence),
+                                       freshness, sizeof(freshness));
+        (void)evidence;
+        (void)freshness;
+        snprintf(out, cap, "Known for: %s", title);
+        return true;
+    }
+    return false;
+}
+
+static float draw_station_memory_summary(const station_t *st,
+                                         float cx,
+                                         float my,
+                                         float inner_right,
+                                         bool compact)
+{
+    const float row_h = compact ? 14.0f : 15.0f;
+    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_DIM[3]     = { PAL_TEXT_FADED };
+    char known[112];
+    char player[112];
+    bool have_known = station_known_for_line(st, known, sizeof(known));
+    bool have_player = station_player_memory_line(st, player, sizeof(player));
+    if (!have_known && !have_player) return my;
+
+    my += draw_section_header(cx, my, inner_right, "STATION MEMORY", HDR_TRADE);
+    int chars = (int)floorf((inner_right - cx) / 8.0f);
+    if (have_known) {
+        char fit[112];
+        ui_fit_text(known, chars, fit, sizeof(fit));
+        draw_row_lr(cx, my, inner_right, COL_HISTORY, fit, NULL, NULL);
+        my += row_h;
+    }
+    if (have_player) {
+        char fit[112];
+        ui_fit_text(player, chars, fit, sizeof(fit));
+        draw_row_lr(cx, my, inner_right, COL_DIM, fit, NULL, NULL);
+        my += row_h;
+    }
+    return my + (compact ? 4.0f : 6.0f);
 }
 
 static const char *history_filter_title(uint8_t filter)
@@ -2153,10 +2358,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
         }
 
-        /* Lineage tag — compact #344 inspection of the representative
-         * cargo_unit_t behind this row. The row already names grade;
-         * this line adds serial, recipe, parent summary, origin, and
-         * receipt seal count where the client has those bytes locally. */
+        /* Lineage tag — default view keeps provenance player-readable.
+         * The forensic chain fields live in HISTORY / inspect surfaces. */
         char lineage_buf[112];
         lineage_buf[0] = '\0';
         char job_note[64];
@@ -2173,9 +2376,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             memcpy(inspect.pub, r->inspect_pub, sizeof(inspect.pub));
             memcpy(inspect.parent_merkle, r->inspect_parent,
                    sizeof(inspect.parent_merkle));
-            char serial[12], parent[8], origin[24];
-            cargo_lineage_serial_label(&inspect, serial, sizeof(serial));
-            cargo_lineage_parent_label(&inspect, parent, sizeof(parent));
+            char origin[24];
             bool origin_known = inspect.recipe_id != (uint16_t)RECIPE_LEGACY_MIGRATE &&
                 ((cargo_kind_t)inspect.kind == CARGO_KIND_INGOT ||
                  inspect.mined_block != 0 || r->inspect_chain_len > 0);
@@ -2183,20 +2384,12 @@ static void draw_trade_view(const station_ui_state_t *ui,
                 cargo_lineage_origin_label(&inspect, origin, sizeof(origin));
             else
                 snprintf(origin, sizeof(origin), "origin ?");
-            const char *recipe = cargo_lineage_recipe_label(&inspect);
-            char seal[16] = "";
-            if (r->inspect_chain_len > 0)
-                snprintf(seal, sizeof(seal), " seal x%u",
-                         (unsigned)r->inspect_chain_len);
             if (r->mined_block != 0) {
                 snprintf(lineage_buf, sizeof(lineage_buf),
-                         "serial %s  %s parent %s  %s ep%llu%s",
-                         serial, recipe, parent, origin,
-                         (unsigned long long)r->mined_block, seal);
+                         "%s, ep %llu",
+                         origin, (unsigned long long)r->mined_block);
             } else {
-                snprintf(lineage_buf, sizeof(lineage_buf),
-                         "serial %s  %s parent %s  %s%s",
-                         serial, recipe, parent, origin, seal);
+                snprintf(lineage_buf, sizeof(lineage_buf), "%s", origin);
             }
         } else if (r->has_lineage) {
             snprintf(lineage_buf, sizeof(lineage_buf),
@@ -2463,6 +2656,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
     }
     my += 6.0f;
+    my = draw_station_memory_summary(st, cx, my, inner_right, compact);
 
     station_construction_need_t build_need;
     if (station_construction_material_need(st, &build_need)) {
@@ -2819,35 +3013,54 @@ static void draw_contracts_view(const station_ui_state_t *ui,
 /* YARD view — fabrication tab: SCAFFOLD KITS catalog + QUEUE           */
 /* ------------------------------------------------------------------ */
 
+static const char *yard_module_effect_label(module_type_t type)
+{
+    switch (type) {
+    case MODULE_DOCK:         return "dock traffic";
+    case MODULE_HOPPER:       return "stores ore";
+    case MODULE_FURNACE:      return "smelts ore";
+    case MODULE_REPAIR_BAY:   return "repairs hull";
+    case MODULE_SIGNAL_RELAY: return "extends signal";
+    case MODULE_FRAME_PRESS:  return "presses frames";
+    case MODULE_LASER_FAB:    return "builds lasers";
+    case MODULE_TRACTOR_FAB:  return "builds tractors";
+    case MODULE_SHIPYARD:     return "builds ships/kits";
+    default:                  return "adds station function";
+    }
+}
+
 static void draw_yard_view(const station_ui_state_t *ui,
                            float cx, float cy, float inner_w, bool compact)
 {
-    (void)compact;
     const station_t *st = ui->station;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
+    float row_h = compact ? 14.0f : 15.0f;
+    float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
+    get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
+    (void)panel_x;
+    (void)panel_w;
+    float content_bottom = panel_y + panel_h - (compact ? 72.0f : 78.0f);
 
     if (!station_has_module(st, MODULE_SHIPYARD)) {
-        float row_h = compact ? 14.0f : 15.0f;
-        sdtx_color3b(PAL_SHIPYARD_HINT);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_puts("No shipyard installed at this station.");
+        draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_SHIPYARD_HINT },
+                    "No shipyard installed at this station.", NULL, NULL);
         my += row_h;
-        sdtx_color3b(PAL_TEXT_FADED);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_puts("Visit or build a station with a shipyard module to");
+        draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_TEXT_FADED },
+                    "Visit or build a station with a shipyard module.",
+                    NULL, NULL);
         my += row_h;
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_puts("fabricate kits.");
+        draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_TEXT_FADED },
+                    "Fabrication rows will appear here.", NULL, NULL);
         return;
     }
 
     /* -------- SHIP COMMISSIONS -------- */
     my += draw_section_header(cx, my, inner_right, "SHIP COMMISSIONS", HDR_YARD);
-    sdtx_color3b(PAL_STATION_HINT);
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-    sdtx_puts("[Z/X/V] commission frame loadout");
-    my += 16.0f;
+    draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_STATION_HINT },
+                "[U/I/O] drones", (const uint8_t[3]){ PAL_STATION_HINT },
+                "[Z/X/V] ships");
+    my += row_h;
 
     static const struct {
         const char *key;
@@ -2861,16 +3074,26 @@ static void draw_yard_view(const station_ui_state_t *ui,
         { "V", HULL_CLASS_MINER },
     };
     for (size_t i = 0; i < sizeof(hull_rows) / sizeof(hull_rows[0]); i++) {
+        if (!station_row_has_room(my, row_h, content_bottom)) {
+            draw_more_rows_hint(cx, my, "more yard rows hidden");
+            return;
+        }
         int frames = 0, lasers = 0, tractors = 0;
         (void)shipyard_hull_cost(hull_rows[i].hull, &frames, &lasers, &tractors);
         bool ready = shipyard_can_commission_hull(st, hull_rows[i].hull);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_color3b(ready ? PAL_TEXT_SECONDARY : PAL_CANNOT_AFFORD);
-        sdtx_printf("[%s] %-22s %df %dl %dt",
-                    hull_rows[i].key,
-                    ship_loadout_name(hull_rows[i].hull),
-                    frames, lasers, tractors);
-        my += 14.0f;
+        char left[64], right[32];
+        snprintf(left, sizeof(left), "[%s] %s",
+                 hull_rows[i].key, ship_loadout_name(hull_rows[i].hull));
+        snprintf(right, sizeof(right), "%df %dl %dt",
+                 frames, lasers, tractors);
+        draw_row_lr(cx, my, inner_right,
+                    ready ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
+                          : (const uint8_t[3]){ PAL_CANNOT_AFFORD },
+                    left,
+                    ready ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
+                          : (const uint8_t[3]){ PAL_TEXT_FADED },
+                    right);
+        my += row_h;
     }
     my += 10.0f;
 
@@ -2882,25 +3105,32 @@ static void draw_yard_view(const station_ui_state_t *ui,
         for (int h = 0; h < HULL_CLASS_COUNT; h++) {
             int count = st->stored_hull_count[h];
             if (count <= 0) continue;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_color3b(PAL_TEXT_SECONDARY);
-            sdtx_printf("  %dx %s", count,
-                        ship_loadout_name((hull_class_t)h));
-            my += 14.0f;
+            if (!station_row_has_room(my, row_h, content_bottom)) {
+                draw_more_rows_hint(cx, my, "more stored hulls hidden");
+                return;
+            }
+            char left[64], right[16];
+            snprintf(left, sizeof(left), "%s", ship_loadout_name((hull_class_t)h));
+            snprintf(right, sizeof(right), "x%d", count);
+            draw_row_lr(cx, my, inner_right,
+                        (const uint8_t[3]){ PAL_TEXT_SECONDARY }, left,
+                        (const uint8_t[3]){ PAL_TEXT_SECONDARY }, right);
+            my += row_h;
         }
         my += 10.0f;
     }
 
     /* -------- SCAFFOLD KITS -------- */
     my += draw_section_header(cx, my, inner_right, "SCAFFOLD KITS", HDR_YARD);
-    sdtx_color3b(PAL_STATION_HINT);
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
     if (station_active_shipyard_count(st) >= 2)
-        sdtx_puts("[1-9] order a scaffold kit");
+        draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_STATION_HINT },
+                    "[1-9] order scaffold kit", NULL, NULL);
     else
-        sdtx_puts("Add a second shipyard to fabricate station modules.");
+        draw_row_lr(cx, my, inner_right, (const uint8_t[3]){ PAL_STATION_HINT },
+                    "Add a second shipyard to fabricate station modules.",
+                    NULL, NULL);
 
-    float ly = my + 16.0f;
+    float ly = my + row_h;
     int credits = (int)lroundf(player_current_balance());
     int shown = 0;
     int locked = 0;
@@ -2917,34 +3147,53 @@ static void draw_yard_view(const station_ui_state_t *ui,
         commodity_t mat_type = module_build_material_lookup(kit);
         const char *mat_name = commodity_short_label(mat_type);
         bool can_afford = credits >= fee;
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
-        else            sdtx_color3b(PAL_CANNOT_AFFORD);
+        if (!station_row_has_room(ly, row_h, content_bottom)) {
+            draw_more_rows_hint(cx, ly, "more kit rows hidden");
+            return;
+        }
+        char left[64], right[64];
+        snprintf(left, sizeof(left), "[%d] %s -> %s",
+                 shown + 1, module_type_name(kit),
+                 yard_module_effect_label(kit));
         if (compact) {
             char short_cur[8];
             ui_station_currency_short(ui->station, short_cur, sizeof(short_cur));
-            sdtx_printf("[%d] %-14s %d %s + %d %s",
-                shown + 1, module_type_name(kit), fee, short_cur, mat, mat_name);
+            snprintf(right, sizeof(right), "%d %s + %d %s",
+                     fee, short_cur, mat, mat_name);
         } else {
-            sdtx_printf("[%d] %-14s %d %s + %d %s",
-                shown + 1, module_type_name(kit),
-                fee, ui_station_currency(ui->station),
-                mat, mat_name);
+            snprintf(right, sizeof(right), "%d %s + %d %s",
+                     fee, ui_station_currency(ui->station), mat, mat_name);
         }
+        draw_row_lr(cx, ly, inner_right,
+                    can_afford ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
+                               : (const uint8_t[3]){ PAL_CANNOT_AFFORD },
+                    left,
+                    can_afford ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
+                               : (const uint8_t[3]){ PAL_TEXT_FADED },
+                    right);
         shown++;
-        ly += 14.0f;
+        ly += row_h;
     }
     if (!any) {
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_color3b(PAL_SHIPYARD_HINT);
-        sdtx_puts("This yard has no production lines installed.");
-        ly += 14.0f;
+        if (!station_row_has_room(ly, row_h, content_bottom)) {
+            draw_more_rows_hint(cx, ly, "more yard rows hidden");
+            return;
+        }
+        draw_row_lr(cx, ly, inner_right, (const uint8_t[3]){ PAL_SHIPYARD_HINT },
+                    "This yard has no production lines installed.", NULL, NULL);
+        ly += row_h;
     }
     if (locked > 0) {
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_color3b(PAL_AFFORD_INACTIVE);
-        sdtx_printf("+%d more locked (build prerequisites first)", locked);
-        ly += 14.0f;
+        if (!station_row_has_room(ly, row_h, content_bottom)) {
+            draw_more_rows_hint(cx, ly, "more yard rows hidden");
+            return;
+        }
+        char left[64];
+        snprintf(left, sizeof(left), "+%d locked", locked);
+        draw_row_lr(cx, ly, inner_right, (const uint8_t[3]){ PAL_AFFORD_INACTIVE },
+                    left, (const uint8_t[3]){ PAL_TEXT_FADED },
+                    "build prerequisites first");
+        ly += row_h;
     }
 
     /* -------- QUEUE — pending construction orders -------- */
@@ -2959,17 +3208,24 @@ static void draw_yard_view(const station_ui_state_t *ui,
             float progress = ui->station->pending_ship_builds[p].build_progress;
             if (progress < 0.0f) progress = 0.0f;
             if (progress > 1.0f) progress = 1.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            if (p == 0) {
-                sdtx_color3b(PAL_DELIVERY_BLUE);
-                sdtx_printf("  ship %d. %s  %.0f%%", p + 1,
-                            ship_loadout_name(hull), progress * 100.0f);
-            } else {
-                sdtx_color3b(PAL_SUPPLY_DIM);
-                sdtx_printf("  ship %d. %s  queued", p + 1,
-                            ship_loadout_name(hull));
+            if (!station_row_has_room(ly, row_h, content_bottom)) {
+                draw_more_rows_hint(cx, ly, "more queue rows hidden");
+                return;
             }
-            ly += 14.0f;
+            char left[64], right[32];
+            snprintf(left, sizeof(left), "ship %d. %s",
+                     p + 1, ship_loadout_name(hull));
+            if (p == 0) {
+                snprintf(right, sizeof(right), "%.0f%%", progress * 100.0f);
+                draw_row_lr(cx, ly, inner_right,
+                            (const uint8_t[3]){ PAL_DELIVERY_BLUE }, left,
+                            (const uint8_t[3]){ PAL_DELIVERY_BLUE }, right);
+            } else {
+                draw_row_lr(cx, ly, inner_right,
+                            (const uint8_t[3]){ PAL_SUPPLY_DIM }, left,
+                            (const uint8_t[3]){ PAL_TEXT_FADED }, "queued");
+            }
+            ly += row_h;
         }
     }
     if (ui->station->pending_scaffold_count > 0) {
@@ -3000,28 +3256,40 @@ static void draw_yard_view(const station_ui_state_t *ui,
             int remaining = (int)ceilf((need - have) - 0.001f);
             if (remaining < 0) remaining = 0;
             const char *mat_label = commodity_short_label(mat_type);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            if (p == 0 && blocker_idx >= 0) {
-                sdtx_color3b(PAL_WARNING);
-                sdtx_printf("  %d. %s  yard blocked; needs %d %s (stock: %d)",
-                    p + 1, module_type_name(t), remaining, mat_label,
-                    (int)lroundf(station_have));
-            } else if (p == 0) {
-                sdtx_color3b(PAL_DELIVERY_BLUE);
-                sdtx_printf("  %d. %s  intake %d/%d %s  (stock: %d)",
-                    p + 1, module_type_name(t), got, total, mat_label,
-                    (int)lroundf(station_have));
-            } else {
-                sdtx_color3b(PAL_SUPPLY_DIM);
-                sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
+            if (!station_row_has_room(ly, row_h, content_bottom)) {
+                draw_more_rows_hint(cx, ly, "more queue rows hidden");
+                return;
             }
-            ly += 14.0f;
+            char left[64], right[80];
+            snprintf(left, sizeof(left), "%d. %s", p + 1, module_type_name(t));
+            if (p == 0 && blocker_idx >= 0) {
+                snprintf(right, sizeof(right), "blocked; need %d %s stock %d",
+                         remaining, mat_label, (int)lroundf(station_have));
+                draw_row_lr(cx, ly, inner_right,
+                            (const uint8_t[3]){ PAL_WARNING }, left,
+                            (const uint8_t[3]){ PAL_WARNING }, right);
+            } else if (p == 0) {
+                snprintf(right, sizeof(right), "intake %d/%d %s stock %d",
+                         got, total, mat_label, (int)lroundf(station_have));
+                draw_row_lr(cx, ly, inner_right,
+                            (const uint8_t[3]){ PAL_DELIVERY_BLUE }, left,
+                            (const uint8_t[3]){ PAL_DELIVERY_BLUE }, right);
+            } else {
+                draw_row_lr(cx, ly, inner_right,
+                            (const uint8_t[3]){ PAL_SUPPLY_DIM }, left,
+                            (const uint8_t[3]){ PAL_TEXT_FADED }, "queued");
+            }
+            ly += row_h;
         }
         if (blocker_idx >= 0) {
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(PAL_SHIPYARD_HINT);
-            sdtx_puts("  Tow loose scaffold clear to start the next build.");
-            ly += 14.0f;
+            if (!station_row_has_room(ly, row_h, content_bottom)) {
+                draw_more_rows_hint(cx, ly, "more queue rows hidden");
+                return;
+            }
+            draw_row_lr(cx, ly, inner_right, (const uint8_t[3]){ PAL_SHIPYARD_HINT },
+                        "Tow loose scaffold clear to start next build.",
+                        NULL, NULL);
+            ly += row_h;
         }
     }
 }
@@ -3062,7 +3330,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_TRADE] = {
         .view = STATION_VIEW_TRADE,
         .label = "TRADE",
-        .legend = "[F] scroll  [S] sell all  [TAB] panel",
+        .legend = "[1-5] trade  [F] page  [S] deliver  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_trade_view,
         .input_fn = station_panel_input_trade,
@@ -3070,7 +3338,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
         .label = "CONTRACTS",
-        .legend = "[S] accept  [TAB] panel",
+        .legend = "[1-3] track  [S] act  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_contracts_view,
         .input_fn = station_panel_input_work,
@@ -3086,7 +3354,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_YARD] = {
         .view = STATION_VIEW_YARD,
         .label = "YARD",
-        .legend = "[TAB] panel",
+        .legend = "[U/I/O/Z/X/V] ships  [1-9] kits  [TAB]",
         .visible_fn = station_panel_visible_shipyard,
         .draw_fn = draw_yard_view,
         .input_fn = station_panel_input_yard,

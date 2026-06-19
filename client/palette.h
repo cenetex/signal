@@ -37,9 +37,10 @@
 #define PAL_TEXT_GREY        100, 110, 100
 #define PAL_F_TEXT_GREY      0.39f, 0.43f, 0.39f
 
-/* Faded background text */
-#define PAL_TEXT_FADED       100, 130, 120
-#define PAL_F_TEXT_FADED     0.39f, 0.51f, 0.47f
+/* Faded background text. Kept above the panel scanline floor so inactive
+ * rows remain readable on the station console. */
+#define PAL_TEXT_FADED       122, 150, 142
+#define PAL_F_TEXT_FADED     0.48f, 0.59f, 0.56f
 
 /* ================================================================
  * STATUS & SIGNAL COLORS
@@ -225,8 +226,8 @@
 #define PAL_F_SYNC_RESYNCING 1.00f, 0.63f, 0.24f
 
 /* Alpha version banner */
-#define PAL_ALPHA_BANNER     180, 160, 60
-#define PAL_F_ALPHA_BANNER   0.71f, 0.63f, 0.24f
+#define PAL_ALPHA_BANNER     118, 110, 66
+#define PAL_F_ALPHA_BANNER   0.46f, 0.43f, 0.26f
 
 /* ================================================================
  * HUD PANEL COLORS (procedural rendering)
@@ -355,8 +356,8 @@
 #define PAL_F_AFFORD_NO      0.35f, 0.41f, 0.51f
 
 /* Dim/inactive affordability */
-#define PAL_AFFORD_INACTIVE  80, 90, 110
-#define PAL_F_AFFORD_INACTIVE 0.31f, 0.35f, 0.43f
+#define PAL_AFFORD_INACTIVE  108, 120, 145
+#define PAL_F_AFFORD_INACTIVE 0.42f, 0.47f, 0.57f
 
 /* ================================================================
  * HALO EFFECTS & BACKGROUND

@@ -415,6 +415,9 @@ static bool ev_is_local(const sim_event_t *ev) {
     return ev->player_id == g.local_player_slot;
 }
 
+static bool local_station_balance_for_player(int station_idx, float *out);
+static void maybe_notice_local_credits_rule(int station_idx, float balance);
+
 static void sim_on_fracture(const sim_event_t *ev) {
     audio_play_fracture(&g.audio, ev->fracture.tier);
     if (ev_is_local(ev)) onboarding_mark_fractured();
@@ -431,6 +434,9 @@ static void sim_on_dock(const sim_event_t *ev) {
     g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
     g.dock_settle_timer = 1.0f; /* show ship settling before panel */
     int ds = LOCAL_PLAYER.current_station;
+    float bal = 0.0f;
+    if (local_station_balance_for_player(ds, &bal))
+        maybe_notice_local_credits_rule(ds, bal);
     if (ds < SIGNAL_ROOT_STATION_COUNT) {
         g.episode.stations_visited |= (1 << ds);
         if (g.episode.stations_visited == ((1u << SIGNAL_ROOT_STATION_COUNT) - 1u)) /* all relay roots */
@@ -796,6 +802,68 @@ static const char *hail_choose_message(int station_idx) {
     return msg[0] ? msg : "Signal acknowledged.";
 }
 
+static bool local_station_balance_for_player(int station_idx, float *out) {
+    if (out) *out = 0.0f;
+    if (g.multiplayer_enabled) return false;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_exists(st)) return false;
+    uint8_t pseudo[32];
+    client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (memcmp(st->ledger[i].player_pubkey, pseudo, 32) == 0) {
+            if (out) *out = st->ledger[i].balance;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool local_player_has_other_station_credit(int current_station) {
+    if (g.multiplayer_enabled) return false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (s == current_station) continue;
+        float bal = 0.0f;
+        if (local_station_balance_for_player(s, &bal) && bal > 0.5f)
+            return true;
+    }
+    return false;
+}
+
+static void maybe_notice_local_credits_rule(int station_idx, float balance) {
+    if (g.local_credit_hint_shown) return;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    if (balance > 0.5f) return;
+    if (!local_player_has_other_station_credit(station_idx)) return;
+    g.local_credit_hint_shown = true;
+    set_notice("Credits stay where you earn them. Carry goods, not money.");
+}
+
+static const char *module_consequence_label(module_type_t type) {
+    switch (type) {
+    case MODULE_DOCK:
+        return "Dock online -- station accepts traffic here.";
+    case MODULE_HOPPER:
+        return "Hopper online -- ore intake and paired production unlocked.";
+    case MODULE_FURNACE:
+        return "Furnace online -- smelting can turn fragments into ingots.";
+    case MODULE_REPAIR_BAY:
+        return "Repair bay online -- hull service available here.";
+    case MODULE_SIGNAL_RELAY:
+        return "Signal relay online -- civilization reaches farther.";
+    case MODULE_FRAME_PRESS:
+        return "Frame press online -- ingots can become station frames.";
+    case MODULE_LASER_FAB:
+        return "Laser fab online -- laser modules can be built here.";
+    case MODULE_TRACTOR_FAB:
+        return "Tractor fab online -- tractor modules can be built here.";
+    case MODULE_SHIPYARD:
+        return "Shipyard online -- ships and scaffold kits can be ordered.";
+    default:
+        return NULL;
+    }
+}
+
 static void sim_on_hail_response(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     int hs = ev->hail_response.station;
@@ -823,6 +891,7 @@ static void sim_on_hail_response(const sim_event_t *ev) {
         set_notice("%s: %s  (balance %d %s)",
                    g.hail_station, g.hail_message,
                    (int)lroundf(shown_credits), unit);
+        maybe_notice_local_credits_rule(hs, shown_credits);
     } else {
         set_notice("%s: %s", g.hail_station, g.hail_message);
     }
@@ -847,7 +916,12 @@ static void sim_on_module_activated(const sim_event_t *ev) {
                     &g.commission_cr, &g.commission_cg, &g.commission_cb);
     audio_play_commission(&g.audio);
     const char *module_name = module_type_name((module_type_t)ev->module_activated.module_type);
-    set_notice("%s online.", module_name);
+    const char *consequence =
+        module_consequence_label((module_type_t)ev->module_activated.module_type);
+    if (consequence)
+        set_notice("%s", consequence);
+    else
+        set_notice("%s online.", module_name);
 }
 
 static void sim_on_outpost_activated(const sim_event_t *ev) {

@@ -599,6 +599,7 @@ typedef struct {
     float hail_credits;          /* balance at hailed station */
     float station_balance;       /* balance at current/nearby station (multiplayer) */
     int hail_station_index;      /* which station was hailed (-1 = none) */
+    bool local_credit_hint_shown; /* one-shot: station credits are local */
     /* Hail ping visual: expanding ring from the ship on H-press. Driven
      * locally from input.c so the click has immediate feedback even if
      * the server takes a frame to respond. */
