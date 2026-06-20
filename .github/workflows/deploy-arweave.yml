@@ -102,6 +102,14 @@ jobs:
         with:
           version: 3.1.64
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
       - name: Build WASM client
         run: |
           export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -113,14 +121,6 @@ jobs:
           cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
              build-web/play.html build-web/signal-touch-controls.js _site/
           cp web/index.html web/mine.html web/ost.html web/shell.html _site/
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install dependencies
-        run: npm install
 
       - name: Deploy Cloudflare Worker
         env:
