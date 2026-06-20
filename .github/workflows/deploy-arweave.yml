@@ -123,6 +123,7 @@ jobs:
           cp web/index.html web/mine.html web/ost.html web/shell.html _site/
 
       - name: Deploy Cloudflare Worker
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx wrangler deploy
