@@ -2,8 +2,9 @@
  * episode.c — MPEG1 video episode playback for Signal Space Miner.
  * Uses pl_mpeg for decoding, sokol_gfx for texture upload, sokol_gl for rendering.
  *
- * All platforms fetch from S3 CDN. Emscripten uses async XHR, native uses
- * local file fallback (assets/ directory for development).
+ * Emscripten fetches episode assets through the same-origin Worker so missing
+ * or not-yet-published videos fail as normal asset misses instead of CORS
+ * errors. Native uses local file fallback (assets/ directory for development).
  */
 
 #include <stdlib.h>
@@ -22,8 +23,6 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
-
-#define ASSET_CDN "https://signal-ratimics-assets.s3.amazonaws.com"
 
 static const episode_info_t episodes[EPISODE_COUNT] = {
     { "anime/ep0-first-light.mpg",     "FIRST LIGHT" },
@@ -239,9 +238,9 @@ void episode_trigger(episode_state_t *ep, int index) {
     const episode_info_t *info = &episodes[index];
 
 #ifdef __EMSCRIPTEN__
-    /* Async fetch from S3 */
+    /* Async fetch from the same-origin asset Worker */
     char url[256];
-    snprintf(url, sizeof(url), "%s/%s", ASSET_CDN, info->filename);
+    snprintf(url, sizeof(url), "/%s", info->filename);
     ep->loading = true;
     emscripten_async_wget_data(url, ep, on_fetch_success, on_fetch_error);
 #else

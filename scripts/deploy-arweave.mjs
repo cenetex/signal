@@ -57,6 +57,8 @@ function ct(f) {
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     png: 'image/png',
+    mpg: 'video/mpeg',
+    mpeg: 'video/mpeg',
   };
   return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
 }

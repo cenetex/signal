@@ -72,6 +72,8 @@ function responseHeaders(path, kvAsset, overrideExt = null) {
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
     png: "image/png",
+    mpg: "video/mpeg",
+    mpeg: "video/mpeg",
   }[effectiveExt] || "application/octet-stream";
 
   return {
