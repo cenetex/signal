@@ -50,7 +50,12 @@ async function estimateUploadPlan(irys, files) {
   let price = new BigNumber(0);
 
   for (const f of files) {
-    const itemBytes = statSync(f.path).size;
+    const data = readFileSync(f.path);
+    const cached = assetCache[f.name];
+    const rewritesPerDeploy = f.name === 'play.html' || f.name === 'signal.html';
+    if (cached && cached.hash === sha256(data) && !rewritesPerDeploy) continue;
+
+    const itemBytes = data.length;
     payloadBytes += itemBytes;
     price = price.plus(await irys.getPrice(itemBytes + 4096));
   }
@@ -69,6 +74,10 @@ async function ensureIrysBalance(irys, uploadPlan) {
   console.log(`Estimated upload: ${(estimatedBytes / 1024).toFixed(1)} KB  Estimated cost: ${price}  Target balance: ${target}`);
 
   if (balance.isGreaterThanOrEqualTo(target)) return balance;
+  if (balance.isGreaterThanOrEqualTo(price)) {
+    console.log(`Irys credit ${balance} is below buffered target ${target}, but covers estimated cost ${price}; continuing.`);
+    return balance;
+  }
   if (!AUTO_FUND) {
     throw new Error(`Irys credit ${balance} is below estimated target ${target}; fund the wallet or enable IRYS_AUTO_FUND.`);
   }
@@ -150,12 +159,23 @@ async function main() {
       }
     }
 
-    // Inject wasm locateFile
+    // Keep JS/WASM as a cache-busted pair. The locateFile assignment must
+    // happen after the page creates Module, otherwise the Module object reset
+    // wipes it out before Emscripten starts.
     const wasmUrl = `/signal.wasm?v=${deployHash}`;
+    const jsUrl = `/signal.js?v=${deployHash}`;
     if (f.name === 'signal.html' || f.name === 'play.html') {
-      const moduleInject = `<script>\nif (!Module) var Module = {};\nModule.locateFile = function(p) { return p === 'signal.wasm' ? '${wasmUrl}' : p; };\n</script>\n`;
-      content = content.replace('<script>', moduleInject + '<script>');
+      const locateFileLine = `Module.locateFile = function(p) { return p === 'signal.wasm' ? '${wasmUrl}' : p; };`;
+      content = content.replace('window.SignalGameModule = Module;', `window.SignalGameModule = Module;\n      ${locateFileLine}`);
+      content = content.replace('window.SignalGameModule=Module</script>', `window.SignalGameModule=Module;${locateFileLine}</script>`);
+      content = content.replaceAll("loadGame('/signal.js')", `loadGame('${jsUrl}')`);
+      content = content.replaceAll('loadGame("/signal.js")', `loadGame("${jsUrl}")`);
+      content = content.replaceAll('src="/signal.js"', `src="${jsUrl}"`);
+      content = content.replaceAll('src=/signal.js', `src="${jsUrl}"`);
+      content = content.replaceAll('src="signal.js"', `src="${jsUrl}"`);
+      content = content.replaceAll('src=signal.js', `src="${jsUrl}"`);
     }
+    writeFileSync(f.path, content);
 
     const data = Buffer.from(content);
     const hash = sha256(data);

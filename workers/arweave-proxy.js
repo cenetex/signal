@@ -4,6 +4,13 @@ export default {
     const path = url.pathname.slice(1) || "index.html";
 
     try {
+      const kvAsset = await getKvAsset(env, path);
+      if (kvAsset) {
+        return new Response(kvAsset.body, {
+          headers: responseHeaders(kvAsset.path, true),
+        });
+      }
+
       // Try KV-stored paths map first (fastest, no network hop)
       let pathsRaw = await env.SIGNAL_MANIFEST.get("manifest");
       if (!pathsRaw) {
@@ -32,19 +39,44 @@ export default {
       }
       if (!fileRes) return new Response("File offline", { status: 503 });
 
-      let effectiveExt = path.split(".").pop().toLowerCase();
-      if (!path.includes(".") && paths[path + ".html"]) effectiveExt = "html";
-      const ct = { html: "text/html; charset=utf-8", js: "application/javascript", wasm: "application/wasm", mp3: "audio/mpeg" }[effectiveExt] || "application/octet-stream";
-
       return new Response(fileRes.body, {
-        headers: {
-          "content-type": ct,
-          "cache-control": effectiveExt === "wasm" ? "public, max-age=86400, immutable" : "public, max-age=3600",
-          "access-control-allow-origin": "*",
-        },
+        headers: responseHeaders(path, false, !path.includes(".") && paths[path + ".html"] ? "html" : null),
       });
     } catch (e) {
       return new Response("Unavailable", { status: 503 });
     }
   },
 };
+
+async function getKvAsset(env, path) {
+  const directAsset = await env.SIGNAL_MANIFEST.get(`asset:${path}`, { type: "arrayBuffer" });
+  if (directAsset) return { path, body: directAsset };
+
+  if (!path.includes(".")) {
+    const htmlPath = `${path}.html`;
+    const htmlAsset = await env.SIGNAL_MANIFEST.get(`asset:${htmlPath}`, { type: "arrayBuffer" });
+    if (htmlAsset) return { path: htmlPath, body: htmlAsset };
+  }
+
+  return null;
+}
+
+function responseHeaders(path, kvAsset, overrideExt = null) {
+  const effectiveExt = overrideExt || path.split(".").pop().toLowerCase();
+  const contentType = {
+    html: "text/html; charset=utf-8",
+    js: "application/javascript",
+    wasm: "application/wasm",
+    mp3: "audio/mpeg",
+  }[effectiveExt] || "application/octet-stream";
+
+  return {
+    "content-type": contentType,
+    "cache-control": kvAsset
+      ? "public, max-age=60, must-revalidate"
+      : effectiveExt === "wasm"
+        ? "public, max-age=86400, immutable"
+        : "public, max-age=3600",
+    "access-control-allow-origin": "*",
+  };
+}

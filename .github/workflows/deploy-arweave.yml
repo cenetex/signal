@@ -140,3 +140,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           npx wrangler kv key put --remote --binding SIGNAL_MANIFEST manifest "$(cat .arweave-paths.json)"
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST asset:play.html --path _site/play.html
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST asset:signal.html --path _site/signal.html
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST asset:signal.js --path _site/signal.js
+          npx wrangler kv key put --remote --binding SIGNAL_MANIFEST asset:signal.wasm --path _site/signal.wasm
