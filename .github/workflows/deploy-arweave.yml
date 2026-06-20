@@ -119,7 +119,9 @@ jobs:
         run: |
           mkdir -p _site
           cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
-             build-web/play.html build-web/signal-touch-controls.js _site/
+             build-web/play.html build-web/signal-touch-controls.js \
+             build-web/signal-hail-llm.js build-web/signal-hail-gguf-worker.js \
+             build-web/signal-hail-wllama-runtime.js _site/
           cp web/index.html web/mine.html web/ost.html web/shell.html _site/
 
       - name: Deploy Cloudflare Worker
