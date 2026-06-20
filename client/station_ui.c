@@ -520,6 +520,34 @@ static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
     snprintf(out, cap, "%.*s...", (int)(limit - 3), src);
 }
 
+static void ui_append_bounded(char *out, size_t cap, size_t *used,
+                              const char *src) {
+    if (!out || cap == 0 || !used || !src) return;
+    if (*used >= cap) {
+        out[cap - 1] = '\0';
+        *used = cap - 1;
+        return;
+    }
+    size_t room = cap - *used - 1;
+    size_t len = strlen(src);
+    if (len > room) len = room;
+    memcpy(out + *used, src, len);
+    *used += len;
+    out[*used] = '\0';
+}
+
+static void ui_write_parts(char *out, size_t cap,
+                           const char *a,
+                           const char *b,
+                           const char *c) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    size_t used = 0;
+    ui_append_bounded(out, cap, &used, a);
+    ui_append_bounded(out, cap, &used, b);
+    ui_append_bounded(out, cap, &used, c);
+}
+
 static bool ui_local_player_pubkey(uint8_t out[32]) {
     if (!out) return false;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
@@ -2202,7 +2230,7 @@ static bool station_contract_arrival_line(const station_t *st,
     contract_objective_t objective;
     if (contract_objective_for_contract(slots[0], &objective) &&
         objective.body[0]) {
-        snprintf(out, cap, "Nearest job: %s.", objective.body);
+        ui_write_parts(out, cap, "Nearest job: ", objective.body, ".");
         return true;
     }
     snprintf(out, cap, "Nearest job: [%d] %s contract.", 1, type);
@@ -2218,22 +2246,23 @@ static int build_station_arrival_lines(const station_t *st,
     char buf[128];
 
     if (station_contract_arrival_line(st, buf, sizeof(buf)) && n < cap) {
-        snprintf(lines[n].text, sizeof(lines[n].text), "%s", buf);
+        ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, NULL, NULL);
         lines[n].rgb = ARRIVAL_READY;
         n++;
     }
     if (station_credit_bridge_line(station_index_of(st), buf, sizeof(buf)) &&
         n < cap) {
-        snprintf(lines[n].text, sizeof(lines[n].text), "%s", buf);
+        ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, NULL, NULL);
         lines[n].rgb = ARRIVAL_CREDIT;
         n++;
     }
     if (station_player_memory_line(st, buf, sizeof(buf)) && n < cap) {
-        snprintf(lines[n].text, sizeof(lines[n].text), "Memory: %s.", buf);
+        ui_write_parts(lines[n].text, sizeof(lines[n].text),
+                       "Memory: ", buf, ".");
         lines[n].rgb = ARRIVAL_MEMORY;
         n++;
     } else if (station_known_for_line(st, buf, sizeof(buf)) && n < cap) {
-        snprintf(lines[n].text, sizeof(lines[n].text), "%s.", buf);
+        ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, ".", NULL);
         lines[n].rgb = ARRIVAL_MEMORY;
         n++;
     }
@@ -2260,8 +2289,9 @@ static float draw_station_arrival_brief(const station_t *st,
     for (int i = 0; i < shown; i++) {
         char line[160];
         char fit[160];
-        snprintf(line, sizeof(line), "%s // %s",
-                 i == 0 ? "ARRIVAL" : "        ", lines[i].text);
+        ui_write_parts(line, sizeof(line),
+                       i == 0 ? "ARRIVAL // " : "        // ",
+                       lines[i].text, NULL);
         ui_fit_text(line, chars, fit, sizeof(fit));
         sdtx_color3b(lines[i].rgb[0], lines[i].rgb[1], lines[i].rgb[2]);
         sdtx_pos(ui_text_pos(left_x), ui_text_pos(y));
