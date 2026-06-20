@@ -102,9 +102,15 @@ static void decode_and_upload(avatar_cache_t *entry, void *data, int size) {
     unsigned char *pixels = stbi_load_from_memory(
         (const unsigned char *)data, size, &w, &h, &channels, 4);
     if (!pixels) {
+#ifdef __EMSCRIPTEN__
+        fprintf(stderr, "[avatar] failed to decode image for '%s'; keeping placeholder\n",
+                entry->slug);
+        entry->state = entry->texture_valid ? AVATAR_STATE_READY : AVATAR_STATE_FAILED;
+#else
         fprintf(stderr, "[avatar] failed to decode image for '%s'; using placeholder\n",
                 entry->slug);
         upload_placeholder(entry);
+#endif
         return;
     }
     upload_texture(entry, pixels, w, h);
@@ -124,9 +130,9 @@ static void on_fetch_success(void *user, void *data, int size) {
 
 static void on_fetch_error(void *user) {
     avatar_cache_t *entry = (avatar_cache_t *)user;
-    fprintf(stderr, "[avatar] portrait fetch failed for '%s'; using placeholder\n",
+    fprintf(stderr, "[avatar] portrait fetch failed for '%s'; keeping placeholder\n",
             entry->slug);
-    upload_placeholder(entry);
+    entry->state = entry->texture_valid ? AVATAR_STATE_READY : AVATAR_STATE_FAILED;
 }
 
 
@@ -194,6 +200,8 @@ void avatar_fetch(int station_index, const char *station_slug) {
     snprintf(url, sizeof(url), "/stations/%s/portrait.png", station_slug);
 
 #ifdef __EMSCRIPTEN__
+    upload_placeholder(entry);
+    entry->state = AVATAR_STATE_FETCHING;
     emscripten_async_wget_data(url, entry, on_fetch_success, on_fetch_error);
     /* Also fetch MOTD JSON */
     if (!entry->motd_fetched) {
