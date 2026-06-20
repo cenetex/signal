@@ -3,12 +3,15 @@ import { resolve, join } from 'path';
 import { createHash } from 'crypto';
 import Irys from '@irys/sdk';
 import { Keypair } from '@solana/web3.js';
+import BigNumber from 'bignumber.js';
 import { homedir } from 'os';
 
 const SITE_DIR = resolve('_site');
 const HOST = process.env.ARWEAVE_HOST || 'arweave.net';
 const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
+const AUTO_FUND = process.env.IRYS_AUTO_FUND !== '0';
+const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '1.25');
 
 // Load Solana keypair for Irys
 let keypair;
@@ -42,6 +45,41 @@ function ct(f) {
   return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
 }
 
+function estimateUploadBytes(files) {
+  const payloadBytes = files.reduce((sum, f) => sum + statSync(f.path).size, 0);
+  // Irys charges for signed data item overhead too. Keep a small per-file
+  // allowance plus manifest/HTML rewrite slack so deploys fund once up front.
+  return payloadBytes + files.length * 4096 + 65536;
+}
+
+async function ensureIrysBalance(irys, estimatedBytes) {
+  const balance = await irys.getLoadedBalance();
+  const price = await irys.getPrice(estimatedBytes);
+  const target = price.multipliedBy(FUNDING_BUFFER).integerValue(BigNumber.ROUND_CEIL);
+  console.log(`Estimated upload: ${(estimatedBytes / 1024).toFixed(1)} KB  Estimated cost: ${price}  Target balance: ${target}`);
+
+  if (balance.isGreaterThanOrEqualTo(target)) return balance;
+  if (!AUTO_FUND) {
+    throw new Error(`Irys credit ${balance} is below estimated target ${target}; fund the wallet or enable IRYS_AUTO_FUND.`);
+  }
+
+  const amount = target.minus(balance).integerValue(BigNumber.ROUND_CEIL);
+  console.log(`Funding Irys shortfall: ${amount}...`);
+  try {
+    const receipt = await irys.fund(amount);
+    console.log(`Funded Irys: ${receipt.id || 'submitted'} quantity=${receipt.quantity}`);
+  } catch (e) {
+    throw new Error(`Unable to fund Irys shortfall ${amount}. Check the Solana wallet balance and funding permissions. ${e.message || e}`);
+  }
+
+  const updated = await irys.getLoadedBalance();
+  console.log(`Irys credit after funding: ${updated}`);
+  if (updated.isLessThan(price)) {
+    throw new Error(`Irys credit ${updated} is still below estimated upload cost ${price}.`);
+  }
+  return updated;
+}
+
 async function main() {
   const irys = new Irys({
     network: 'mainnet',
@@ -51,10 +89,13 @@ async function main() {
   });
 
   const addr = irys.address;
-  const bal = await irys.getLoadedBalance();
+  let bal = await irys.getLoadedBalance();
   console.log(`Wallet: ${addr}  Irys credit: ${bal}`);
 
   const files = collectFiles(SITE_DIR, '');
+  bal = await ensureIrysBalance(irys, estimateUploadBytes(files));
+  console.log(`Wallet: ${addr}  Deployable Irys credit: ${bal}`);
+
   const htmlFiles = [];
   const manifestEntries = {};
   let totalBytes = 0;
