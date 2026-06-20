@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * sim_save.c -- World and player persistence for the Signal Space Miner
  * server. Extracted from game_sim.c (#272) — pure code motion, no

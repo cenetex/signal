@@ -52,14 +52,32 @@ static fixp_t fixp_div(fixp_t a, fixp_t b) {
     if (b == 0) return (a >= 0) ? INT64_MAX : INT64_MIN;
     return fixp_from_wide_double(((long double)a * (long double)FIXP_ONE) / (long double)b);
 }
-#else
+#elif defined(__GNUC__) || defined(__clang__)
+__extension__ typedef __int128 fixp_wide_t;
+
 static fixp_t fixp_mul(fixp_t a, fixp_t b) {
-    return (fixp_t)(((__int128)a * (__int128)b) / (__int128)FIXP_ONE);
+    return (fixp_t)(((fixp_wide_t)a * (fixp_wide_t)b) / (fixp_wide_t)FIXP_ONE);
 }
 
 static fixp_t fixp_div(fixp_t a, fixp_t b) {
     if (b == 0) return (a >= 0) ? INT64_MAX : INT64_MIN;
-    return (fixp_t)(((__int128)a * (__int128)FIXP_ONE) / (__int128)b);
+    return (fixp_t)(((fixp_wide_t)a * (fixp_wide_t)FIXP_ONE) / (fixp_wide_t)b);
+}
+#else
+static fixp_t fixp_from_wide_double(long double x) {
+    if (!isfinite((double)x)) return 0;
+    if (x > (long double)INT64_MAX) return INT64_MAX;
+    if (x < (long double)INT64_MIN) return INT64_MIN;
+    return (fixp_t)x;
+}
+
+static fixp_t fixp_mul(fixp_t a, fixp_t b) {
+    return fixp_from_wide_double(((long double)a * (long double)b) / (long double)FIXP_ONE);
+}
+
+static fixp_t fixp_div(fixp_t a, fixp_t b) {
+    if (b == 0) return (a >= 0) ? INT64_MAX : INT64_MIN;
+    return fixp_from_wide_double(((long double)a * (long double)FIXP_ONE) / (long double)b);
 }
 #endif
 
