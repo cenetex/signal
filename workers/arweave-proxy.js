@@ -23,9 +23,14 @@ export default {
       if (!txId && !path.includes(".")) txId = paths[path + ".html"];
       if (!txId) return new Response("Not Found", { status: 404 });
 
-      // Fetch asset from arweave (all cached asset TXs are native arweave)
-      const fileRes = await fetch(`https://arweave.net/raw/${txId}`);
-      if (!fileRes.ok) return new Response("File offline", { status: 503 });
+      // Irys uploads can be visible on Irys gateways before arweave.net/raw
+      // catches up. Try all known gateways before reporting the file offline.
+      let fileRes = null;
+      for (const gw of ["https://arweave.net/raw/", "https://gateway.irys.xyz/", "https://node2.irys.xyz/"]) {
+        const res = await fetch(gw + txId);
+        if (res.ok) { fileRes = res; break; }
+      }
+      if (!fileRes) return new Response("File offline", { status: 503 });
 
       let effectiveExt = path.split(".").pop().toLowerCase();
       if (!path.includes(".") && paths[path + ".html"]) effectiveExt = "html";

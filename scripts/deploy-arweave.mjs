@@ -87,19 +87,20 @@ async function main() {
   for (const f of htmlFiles) {
     let content = readFileSync(f.path, 'utf-8');
 
-    // Rewrite asset references to arweave raw URLs
+    // Keep asset references on the Signal worker so it can apply gateway
+    // fallback for recently uploaded Irys files.
     for (const [name, txId] of Object.entries(manifestEntries)) {
       if (!name.includes('/') && (name.endsWith('.js') || name.endsWith('.wasm') || name.endsWith('.css'))) {
-        content = content.replaceAll(`./${name}`, `https://arweave.net/raw/${txId}`);
-        content = content.replaceAll(`"${name}"`, `"https://arweave.net/raw/${txId}"`);
+        content = content.replaceAll(`./${name}`, `/${name}`);
+        content = content.replaceAll(`"${name}"`, `"/${name}"`);
       }
       if (name.startsWith('music/')) {
-        content = content.replaceAll(`"./music/${name.slice(6)}"`, `https://arweave.net/raw/${txId}`);
+        content = content.replaceAll(`"./music/${name.slice(6)}"`, `"/music/${name.slice(6)}"`);
       }
     }
 
     // Inject wasm locateFile
-    const wasmUrl = `https://arweave.net/raw/${manifestEntries['signal.wasm']}?v=${deployHash}`;
+    const wasmUrl = `/signal.wasm?v=${deployHash}`;
     if (f.name === 'signal.html' || f.name === 'play.html') {
       const moduleInject = `<script>\nif (!Module) var Module = {};\nModule.locateFile = function(p) { return p === 'signal.wasm' ? '${wasmUrl}' : p; };\n</script>\n`;
       content = content.replace('<script>', moduleInject + '<script>');

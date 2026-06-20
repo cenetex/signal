@@ -6,7 +6,7 @@
 
 /* Build a minimal event header */
 static void make_hdr(chain_event_header_t *hdr, uint8_t type, uint64_t id,
-                      const uint8_t payload[32], uint16_t plen) {
+                      const uint8_t *payload, uint16_t plen) {
     memset(hdr, 0, sizeof(*hdr));
     hdr->type = type;
     hdr->event_id = id;

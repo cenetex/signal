@@ -7189,7 +7189,7 @@ TEST(test_destroyed_rocks_persists_past_legacy_256_cap) {
     world_reset(w);
 
     enum { COUNT = 300 };
-    ASSERT(COUNT < MAX_DESTROYED_ROCKS);
+    ASSERT((int)COUNT < (int)MAX_DESTROYED_ROCKS);
     for (uint16_t i = 0; i < COUNT; i++) {
         memset(w->destroyed_rocks[i].rock_pub, 0, 32);
         w->destroyed_rocks[i].rock_pub[30] = (uint8_t)(i >> 8);
