@@ -11,7 +11,7 @@ const HOST = process.env.ARWEAVE_HOST || 'arweave.net';
 const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 const AUTO_FUND = process.env.IRYS_AUTO_FUND !== '0';
-const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '1.25');
+const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '2');
 
 // Load Solana keypair for Irys
 let keypair;
@@ -45,16 +45,26 @@ function ct(f) {
   return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
 }
 
-function estimateUploadBytes(files) {
-  const payloadBytes = files.reduce((sum, f) => sum + statSync(f.path).size, 0);
+async function estimateUploadPlan(irys, files) {
+  let payloadBytes = 0;
+  let price = new BigNumber(0);
+
+  for (const f of files) {
+    const itemBytes = statSync(f.path).size;
+    payloadBytes += itemBytes;
+    price = price.plus(await irys.getPrice(itemBytes + 4096));
+  }
+
   // Irys charges for signed data item overhead too. Keep a small per-file
   // allowance plus manifest/HTML rewrite slack so deploys fund once up front.
-  return payloadBytes + files.length * 4096 + 65536;
+  const estimatedBytes = payloadBytes + files.length * 4096 + 65536;
+  price = price.plus(await irys.getPrice(65536));
+  return { bytes: estimatedBytes, price };
 }
 
-async function ensureIrysBalance(irys, estimatedBytes) {
+async function ensureIrysBalance(irys, uploadPlan) {
   const balance = await irys.getLoadedBalance();
-  const price = await irys.getPrice(estimatedBytes);
+  const { bytes: estimatedBytes, price } = uploadPlan;
   const target = price.multipliedBy(FUNDING_BUFFER).integerValue(BigNumber.ROUND_CEIL);
   console.log(`Estimated upload: ${(estimatedBytes / 1024).toFixed(1)} KB  Estimated cost: ${price}  Target balance: ${target}`);
 
@@ -93,7 +103,7 @@ async function main() {
   console.log(`Wallet: ${addr}  Irys credit: ${bal}`);
 
   const files = collectFiles(SITE_DIR, '');
-  bal = await ensureIrysBalance(irys, estimateUploadBytes(files));
+  bal = await ensureIrysBalance(irys, await estimateUploadPlan(irys, files));
   console.log(`Wallet: ${addr}  Deployable Irys credit: ${bal}`);
 
   const htmlFiles = [];
