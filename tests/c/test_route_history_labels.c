@@ -7,6 +7,10 @@ TEST(test_route_history_labels_name_route_reputation) {
                   "route reputation");
     ASSERT_STR_EQ(route_history_action_label(CONTRACT_TRACTOR), "haul");
     ASSERT_STR_EQ(route_history_action_label(CONTRACT_DELIVERY), "delivery");
+    ASSERT_STR_EQ(route_history_certainty_label(240, 230), "known");
+    ASSERT_STR_EQ(route_history_certainty_label(190, 180), "fresh");
+    ASSERT_STR_EQ(route_history_certainty_label(120, 120), "heard");
+    ASSERT_STR_EQ(route_history_certainty_label(80, 70), "faint");
 }
 
 TEST(test_route_history_summary_names_route_and_evidence) {
@@ -65,8 +69,8 @@ TEST(test_route_history_detail_fields_show_signed_event_context) {
         evidence, sizeof(evidence),
         meta, sizeof(meta));
     ASSERT_STR_EQ(title, "route reputation Prospect>Helios FM");
-    ASSERT_STR_EQ(evidence, "delivery via FM, 4 receipts, conf 221 sal 180");
-    ASSERT_STR_EQ(meta, "event 42 epoch 9 tick 12345 value 77");
+    ASSERT_STR_EQ(evidence, "signed proof: delivery via FM, 4 receipts");
+    ASSERT_STR_EQ(meta, "fresh event 42 epoch 9 tick 12345 value 77");
 }
 
 TEST(test_route_history_aggregate_fields_show_institution_memory) {
@@ -88,8 +92,8 @@ TEST(test_route_history_aggregate_fields_show_institution_memory) {
         evidence, sizeof(evidence),
         freshness, sizeof(freshness));
     ASSERT_STR_EQ(title, "route reputation Kepler>Blackglass CO");
-    ASSERT_STR_EQ(evidence, "haul via CO, 3 signed rows, 19 receipts");
-    ASSERT_STR_EQ(freshness, "peak conf 240 sal 201 latest tick 98765");
+    ASSERT_STR_EQ(evidence, "institution memory: haul via CO, 3 signed rows, 19 receipts");
+    ASSERT_STR_EQ(freshness, "known, latest tick 98765");
 }
 
 TEST(test_route_history_aggregate_groups_and_ranks_rows) {

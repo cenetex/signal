@@ -217,7 +217,7 @@ static fixp_t fixp_ln_fixp(fixp_t x) {
         sum += zpow / denom;
     }
 
-    return (sum << 1) + (fixp_t)k * FIXP_LN2;
+    return (sum + sum) + (fixp_t)k * FIXP_LN2;
 }
 
 /* ---- Public API ---- */

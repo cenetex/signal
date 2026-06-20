@@ -52,6 +52,15 @@ static inline const char *route_history_action_label(uint8_t action) {
     }
 }
 
+static inline const char *route_history_certainty_label(uint8_t confidence,
+                                                        uint8_t salience) {
+    unsigned score = ((unsigned)confidence + (unsigned)salience) / 2u;
+    if (score >= 216u) return "known";
+    if (score >= 176u) return "fresh";
+    if (score >= 112u) return "heard";
+    return "faint";
+}
+
 static inline void route_history_station_label(uint8_t station_idx,
                                                char *out,
                                                size_t cap) {
@@ -158,16 +167,15 @@ static inline void route_history_detail_fields(
                  origin, destination, commodity);
     }
     if (evidence && evidence_cap > 0) {
-        snprintf(evidence, evidence_cap, "%s via %s, %u receipt%s, conf %u sal %u",
+        snprintf(evidence, evidence_cap, "signed proof: %s via %s, %u receipt%s",
                  route_history_action_label(action),
                  commodity,
                  (unsigned)evidence_count,
-                 evidence_count == 1 ? "" : "s",
-                 (unsigned)confidence,
-                 (unsigned)salience);
+                 evidence_count == 1 ? "" : "s");
     }
     if (meta && meta_cap > 0) {
-        snprintf(meta, meta_cap, "event %llu epoch %llu tick %u value %u",
+        snprintf(meta, meta_cap, "%s event %llu epoch %llu tick %u value %u",
+                 route_history_certainty_label(confidence, salience),
                  (unsigned long long)event_id,
                  (unsigned long long)epoch,
                  (unsigned)observed_tick,
@@ -304,7 +312,7 @@ static inline void route_history_aggregate_fields(
                  origin, destination, commodity);
     }
     if (evidence && evidence_cap > 0) {
-        snprintf(evidence, evidence_cap, "%s via %s, %u signed row%s, %u receipt%s",
+        snprintf(evidence, evidence_cap, "institution memory: %s via %s, %u signed row%s, %u receipt%s",
                  route_history_action_label(action),
                  commodity,
                  (unsigned)event_count,
@@ -313,9 +321,8 @@ static inline void route_history_aggregate_fields(
                  evidence_sum == 1 ? "" : "s");
     }
     if (freshness && freshness_cap > 0) {
-        snprintf(freshness, freshness_cap, "peak conf %u sal %u latest tick %u",
-                 (unsigned)confidence_peak,
-                 (unsigned)salience_peak,
+        snprintf(freshness, freshness_cap, "%s, latest tick %u",
+                 route_history_certainty_label(confidence_peak, salience_peak),
                  (unsigned)latest_tick);
     }
 }

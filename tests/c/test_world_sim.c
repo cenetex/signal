@@ -984,6 +984,62 @@ TEST(test_towed_cargo_pod_bulk_sell_clamps_to_hopper_space) {
     ASSERT(sp->ship.stat_credits_earned > 0.0f);
 }
 
+TEST(test_towed_fragment_loads_raw_contract_at_dock) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x59, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .quantity_needed = 10.0f,
+        .base_price = 8.0f,
+        .claimed_by = -1,
+    };
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *a = &w.asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 7.0f;
+    a->max_ore = 7.0f;
+    a->radius = 8.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+
+    sp->ship.towed_fragments[0] = (int16_t)frag;
+    sp->ship.towed_count = 1;
+    float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_ORE;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!w.asteroids[frag].active);
+    ASSERT_EQ_INT(sp->ship.towed_count, 0);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    before + 7.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 3.0f, 0.001f);
+    ASSERT(sp->ship.stat_credits_earned > 0.0f);
+}
+
 TEST(test_gas_rich_asteroid_emits_gas_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -6879,6 +6935,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_cargo_pod_row_sell_sells_one_unit);
     RUN(test_towed_cargo_pod_row_sell_refuses_full_hopper);
     RUN(test_towed_cargo_pod_bulk_sell_clamps_to_hopper_space);
+    RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
     RUN(test_hail_responds_while_docked);
     RUN(test_hail_does_not_spawn_nearest_rock_contract);

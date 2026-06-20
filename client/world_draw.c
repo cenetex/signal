@@ -76,14 +76,10 @@ int lod_segments(int base_segments, float radius) {
     return base_segments;
 }
 
-/* Float-RGB wrapper of the canonical mining_grade_rgb palette (defined
+/* Float-RGB wrapper of the canonical mining_grade_rgb_f palette (defined
  * alongside the grade enum in shared/mining.h) for sokol_gl callers. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b) {
-    uint8_t rr, gg, bb;
-    mining_grade_rgb((mining_grade_t)grade, &rr, &gg, &bb);
-    *r = (float)rr / 255.0f;
-    *g = (float)gg / 255.0f;
-    *b = (float)bb / 255.0f;
+    mining_grade_rgb_f((mining_grade_t)grade, r, g, b);
 }
 
 static bool hail_scan_active(void) {
@@ -2146,6 +2142,28 @@ static void draw_throw_lock_bracket(vec2 pos, float radius, float hotness) {
     draw_segment(br, v2(br.x, br.y - arm), r, g0, b, a);
 }
 
+static void draw_throw_practice_target(vec2 start, vec2 dir, float speed,
+                                       float hotness) {
+    if (g.onboarding.threw || !g.onboarding.tractored) return;
+    float dist = 180.0f + clampf(speed * 0.55f, 0.0f, 260.0f);
+    vec2 pos = v2_add(start, v2_scale(dir, dist));
+    float pulse = 0.65f + 0.35f * sinf(g.world.time * 7.0f);
+    float a = 0.28f + 0.42f * pulse;
+    float r = 0.36f + 0.44f * hotness;
+    float g0 = 0.90f;
+    float b = 0.84f - 0.30f * hotness;
+    draw_circle_outline(pos, 32.0f, 28, r, g0, b, a);
+    draw_circle_outline(pos, 12.0f, 20, r, g0, b, a * 0.80f);
+    draw_segment(v2(pos.x - 48.0f, pos.y), v2(pos.x - 20.0f, pos.y),
+                 r, g0, b, a);
+    draw_segment(v2(pos.x + 20.0f, pos.y), v2(pos.x + 48.0f, pos.y),
+                 r, g0, b, a);
+    draw_segment(v2(pos.x, pos.y - 48.0f), v2(pos.x, pos.y - 20.0f),
+                 r, g0, b, a);
+    draw_segment(v2(pos.x, pos.y + 20.0f), v2(pos.x, pos.y + 48.0f),
+                 r, g0, b, a);
+}
+
 static bool throw_preview_hits_target(vec2 start, vec2 dir, vec2 target,
                                       float radius, float max_dist)
 {
@@ -2209,8 +2227,11 @@ static void draw_throw_preview(void) {
         }
     }
 
-    if (best_hotness >= 0.0f)
+    if (best_hotness >= 0.0f) {
+        draw_throw_practice_target(best_start, best_dir, best_speed,
+                                   best_hotness);
         draw_throw_locks(best_start, best_dir, best_speed, best_hotness);
+    }
 }
 
 void draw_ship(void) {
@@ -3418,12 +3439,6 @@ void draw_npc_chatter(void) {
 /* Sell FX — floating "+N" popups on SIM_EVENT_SELL                   */
 /* ================================================================== */
 
-/* Popup text color — uses the canonical palette from shared/mining.h.
- * Contract-priced sales override with fixed yellow inside spawn_sell_fx. */
-static void sell_fx_grade_rgb(mining_grade_t grade, uint8_t *r, uint8_t *g, uint8_t *b) {
-    mining_grade_rgb(grade, r, g, b);
-}
-
 void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by_contract) {
     if (amount <= 0 || !origin) return;
     /* Pick the oldest available slot. */
@@ -3452,7 +3467,7 @@ void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by
         g.sell_fx[slot].g = 210;
         g.sell_fx[slot].b = 60;
     } else {
-        sell_fx_grade_rgb(grade, &g.sell_fx[slot].r, &g.sell_fx[slot].g, &g.sell_fx[slot].b);
+        mining_grade_rgb(grade, &g.sell_fx[slot].r, &g.sell_fx[slot].g, &g.sell_fx[slot].b);
     }
     snprintf(g.sell_fx[slot].text, sizeof(g.sell_fx[slot].text), "+%d", amount);
 }

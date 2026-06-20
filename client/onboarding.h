@@ -12,6 +12,7 @@ void onboarding_load(void);
 void onboarding_mark_moved(void);
 void onboarding_mark_fractured(void);
 void onboarding_mark_tractored(void);
+void onboarding_mark_threw(void);
 void onboarding_mark_hailed(void);
 void onboarding_mark_boosted(void);
 

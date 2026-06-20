@@ -105,6 +105,22 @@ static void station_name(int station_index, char *out, size_t out_size) {
     snprintf(out, out_size, "station");
 }
 
+static void credit_cargo_route_phrase(const contract_t *ct,
+                                      char *out,
+                                      size_t out_size)
+{
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!ct) {
+        snprintf(out, out_size, "cargo");
+        return;
+    }
+    char origin[32], dest[32];
+    station_name(ct->target_index, origin, sizeof(origin));
+    station_name(ct->station_index, dest, sizeof(dest));
+    snprintf(out, out_size, "cargo from %s to %s", origin, dest);
+}
+
 static int contract_quantity_goal(const contract_t *ct) {
     int qty = (ct && ct->quantity_needed > 0.5f)
             ? (int)ceilf(ct->quantity_needed)
@@ -436,6 +452,8 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
     char origin[32], dest[32];
     station_name(ct->target_index, origin, sizeof(origin));
     station_name(ct->station_index, dest, sizeof(dest));
+    char cargo_route[96];
+    credit_cargo_route_phrase(ct, cargo_route, sizeof(cargo_route));
 
     out->active = true;
     out->contract_index = contract_index;
@@ -462,7 +480,7 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
     }
 
     if (ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
-        int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+        int held = (int)ledger->held_bound;
         if (held > 0) {
             int deliver = held < qty ? held : qty;
             out->kind = CONTRACT_OBJECTIVE_DELIVER;
@@ -472,8 +490,7 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                          CONTRACT_OBJECTIVE_TARGET_DESTINATION);
             objective_set_copy(out, "SIGNAL // CONTRACT",
                                "UNLOAD %s x%d AT %s",
-                               commodity_short_name(ct->commodity),
-                               deliver, dest);
+                               cargo_route, deliver, dest);
             return true;
         }
         out->kind = CONTRACT_OBJECTIVE_PICKUP;
@@ -482,7 +499,7 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                      CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
         objective_set_copy(out, "SIGNAL // CONTRACT",
                            "RECOVER %s SHIPMENT OR RETURN TO %s",
-                           commodity_short_name(ct->commodity), origin);
+                           cargo_route, origin);
         return true;
     }
 
@@ -495,7 +512,7 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
                                      CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
         objective_set_copy(out, "SIGNAL // CONTRACT",
                            "WAIT FOR %s AT %s",
-                           commodity_short_name(ct->commodity), origin);
+                           cargo_route, origin);
         return true;
     }
 
@@ -508,13 +525,11 @@ static bool objective_credit_delivery(int contract_index, const contract_t *ct,
         if (g.station_view == STATION_VIEW_WORK) {
             objective_set_copy(out, "SIGNAL // CONTRACT",
                                "LOAD %s x%d AT %s [S], DELIVER TO %s",
-                               commodity_short_name(ct->commodity), qty,
-                               origin, dest);
+                               cargo_route, qty, origin, dest);
         } else {
             objective_set_copy(out, "SIGNAL // CONTRACT",
                                "OPEN CONTRACTS [TAB] TO LOAD %s x%d AT %s",
-                               commodity_short_name(ct->commodity), qty,
-                               origin);
+                               cargo_route, qty, origin);
         }
     } else {
         objective_set_copy(out, "SIGNAL // CONTRACT",
@@ -556,7 +571,7 @@ static bool player_can_fulfill_contract_now(const contract_t *ct) {
             return true;
         }
         return ledger && ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
-               contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0;
+               ledger->held_bound > 0;
     }
     if (ct->action != CONTRACT_TRACTOR) return false;
     if (ct->commodity < COMMODITY_RAW_ORE_COUNT)

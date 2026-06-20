@@ -1376,6 +1376,12 @@ TEST(test_delivery_contract_action_serializes) {
 TEST(test_delivery_ledger_serializes_player_shipments) {
     WORLD_DECL;
     world_reset(&w);
+    uint8_t bound_pub[32];
+    uint8_t other_bound_pub[32];
+    uint8_t decoy_pub[32];
+    memset(bound_pub, 0xa1, sizeof(bound_pub));
+    memset(other_bound_pub, 0xb2, sizeof(other_bound_pub));
+    memset(decoy_pub, 0xc3, sizeof(decoy_pub));
     w.delivery_shipments[0] = (delivery_shipment_t){
         .active = true,
         .shipment_id = 77,
@@ -1393,6 +1399,8 @@ TEST(test_delivery_ledger_serializes_player_shipments) {
         .due_tick = 900,
         .status = DELIVERY_SHIPMENT_PICKED_UP,
     };
+    memcpy(w.delivery_shipments[0].cargo_pub[0], bound_pub, 32);
+    memcpy(w.delivery_shipments[0].cargo_pub[1], other_bound_pub, 32);
     w.delivery_shipments[1] = (delivery_shipment_t){
         .active = true,
         .shipment_id = 88,
@@ -1405,6 +1413,19 @@ TEST(test_delivery_ledger_serializes_player_shipments) {
         .debtor_player = 0,
         .status = DELIVERY_SHIPMENT_PICKED_UP,
     };
+
+    ASSERT(ship_manifest_bootstrap(&w.players[1].ship));
+    cargo_unit_t bound = {0};
+    bound.kind = CARGO_KIND_INGOT;
+    bound.commodity = COMMODITY_FERRITE_INGOT;
+    bound.grade = MINING_GRADE_COMMON;
+    bound.quantity = 1;
+    memcpy(bound.pub, bound_pub, 32);
+    ASSERT(ship_manifest_push_with_chain(&w.players[1].ship, &bound, NULL));
+
+    cargo_unit_t decoy = bound;
+    memcpy(decoy.pub, decoy_pub, 32);
+    ASSERT(ship_manifest_push_with_chain(&w.players[1].ship, &decoy, NULL));
 
     uint8_t buf[DELIVERY_LEDGER_HEADER +
                 DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE];
@@ -1426,6 +1447,7 @@ TEST(test_delivery_ledger_serializes_player_shipments) {
     ASSERT_EQ_FLOAT(read_f32_le(&p[17]), 150.0f, 0.001f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[21]), 6.0f, 0.001f);
     ASSERT_EQ_INT((int)read_u32_le(&p[25]), 900);
+    ASSERT_EQ_INT(read_u16_le(&p[29]), 1);
 }
 
 TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {

@@ -58,15 +58,17 @@ TEST(test_cargo_lineage_labels_ingot) {
     unit.origin_station = 1;
     unit.mined_block = 4422;
 
-    char serial[12], parent[8], origin[24];
+    char serial[12], parent[8], origin[24], story[96];
     cargo_lineage_serial_label(&unit, serial, sizeof(serial));
     cargo_lineage_parent_label(&unit, parent, sizeof(parent));
     cargo_lineage_origin_label(&unit, origin, sizeof(origin));
+    cargo_lineage_story_label(&unit, story, sizeof(story));
 
     ASSERT(strlen(serial) > 0);
     ASSERT(strlen(parent) > 0);
     ASSERT_STR_EQ(origin, "Kepler");
     ASSERT_STR_EQ(cargo_lineage_recipe_label(&unit), "smelt");
+    ASSERT_STR_EQ(story, "smelted at Kepler from fragment ep 4422");
 }
 
 TEST(test_cargo_lineage_labels_legacy_parentless) {
@@ -75,13 +77,32 @@ TEST(test_cargo_lineage_labels_legacy_parentless) {
     ASSERT(hash_legacy_migrate_unit(origin_seed, COMMODITY_FRAME, 3, &unit));
     unit.origin_station = 2;
 
-    char parent[8], origin[24];
+    char parent[8], origin[24], story[96];
     cargo_lineage_parent_label(&unit, parent, sizeof(parent));
     cargo_lineage_origin_label(&unit, origin, sizeof(origin));
+    cargo_lineage_story_label(&unit, story, sizeof(story));
 
     ASSERT_STR_EQ(parent, "none");
     ASSERT_STR_EQ(origin, "Helios");
     ASSERT_STR_EQ(cargo_lineage_recipe_label(&unit), "legacy");
+    ASSERT_STR_EQ(story, "legacy cargo at Helios");
+}
+
+TEST(test_cargo_lineage_story_names_signed_product_inputs) {
+    uint8_t fragment[32] = {0};
+    for (int i = 0; i < 32; i++) fragment[i] = (uint8_t)(0x40 + i);
+
+    cargo_unit_t input = {0};
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+                      fragment, 1, &input));
+
+    cargo_unit_t product = {0};
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 0, &product));
+    product.origin_station = 0;
+
+    char story[96];
+    cargo_lineage_story_label(&product, story, sizeof(story));
+    ASSERT_STR_EQ(story, "pressed at Prospect from signed ingots");
 }
 
 void register_cargo_lineage_tests(void);
@@ -92,4 +113,5 @@ void register_cargo_lineage_tests(void) {
     RUN(test_station_short_name_invalid_returns_sentinel);
     RUN(test_cargo_lineage_labels_ingot);
     RUN(test_cargo_lineage_labels_legacy_parentless);
+    RUN(test_cargo_lineage_story_names_signed_product_inputs);
 }

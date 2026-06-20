@@ -112,6 +112,23 @@ static const NetDeliveryLedgerEntry *input_delivery_ledger_for_contract(
     return NULL;
 }
 
+static void input_credit_cargo_route_label(const contract_t *ct,
+                                           char *out,
+                                           size_t out_size)
+{
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!ct || ct->action != CONTRACT_DELIVERY ||
+        ct->target_index < 0 || ct->target_index >= MAX_STATIONS ||
+        ct->station_index >= MAX_STATIONS) {
+        snprintf(out, out_size, "cargo");
+        return;
+    }
+    snprintf(out, out_size, "cargo %s>%s",
+             station_short_name(ct->target_index),
+             station_short_name(ct->station_index));
+}
+
 static int input_local_ledger_index(station_t *st) {
     if (!st) return -1;
     uint8_t pseudo[32];
@@ -298,6 +315,11 @@ static void sample_tractor(input_intent_t *intent) {
     if (g.input.tractor_press_time > 0.0f) {
         float held = g.world.time - g.input.tractor_press_time;
         if (held < 0.2f) intent->release_tow = true;
+        if (intent->release_tow && LOCAL_PLAYER.ship.towed_count > 0 &&
+            !g.onboarding.threw) {
+            onboarding_mark_threw();
+            set_notice("Throw calibrated. Band line predicts impact; tow another fragment to smelt or fight.");
+        }
         g.input.tractor_press_time = 0.0f;
     }
 }
@@ -548,10 +570,12 @@ void station_panel_input_work(input_intent_t *intent) {
             if (ct->action == CONTRACT_DELIVERY) {
                 const NetDeliveryLedgerEntry *ledger =
                     input_delivery_ledger_for_contract(g.selected_contract);
+                char cargo_route[48];
+                input_credit_cargo_route_label(ct, cargo_route,
+                                               sizeof(cargo_route));
                 bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
                 bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
-                int held = contract_fit_manifest_count(ct,
-                                                       &LOCAL_PLAYER.ship.manifest);
+                int held = ledger ? (int)ledger->held_bound : 0;
                 if (at_origin && ledger &&
                     ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
                     intent->hail = true;
@@ -562,21 +586,21 @@ void station_panel_input_work(input_intent_t *intent) {
                     if (source_stock <= 0) {
                         set_notice("%s has no %s ready.",
                                    here_st ? here_st->name : "Origin",
-                                   commodity_short_name(ct->commodity));
+                                   cargo_route);
                         return;
                     }
                     intent->hail = true;
                     int qty = input_contract_quantity_goal(ct);
                     if (qty > source_stock) qty = source_stock;
                     set_notice("Loading %s x%d on credit...",
-                               commodity_short_name(ct->commodity), qty);
+                               cargo_route, qty);
                 } else if (at_dest && ledger &&
                            ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
                            held > 0) {
                     intent->service_sell = true;
                     intent->service_sell_only = ct->commodity;
                     set_notice("Unloading %s...",
-                               commodity_short_name(ct->commodity));
+                               cargo_route);
                 } else {
                     intent->hail = true;
                     set_notice("Contacting station...");
@@ -584,7 +608,17 @@ void station_panel_input_work(input_intent_t *intent) {
             } else {
                 intent->service_sell = true;
                 intent->service_sell_only = ct->commodity;
-                set_notice("Delivering %s...", commodity_short_name(ct->commodity));
+                if (ct->action == CONTRACT_TRACTOR &&
+                    ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+                    set_notice("Loading %s...",
+                               commodity_short_name(ct->commodity));
+                } else if (ct->action == CONTRACT_TRACTOR) {
+                    set_notice("Unloading %s...",
+                               commodity_short_name(ct->commodity));
+                } else {
+                    set_notice("Delivering %s...",
+                               commodity_short_name(ct->commodity));
+                }
             }
         } else {
             /* Selected contract was completed/cancelled; fall back. */

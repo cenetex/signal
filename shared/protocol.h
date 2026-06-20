@@ -739,7 +739,7 @@ enum {
  * shipment_id:u16, status:u8, origin:u8, destination:u8, contract_index:u8,
  * commodity:u8, quantity_total:u16, quantity_delivered:u16,
  * quantity_bound:u16, debt_principal:f32, destination_payout:f32,
- * origin_credit:f32, due_tick:u32, reserved:3. */
+ * origin_credit:f32, due_tick:u32, held_bound:u16, reserved:1. */
 #define DELIVERY_LEDGER_HEADER 2
 #define DELIVERY_LEDGER_RECORD_SIZE 32
 #define DELIVERY_LEDGER_MAX_RECORDS 24

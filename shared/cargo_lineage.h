@@ -74,4 +74,56 @@ static inline void cargo_lineage_origin_label(const cargo_unit_t *unit,
     snprintf(out, cap, "%s", station_short_name((int)unit->origin_station));
 }
 
+static inline void cargo_lineage_story_label(const cargo_unit_t *unit,
+                                             char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!unit) {
+        snprintf(out, cap, "origin unknown");
+        return;
+    }
+
+    char origin[24];
+    cargo_lineage_origin_label(unit, origin, sizeof(origin));
+    bool has_parent = !cargo_lineage_hash_is_zero(unit->parent_merkle);
+    bool has_epoch = unit->mined_block != 0;
+
+    switch ((recipe_id_t)unit->recipe_id) {
+    case RECIPE_SMELT:
+        if (has_epoch)
+            snprintf(out, cap, "smelted at %s from fragment ep %llu",
+                     origin, (unsigned long long)unit->mined_block);
+        else
+            snprintf(out, cap, "smelted at %s", origin);
+        return;
+    case RECIPE_FRAME_BASIC:
+        snprintf(out, cap, "pressed at %s%s",
+                 origin, has_parent ? " from signed ingots" : "");
+        return;
+    case RECIPE_LASER_BASIC:
+        snprintf(out, cap, "laser fab at %s%s",
+                 origin, has_parent ? " from signed inputs" : "");
+        return;
+    case RECIPE_TRACTOR_COIL:
+        snprintf(out, cap, "tractor fab at %s%s",
+                 origin, has_parent ? " from signed inputs" : "");
+        return;
+    case RECIPE_REPAIR_KIT_FAB:
+        snprintf(out, cap, "repair kits made at %s%s",
+                 origin, has_parent ? " from signed inputs" : "");
+        return;
+    case RECIPE_LEGACY_MIGRATE:
+        snprintf(out, cap, "legacy cargo at %s", origin);
+        return;
+    case RECIPE_COUNT:
+    default:
+        if (has_epoch)
+            snprintf(out, cap, "from %s, ep %llu",
+                     origin, (unsigned long long)unit->mined_block);
+        else
+            snprintf(out, cap, "from %s", origin);
+        return;
+    }
+}
+
 #endif /* SHARED_CARGO_LINEAGE_H */

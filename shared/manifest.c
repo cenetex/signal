@@ -645,12 +645,12 @@ bool manifest_rarity_tint(const manifest_t *manifest, float fill_ratio,
     int count = 0;
     for (uint16_t i = 0; i < manifest->count; i++) {
         const cargo_unit_t *unit = &manifest->units[i];
-        uint8_t grade_r, grade_g, grade_b;
-        mining_grade_rgb((mining_grade_t)unit->grade,
-                         &grade_r, &grade_g, &grade_b);
-        avg_r += (float)grade_r / 255.0f;
-        avg_g += (float)grade_g / 255.0f;
-        avg_b += (float)grade_b / 255.0f;
+        float grade_r, grade_g, grade_b;
+        mining_grade_rgb_f((mining_grade_t)unit->grade,
+                           &grade_r, &grade_g, &grade_b);
+        avg_r += grade_r;
+        avg_g += grade_g;
+        avg_b += grade_b;
         count++;
     }
 

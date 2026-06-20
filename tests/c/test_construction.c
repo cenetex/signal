@@ -428,7 +428,7 @@ TEST(test_docked_buy_one_unit_per_intent) {
 
 TEST(test_one_shipyard_builds_ships_two_shipyards_build_station_modules) {
     station_t st = {0};
-    strcpy(st.name, "Test Yard");
+    snprintf(st.name, sizeof(st.name), "%s", "Test Yard");
     st.signal_range = 1000.0f;
     add_module_at(&st, MODULE_SHIPYARD, 2, 0);
     add_module_at(&st, MODULE_FURNACE, 2, 1);

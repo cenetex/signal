@@ -31,7 +31,8 @@ static void onboarding_save(void) {
     if (g.onboarding.moved)     flags |= (1 << 0);
     if (g.onboarding.fractured) flags |= (1 << 1);
     if (g.onboarding.tractored) flags |= (1 << 2);
-    if (g.onboarding.hailed)    flags |= (1 << 3);
+    if (g.onboarding.threw)     flags |= (1 << 3);
+    if (g.onboarding.hailed)    flags |= (1 << 4);
     char js[80];
     snprintf(js, sizeof(js), "localStorage.setItem('signal_onboarding','%d')", flags);
     emscripten_run_script(js);
@@ -46,6 +47,7 @@ static bool onboarding_core_complete(void) {
     return g.onboarding.moved &&
            g.onboarding.fractured &&
            g.onboarding.tractored &&
+           g.onboarding.threw &&
            g.onboarding.hailed;
 }
 
@@ -68,6 +70,9 @@ void onboarding_mark_fractured(void) {
 }
 void onboarding_mark_tractored(void) {
     complete_step(&g.onboarding.tractored);
+}
+void onboarding_mark_threw(void) {
+    complete_step(&g.onboarding.threw);
 }
 void onboarding_mark_hailed(void) {
     complete_step(&g.onboarding.hailed);
@@ -127,8 +132,21 @@ static bool guide_tractor(char *message, size_t message_size) {
     return true;
 }
 
+static bool guide_throw(char *message, size_t message_size) {
+    if (!g.onboarding.tractored || g.onboarding.threw || LOCAL_PLAYER.docked)
+        return false;
+    if (LOCAL_PLAYER.ship.towed_count > 0) {
+        snprintf(message, message_size,
+                 "SIGNAL // GUIDE // THROW PRACTICE ::::: STRETCH TETHER, TAP [SPACE]");
+    } else {
+        snprintf(message, message_size,
+                 "SIGNAL // GUIDE // TRACTOR A FRAGMENT ::::: THEN TAP [SPACE] TO THROW");
+    }
+    return true;
+}
+
 static bool guide_scan(char *message, size_t message_size) {
-    if (!g.onboarding.tractored || g.onboarding.hailed || LOCAL_PLAYER.docked)
+    if (!g.onboarding.threw || g.onboarding.hailed || LOCAL_PLAYER.docked)
         return false;
     float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
     if (sig > 0.0f) {
@@ -146,6 +164,7 @@ static const guide_objective_t GUIDE_OBJECTIVES[] = {
     { guide_flight },
     { guide_fracture },
     { guide_tractor },
+    { guide_throw },
     { guide_scan },
 };
 

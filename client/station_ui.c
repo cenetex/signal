@@ -148,6 +148,7 @@ static int station_manifest_count_cg(const station_t *st,
                                      mining_grade_t grade);
 static int ship_manifest_count_c(const ship_t *ship, commodity_t commodity);
 static float ship_manifest_backed_cargo_volume(const ship_t *ship);
+static void ui_station_name_short(int station_index, char *out, size_t cap);
 static bool can_afford_upgrade_manifest_ui(const station_t *station,
                                            const ship_t *ship,
                                            ship_upgrade_t upgrade,
@@ -162,6 +163,25 @@ static const NetDeliveryLedgerEntry *ui_delivery_ledger_for_contract(
             return entry;
     }
     return NULL;
+}
+
+static bool ui_credit_cargo_route_label(const contract_t *ct,
+                                        char *out,
+                                        size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!ct || ct->action != CONTRACT_DELIVERY ||
+        ct->target_index < 0 || ct->target_index >= MAX_STATIONS ||
+        ct->station_index >= MAX_STATIONS) {
+        return false;
+    }
+    char origin[12];
+    char dest[12];
+    ui_station_name_short(ct->target_index, origin, sizeof(origin));
+    ui_station_name_short(ct->station_index, dest, sizeof(dest));
+    snprintf(out, out_size, "cargo %s>%s", origin, dest);
+    return true;
 }
 
 static int ui_contract_quantity_goal(const contract_t *ct)
@@ -244,8 +264,7 @@ int build_work_slots(int here_idx, vec2 here_pos,
                 ui_delivery_ledger_for_contract(ci);
             bool at_origin = here_idx >= 0 && ct->target_index == here_idx;
             bool at_dest = here_idx >= 0 && ct->station_index == here_idx;
-            held_int = contract_fit_manifest_count(ct,
-                                                   &LOCAL_PLAYER.ship.manifest);
+            held_int = ledger ? (int)ledger->held_bound : 0;
             if (at_origin && ledger &&
                 ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
                 actionable_here = true;
@@ -1503,8 +1522,9 @@ static bool trade_row_tracked_note(const station_t *st,
             snprintf(out, out_size, "use contracts for credit");
             return true;
         }
-        if (row->kind == 1 && row->held > 0 && at_dest && ledger &&
-            ledger->status == DELIVERY_SHIPMENT_PICKED_UP) {
+        if (row->kind == 1 && at_dest && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+            ledger->held_bound > 0) {
             snprintf(out, out_size, "ready to deliver");
             return true;
         }
@@ -1532,6 +1552,31 @@ static bool trade_row_tracked_note(const station_t *st,
     return true;
 }
 
+static bool trade_row_credit_cargo_label(const station_t *st,
+                                         const trade_row_t *row,
+                                         char *out,
+                                         size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!row || row->kind != 1) return false;
+    contract_objective_t objective;
+    const contract_t *ct = tracked_contract_for_station_ui(&objective);
+    if (!ct || ct->action != CONTRACT_DELIVERY ||
+        ct->commodity != row->commodity) {
+        return false;
+    }
+    int here_idx = station_index_of(st);
+    if (here_idx < 0 || here_idx != (int)ct->station_index) return false;
+    const NetDeliveryLedgerEntry *ledger =
+        ui_delivery_ledger_for_contract(objective.contract_index);
+    if (!ledger || ledger->status != DELIVERY_SHIPMENT_PICKED_UP ||
+        ledger->held_bound == 0) {
+        return false;
+    }
+    return ui_credit_cargo_route_label(ct, out, out_size);
+}
+
 static bool contract_row_tracked_note(int here_idx,
                                       int contract_index,
                                       bool fulfillable_here,
@@ -1551,7 +1596,7 @@ static bool contract_row_tracked_note(int here_idx,
             ui_delivery_ledger_for_contract(contract_index);
         bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
         bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
-        int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+        int held = ledger ? (int)ledger->held_bound : 0;
         if (at_origin && ledger &&
             ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
             snprintf(out, out_size, "return proof");
@@ -1582,7 +1627,14 @@ static bool contract_row_tracked_note(int here_idx,
         }
     }
     if (fulfillable_here) {
-        snprintf(out, out_size, "deliver cargo");
+        if (ct->action == CONTRACT_TRACTOR &&
+            ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+            snprintf(out, out_size, "load ore");
+        } else if (ct->action == CONTRACT_TRACTOR) {
+            snprintf(out, out_size, "unload cargo");
+        } else {
+            snprintf(out, out_size, "deliver cargo");
+        }
         return true;
     }
 
@@ -1597,13 +1649,89 @@ static bool contract_row_tracked_note(int here_idx,
     return false;
 }
 
+static float ui_towed_matching_ore(const contract_t *ct)
+{
+    float held = 0.0f;
+    const ship_t *ship = &LOCAL_PLAYER.ship;
+    if (!ct || ct->action != CONTRACT_TRACTOR ||
+        ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
+        return 0.0f;
+    }
+    for (int t = 0; t < ship->towed_count; t++) {
+        int fi = ship->towed_fragments[t];
+        if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &g.world.asteroids[fi];
+        if (contract_fit_is_ok(contract_fit_fragment(ct, a)))
+            held += a->ore;
+    }
+    return held;
+}
+
 static bool contract_row_note_is_action(const char *note)
 {
     if (!note || !note[0]) return false;
     return strcmp(note, "load cargo") == 0 ||
+           strcmp(note, "load ore") == 0 ||
            strcmp(note, "unload cargo") == 0 ||
            strcmp(note, "deliver cargo") == 0 ||
            strcmp(note, "return proof") == 0;
+}
+
+static bool station_contract_s_action_label(const station_t *station,
+                                            char *out,
+                                            size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (g.selected_contract < 0 || g.selected_contract >= MAX_CONTRACTS)
+        return false;
+    const contract_t *ct = &g.world.contracts[g.selected_contract];
+    if (!ct->active) return false;
+
+    int here_idx = station_index_of(station);
+    if (ct->action == CONTRACT_DELIVERY) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_contract(g.selected_contract);
+        bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
+        bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+        int held = ledger ? (int)ledger->held_bound : 0;
+        if (at_origin && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_DELIVERED) {
+            snprintf(out, out_size, "return proof");
+            return true;
+        }
+        if (at_origin && !ledger) {
+            int source_stock = station_contract_source_stock_count(station, ct);
+            snprintf(out, out_size, source_stock > 0 ? "accept cargo" : "check stock");
+            return true;
+        }
+        if (at_dest && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP && held > 0) {
+            snprintf(out, out_size, "unload cargo");
+            return true;
+        }
+        snprintf(out, out_size, "contact");
+        return true;
+    }
+
+    if (ct->action == CONTRACT_TRACTOR) {
+        bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+        if (!at_dest) {
+            snprintf(out, out_size, "track");
+            return true;
+        }
+        if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+            snprintf(out, out_size,
+                     ui_towed_matching_ore(ct) > 0.0f ? "load ore" : "track ore");
+            return true;
+        }
+        snprintf(out, out_size,
+                 contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0
+                    ? "unload cargo" : "track cargo");
+        return true;
+    }
+
+    return false;
 }
 
 static const uint8_t COL_CONTRACT_TYPE_HAUL[3]   = { PAL_TRACTOR_OFF };
@@ -1845,12 +1973,23 @@ static float draw_station_policy_rows(const station_t *st,
     }
 
     char cards[160] = {0};
+    size_t cards_used = 0;
     for (int i = 0; i < count; i++) {
         uint8_t id = st->policy_card_ids[i];
         if (id >= (uint8_t)STATION_POLICY_CARD_COUNT) continue;
         const char *name = station_policy_card_name((station_policy_card_id_t)id);
-        if (cards[0]) strncat(cards, " / ", sizeof(cards) - strlen(cards) - 1);
-        strncat(cards, name, sizeof(cards) - strlen(cards) - 1);
+        int written = snprintf(cards + cards_used,
+                               sizeof(cards) - cards_used,
+                               "%s%s",
+                               cards_used > 0 ? " / " : "",
+                               name);
+        if (written < 0) break;
+        size_t added = (size_t)written;
+        if (added >= sizeof(cards) - cards_used) {
+            cards_used = sizeof(cards) - 1;
+            break;
+        }
+        cards_used += added;
     }
     draw_row_lr(cx, my, inner_right, COL_DIM, "active cards",
                 COL_POLICY, cards[0] ? cards : "unknown");
@@ -1953,6 +2092,185 @@ static bool station_known_for_line(const station_t *st,
     return false;
 }
 
+typedef struct {
+    char text[128];
+    const uint8_t *rgb;
+} station_arrival_line_t;
+
+static const uint8_t ARRIVAL_READY[3]  = { PAL_CONTRACT_READY };
+static const uint8_t ARRIVAL_CREDIT[3] = { PAL_STATION_HINT };
+static const uint8_t ARRIVAL_MEMORY[3] = { 135, 220, 195 };
+
+static bool station_credit_bridge_line(int current_station,
+                                       char *out,
+                                       size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (g.multiplayer_enabled) return false;
+    if (current_station < 0 || current_station >= MAX_STATIONS)
+        return false;
+    if (player_current_balance() > 0.5f) return false;
+
+    uint8_t pubkey[32];
+    if (!ui_local_player_pubkey(pubkey)) return false;
+    int best_station = -1;
+    float best_balance = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (s == current_station) continue;
+        float bal = 0.0f;
+        if (!ui_station_balance_for_pubkey(s, pubkey, &bal)) continue;
+        if (bal > best_balance) {
+            best_balance = bal;
+            best_station = s;
+        }
+    }
+    if (best_station < 0 || best_balance <= 0.5f) return false;
+    char source[16], here[16];
+    ui_station_name_short(best_station, source, sizeof(source));
+    ui_station_name_short(current_station, here, sizeof(here));
+    snprintf(out, cap, "Spend %s value by buying cargo there, hauling to %s.",
+             source, here);
+    return true;
+}
+
+static const char *contract_ready_action_label(int here_idx,
+                                               int contract_index,
+                                               bool fulfillable_here)
+{
+    if (contract_index < 0 || contract_index >= MAX_CONTRACTS)
+        return "track";
+    const contract_t *ct = &g.world.contracts[contract_index];
+    if (!ct->active) return "track";
+    if (ct->action == CONTRACT_DELIVERY) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_contract(contract_index);
+        bool at_origin = here_idx >= 0 && here_idx == ct->target_index;
+        bool at_dest = here_idx >= 0 && here_idx == (int)ct->station_index;
+        if (at_origin && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_DELIVERED)
+            return "return proof";
+        if (at_origin && !ledger)
+            return "accept cargo";
+        if (at_dest && ledger &&
+            ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+            ledger->held_bound > 0)
+            return "unload cargo";
+        return "track route";
+    }
+    if (fulfillable_here) {
+        if (ct->action == CONTRACT_TRACTOR &&
+            ct->commodity < COMMODITY_RAW_ORE_COUNT)
+            return "load ore";
+        if (ct->action == CONTRACT_TRACTOR)
+            return "unload cargo";
+        if (ct->action == CONTRACT_FRACTURE)
+            return "claim bounty";
+    }
+    return "track";
+}
+
+static bool station_contract_arrival_line(const station_t *st,
+                                          char *out,
+                                          size_t cap)
+{
+    if (!st || !out || cap == 0) return false;
+    out[0] = '\0';
+    char action[32];
+    if (station_contract_s_action_label(st, action, sizeof(action))) {
+        snprintf(out, cap, "Selected contract ready: [S] %s.", action);
+        return true;
+    }
+
+    int slots[3] = {-1, -1, -1};
+    bool fulfillable[3] = {false, false, false};
+    int held[3] = {0, 0, 0};
+    int here_idx = station_index_of(st);
+    int count = build_work_slots(here_idx, st->pos, slots, fulfillable, held);
+    if (count <= 0) return false;
+
+    const contract_t *ct = &g.world.contracts[slots[0]];
+    const char *type = contract_panel_type_label(ct);
+    const char *verb = contract_ready_action_label(here_idx, slots[0],
+                                                   fulfillable[0]);
+    if (fulfillable[0]) {
+        snprintf(out, cap, "Ready job: [%d] %s, then [S] %s.",
+                 1, type, verb);
+        return true;
+    }
+
+    contract_objective_t objective;
+    if (contract_objective_for_contract(slots[0], &objective) &&
+        objective.body[0]) {
+        snprintf(out, cap, "Nearest job: %s.", objective.body);
+        return true;
+    }
+    snprintf(out, cap, "Nearest job: [%d] %s contract.", 1, type);
+    return true;
+}
+
+static int build_station_arrival_lines(const station_t *st,
+                                       station_arrival_line_t *lines,
+                                       int cap)
+{
+    if (!st || !lines || cap <= 0) return 0;
+    int n = 0;
+    char buf[128];
+
+    if (station_contract_arrival_line(st, buf, sizeof(buf)) && n < cap) {
+        snprintf(lines[n].text, sizeof(lines[n].text), "%s", buf);
+        lines[n].rgb = ARRIVAL_READY;
+        n++;
+    }
+    if (station_credit_bridge_line(station_index_of(st), buf, sizeof(buf)) &&
+        n < cap) {
+        snprintf(lines[n].text, sizeof(lines[n].text), "%s", buf);
+        lines[n].rgb = ARRIVAL_CREDIT;
+        n++;
+    }
+    if (station_player_memory_line(st, buf, sizeof(buf)) && n < cap) {
+        snprintf(lines[n].text, sizeof(lines[n].text), "Memory: %s.", buf);
+        lines[n].rgb = ARRIVAL_MEMORY;
+        n++;
+    } else if (station_known_for_line(st, buf, sizeof(buf)) && n < cap) {
+        snprintf(lines[n].text, sizeof(lines[n].text), "%s.", buf);
+        lines[n].rgb = ARRIVAL_MEMORY;
+        n++;
+    }
+    return n;
+}
+
+static float draw_station_arrival_brief(const station_t *st,
+                                        float panel_x,
+                                        float panel_y,
+                                        float panel_w,
+                                        bool compact)
+{
+    station_arrival_line_t lines[3];
+    int count = build_station_arrival_lines(st, lines, 3);
+    if (count <= 0) return 0.0f;
+    int shown = compact ? 1 : 2;
+    if (shown > count) shown = count;
+
+    const float cell_w = 8.0f;
+    float left_x = panel_x + 20.0f;
+    float right_x = panel_x + panel_w - 20.0f;
+    float y = panel_y + 78.0f;
+    int chars = (int)floorf((right_x - left_x) / cell_w);
+    for (int i = 0; i < shown; i++) {
+        char line[160];
+        char fit[160];
+        snprintf(line, sizeof(line), "%s // %s",
+                 i == 0 ? "ARRIVAL" : "        ", lines[i].text);
+        ui_fit_text(line, chars, fit, sizeof(fit));
+        sdtx_color3b(lines[i].rgb[0], lines[i].rgb[1], lines[i].rgb[2]);
+        sdtx_pos(ui_text_pos(left_x), ui_text_pos(y));
+        sdtx_puts(fit);
+        y += compact ? 14.0f : 15.0f;
+    }
+    return (float)shown * (compact ? 14.0f : 15.0f) + 8.0f;
+}
+
 static float draw_station_memory_summary(const station_t *st,
                                          float cx,
                                          float my,
@@ -1988,11 +2306,11 @@ static float draw_station_memory_summary(const station_t *st,
 static const char *history_filter_title(uint8_t filter)
 {
     switch (filter) {
-    case 1:  return "OUTBOUND ROUTE MEMORY";
-    case 2:  return "INBOUND ROUTE MEMORY";
-    case 3:  return "LOCAL SIGNED EVENTS";
+    case 1:  return "OUTBOUND INSTITUTION MEMORY";
+    case 2:  return "INBOUND INSTITUTION MEMORY";
+    case 3:  return "LOCAL SIGNED PROOF";
     case 0:
-    default: return "AGGREGATE ROUTE MEMORY";
+    default: return "INSTITUTION MEMORY";
     }
 }
 
@@ -2033,17 +2351,17 @@ static void draw_history_view(const station_ui_state_t *ui,
         aggregate, (int)(sizeof(aggregate) / sizeof(aggregate[0])));
     if (aggregate_count <= 0 && filter != 3) {
         draw_row_lr(cx, my, inner_right, COL_DIM,
-                    "No signed route history yet.", NULL, NULL);
+                    "No institution memory yet.", NULL, NULL);
         my += row_h;
         draw_row_lr(cx, my, inner_right, COL_FADED,
-                    "Repeated receipt-backed routes will appear here.",
+                    "Repeat receipt-backed routes to make memory.",
                     NULL, NULL);
         return;
     }
 
     if (filter != 3) {
         draw_row_lr(cx, my, inner_right, COL_FADED,
-                    "Read-only summary of station-signed memory.",
+                    "Aggregates route proof from station-signed rows.",
                     NULL, NULL);
         my += row_h + (compact ? 2.0f : 4.0f);
 
@@ -2086,11 +2404,11 @@ static void draw_history_view(const station_ui_state_t *ui,
         }
         if (shown == 0) {
             draw_row_lr(cx, my, inner_right, COL_DIM,
-                        "No matching aggregate route memory yet.",
+                        "No matching institution memory yet.",
                         NULL, NULL);
             my += row_h;
             draw_row_lr(cx, my, inner_right, COL_FADED,
-                        "Try all routes or wait for more signed receipts.",
+                        "Switch filters or create more signed receipts.",
                         NULL, NULL);
             my += row_h + (compact ? 4.0f : 6.0f);
         }
@@ -2098,7 +2416,7 @@ static void draw_history_view(const station_ui_state_t *ui,
 
     if (filter == 0 || filter == 3) {
         my += compact ? 2.0f : 4.0f;
-        my += draw_section_header(cx, my, inner_right, "RECENT SIGNED EVENTS", HDR_TRADE);
+        my += draw_section_header(cx, my, inner_right, "LOCAL SIGNED PROOF", HDR_TRADE);
     } else {
         return;
     }
@@ -2107,16 +2425,16 @@ static void draw_history_view(const station_ui_state_t *ui,
     int count = chain_log_read_route_history_tail(st, rows, 8);
     if (count <= 0) {
         draw_row_lr(cx, my, inner_right, COL_DIM,
-                    "This station has no local signed rows yet.", NULL, NULL);
+                    "This station has no local proof rows yet.", NULL, NULL);
         my += row_h;
         draw_row_lr(cx, my, inner_right, COL_FADED,
-                    "Other stations may still contribute aggregate memory.",
+                    "Deliveries and repeated receipts create proof.",
                     NULL, NULL);
         return;
     }
 
     draw_row_lr(cx, my, inner_right, COL_FADED,
-                "Newest route-history rows signed by this station.",
+                "Newest route proof signed by this station.",
                 NULL, NULL);
     my += row_h + (compact ? 2.0f : 4.0f);
 
@@ -2337,25 +2655,34 @@ static void draw_trade_view(const station_ui_state_t *ui,
          * etc. before the commodity name so the row's premium price is
          * legible to the player. Anonymous-prefix rows render with no
          * indicator and behave like the legacy bulk path. */
-        char commodity_label[32];
+        char commodity_label[48];
         const char *cname = commodity_short_name(r->commodity);
-        const char *cls_prefix = NULL;
-        switch ((ingot_prefix_t)r->prefix_class) {
-        case INGOT_PREFIX_M:            cls_prefix = "M-"; break;
-        case INGOT_PREFIX_H:            cls_prefix = "H-"; break;
-        case INGOT_PREFIX_T:            cls_prefix = "T-"; break;
-        case INGOT_PREFIX_S:            cls_prefix = "S-"; break;
-        case INGOT_PREFIX_F:            cls_prefix = "F-"; break;
-        case INGOT_PREFIX_K:            cls_prefix = "K-"; break;
-        case INGOT_PREFIX_RATI:         cls_prefix = "RATi-"; break;
-        case INGOT_PREFIX_COMMISSIONED: cls_prefix = "RATi*-"; break;
-        case INGOT_PREFIX_ANONYMOUS:
-        default:                        cls_prefix = NULL; break;
-        }
-        if (cls_prefix) {
-            snprintf(commodity_label, sizeof(commodity_label), "%s%s", cls_prefix, cname);
+        bool credit_cargo_row =
+            trade_row_credit_cargo_label(st, r, commodity_label,
+                                         sizeof(commodity_label));
+        if (!credit_cargo_row) {
+            const char *cls_prefix = NULL;
+            switch ((ingot_prefix_t)r->prefix_class) {
+            case INGOT_PREFIX_M:            cls_prefix = "M-"; break;
+            case INGOT_PREFIX_H:            cls_prefix = "H-"; break;
+            case INGOT_PREFIX_T:            cls_prefix = "T-"; break;
+            case INGOT_PREFIX_S:            cls_prefix = "S-"; break;
+            case INGOT_PREFIX_F:            cls_prefix = "F-"; break;
+            case INGOT_PREFIX_K:            cls_prefix = "K-"; break;
+            case INGOT_PREFIX_RATI:         cls_prefix = "RATi-"; break;
+            case INGOT_PREFIX_COMMISSIONED: cls_prefix = "RATi*-"; break;
+            case INGOT_PREFIX_ANONYMOUS:
+            default:                        cls_prefix = NULL; break;
+            }
+            if (cls_prefix) {
+                snprintf(commodity_label, sizeof(commodity_label), "%s%s",
+                         cls_prefix, cname);
+            } else {
+                snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
+            }
         } else {
-            snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
+            grade_label = "";
+            grade_rgb_ptr = COL_FADED;
         }
 
         /* Lineage tag — default view keeps provenance player-readable.
@@ -2364,7 +2691,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
         lineage_buf[0] = '\0';
         char job_note[64];
         (void)trade_row_tracked_note(st, r, job_note, sizeof(job_note));
-        if (r->has_inspect) {
+        if (credit_cargo_row) {
+            lineage_buf[0] = '\0';
+        } else if (r->has_inspect) {
             cargo_unit_t inspect = {0};
             inspect.kind = r->inspect_kind;
             inspect.commodity = (uint8_t)r->commodity;
@@ -2376,21 +2705,14 @@ static void draw_trade_view(const station_ui_state_t *ui,
             memcpy(inspect.pub, r->inspect_pub, sizeof(inspect.pub));
             memcpy(inspect.parent_merkle, r->inspect_parent,
                    sizeof(inspect.parent_merkle));
-            char origin[24];
             bool origin_known = inspect.recipe_id != (uint16_t)RECIPE_LEGACY_MIGRATE &&
                 ((cargo_kind_t)inspect.kind == CARGO_KIND_INGOT ||
                  inspect.mined_block != 0 || r->inspect_chain_len > 0);
             if (origin_known)
-                cargo_lineage_origin_label(&inspect, origin, sizeof(origin));
+                cargo_lineage_story_label(&inspect, lineage_buf,
+                                          sizeof(lineage_buf));
             else
-                snprintf(origin, sizeof(origin), "origin ?");
-            if (r->mined_block != 0) {
-                snprintf(lineage_buf, sizeof(lineage_buf),
-                         "%s, ep %llu",
-                         origin, (unsigned long long)r->mined_block);
-            } else {
-                snprintf(lineage_buf, sizeof(lineage_buf), "%s", origin);
-            }
+                snprintf(lineage_buf, sizeof(lineage_buf), "origin unknown");
         } else if (r->has_lineage) {
             snprintf(lineage_buf, sizeof(lineage_buf),
                      "from %s, ep %llu",
@@ -2598,12 +2920,12 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                 sgl_begin_quads();
                 for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
                     if (vol_by_grade[gi] < 0.001f) continue;
-                    uint8_t cr, cg, cb;
-                    mining_grade_rgb((mining_grade_t)gi, &cr, &cg, &cb);
+                    float cr, cg, cb;
+                    mining_grade_rgb_f((mining_grade_t)gi, &cr, &cg, &cb);
                     float seg_w = bar_w * (vol_by_grade[gi] / cap_v);
                     if (seg_w < 0.0f) seg_w = 0.0f;
                     if (x + seg_w > bar_x + bar_w) seg_w = (bar_x + bar_w) - x;
-                    sgl_c4f(cr / 255.0f, cg / 255.0f, cb / 255.0f, 0.95f);
+                    sgl_c4f(cr, cg, cb, 0.95f);
                     sgl_v2f(x, bar_y);
                     sgl_v2f(x + seg_w, bar_y);
                     sgl_v2f(x + seg_w, bar_y + (towed_volume > 0.001f ? 2.0f : bar_h));
@@ -2886,7 +3208,7 @@ static void draw_contracts_view(const station_ui_state_t *ui,
             sgl_end();
         }
 
-        char key_buf[8], cargo_buf[32], pay_buf[64]; /* 64 = room for "+%d %s" with 31-char currency name */
+        char key_buf[8], cargo_buf[48], pay_buf[64]; /* 64 = room for "+%d %s" with 31-char currency name */
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
 
@@ -2903,7 +3225,10 @@ static void draw_contracts_view(const station_ui_state_t *ui,
         const station_t *dest = (ct->station_index < MAX_STATIONS)
             ? &g.world.stations[ct->station_index] : NULL;
 
-        if (ct->action == CONTRACT_FRACTURE) {
+        if (ct->action == CONTRACT_DELIVERY &&
+            ui_credit_cargo_route_label(ct, cargo_buf, sizeof(cargo_buf))) {
+            /* Credit cargo is a wrapped station-to-station shipment. */
+        } else if (ct->action == CONTRACT_FRACTURE) {
             snprintf(cargo_buf, sizeof(cargo_buf), "asteroid field");
         } else if (objective.kind == CONTRACT_OBJECTIVE_PICKUP &&
                    objective.source_station >= 0 &&
@@ -3338,7 +3663,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
         .label = "CONTRACTS",
-        .legend = "[1-3] track  [S] act  [TAB] panel",
+        .legend = "[1-3] select  [S] deliver all  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_contracts_view,
         .input_fn = station_panel_input_work,
@@ -3462,12 +3787,14 @@ void draw_station_services(const station_ui_state_t* ui) {
     bool compact = ui_is_compact();
 
     draw_header_band(ui, panel_x, panel_y, panel_w, compact);
+    float brief_h = draw_station_arrival_brief(ui->station, panel_x, panel_y,
+                                               panel_w, compact);
 
     /* View content begins below the 3-line header (last line at panel_y+58)
      * and the divider rule at panel_y+72. */
     float inner_x = panel_x + 18.0f;
     float inner_w = panel_w - 36.0f;
-    float content_top = panel_y + 78.0f;
+    float content_top = panel_y + 78.0f + brief_h;
     float cx = inner_x + 18.0f;
 
     /* Station-role tint — used sparingly: active tab latch + section rules
@@ -3548,6 +3875,16 @@ void draw_station_services(const station_ui_state_t* ui) {
     const char *hint = (active_panel && active_panel->legend)
         ? active_panel->legend
         : "[TAB] panels";
+    char dynamic_hint[96];
+    if (active_panel && active_panel->view == STATION_VIEW_WORK) {
+        char action[32];
+        if (station_contract_s_action_label(ui->station, action,
+                                            sizeof(action))) {
+            snprintf(dynamic_hint, sizeof(dynamic_hint),
+                     "[1-3] select  [S] %s  [TAB] panel", action);
+            hint = dynamic_hint;
+        }
+    }
     char hint_fit[96];
     int hint_chars = (int)floorf((panel_w - 40.0f) / 8.0f);
     ui_fit_text(hint, hint_chars, hint_fit, sizeof(hint_fit));

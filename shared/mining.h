@@ -103,6 +103,15 @@ static inline void mining_grade_rgb(mining_grade_t grade,
     }
 }
 
+static inline void mining_grade_rgb_f(mining_grade_t grade,
+                                      float *r, float *g, float *b) {
+    uint8_t rr, gg, bb;
+    mining_grade_rgb(grade, &rr, &gg, &bb);
+    *r = (float)rr / 255.0f;
+    *g = (float)gg / 255.0f;
+    *b = (float)bb / 255.0f;
+}
+
 /* ------------------------------------------------------------------ */
 /* Grade classification                                                */
 /* ------------------------------------------------------------------ */

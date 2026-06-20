@@ -3059,6 +3059,100 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     return true;
 }
 
+static float try_deliver_towed_fragments_to_contracts(world_t *w,
+                                                      server_player_t *sp,
+                                                      station_t *st,
+                                                      commodity_t filter) {
+    if (!w || !sp || !st) return 0.0f;
+    if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS)
+        return 0.0f;
+
+    float payout = 0.0f;
+    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] =
+                sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            continue;
+        }
+
+        asteroid_t *a = &w->asteroids[idx];
+        if (a->commodity >= COMMODITY_RAW_ORE_COUNT) continue;
+        if (filter != COMMODITY_COUNT && filter != a->commodity) continue;
+
+        int best_contract = -1;
+        float best_price = 0.0f;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            contract_t *ct = &w->contracts[k];
+            if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+            if (ct->station_index != sp->current_station) continue;
+            if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
+            float price = contract_price(ct);
+            if (best_contract < 0 || price > best_price) {
+                best_contract = k;
+                best_price = price;
+            }
+        }
+        if (best_contract < 0) continue;
+
+        contract_t *ct = &w->contracts[best_contract];
+        mining_grade_t grade = (a->grade < (uint8_t)MINING_GRADE_COUNT)
+            ? (mining_grade_t)a->grade
+            : MINING_GRADE_COMMON;
+        float ore_units = a->ore;
+        if (ore_units <= 0.0f) continue;
+
+        st->_inventory_cache[a->commodity] += ore_units;
+        if (st->_inventory_cache[a->commodity] > REFINERY_HOPPER_CAPACITY)
+            st->_inventory_cache[a->commodity] = REFINERY_HOPPER_CAPACITY;
+
+        float ore_value = ore_units * best_price;
+        float graded_value = ore_value * mining_payout_multiplier(grade);
+        float credited = 0.0f;
+        if (server_player_can_use_pubkey_persistence(sp)) {
+            credited = ledger_credit_supply_amount_by_pubkey(st, sp->pubkey,
+                                                             graded_value);
+            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)lroundf(ore_units),
+                                   (uint8_t)a->commodity);
+        } else {
+            credited = ledger_credit_supply_amount(st, sp->session_token,
+                                                   graded_value);
+        }
+        sp->ship.stat_credits_earned += credited;
+        payout += credited;
+
+        ct->quantity_needed -= ore_units;
+        if (ct->quantity_needed <= 0.01f) {
+            ct->active = false;
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                .contract_complete.action = CONTRACT_TRACTOR});
+        }
+
+        sp->ship.towed_count--;
+        sp->ship.towed_fragments[t] =
+            sp->ship.towed_fragments[sp->ship.towed_count];
+        sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+
+        SIM_LOG("[sim] player %d loaded towed %s fragment (%.0f ore) for %.0f cr at %s\n",
+                sp->id, commodity_short_name(a->commodity), ore_units,
+                credited, st->name);
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL, .player_id = sp->id,
+            .sell = { .station = sp->current_station,
+                      .grade = (uint8_t)grade,
+                      .base_cr = (int)lroundf(ore_value),
+                      .bonus_cr = (int)lroundf(graded_value - ore_value),
+                      .by_contract = 1 }});
+
+        memset(a, 0, sizeof(*a));
+        if (idx >= 0 && idx < MAX_ASTEROIDS)
+            memset(&w->asteroid_origin[idx], 0, sizeof(w->asteroid_origin[idx]));
+    }
+    return payout;
+}
+
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
 
@@ -3095,6 +3189,14 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
     bool tried_but_full = false;
     bool had_sellable_cargo = false;
+
+    float fragment_payout = try_deliver_towed_fragments_to_contracts(
+        w, sp, st, filter);
+    if (fragment_payout > 0.01f) {
+        direct_payout += fragment_payout;
+        sold_against_contract = true;
+        had_sellable_cargo = true;
+    }
 
     float delivery_payout = delivery_try_deliver_bound_cargo(w, sp, st, filter);
     if (delivery_payout > 0.01f) {

@@ -1577,6 +1577,86 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     ASSERT(ledger_balance(prospect, sp->session_token) > 0.0f);
 }
 
+TEST(test_delivery_credit_requires_exact_bound_cargo) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT,
+                                           2));
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_FERRITE_INGOT,
+                                           0));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    helios->base_price[COMMODITY_FERRITE_INGOT] = 30.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
+    ASSERT(shipment != NULL);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 2);
+    ASSERT(sp->ship.manifest.count >= 2);
+
+    uint8_t first_exact_pub[32];
+    uint8_t second_exact_pub[32];
+    memcpy(first_exact_pub, shipment->cargo_pub[0], sizeof(first_exact_pub));
+    memcpy(second_exact_pub, shipment->cargo_pub[1], sizeof(second_exact_pub));
+    ASSERT(memcmp(sp->ship.manifest.units[0].pub, first_exact_pub, 32) == 0);
+    ASSERT(memcmp(sp->ship.manifest.units[1].pub, second_exact_pub, 32) == 0);
+    memset(sp->ship.manifest.units[1].pub, 0xee,
+           sizeof(sp->ship.manifest.units[1].pub));
+
+    sp->docked = true;
+    sp->current_station = 2;
+    sp->nearby_station = 2;
+    sp->in_dock_range = true;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    float helios_before = ledger_balance(helios, sp->session_token);
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    ASSERT_EQ_INT(shipment->quantity_delivered, 1);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
+
+    float helios_after_exact = ledger_balance(helios, sp->session_token);
+    memcpy(sp->ship.manifest.units[0].pub, second_exact_pub,
+           sizeof(sp->ship.manifest.units[0].pub));
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
+    ASSERT_EQ_INT(shipment->quantity_delivered, 2);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FERRITE_INGOT), 2);
+    ASSERT(ledger_balance(helios, sp->session_token) > helios_after_exact);
+}
+
 TEST(test_delivery_credit_hail_ignores_empty_origin) {
     WORLD_DECL;
     world_reset(&w);
@@ -2808,6 +2888,7 @@ void register_economy_mixed_cargo_tests(void) {
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_delivery_credit_contract_pickup_deliver_and_clear);
+    RUN(test_delivery_credit_requires_exact_bound_cargo);
     RUN(test_delivery_credit_hail_ignores_empty_origin);
     RUN(test_delivery_credit_hail_requires_docking_to_pick_up);
     RUN(test_delivery_credit_black_market_sale_defaults_origin_debt);

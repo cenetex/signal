@@ -1488,6 +1488,7 @@ static void handle_message(const uint8_t* data, int len) {
                     entries[i].destination_payout = read_f32_le(&p[17]);
                     entries[i].origin_completion_credit = read_f32_le(&p[21]);
                     entries[i].due_tick = read_u32_le(&p[25]);
+                    entries[i].held_bound = read_u16_le(&p[29]);
                 }
                 net_state.callbacks.on_delivery_ledger(entries, n);
             }

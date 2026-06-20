@@ -659,13 +659,14 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
 }
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
     if (ev->contract_complete.action == CONTRACT_TRACTOR) {
-        set_notice("Tractor contract complete.");
+        set_notice("Haul complete: cargo accepted, payout posted, station demand cooled.");
         episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
     } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
-        set_notice("Fracture contract complete.");
+        set_notice("Bounty complete: asteroid broken, station memory updated.");
     } else if (ev->contract_complete.action == CONTRACT_DELIVERY) {
-        set_notice("Delivery contract complete.");
+        set_notice("Delivery complete: cargo accepted, payout posted, route trust increased.");
     }
 }
 
@@ -673,7 +674,7 @@ static void sim_on_scaffold_ready(const sim_event_t *ev) {
     int sidx = ev->scaffold_ready.station;
     int mtype = ev->scaffold_ready.module_type;
     if (sidx < 0 || sidx >= MAX_STATIONS) return;
-    set_notice("%s scaffold ready at %s.",
+    set_notice("%s scaffold ready at %s. Tow it to extend station function.",
                module_type_name((module_type_t)mtype),
                g.world.stations[sidx].name);
 }
@@ -685,6 +686,7 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     g.plan_target_station = ev->outpost_placed.slot;
     g.placement_target_station = ev->outpost_placed.slot;
+    set_notice("Outpost blueprint placed. Bring relay material here to turn fringe space into signal.");
 }
 
 /* Spawn the 8 shards + cinematic state for a death event. */
@@ -830,13 +832,42 @@ static bool local_player_has_other_station_credit(int current_station) {
     return false;
 }
 
+static int local_player_best_other_station_credit(int current_station,
+                                                  float *out_balance)
+{
+    if (out_balance) *out_balance = 0.0f;
+    if (g.multiplayer_enabled) return -1;
+    int best_station = -1;
+    float best_balance = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (s == current_station) continue;
+        float bal = 0.0f;
+        if (!local_station_balance_for_player(s, &bal)) continue;
+        if (bal > best_balance) {
+            best_balance = bal;
+            best_station = s;
+        }
+    }
+    if (out_balance) *out_balance = best_balance;
+    return best_balance > 0.5f ? best_station : -1;
+}
+
 static void maybe_notice_local_credits_rule(int station_idx, float balance) {
     if (g.local_credit_hint_shown) return;
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return;
     if (balance > 0.5f) return;
     if (!local_player_has_other_station_credit(station_idx)) return;
     g.local_credit_hint_shown = true;
-    set_notice("Credits stay where you earn them. Carry goods, not money.");
+    float other_balance = 0.0f;
+    int other_station = local_player_best_other_station_credit(
+        station_idx, &other_balance);
+    if (other_station >= 0) {
+        set_notice("Credits stay local: spend %d at %s on cargo, then haul it here.",
+                   (int)lroundf(other_balance),
+                   g.world.stations[other_station].name);
+    } else {
+        set_notice("Credits stay where you earn them. Carry goods, not money.");
+    }
 }
 
 static const char *module_consequence_label(module_type_t type) {
@@ -928,6 +959,7 @@ static void sim_on_outpost_activated(const sim_event_t *ev) {
     (void)ev;
     if (!g.episode.watched[4]) episode_trigger(&g.episode, 4); /* Ep 4: Naming */
     audio_play_commission(&g.audio);
+    set_notice("Outpost online: local signal expanded. Add modules to make the stop useful.");
 }
 
 static void sim_on_npc_spawned(const sim_event_t *ev) {
@@ -946,6 +978,10 @@ static void sim_on_signal_lost(const sim_event_t *ev) {
 static void sim_on_station_connected(const sim_event_t *ev) {
     if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
         episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
+    if (ev->station_connected.connected_count > 0) {
+        set_notice("Signal chain connected: %d stations now share route memory.",
+                   ev->station_connected.connected_count);
+    }
 }
 
 /* Map order-rejection reason codes to user-visible notices. Reason

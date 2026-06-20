@@ -876,11 +876,11 @@ test.describe('Browser smoke tests', () => {
     await expect(page.locator('[data-control="tab"]')).toBeVisible();
     await expect(page.locator('[data-control="tab"]')).toHaveText('Panel');
     await expect.poll(async () => stationPanelLabel(page)).toBe('SHIP');
-    await expect.poll(async () => stationPanelLegend(page)).toBe('[R] repair  [M/C/T] refit  [TAB]');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[R] repair  [M/C/T] refit  [TAB] panel');
 
     await tap(page, 'Tab');
     await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
-    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] rows [F] page [S] all [TAB]');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] trade  [F] page  [S] deliver  [TAB] panel');
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationTrade)
       .toBe(mobileFlag.stationTrade);
@@ -900,7 +900,9 @@ test.describe('Browser smoke tests', () => {
 
     await tap(page, 'Tab');
     await expect.poll(async () => stationPanelLabel(page)).toBe('CONTRACTS');
-    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-3] track  [S] deliver  [TAB]');
+    await expect
+      .poll(async () => stationPanelLegend(page))
+      .toMatch(/^\[1-3\] select  \[S\] .+  \[TAB\] panel$/);
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationWork)
       .toBe(mobileFlag.stationWork);

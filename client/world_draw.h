@@ -28,7 +28,7 @@ float asteroid_profile(const asteroid_t* asteroid, float angle);
 int  crystal_spike_count(const asteroid_t *a);
 
 /* Float-RGB grade tint for sokol_gl callers. Delegates to the canonical
- * mining_grade_rgb in shared/mining.h. UI code should call that directly
+ * mining_grade_rgb_f in shared/mining.h. UI code should call that directly
  * instead of routing grade colors through world_draw. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b);
 

@@ -144,6 +144,7 @@ typedef struct {
     float destination_payout;
     float origin_completion_credit;
     uint32_t due_tick;
+    uint16_t held_bound;
 } NetDeliveryLedgerEntry;
 
 typedef void (*net_on_delivery_ledger_fn)(

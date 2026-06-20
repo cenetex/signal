@@ -1803,6 +1803,24 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
         write_f32_le(&p[17], s->destination_payout);
         write_f32_le(&p[21], s->origin_completion_credit);
         write_u32_le(&p[25], s->due_tick);
+        uint16_t held_bound = 0;
+        if (player_id < MAX_PLAYERS) {
+            const ship_t *ship = &w->players[player_id].ship;
+            if (ship->manifest.units) {
+                for (uint16_t m = 0; m < ship->manifest.count; m++) {
+                    const cargo_unit_t *unit = &ship->manifest.units[m];
+                    if (unit->commodity != s->commodity) continue;
+                    for (uint16_t b = 0; b < s->quantity_bound &&
+                                          b < MAX_DELIVERY_BOUND_CARGO; b++) {
+                        if (memcmp(s->cargo_pub[b], unit->pub, 32) == 0) {
+                            held_bound++;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        write_u16_le(&p[29], held_bound);
         count++;
     }
     buf[1] = (uint8_t)count;

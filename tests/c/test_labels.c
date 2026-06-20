@@ -53,6 +53,34 @@ TEST(test_mining_grade_label_all) {
     ASSERT_STR_EQ(mining_grade_label((mining_grade_t)99), "?");
 }
 
+TEST(test_mining_grade_palette_all) {
+    static const uint8_t expected[MINING_GRADE_COUNT][3] = {
+        [MINING_GRADE_COMMON]       = {200, 220, 230},
+        [MINING_GRADE_FINE]         = {140, 220, 255},
+        [MINING_GRADE_RARE]         = {190, 130, 255},
+        [MINING_GRADE_RATI]         = {255, 200,  90},
+        [MINING_GRADE_COMMISSIONED] = {255, 240, 130},
+    };
+    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+        uint8_t r = 0, g = 0, b = 0;
+        float rf = 0.0f, gf = 0.0f, bf = 0.0f;
+        mining_grade_rgb((mining_grade_t)gi, &r, &g, &b);
+        mining_grade_rgb_f((mining_grade_t)gi, &rf, &gf, &bf);
+        ASSERT_EQ_INT(r, expected[gi][0]);
+        ASSERT_EQ_INT(g, expected[gi][1]);
+        ASSERT_EQ_INT(b, expected[gi][2]);
+        ASSERT_EQ_FLOAT(rf, (float)expected[gi][0] / 255.0f, 0.001f);
+        ASSERT_EQ_FLOAT(gf, (float)expected[gi][1] / 255.0f, 0.001f);
+        ASSERT_EQ_FLOAT(bf, (float)expected[gi][2] / 255.0f, 0.001f);
+    }
+
+    uint8_t r = 0, g = 0, b = 0;
+    mining_grade_rgb((mining_grade_t)99, &r, &g, &b);
+    ASSERT_EQ_INT(r, expected[MINING_GRADE_COMMON][0]);
+    ASSERT_EQ_INT(g, expected[MINING_GRADE_COMMON][1]);
+    ASSERT_EQ_INT(b, expected[MINING_GRADE_COMMON][2]);
+}
+
 TEST(test_commodity_short_label_all) {
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_FRAME),         "frames");
     ASSERT_STR_EQ(commodity_short_label(COMMODITY_FERRITE_INGOT), "fe ingots");
@@ -257,6 +285,7 @@ void register_label_tests(void) {
     RUN(test_signal_visual_cue_saturation_resists_grayscale);
     RUN(test_signal_visual_player_saturation_keeps_ship_readable);
     RUN(test_mining_grade_label_all);
+    RUN(test_mining_grade_palette_all);
     RUN(test_commodity_short_label_all);
     RUN(test_station_flow_diag_label_all);
     RUN(test_station_planned_site_abandoned_helper);

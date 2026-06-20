@@ -470,6 +470,7 @@ typedef struct {
         bool moved;          /* pressed a movement key */
         bool fractured;      /* broke an asteroid */
         bool tractored;      /* collected ore fragments */
+        bool threw;          /* released a towed fragment with the slingshot */
         bool hailed;         /* pressed H to hail a station */
         bool boosted;        /* held SHIFT outside core signal */
         bool complete;       /* core loop done — stations take over */

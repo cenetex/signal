@@ -252,6 +252,37 @@ static void hud_player_scan_label(int idx, char *out, size_t cap) {
     }
 }
 
+static const char *hud_npc_role_label(uint8_t role);
+
+static const char *hud_npc_action_hint(const npc_ship_t *npc) {
+    if (!npc) return "scan";
+    switch (npc->role) {
+    case NPC_ROLE_MINER:
+        if (npc->state == NPC_STATE_MINING ||
+            npc->state == NPC_STATE_TRAVEL_TO_ASTEROID) {
+            return "compete for rock";
+        }
+        if (npc->state == NPC_STATE_RETURN_TO_STATION ||
+            npc->state == NPC_STATE_DOCKED) {
+            return "follow to refinery";
+        }
+        return "follow ore route";
+    case NPC_ROLE_HAULER:
+        if (npc->state == NPC_STATE_TRAVEL_TO_DEST ||
+            npc->state == NPC_STATE_UNLOADING) {
+            return "follow route";
+        }
+        if (npc->state == NPC_STATE_DOCKED) {
+            return "watch for departure";
+        }
+        return "intercept cargo";
+    case NPC_ROLE_TOW:
+        return "follow tow path";
+    default:
+        return "hail or follow";
+    }
+}
+
 static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, float sig_quality) {
     hud_action_t out = {0};
     out.kind = HUD_ACTION_IDLE;
@@ -282,7 +313,8 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
     if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
         const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
         out.kind = HUD_ACTION_SCAN_NPC;
-        out.str_a = (npc->role == NPC_ROLE_MINER) ? "miner" : "hauler";
+        out.str_a = hud_npc_role_label(npc->role);
+        out.str_b = hud_npc_action_hint(npc);
         int total = 0;
         for (int ci = 0; ci < COMMODITY_COUNT; ci++) total += (int)lroundf(npc->cargo[ci]);
         out.int_a = total;
@@ -385,8 +417,11 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         else          snprintf(out, out_size, "SCAN %s // CORE", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
-        snprintf(out, out_size, "SCAN NPC // %s",
-                 (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
+        if (a->str_b)
+            snprintf(out, out_size, "SCAN NPC // %s", a->str_b);
+        else
+            snprintf(out, out_size, "SCAN NPC // %s",
+                     (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
         return;
     case HUD_ACTION_SCAN_PILOT:
         if (a->str_a) snprintf(out, out_size, "SCAN PILOT // %s", a->str_a);
@@ -453,7 +488,12 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         else          snprintf(out, out_size, "Scan %s // core hub", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
-        snprintf(out, out_size, "Scan NPC %s // cargo %d", a->str_a, a->int_a);
+        if (a->str_b)
+            snprintf(out, out_size, "Scan NPC %s // %s // cargo %d",
+                     a->str_a, a->str_b, a->int_a);
+        else
+            snprintf(out, out_size, "Scan NPC %s // cargo %d",
+                     a->str_a, a->int_a);
         return;
     case HUD_ACTION_SCAN_PILOT:
         if (a->str_a && a->int_b > 0)
