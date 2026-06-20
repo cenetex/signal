@@ -341,34 +341,29 @@ static bool asteroid_near_corridor_module(const asteroid_t *a,
 }
 
 void resolve_asteroid_station_collisions(world_t *w) {
-    /* Build geometry for all active stations once */
-    station_geom_t geom_cache[MAX_STATIONS];
-    bool geom_valid[MAX_STATIONS];
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (station_collides(&w->stations[s])) {
-            station_build_geom(&w->stations[s], &geom_cache[s]);
-            geom_valid[s] = true;
-        } else {
-            geom_valid[s] = false;
-        }
-    }
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!geom_valid[s]) continue;
-            const station_geom_t *geom = &geom_cache[s];
+        if (!station_collides(&w->stations[s])) continue;
+
+        /* A full MAX_STATIONS geometry cache is ~320 KiB with the expanded
+         * station cap, which overflows the browser WASM stack. Keep only one
+         * station's geometry live while walking all asteroids. */
+        station_geom_t geom;
+        station_build_geom(&w->stations[s], &geom);
+
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            asteroid_t *a = &w->asteroids[i];
+            if (!a->active) continue;
             /* Core collision */
-            if (geom->has_core)
-                resolve_asteroid_module_collision(a, geom->core.center, geom->core.radius);
+            if (geom.has_core)
+                resolve_asteroid_module_collision(a, geom.core.center, geom.core.radius);
             /* Module and dock collision circles. */
-            for (int ci = 0; ci < geom->circle_count; ci++)
-                resolve_asteroid_module_collision(a, geom->circles[ci].center, geom->circles[ci].radius);
+            for (int ci = 0; ci < geom.circle_count; ci++)
+                resolve_asteroid_module_collision(a, geom.circles[ci].center, geom.circles[ci].radius);
             /* Corridor arcs form the visible station wall bands between modules. */
-            for (int ci = 0; ci < geom->corridor_count; ci++) {
-                const geom_corridor_t *cor = &geom->corridors[ci];
-                if (asteroid_near_corridor_module(a, geom, cor)) continue;
-                resolve_asteroid_corridor_collision(a, geom->center,
+            for (int ci = 0; ci < geom.corridor_count; ci++) {
+                const geom_corridor_t *cor = &geom.corridors[ci];
+                if (asteroid_near_corridor_module(a, &geom, cor)) continue;
+                resolve_asteroid_corridor_collision(a, geom.center,
                     cor->ring_radius, cor->angle_a, cor->arc_delta);
             }
         }
