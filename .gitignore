@@ -50,6 +50,7 @@ arweave-wallet.json
 .arweave-cache.json
 .arweave-manifest-tx
 .arweave-paths.json
+.arweave-previous-paths.json
 
 # Local Cloudflare/Wrangler runtime state.
 .wrangler/

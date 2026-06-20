@@ -13,6 +13,7 @@ const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 const AUTO_FUND = process.env.IRYS_AUTO_FUND !== '0';
 const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '2');
 const OST_MANIFEST_FILE = resolve('web/ost-manifest.json');
+const PREVIOUS_PATHS_FILE = resolve('.arweave-previous-paths.json');
 
 // Load Solana keypair for Irys
 let keypair;
@@ -27,6 +28,10 @@ if (process.env.SOLANA_KEYPAIR) {
 // Content-hash cache to avoid re-uploading unchanged files
 let assetCache = {};
 try { assetCache = JSON.parse(readFileSync('.arweave-cache.json', 'utf-8')); } catch (_) {}
+
+let previousPathEntries = {};
+try { previousPathEntries = JSON.parse(readFileSync(PREVIOUS_PATHS_FILE, 'utf-8')); } catch (_) {}
+const remoteCacheHits = new Map();
 
 function collectFiles(dir, base) {
   const files = [];
@@ -81,6 +86,31 @@ function loadStaticPathEntries() {
   return entries;
 }
 
+async function fetchGatewayBytes(txId) {
+  for (const gw of [`${PROTOCOL}://${HOST}/raw/`, 'https://gateway.irys.xyz/', 'https://node2.irys.xyz/']) {
+    try {
+      const res = await fetch(gw + txId);
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function remoteCacheTxForFile(name, data) {
+  if (remoteCacheHits.has(name)) return remoteCacheHits.get(name);
+
+  const txId = previousPathEntries[name];
+  if (typeof txId !== 'string' || !txId) {
+    remoteCacheHits.set(name, null);
+    return null;
+  }
+
+  const remote = await fetchGatewayBytes(txId);
+  const hit = remote && sha256(remote) === sha256(data) ? txId : null;
+  remoteCacheHits.set(name, hit);
+  return hit;
+}
+
 async function estimateUploadPlan(irys, files) {
   let payloadBytes = 0;
   let price = new BigNumber(0);
@@ -90,6 +120,7 @@ async function estimateUploadPlan(irys, files) {
     const cached = assetCache[f.name];
     const rewritesPerDeploy = f.name === 'play.html' || f.name === 'signal.html';
     if (cached && cached.hash === sha256(data) && !rewritesPerDeploy) continue;
+    if (!rewritesPerDeploy && await remoteCacheTxForFile(f.name, data)) continue;
 
     const itemBytes = data.length;
     payloadBytes += itemBytes;
@@ -173,6 +204,13 @@ async function main() {
       console.log(`  ${f.name} (unchanged, reuse ${cached.tx.slice(0, 8)}...)`);
       continue;
     }
+    const remoteTx = await remoteCacheTxForFile(f.name, data);
+    if (remoteTx) {
+      manifestEntries[f.name] = remoteTx;
+      assetCache[f.name] = { hash, tx: remoteTx };
+      console.log(`  ${f.name} (remote unchanged, reuse ${remoteTx.slice(0, 8)}...)`);
+      continue;
+    }
     totalBytes += data.length;
     console.log(`  ${f.name} (${(data.length / 1024).toFixed(1)} KB)...`);
     const receipt = await irys.upload(data, {
@@ -226,6 +264,14 @@ async function main() {
       manifestEntries[f.name] = cached.tx;
       if (f.name.endsWith('.html')) manifestEntries[f.name.replace('.html', '')] = cached.tx;
       console.log(`  ${f.name} (unchanged, reuse ${cached.tx.slice(0, 8)}...)`);
+      continue;
+    }
+    const remoteTx = await remoteCacheTxForFile(f.name, data);
+    if (remoteTx) {
+      manifestEntries[f.name] = remoteTx;
+      if (f.name.endsWith('.html')) manifestEntries[f.name.replace('.html', '')] = remoteTx;
+      assetCache[f.name] = { hash, tx: remoteTx };
+      console.log(`  ${f.name} (remote unchanged, reuse ${remoteTx.slice(0, 8)}...)`);
       continue;
     }
 
