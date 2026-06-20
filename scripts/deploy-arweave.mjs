@@ -12,6 +12,7 @@ const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 const AUTO_FUND = process.env.IRYS_AUTO_FUND !== '0';
 const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '2');
+const STATIC_PATHS_FILE = resolve('web/music-arweave.json');
 
 // Load Solana keypair for Irys
 let keypair;
@@ -43,6 +44,17 @@ function sha256(data) { return createHash('sha256').update(data).digest('hex'); 
 function ct(f) {
   const t = { html: 'text/html', js: 'application/javascript', wasm: 'application/wasm', css: 'text/css', mp3: 'audio/mpeg' };
   return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
+}
+
+function loadStaticPathEntries() {
+  if (!existsSync(STATIC_PATHS_FILE)) return {};
+  const entries = JSON.parse(readFileSync(STATIC_PATHS_FILE, 'utf-8'));
+  for (const [name, txId] of Object.entries(entries)) {
+    if (typeof name !== 'string' || typeof txId !== 'string' || !name || !txId) {
+      throw new Error(`Invalid static Arweave path entry in ${STATIC_PATHS_FILE}`);
+    }
+  }
+  return entries;
 }
 
 async function estimateUploadPlan(irys, files) {
@@ -118,6 +130,12 @@ async function main() {
   const htmlFiles = [];
   const manifestEntries = {};
   let totalBytes = 0;
+
+  const staticPathEntries = loadStaticPathEntries();
+  Object.assign(manifestEntries, staticPathEntries);
+  if (Object.keys(staticPathEntries).length) {
+    console.log(`Static Arweave paths: ${Object.keys(staticPathEntries).length}`);
+  }
 
   // Phase 1: upload non-HTML (assets, js, wasm, mp3)
   console.log('\nPhase 1: assets...');
