@@ -12,7 +12,7 @@ const PORT = parseInt(process.env.ARWEAVE_PORT || '443');
 const PROTOCOL = process.env.ARWEAVE_PROTOCOL || 'https';
 const AUTO_FUND = process.env.IRYS_AUTO_FUND !== '0';
 const FUNDING_BUFFER = parseFloat(process.env.IRYS_FUNDING_BUFFER || '2');
-const STATIC_PATHS_FILE = resolve('web/music-arweave.json');
+const OST_MANIFEST_FILE = resolve('web/ost-manifest.json');
 
 // Load Solana keypair for Irys
 let keypair;
@@ -42,18 +42,42 @@ function collectFiles(dir, base) {
 function sha256(data) { return createHash('sha256').update(data).digest('hex'); }
 
 function ct(f) {
-  const t = { html: 'text/html', js: 'application/javascript', wasm: 'application/wasm', css: 'text/css', mp3: 'audio/mpeg' };
+  const t = {
+    html: 'text/html',
+    js: 'application/javascript',
+    wasm: 'application/wasm',
+    css: 'text/css',
+    json: 'application/json',
+    mp3: 'audio/mpeg',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+  };
   return t[f.split('.').pop().toLowerCase()] || 'application/octet-stream';
 }
 
 function loadStaticPathEntries() {
-  if (!existsSync(STATIC_PATHS_FILE)) return {};
-  const entries = JSON.parse(readFileSync(STATIC_PATHS_FILE, 'utf-8'));
-  for (const [name, txId] of Object.entries(entries)) {
-    if (typeof name !== 'string' || typeof txId !== 'string' || !name || !txId) {
-      throw new Error(`Invalid static Arweave path entry in ${STATIC_PATHS_FILE}`);
-    }
+  if (!existsSync(OST_MANIFEST_FILE)) return {};
+
+  const manifest = JSON.parse(readFileSync(OST_MANIFEST_FILE, 'utf-8'));
+  if (!Array.isArray(manifest.tracks)) {
+    throw new Error(`Invalid OST manifest: missing tracks array in ${OST_MANIFEST_FILE}`);
   }
+
+  const entries = {};
+  for (const track of manifest.tracks) {
+    const audio = track && track.audio ? track.audio : {};
+    const name = audio.path;
+    const txId = audio.tx;
+    if (typeof name !== 'string' || typeof txId !== 'string' || !name || !txId) {
+      throw new Error(`Invalid OST track audio entry in ${OST_MANIFEST_FILE}`);
+    }
+    if (name.startsWith('/')) {
+      throw new Error(`OST track paths must be relative: ${name}`);
+    }
+    entries[name] = txId;
+  }
+
   return entries;
 }
 

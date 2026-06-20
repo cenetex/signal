@@ -418,8 +418,11 @@ site: build-web
 	@rm -rf _site
 	@mkdir -p _site
 	cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
-	   build-web/play.html build-web/signal-touch-controls.js _site/
-	cp web/index.html web/ost.html web/mine.html web/shell.html _site/
+	   build-web/play.html build-web/signal-touch-controls.js \
+	   build-web/signal-hail-llm.js build-web/signal-hail-gguf-worker.js \
+	   build-web/signal-hail-wllama-runtime.js _site/
+	cp web/index.html web/ost.html web/ost-manifest.json web/ost-cover.jpg \
+	   web/mine.html web/shell.html _site/
 	@echo "Site built in _site/"
 
 deploy-arweave: site

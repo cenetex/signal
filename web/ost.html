@@ -51,7 +51,7 @@
                     radial-gradient(circle at center, transparent 44%, rgba(0,0,0,0.42) 100%);
       }
 
-      .page { position: relative; z-index: 1; width: min(680px, 100%); }
+      .page { position: relative; z-index: 1; width: min(760px, 100%); }
 
       .back {
         display: inline-block;
@@ -65,7 +65,26 @@
         transition: color 0.2s;
       }
 
-      .header { text-align: center; margin-bottom: 24px; }
+      .album {
+        display: grid;
+        grid-template-columns: 168px minmax(0, 1fr);
+        gap: 20px;
+        align-items: end;
+        margin-bottom: 24px;
+      }
+
+      .cover {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1;
+        display: block;
+        object-fit: cover;
+        border: 1px solid rgba(128, 255, 213, 0.24);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+        background: rgba(245, 239, 223, 0.04);
+      }
+
+      .header { text-align: left; min-width: 0; }
 
       h1 {
         font-size: clamp(36px, 8vw, 60px);
@@ -83,6 +102,7 @@
         font-family: "IBM Plex Mono", monospace;
         font-size: 12px;
         letter-spacing: 0.08em;
+        line-height: 1.55;
       }
 
       .player {
@@ -241,6 +261,18 @@
 
       @media (max-width: 500px) {
         body { padding: 16px 12px 32px; }
+        .album {
+          grid-template-columns: 108px minmax(0, 1fr);
+          gap: 14px;
+          align-items: center;
+        }
+        h1 {
+          font-size: clamp(32px, 12vw, 48px);
+        }
+        .sub {
+          font-size: 10px;
+          letter-spacing: 0.04em;
+        }
         .player { gap: 8px; padding: 8px 12px; }
         .p-bar { max-width: 88px; }
         .track-btn {
@@ -255,9 +287,12 @@
   <body>
     <div class="page">
       <a class="back" href="/">&larr; Signal</a>
-      <div class="header">
-        <h1>Signal <span class="a">OST</span></h1>
-        <div class="sub">Vol. 1 &mdash; ratimics &mdash; 24 tracks &mdash; <span id="dur">--:--</span></div>
+      <div class="album">
+        <img class="cover" id="cover" src="./ost-cover.jpg" alt="" width="960" height="960" decoding="async">
+        <div class="header">
+          <h1 id="album-title">Signal <span class="a">OST</span></h1>
+          <div class="sub" id="album-meta">Vol. 1 / ratimics / 24 tracks / --:--</div>
+        </div>
       </div>
 
       <div class="player">
@@ -273,53 +308,90 @@
       <div class="foot"><a href="/">signal.ratimics.com</a> &mdash; <a href="/play">play</a></div>
     </div>
     <script>
-const U="./music";
-const T=[
-  {f:"belt_drifters.mp3",n:"Signal: Belt Drifters",d:"8:00"},
-  {f:"belt_drifters_2.mp3",n:"Signal: Belt Drifters (II)",d:"4:14"},
-  {f:"echoes.mp3",n:"Signal: Echoes in the Belt",d:"6:37"},
-  {f:"echoes_2.mp3",n:"Signal: Echoes in the Belt (II)",d:"3:48"},
-  {f:"echoes_3.mp3",n:"Signal: Echoes in the Belt (III)",d:"3:56"},
-  {f:"clock_thunder.mp3",n:"Clock Made Of Thunder",d:"7:31"},
-  {f:"clock_thunder_2.mp3",n:"Clock Made Of Thunder (II)",d:"7:13"},
-  {f:"kings_of_nowhere.mp3",n:"Vector Kings of Nowhere",d:"3:23"},
-  {f:"kings_of_nowhere_2.mp3",n:"Vector Kings of Nowhere (II)",d:"3:10"},
-  {f:"vector_economy.mp3",n:"Signal: Vector Space Economy",d:"4:48"},
-  {f:"vector_economy_2.mp3",n:"Signal: Vector Space Economy (II)",d:"5:17"},
-  {f:"vector_miners_epoch.mp3",n:"Signal: Vector Miners Epoch",d:"5:08"},
-  {f:"vector_miners_epoch_2.mp3",n:"Signal: Vector Miners Epoch (II)",d:"7:59"},
-  {f:"vector_veins.mp3",n:"Vector Veins",d:"3:48"},
-  {f:"vector_veins_lofi.mp3",n:"Vector Veins: Lo-Fi Belt Miners",d:"3:08"},
-  {f:"vector_veins_80s.mp3",n:"Vector Veins: 80s Belt Miners",d:"3:59"},
-  {f:"vector_veins_80s_2.mp3",n:"Vector Veins: 80s Belt Miners (II)",d:"3:39"},
-  {f:"belt_drifters_3.mp3",n:"Signal: Belt Drifters (III)",d:"3:44"},
-  {f:"belt_drifters_4.mp3",n:"Signal: Belt Drifters (IV)",d:"7:59"},
-  {f:"fade_out_at_seventeen.mp3",n:"Fade Out At Seventeen",d:"3:12"},
-  {f:"fade_out_at_seventeen_2.mp3",n:"Fade Out At Seventeen (II)",d:"3:27"},
-  {f:"lofi_drift_jam.mp3",n:"Signal: Lo-Fi Drift Jam",d:"3:43"},
-  {f:"nebula_drift_protocol.mp3",n:"Nebula Drift Protocol",d:"4:17"},
-  {f:"nebula_drift_protocol_2.mp3",n:"Nebula Drift Protocol (II)",d:"3:58"},
-];
-const p=s=>{const[m,s2]=s.split(":").map(Number);return m*60+s2};
+const MANIFEST_URL="./ost-manifest.json";
+let T=[];
+let ci=-1;
+let a=new Audio();
+a.volume=0.8;
+
+const p=s=>{
+  const parts=String(s||"0:00").split(":").map(Number);
+  if(parts.length===3)return parts[0]*3600+parts[1]*60+parts[2];
+  return (parts[0]||0)*60+(parts[1]||0);
+};
 const fm=s=>{const m=Math.floor(s/60);return m+":"+String(Math.floor(s%60)).padStart(2,"0")};
-const tot=T.reduce((a,t)=>a+p(t.d),0);
-document.getElementById("dur").textContent=Math.floor(tot/3600)+"h "+fm(tot%3600);
+const albumDuration=s=>s>=3600?Math.floor(s/3600)+"h "+fm(s%3600):fm(s);
+const trackSrc=t=>{
+  const path=t&&t.audio?t.audio.path:"";
+  if(!path)return "";
+  if(path.startsWith("/")||path.startsWith("http://")||path.startsWith("https://"))return path;
+  return "./"+path;
+};
 
 const el=document.getElementById("list");
-T.forEach((t,i)=>{
+function renderAlbum(manifest){
+  const album=manifest.album||{};
+  const title=album.title||"Signal OST";
+  const words=title.trim().split(/\s+/);
+  const last=words.pop()||"OST";
+  const h=document.getElementById("album-title");
+  h.textContent="";
+  if(words.length)h.append(document.createTextNode(words.join(" ")+" "));
+  const accent=document.createElement("span");
+  accent.className="a";
+  accent.textContent=last;
+  h.appendChild(accent);
+
+  document.title=[title,album.subtitle].filter(Boolean).join(" ");
+  const cover=album.cover||{};
+  const img=document.getElementById("cover");
+  if(cover.path)img.src=cover.path.startsWith("/")?cover.path:"./"+cover.path;
+  if(cover.alt)img.alt=cover.alt;
+
+  const total=T.reduce((sum,t)=>sum+p(t.duration),0);
+  document.getElementById("album-meta").textContent=[
+    album.subtitle,
+    album.artist,
+    T.length+" tracks",
+    albumDuration(total),
+  ].filter(Boolean).join(" / ");
+}
+
+function renderTracks(){
+  el.textContent="";
+  T.forEach((t,i)=>{
   const li=document.createElement("li");
   li.className="t";
-  li.innerHTML=`<button class="track-btn" type="button" aria-label="Play ${t.n}"><div class="t-n">${String(i+1).padStart(2,"0")}</div><div class="t-name">${t.n}</div><div class="t-dur">${t.d}</div></button>`;
-  li.querySelector("button").addEventListener("click",()=>go(i));
+  const btn=document.createElement("button");
+  btn.className="track-btn";
+  btn.type="button";
+  btn.setAttribute("aria-label","Play "+t.title);
+  const num=document.createElement("div");
+  num.className="t-n";
+  num.textContent=String(t.number||i+1).padStart(2,"0");
+  const name=document.createElement("div");
+  name.className="t-name";
+  name.textContent=t.title;
+  const dur=document.createElement("div");
+  dur.className="t-dur";
+  dur.textContent=t.duration;
+  btn.append(num,name,dur);
+  btn.addEventListener("click",()=>go(i));
+  li.appendChild(btn);
   el.appendChild(li);
-});
+  });
+}
 
-let ci=-1,a=new Audio();a.volume=0.8;
 function go(i){
+  if(!T.length)return;
+  if(i<0)i=T.length-1;
+  if(i>=T.length)i=0;
   ci=i;
-  a.src=U+"/"+T[i].f;
-  a.play();
-  document.getElementById("title").textContent=T[i].n;
+  const src=trackSrc(T[i]);
+  if(!src)return;
+  a.src=src;
+  a.play().catch(()=>ico(0));
+  document.getElementById("title").textContent=T[i].title;
   ico(1);
   document.querySelectorAll(".t").forEach((e,j)=>e.classList.toggle("on",j===i));
 }
@@ -328,8 +400,8 @@ function ico(pauseOn){
 }
 document.getElementById("play").onclick=()=>{if(ci<0)return go(0);a.paused?(a.play(),ico(1)):(a.pause(),ico(0))};
 document.getElementById("prev").onclick=()=>go(ci<=0?T.length-1:ci-1);
-document.getElementById("next").onclick=()=>go((ci+1)%T.length);
-a.onended=()=>go((ci+1)%T.length);
+document.getElementById("next").onclick=()=>go(ci<0?0:(ci+1)%T.length);
+a.onended=()=>{if(T.length)go((ci+1)%T.length)};
 a.ontimeupdate=()=>{if(!a.duration)return;document.getElementById("fill").style.width=(a.currentTime/a.duration*100)+"%";document.getElementById("time").textContent=fm(a.currentTime)};
 document.getElementById("bar").onclick=e=>{if(!a.duration)return;const r=e.currentTarget.getBoundingClientRect();a.currentTime=(e.clientX-r.left)/r.width*a.duration};
 document.addEventListener("keydown",e=>{
@@ -349,6 +421,21 @@ document.addEventListener("keydown",e=>{
     document.getElementById("prev").click();
   }
 });
+
+fetch(MANIFEST_URL)
+  .then(res=>{
+    if(!res.ok)throw new Error("OST manifest unavailable");
+    return res.json();
+  })
+  .then(manifest=>{
+    T=Array.isArray(manifest.tracks)?manifest.tracks.slice().sort((a,b)=>(a.number||0)-(b.number||0)):[];
+    renderAlbum(manifest);
+    renderTracks();
+  })
+  .catch(err=>{
+    console.error(err);
+    document.getElementById("title").textContent="Album metadata unavailable";
+  });
     </script>
   </body>
 </html>

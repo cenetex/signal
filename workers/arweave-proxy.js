@@ -68,6 +68,10 @@ function responseHeaders(path, kvAsset, overrideExt = null) {
     js: "application/javascript",
     wasm: "application/wasm",
     mp3: "audio/mpeg",
+    json: "application/json; charset=utf-8",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
   }[effectiveExt] || "application/octet-stream";
 
   return {

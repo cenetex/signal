@@ -1,0 +1,305 @@
+{
+  "schema": "signal.ost.album.v1",
+  "album": {
+    "id": "signal-ost-vol-1",
+    "title": "Signal OST",
+    "subtitle": "Vol. 1",
+    "artist": "ratimics",
+    "year": 2026,
+    "cover": {
+      "path": "ost-cover.jpg",
+      "contentType": "image/jpeg",
+      "alt": "Signal OST Vol. 1 cover art: a luminous signal path through an industrial asteroid belt."
+    }
+  },
+  "tracks": [
+    {
+      "number": 1,
+      "disc": 1,
+      "slug": "belt-drifters",
+      "title": "Signal: Belt Drifters",
+      "duration": "8:00",
+      "audio": {
+        "path": "music/belt_drifters.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "ttApPkREUj0t9TbzmheWid8eLgKEH6TSAJoPxpUxoeM"
+      }
+    },
+    {
+      "number": 2,
+      "disc": 1,
+      "slug": "belt-drifters-ii",
+      "title": "Signal: Belt Drifters (II)",
+      "duration": "4:14",
+      "audio": {
+        "path": "music/belt_drifters_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "oC9YovCqJdFwFasdjaF-oSQa9nvcuJ8UnwoMBl1Iakg"
+      }
+    },
+    {
+      "number": 3,
+      "disc": 1,
+      "slug": "echoes-in-the-belt",
+      "title": "Signal: Echoes in the Belt",
+      "duration": "6:37",
+      "audio": {
+        "path": "music/echoes.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "wzGagmKnTL9HuBBxYX1HfsFLyG-OzvTXcdGKAkD0PGY"
+      }
+    },
+    {
+      "number": 4,
+      "disc": 1,
+      "slug": "echoes-in-the-belt-ii",
+      "title": "Signal: Echoes in the Belt (II)",
+      "duration": "3:48",
+      "audio": {
+        "path": "music/echoes_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "EyNphAHKPDP0g8e71dMwU9utVrs6edc1u3V8ytMyVNk"
+      }
+    },
+    {
+      "number": 5,
+      "disc": 1,
+      "slug": "echoes-in-the-belt-iii",
+      "title": "Signal: Echoes in the Belt (III)",
+      "duration": "3:56",
+      "audio": {
+        "path": "music/echoes_3.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "voUvleJc6xGqX_2akPqBIQ0lVi6razZPSTQx3D3Xpqs"
+      }
+    },
+    {
+      "number": 6,
+      "disc": 1,
+      "slug": "clock-made-of-thunder",
+      "title": "Clock Made Of Thunder",
+      "duration": "7:31",
+      "audio": {
+        "path": "music/clock_thunder.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "rhKjWrLpD6qWd3WHuw0PN4Ly2e8gCS828sY6B_oGq6s"
+      }
+    },
+    {
+      "number": 7,
+      "disc": 1,
+      "slug": "clock-made-of-thunder-ii",
+      "title": "Clock Made Of Thunder (II)",
+      "duration": "7:13",
+      "audio": {
+        "path": "music/clock_thunder_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "6wG-KUVDbs9PAqXqVAei1bV4ankTjweLakZvyQiurzw"
+      }
+    },
+    {
+      "number": 8,
+      "disc": 1,
+      "slug": "vector-kings-of-nowhere",
+      "title": "Vector Kings of Nowhere",
+      "duration": "3:23",
+      "audio": {
+        "path": "music/kings_of_nowhere.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "-pVfJGisgGAVaaqjzbBg6rlls0kOCZ235CgI5ZjQH1k"
+      }
+    },
+    {
+      "number": 9,
+      "disc": 1,
+      "slug": "vector-kings-of-nowhere-ii",
+      "title": "Vector Kings of Nowhere (II)",
+      "duration": "3:10",
+      "audio": {
+        "path": "music/kings_of_nowhere_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "nADkJhrpjKLopc-kOUbO4xK4f29OorCjzSPvyGbj2vI"
+      }
+    },
+    {
+      "number": 10,
+      "disc": 1,
+      "slug": "vector-space-economy",
+      "title": "Signal: Vector Space Economy",
+      "duration": "4:48",
+      "audio": {
+        "path": "music/vector_economy.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "6gHHWNx3sMHUoeoV893lClCCNI9587grf3m9aicf90o"
+      }
+    },
+    {
+      "number": 11,
+      "disc": 1,
+      "slug": "vector-space-economy-ii",
+      "title": "Signal: Vector Space Economy (II)",
+      "duration": "5:17",
+      "audio": {
+        "path": "music/vector_economy_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "ddF-qVDtF7jeyAF9dFQmgB5WQn-Dl6-sd_787346cnk"
+      }
+    },
+    {
+      "number": 12,
+      "disc": 1,
+      "slug": "vector-miners-epoch",
+      "title": "Signal: Vector Miners Epoch",
+      "duration": "5:08",
+      "audio": {
+        "path": "music/vector_miners_epoch.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "VZ6NgfK4WLVtVm3tGgTiLSeSa5JjGPBsxpZGZT3tQks"
+      }
+    },
+    {
+      "number": 13,
+      "disc": 1,
+      "slug": "vector-miners-epoch-ii",
+      "title": "Signal: Vector Miners Epoch (II)",
+      "duration": "7:59",
+      "audio": {
+        "path": "music/vector_miners_epoch_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "e3cP31XeRNzYaa5X6FY1BlkGGDL3AlS1ztmkIlYJQaw"
+      }
+    },
+    {
+      "number": 14,
+      "disc": 1,
+      "slug": "vector-veins",
+      "title": "Vector Veins",
+      "duration": "3:48",
+      "audio": {
+        "path": "music/vector_veins.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "fMX_P0l3NyqxhIqx61ebVMbQKBhPWxvav7mH-OJHERQ"
+      }
+    },
+    {
+      "number": 15,
+      "disc": 1,
+      "slug": "vector-veins-lo-fi-belt-miners",
+      "title": "Vector Veins: Lo-Fi Belt Miners",
+      "duration": "3:08",
+      "audio": {
+        "path": "music/vector_veins_lofi.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "uqd6dfG93q6FPlff_h0XqJ8xqUH82Ukg2OG2yw1cCdY"
+      }
+    },
+    {
+      "number": 16,
+      "disc": 1,
+      "slug": "vector-veins-80s-belt-miners",
+      "title": "Vector Veins: 80s Belt Miners",
+      "duration": "3:59",
+      "audio": {
+        "path": "music/vector_veins_80s.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "Ow2RX13wBz73rRQ03tPWvPXG3gBYV6E8z2oAwlxl35A"
+      }
+    },
+    {
+      "number": 17,
+      "disc": 1,
+      "slug": "vector-veins-80s-belt-miners-ii",
+      "title": "Vector Veins: 80s Belt Miners (II)",
+      "duration": "3:39",
+      "audio": {
+        "path": "music/vector_veins_80s_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "JfGUUc6twZhch8IOy2aSS8jeAaWBUIMhGJgDBvUeI9Q"
+      }
+    },
+    {
+      "number": 18,
+      "disc": 1,
+      "slug": "belt-drifters-iii",
+      "title": "Signal: Belt Drifters (III)",
+      "duration": "3:44",
+      "audio": {
+        "path": "music/belt_drifters_3.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "Ntc10EBjgZETSIk-yizqsAQWLU0yqzrrBZYznqsAA7w"
+      }
+    },
+    {
+      "number": 19,
+      "disc": 1,
+      "slug": "belt-drifters-iv",
+      "title": "Signal: Belt Drifters (IV)",
+      "duration": "7:59",
+      "audio": {
+        "path": "music/belt_drifters_4.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "8h8YdslL5E7dVpS95_cKwGu82jhTtgoeGHsxTtvIgzA"
+      }
+    },
+    {
+      "number": 20,
+      "disc": 1,
+      "slug": "fade-out-at-seventeen",
+      "title": "Fade Out At Seventeen",
+      "duration": "3:12",
+      "audio": {
+        "path": "music/fade_out_at_seventeen.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "PHArhHIpcwgTQIS9oZZ_Vrd7rSL_Id1rBmQNCBYU8z8"
+      }
+    },
+    {
+      "number": 21,
+      "disc": 1,
+      "slug": "fade-out-at-seventeen-ii",
+      "title": "Fade Out At Seventeen (II)",
+      "duration": "3:27",
+      "audio": {
+        "path": "music/fade_out_at_seventeen_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "VlbjsbeSnb9FIp1Wm7tYS039w2_5qkDVvFcKT-j9b5I"
+      }
+    },
+    {
+      "number": 22,
+      "disc": 1,
+      "slug": "lo-fi-drift-jam",
+      "title": "Signal: Lo-Fi Drift Jam",
+      "duration": "3:43",
+      "audio": {
+        "path": "music/lofi_drift_jam.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "dutlNG_5eUjeCu_q6c-p101DN-yfoOmcJNU4O9Jeetc"
+      }
+    },
+    {
+      "number": 23,
+      "disc": 1,
+      "slug": "nebula-drift-protocol",
+      "title": "Nebula Drift Protocol",
+      "duration": "4:17",
+      "audio": {
+        "path": "music/nebula_drift_protocol.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "PBYamfq-6srP_pHXWM0PFj6dW-zZpTHp2QubJQuhw-4"
+      }
+    },
+    {
+      "number": 24,
+      "disc": 1,
+      "slug": "nebula-drift-protocol-ii",
+      "title": "Nebula Drift Protocol (II)",
+      "duration": "3:58",
+      "audio": {
+        "path": "music/nebula_drift_protocol_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "rh3euZz7lrfps7WTdO4_77MJEi9QiBAk7XWC5H3MkI8"
+      }
+    }
+  ]
+}
