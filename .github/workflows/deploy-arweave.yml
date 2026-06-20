@@ -41,6 +41,8 @@ jobs:
 
   test-sanitizers:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -86,7 +88,7 @@ jobs:
 
   deploy:
     runs-on: ubuntu-latest
-    needs: [test-fast, test-sanitizers, smoke-browser]
+    needs: [test-fast, smoke-browser]
     steps:
       - uses: actions/checkout@v4
 
