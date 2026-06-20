@@ -2926,11 +2926,22 @@ void draw_tracked_contract_highlight(void) {
     if (!on_screen(target.x, target.y, radius + 40.0f)) return;
     float t = g.world.time;
     float pulse = 0.5f + 0.5f * sinf(t * 2.4f);
-    float r = radius * (1.0f + 0.06f * pulse);
     float cr, cg, cb;
     contract_target_color(kind, &cr, &cg, &cb);
     float cue_prev = world_signal_visual_enter_cue();
-    draw_circle_outline(target, r, 40, cr, cg, cb, 0.75f + 0.20f * pulse);
+    float a = 0.70f + 0.22f * pulse;
+    float reticle_r = 8.0f + 1.5f * pulse;
+    draw_circle_outline(target, reticle_r, 14, cr, cg, cb, a);
+    draw_circle_filled(target, 2.0f, 8, cr, cg, cb, a * 0.75f);
+    sgl_begin_lines();
+    sgl_c4f(cr, cg, cb, a * 0.82f);
+    float inner = 14.0f;
+    float outer = 22.0f;
+    sgl_v2f(target.x - outer, target.y); sgl_v2f(target.x - inner, target.y);
+    sgl_v2f(target.x + inner, target.y); sgl_v2f(target.x + outer, target.y);
+    sgl_v2f(target.x, target.y - outer); sgl_v2f(target.x, target.y - inner);
+    sgl_v2f(target.x, target.y + inner); sgl_v2f(target.x, target.y + outer);
+    sgl_end();
     world_signal_visual_leave_cue(cue_prev);
 }
 

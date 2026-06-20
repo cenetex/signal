@@ -1,7 +1,7 @@
 /*
  * avatar.c — Station portrait fetch, decode, and texture cache.
- * Fetches PNG/JPG from S3 CDN, decodes with stb_image, uploads
- * as sokol_gfx texture for HUD rendering.
+ * Fetches PNG/JPG station media from same-origin deployed assets, decodes
+ * with stb_image, uploads as sokol_gfx texture for HUD rendering.
  */
 #include "avatar.h"
 #include "motd_json.h"
@@ -21,8 +21,6 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
-
-#define ASSET_CDN "https://signal-ratimics-assets.s3.amazonaws.com"
 
 static avatar_cache_t cache[MAX_STATIONS];
 static uint32_t shared_sampler;
@@ -83,13 +81,30 @@ static void upload_texture(avatar_cache_t *entry, const unsigned char *rgba, int
     printf("[avatar] loaded portrait %dx%d for '%s'\n", w, h, entry->slug);
 }
 
+static void upload_placeholder(avatar_cache_t *entry) {
+    unsigned char placeholder[64 * 64 * 4];
+    uint32_t hash = 0;
+    for (const char *c = entry->slug; *c; c++) hash = hash * 31 + (uint32_t)*c;
+    uint8_t r = 60 + (hash & 0x3F);
+    uint8_t g0 = 80 + ((hash >> 8) & 0x3F);
+    uint8_t b = 100 + ((hash >> 16) & 0x3F);
+    for (int i = 0; i < 64 * 64; i++) {
+        placeholder[i * 4 + 0] = r;
+        placeholder[i * 4 + 1] = g0;
+        placeholder[i * 4 + 2] = b;
+        placeholder[i * 4 + 3] = 200;
+    }
+    upload_texture(entry, placeholder, 64, 64);
+}
+
 static void decode_and_upload(avatar_cache_t *entry, void *data, int size) {
     int w, h, channels;
     unsigned char *pixels = stbi_load_from_memory(
         (const unsigned char *)data, size, &w, &h, &channels, 4);
     if (!pixels) {
-        fprintf(stderr, "[avatar] failed to decode image for '%s'\n", entry->slug);
-        entry->state = AVATAR_STATE_FAILED;
+        fprintf(stderr, "[avatar] failed to decode image for '%s'; using placeholder\n",
+                entry->slug);
+        upload_placeholder(entry);
         return;
     }
     upload_texture(entry, pixels, w, h);
@@ -109,8 +124,9 @@ static void on_fetch_success(void *user, void *data, int size) {
 
 static void on_fetch_error(void *user) {
     avatar_cache_t *entry = (avatar_cache_t *)user;
-    fprintf(stderr, "[avatar] portrait fetch failed for '%s'\n", entry->slug);
-    entry->state = AVATAR_STATE_FAILED;
+    fprintf(stderr, "[avatar] portrait fetch failed for '%s'; using placeholder\n",
+            entry->slug);
+    upload_placeholder(entry);
 }
 
 
@@ -162,8 +178,11 @@ void avatar_fetch(int station_index, const char *station_slug) {
 
     avatar_cache_t *entry = &cache[station_index];
 
-    /* Already cached for this slug? */
-    if (entry->state == AVATAR_STATE_READY && strcmp(entry->slug, station_slug) == 0)
+    /* Already resolved for this slug? Failed entries are negative-cached so
+     * missing deployed media cannot trigger an async fetch every frame. */
+    if ((entry->state == AVATAR_STATE_READY ||
+         entry->state == AVATAR_STATE_FAILED) &&
+        strcmp(entry->slug, station_slug) == 0)
         return;
     if (entry->state == AVATAR_STATE_FETCHING)
         return;
@@ -172,14 +191,14 @@ void avatar_fetch(int station_index, const char *station_slug) {
     entry->state = AVATAR_STATE_FETCHING;
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/stations/%s/portrait.png", ASSET_CDN, station_slug);
+    snprintf(url, sizeof(url), "/stations/%s/portrait.png", station_slug);
 
 #ifdef __EMSCRIPTEN__
     emscripten_async_wget_data(url, entry, on_fetch_success, on_fetch_error);
     /* Also fetch MOTD JSON */
     if (!entry->motd_fetched) {
         char motd_url[256];
-        snprintf(motd_url, sizeof(motd_url), "%s/stations/%s/motd.json", ASSET_CDN, station_slug);
+        snprintf(motd_url, sizeof(motd_url), "/stations/%s/motd.json", station_slug);
         emscripten_async_wget_data(motd_url, entry, on_motd_success, on_motd_error);
     }
 #else
@@ -192,23 +211,7 @@ void avatar_fetch(int station_index, const char *station_slug) {
         decode_and_upload(entry, data, file_size);
         free(data);
     } else {
-        /* No local file — generate a procedural placeholder */
-        unsigned char placeholder[64 * 64 * 4];
-        uint32_t hash = 0;
-        for (const char *c = station_slug; *c; c++) hash = hash * 31 + (uint32_t)*c;
-        uint8_t r = 60 + (hash & 0x3F);
-        uint8_t g = 80 + ((hash >> 8) & 0x3F);
-        uint8_t b = 100 + ((hash >> 16) & 0x3F);
-        for (int i = 0; i < 64 * 64; i++) {
-            placeholder[i * 4 + 0] = r;
-            placeholder[i * 4 + 1] = g;
-            placeholder[i * 4 + 2] = b;
-            placeholder[i * 4 + 3] = 200;
-        }
-        /* Draw a letter in the center (crude 5x7 block) */
-        char letter = station_slug[0] & ~0x20; /* uppercase */
-        (void)letter; /* placeholder — just colored square */
-        upload_texture(entry, placeholder, 64, 64);
+        upload_placeholder(entry);
     }
 
     /* Also try to load MOTD JSON locally */

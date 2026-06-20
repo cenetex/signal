@@ -1,6 +1,6 @@
 # Signal external asset pack.
-# Paths are relative to the local assets/ directory and the CDN base below.
-# Default CDN: https://signal-ratimics-assets.s3.amazonaws.com
+# Paths are relative to the local assets/ directory. Browser runtime fetches
+# deployed assets from same-origin Worker routes.
 # Prefix optional entries with ?. Missing optional assets warn but do not fail
 # the sync; the client keeps its runtime fallback.
 

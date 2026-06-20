@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "signal_brain.h"
 #include "signal_contract_brain.h"
 #include "sim_mining.h"
 #include "sim_ship.h"
@@ -7,6 +8,28 @@
 #include "contract_fit.h"
 #include "faction.h"
 #include "gossip.h"
+#include "neural_checkpoint.h"
+#include <stdio.h>
+
+#define TEST_FLIGHT_CKPT_DATA _Users_ratimics_develop_crlplrimes_build_float_signal_flight_longhorizon_live_signal_flight_nnckpt
+#define TEST_FLIGHT_CKPT_LEN  _Users_ratimics_develop_crlplrimes_build_float_signal_flight_longhorizon_live_signal_flight_nnckpt_len
+
+static bool test_load_embedded_flight_brain(void) {
+    const char *path = "/tmp/signal-test-flight-brain.nnckpt";
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return false;
+    size_t wrote = fwrite(TEST_FLIGHT_CKPT_DATA, 1, TEST_FLIGHT_CKPT_LEN, fp);
+    bool io_ok = wrote == (size_t)TEST_FLIGHT_CKPT_LEN && fclose(fp) == 0;
+    if (!io_ok) {
+        remove(path);
+        return false;
+    }
+    char err[256] = {0};
+    bool ok = signal_brain_load_checkpoint(path, err, sizeof(err));
+    remove(path);
+    if (!ok) fprintf(stderr, "embedded neural checkpoint load failed: %s\n", err);
+    return ok;
+}
 
 static int test_spawn_hauler_at(world_t *w, int station_idx) {
     return spawn_npc(w, station_idx, NPC_ROLE_HAULER);
@@ -2404,6 +2427,52 @@ TEST(test_world_sim_step_npc_miners_work) {
         }
     }
     ASSERT(any_traveling);
+}
+
+TEST(test_embedded_neural_checkpoint_drives_npc_worker) {
+    ASSERT(test_load_embedded_flight_brain());
+
+    WORLD_DECL;
+    world_reset(&w);
+
+    int npc_idx = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER) {
+            npc_idx = i;
+            break;
+        }
+    }
+    ASSERT(npc_idx >= 0);
+
+    int ast_idx = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            ast_idx = i;
+            break;
+        }
+    }
+    ASSERT(ast_idx >= 0);
+
+    npc_ship_t *npc = &w.npc_ships[npc_idx];
+    npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    npc->state_timer = 0.0f;
+    npc->target_asteroid = ast_idx;
+    npc->ship.pos = v2_add(w.asteroids[ast_idx].pos, v2(-900.0f, -80.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    npc->ship.hull = ship_max_hull(&npc->ship);
+    npc->hull = npc->ship.hull;
+    rebuild_characters_from_npcs(&w);
+
+    uint64_t before_inferences = signal_brain_inference_count();
+    vec2 before_pos = npc->ship.pos;
+    step_npc_ships(&w, SIM_DT);
+
+    npc = &w.npc_ships[npc_idx];
+    ASSERT(signal_brain_inference_count() > before_inferences);
+    ASSERT(fabsf(npc->input.turn) > 0.0f || fabsf(npc->input.thrust) > 0.0f);
+    ASSERT(v2_dist_sq(npc->ship.pos, before_pos) > 0.0001f);
 }
 
 TEST(test_world_network_writes_persist) {
@@ -6972,6 +7041,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
+    RUN(test_embedded_neural_checkpoint_drives_npc_worker);
     RUN(test_npc_mining_drops_state_when_far_from_target);
     RUN(test_mining_beam_step_rejects_target_beyond_surface_range);
     RUN(test_mining_beam_step_rejects_off_axis_target);

@@ -718,6 +718,8 @@ bool signal_brain_drive_npc_to(world_t *w, npc_ship_t *npc, vec2 target) {
             best = i;
         }
     }
+    if (!isfinite(best_score))
+        return false;
 
     npc->input.turn = (float)SB_ACTIONS[best].turn;
     npc->input.thrust = (float)SB_ACTIONS[best].thrust;

@@ -1,6 +1,7 @@
 /*
  * avatar.h — Station portrait fetch, decode, and texture cache.
- * Portraits are static PNG/JPG files on S3 CDN, fetched async.
+ * Portraits are static PNG/JPG files in the deployed asset manifest,
+ * fetched async by the browser build.
  */
 #ifndef AVATAR_H
 #define AVATAR_H

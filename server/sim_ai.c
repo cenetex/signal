@@ -5281,15 +5281,31 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
         float clearance = hull ? (hull->ship_radius + 30.0f) : 46.0f;
         vec2 neural_target = nav_follow_path(w, path, npc->ship.pos, final_target,
                                              clearance, dt);
-        (void)signal_brain_drive_npc_to((world_t *)w, npc, neural_target);
-        flight_cmd_t guarded = {
-            .turn = npc->input.turn,
-            .thrust = npc->input.thrust * thrust_scale,
-            .reverse_thrust = false,
-        };
-        flight_avoid_station_wall(w, &npc->ship, &guarded);
-        npc_apply_flight_cmd(npc, guarded, dt);
-        return;
+        bool neural_ok = signal_brain_drive_npc_to((world_t *)w, npc,
+                                                   neural_target);
+        if (neural_ok) {
+            vec2 to_target = v2_sub(neural_target, npc->ship.pos);
+            float target_dist = v2_len(to_target);
+            float speed = v2_len(npc->ship.vel);
+            float align = 1.0f;
+            if (target_dist > 1.0f) {
+                vec2 target_dir = v2_scale(to_target, 1.0f / target_dist);
+                align = v2_dot(v2_from_angle(npc->ship.angle), target_dir);
+            }
+            bool progress_output = npc->input.thrust > 0.0f &&
+                                   (align > 0.10f || speed > 40.0f);
+            bool useful_output = target_dist <= 96.0f || progress_output;
+            if (useful_output) {
+                flight_cmd_t guarded = {
+                    .turn = npc->input.turn,
+                    .thrust = npc->input.thrust * thrust_scale,
+                    .reverse_thrust = false,
+                };
+                flight_avoid_station_wall(w, &npc->ship, &guarded);
+                npc_apply_flight_cmd(npc, guarded, dt);
+                return;
+            }
+        }
     }
 
     flight_cmd_t cmd = flight_steer_to(w, &npc->ship, path, final_target,
