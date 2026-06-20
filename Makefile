@@ -213,6 +213,9 @@ build-test:
 # Number of shards for the parallel test runner. Defaults to min(8, ncores).
 NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
+TEST_BIN ?= ./build/signal_test
+TEST_ENV ?=
+TEST_PREFIX ?=
 
 # Reusable parallel-shard runner. Caller passes RUN_FLAGS for the test
 # binary (e.g. --no-soak / --soak-only); the runner handles sharding,
@@ -220,7 +223,7 @@ TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
 define RUN_PARALLEL_TESTS
 	@rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit
 	@for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
-		( ./build/signal_test --shard=$$i/$(TEST_SHARDS) $(1) $(TEST_QUIET) \
+		( $(TEST_PREFIX) $(TEST_ENV) $(TEST_BIN) --shard=$$i/$(TEST_SHARDS) $(1) $(TEST_QUIET) \
 			> /tmp/signal-test-shard.$$i.log 2>&1; \
 		  echo $$? > /tmp/signal-test-shard.$$i.exit ) & \
 	done; \
@@ -282,11 +285,15 @@ build-san:
 	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
 	cmake --build $(SAN_BUILD_DIR) --parallel
 
+test-san: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
+test-san: TEST_ENV=ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test-san: TEST_PREFIX=ulimit -s 16384 &&
 test-san: build-san
-	ulimit -s 16384 && ASAN_OPTIONS=halt_on_error=1 \
-		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-		./$(SAN_BUILD_DIR)/signal_test $(SAN_TEST_FLAGS)
+	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
+test-tsan: TEST_BIN=./build-tsan/signal_test
+test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
+test-tsan: TEST_PREFIX=ulimit -s 16384 &&
 test-tsan:
 	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
 		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
@@ -294,8 +301,7 @@ test-tsan:
 		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 	@ln -sf build-tsan/compile_commands.json compile_commands.json
 	cmake --build build-tsan --parallel
-	ulimit -s 16384 && TSAN_OPTIONS=halt_on_error=1 \
-		./build-tsan/signal_test $(SAN_TEST_FLAGS)
+	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
 banned-apis:
 	python3 scripts/check_banned_apis.py
