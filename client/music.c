@@ -21,6 +21,53 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+
+EM_JS(void, signal_music_play_js, (const char *url_ptr, double volume), {
+    const url = UTF8ToString(url_ptr);
+    let audio = Module.signalMusicAudio;
+    if (!audio) {
+        audio = new Audio();
+        audio.crossOrigin = "anonymous";
+        audio.preload = "auto";
+        Module.signalMusicAudio = audio;
+    }
+    audio.pause();
+    audio.src = url;
+    audio.loop = true;
+    audio.volume = Math.max(0, Math.min(1, volume));
+    audio.currentTime = 0;
+    const play = audio.play();
+    if (play && play.catch) {
+        play.catch((err) => {
+            console.error("music: html audio play failed", err && err.message ? err.message : err);
+        });
+    }
+})
+
+EM_JS(void, signal_music_stop_js, (), {
+    const audio = Module.signalMusicAudio;
+    if (audio) {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+    }
+})
+
+EM_JS(void, signal_music_pause_js, (), {
+    const audio = Module.signalMusicAudio;
+    if (audio) audio.pause();
+})
+
+EM_JS(void, signal_music_resume_js, (), {
+    const audio = Module.signalMusicAudio;
+    if (!audio) return;
+    const play = audio.play();
+    if (play && play.catch) {
+        play.catch((err) => {
+            console.error("music: html audio resume failed", err && err.message ? err.message : err);
+        });
+    }
+})
 #endif
 
 /* Gameplay tracks ordered low→high signal.
@@ -139,6 +186,7 @@ static void decode_chunk(music_state_t *m) {
 
 /* --- Start playback once data is in memory --- */
 
+#ifndef __EMSCRIPTEN__
 static void music_start_playback(music_state_t *m, unsigned char *data, int size) {
     mp3dec_t *dec = (mp3dec_t *)malloc(sizeof(mp3dec_t));
     if (!dec) { free(data); return; }
@@ -163,29 +211,6 @@ static void music_start_playback(music_state_t *m, unsigned char *data, int size
     /* Pre-fill buffer */
     decode_chunk(m);
     decode_chunk(m);
-}
-
-/* --- Async fetch (Emscripten) --- */
-
-#ifdef __EMSCRIPTEN__
-static void on_music_fetch_success(void *user, void *data, int size) {
-    music_state_t *m = (music_state_t *)user;
-    unsigned char *copy = (unsigned char *)malloc((size_t)size);
-    if (!copy) {
-        fprintf(stderr, "music: out of memory for %d bytes\n", size);
-        m->loading = false;
-        return;
-    }
-    memcpy(copy, data, (size_t)size);
-    music_start_playback(m, copy, size);
-}
-
-static void on_music_fetch_error(void *user) {
-    music_state_t *m = (music_state_t *)user;
-    fprintf(stderr, "music: fetch failed for track %d\n", m->current_track);
-    m->loading = false;
-    /* Try next track after a failure */
-    music_next_track(m);
 }
 #endif
 
@@ -215,8 +240,13 @@ static void music_play_file(music_state_t *m, const char *filename) {
 #ifdef __EMSCRIPTEN__
     char url[256];
     snprintf(url, sizeof(url), "/%s", filename);
-    m->loading = true;
-    emscripten_async_wget_data(url, m, on_music_fetch_success, on_music_fetch_error);
+    signal_music_play_js(url, (double)m->volume);
+    m->playing = true;
+    m->paused = false;
+    m->loading = false;
+    m->track_display_timer = 0.0f;
+    m->fade_volume = 1.0f;
+    m->fade_target = 1.0f;
 #else
     char path[256];
     snprintf(path, sizeof(path), "assets/%s", filename);
@@ -249,6 +279,12 @@ static void music_play_immediate(music_state_t *m, int track);
 void music_play(music_state_t *m, int track) {
     if (track < 0 || track >= MUSIC_TRACK_COUNT) return;
 
+#ifdef __EMSCRIPTEN__
+    music_stop(m);
+    music_play_immediate(m, track);
+    return;
+#endif
+
     if (m->playing && !m->paused && m->fade_volume > 0.1f) {
         /* Crossfade: fade out current, queue next */
         m->pending_track = track;
@@ -267,6 +303,9 @@ static void music_play_immediate(music_state_t *m, int track) {
 }
 
 void music_stop(music_state_t *m) {
+#ifdef __EMSCRIPTEN__
+    signal_music_stop_js();
+#endif
     m->playing = false;
     m->paused = false;
     m->loading = false;
@@ -284,16 +323,27 @@ void music_stop(music_state_t *m) {
 
 void music_pause(music_state_t *m) {
     m->paused = true;
+#ifdef __EMSCRIPTEN__
+    signal_music_pause_js();
+#endif
 }
 
 void music_resume(music_state_t *m) {
     m->paused = false;
+#ifdef __EMSCRIPTEN__
+    signal_music_resume_js();
+#endif
 }
 
 void music_update(music_state_t *m, float dt) {
     if (!m->playing || m->paused) return;
 
     m->track_display_timer += dt;
+
+#ifdef __EMSCRIPTEN__
+    (void)dt;
+    return;
+#endif
 
     /* Fade volume */
     if (m->fade_volume < m->fade_target) {
@@ -464,6 +514,14 @@ void music_shutdown(music_state_t *m) {
 }
 
 int music_read_audio(music_state_t *m, float *buffer, int frames, int channels) {
+#ifdef __EMSCRIPTEN__
+    (void)m;
+    (void)buffer;
+    (void)frames;
+    (void)channels;
+    return 0;
+#endif
+
     if (!m->playing || m->paused) return 0;
 
     float vol = m->volume * m->fade_volume;
