@@ -27,6 +27,28 @@ static inline bool inspect_label_hash32_eq(const uint8_t a[32],
     return true;
 }
 
+static inline void inspect_label_write_prefixed(char *out,
+                                                size_t cap,
+                                                const char *prefix,
+                                                const char *text) {
+    if (!out || cap == 0) return;
+    size_t used = 0;
+    if (prefix) {
+        size_t prefix_len = strlen(prefix);
+        if (prefix_len >= cap) prefix_len = cap - 1;
+        memcpy(out, prefix, prefix_len);
+        used = prefix_len;
+    }
+    if (text && used + 1 < cap) {
+        size_t text_len = strlen(text);
+        size_t room = cap - used - 1;
+        if (text_len > room) text_len = room;
+        memcpy(out + used, text, text_len);
+        used += text_len;
+    }
+    out[used] = '\0';
+}
+
 static inline bool inspect_label_diag_is_job(uint8_t kind) {
     switch ((inspect_diag_kind_t)kind) {
     case INSPECT_DIAG_JOB_MINE:
@@ -539,7 +561,8 @@ static inline bool inspect_label_job_cause_lines(
                                           source_chain,
                                           sizeof(source_chain))) {
         if (line2 && line2_cap > 0)
-            snprintf(line2, line2_cap, "source: %s", source_chain);
+            inspect_label_write_prefixed(line2, line2_cap,
+                                         "source: ", source_chain);
     } else if (line2 && line2_cap > 0) {
         if (!inspect_label_hash32_is_zero(cause->job->receipt_head))
             snprintf(line2, line2_cap, "source: proof anchor only");

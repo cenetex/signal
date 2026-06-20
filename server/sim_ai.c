@@ -3074,7 +3074,7 @@ static int npc_append_hauler_offer_for_source(const world_t *w,
                                               const market_memory_t *source_memory) {
     if (!w || !npc || !offers || !ct || count >= cap) return count;
     if (source_station < 0 || source_station >= MAX_STATIONS) return count;
-    if (ct->station_index < 0 || ct->station_index >= MAX_STATIONS) return count;
+    if (ct->station_index >= MAX_STATIONS) return count;
     if (source_station == ct->station_index) return count;
     const station_t *source = &w->stations[source_station];
     if (!station_is_hauler_logistics_node(source)) return count;

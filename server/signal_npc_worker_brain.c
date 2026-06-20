@@ -425,7 +425,7 @@ int signal_npc_worker_brain_choose_with_scores(
         double row[SNWB_FEATURE_COUNT];
         fill_features(&candidates[i], row);
         double score = forward_model(row);
-        if (candidates[i].option >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
+        if ((int)candidates[i].option >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
             score = teacher_augmented_score(&candidates[i]);
         if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {
