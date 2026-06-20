@@ -68,9 +68,13 @@ function loadStaticPathEntries() {
   if (!Array.isArray(manifest.tracks)) {
     throw new Error(`Invalid OST manifest: missing tracks array in ${OST_MANIFEST_FILE}`);
   }
+  if (manifest.runtimeTracks && !Array.isArray(manifest.runtimeTracks)) {
+    throw new Error(`Invalid OST manifest: runtimeTracks must be an array in ${OST_MANIFEST_FILE}`);
+  }
 
   const entries = {};
-  for (const track of manifest.tracks) {
+  const staticTracks = manifest.tracks.concat(manifest.runtimeTracks || []);
+  for (const track of staticTracks) {
     const audio = track && track.audio ? track.audio : {};
     const name = audio.path;
     const txId = audio.tx;
@@ -79,6 +83,9 @@ function loadStaticPathEntries() {
     }
     if (name.startsWith('/')) {
       throw new Error(`OST track paths must be relative: ${name}`);
+    }
+    if (entries[name] && entries[name] !== txId) {
+      throw new Error(`Conflicting OST track tx for path ${name}`);
     }
     entries[name] = txId;
   }

@@ -301,5 +301,51 @@
         "tx": "rh3euZz7lrfps7WTdO4_77MJEi9QiBAk7XWC5H3MkI8"
       }
     }
+  ],
+  "runtimeTracks": [
+    {
+      "key": "last-light-in-the-belt",
+      "usage": "gameplay",
+      "title": "Last Light in the Belt",
+      "duration": "4:06",
+      "audio": {
+        "path": "music/last_light_in_the_belt.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "Lt2zG9Q3x7kkM7Pn9bpTNzt4WcO8nMgt_3DfKokAu5w"
+      }
+    },
+    {
+      "key": "last-light-in-the-belt-ii",
+      "usage": "gameplay",
+      "title": "Last Light in the Belt (II)",
+      "duration": "3:45",
+      "audio": {
+        "path": "music/last_light_in_the_belt_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "f44MfnpCUWLE4a1QlaehXdCJ-8068CJ8uQlBcao_GMY"
+      }
+    },
+    {
+      "key": "vacuum-in-my-lungs",
+      "usage": "death",
+      "title": "Vacuum in My Lungs",
+      "duration": "3:44",
+      "audio": {
+        "path": "music/vacuum_in_my_lungs.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "v-o1JOH8vFShr_L-_JfroXXN6XHlR9CblfhfilFm1dY"
+      }
+    },
+    {
+      "key": "vacuum-in-my-lungs-ii",
+      "usage": "death",
+      "title": "Vacuum in My Lungs (II)",
+      "duration": "3:48",
+      "audio": {
+        "path": "music/vacuum_in_my_lungs_2.mp3",
+        "contentType": "audio/mpeg",
+        "tx": "ZwzYX9Ou60M_Oz6VC2XHOjWWD5eYURwoZIqKaaEkZIM"
+      }
+    }
   ]
 }

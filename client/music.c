@@ -23,8 +23,6 @@
 #include <emscripten.h>
 #endif
 
-#define ASSET_CDN "https://signal-ratimics-assets.s3.amazonaws.com"
-
 /* Gameplay tracks ordered low→high signal.
  * Tracks 0-7: deep space / sparse belt / lonely drift
  * Tracks 8-15: mid-belt / mining / hauling
@@ -216,7 +214,7 @@ static unsigned char *load_file(const char *path, int *out_size) {
 static void music_play_file(music_state_t *m, const char *filename) {
 #ifdef __EMSCRIPTEN__
     char url[256];
-    snprintf(url, sizeof(url), "%s/%s", ASSET_CDN, filename);
+    snprintf(url, sizeof(url), "/%s", filename);
     m->loading = true;
     emscripten_async_wget_data(url, m, on_music_fetch_success, on_music_fetch_error);
 #else
