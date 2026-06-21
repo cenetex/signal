@@ -63,6 +63,7 @@ static const char *internal_token = NULL;
 
 
 static const char *persistence_data_dir = ".";
+static const char *static_root_dir = NULL;
 static int server_bot_player_target = 0;
 static int server_bot_players_spawned = 0;
 static int server_bot_brain_mode = SERVER_BRAIN_MODE_NONE;
@@ -3770,6 +3771,52 @@ static void handle_protocol_info_http(struct mg_connection *c) {
     mg_http_reply(c, 200, api_headers, "%s", out);
 }
 
+static bool redirect_static_alias(struct mg_connection *c,
+                                  struct mg_http_message *hm,
+                                  const char *path,
+                                  const char *target) {
+    if (!mg_match(hm->uri, mg_str(path), NULL)) return false;
+    char headers[1024];
+    if (hm->query.len > 0) {
+        snprintf(headers, sizeof(headers),
+                 "Location: %s?%.*s\r\nCache-Control: no-store\r\n",
+                 target, (int)hm->query.len, hm->query.buf);
+    } else {
+        snprintf(headers, sizeof(headers),
+                 "Location: %s\r\nCache-Control: no-store\r\n", target);
+    }
+    mg_http_reply(c, 302, headers, "");
+    return true;
+}
+
+static bool serve_static_http(struct mg_connection *c,
+                              struct mg_http_message *hm) {
+    if (!static_root_dir || static_root_dir[0] == '\0') return false;
+    if (redirect_static_alias(c, hm, "/play", "/play.html") ||
+        redirect_static_alias(c, hm, "/play/", "/play.html") ||
+        redirect_static_alias(c, hm, "/ost", "/ost.html") ||
+        redirect_static_alias(c, hm, "/ost/", "/ost.html") ||
+        redirect_static_alias(c, hm, "/mine", "/mine.html") ||
+        redirect_static_alias(c, hm, "/mine/", "/mine.html")) {
+        return true;
+    }
+    struct mg_http_serve_opts opts = {
+        .root_dir = static_root_dir,
+        .extra_headers =
+            "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+            "Pragma: no-cache\r\n"
+            "Expires: 0\r\n"
+            "X-Content-Type-Options: nosniff\r\n",
+        .mime_types =
+            ".wasm=application/wasm,"
+            ".js=text/javascript,"
+            ".mjs=text/javascript,"
+            ".html=text/html; charset=utf-8",
+    };
+    mg_http_serve_dir(c, hm, &opts);
+    return true;
+}
+
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
@@ -4091,7 +4138,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 }
                 if (text) free(text);
             }
-        } else {
+        } else if (!serve_static_http(c, hm)) {
             mg_http_reply(c, 404, "", "Not found");
         }
     } else if (ev == MG_EV_WS_OPEN) {
@@ -4722,10 +4769,14 @@ static void srv_dispatch_sim_event(const sim_event_t *ev) {
  * a token. listen_url is sized by the caller. */
 static bool read_env_config(char *listen_url, size_t listen_url_size) {
     const char *port = getenv("PORT");
+    if (!port || port[0] == '\0') port = "8080";
+    static_root_dir = getenv("SIGNAL_STATIC_DIR");
     persistence_data_dir = getenv("SIGNAL_DATA_DIR");
     if (!persistence_data_dir || persistence_data_dir[0] == '\0') 
         persistence_data_dir = ".";
     printf("[server] Persistence: local (data_dir=%s)\n", persistence_data_dir);
+    if (static_root_dir && static_root_dir[0] != '\0')
+        printf("[server] Static web root: %s\n", static_root_dir);
     if (!read_u32_env("SIGNAL_WORLD_SEED", &fresh_world_seed_override) ||
         !read_u32_env("SIGNAL_WORLD_SEQ", &fresh_world_seq_override)) {
         return false;

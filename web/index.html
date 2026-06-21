@@ -74,6 +74,18 @@
       }
 
       .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 48px; }
+      .play-options {
+        margin: -34px 0 46px;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .play-options a {
+        color: var(--faint);
+        text-decoration: none;
+      }
+      .play-options a:hover { color: var(--signal); }
 
       .btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -220,6 +232,7 @@
         <a class="btn go" href="/play">Enter Sector One</a>
         <a class="btn" href="/ost">Hear the Belt</a>
       </div>
+      <p class="play-options"><a href="/play?singleplayer=1">Single-player local sim</a></p>
 
       <!-- Roadmap -->
       <p class="roadmap-header">Sector One And Beyond</p>

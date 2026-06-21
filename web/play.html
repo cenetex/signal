@@ -89,12 +89,15 @@
 
       /* ?singleplayer=1 forces the in-process server.
        * ?server=ws://... connects to an explicit multiplayer relay.
-       * Otherwise defaults to singleplayer. */
+       * Otherwise defaults to the same-origin multiplayer relay. */
       var signalParams = new URLSearchParams(window.location.search);
 
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
-      else window.SIGNAL_SERVER = '';
+      else {
+        var signalWsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        window.SIGNAL_SERVER = signalWsProto + '//' + window.location.host + '/ws';
+      }
 
       function setLoading(message) {
         document.getElementById('loading').textContent = message;

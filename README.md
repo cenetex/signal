@@ -90,6 +90,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   contract gossip, decaying market memory, and neural worker coordination.
 - [`docs/protocol-telemetry.md`](docs/protocol-telemetry.md): protocol
   discovery, stream classes, record sizes, and telemetry split.
+- [`docs/fly-multiplayer.md`](docs/fly-multiplayer.md): cheap headless
+  multiplayer relay deployment on Fly.io.
 - [`docs/replay-harness.md`](docs/replay-harness.md): deterministic
   seed+prefix counterfactual replay harness for agent experiments.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current
@@ -162,16 +164,31 @@ with a local server.
 Local multiplayer dev:
 
 ```sh
-make dev-logs
-make stop
+make build-server
+PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
 ```
 
-Then open `http://localhost:8080/play.html?server=ws://localhost:9091/ws`.
+In a second terminal:
+
+```sh
+make build-web
+python3 -m http.server 8080 --directory build-web
+```
+
+Then open `http://127.0.0.1:8080/play.html?server=ws://127.0.0.1:9091/ws`.
 
 High-latency multiplayer test:
 
 ```sh
-make dev
+make build-server
+PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+```
+
+In separate terminals:
+
+```sh
+make build-web
+python3 -m http.server 8080 --directory build-web
 make latency-proxy-high
 ```
 
@@ -214,10 +231,9 @@ The latency smoke reads wasm telemetry for ping RTT, authoritative ack age,
 ack-minus-ping gap, player-state cadence, correction mode counts, replay depth,
 tick skew, unacked inputs, and render-offset bounds.
 
-Operator metrics for DAU, average latency, ack-gap budget, and concurrency are
-
-Production runs the relay as disposable compute with explicit external state.
-See [`docs/production-ephemeral-relay.md`](docs/production-ephemeral-relay.md)
+Production runs the web client and headless multiplayer relay as one small
+Fly.io app with a persistent volume and auto-start/auto-suspend. See
+[`docs/fly-multiplayer.md`](docs/fly-multiplayer.md).
 
 ## Test
 

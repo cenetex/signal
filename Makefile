@@ -413,7 +413,7 @@ latency-proxy-high:
 latency-proxy-ack-lag:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
 
-# --- Arweave deploy (run locally or via CI: .github/workflows/deploy-arweave.yml) ---
+# --- Static web bundle / Fly deploy ---
 site: build-web
 	@rm -rf _site
 	@mkdir -p _site
@@ -425,8 +425,8 @@ site: build-web
 	   web/mine.html web/shell.html _site/
 	@echo "Site built in _site/"
 
-deploy-arweave: site
-	node scripts/deploy-arweave.mjs
+deploy-fly:
+	flyctl deploy --remote-only --config fly.toml --build-arg GIT_HASH=$(GIT_HASH)
 
 
 
