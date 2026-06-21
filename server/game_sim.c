@@ -969,7 +969,8 @@ void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     /* Assign a dock berth and position ship there */
     int nberths = station_berth_count(st);
     if (nberths > 0) {
-        sp->dock_berth = sp->id % nberths;
+        if (sp->dock_berth < 0 || sp->dock_berth >= nberths)
+            sp->dock_berth = sp->id % nberths;
         sp->ship.pos = dock_berth_pos(st, sp->dock_berth);
         sp->ship.angle = dock_berth_angle(st, sp->dock_berth);
     } else {
@@ -1298,6 +1299,8 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
     dst->docking_approach = src->docking_approach;
     dst->dock_berth = src->dock_berth;
     server_player_clear_transient_input(dst);
+    if (dst->docked)
+        anchor_ship_in_station(dst, w);
 
     asset->operator_slot = (int16_t)dst_slot;
     (void)world_ship_asset_sync_from_player(w, dst);
@@ -1435,6 +1438,7 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
     sp->docked = true;
     sp->in_dock_range = true;
     sp->docking_approach = false;
+    sp->dock_berth = -1;
     anchor_ship_in_station(sp, w);
     asset->hull_class = sp->ship.hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
@@ -1698,6 +1702,48 @@ static vec2 launch_clear_position(const world_t *w, int player_slot,
     return base;
 }
 
+static vec2 launch_lane_for_berth(const station_t *st, int dock_berth,
+                                  int player_slot, vec2 away) {
+    float len = v2_len(away);
+    if (len <= 1.0f) away = v2(0.0f, -1.0f);
+    else away = v2_scale(away, 1.0f / len);
+
+    int berth_count = st ? station_berth_count(st) : 0;
+    if (berth_count <= 1) return away;
+
+    int lane = dock_berth;
+    if (lane < 0) lane = player_slot;
+    if (lane < 0) lane = 0;
+    lane %= berth_count;
+
+    int berth_subslot = lane % 3; /* BERTHS_PER_DOCK */
+    float offset = 0.0f;
+    if (berth_subslot == 1) offset = -0.22f;
+    else if (berth_subslot == 2) offset = 0.22f;
+    if (lane >= 3) {
+        int dock_lane = lane / 3;
+        float dock_side = (dock_lane & 1) ? 1.0f : -1.0f;
+        offset += dock_side * 0.08f * (float)((dock_lane + 1) / 2);
+    }
+
+    float angle = fixp_atan2f(away.y, away.x) + offset;
+    return v2_from_angle(angle);
+}
+
+static void translate_towed_pods_for_ship_snap(world_t *w,
+                                               const server_player_t *sp,
+                                               vec2 delta) {
+    if (!w || !sp) return;
+    if (v2_len_sq(delta) <= 0.001f) return;
+    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active) continue;
+        pod->pos = v2_add(pod->pos, delta);
+    }
+}
+
 static void launch_ship(world_t *w, server_player_t *sp) {
     if (!player_claim_waiting_ship_asset(w, sp)) {
         if (sp) {
@@ -1707,6 +1753,17 @@ static void launch_ship(world_t *w, server_player_t *sp) {
         }
         return;
     }
+    if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
+        !station_exists(&w->stations[sp->current_station])) {
+        sp->current_station = (sp->nearby_station >= 0 &&
+                               sp->nearby_station < MAX_STATIONS &&
+                               station_exists(&w->stations[sp->nearby_station]))
+            ? sp->nearby_station
+            : 0;
+    }
+    int player_slot = player_slot_for_ptr(w, sp);
+    vec2 pre_launch_pos = sp->ship.pos;
+    anchor_ship_in_station(sp, w);
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
@@ -1715,9 +1772,9 @@ static void launch_ship(world_t *w, server_player_t *sp) {
      * forward thrust clears the berth instead of driving back into it. */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(sp->ship.pos, st->pos);
+    away = launch_lane_for_berth(st, sp->dock_berth, player_slot, away);
     float len = v2_len(away);
     if (len > 1.0f) {
-        int player_slot = player_slot_for_ptr(w, sp);
         sp->ship.pos = launch_clear_position(w, player_slot, st, &sp->ship, away);
         sp->ship.angle = fixp_atan2f(away.y, away.x);
         sp->ship.vel = v2_scale(away, 95.0f / len);
@@ -1730,6 +1787,8 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     /* First launch: "Hull integrity 94%" */
     if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
         sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
+    translate_towed_pods_for_ship_snap(
+        w, sp, v2_sub(sp->ship.pos, pre_launch_pos));
     SIM_LOG("[sim] player %d launched\n", sp->id);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
@@ -11387,6 +11446,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship_asset_id = prior_asset_id;
     sp->docked          = true;
     sp->current_station = 0;
+    sp->dock_berth      = -1;
     /* Seed credits are granted by player_seed_credits() AFTER session_token is set.
      * Calling ledger_earn here would use the wrong (zero) token on the server. */
     sp->nearby_station  = 0;

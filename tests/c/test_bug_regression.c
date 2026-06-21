@@ -677,6 +677,37 @@ TEST(test_launch_uses_clear_lane_when_actor_blocks_exit) {
     ASSERT(signal_strength_at(&w, w.players[0].ship.pos) > 0.01f);
 }
 
+TEST(test_launch_carries_towed_pod_to_clear_lane) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    ASSERT(bug_test_spawn_towed_exact_pod(
+        &w, &w.players[0], COMMODITY_FERRITE_INGOT, 1));
+
+    int pod_idx = w.players[0].ship.towed_pods[0];
+    ASSERT(pod_idx >= 0 && pod_idx < MAX_CARGO_PODS);
+    vec2 docked_ship_pos = w.players[0].ship.pos;
+    vec2 docked_pod_pos = w.cargo_pods[pod_idx].pos;
+
+    w.players[0].input.launch = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!w.players[0].docked);
+    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+    vec2 ship_delta = v2_sub(w.players[0].ship.pos, docked_ship_pos);
+    vec2 expected_pod_pos = v2_add(docked_pod_pos, ship_delta);
+    ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, expected_pod_pos) < 1.0f);
+
+    for (int i = 0; i < 20; i++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
+        ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+    }
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1671,6 +1702,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug39_duplicate_launch_action_no_redock);
     RUN(test_launch_clears_dock_berth_under_thrust);
     RUN(test_launch_uses_clear_lane_when_actor_blocks_exit);
+    RUN(test_launch_carries_towed_pod_to_clear_lane);
     RUN(test_bug40_no_player_player_collision);
 }
 

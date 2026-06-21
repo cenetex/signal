@@ -282,8 +282,16 @@ void on_player_leave(uint8_t player_id) {
             set_notice("%s left.", ps->callsign);
         else
             set_notice("Pilot left.");
+        server_player_cleanup_local(&g.world.players[player_id]);
+        memset(&g.world.players[player_id], 0,
+               sizeof(g.world.players[player_id]));
+    } else {
+        g.world.players[player_id].connected = false;
     }
-    g.world.players[player_id].connected = false;
+    memset(&g.player_interp.prev[player_id], 0,
+           sizeof(g.player_interp.prev[player_id]));
+    memset(&g.player_interp.curr[player_id], 0,
+           sizeof(g.player_interp.curr[player_id]));
     g.scanned_players[player_id] = false;
 }
 
@@ -1187,6 +1195,7 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
 void begin_player_state_batch(void) {
     memcpy(g.player_interp.prev, g.player_interp.curr,
            sizeof(g.player_interp.prev));
+    memset(g.player_interp.curr, 0, sizeof(g.player_interp.curr));
     float prev_interval = g.net_motion.packet_interval;
     float elapsed = g.player_interp.t * g.player_interp.interval;
     elapsed = clampf(elapsed, 0.03f, 0.15f);
@@ -1422,7 +1431,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
     } else {
         /* Remote player: update curr for interpolation.
          * begin_player_state_batch() already shifted prev←curr. */
-        bool was_active = g.player_interp.curr[state->player_id].active;
+        bool was_active = g.player_interp.prev[state->player_id].active ||
+            g.player_interp.curr[state->player_id].active;
         g.player_interp.curr[state->player_id] = *state;
         /* First time we see this player with a callsign — show join notice */
         if (!was_active && state->active && state->callsign[0])

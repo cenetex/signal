@@ -501,6 +501,7 @@ TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     src->docking_approach = true;
     src->dock_berth = 2;
     src->ship.hull = 42.0f;
+    src->ship.pos = v2(9999.0f, -8888.0f);
     src->ship.angle = 1.25f;
 
     ASSERT(world_player_transfer_ship_state(&w, 1, 0));
@@ -515,7 +516,7 @@ TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     ASSERT(!dst->docking_approach);
     ASSERT_EQ_INT(dst->dock_berth, 2);
     ASSERT_EQ_FLOAT(dst->ship.hull, 42.0f, 0.001f);
-    ASSERT_EQ_FLOAT(dst->ship.angle, 1.25f, 0.001f);
+    ASSERT(v2_dist_sq(dst->ship.pos, w.stations[1].pos) < 1000.0f * 1000.0f);
 
     const ship_asset_t *moved = world_ship_asset_by_id_const(&w, src_asset_id);
     ASSERT(moved != NULL);

@@ -3088,6 +3088,7 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     sp->docked = true;
     sp->nearby_station = sp->current_station;
     sp->in_dock_range = true;
+    sp->dock_berth = -1;
     anchor_ship_in_station(sp, w);
     /* Migrate old global credits → station ledger balance */
     if (migrated_credits > 0.01f) {
