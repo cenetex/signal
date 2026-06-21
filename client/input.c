@@ -74,6 +74,36 @@ static float action_predict_window_sec(void) {
     return window;
 }
 
+static void predict_local_launch_from_dock(void) {
+    int station_idx = LOCAL_PLAYER.current_station;
+    LOCAL_PLAYER.docked = false;
+    LOCAL_PLAYER.in_dock_range = false;
+    LOCAL_PLAYER.docking_approach = false;
+    LOCAL_PLAYER.nearby_station = -1;
+
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_exists(st)) return;
+
+    const hull_def_t *hull = ship_hull_def(&LOCAL_PLAYER.ship);
+    float ship_r = hull ? hull->ship_radius : 18.0f;
+    vec2 away = v2_sub(LOCAL_PLAYER.ship.pos, st->pos);
+    float len = v2_len(away);
+    if (len <= 1.0f) {
+        away = v2(0.0f, -1.0f);
+    } else {
+        away = v2_scale(away, 1.0f / len);
+    }
+
+    float launch_r =
+        st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
+    float min_r = st->radius + ship_r + 180.0f;
+    if (launch_r < min_r) launch_r = min_r;
+    LOCAL_PLAYER.ship.pos = v2_add(st->pos, v2_scale(away, launch_r));
+    LOCAL_PLAYER.ship.angle = fixp_atan2f(away.y, away.x);
+    LOCAL_PLAYER.ship.vel = v2_scale(away, 95.0f);
+}
+
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
@@ -1251,8 +1281,7 @@ void submit_input(const input_intent_t *intent, float dt) {
         if (intent->interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
             if (LOCAL_PLAYER.docked) {
-                LOCAL_PLAYER.docked = false;
-                LOCAL_PLAYER.in_dock_range = false;
+                predict_local_launch_from_dock();
             }
         } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;

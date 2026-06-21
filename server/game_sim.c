@@ -10488,6 +10488,32 @@ void world_sim_step(world_t *w, float dt) {
 /* Public: world_sim_step_player_only                                 */
 /* ================================================================== */
 
+static input_intent_t player_only_movement_intent(input_intent_t in) {
+    in.dock = false;
+    in.launch = false;
+    in.interact = false;
+    in.service_sell = false;
+    in.service_sell_one = false;
+    in.service_repair = false;
+    in.upgrade_mining = false;
+    in.upgrade_hold = false;
+    in.upgrade_tractor = false;
+    in.place_outpost = false;
+    in.add_plan = false;
+    in.create_planned_outpost = false;
+    in.cancel_planned_outpost = false;
+    in.cancel_plan_slot = false;
+    in.buy_scaffold_kit = false;
+    in.commission_ship = false;
+    in.buy_product = false;
+    in.buy_station_pod = false;
+    in.hail = false;
+    in.release_tow = false;
+    in.reset = false;
+    in.toggle_autopilot = false;
+    return in;
+}
+
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
     sim_interactions_clear(w);
@@ -10495,10 +10521,12 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_idx];
     if (!sp->connected) return;
+    input_intent_t saved_input = sp->input;
+    sp->input = player_only_movement_intent(saved_input);
     w->player_only_mode = true;  /* suppress mining HP and world RNG mutation */
     step_player(w, sp, dt);
     w->player_only_mode = false;
-    (void)world_ship_asset_sync_from_player(w, sp);
+    sp->input = saved_input;
 }
 
 /* ================================================================== */

@@ -163,6 +163,8 @@ bool ship_receipts_reserve(ship_receipts_t *r, uint16_t cap) {
 bool ship_receipts_clone(ship_receipts_t *dst, const ship_receipts_t *src) {
     if (!dst || !src) return false;
     if (dst == src) return true;
+    if (src->count > src->cap) return false;
+    if (src->count > 0 && !src->chains) return false;
     ship_receipts_t tmp = {0};
     if (!ship_receipts_init(&tmp, src->cap > 0 ? src->cap : 1)) return false;
     if (src->count > 0 && src->chains)

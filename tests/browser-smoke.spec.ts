@@ -736,6 +736,64 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
+  test('live relay launch accepts flight input', async ({ page }) => {
+    test.skip(!usesLiveSmokeUrl(), 'requires SMOKE_URL pointed at a live relay URL');
+    test.skip(
+      !process.env.SMOKE_LIVE_RELAY_ASSERT,
+      'set SMOKE_LIVE_RELAY_ASSERT=1 to require live relay input acks',
+    );
+    test.setTimeout(45_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, true);
+
+    await expect
+      .poll(async () => hudHintText(page), { timeout: 5_000 })
+      .toContain('SIGNAL // GUIDE // LAUNCH FROM DOCK');
+
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+    await expect
+      .poll(async () => {
+        const flags = await mobileControlFlags(page);
+        return (flags & mobileFlag.docked) === 0 &&
+          (flags & mobileFlag.canFlight) !== 0;
+      }, {
+        timeout: 10_000,
+        message: 'live launch should leave the local client in flight mode',
+      })
+      .toBeTruthy();
+
+    const acksBefore = (await netMotionSnapshot(page)).inputAcks;
+    await page.keyboard.down('W');
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 3_000,
+          message: 'W should register as a held flight control',
+        })
+        .toBe(1);
+      await page.waitForTimeout(1_200);
+    } finally {
+      await page.keyboard.up('W');
+    }
+
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 10_000,
+        message: 'held flight input should receive authoritative acks',
+      })
+      .toBeGreaterThan(acksBefore);
+
+    const motion = await netMotionSnapshot(page);
+    expect(motion.samples).toBeGreaterThan(0);
+    expect(motion.unackedInputs).toBeLessThan(16);
+    expect(motion.actionQueueDepth).toBe(0);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
   test('play page clears held flight controls when browser focus leaves', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires the local play.html build with debug input exports');
 
