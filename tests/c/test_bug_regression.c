@@ -640,6 +640,43 @@ TEST(test_launch_clears_dock_berth_under_thrust) {
     ASSERT(end_center_dist > start_center_dist + 50.0f);
 }
 
+TEST(test_launch_uses_clear_lane_when_actor_blocks_exit) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+
+    station_t *st = &w.stations[0];
+    vec2 berth = w.players[0].ship.pos;
+    vec2 away = v2_sub(berth, st->pos);
+    float away_len = v2_len(away);
+    ASSERT(away_len > 1.0f);
+    away = v2_scale(away, 1.0f / away_len);
+
+    float ship_r = ship_hull_def(&w.players[0].ship)->ship_radius;
+    float launch_r = st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
+    float min_r = st->radius + ship_r + 180.0f;
+    if (launch_r < min_r) launch_r = min_r;
+    vec2 blocked_exit = v2_add(st->pos, v2_scale(away, launch_r));
+
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].state = NPC_STATE_IDLE;
+    w.npc_ships[0].ship.pos = blocked_exit;
+    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+
+    w.players[0].input.launch = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!w.players[0].docked);
+    float moved_from_berth = v2_len(v2_sub(w.players[0].ship.pos, berth));
+    ASSERT(moved_from_berth > 80.0f);
+    float sep = v2_len(v2_sub(w.players[0].ship.pos, w.npc_ships[0].ship.pos));
+    float npc_r = npc_hull_def(&w.npc_ships[0])->ship_radius;
+    ASSERT(sep > ship_r + npc_r + 20.0f);
+    ASSERT(signal_strength_at(&w, w.players[0].ship.pos) > 0.01f);
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1593,6 +1630,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug39_launch_immediate_redock);
     RUN(test_bug39_duplicate_launch_action_no_redock);
     RUN(test_launch_clears_dock_berth_under_thrust);
+    RUN(test_launch_uses_clear_lane_when_actor_blocks_exit);
     RUN(test_bug40_no_player_player_collision);
 }
 

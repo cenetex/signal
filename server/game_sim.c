@@ -1616,6 +1616,65 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
 static bool is_finished_good(commodity_t c);
 static void sync_station_finished_inventory(station_t *st, commodity_t c);
 
+static vec2 actor_stack_normal(int a, int b) {
+    uint32_t h = (uint32_t)(a + 1) * 1103515245u ^
+                 (uint32_t)(b + 1) * 2654435761u ^
+                 0x9E3779B9u;
+    float angle = ((float)(h & 0xFFFFu) / 65536.0f) * TWO_PI_F;
+    return v2_from_angle(angle);
+}
+
+static bool launch_candidate_clear(const world_t *w, int player_slot,
+                                   vec2 pos, float radius) {
+    if (!w) return true;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (p == player_slot) continue;
+        const server_player_t *other = &w->players[p];
+        if (!other->connected || other->docked) continue;
+        const hull_def_t *hull = ship_hull_def(&other->ship);
+        float min_d = radius + hull->ship_radius + 32.0f;
+        if (v2_dist_sq(pos, other->ship.pos) < min_d * min_d)
+            return false;
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        const npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
+        const hull_def_t *hull = npc_hull_def(npc);
+        float min_d = radius + hull->ship_radius + 32.0f;
+        if (v2_dist_sq(pos, npc->ship.pos) < min_d * min_d)
+            return false;
+    }
+    return true;
+}
+
+static vec2 launch_clear_position(const world_t *w, int player_slot,
+                                  const station_t *st, const ship_t *ship,
+                                  vec2 away) {
+    const hull_def_t *hull = ship_hull_def(ship);
+    float ship_r = hull ? hull->ship_radius : 18.0f;
+    float len = v2_len(away);
+    if (len <= 1.0f) away = v2(0.0f, -1.0f);
+    else away = v2_scale(away, 1.0f / len);
+
+    float launch_r = st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
+    float min_r = st->radius + ship_r + 180.0f;
+    if (launch_r < min_r) launch_r = min_r;
+    vec2 base = v2_add(st->pos, v2_scale(away, launch_r));
+    if (launch_candidate_clear(w, player_slot, base, ship_r)) return base;
+
+    vec2 tangent = v2(-away.y, away.x);
+    float step = ship_r * 2.0f + 44.0f;
+    for (int i = 1; i <= 6; i++) {
+        float side = (i & 1) ? 1.0f : -1.0f;
+        float lane = (float)((i + 1) / 2);
+        vec2 candidate = v2_add(base, v2_scale(tangent, side * lane * step));
+        candidate = v2_add(candidate, v2_scale(away, lane * 18.0f));
+        if (launch_candidate_clear(w, player_slot, candidate, ship_r))
+            return candidate;
+    }
+    return base;
+}
+
 static void launch_ship(world_t *w, server_player_t *sp) {
     if (!player_claim_waiting_ship_asset(w, sp)) {
         if (sp) {
@@ -1635,11 +1694,15 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     vec2 away = v2_sub(sp->ship.pos, st->pos);
     float len = v2_len(away);
     if (len > 1.0f) {
+        int player_slot = player_slot_for_ptr(w, sp);
+        sp->ship.pos = launch_clear_position(w, player_slot, st, &sp->ship, away);
         sp->ship.angle = fixp_atan2f(away.y, away.x);
-        sp->ship.vel = v2_scale(away, 40.0f / len);
+        sp->ship.vel = v2_scale(away, 95.0f / len);
     } else {
+        sp->ship.pos = launch_clear_position(
+            w, player_slot_for_ptr(w, sp), st, &sp->ship, v2(0.0f, -1.0f));
         sp->ship.angle = -PI_F * 0.5f;
-        sp->ship.vel = v2(0.0f, -40.0f);
+        sp->ship.vel = v2(0.0f, -95.0f);
     }
     /* First launch: "Hull integrity 94%" */
     if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
@@ -9426,7 +9489,9 @@ void world_sim_step(world_t *w, float dt) {
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
             float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            vec2 normal = d > 0.00001f
+                ? v2_scale(delta, 1.0f / d)
+                : actor_stack_normal(i, j);
             float overlap = minimum - d;
             w->players[i].ship.pos = v2_add(w->players[i].ship.pos, v2_scale(normal, overlap * 0.5f));
             w->players[j].ship.pos = v2_sub(w->players[j].ship.pos, v2_scale(normal, overlap * 0.5f));
@@ -9471,7 +9536,9 @@ void world_sim_step(world_t *w, float dt) {
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
             float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            vec2 normal = d > 0.00001f
+                ? v2_scale(delta, 1.0f / d)
+                : actor_stack_normal(i, j);
             float overlap = minimum - d;
             a->ship.pos = v2_add(a->ship.pos, v2_scale(normal, overlap * 0.5f));
             b->ship.pos = v2_sub(b->ship.pos, v2_scale(normal, overlap * 0.5f));
@@ -9514,7 +9581,9 @@ void world_sim_step(world_t *w, float dt) {
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
             float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            vec2 normal = d > 0.00001f
+                ? v2_scale(delta, 1.0f / d)
+                : actor_stack_normal(i, n + MAX_PLAYERS);
             float overlap = minimum - d;
             sp->ship.pos = v2_add(sp->ship.pos, v2_scale(normal, overlap * 0.5f));
             npc->ship.pos     = v2_sub(npc->ship.pos,    v2_scale(normal, overlap * 0.5f));
