@@ -2788,7 +2788,7 @@ static void draw_cargo_pod_module_tractor_beam(vec2 anchor,
 }
 
 static bool draw_published_cargo_pod_module_tractors(void) {
-    bool authoritative = false;
+    bool drew = false;
     for (int i = 0; i < g.world.interactions.count; i++) {
         const sim_interaction_t *it = &g.world.interactions.items[i];
         if (it->type != SIM_INTERACTION_TRACTOR_BEAM ||
@@ -2796,12 +2796,12 @@ static bool draw_published_cargo_pod_module_tractors(void) {
             it->target.type != SIM_INTERACTION_ENTITY_CARGO_POD) {
             continue;
         }
-        authoritative = true;
 
         int pod_idx = it->target.index;
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
         if (!pod->active) continue;
+        if (it->intensity <= 0.0f) continue;
 
         commodity_t commodity = it->commodity < COMMODITY_COUNT
             ? (commodity_t)it->commodity
@@ -2809,8 +2809,9 @@ static bool draw_published_cargo_pod_module_tractors(void) {
         draw_cargo_pod_module_tractor_beam(
             it->source_pos, it->target_pos, pod, commodity,
             it->intensity, pod_idx);
+        drew = true;
     }
-    return authoritative;
+    return drew;
 }
 
 /* Draw furnace tractor beams: orange tendrils to nearby S-tier fragments,
