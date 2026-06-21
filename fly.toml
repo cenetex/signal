@@ -1,6 +1,6 @@
 # Fly app names are globally unique. Change this before the first deploy if
 # Fly asks for a different name, then keep the volume name below unchanged.
-app = "signal-relay"
+app = "signal-relay-kind-pond-4338"
 primary_region = "lax"
 
 [build]

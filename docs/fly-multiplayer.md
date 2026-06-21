@@ -41,7 +41,7 @@ Arweave/Irys deployment workflow and upload helpers have been removed.
 
 You can override the defaults with repository variables:
 
-- `FLY_APP` (default `signal-relay`)
+- `FLY_APP` (default `signal-relay-kind-pond-4338`)
 - `FLY_REGION` (default `lax`)
 - `FLY_VOLUME` (default `signal_data`)
 - `FLY_VOLUME_SIZE` (default `1`)
@@ -68,13 +68,13 @@ Check the relay:
 ```sh
 fly status
 fly logs
-curl https://signal-relay.fly.dev/health
+curl https://signal-relay-kind-pond-4338.fly.dev/health
 ```
 
 Open the browser client with:
 
 ```text
-https://signal-relay.fly.dev/play
+https://signal-relay-kind-pond-4338.fly.dev/play
 ```
 
 Once DNS is pointed at Fly, the canonical URL is:
