@@ -25,7 +25,7 @@ RUN mkdir -p node_modules/@wllama \
       -DGIT_HASH=${GIT_HASH} \
     && emmake cmake --build build-web --parallel \
     && mkdir -p public \
-    && cp build-web/signal.html build-web/signal.js build-web/signal.wasm \
+    && cp build-web/signal.js build-web/signal.wasm \
           build-web/play.html build-web/signal-touch-controls.js \
           build-web/signal-hail-llm.js build-web/signal-hail-gguf-worker.js \
           build-web/signal-hail-wllama-runtime.js public/ \

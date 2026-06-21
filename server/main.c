@@ -10,7 +10,6 @@
 #include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
-#include "pubkey_proof.h"
 #include "signal_crypto.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
@@ -131,26 +130,25 @@ static bool station_econ_dirty = true;   /* station inventories changed */
 static bool contracts_dirty = true;       /* contract list changed */
 static highscore_table_t highscores;
 static bool highscores_dirty = true;      /* broadcast + persist pending */
+static server_world_snapshot_scratch_t world_snapshot_scratch;
+static server_private_snapshot_scratch_t private_snapshot_scratch;
+static server_station_snapshot_scratch_t station_snapshot_scratch;
 
 /* Defined further down; forward-declared so the highscore helpers can
  * use the same send wrapper as every other broadcast in this file
  * (consistent with future send-queue / rate-limiting changes). */
 static void ws_send(struct mg_connection *c, const void *data, size_t len);
-static float player_station_balance(const server_player_t *sp);
 
 static void send_cargo_receipt_chain(struct mg_connection *c,
                                      const cargo_receipt_chain_t *chain) {
-    if (!c || !chain || chain->len == 0 ||
-        chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
-        return;
-    }
     uint8_t buf[3 + CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE];
-    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
-    buf[1] = chain->len;
-    buf[2] = 0;
-    for (uint8_t i = 0; i < chain->len; i++)
-        cargo_receipt_pack(&chain->links[i], &buf[3 + i * CARGO_RECEIPT_SIZE]);
-    ws_send(c, buf, 3u + (size_t)chain->len * CARGO_RECEIPT_SIZE);
+    int len = serialize_cargo_receipt_bundle(buf, chain);
+    if (c && len > 0) ws_send(c, buf, (size_t)len);
+}
+
+static void ws_cargo_receipt_chain_sink(void *user,
+                                        const cargo_receipt_chain_t *chain) {
+    send_cargo_receipt_chain((struct mg_connection *)user, chain);
 }
 
 static void send_handoff_ticket_msg(struct mg_connection *c, uint8_t status,
@@ -172,6 +170,21 @@ static void send_handoff_result_msg(struct mg_connection *c, uint8_t status,
     ws_send(c, buf, (size_t)len);
 }
 
+static void ws_handoff_ticket_sink(void *user, uint8_t status,
+                                   uint8_t source_station,
+                                   uint8_t dest_station,
+                                   const handoff_ticket_t *ticket) {
+    send_handoff_ticket_msg((struct mg_connection *)user, status,
+                            source_station, dest_station, ticket);
+}
+
+static void ws_handoff_result_sink(void *user, uint8_t status,
+                                   uint8_t reason, uint8_t dest_station,
+                                   const uint8_t ticket_hash[32]) {
+    send_handoff_result_msg((struct mg_connection *)user, status, reason,
+                            dest_station, ticket_hash);
+}
+
 static const char *cargo_receipt_present_result_name(
     cargo_receipt_present_result_t result) {
     switch (result) {
@@ -185,20 +198,6 @@ static const char *cargo_receipt_present_result_name(
     case CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE: return "receipt-store";
     default: return "unknown";
     }
-}
-
-static bool tick_after_u32(uint32_t a, uint32_t b) {
-    return (int32_t)(a - b) > 0;
-}
-
-static uint32_t server_input_apply_tick(uint32_t client_tick) {
-    const uint32_t max_future_ticks = NET_INPUT_APPLY_FUTURE_MAX_TICKS;
-    uint32_t next_tick = world.tick + 1u;
-    if (client_tick == 0 || !tick_after_u32(client_tick, world.tick))
-        return next_tick;
-    if (tick_after_u32(client_tick, world.tick + max_future_ticks))
-        return world.tick + max_future_ticks;
-    return client_tick;
 }
 
 #define ANALYTICS_ACTIVE_WINDOW_MS 60000ull
@@ -379,55 +378,6 @@ static void analytics_emit_emf(uint64_t now_ms) {
            avg_ack,
            avg_gap,
            (unsigned)max_gap);
-}
-
-static void merge_one_shot_input(input_intent_t *dst,
-                                 const input_intent_t *src) {
-    if (!dst || !src) return;
-    if (src->dock) {
-        dst->dock = true;
-        dst->interact = true;
-    }
-    if (src->launch) {
-        dst->launch = true;
-        dst->interact = true;
-    }
-    if (src->interact) dst->interact = true;
-    if (src->service_sell) {
-        dst->service_sell = true;
-        dst->service_sell_only = src->service_sell_only;
-        dst->service_sell_grade = src->service_sell_grade;
-        dst->service_sell_one = src->service_sell_one;
-    }
-    if (src->service_repair) dst->service_repair = true;
-    if (src->upgrade_mining) dst->upgrade_mining = true;
-    if (src->upgrade_hold) dst->upgrade_hold = true;
-    if (src->upgrade_tractor) dst->upgrade_tractor = true;
-    if (src->place_outpost) {
-        dst->place_outpost = true;
-        dst->place_target_station = src->place_target_station;
-        dst->place_target_ring = src->place_target_ring;
-        dst->place_target_slot = src->place_target_slot;
-    }
-    if (src->buy_scaffold_kit) {
-        dst->buy_scaffold_kit = true;
-        dst->scaffold_kit_module = src->scaffold_kit_module;
-    }
-    if (src->commission_ship) {
-        dst->commission_ship = true;
-        dst->commission_hull_class = src->commission_hull_class;
-    }
-    if (src->buy_product) {
-        dst->buy_product = true;
-        dst->buy_commodity = src->buy_commodity;
-        dst->buy_grade = src->buy_grade;
-        dst->buy_station_pod = src->buy_station_pod;
-        dst->buy_station_pod_index = src->buy_station_pod_index;
-    }
-    if (src->hail) dst->hail = true;
-    if (src->release_tow) dst->release_tow = true;
-    if (src->reset) dst->reset = true;
-    if (src->toggle_autopilot) dst->toggle_autopilot = true;
 }
 
 static void broadcast_highscores(void) {
@@ -666,150 +616,19 @@ static void send_latency_pong(struct mg_connection *c, uint32_t seq,
     ws_send(c, buf, (size_t)len);
 }
 
-static int action_result_station_index(const server_player_t *sp) {
-    return sp->docked ? sp->current_station : sp->nearby_station;
-}
-
-static int action_result_station_pending_count(const server_player_t *sp) {
-    int st = sp->pending_action_before_station;
-    if (st < 0 || st >= MAX_STATIONS) return -1;
-    (void)sp;
-    return world.stations[st].pending_scaffold_count;
-}
-
-static int action_result_station_pending_ship_build_count(const server_player_t *sp) {
-    int st = sp->pending_action_before_station;
-    if (st < 0 || st >= MAX_STATIONS) return -1;
-    (void)sp;
-    return world.stations[st].pending_ship_build_count;
-}
-
-static void begin_pending_action_result(server_player_t *sp,
-                                        uint16_t action_id,
-                                        uint16_t input_seq,
-                                        uint8_t action) {
-    if (!sp || action_id == 0 || action == NET_ACTION_NONE) return;
-    int st = action_result_station_index(sp);
-    sp->pending_action_result_valid = true;
-    sp->pending_action_result_action = action;
-    sp->pending_action_result_id = action_id;
-    sp->pending_action_result_input_seq = input_seq;
-    sp->pending_action_before_docked = sp->docked;
-    sp->pending_action_before_docking_approach = sp->docking_approach;
-    sp->pending_action_before_station = st;
-    sp->pending_action_before_autopilot_mode = sp->autopilot_mode;
-    sp->pending_action_before_hull = sp->ship.hull;
-    sp->pending_action_before_cargo_total = ship_total_cargo(&sp->ship);
-    sp->pending_action_before_manifest_count = sp->ship.manifest.count;
-    sp->pending_action_before_mining_level = (uint8_t)sp->ship.mining_level;
-    sp->pending_action_before_hold_level = (uint8_t)sp->ship.hold_level;
-    sp->pending_action_before_tractor_level = (uint8_t)sp->ship.tractor_level;
-    sp->pending_action_before_towed_count = sp->ship.towed_count;
-    sp->pending_action_before_towed_scaffold = sp->ship.towed_scaffold;
-    sp->pending_action_before_station_pending_scaffold_count =
-        (st >= 0 && st < MAX_STATIONS) ? world.stations[st].pending_scaffold_count : -1;
-    sp->pending_action_before_station_pending_ship_build_count =
-        (st >= 0 && st < MAX_STATIONS) ? world.stations[st].pending_ship_build_count : -1;
-    sp->pending_action_before_station_balance = player_station_balance(sp);
-}
-
-static bool pending_action_state_changed(const server_player_t *sp) {
-    if (!sp || !sp->pending_action_result_valid) return false;
-    if (sp->pending_action_before_docked != sp->docked) return true;
-    if (sp->pending_action_before_docking_approach != sp->docking_approach) return true;
-    if (sp->pending_action_before_station != action_result_station_index(sp)) return true;
-    if (sp->pending_action_before_autopilot_mode != sp->autopilot_mode) return true;
-    if (fabsf(sp->pending_action_before_hull - sp->ship.hull) > 0.01f) return true;
-    if (fabsf(sp->pending_action_before_cargo_total - ship_total_cargo(&sp->ship)) > 0.01f) return true;
-    if (sp->pending_action_before_manifest_count != sp->ship.manifest.count) return true;
-    if (sp->pending_action_before_mining_level != (uint8_t)sp->ship.mining_level) return true;
-    if (sp->pending_action_before_hold_level != (uint8_t)sp->ship.hold_level) return true;
-    if (sp->pending_action_before_tractor_level != (uint8_t)sp->ship.tractor_level) return true;
-    if (sp->pending_action_before_towed_count != sp->ship.towed_count) return true;
-    if (sp->pending_action_before_towed_scaffold != sp->ship.towed_scaffold) return true;
-    if (sp->pending_action_before_station_pending_scaffold_count !=
-        action_result_station_pending_count(sp)) {
-        return true;
-    }
-    if (sp->pending_action_before_station_pending_ship_build_count !=
-        action_result_station_pending_ship_build_count(sp)) {
-        return true;
-    }
-    if (fabsf(sp->pending_action_before_station_balance -
-              player_station_balance(sp)) > 0.01f) {
-        return true;
-    }
-    return false;
-}
-
-static bool action_matches_event(uint8_t action, uint8_t event_type) {
-    if (action == NET_ACTION_DOCK) return event_type == SIM_EVENT_DOCK;
-    if (action == NET_ACTION_LAUNCH) return event_type == SIM_EVENT_LAUNCH;
-    if (action == NET_ACTION_SELL_CARGO ||
-        (action >= NET_ACTION_DELIVER_COMMODITY &&
-         action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT)) {
-        return event_type == SIM_EVENT_SELL ||
-               event_type == SIM_EVENT_CONTRACT_COMPLETE;
-    }
-    if (action == NET_ACTION_REPAIR) return event_type == SIM_EVENT_REPAIR;
-    if (action == NET_ACTION_UPGRADE_MINING ||
-        action == NET_ACTION_UPGRADE_HOLD ||
-        action == NET_ACTION_UPGRADE_TRACTOR) {
-        return event_type == SIM_EVENT_UPGRADE;
-    }
-    if (action == NET_ACTION_PLACE_OUTPOST) return event_type == SIM_EVENT_OUTPOST_PLACED;
-    if (action == NET_ACTION_HAIL) return event_type == SIM_EVENT_HAIL_RESPONSE;
-    if (action == NET_ACTION_RESET) return event_type == SIM_EVENT_DEATH;
-    if (action >= NET_ACTION_BUY_PRODUCT &&
-        action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
-        return event_type == SIM_EVENT_BUY;
-    }
-    if (action == NET_ACTION_BUY_INGOT) return event_type == SIM_EVENT_BUY;
-    return false;
-}
-
-static uint8_t pending_action_result_status(const server_player_t *sp,
-                                            const sim_events_t *events) {
-    bool matched_event = false;
-    bool rejected = false;
-    if (sp && events) {
-        for (int i = 0; i < events->count; i++) {
-            const sim_event_t *ev = &events->events[i];
-            if (ev->player_id != sp->id) continue;
-            if (ev->type == SIM_EVENT_ORDER_REJECTED) rejected = true;
-            if (action_matches_event(sp->pending_action_result_action,
-                                     (uint8_t)ev->type)) {
-                matched_event = true;
-            }
-        }
-    }
-    if (rejected) return NET_ACTION_RESULT_REJECTED;
-    if (matched_event || pending_action_state_changed(sp)) return NET_ACTION_RESULT_OK;
-    return NET_ACTION_RESULT_NOOP;
-}
-
-static const char *action_result_status_name(uint8_t status) {
-    switch (status) {
-    case NET_ACTION_RESULT_OK:       return "ok";
-    case NET_ACTION_RESULT_REJECTED: return "rejected";
-    case NET_ACTION_RESULT_NOOP:     return "noop";
-    default:                         return "unknown";
-    }
-}
-
 static void send_pending_action_results(const sim_events_t *events) {
     uint32_t server_tick = world.tick;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
         if (!sp->pending_action_result_valid) continue;
-        uint8_t status = pending_action_result_status(sp, events);
+        uint8_t status = server_pending_action_result_status(&world, sp, events);
         force_player_authoritative_resync(sp);
         printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=%s tick=%u resync=authoritative\n",
                sp->id,
                (unsigned)sp->pending_action_result_id,
                (unsigned)sp->pending_action_result_input_seq,
                (unsigned)sp->pending_action_result_action,
-               action_result_status_name(status),
+               server_action_result_status_name(status),
                (unsigned)server_tick);
         if (sp->connected && sp->conn) {
             send_action_result(sp->conn,
@@ -830,6 +649,55 @@ static void broadcast(const void *data, size_t len) {
     }
 }
 
+static void ws_packet_sink(void *user, const uint8_t *data, int len) {
+    struct mg_connection *c = (struct mg_connection *)user;
+    if (c && data && len > 0) ws_send(c, data, (size_t)len);
+}
+
+typedef struct {
+    struct mg_connection *conn;
+    server_player_t *player;
+} ws_private_packet_sink_t;
+
+static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
+    ws_private_packet_sink_t *sink = (ws_private_packet_sink_t *)user;
+    if (!sink || !sink->conn || !sink->player || !data || len <= 0) return;
+    net_payload_cache_t *cache = NULL;
+    switch (data[0]) {
+    case NET_MSG_PLAYER_SHIP:
+        cache = &sink->player->player_ship_cache;
+        break;
+    case NET_MSG_HOLD_INGOTS:
+        cache = &sink->player->hold_ingots_cache;
+        break;
+    case NET_MSG_PLAYER_MANIFEST:
+        cache = &sink->player->player_manifest_cache;
+        break;
+    case NET_MSG_INSPECT_SNAPSHOT:
+        cache = &sink->player->inspect_snapshot_cache;
+        break;
+    case NET_MSG_PLAYER_KNOWN_CONTRACTS:
+        cache = &sink->player->known_contracts_cache;
+        break;
+    case NET_MSG_DELIVERY_LEDGER:
+        cache = &sink->player->delivery_ledger_cache;
+        break;
+    default:
+        break;
+    }
+    ws_send_if_changed(sink->conn, cache, data, (size_t)len);
+}
+
+static void ws_player_packet_sink(void *user, int player_slot,
+                                  const uint8_t *data, int len) {
+    (void)user;
+    if (!data || len <= 0) return;
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[player_slot];
+    if (!sp->connected || !sp->conn) return;
+    ws_send(sp->conn, data, (size_t)len);
+}
+
 static void broadcast_except(int exclude, const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (i == exclude) continue;
@@ -838,97 +706,8 @@ static void broadcast_except(int exclude, const void *data, size_t len) {
     }
 }
 
-static float fracture_signal_radius(vec2 pos) {
-    float radius = 0.0f;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        const station_t *st = &world.stations[s];
-        if (!station_provides_signal(st)) continue;
-        if (v2_dist_sq(pos, st->pos) <= st->signal_range * st->signal_range &&
-            st->signal_range > radius)
-            radius = st->signal_range;
-    }
-    return radius;
-}
-
-static bool fracture_player_in_range(int player_id, int asteroid_idx) {
-    float radius;
-    if (player_id < 0 || player_id >= MAX_PLAYERS ||
-        asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
-        return false;
-    if (!world.players[player_id].connected ||
-        !world.players[player_id].session_ready ||
-        !world.players[player_id].conn ||
-        !world.asteroids[asteroid_idx].active)
-        return false;
-    radius = fracture_signal_radius(world.asteroids[asteroid_idx].pos);
-    if (radius <= 0.0f) return false;
-    return v2_dist_sq(world.players[player_id].ship.pos, world.asteroids[asteroid_idx].pos) <= radius * radius;
-}
-
 static void broadcast_fracture_updates(void) {
-    uint32_t now_ms = (uint32_t)(world.time * 1000.0f);
-
-    /* Challenges: re-broadcast to each in-range player while the window
-     * is open (challenge_dirty is re-armed in step_fracture_claims).
-     * Clients dedupe by fracture_id so duplicate challenges are cheap. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        fracture_claim_state_t *state = &world.fracture_claims[i];
-        if (state->challenge_dirty && state->fracture_id && world.asteroids[i].active) {
-            uint8_t buf[FRACTURE_CHALLENGE_SIZE];
-            buf[0] = NET_MSG_FRACTURE_CHALLENGE;
-            write_u32_le(&buf[1], state->fracture_id);
-            memcpy(&buf[5], world.asteroids[i].fracture_seed, 32);
-            write_u32_le(&buf[37], state->deadline_ms);
-            write_u16_le(&buf[41], state->burst_cap);
-            for (int p = 0; p < MAX_PLAYERS; p++) {
-                if (!fracture_player_in_range(p, i)) continue;
-                ws_send(world.players[p].conn, buf, sizeof(buf));
-            }
-            state->challenge_dirty = false;
-        }
-        /* The legacy per-state resolved_dirty path is preserved for the
-         * common "asteroid still alive at resolve time" case — cheap
-         * and range-filtered. The pending_resolves queue below covers
-         * the gnarly case (resolve + smelt in same tick). */
-        if (state->resolved_dirty && state->fracture_id && world.asteroids[i].active) {
-            uint8_t buf[FRACTURE_RESOLVED_SIZE];
-            buf[0] = NET_MSG_FRACTURE_RESOLVED;
-            write_u32_le(&buf[1], state->fracture_id);
-            memcpy(&buf[5], world.asteroids[i].fragment_pub, 32);
-            memcpy(&buf[37], state->best_player_pub, 32);
-            buf[69] = state->best_grade;
-            for (int p = 0; p < MAX_PLAYERS; p++) {
-                if (!fracture_player_in_range(p, i)) continue;
-                ws_send(world.players[p].conn, buf, sizeof(buf));
-            }
-            state->resolved_dirty = false;
-        }
-    }
-
-    /* Pending resolves: fracture_commit_resolution pushes here so
-     * deliveries survive asteroid clear. Broadcast to every connected
-     * player rather than range-filtering — the asteroid may be gone
-     * so we can't compute range, and clients that never got the
-     * matching challenge drop the resolve in mining_client_resolve_fracture. */
-    for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
-        pending_resolve_t *pr = &world.pending_resolves[p];
-        if (!pr->active) continue;
-        if (pr->tx_count > 0 && now_ms < pr->last_tx_ms + FRACTURE_RESOLVE_RETRY_PERIOD_MS)
-            continue;
-        uint8_t buf[FRACTURE_RESOLVED_SIZE];
-        buf[0] = NET_MSG_FRACTURE_RESOLVED;
-        write_u32_le(&buf[1], pr->fracture_id);
-        memcpy(&buf[5], pr->fragment_pub, 32);
-        memcpy(&buf[37], pr->winner_pub, 32);
-        buf[69] = pr->grade;
-        for (int pi = 0; pi < MAX_PLAYERS; pi++) {
-            if (!world.players[pi].connected || !world.players[pi].conn) continue;
-            ws_send(world.players[pi].conn, buf, sizeof(buf));
-        }
-        pr->tx_count++;
-        pr->last_tx_ms = now_ms;
-        if (pr->tx_count >= FRACTURE_RESOLVE_RETRY_COUNT) pr->active = false;
-    }
+    server_emit_fracture_updates(&world, -1, ws_player_packet_sink, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -939,159 +718,6 @@ static void broadcast_fracture_updates(void) {
 static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
 #define WS_RATE_WINDOW_MS 1000
 #define WS_RATE_LIMIT 140 /* 60Hz input + signed/plan bursts without drops */
-
-static uint16_t signed_action_payload_id(const uint8_t *payload,
-                                         uint16_t payload_len,
-                                         uint16_t fixed_len) {
-    if (!payload || payload_len < (uint16_t)(fixed_len + 2u)) return 0;
-    return read_u16_le(&payload[fixed_len]);
-}
-
-static void apply_signed_input_action(int pid, const uint8_t *payload,
-                                      uint16_t payload_len) {
-    if (pid < 0 || pid >= MAX_PLAYERS || !payload || payload_len < 5) return;
-    server_player_t *sp = &world.players[pid];
-    uint8_t action = payload[0];
-    uint16_t action_id = (payload_len >= 7) ? read_u16_le(&payload[5]) : 0;
-    uint8_t buf[8] = {
-        NET_MSG_INPUT,
-        0,
-        action,
-        0xFF,
-        payload[1],
-        payload[2],
-        payload[3],
-        payload[4],
-    };
-    input_intent_t parsed = {0};
-    parsed.mining_target_hint = -1;
-    parsed.buy_grade = MINING_GRADE_COUNT;
-    parsed.service_sell_only = COMMODITY_COUNT;
-    parsed.service_sell_grade = MINING_GRADE_COUNT;
-    parse_input(buf, (int)sizeof(buf), &parsed);
-    if (action_id != 0) begin_pending_action_result(sp, action_id, 0, action);
-    merge_one_shot_input(&sp->input, &parsed);
-
-    if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
-         action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
-        action == NET_ACTION_BUY_SCAFFOLD) {
-        int s = sp->current_station;
-        if (s >= 0 && s < MAX_STATIONS) station_identity_dirty[s] = true;
-    }
-}
-
-static void apply_signed_plan(int pid, const uint8_t *payload,
-                              uint16_t payload_len) {
-    if (pid < 0 || pid >= MAX_PLAYERS || !payload) return;
-    if (payload_len != NET_PLAN_MSG_SIZE - 1) return;
-    uint8_t buf[NET_PLAN_MSG_SIZE];
-    buf[0] = NET_MSG_PLAN;
-    memcpy(&buf[1], payload, NET_PLAN_MSG_SIZE - 1);
-    parse_plan(buf, NET_PLAN_MSG_SIZE, &world.players[pid].input);
-}
-
-static void handle_deliver_ingot_index(struct mg_connection *c, int pid,
-                                       uint8_t target) {
-    if (pid < 0 || pid >= MAX_PLAYERS) return;
-    server_player_t *sp = &world.players[pid];
-    if (!sp->docked) return;
-    int sidx = sp->current_station;
-    if (sidx < 0 || sidx >= MAX_STATIONS) return;
-    station_t *st = &world.stations[sidx];
-    ship_t *ship = &sp->ship;
-    int hidx = -1;
-    int seen = 0;
-    for (uint16_t u = 0; u < ship->manifest.count; u++) {
-        const cargo_unit_t *cu = &ship->manifest.units[u];
-        if ((cargo_kind_t)cu->kind != CARGO_KIND_INGOT) continue;
-        if ((ingot_prefix_t)cu->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
-        if (seen == target) { hidx = (int)u; break; }
-        seen++;
-    }
-    if (hidx < 0) return;
-    cargo_unit_t copy = ship->manifest.units[hidx];
-    cargo_receipt_chain_t attached_chain = {0};
-    ship_receipts_t *rcpts = ship_get_receipts(ship);
-    if (rcpts && hidx < (int)rcpts->count) {
-        const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
-        attached_chain = *attached;
-        if (attached->len > 0) {
-            cargo_receipt_result_t vr = cargo_receipt_chain_verify(
-                attached->links, attached->len, copy.pub);
-            if (vr != CARGO_RECEIPT_OK) {
-                printf("[server] receipt_chain_invalid: deliver from player %d, reason=%d\n",
-                       pid, (int)vr);
-                return;
-            }
-            if (attached->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
-                printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n", pid);
-                return;
-            }
-        }
-    }
-    if (st->manifest.count >= st->manifest.cap) {
-        cargo_unit_t evicted = {0};
-        if (station_manifest_remove_with_chain(st, 0, &evicted, NULL) &&
-            (ingot_prefix_t)evicted.prefix_class != INGOT_PREFIX_ANONYMOUS) {
-            char ev_cs[12]; mining_render_callsign(evicted.pub, ev_cs);
-            char ev_msg[96];
-            snprintf(ev_msg, sizeof(ev_msg), "stockpile full - voided %s", ev_cs);
-            signal_channel_post(&world, sidx, ev_msg, "");
-        }
-    }
-    uint8_t prev_hash[32] = {0};
-    bool have_prev = false;
-    if (attached_chain.len > 0) {
-        cargo_receipt_hash(&attached_chain.links[attached_chain.len - 1], prev_hash);
-        have_prev = true;
-    }
-    cargo_receipt_chain_t removed_chain = {0};
-    if (!ship_manifest_remove_with_chain(ship, (uint16_t)hidx,
-                                         &copy, &removed_chain)) {
-        return;
-    }
-
-    cargo_receipt_t receipt = {0};
-    cargo_receipt_chain_t station_chain = removed_chain;
-    uint64_t xfer_id = cargo_receipt_emit_transfer(
-        &world, st,
-        sp->pubkey,
-        st->station_pubkey,
-        copy.pub,
-        (uint8_t)CARGO_KIND_INGOT,
-        have_prev ? prev_hash : st->chain_last_hash,
-        &receipt);
-    if (xfer_id != 0 && station_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
-        station_chain.links[station_chain.len++] = receipt;
-
-    if (!station_manifest_push_with_chain(st, &copy, &station_chain)) {
-        (void)ship_manifest_push_with_chain(ship, &copy, &removed_chain);
-        return;
-    }
-
-    float delivery_f = station_buy_price_unit(st, &copy);
-    float floor_f = (float)INGOT_DELIVERY_CREDIT;
-    if (delivery_f < floor_f) delivery_f = floor_f;
-    int delivery_int = (int)lroundf(delivery_f);
-    if (server_player_can_use_pubkey_persistence(sp)) {
-        ledger_credit_supply_by_pubkey(st, sp->pubkey, (float)delivery_int);
-    } else {
-        ledger_credit_supply(st, sp->session_token, (float)delivery_int);
-    }
-    if (xfer_id != 0) {
-        send_cargo_receipt_chain(c, &station_chain);
-        chain_payload_trade_t trade = {0};
-        trade.transfer_event_id = xfer_id;
-        trade.ledger_delta_signed = (int64_t)delivery_int;
-        memcpy(trade.ledger_pubkey, sp->pubkey, 32);
-        (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                             &trade, (uint16_t)sizeof(trade));
-    }
-    char cs[12]; mining_render_callsign(copy.pub, cs);
-    char msg[96];
-    snprintf(msg, sizeof(msg), "%s delivered %s", sp->callsign, cs);
-    signal_channel_post(&world, sidx, msg, "");
-}
 
 static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
                                               uint64_t now) {
@@ -1136,8 +762,7 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
         }
     }
 
-    (void)registry_register_pubkey(&world, pk, sp->session_token);
-    sp->pubkey_identity_finalized = true;
+    (void)server_finalize_pubkey_identity(&world, pid);
     printf("[server] player %d: verified pubkey %02x%02x%02x%02x...\n",
            pid, pk[0], pk[1], pk[2], pk[3]);
     analytics_log_player_event("player_identity", pid, sp, now, 0);
@@ -1203,104 +828,65 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         break;
     case NET_MSG_INPUT:
     {
-        const uint8_t *input_data = data;
-        uint8_t input_copy[32];
-        int input_len = len;
-        uint8_t action = (len >= 3) ? data[2] : NET_ACTION_NONE;
-        uint8_t ack_status = 0;
-        uint16_t action_id = 0;
-        uint16_t input_seq = (len >= 10)
-            ? (uint16_t)data[8] | ((uint16_t)data[9] << 8)
-            : 0;
-        uint32_t client_tick = input_client_tick(data, len);
         server_player_t *sp = &world.players[pid];
-        if (action != NET_ACTION_NONE && sp->pubkey_set) {
+        server_input_dispatch_result_t input_result;
+        if (!server_dispatch_input_message(&world, pid, data, len,
+                                           &input_result)) {
+            break;
+        }
+        if (input_result.rejected_unsigned_action) {
             unsigned_action_count++;
-            ack_status = NET_ACTION_ACK_REJECTED;
-            size_t copy_len = (size_t)len;
-            if (copy_len > sizeof(input_copy)) copy_len = sizeof(input_copy);
-            if (copy_len >= 3) {
-                memcpy(input_copy, data, copy_len);
-                input_copy[2] = NET_ACTION_NONE;
-                input_data = input_copy;
-                input_len = (int)copy_len;
-                action = NET_ACTION_NONE;
-            }
-            if (len >= 14)
-                action_id = input_action_id(data, len);
-        } else if (len >= 14 && action != NET_ACTION_NONE) {
-            action_id = input_action_id(data, len);
-            if (action_id != 0 && sp->last_input_action_id_valid &&
-                sp->last_input_action_id == action_id) {
-                ack_status = NET_ACTION_ACK_DUPLICATE;
-                size_t copy_len = (size_t)len;
-                if (copy_len > sizeof(input_copy)) copy_len = sizeof(input_copy);
-                if (copy_len >= 3) {
-                    memcpy(input_copy, data, copy_len);
-                    input_copy[2] = NET_ACTION_NONE;
-                    input_data = input_copy;
-                    input_len = (int)copy_len;
-                    action = NET_ACTION_NONE;
-                }
-            } else if (action_id != 0) {
-                sp->last_input_action_id = action_id;
-                sp->last_input_action_id_valid = true;
-                ack_status = NET_ACTION_ACK_RECEIVED;
-                begin_pending_action_result(sp, action_id, input_seq, action);
-            }
         }
-        if (len >= 4) {
-            input_intent_t parsed = {0};
-            parsed.mining_target_hint = -1;
-            parsed.buy_grade = MINING_GRADE_COUNT;
-            parsed.service_sell_only = COMMODITY_COUNT;
-            parsed.service_sell_grade = MINING_GRADE_COUNT;
-            parse_input(input_data, input_len, &parsed);
-            server_player_queue_movement_input(
-                sp, &parsed, input_seq, server_input_apply_tick(client_tick));
-            merge_one_shot_input(&sp->input, &parsed);
+        if (input_result.ack_status == NET_ACTION_ACK_RECEIVED &&
+            input_result.action_id != 0) {
+            server_begin_pending_action_result(&world, sp,
+                                               input_result.action_id,
+                                               input_result.input_seq,
+                                               input_result.action);
         }
+        server_merge_one_shot_input(&sp->input, &input_result.intent);
         /* Movement-only input acks ride the authoritative WORLD_PLAYERS
          * stream. ACTION_ACK is only for one-shot actions or rejections. */
         if (c) {
-            if (ack_status != 0) {
-                send_action_ack(c, action_id, input_seq, ack_status, data[2]);
-                if (ack_status == NET_ACTION_ACK_REJECTED &&
-                    data[2] != NET_ACTION_NONE &&
-                    (action_id != 0 || sp->pubkey_set)) {
+            if (input_result.ack_status != 0) {
+                send_action_ack(c, input_result.action_id,
+                                input_result.input_seq,
+                                input_result.ack_status,
+                                input_result.action);
+                if (input_result.force_authoritative_resync) {
                     force_player_authoritative_resync(sp);
                     printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=rejected tick=%u resync=unsigned-reject\n",
-                           sp->id, (unsigned)action_id,
-                           (unsigned)input_seq, (unsigned)data[2],
+                           sp->id, (unsigned)input_result.action_id,
+                           (unsigned)input_result.input_seq,
+                           (unsigned)input_result.action,
                            (unsigned)world.tick);
-                    send_action_result(c, action_id, input_seq,
+                    send_action_result(c, input_result.action_id,
+                                       input_result.input_seq,
                                        NET_ACTION_RESULT_REJECTED,
-                                       data[2], world.tick);
+                                       input_result.action, world.tick);
                 }
             }
         }
         /* If the player just queued a shipyard order, refresh that station's
          * identity on the next world tick so the SHIPYARD tab sees the new
          * pending count immediately instead of waiting for the 2s fallback. */
-        if (len >= 3) {
-            if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
-                 action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
-                action == NET_ACTION_BUY_SCAFFOLD) {
-                int s = world.players[pid].current_station;
-                if (s >= 0 && s < MAX_STATIONS) station_identity_dirty[s] = true;
-            }
-        }
+        if (input_result.station_identity_dirty >= 0 &&
+            input_result.station_identity_dirty < MAX_STATIONS)
+            station_identity_dirty[input_result.station_identity_dirty] = true;
         break;
     }
     case NET_MSG_PLAN:
-        if (world.players[pid].pubkey_set) {
+    {
+        server_unsigned_dispatch_result_t result;
+        if (server_dispatch_legacy_plan_message(&world, pid, data, len,
+                                                &result) &&
+            result.rejected_unsigned_action) {
             unsigned_action_count++;
             printf("[server] legacy unsigned PLAN rejected for pubkey player %d; signed action required\n",
                    pid);
-            break;
         }
-        parse_plan(data, len, &world.players[pid].input);
         break;
+    }
     case NET_MSG_STATE:
         /* Ignored -- server is authoritative. */
         break;
@@ -1308,344 +894,61 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         /* Legacy -- mining handled via INPUT flags now. */
         break;
     case NET_MSG_BUY_INGOT:
-        if (world.players[pid].pubkey_set) {
+    {
+        server_legacy_cargo_dispatch_result_t result;
+        if (server_dispatch_legacy_buy_ingot_message(
+                &world, pid, data, len, ws_cargo_receipt_chain_sink,
+                c, &result) &&
+            result.rejected_unsigned_action) {
             unsigned_action_count++;
             printf("[server] legacy unsigned BUY_INGOT rejected for pubkey player %d; signed action required\n",
                    pid);
-            break;
-        }
-        /* RATi v2: purchase a specific named ingot from the docked
-         * station's manifest. Payload: [type:1][pubkey:32]. The unit
-         * is transferred from station.manifest to ship.manifest with
-         * its full provenance (prefix_class, origin_station,
-         * mined_block, parent_merkle) preserved. */
-        if (len >= 33 && world.players[pid].docked) {
-            int sidx = world.players[pid].current_station;
-            if (sidx < 0 || sidx >= MAX_STATIONS) break;
-            server_player_t *sp = &world.players[pid];
-            station_t *st = &world.stations[sidx];
-            ship_t *ship = &sp->ship;
-            const uint8_t *pk = &data[1];
-            int slot = manifest_find(&st->manifest, pk);
-            if (slot < 0) break;
-            cargo_unit_t *src = &st->manifest.units[slot];
-            if ((cargo_kind_t)src->kind != CARGO_KIND_INGOT) break;
-            /* Prefix-class price multipliers (#prefix-pricing): the
-             * specific unit's sale price scales by both the dynamic
-             * stock curve and the unit's prefix_class. Anonymous
-             * ingots aren't purchasable through this path — they're
-             * bulk material and have no named-collectible premium. */
-            if ((ingot_prefix_t)src->prefix_class == INGOT_PREFIX_ANONYMOUS) break;
-            int price = (int)lroundf(station_sell_price_unit(st, src));
-            if (price <= 0) break;
-            if (!station_manifest_bootstrap(st)) break;
-            if (!ship_manifest_bootstrap(ship)) break;
-            ship_receipts_t *station_receipts = station_get_receipts(st);
-            cargo_receipt_chain_t station_chain = {0};
-            if (station_receipts && slot < (int)station_receipts->count)
-                station_chain = station_receipts->chains[slot];
-            if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) break;
-            /* Use ledger_spend so the credit pool stays conserved. */
-            bool spent = server_player_can_use_pubkey_persistence(sp)
-                ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
-                : ledger_spend(st, sp->session_token, (float)price, ship);
-            if (!spent) break;
-            cargo_unit_t copy = {0};
-            if (!station_manifest_remove_with_chain(st, (uint16_t)slot,
-                                                    &copy, &station_chain)) {
-                break;
-            }
-            /* Layer C of #479: emit EVT_TRANSFER + EVT_TRADE. The two
-             * are linked by transfer_event_id so a verifier can stitch
-             * them back into a single atomic move.
-             * Layer D of #479: also issue a portable cargo_receipt_t the
-             * player carries with the cargo. The origin receipt's
-             * prev_receipt_hash is the station's chain_last_hash AFTER
-             * the EVT_TRANSFER emit — verifiable in isolation by
-             * walking the station's chain log to that exact event. */
-            {
-                cargo_receipt_t receipt;
-                uint8_t prev_hash[32] = {0};
-                cargo_receipt_chain_t outgoing_chain = station_chain;
-                if (station_chain.len > 0)
-                    cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
-                                       prev_hash);
-                uint64_t xfer_id = cargo_receipt_emit_transfer(
-                    &world, st,
-                    st->station_pubkey,
-                    world.players[pid].pubkey,
-                    copy.pub,
-                    (uint8_t)CARGO_KIND_INGOT,
-                    station_chain.len > 0 ? prev_hash : st->chain_last_hash,
-                    &receipt);
-                if (xfer_id != 0 && outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
-                    outgoing_chain.links[outgoing_chain.len++] = receipt;
-                if (!ship_manifest_push_with_chain(ship, &copy, &outgoing_chain)) {
-                    (void)station_manifest_push_with_chain(st, &copy, &station_chain);
-                    break;
-                }
-                if (xfer_id != 0) {
-                    send_cargo_receipt_chain(c, &outgoing_chain);
-                    chain_payload_trade_t trade = {0};
-                    trade.transfer_event_id = xfer_id;
-                    trade.ledger_delta_signed = -(int64_t)price;
-                    memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
-                    (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                                         &trade, (uint16_t)sizeof(trade));
-                }
-            }
-            char cs[12]; mining_render_callsign(copy.pub, cs);
-            char msg[96];
-            snprintf(msg, sizeof(msg), "%s purchased %s for %d", world.players[pid].callsign, cs, price);
-            signal_channel_post(&world, sidx, msg, "");
         }
         break;
+    }
     case NET_MSG_DELIVER_INGOT:
-        if (world.players[pid].pubkey_set) {
+    {
+        server_legacy_cargo_dispatch_result_t result;
+        if (server_dispatch_legacy_deliver_ingot_message(
+                &world, pid, data, len, ws_cargo_receipt_chain_sink,
+                c, &result) &&
+            result.rejected_unsigned_action) {
             unsigned_action_count++;
             printf("[server] legacy unsigned DELIVER_INGOT rejected for pubkey player %d; signed action required\n",
                    pid);
-            break;
-        }
-        /* RATi v2: deposit a specific hold ingot into the docked
-         * station's manifest. Payload: [type:1][hold_index:1]. The
-         * index is into ship.manifest filtered by named ingots
-         * (kind == INGOT && prefix != ANONYMOUS). */
-        if (len >= 2 && world.players[pid].docked) {
-            int sidx = world.players[pid].current_station;
-            if (sidx < 0 || sidx >= MAX_STATIONS) break;
-            station_t *st = &world.stations[sidx];
-            ship_t *ship = &world.players[pid].ship;
-            int target = data[1];
-            int hidx = -1;
-            int seen = 0;
-            for (uint16_t u = 0; u < ship->manifest.count; u++) {
-                const cargo_unit_t *cu = &ship->manifest.units[u];
-                if ((cargo_kind_t)cu->kind != CARGO_KIND_INGOT) continue;
-                if ((ingot_prefix_t)cu->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
-                if (seen == target) { hidx = (int)u; break; }
-                seen++;
-            }
-            if (hidx < 0) break;
-            cargo_unit_t copy = ship->manifest.units[hidx];
-            cargo_receipt_chain_t attached_chain = {0};
-            /* Layer D of #479: validate any attached receipt chain
-             * before accepting. If the chain fails verification, refuse
-             * the deliver — federation invariant: a station only takes
-             * cargo whose lineage is signed all the way back. If no
-             * receipt chain is attached (legacy / pre-D save / cargo
-             * smelted on-station with no transfer history), accept
-             * unconditionally — the station treats the loading-state
-             * cargo as origin-attested and signs a fresh receipt. */
-            ship_receipts_t *rcpts = ship_get_receipts(ship);
-            if (rcpts && hidx < (int)rcpts->count) {
-                const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
-                attached_chain = *attached;
-                if (attached->len > 0) {
-                    cargo_receipt_result_t vr = cargo_receipt_chain_verify(
-                        attached->links, attached->len, copy.pub);
-                    if (vr != CARGO_RECEIPT_OK) {
-                        printf("[server] receipt_chain_invalid: deliver from player %d, reason=%d\n",
-                               pid, (int)vr);
-                        break; /* refuse the deliver */
-                    }
-                    if (attached->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
-                        printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n", pid);
-                        break;
-                    }
-                }
-            }
-            /* FIFO-evict the oldest manifest entry on full station, mirroring
-             * the smelt rotation path. The evicted unit's pubkey is voided
-             * so it can never be re-deposited. */
-            if (st->manifest.count >= st->manifest.cap) {
-                cargo_unit_t evicted = {0};
-                if (station_manifest_remove_with_chain(st, 0, &evicted, NULL) &&
-                    (ingot_prefix_t)evicted.prefix_class != INGOT_PREFIX_ANONYMOUS) {
-                    char ev_cs[12]; mining_render_callsign(evicted.pub, ev_cs);
-                    char ev_msg[96];
-                    snprintf(ev_msg, sizeof(ev_msg), "stockpile full — voided %s", ev_cs);
-                    signal_channel_post(&world, sidx, ev_msg, "");
-                }
-            }
-            /* Capture last receipt hash (for the new station-issued
-             * receipt's prev_receipt_hash) BEFORE removing. */
-            uint8_t prev_hash[32] = {0};
-            bool have_prev = false;
-            if (attached_chain.len > 0) {
-                cargo_receipt_hash(&attached_chain.links[attached_chain.len - 1], prev_hash);
-                have_prev = true;
-            }
-            cargo_receipt_chain_t removed_chain = {0};
-            if (!ship_manifest_remove_with_chain(ship, (uint16_t)hidx,
-                                                 &copy, &removed_chain)) {
-                break;
-            }
-            /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
-             * EVT_TRADE (delivery credit accrual on the station's
-             * ledger).
-             * Layer D of #479: also issue station's own receipt. The
-             * receipt's prev_receipt_hash is the SHA-256 of the player's
-             * presented chain head if there was one — this hop closes
-             * the chain at the destination station. If no prior chain,
-             * anchor to the station's own chain_last_hash post-emit. */
-            cargo_receipt_t receipt = {0};
-            cargo_receipt_chain_t station_chain = removed_chain;
-            uint64_t xfer_id = cargo_receipt_emit_transfer(
-                &world, st,
-                world.players[pid].pubkey,
-                st->station_pubkey,
-                copy.pub,
-                (uint8_t)CARGO_KIND_INGOT,
-                have_prev ? prev_hash : st->chain_last_hash,
-                &receipt);
-            if (xfer_id != 0 && station_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
-                station_chain.links[station_chain.len++] = receipt;
-
-            if (!station_manifest_push_with_chain(st, &copy, &station_chain)) {
-                (void)ship_manifest_push_with_chain(ship, &copy, &removed_chain);
-                break;
-            }
-
-            /* Pay delivery credit through the ledger so supply stays
-             * balanced. Prefix-class price multipliers (#501): a specific
-             * delivered unit pays station_buy_price_unit, so M-class
-             * ingots pay 2× and RATi pays 50×. INGOT_DELIVERY_CREDIT is
-             * kept as the floor for low-base-price edge cases. */
-            float delivery_f = station_buy_price_unit(st, &copy);
-            float floor_f = (float)INGOT_DELIVERY_CREDIT;
-            if (delivery_f < floor_f) delivery_f = floor_f;
-            int delivery_int = (int)lroundf(delivery_f);
-            if (server_player_can_use_pubkey_persistence(&world.players[pid])) {
-                ledger_credit_supply_by_pubkey(st, world.players[pid].pubkey, (float)delivery_int);
-            } else {
-                ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
-            }
-            {
-                if (xfer_id != 0) {
-                    /* The cargo is now in station custody, but returning
-                     * the full reissued chain keeps the client as a
-                     * potential bearer if this same cargo later comes
-                     * back to the ship through a different authority. */
-                    send_cargo_receipt_chain(c, &station_chain);
-
-                    /* Trade event records the actual prefix-scaled
-                     * delivery amount (#501), not a flat constant. */
-                    chain_payload_trade_t trade = {0};
-                    trade.transfer_event_id = xfer_id;
-                    trade.ledger_delta_signed = (int64_t)delivery_int;
-                    memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
-                    (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                                         &trade, (uint16_t)sizeof(trade));
-                }
-            }
-            char cs[12]; mining_render_callsign(copy.pub, cs);
-            char msg[96];
-            snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);
-            signal_channel_post(&world, sidx, msg, "");
         }
         break;
+    }
     case NET_MSG_PRESENT_RECEIPT_CHAIN:
-        if (len >= 35) {
-            const uint8_t *cargo_pub = &data[1];
-            uint16_t chain_len = read_u16_le(&data[33]);
-            size_t expected = 35u + (size_t)chain_len * CARGO_RECEIPT_SIZE;
-            if (chain_len == 0 || chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN)
-                break;
-            if ((size_t)len < expected) break;
-
-            cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN];
-            for (uint16_t i = 0; i < chain_len; i++) {
-                const uint8_t *p = &data[35u + (size_t)i * CARGO_RECEIPT_SIZE];
-                (void)cargo_receipt_unpack(p, &chain[i]);
-            }
-
-            cargo_receipt_present_result_t pr = cargo_receipt_present_to_ship(
-                &world.players[pid], cargo_pub, chain, (uint8_t)chain_len);
-            if (pr != CARGO_RECEIPT_PRESENT_OK) {
+    {
+        server_receipt_presentation_dispatch_result_t result;
+        if (server_dispatch_receipt_presentation_message(
+                &world, pid, data, len, &result) &&
+            result.evaluated &&
+            result.result != CARGO_RECEIPT_PRESENT_OK) {
                 printf("[server] receipt_present rejected player=%d reason=%s\n",
-                       pid, cargo_receipt_present_result_name(pr));
-            }
+                       pid, cargo_receipt_present_result_name(result.result));
         }
         break;
+    }
     case NET_MSG_HANDOFF_REQUEST:
-        if (len >= NET_HANDOFF_REQUEST_SIZE) {
-            uint8_t source_wire = data[1];
-            uint8_t dest_wire = data[2];
-            int source_station = (source_wire == 0xFFu)
-                ? world.players[pid].current_station
-                : (int)source_wire;
-            int dest_station = (int)dest_wire;
-            uint32_t ttl_ticks = read_u32_le(&data[3]);
-            handoff_ticket_t ticket;
-            memset(&ticket, 0, sizeof(ticket));
-            bool ok = handoff_issue_ticket_to_station(
-                &world, pid, source_station, dest_station, ttl_ticks, &ticket);
-            send_handoff_ticket_msg(c,
-                                    ok ? NET_HANDOFF_STATUS_OK
-                                       : NET_HANDOFF_STATUS_REJECTED,
-                                    (uint8_t)(source_station >= 0 &&
-                                              source_station < 256
-                                              ? source_station : 0xFF),
-                                    dest_wire,
-                                    ok ? &ticket : NULL);
-            printf("[server] handoff_issue player=%d source=%d dest=%d status=%s\n",
-                   pid, source_station, dest_station, ok ? "ok" : "rejected");
-        }
+        (void)server_dispatch_handoff_request(&world, pid, data, len,
+                                              ws_handoff_ticket_sink, c);
         break;
     case NET_MSG_HANDOFF_PRESENT:
-        if ((size_t)len >= 1u + HANDOFF_TICKET_SIZE + 4u) {
-            handoff_ticket_t ticket;
-            uint8_t ticket_hash[32];
-            ship_t presented;
-            size_t consumed = 0;
-            int dest_station = -1;
-            handoff_flow_result_t hr = HANDOFF_FLOW_REJECT_BAD_ARGS;
-            uint32_t snapshot_len =
-                read_u32_le(&data[1 + HANDOFF_TICKET_SIZE]);
-            size_t snapshot_off = 1u + HANDOFF_TICKET_SIZE + 4u;
-            memset(&ticket, 0, sizeof(ticket));
-            memset(&ticket_hash, 0, sizeof(ticket_hash));
-            memset(&presented, 0, sizeof(presented));
-
-            if (handoff_ticket_unpack(&data[1], &ticket))
-                handoff_ticket_hash(&ticket, ticket_hash);
-
-            if (snapshot_len <= HANDOFF_SHIP_SNAPSHOT_MAX_SIZE &&
-                (size_t)len >= snapshot_off + (size_t)snapshot_len &&
-                handoff_ship_snapshot_unpack(&data[snapshot_off],
-                                             (size_t)snapshot_len,
-                                             &presented, &consumed) &&
-                consumed == (size_t)snapshot_len) {
-                hr = handoff_accept_presented_ship(&world, pid, &ticket,
-                                                   &presented, &dest_station);
-            }
-
-            send_handoff_result_msg(
-                c,
-                hr == HANDOFF_FLOW_OK ? NET_HANDOFF_STATUS_OK
-                                      : NET_HANDOFF_STATUS_REJECTED,
-                (uint8_t)hr,
-                (uint8_t)(dest_station >= 0 && dest_station < 256
-                          ? dest_station : 0xFF),
-                ticket_hash);
-            printf("[server] handoff_present player=%d dest=%d status=%s\n",
-                   pid, dest_station, handoff_flow_result_name(hr));
-            ship_cleanup(&presented);
-        }
+        (void)server_dispatch_handoff_present(&world, pid, data, len,
+                                              ws_handoff_result_sink, c);
         break;
     case NET_MSG_FRACTURE_CLAIM:
-        if (world.players[pid].pubkey_set) {
+    {
+        server_unsigned_dispatch_result_t result;
+        if (server_dispatch_fracture_claim_message(&world, pid, data, len,
+                                                   &result) &&
+            result.rejected_unsigned_action) {
             unsigned_action_count++;
-            break;
-        }
-        if (len >= FRACTURE_CLAIM_SIZE) {
-            uint32_t fracture_id = read_u32_le(&data[1]);
-            uint32_t burst_nonce = read_u32_le(&data[5]);
-            uint8_t claimed_grade = data[9];
-            (void)submit_fracture_claim(&world, pid, fracture_id, burst_nonce, claimed_grade);
         }
         break;
+    }
     case NET_MSG_SIGNED_ACTION: {
         /* Layer A.3 of #479 — Ed25519-signed state-changing action. */
         uint8_t action_type = 0;
@@ -1675,182 +978,14 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
          * so a faulting handler can't clear the replay protection. */
         world.players[pid].last_signed_nonce = nonce;
         signed_action_count++;
-        server_player_t *sp = &world.players[pid];
-        switch ((signed_action_type_t)action_type) {
-        case SIGNED_ACTION_BUY_PRODUCT:
-            /* Payload: [commodity:1][grade:1] — same fields the unsigned
-             * NET_MSG_INPUT.action path produces. We just stuff them into
-             * the same intent slot the sim already consumes. */
-            if (payload_len >= 2) {
-                uint8_t commodity = payload[0];
-                uint8_t grade     = payload[1];
-                uint16_t action_id = signed_action_payload_id(payload,
-                                                              payload_len, 2);
-                uint8_t action = (commodity < COMMODITY_COUNT)
-                    ? (uint8_t)(NET_ACTION_BUY_PRODUCT + commodity)
-                    : NET_ACTION_BUY_PRODUCT;
-                begin_pending_action_result(sp, action_id, 0, action);
-                if (commodity < COMMODITY_COUNT) {
-                    sp->input.buy_product = true;
-                    sp->input.buy_commodity = (commodity_t)commodity;
-                    if (grade <= MINING_GRADE_COUNT)
-                        sp->input.buy_grade = (mining_grade_t)grade;
-                    else
-                        sp->input.buy_grade = MINING_GRADE_COUNT;
-                }
-            }
-            break;
-        case SIGNED_ACTION_BUY_INGOT:
-            /* Payload: [pubkey:32]. Mirrors the legacy NET_MSG_BUY_INGOT
-             * transfer path for identity-backed clients. */
-            if (payload_len >= 32) {
-                uint16_t action_id = signed_action_payload_id(payload,
-                                                              payload_len, 32);
-                begin_pending_action_result(sp, action_id, 0,
-                                            NET_ACTION_BUY_INGOT);
-                if (!sp->docked) break;
-                int sidx = sp->current_station;
-                if (sidx >= 0 && sidx < MAX_STATIONS) {
-                    station_t *st = &world.stations[sidx];
-                    ship_t *ship = &sp->ship;
-                    int slot = manifest_find(&st->manifest, payload);
-                    if (slot >= 0) {
-                        cargo_unit_t *src = &st->manifest.units[slot];
-                        if ((cargo_kind_t)src->kind == CARGO_KIND_INGOT &&
-                            (ingot_prefix_t)src->prefix_class != INGOT_PREFIX_ANONYMOUS) {
-                            /* Prefix-class price multipliers (#prefix-pricing):
-                             * mirror the unsigned BUY_INGOT path above. */
-                            int price = (int)lroundf(station_sell_price_unit(st, src));
-                            if (!station_manifest_bootstrap(st) ||
-                                !ship_manifest_bootstrap(ship)) {
-                                break;
-                            }
-                            bool spent = price > 0 && (server_player_can_use_pubkey_persistence(sp)
-                                ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
-                                : ledger_spend(st, sp->session_token, (float)price, ship));
-                            if (spent) {
-                                cargo_unit_t copy = {0};
-                                cargo_receipt_chain_t station_chain = {0};
-                                if (station_manifest_remove_with_chain(st, (uint16_t)slot,
-                                                                       &copy, &station_chain)) {
-                                    cargo_receipt_t receipt = {0};
-                                    uint8_t prev_hash[32] = {0};
-                                    cargo_receipt_chain_t outgoing_chain = station_chain;
-                                    if (station_chain.len > 0) {
-                                        cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
-                                                           prev_hash);
-                                    }
-                                    uint64_t xfer_id = cargo_receipt_emit_transfer(
-                                        &world, st,
-                                        st->station_pubkey,
-                                        sp->pubkey,
-                                        copy.pub,
-                                        (uint8_t)CARGO_KIND_INGOT,
-                                        station_chain.len > 0 ? prev_hash : st->chain_last_hash,
-                                        &receipt);
-                                    if (xfer_id != 0 &&
-                                        outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN) {
-                                        outgoing_chain.links[outgoing_chain.len++] = receipt;
-                                    }
-                                    if (!ship_manifest_push_with_chain(ship, &copy, &outgoing_chain)) {
-                                        (void)station_manifest_push_with_chain(st, &copy, &station_chain);
-                                    } else if (xfer_id != 0) {
-                                        send_cargo_receipt_chain(c, &outgoing_chain);
-                                        chain_payload_trade_t trade = {0};
-                                        trade.transfer_event_id = xfer_id;
-                                        trade.ledger_delta_signed = -(int64_t)price;
-                                        memcpy(trade.ledger_pubkey, sp->pubkey, 32);
-                                        (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                                                             &trade, (uint16_t)sizeof(trade));
-                                        char cs[12]; mining_render_callsign(copy.pub, cs);
-                                        char msg[96];
-                                        snprintf(msg, sizeof(msg), "%s purchased %s for %d",
-                                                 sp->callsign, cs, price);
-                                        signal_channel_post(&world, sidx, msg, "");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            break;
-        case SIGNED_ACTION_SELL_CARGO:
-            /* Payload: [commodity:1][grade:1]. commodity==COMMODITY_COUNT
-             * lets the dock choose the next accepted sale target. */
-            if (payload_len >= 2) {
-                uint8_t commodity = payload[0];
-                uint8_t grade     = payload[1];
-                uint16_t action_id = signed_action_payload_id(payload,
-                                                              payload_len, 2);
-                uint8_t action = (commodity < COMMODITY_COUNT)
-                    ? (uint8_t)(NET_ACTION_DELIVER_COMMODITY + commodity)
-                    : NET_ACTION_SELL_CARGO;
-                begin_pending_action_result(sp, action_id, 0, action);
-                sp->input.service_sell = true;
-                sp->input.service_sell_only =
-                    (commodity < COMMODITY_COUNT)
-                    ? (commodity_t)commodity : COMMODITY_COUNT;
-                if (grade < MINING_GRADE_COUNT) {
-                    sp->input.service_sell_grade = (mining_grade_t)grade;
-                    sp->input.service_sell_one = true;
-                } else {
-                    sp->input.service_sell_grade = MINING_GRADE_COUNT;
-                    sp->input.service_sell_one = false;
-                }
-            }
-            break;
-        case SIGNED_ACTION_PLACE_OUTPOST:
-            if (payload_len >= 3) {
-                uint16_t action_id = signed_action_payload_id(payload,
-                                                              payload_len, 3);
-                begin_pending_action_result(sp, action_id, 0,
-                                            NET_ACTION_PLACE_OUTPOST);
-                sp->input.place_outpost = true;
-                sp->input.place_target_station = (int8_t)payload[0];
-                sp->input.place_target_ring    = (int8_t)payload[1];
-                sp->input.place_target_slot    = (int8_t)payload[2];
-            }
-            break;
-        case SIGNED_ACTION_FRACTURE_CLAIM:
-            if (payload_len >= 9) {
-                uint32_t fracture_id = (uint32_t)payload[0]
-                                     | ((uint32_t)payload[1] << 8)
-                                     | ((uint32_t)payload[2] << 16)
-                                     | ((uint32_t)payload[3] << 24);
-                uint32_t burst_nonce = (uint32_t)payload[4]
-                                     | ((uint32_t)payload[5] << 8)
-                                     | ((uint32_t)payload[6] << 16)
-                                     | ((uint32_t)payload[7] << 24);
-                uint8_t claimed_grade = payload[8];
-                (void)submit_fracture_claim(&world, pid, fracture_id,
-                                            burst_nonce, claimed_grade);
-            }
-            break;
-        case SIGNED_ACTION_DELIVER:
-            if (payload_len >= 1) {
-                uint16_t action_id = signed_action_payload_id(payload,
-                                                              payload_len, 1);
-                begin_pending_action_result(sp, action_id, 0,
-                                            NET_ACTION_SELL_CARGO);
-                handle_deliver_ingot_index(c, pid, payload[0]);
-            }
-            break;
-        case SIGNED_ACTION_INPUT_ACTION:
-            apply_signed_input_action(pid, payload, payload_len);
-            break;
-        case SIGNED_ACTION_PLAN:
-            apply_signed_plan(pid, payload, payload_len);
-            break;
-        case SIGNED_ACTION_CLAIM_CONTRACT:
-        case SIGNED_ACTION_CANCEL_CONTRACT:
-            /* Reserved action types; no current client path dispatches
-             * contract claim/cancel mutations. */
-            break;
-        case SIGNED_ACTION_COUNT:
-        default:
-            /* unreachable — verify rejected unknown types */
-            break;
+        server_signed_action_dispatch_result_t dispatch_result;
+        if (server_dispatch_signed_action_payload(
+                &world, pid, action_type, payload, payload_len,
+                ws_cargo_receipt_chain_sink, c, &dispatch_result) &&
+            dispatch_result.station_identity_dirty >= 0 &&
+            dispatch_result.station_identity_dirty < MAX_STATIONS) {
+            station_identity_dirty[dispatch_result.station_identity_dirty] =
+                true;
         }
         break;
     }
@@ -1858,44 +993,33 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         /* Layer A.2 of #479: client asserts its persisted Ed25519 pubkey.
          * The assertion alone does not bind registry or persistence; that
          * waits for NET_MSG_PROVE_PUBKEY. */
-        if (len >= REGISTER_PUBKEY_MSG_SIZE) {
-            const uint8_t *pk = &data[1];
-            server_player_t *sp = &world.players[pid];
-            if (sp->pubkey_set && memcmp(sp->pubkey, pk, 32) == 0) {
+    {
+        server_pubkey_register_result_t result;
+        if (server_dispatch_register_pubkey_message(&world, pid, data, len,
+                                                    &result)) {
+            if (result.same_pubkey) {
                 finalize_verified_pubkey_identity(c, pid, now);
                 break;
             }
-            memcpy(sp->pubkey, pk, 32);
-            sp->pubkey_set = true;
-            sp->pubkey_proof_ok = false;
-            sp->pubkey_identity_finalized = false;
             printf("[server] player %d: registered pubkey pending proof %02x%02x%02x%02x...\n",
-                   pid, pk[0], pk[1], pk[2], pk[3]);
+                   pid, result.pubkey[0], result.pubkey[1],
+                   result.pubkey[2], result.pubkey[3]);
         }
         break;
+    }
     case NET_MSG_PROVE_PUBKEY:
-        if (len >= PROVE_PUBKEY_MSG_SIZE) {
-            server_player_t *sp = &world.players[pid];
-            const uint8_t *pk = &data[PROVE_PUBKEY_PUBKEY_OFFSET];
-            const uint8_t *token = &data[PROVE_PUBKEY_TOKEN_OFFSET];
-            const uint8_t *sig = &data[PROVE_PUBKEY_SIG_OFFSET];
-            if (!sp->pubkey_set || !sp->session_ready) break;
-            if (memcmp(pk, sp->pubkey, 32) != 0) {
-                printf("[server] player %d: pubkey proof rejected (pubkey mismatch)\n", pid);
-                break;
-            }
-            if (memcmp(token, sp->session_token, 8) != 0) {
-                printf("[server] player %d: pubkey proof rejected (session mismatch)\n", pid);
-                break;
-            }
-            if (!pubkey_proof_verify(pk, token, sig)) {
-                printf("[server] player %d: pubkey proof rejected (bad signature)\n", pid);
-                break;
-            }
-            sp->pubkey_proof_ok = true;
+    {
+        server_pubkey_proof_result_t result;
+        if (server_dispatch_pubkey_proof_message(&world, pid, data, len,
+                                                 &result) &&
+            result.verified) {
             finalize_verified_pubkey_identity(c, pid, now);
+        } else if (result.status != SERVER_PUBKEY_PROOF_MALFORMED) {
+            printf("[server] player %d: pubkey proof rejected (%s)\n",
+                   pid, server_pubkey_proof_status_name(result.status));
         }
         break;
+    }
     case NET_MSG_CLAIM_LEGACY_SAVE: {
         /* Layer A.4 of #479. Client supplies (token_hex, signature). We
          * verify sig against the registered pubkey, then rename the
@@ -1972,13 +1096,14 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         break;
     }
     case NET_MSG_SESSION:
-        if (len >= 9 && !world.players[pid].session_ready) {
-            const uint8_t *token = &data[1];
+    {
+        server_session_message_t session;
+        if (server_parse_session_message(data, len, &session) &&
+            !world.players[pid].session_ready) {
+            const uint8_t *token = session.token;
             /* Extract callsign if present (bytes 9-15) */
-            if (len >= 16) {
-                memcpy(world.players[pid].callsign, &data[9], 7);
-                world.players[pid].callsign[7] = '\0';
-                printf("[server] player %d callsign: %s\n", pid, world.players[pid].callsign);
+            if (session.has_callsign) {
+                printf("[server] player %d callsign: %s\n", pid, session.callsign);
             }
             /* Check for existing grace-period player with same token */
             int reattach = -1;
@@ -1994,11 +1119,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (reattach >= 0) {
                 /* Reattach: copy state from grace slot to new slot */
                 server_player_t *old = &world.players[reattach];
-                server_player_t *sp = &world.players[pid];
                 if (!world_player_transfer_ship_state(&world, pid, reattach))
                     break;
-                memcpy(sp->session_token, token, 8);
-                sp->session_ready = true;
+                if (!server_apply_session_message(&world, pid, &session))
+                    break;
                 /* Clear the grace slot and broadcast LEAVE so clients drop the ghost */
                 old->connected = false;
                 old->grace_period = false;
@@ -2009,8 +1133,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
             } else {
-                memcpy(world.players[pid].session_token, token, 8);
-                world.players[pid].session_ready = true;
+                if (!server_apply_session_message(&world, pid, &session))
+                    break;
                 /* Try to restore saved state keyed by session token */
                 if (true &&
                     player_load_by_token(&world.players[pid], &world,
@@ -2031,6 +1155,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                        now, 0);
         }
         break;
+    }
     default:
         break;
     }
@@ -3796,6 +2921,7 @@ static bool serve_static_http(struct mg_connection *c,
     if (!static_root_dir || static_root_dir[0] == '\0') return false;
     if (redirect_static_alias(c, hm, "/play", "/play.html") ||
         redirect_static_alias(c, hm, "/play/", "/play.html") ||
+        redirect_static_alias(c, hm, "/signal.html", "/play.html") ||
         redirect_static_alias(c, hm, "/ost", "/ost.html") ||
         redirect_static_alias(c, hm, "/ost/", "/ost.html") ||
         redirect_static_alias(c, hm, "/mine", "/mine.html") ||
@@ -4206,16 +3332,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, exist_msg, 2);
         }
 
-        /* Send station identity for all active stations. */
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!station_exists(&world.stations[s])) continue;
-            uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
-            int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
-            ws_send(c, id_buf, (size_t)id_len);
-            uint8_t diag_buf[STATION_DIAG_SIZE];
-            int diag_len = serialize_station_diag(diag_buf, s, &world.stations[s]);
-            ws_send(c, diag_buf, (size_t)diag_len);
-        }
+        /* Send the same station snapshot bundle local loopback uses. */
+        server_emit_station_snapshot(
+            &world, true, ws_packet_sink, c, &station_snapshot_scratch);
 
         /* Send the same relevance-filtered asteroid view used by the
          * periodic world tick. A full-belt join burst can be tens of KB;
@@ -4244,30 +3363,6 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 ws_send(c, msg, (size_t)len);
                 free(msg);
             }
-        }
-
-        /* RATi v2: per-station named-ingot snapshot, derived from the
-         * unified manifest. New client sees what's currently on offer
-         * at every station so the MARKET stockpile UI is populated
-         * immediately. Wire shape unchanged. */
-        for (int sidx = 0; sidx < MAX_STATIONS; sidx++) {
-            if (!station_exists(&world.stations[sidx])) continue;
-            uint8_t buf[STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
-            int len = serialize_station_ingots(buf, sidx, &world.stations[sidx]);
-            if (len <= STATION_INGOTS_HEADER) continue;
-            ws_send(c, buf, (size_t)len);
-        }
-
-        /* Phase 2 station manifest summary — same rationale, different
-         * payload: grade-grouped counts for the TRADE BUY rows. Sent for
-         * every station (empty manifest is legal — body will be just the
-         * 4-byte header with entry_count=0). */
-        for (int sidx = 0; sidx < MAX_STATIONS; sidx++) {
-            if (!station_exists(&world.stations[sidx])) continue;
-            uint8_t mbuf[STATION_MANIFEST_HEADER +
-                         COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
-            int mlen = serialize_station_manifest(mbuf, sidx, &world.stations[sidx]);
-            ws_send(c, mbuf, (size_t)mlen);
         }
 
         /* Send server version hash. */
@@ -4338,160 +3433,18 @@ static void broadcast_player_states(void) {
  * in serialize_asteroids_for_player handles viewport culling. */
 
 static void broadcast_world(void) {
-    /* Asteroids: per-player relevance filtering.
-     * Each player gets only asteroids in their view radius.
-     * Deactivation records sent when asteroids leave a player's view. */
-    {
-        uint8_t abuf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
-            int alen = serialize_asteroids_for_player(
-                abuf, world.asteroids, sp->ship.pos, sp->asteroid_sent);
-            if (alen > 2) /* skip empty messages */
-                ws_send(sp->conn, abuf, (size_t)alen);
-        }
-        /* Bulk clear dirty flags after all players served */
-        for (int i = 0; i < MAX_ASTEROIDS; i++)
-            world.asteroids[i].net_dirty = false;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        server_player_t *sp = &world.players[p];
+        if (!sp->connected || !sp->session_ready || !sp->conn) continue;
+        server_emit_world_snapshot_for_player(
+            &world, p, false, ws_packet_sink, sp->conn,
+            &world_snapshot_scratch);
     }
-
-    /* NPCs: per-player view filtering (same radius as asteroids) */
-    {
-        uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
-            int count = 0;
-            for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-                if (!world.npc_ships[i].active) continue;
-                if (v2_dist_sq(world.npc_ships[i].ship.pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
-                    continue;
-                const npc_ship_t *n = &world.npc_ships[i];
-                uint8_t *q = &nbuf[2 + count * NPC_RECORD_SIZE];
-                q[0] = (uint8_t)i;
-                q[1] = 1;
-                q[1] |= (((uint8_t)n->role & 0x3) << 1);
-                q[1] |= (((uint8_t)n->state & 0x7) << 3);
-                if (n->thrusting) q[1] |= (1 << 6);
-                write_f32_le(&q[2],  n->ship.pos.x);
-                write_f32_le(&q[6],  n->ship.pos.y);
-                write_f32_le(&q[10], n->ship.vel.x);
-                write_f32_le(&q[14], n->ship.vel.y);
-                write_f32_le(&q[18], n->ship.angle);
-                uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
-                    ? (uint16_t)n->target_asteroid : 0xFFFFu;
-                uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
-                    ? (uint16_t)n->towed_fragment : 0xFFFFu;
-                write_u16_le(&q[22], target);
-                write_u16_le(&q[24], towed);
-                q[26] = (uint8_t)(n->tint_r * 255.0f);
-                q[27] = (uint8_t)(n->tint_g * 255.0f);
-                q[28] = (uint8_t)(n->tint_b * 255.0f);
-                memcpy(&q[29], n->session_token, sizeof(n->session_token));
-                q[37] = (uint8_t)(n->home_station & 0xFF);
-                count++;
-            }
-            nbuf[0] = NET_MSG_WORLD_NPCS;
-            nbuf[1] = (uint8_t)count;
-            ws_send(sp->conn, nbuf, (size_t)(2 + count * NPC_RECORD_SIZE));
-        }
-    }
-
-    /* Scaffolds: per-player view filtering */
-    {
-        uint8_t scbuf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
-            int count = 0;
-            for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-                if (!world.scaffolds[i].active) continue;
-                if (v2_dist_sq(world.scaffolds[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
-                    continue;
-                serialize_one_scaffold(&scbuf[2 + count * SCAFFOLD_RECORD_SIZE], i, &world.scaffolds[i]);
-                count++;
-            }
-            scbuf[0] = NET_MSG_WORLD_SCAFFOLDS;
-            scbuf[1] = (uint8_t)count;
-            if (count > 0)
-                ws_send(sp->conn, scbuf, (size_t)(2 + count * SCAFFOLD_RECORD_SIZE));
-        }
-    }
-
-    /* Cargo pods: per-player view filtering. */
-    {
-        uint8_t cpbuf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            server_player_t *sp = &world.players[p];
-            if (!sp->connected || !sp->session_ready || !sp->conn) continue;
-            int count = 0;
-            for (int i = 0; i < MAX_CARGO_PODS; i++) {
-                if (!world.cargo_pods[i].active) continue;
-                if (v2_dist_sq(world.cargo_pods[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
-                    continue;
-                serialize_one_cargo_pod(&cpbuf[2 + count * CARGO_POD_RECORD_SIZE],
-                                        i, &world.cargo_pods[i]);
-                count++;
-            }
-            cpbuf[0] = NET_MSG_WORLD_CARGO_PODS;
-            cpbuf[1] = (uint8_t)count;
-            ws_send(sp->conn, cpbuf, (size_t)(2 + count * CARGO_POD_RECORD_SIZE));
-        }
-    }
-
-    /* World time sync (5 bytes: type + float) */
-    uint8_t tbuf[5];
-    tbuf[0] = NET_MSG_WORLD_TIME;
-    write_f32_le(&tbuf[1], world.time);
-    broadcast(tbuf, 5);
-}
-
-/* Compute station-local balance for a player at their current/nearby
- * station. Must read the same ledger entry the buy/credit paths use:
- * pubkey when verified, session-token-pseudokey otherwise. Reading
- * the wrong entry was the visible-bug-symptom that motivated the
- * earlier identity-fix series — broadcast balance came from a stale
- * (often negative) session-token entry while real earnings sat on
- * the pubkey entry. */
-static float player_station_balance(const server_player_t *sp) {
-    int st = sp->docked ? sp->current_station : sp->nearby_station;
-    if (st < 0 || st >= MAX_STATIONS) return 0.0f;
-    if (server_player_can_use_pubkey_persistence(sp))
-        return ledger_balance_by_pubkey(&world.stations[st], sp->pubkey);
-    return ledger_balance(&world.stations[st], sp->session_token);
+    server_clear_asteroid_net_dirty(&world);
 }
 
 static int send_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp) {
-    return serialize_player_ship_bal(buf, id, sp, player_station_balance(sp));
-}
-
-static int send_inspect_snapshot(uint8_t *buf, const server_player_t *sp) {
-    if (!sp || !sp->scan_active || sp->scan_target_type == INSPECT_TARGET_NONE)
-        return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
-
-    if (sp->scan_target_type == INSPECT_TARGET_NPC &&
-        sp->scan_target_index >= 0 &&
-        sp->scan_target_index < MAX_NPC_SHIPS) {
-        const npc_ship_t *npc = &world.npc_ships[sp->scan_target_index];
-        ship_t *ship = world_npc_ship_for(&world, sp->scan_target_index);
-        return serialize_inspect_snapshot_npc_with_station_receipts(
-            buf, (uint8_t)sp->scan_target_index, npc, ship,
-            world.stations, MAX_STATIONS);
-    }
-
-    if (sp->scan_target_type == INSPECT_TARGET_PLAYER &&
-        sp->scan_target_index >= 0 &&
-        sp->scan_target_index < MAX_PLAYERS) {
-        const server_player_t *target = &world.players[sp->scan_target_index];
-        return serialize_inspect_snapshot_player(buf,
-                                                 (uint8_t)sp->scan_target_index,
-                                                 target);
-    }
-
-    return serialize_inspect_snapshot_target(buf, sp->scan_target_type,
-                                             sp->scan_target_index,
-                                             sp->scan_module_index);
+    return serialize_player_ship_for_world(buf, id, &world, sp);
 }
 
 static void broadcast_ship_states(void) {
@@ -4500,48 +3453,13 @@ static void broadcast_ship_states(void) {
         if (!sp->connected || !sp->session_ready || !sp->conn) continue;
         if (sp->force_authoritative_resync)
             invalidate_player_authoritative_caches(sp);
-        uint8_t buf[PLAYER_SHIP_SIZE + 4]; /* +4 headroom */
-        int len = send_player_ship(buf, (uint8_t)i, sp);
-        /* Full ship state sent only to the owning player. */
-        ws_send_if_changed(sp->conn, &sp->player_ship_cache, buf, (size_t)len);
-
-        /* RATi v2: also push hold-ingot snapshot, derived from the
-         * ship manifest. Wire shape unchanged. Sized for the wire cap
-         * (u8 count) so an unusually full hold can't truncate. */
-        uint8_t hbuf[HOLD_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
-        int hlen = serialize_hold_ingots(hbuf, &sp->ship);
-        ws_send_if_changed(sp->conn, &sp->hold_ingots_cache, hbuf, (size_t)hlen);
-
-        /* Player manifest summary — keeps the trade UI's SELL rows in
-         * sync with server-authoritative manifest mutations (buy/sell/
-         * smelt move units across the player's manifest server-side, but
-         * PLAYER_SHIP only carries the float cargo). Worst case is
-         * COMMODITY_COUNT * MINING_GRADE_COUNT entries; we cap header
-         * + entries with a generous bound. */
-        uint8_t pmbuf[PLAYER_MANIFEST_HEADER
-                      + COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY];
-        int pmlen = serialize_player_manifest(pmbuf, &sp->ship);
-        ws_send_if_changed(sp->conn, &sp->player_manifest_cache, pmbuf, (size_t)pmlen);
-
-        uint8_t ibuf[INSPECT_SNAPSHOT_MAX_SIZE];
-        int ilen = send_inspect_snapshot(ibuf, sp);
-        ws_send_if_changed(sp->conn, &sp->inspect_snapshot_cache, ibuf, (size_t)ilen);
-
-        /* Gossip-contract visibility mask. The dock UI on the client
-         * reads NET_MSG_CONTRACTS for the global authoritative array
-         * but filters by this per-player mask so the player only sees
-         * contracts they've heard about via dock contact. 5 bytes. */
-        uint8_t kbuf[5];
-        int klen = serialize_player_known_contracts(kbuf, world.contracts,
-                                                    &sp->ship);
-        ws_send_if_changed(sp->conn, &sp->known_contracts_cache, kbuf, (size_t)klen);
-        {
-            uint8_t dbuf[DELIVERY_LEDGER_HEADER +
-                         DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE];
-            int dlen = serialize_delivery_ledger(dbuf, &world, (uint8_t)i);
-            ws_send_if_changed(sp->conn, &sp->delivery_ledger_cache,
-                               dbuf, (size_t)dlen);
-        }
+        ws_private_packet_sink_t sink = {
+            .conn = sp->conn,
+            .player = sp,
+        };
+        server_emit_private_snapshot_for_player(
+            &world, i, ws_private_packet_sink, &sink,
+            &private_snapshot_scratch);
         sp->force_authoritative_resync = false;
     }
 
@@ -4676,24 +3594,9 @@ static void srv_on_death(const sim_event_t *ev) {
 
     if (!sp->conn) return;
 
-    /* Death packet: [type:1][pid:1][px:f32][py:f32][vx:f32][vy:f32]
-     * [ang:f32][ore:f32][earned:f32][spent:f32][asteroids:f32]
-     * [respawn_station:u8][respawn_fee:f32] = 43 bytes */
-    uint8_t msg[43];
-    msg[0] = NET_MSG_DEATH;
-    msg[1] = (uint8_t)pid;
-    write_f32_le(&msg[2],  ev->death.pos_x);
-    write_f32_le(&msg[6],  ev->death.pos_y);
-    write_f32_le(&msg[10], ev->death.vel_x);
-    write_f32_le(&msg[14], ev->death.vel_y);
-    write_f32_le(&msg[18], ev->death.angle);
-    write_f32_le(&msg[22], ev->death.ore_mined);
-    write_f32_le(&msg[26], ev->death.credits_earned);
-    write_f32_le(&msg[30], ev->death.credits_spent);
-    write_f32_le(&msg[34], (float)ev->death.asteroids_fractured);
-    msg[38] = ev->death.respawn_station;
-    write_f32_le(&msg[39], ev->death.respawn_fee);
-    ws_send(sp->conn, msg, sizeof(msg));
+    uint8_t msg[NET_DEATH_MSG_SIZE];
+    int death_len = serialize_death(msg, (uint8_t)pid, ev);
+    ws_send(sp->conn, msg, (size_t)death_len);
 
     uint8_t buf[PLAYER_SHIP_SIZE + 4];
     int len = send_player_ship(buf, (uint8_t)pid, sp);
@@ -4713,13 +3616,8 @@ static void srv_on_hail_response(const sim_event_t *ev) {
     if (!sp->connected || !sp->conn) return;
 
     uint8_t msg[7];
-    msg[0] = NET_MSG_HAIL_RESPONSE;
-    msg[1] = (uint8_t)ev->hail_response.station;
-    write_f32_le(&msg[2], ev->hail_response.credits);
-    int ci = ev->hail_response.contract_index;
-    int compact_ci = contract_compact_index_for_slot(world.contracts, ci);
-    msg[6] = (compact_ci >= 0) ? (uint8_t)compact_ci : 0xFF;
-    ws_send(sp->conn, msg, sizeof(msg));
+    int msg_len = serialize_hail_response_for_world(msg, &world, ev);
+    if (msg_len > 0) ws_send(sp->conn, msg, (size_t)msg_len);
 
     contracts_dirty = true;
     /* Push fresh ship state so the credit bump is visible immediately. */

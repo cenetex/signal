@@ -569,7 +569,7 @@ static bool ui_local_player_pubkey(uint8_t out[32]) {
     if (!out) return false;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
         return false;
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         memset(out, 0, 32);
         return false;
     }
@@ -620,7 +620,7 @@ static int ui_build_ledger_strip(int current_station,
     size_t used = (size_t)written < cap ? (size_t)written : cap - 1;
     int rows = 1;
 
-    if (g.multiplayer_enabled)
+    if (g.net_authority_enabled)
         return rows;
 
     uint8_t pubkey[32];
@@ -939,8 +939,8 @@ static const uint8_t HDR_FIT[3]     = { PAL_NAV_BLUE };
 static const uint8_t HDR_YARD[3]    = { PAL_HOLD_CYAN };
 
 /* Station manifest readers — unified through the client-side summary
- * (g.station_manifest_summary) populated every frame in SP and by the
- * net sync in MP. UI no longer pokes at station_t.manifest directly;
+ * (g.station_manifest_summary), populated by the network stream or by the
+ * offline fallback. UI no longer pokes at station_t.manifest directly;
  * the summary is the only contract. */
 static int station_index_of(const station_t *st) {
     return (int)(st - g.world.stations);
@@ -1036,10 +1036,10 @@ static void trade_row_attach_inspect(trade_row_t *row,
  * full grade range directly, so the "any-grade?" predicate is no
  * longer needed. */
 
-/* Ship manifest helpers — iterate directly. In multiplayer, net_sync.c
- * rebuilds the local ship manifest from PLAYER_MANIFEST plus any detailed
- * HOLD_INGOTS provenance snapshot, so the trade UI can read the same
- * local manifest path in SP and MP. */
+/* Ship manifest helpers — iterate directly. In network-authoritative sessions,
+ * net_sync.c rebuilds the local ship manifest from PLAYER_MANIFEST plus any
+ * detailed HOLD_INGOTS provenance snapshot, so the trade UI can read the same
+ * local manifest path in every mode. */
 static int SIGNAL_MAYBE_UNUSED
 ship_manifest_count_cg(const ship_t *ship,
                        commodity_t commodity,
@@ -2610,7 +2610,7 @@ static bool station_credit_bridge_line(int current_station,
 {
     if (!out || cap == 0) return false;
     out[0] = '\0';
-    if (g.multiplayer_enabled) return false;
+    if (g.net_authority_enabled) return false;
     if (current_station < 0 || current_station >= MAX_STATIONS)
         return false;
     if (player_current_balance() > 0.5f) return false;
@@ -3081,7 +3081,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     {
         station_flow_summary_t summary;
-        bool mirrored_authoritative = g.multiplayer_enabled && net_is_connected();
+        bool mirrored_authoritative = g.net_authority_enabled && net_is_connected();
         if (station_flow_summary(st, mirrored_authoritative, &summary) &&
             station_flow_summary_format(&summary, flow_line, sizeof(flow_line))) {
             flow_rgb = COL_FLOW_OK;

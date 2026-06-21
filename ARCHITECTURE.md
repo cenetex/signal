@@ -24,7 +24,7 @@ shared/     Wire protocol, types, commodity, economy, cargo receipts, crypto —
 tests/      C test suite (+ Playwright browser smoke in tests/browser-smoke.spec.ts).
 tools/      Standalone CLI tools (chain verifier, replay harness, flight traces).
 vendor/     Sokol, TweetNaCl, minimp3, pl_mpeg, fastfilter.
-web/        Static HTML/JS for the browser build (shell.html, touch controls).
+web/        Static HTML/JS for the browser build (play.html, touch controls).
 ```
 
 ## Sim Tick Pipeline
@@ -79,6 +79,18 @@ Unified signal quality axis (0.0–1.0) gating mining efficiency, ship control, 
 
 ### Economy ([shared/economy.h](shared/economy.h), [shared/economy_const.h](shared/economy_const.h))
 Per-station sovereign currencies — no global wallet. Credits are `(station_id, player_pubkey) → balance`. Prices are dynamic (supply/demand scaling). Value moves between stations as goods, not currency.
+
+The production backbone is:
+fragments -> ingots -> frames / laser modules / tractor modules -> ships,
+scaffolds, and repair kits. Smelting is furnace-tagged by output commodity.
+Frames use ferrite ingots, laser modules use cuprite ingots plus frames, and
+tractor modules use crystal ingots plus frames. Shipyards consume those
+finished parts for hull commissions, station-module scaffolds, and the repair
+kit sink.
+
+Mining progression has both size and material gates. The starter L1 laser can
+fracture M rocks. Each laser upgrade raises the largest fracture size one
+step; cuprite requires L2, and crystal requires L3.
 
 ### Chain Log ([server/chain_log.h](server/chain_log.h))
 Per-station signed append-only event log. Every state mutation (smelt, trade, construction, death) emits a 184-byte header + payload signed by the station's Ed25519 key. `signal_verify` validates the full chain.

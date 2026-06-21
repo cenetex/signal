@@ -14,7 +14,7 @@
  */
 #include "sim_mining.h"
 #include "laser.h"
-#include "game_sim.h"      /* MINING_RANGE, max_mineable_tier, fracture_asteroid */
+#include "game_sim.h"      /* MINING_RANGE, mining gates, fracture_asteroid */
 #include "sim_asteroid.h"  /* asteroid_is_collectible */
 #include <math.h>
 
@@ -93,11 +93,10 @@ mining_beam_t sim_mining_beam_step_with_aim_slack(world_t *w, vec2 muzzle,
         return r;
     r.hit = true;
 
-    /* Tier gate: laser too weak to chip this rock. Beam still hits (so
+    /* Laser gate: beam too weak to chip this rock. Beam still hits (so
      * the visual tells the player "I'm pointed at it") but applies no
      * damage and reports back so the caller can flash the warning. */
-    asteroid_tier_t max_tier = max_mineable_tier(mining_level);
-    if (a->tier < max_tier) {
+    if (!mining_level_can_fracture_asteroid(mining_level, a)) {
         r.ineffective = true;
         return r;
     }

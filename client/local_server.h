@@ -17,11 +17,10 @@ typedef struct {
 /* Initialize the local server world and spawn the player. */
 void local_server_init(local_server_t *ls, uint32_t seed);
 
-/* Run one authoritative sim tick. */
-void local_server_step(local_server_t *ls, int player_slot,
-                        const input_intent_t *input, float dt);
-
-/* Copy authoritative state into the client's interpolation buffers. */
-void local_server_sync_to_client(const local_server_t *ls);
+/* Attach the in-process server to net.c's loopback transport and drive it
+ * through the same client networking path used by multiplayer. */
+void local_server_attach_loopback(local_server_t *ls);
+void local_server_send_initial_snapshot(local_server_t *ls, int player_slot);
+void local_server_step_loopback(local_server_t *ls, int player_slot, float dt);
 
 #endif /* LOCAL_SERVER_H */

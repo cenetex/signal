@@ -40,7 +40,7 @@ static uint8_t remote_pending_receipt_pub[REMOTE_PENDING_RECEIPT_CAP][32];
 static uint8_t remote_pending_receipt_count;
 
 bool net_local_prediction_enabled(void) {
-    if (!g.multiplayer_enabled || g.local_server.active) return true;
+    if (!g.net_authority_enabled) return true;
     return g.net_input_tick_protocol;
 }
 
@@ -128,7 +128,7 @@ static void net_replay_append(const input_replay_frame_t *frame) {
 void net_replay_record_prediction(const input_intent_t *intent, float dt) {
     if (!intent || dt <= 0.0f) return;
     if (!net_replay_enabled()) return;
-    if (!g.multiplayer_enabled || g.local_server.active || !net_is_connected())
+    if (!g.net_authority_enabled || !net_is_connected())
         return;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     if (!g.net_prediction_tick_valid) return;
@@ -394,7 +394,7 @@ bool net_remote_player_scanned(int player_id) {
 }
 
 void net_update_remote_player_scans(const NetPlayerState *players) {
-    if (!g.multiplayer_enabled || !players) return;
+    if (!g.net_authority_enabled || !players) return;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
 
     const server_player_t *local = &LOCAL_PLAYER;
@@ -557,7 +557,7 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
      * cover the chain events visible to a player at-a-glance.
      * Thresholds are loose so float drift in the smelter (~0.016/tick)
      * doesn't fire every frame: 0.5 units of any commodity, or 5
-     * credits of pool delta. Mirror the singleplayer existence gate
+     * credits of pool delta. Mirror the offline existence gate
      * so an uninhabited slot with stale prev_seen=true doesn't fire. */
     if (g.station_prev_seen[index] && station_exists(st)) {
         bool fired = false;
@@ -621,7 +621,7 @@ static bool cargo_unit_from_named_ingot_entry(const NetNamedIngotEntry *entry,
 }
 
 /* Detailed station named-ingot snapshot. The station manifest remains a
- * partial provenance mirror in multiplayer: counts come from
+ * partial provenance mirror under network authority: counts come from
  * g.station_manifest_summary, while this manifest holds only the named
  * ingot units needed for representative lineage strings. */
 void apply_remote_station_ingots(uint8_t station_id,
@@ -1151,7 +1151,7 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
         set_notice("Local scan sweep.");
         return;
     }
-    /* Use the same hail overlay as singleplayer — station name + the
+    /* Use the same hail overlay as local play — station name + the
      * operator-authored station hail + credits. Tutorial/system guidance
      * is intentionally kept out of station hails. */
     net_station_hail_label(station, g.hail_station, sizeof(g.hail_station));
@@ -1413,7 +1413,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
         sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
         sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
         /* Tractor active is server-authoritative — autopilot owns it
-         * server-side and the client never predicts toggles in MP mode.
+         * server-side and the client never predicts toggles under network authority.
          * Without this, the HUD shows stale "TRACTOR OFF" while the
          * server is actively pulling fragments. */
         sp->ship.tractor_active = (state->flags & 16) != 0;
@@ -1440,7 +1440,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      * optimistic change (buy/sell/upgrade/launch) that the server hasn't
      * confirmed yet.  Skip overwriting mutable ship state to prevent
      * flicker from stale PLAYER_SHIP messages. Station balance is not
-     * locally predicted in multiplayer, so keep it authoritative even
+     * locally predicted under network authority, so keep it authoritative even
      * during the predict window; otherwise ws_send_if_changed can deliver
      * the only changed balance packet while the client is ignoring it. */
     if (g.action_predict_timer <= 0.0f) {
@@ -1516,10 +1516,6 @@ void sync_local_player_slot_from_network(void) {
 }
 
 void interpolate_world_for_render(void) {
-    /* Singleplayer: local server syncs every tick, no interpolation needed.
-     * g.world already has authoritative state from local_server_sync_to_client. */
-    if (g.local_server.active) return;
-
     float asteroid_elapsed = clampf(g.asteroid_interp.t * g.asteroid_interp.interval,
                                     0.0f, ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC);
 
@@ -1577,7 +1573,6 @@ void interpolate_world_for_render(void) {
 
 const NetPlayerState* net_get_interpolated_players(void) {
     static NetPlayerState result[NET_MAX_PLAYERS];
-    if (g.local_server.active) return net_get_players();
 
     float pt = clampf(g.player_interp.t, 0.0f, 1.0f);
     for (int i = 0; i < NET_MAX_PLAYERS; i++) {

@@ -22,7 +22,7 @@ cmake --build build-web
 python3 -m http.server 8080 --directory build-web
 ```
 
-Open `http://127.0.0.1:8080/signal.html`.
+Open `http://127.0.0.1:8080/play.html?singleplayer=1`.
 
 Tests (preferred — always rebuilds before running, quiet output, fails loudly):
 

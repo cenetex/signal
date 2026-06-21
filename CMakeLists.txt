@@ -540,6 +540,7 @@ if(EMSCRIPTEN)
         "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
         "'_signal_mobile_clear'"
+        "'_signal_debug_held_control_mask'"
         "'_signal_net_transport_open'"
         "'_signal_net_transport_message'"
         "'_signal_net_transport_close'"
@@ -548,7 +549,7 @@ if(EMSCRIPTEN)
         "'_free'"
     )
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
-    set_target_properties(signal PROPERTIES SUFFIX ".html")
+    set_target_properties(signal PROPERTIES SUFFIX ".js")
     target_link_options(signal PRIVATE
         "SHELL:-sWASM=1"
         "SHELL:-sALLOW_MEMORY_GROWTH=1"
@@ -560,7 +561,6 @@ if(EMSCRIPTEN)
         "SHELL:-sDECLARE_ASM_MODULE_EXPORTS=0"
         "SHELL:-sEXPORTED_FUNCTIONS=[${SIGNAL_EMSCRIPTEN_EXPORTS_CSV}]"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
-        "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
     )
     # Copy static web assets into build-web as real dependencies so JS-only
@@ -618,6 +618,15 @@ if(EMSCRIPTEN)
                 ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm/wasm/wllama.wasm
         VERBATIM
     )
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+                ${CMAKE_CURRENT_BINARY_DIR}/signal.html
+                ${CMAKE_CURRENT_BINARY_DIR}/signal.html.bak
+        COMMAND ${CMAKE_COMMAND} -E touch
+                ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
+        VERBATIM
+    )
     add_custom_target(signal_web_assets
         DEPENDS
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
@@ -626,6 +635,7 @@ if(EMSCRIPTEN)
             ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
             ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
             ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
+            ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
     )
     add_dependencies(signal signal_web_assets)
 elseif(APPLE)

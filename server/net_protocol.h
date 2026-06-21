@@ -8,6 +8,7 @@
 #ifndef NET_PROTOCOL_H
 #define NET_PROTOCOL_H
 
+#include <math.h>
 #include <string.h>
 
 #include "game_sim.h"
@@ -106,6 +107,22 @@ static inline int serialize_action_result(uint8_t *buf, uint16_t action_id,
     return NET_ACTION_RESULT_SIZE;
 }
 
+static inline int serialize_cargo_receipt_bundle(
+    uint8_t *buf,
+    const cargo_receipt_chain_t *chain) {
+    if (!buf || !chain || chain->len == 0 ||
+        chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return 0;
+    }
+    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
+    write_u16_le(&buf[1], chain->len);
+    for (uint8_t i = 0; i < chain->len; i++) {
+        cargo_receipt_pack(&chain->links[i],
+                           &buf[3 + i * CARGO_RECEIPT_SIZE]);
+    }
+    return 3 + chain->len * CARGO_RECEIPT_SIZE;
+}
+
 static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
                                          uint32_t client_sent_ms,
                                          uint32_t server_recv_ms,
@@ -116,6 +133,101 @@ static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
     write_u32_le(&buf[9], server_recv_ms);
     write_u32_le(&buf[13], server_send_ms);
     return NET_LATENCY_PONG_SIZE;
+}
+
+static inline int serialize_death(uint8_t *buf, uint8_t player_id,
+                                  const sim_event_t *ev) {
+    if (!buf || !ev) return 0;
+    buf[0] = NET_MSG_DEATH;
+    buf[1] = player_id;
+    write_f32_le(&buf[2],  ev->death.pos_x);
+    write_f32_le(&buf[6],  ev->death.pos_y);
+    write_f32_le(&buf[10], ev->death.vel_x);
+    write_f32_le(&buf[14], ev->death.vel_y);
+    write_f32_le(&buf[18], ev->death.angle);
+    write_f32_le(&buf[22], ev->death.ore_mined);
+    write_f32_le(&buf[26], ev->death.credits_earned);
+    write_f32_le(&buf[30], ev->death.credits_spent);
+    write_f32_le(&buf[34], (float)ev->death.asteroids_fractured);
+    buf[38] = ev->death.respawn_station;
+    write_f32_le(&buf[39], ev->death.respawn_fee);
+    return NET_DEATH_MSG_SIZE;
+}
+
+static inline float server_fracture_signal_radius_for_world(
+    const world_t *w,
+    vec2 pos) {
+    if (!w) return 0.0f;
+    float radius = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_provides_signal(st)) continue;
+        if (v2_dist_sq(pos, st->pos) <= st->signal_range * st->signal_range &&
+            st->signal_range > radius)
+            radius = st->signal_range;
+    }
+    return radius;
+}
+
+static inline bool server_fracture_player_in_range_for_world(
+    const world_t *w,
+    int player_id,
+    int asteroid_idx) {
+    if (!w || player_id < 0 || player_id >= MAX_PLAYERS ||
+        asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return false;
+    const server_player_t *sp = &w->players[player_id];
+    if (!sp->connected || !sp->session_ready ||
+        !w->asteroids[asteroid_idx].active) {
+        return false;
+    }
+    float radius =
+        server_fracture_signal_radius_for_world(w, w->asteroids[asteroid_idx].pos);
+    if (radius <= 0.0f) return false;
+    return v2_dist_sq(sp->ship.pos, w->asteroids[asteroid_idx].pos) <=
+        radius * radius;
+}
+
+static inline int serialize_fracture_challenge_for_world(
+    uint8_t *buf,
+    const world_t *w,
+    int asteroid_idx) {
+    if (!buf || !w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return 0;
+    const fracture_claim_state_t *state = &w->fracture_claims[asteroid_idx];
+    buf[0] = NET_MSG_FRACTURE_CHALLENGE;
+    write_u32_le(&buf[1], state->fracture_id);
+    memcpy(&buf[5], w->asteroids[asteroid_idx].fracture_seed, 32);
+    write_u32_le(&buf[37], state->deadline_ms);
+    write_u16_le(&buf[41], state->burst_cap);
+    return FRACTURE_CHALLENGE_SIZE;
+}
+
+static inline int serialize_fracture_resolved_for_world(
+    uint8_t *buf,
+    const world_t *w,
+    int asteroid_idx) {
+    if (!buf || !w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return 0;
+    const fracture_claim_state_t *state = &w->fracture_claims[asteroid_idx];
+    buf[0] = NET_MSG_FRACTURE_RESOLVED;
+    write_u32_le(&buf[1], state->fracture_id);
+    memcpy(&buf[5], w->asteroids[asteroid_idx].fragment_pub, 32);
+    memcpy(&buf[37], state->best_player_pub, 32);
+    buf[69] = state->best_grade;
+    return FRACTURE_RESOLVED_SIZE;
+}
+
+static inline int serialize_pending_fracture_resolved(
+    uint8_t *buf,
+    const pending_resolve_t *pr) {
+    if (!buf || !pr) return 0;
+    buf[0] = NET_MSG_FRACTURE_RESOLVED;
+    write_u32_le(&buf[1], pr->fracture_id);
+    memcpy(&buf[5], pr->fragment_pub, 32);
+    memcpy(&buf[37], pr->winner_pub, 32);
+    buf[69] = pr->grade;
+    return FRACTURE_RESOLVED_SIZE;
 }
 
 static inline int serialize_handoff_ticket(uint8_t *buf, uint8_t status,
@@ -1286,33 +1398,57 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
  * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
  * (29 legacy pose/target/tint bytes + 8 session-token bytes + 1 home-station byte)
  */
+static inline bool serialize_relevance_in_player_view(vec2 pos,
+                                                      vec2 player_pos) {
+    return v2_dist_sq(pos, player_pos) <= ASTEROID_VIEW_RADIUS_SQ;
+}
+
+static inline void serialize_one_npc(uint8_t *p, int index,
+                                     const npc_ship_t *n) {
+    p[0] = (uint8_t)index;
+    p[1] = 1; /* active */
+    p[1] |= (((uint8_t)n->role & 0x3) << 1);
+    p[1] |= (((uint8_t)n->state & 0x7) << 3);
+    if (n->thrusting) p[1] |= (1 << 6);
+    write_f32_le(&p[2],  n->ship.pos.x);
+    write_f32_le(&p[6],  n->ship.pos.y);
+    write_f32_le(&p[10], n->ship.vel.x);
+    write_f32_le(&p[14], n->ship.vel.y);
+    write_f32_le(&p[18], n->ship.angle);
+    uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
+        ? (uint16_t)n->target_asteroid : 0xFFFFu;
+    uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
+        ? (uint16_t)n->towed_fragment : 0xFFFFu;
+    write_u16_le(&p[22], target);
+    write_u16_le(&p[24], towed);
+    p[26] = (uint8_t)(n->tint_r * 255.0f);
+    p[27] = (uint8_t)(n->tint_g * 255.0f);
+    p[28] = (uint8_t)(n->tint_b * 255.0f);
+    memcpy(&p[29], n->session_token, sizeof(n->session_token));
+    p[37] = (uint8_t)(n->home_station & 0xFF);
+}
+
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        const npc_ship_t *n = &npcs[i];
-        uint8_t *p = &buf[2 + count * NPC_RECORD_SIZE];
-        p[0] = (uint8_t)i;
-        p[1] = 1; /* active */
-        p[1] |= (((uint8_t)n->role & 0x3) << 1);
-        p[1] |= (((uint8_t)n->state & 0x7) << 3);
-        if (n->thrusting) p[1] |= (1 << 6);
-        write_f32_le(&p[2],  n->ship.pos.x);
-        write_f32_le(&p[6],  n->ship.pos.y);
-        write_f32_le(&p[10], n->ship.vel.x);
-        write_f32_le(&p[14], n->ship.vel.y);
-        write_f32_le(&p[18], n->ship.angle);
-        uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
-            ? (uint16_t)n->target_asteroid : 0xFFFFu;
-        uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
-            ? (uint16_t)n->towed_fragment : 0xFFFFu;
-        write_u16_le(&p[22], target);
-        write_u16_le(&p[24], towed);
-        p[26] = (uint8_t)(n->tint_r * 255.0f);
-        p[27] = (uint8_t)(n->tint_g * 255.0f);
-        p[28] = (uint8_t)(n->tint_b * 255.0f);
-        memcpy(&p[29], n->session_token, sizeof(n->session_token));
-        p[37] = (uint8_t)(n->home_station & 0xFF);
+        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_NPCS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * NPC_RECORD_SIZE;
+}
+
+static inline int serialize_npcs_for_player(uint8_t *buf,
+                                            const npc_ship_t *npcs,
+                                            vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i]);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
@@ -1598,6 +1734,23 @@ static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds)
     return 2 + count * SCAFFOLD_RECORD_SIZE;
 }
 
+static inline int serialize_scaffolds_for_player(uint8_t *buf,
+                                                 const scaffold_t *scaffolds,
+                                                 vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (!scaffolds[i].active) continue;
+        if (!serialize_relevance_in_player_view(scaffolds[i].pos, player_pos))
+            continue;
+        serialize_one_scaffold(&buf[2 + count * SCAFFOLD_RECORD_SIZE],
+                               i, &scaffolds[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_SCAFFOLDS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * SCAFFOLD_RECORD_SIZE;
+}
+
 /*
  * WORLD_CARGO_PODS message: active engine-less towable cargo bodies.
  * [type:1][count:1] + count * CARGO_POD_RECORD_SIZE
@@ -1647,6 +1800,148 @@ static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
     buf[0] = NET_MSG_WORLD_CARGO_PODS;
     buf[1] = (uint8_t)count;
     return 2 + count * CARGO_POD_RECORD_SIZE;
+}
+
+static inline int serialize_cargo_pods_for_player(uint8_t *buf,
+                                                  const cargo_pod_t *pods,
+                                                  vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        if (!serialize_relevance_in_player_view(pods[i].pos, player_pos))
+            continue;
+        serialize_one_cargo_pod(&buf[2 + count * CARGO_POD_RECORD_SIZE],
+                                i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_PODS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * CARGO_POD_RECORD_SIZE;
+}
+
+typedef void (*server_packet_sink_fn)(void *user, const uint8_t *data, int len);
+typedef void (*server_player_packet_sink_fn)(void *user, int player_slot,
+                                             const uint8_t *data, int len);
+
+typedef struct {
+    uint8_t asteroids[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t players[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    uint8_t npcs[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
+    uint8_t scaffolds[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
+    uint8_t cargo_pods[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+    uint8_t world_time[5];
+} server_world_snapshot_scratch_t;
+
+static inline void server_emit_world_snapshot_for_player(
+    world_t *w,
+    int player_slot,
+    bool include_player_states,
+    server_packet_sink_fn send,
+    void *send_user,
+    server_world_snapshot_scratch_t *scratch) {
+    if (!w || !send || !scratch) return;
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    server_player_t *sp = &w->players[player_slot];
+    if (!sp->connected) return;
+
+    int alen = serialize_asteroids_for_player(
+        scratch->asteroids, w->asteroids, sp->ship.pos, sp->asteroid_sent);
+    if (alen > ASTEROID_MSG_HEADER)
+        send(send_user, scratch->asteroids, alen);
+
+    if (include_player_states) {
+        int plen = serialize_all_player_states(
+            scratch->players, w->players, w->tick);
+        send(send_user, scratch->players, plen);
+    }
+
+    int nlen = serialize_npcs_for_player(
+        scratch->npcs, w->npc_ships, sp->ship.pos);
+    send(send_user, scratch->npcs, nlen);
+
+    int slen = serialize_scaffolds_for_player(
+        scratch->scaffolds, w->scaffolds, sp->ship.pos);
+    send(send_user, scratch->scaffolds, slen);
+
+    int clen = serialize_cargo_pods_for_player(
+        scratch->cargo_pods, w->cargo_pods, sp->ship.pos);
+    send(send_user, scratch->cargo_pods, clen);
+
+    scratch->world_time[0] = NET_MSG_WORLD_TIME;
+    write_f32_le(&scratch->world_time[1], w->time);
+    send(send_user, scratch->world_time, (int)sizeof(scratch->world_time));
+}
+
+static inline void server_clear_asteroid_net_dirty(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].net_dirty = false;
+}
+
+static inline bool server_player_slot_in_emit_range(int slot,
+                                                    int only_player_slot) {
+    if (slot < 0 || slot >= MAX_PLAYERS) return false;
+    return only_player_slot < 0 || slot == only_player_slot;
+}
+
+static inline void server_emit_fracture_updates(
+    world_t *w,
+    int only_player_slot,
+    server_player_packet_sink_fn send,
+    void *send_user) {
+    if (!w || !send) return;
+    uint32_t now_ms = (uint32_t)(w->time * 1000.0f);
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        fracture_claim_state_t *state = &w->fracture_claims[i];
+        if (state->challenge_dirty && state->fracture_id &&
+            w->asteroids[i].active) {
+            uint8_t buf[FRACTURE_CHALLENGE_SIZE];
+            int len = serialize_fracture_challenge_for_world(buf, w, i);
+            for (int p = 0; p < MAX_PLAYERS; p++) {
+                if (!server_player_slot_in_emit_range(p, only_player_slot))
+                    continue;
+                if (!w->players[p].connected) continue;
+                if (server_fracture_player_in_range_for_world(w, p, i))
+                    send(send_user, p, buf, len);
+            }
+            state->challenge_dirty = false;
+        }
+        if (state->resolved_dirty && state->fracture_id &&
+            w->asteroids[i].active) {
+            uint8_t buf[FRACTURE_RESOLVED_SIZE];
+            int len = serialize_fracture_resolved_for_world(buf, w, i);
+            for (int p = 0; p < MAX_PLAYERS; p++) {
+                if (!server_player_slot_in_emit_range(p, only_player_slot))
+                    continue;
+                if (!w->players[p].connected) continue;
+                if (server_fracture_player_in_range_for_world(w, p, i))
+                    send(send_user, p, buf, len);
+            }
+            state->resolved_dirty = false;
+        }
+    }
+
+    for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
+        pending_resolve_t *pr = &w->pending_resolves[p];
+        if (!pr->active) continue;
+        if (pr->tx_count > 0 &&
+            now_ms < pr->last_tx_ms + FRACTURE_RESOLVE_RETRY_PERIOD_MS) {
+            continue;
+        }
+        uint8_t buf[FRACTURE_RESOLVED_SIZE];
+        int len = serialize_pending_fracture_resolved(buf, pr);
+        for (int pi = 0; pi < MAX_PLAYERS; pi++) {
+            if (!server_player_slot_in_emit_range(pi, only_player_slot))
+                continue;
+            if (!w->players[pi].connected) continue;
+            send(send_user, pi, buf, len);
+        }
+        pr->tx_count++;
+        pr->last_tx_ms = now_ms;
+        if (pr->tx_count >= FRACTURE_RESOLVE_RETRY_COUNT)
+            pr->active = false;
+    }
 }
 
 /*
@@ -1754,6 +2049,256 @@ static inline int contract_compact_index_for_slot(const contract_t *contracts,
     return -1;
 }
 
+/* Compute station-local balance for a player at their current/nearby
+ * station. This must match the buy/credit paths: pubkey ledger when the
+ * identity is verified, session-token ledger otherwise. */
+static inline float server_player_station_balance_in_world(
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!w || !sp) return 0.0f;
+    int st = sp->docked ? sp->current_station : sp->nearby_station;
+    if (st < 0 || st >= MAX_STATIONS) return 0.0f;
+    if (server_player_can_use_pubkey_persistence(sp))
+        return ledger_balance_by_pubkey(&w->stations[st], sp->pubkey);
+    return ledger_balance(&w->stations[st], sp->session_token);
+}
+
+static inline int server_action_result_station_index(
+    const server_player_t *sp) {
+    if (!sp) return -1;
+    return sp->docked ? sp->current_station : sp->nearby_station;
+}
+
+static inline int server_action_result_station_pending_count(
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!w || !sp) return -1;
+    int st = sp->pending_action_before_station;
+    if (st < 0 || st >= MAX_STATIONS) return -1;
+    return w->stations[st].pending_scaffold_count;
+}
+
+static inline int server_action_result_station_pending_ship_build_count(
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!w || !sp) return -1;
+    int st = sp->pending_action_before_station;
+    if (st < 0 || st >= MAX_STATIONS) return -1;
+    return w->stations[st].pending_ship_build_count;
+}
+
+static inline void server_begin_pending_action_result(
+    const world_t *w,
+    server_player_t *sp,
+    uint16_t action_id,
+    uint16_t input_seq,
+    uint8_t action) {
+    if (!sp || action_id == 0 || action == NET_ACTION_NONE) return;
+    int st = server_action_result_station_index(sp);
+    sp->pending_action_result_valid = true;
+    sp->pending_action_result_action = action;
+    sp->pending_action_result_id = action_id;
+    sp->pending_action_result_input_seq = input_seq;
+    sp->pending_action_before_docked = sp->docked;
+    sp->pending_action_before_docking_approach = sp->docking_approach;
+    sp->pending_action_before_station = st;
+    sp->pending_action_before_autopilot_mode = sp->autopilot_mode;
+    sp->pending_action_before_hull = sp->ship.hull;
+    sp->pending_action_before_cargo_total = ship_total_cargo(&sp->ship);
+    sp->pending_action_before_manifest_count = sp->ship.manifest.count;
+    sp->pending_action_before_mining_level = (uint8_t)sp->ship.mining_level;
+    sp->pending_action_before_hold_level = (uint8_t)sp->ship.hold_level;
+    sp->pending_action_before_tractor_level = (uint8_t)sp->ship.tractor_level;
+    sp->pending_action_before_towed_count = sp->ship.towed_count;
+    sp->pending_action_before_towed_scaffold = sp->ship.towed_scaffold;
+    sp->pending_action_before_station_pending_scaffold_count =
+        (w && st >= 0 && st < MAX_STATIONS)
+            ? w->stations[st].pending_scaffold_count
+            : -1;
+    sp->pending_action_before_station_pending_ship_build_count =
+        (w && st >= 0 && st < MAX_STATIONS)
+            ? w->stations[st].pending_ship_build_count
+            : -1;
+    sp->pending_action_before_station_balance =
+        server_player_station_balance_in_world(w, sp);
+}
+
+static inline bool server_pending_action_state_changed(
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!sp || !sp->pending_action_result_valid) return false;
+    if (sp->pending_action_before_docked != sp->docked) return true;
+    if (sp->pending_action_before_docking_approach !=
+        sp->docking_approach) {
+        return true;
+    }
+    if (sp->pending_action_before_station !=
+        server_action_result_station_index(sp)) {
+        return true;
+    }
+    if (sp->pending_action_before_autopilot_mode !=
+        sp->autopilot_mode) {
+        return true;
+    }
+    if (fabsf(sp->pending_action_before_hull - sp->ship.hull) > 0.01f)
+        return true;
+    if (fabsf(sp->pending_action_before_cargo_total -
+              ship_total_cargo(&sp->ship)) > 0.01f) {
+        return true;
+    }
+    if (sp->pending_action_before_manifest_count != sp->ship.manifest.count)
+        return true;
+    if (sp->pending_action_before_mining_level !=
+        (uint8_t)sp->ship.mining_level) {
+        return true;
+    }
+    if (sp->pending_action_before_hold_level !=
+        (uint8_t)sp->ship.hold_level) {
+        return true;
+    }
+    if (sp->pending_action_before_tractor_level !=
+        (uint8_t)sp->ship.tractor_level) {
+        return true;
+    }
+    if (sp->pending_action_before_towed_count != sp->ship.towed_count)
+        return true;
+    if (sp->pending_action_before_towed_scaffold !=
+        sp->ship.towed_scaffold) {
+        return true;
+    }
+    if (sp->pending_action_before_station_pending_scaffold_count !=
+        server_action_result_station_pending_count(w, sp)) {
+        return true;
+    }
+    if (sp->pending_action_before_station_pending_ship_build_count !=
+        server_action_result_station_pending_ship_build_count(w, sp)) {
+        return true;
+    }
+    if (fabsf(sp->pending_action_before_station_balance -
+              server_player_station_balance_in_world(w, sp)) > 0.01f) {
+        return true;
+    }
+    return false;
+}
+
+static inline bool server_action_matches_event(uint8_t action,
+                                               uint8_t event_type) {
+    if (action == NET_ACTION_DOCK) return event_type == SIM_EVENT_DOCK;
+    if (action == NET_ACTION_LAUNCH) return event_type == SIM_EVENT_LAUNCH;
+    if (action == NET_ACTION_SELL_CARGO ||
+        (action >= NET_ACTION_DELIVER_COMMODITY &&
+         action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT)) {
+        return event_type == SIM_EVENT_SELL ||
+               event_type == SIM_EVENT_CONTRACT_COMPLETE;
+    }
+    if (action == NET_ACTION_REPAIR) return event_type == SIM_EVENT_REPAIR;
+    if (action == NET_ACTION_UPGRADE_MINING ||
+        action == NET_ACTION_UPGRADE_HOLD ||
+        action == NET_ACTION_UPGRADE_TRACTOR) {
+        return event_type == SIM_EVENT_UPGRADE;
+    }
+    if (action == NET_ACTION_PLACE_OUTPOST)
+        return event_type == SIM_EVENT_OUTPOST_PLACED;
+    if (action == NET_ACTION_HAIL) return event_type == SIM_EVENT_HAIL_RESPONSE;
+    if (action == NET_ACTION_RESET) return event_type == SIM_EVENT_DEATH;
+    if (action >= NET_ACTION_BUY_PRODUCT &&
+        action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
+        return event_type == SIM_EVENT_BUY;
+    }
+    if (action == NET_ACTION_BUY_INGOT) return event_type == SIM_EVENT_BUY;
+    return false;
+}
+
+static inline uint8_t server_pending_action_result_status(
+    const world_t *w,
+    const server_player_t *sp,
+    const sim_events_t *events) {
+    bool matched_event = false;
+    bool rejected = false;
+    if (sp && events) {
+        for (int i = 0; i < events->count; i++) {
+            const sim_event_t *ev = &events->events[i];
+            if (ev->player_id != sp->id) continue;
+            if (ev->type == SIM_EVENT_ORDER_REJECTED) rejected = true;
+            if (server_action_matches_event(
+                    sp->pending_action_result_action, (uint8_t)ev->type)) {
+                matched_event = true;
+            }
+        }
+    }
+    if (rejected) return NET_ACTION_RESULT_REJECTED;
+    if (matched_event || server_pending_action_state_changed(w, sp))
+        return NET_ACTION_RESULT_OK;
+    return NET_ACTION_RESULT_NOOP;
+}
+
+static inline const char *server_action_result_status_name(uint8_t status) {
+    switch (status) {
+    case NET_ACTION_RESULT_OK:       return "ok";
+    case NET_ACTION_RESULT_REJECTED: return "rejected";
+    case NET_ACTION_RESULT_NOOP:     return "noop";
+    default:                         return "unknown";
+    }
+}
+
+static inline int serialize_player_ship_for_world(
+    uint8_t *buf,
+    uint8_t id,
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!buf || !sp) return 0;
+    return serialize_player_ship_bal(
+        buf, id, sp, server_player_station_balance_in_world(w, sp));
+}
+
+static inline int serialize_inspect_snapshot_for_world(
+    uint8_t *buf,
+    const world_t *w,
+    const server_player_t *sp) {
+    if (!buf) return 0;
+    if (!w || !sp || !sp->scan_active ||
+        sp->scan_target_type == INSPECT_TARGET_NONE) {
+        return serialize_inspect_snapshot_target(
+            buf, INSPECT_TARGET_NONE, -1, -1);
+    }
+
+    if (sp->scan_target_type == INSPECT_TARGET_NPC &&
+        sp->scan_target_index >= 0 &&
+        sp->scan_target_index < MAX_NPC_SHIPS) {
+        const npc_ship_t *npc = &w->npc_ships[sp->scan_target_index];
+        ship_t *ship = world_npc_ship_for((world_t *)w, sp->scan_target_index);
+        return serialize_inspect_snapshot_npc_with_station_receipts(
+            buf, (uint8_t)sp->scan_target_index, npc, ship,
+            w->stations, MAX_STATIONS);
+    }
+
+    if (sp->scan_target_type == INSPECT_TARGET_PLAYER &&
+        sp->scan_target_index >= 0 &&
+        sp->scan_target_index < MAX_PLAYERS) {
+        return serialize_inspect_snapshot_player(
+            buf, (uint8_t)sp->scan_target_index,
+            &w->players[sp->scan_target_index]);
+    }
+
+    return serialize_inspect_snapshot_target(buf, sp->scan_target_type,
+                                             sp->scan_target_index,
+                                             sp->scan_module_index);
+}
+
+static inline int serialize_hail_response_for_world(
+    uint8_t *buf,
+    const world_t *w,
+    const sim_event_t *ev) {
+    if (!buf || !w || !ev) return 0;
+    buf[0] = NET_MSG_HAIL_RESPONSE;
+    buf[1] = (uint8_t)ev->hail_response.station;
+    write_f32_le(&buf[2], ev->hail_response.credits);
+    int compact_ci = contract_compact_index_for_slot(
+        w->contracts, ev->hail_response.contract_index);
+    buf[6] = (compact_ci >= 0) ? (uint8_t)compact_ci : 0xFFu;
+    return 7;
+}
+
 /* Per-player gossip-contract visibility mask. Bit i set iff compact
  * contract record i from NET_MSG_CONTRACTS matches a summary in the
  * player's ship known_contracts pool (by action + station_index +
@@ -1842,6 +2387,104 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
     }
     buf[1] = (uint8_t)count;
     return DELIVERY_LEDGER_HEADER + count * DELIVERY_LEDGER_RECORD_SIZE;
+}
+
+typedef struct {
+    uint8_t player_ship[PLAYER_SHIP_SIZE + 4];
+    uint8_t hold_ingots[HOLD_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
+    uint8_t player_manifest[
+        PLAYER_MANIFEST_HEADER +
+        COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY
+    ];
+    uint8_t inspect_snapshot[INSPECT_SNAPSHOT_MAX_SIZE];
+    uint8_t known_contracts[5];
+    uint8_t delivery_ledger[
+        DELIVERY_LEDGER_HEADER +
+        DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE
+    ];
+} server_private_snapshot_scratch_t;
+
+typedef struct {
+    uint8_t station_identity[STATION_IDENTITY_SIZE + 4];
+    uint8_t station_diag[STATION_DIAG_SIZE];
+    uint8_t station_ingots[
+        STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE
+    ];
+    uint8_t station_manifest[
+        STATION_MANIFEST_HEADER +
+        COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY
+    ];
+    uint8_t world_stations[2 + MAX_STATIONS * STATION_RECORD_SIZE];
+} server_station_snapshot_scratch_t;
+
+static inline void server_emit_station_snapshot(
+    world_t *w,
+    bool include_world_stations,
+    server_packet_sink_fn send,
+    void *send_user,
+    server_station_snapshot_scratch_t *scratch) {
+    if (!w || !send || !scratch) return;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+
+        int id_len = serialize_station_identity(
+            scratch->station_identity, s, st);
+        send(send_user, scratch->station_identity, id_len);
+
+        int diag_len = serialize_station_diag(scratch->station_diag, s, st);
+        send(send_user, scratch->station_diag, diag_len);
+
+        int ingot_len = serialize_station_ingots(
+            scratch->station_ingots, s, st);
+        send(send_user, scratch->station_ingots, ingot_len);
+
+        int manifest_len = serialize_station_manifest(
+            scratch->station_manifest, s, st);
+        send(send_user, scratch->station_manifest, manifest_len);
+    }
+
+    if (include_world_stations) {
+        int station_len = serialize_stations(
+            scratch->world_stations, w->stations);
+        send(send_user, scratch->world_stations, station_len);
+    }
+}
+
+static inline void server_emit_private_snapshot_for_player(
+    world_t *w,
+    int player_slot,
+    server_packet_sink_fn send,
+    void *send_user,
+    server_private_snapshot_scratch_t *scratch) {
+    if (!w || !send || !scratch) return;
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    server_player_t *sp = &w->players[player_slot];
+    if (!sp->connected) return;
+
+    int ship_len = serialize_player_ship_for_world(
+        scratch->player_ship, (uint8_t)player_slot, w, sp);
+    send(send_user, scratch->player_ship, ship_len);
+
+    int hold_len = serialize_hold_ingots(scratch->hold_ingots, &sp->ship);
+    send(send_user, scratch->hold_ingots, hold_len);
+
+    int manifest_len = serialize_player_manifest(
+        scratch->player_manifest, &sp->ship);
+    send(send_user, scratch->player_manifest, manifest_len);
+
+    int inspect_len = serialize_inspect_snapshot_for_world(
+        scratch->inspect_snapshot, w, sp);
+    send(send_user, scratch->inspect_snapshot, inspect_len);
+
+    int known_len = serialize_player_known_contracts(
+        scratch->known_contracts, w->contracts, &sp->ship);
+    send(send_user, scratch->known_contracts, known_len);
+
+    int delivery_len = serialize_delivery_ledger(
+        scratch->delivery_ledger, w, (uint8_t)player_slot);
+    send(send_user, scratch->delivery_ledger, delivery_len);
 }
 
 /* ------------------------------------------------------------------ */

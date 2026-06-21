@@ -55,11 +55,11 @@ EM_JS(int, signal_relay_debug_health_latency_ms_js, (), {
 /* Station-local balance helper                                        */
 /* ------------------------------------------------------------------ */
 
-/* Returns the player's credit balance at the given station.
- * In singleplayer reads the mirrored ledger; in multiplayer uses
- * the cached value from the last PLAYER_SHIP message. */
+/* Returns the player's credit balance at the given station. Network authority
+ * uses the cached value from the last PLAYER_SHIP message; the offline
+ * fallback reads the mirrored ledger. */
 static float client_station_balance(int station_idx) {
-    if (g.multiplayer_enabled)
+    if (g.net_authority_enabled)
         return g.station_balance;
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return 0.0f;
     const station_t *st = &g.world.stations[station_idx];
@@ -84,7 +84,8 @@ float player_current_balance(void) {
  * balance for the local player, `strongest_balance` with that amount,
  * and `other_count` with how many *other* stations also have a
  * positive balance. Returns true when there's any station-local balance to show.
- * Singleplayer only — MP doesn't push per-station ledgers. */
+ * Offline fallback only — the network stream exposes the current balance, not
+ * every per-station ledger row. */
 static bool client_ledger_balance_summary(int *strongest_idx,
                                           float *strongest_balance,
                                           int *other_count);
@@ -282,7 +283,7 @@ static const char *hud_asteroid_usefulness(const asteroid_t *a) {
 }
 
 static const NetPlayerState *hud_net_player_state(int idx) {
-    if (!g.multiplayer_enabled || idx < 0 || idx >= NET_MAX_PLAYERS)
+    if (!g.net_authority_enabled || idx < 0 || idx >= NET_MAX_PLAYERS)
         return NULL;
     const NetPlayerState *players = net_get_interpolated_players();
     if (players && players[idx].active) return &players[idx];
@@ -691,7 +692,7 @@ static void hud_format_region_label(char *out, size_t cap) {
     (void)signal_relay_debug_region_js(out, (int)cap);
 #endif
     if (out[0] == '\0') {
-        if (g.multiplayer_enabled)
+        if (g.net_authority_enabled)
             snprintf(out, cap, "direct");
         else
             snprintf(out, cap, "solo");
@@ -733,11 +734,11 @@ static void hud_format_latency_label(char *out, size_t cap) {
 
 /* ------------------------------------------------------------------ */
 /* Shared post-classify panels — render in BOTH compact and wide so a  */
-/* small window doesn't silently lose signal-lost warnings, MP status, */
+/* small window doesn't silently lose signal-lost warnings, net status, */
 /* hail sigil, etc. Each is a one-shot draw guarded by its own state. */
 /* ------------------------------------------------------------------ */
 
-static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact) {
+static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
     /* Version / connection status — top right */
     float info_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 100.0f : 140.0f)));
     float info_y = ui_text_pos(8.0f);
@@ -747,7 +748,7 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
 #else
     const char *client_hash = "dev";
 #endif
-    if (g.multiplayer_enabled && net_is_connected()) {
+    if (g.net_authority_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
         bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
         if (match)              { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
@@ -800,7 +801,7 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
                             (unsigned)g.net_replay_count);
             }
         }
-    } else if (g.multiplayer_enabled) {
+    } else if (g.net_authority_enabled) {
         sdtx_color3b(PAL_SYNC_OFFLINE);
         sdtx_puts("offline [P] reconnect");
     } else {
@@ -822,7 +823,7 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
     char latency[80];
     hud_format_region_label(region, sizeof(region));
     hud_format_latency_label(latency, sizeof(latency));
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         snprintf(segment, sizeof(segment),
                  "ALPHA // v%s // %s // %s // resets possible // ",
                  client_hash, region, latency);
@@ -905,7 +906,7 @@ static void hud_draw_module_inspect_pane(float screen_w) {
     }
     const station_module_t *im = &ist->modules[g.inspect_module];
     station_flow_diag_t flow = station_module_flow_diag_view(
-        ist, g.inspect_module, g.multiplayer_enabled && net_is_connected());
+        ist, g.inspect_module, g.net_authority_enabled && net_is_connected());
     float px = fmaxf(16.0f, screen_w - 260.0f);
     float py = 60.0f;
     float cell = 8.0f;
@@ -2433,7 +2434,7 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
 }
 
 static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_quality, bool compact) {
-    hud_draw_alpha_banner_and_mp_indicator(screen_w, compact);
+    hud_draw_alpha_banner_and_connection(screen_w, compact);
     hud_draw_nav_label(screen_w, screen_h);
     hud_draw_hail_sigil(screen_w, screen_h);
     hud_draw_module_inspect_pane(screen_w);
@@ -2453,8 +2454,8 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
 /* Station-local balances, broken out per station. Reports the station holding
  * the largest player-owned balance plus how many *other* stations also have a
  * positive balance, so the HUD can show local-credit spread without flattening
- * it into one global number. Singleplayer only: in MP the server doesn't push a
- * per-station ledger and this returns false. Cheap O(stations × ledger) walk;
+ * it into one global number. Offline fallback only: the network stream doesn't
+ * push every per-station ledger row and this returns false. Cheap O(stations × ledger) walk;
  * reused per-frame by both HUD variants. */
 static bool client_ledger_balance_summary(int *strongest_idx,
                                           float *strongest_balance,
@@ -3330,13 +3331,28 @@ static int smoke_apply_loop_state(int state) {
         sp->ship.towed_count = 1;
         sp->ship.towed_fragments[0] = 0;
         return 1;
-    case SMOKE_LOOP_STATE_HAIL_READY:
+    case SMOKE_LOOP_STATE_HAIL_READY: {
         if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
             return 0;
         g.local_server.active = true;
         g.world.stations[0].ledger_count = 0;
+        bool has_token = false;
+        for (int i = 0; i < 8; i++) {
+            if (sp->session_token[i] != 0) {
+                has_token = true;
+                break;
+            }
+        }
+        if (!has_token) {
+            const uint8_t smoke_token[8] = {
+                'S', 'M', 'O', 'K', 'E', '0', '0', '1'
+            };
+            memcpy(sp->session_token, smoke_token, sizeof(sp->session_token));
+            sp->session_ready = true;
+        }
         ledger_earn(&g.world.stations[0], sp->session_token, 123.0f);
         return 1;
+    }
     case SMOKE_LOOP_STATE_HAIL_NOTICE:
         snprintf(g.notice, sizeof(g.notice),
                  "Prospect: channel open. Balance 123 cr.");
@@ -3474,7 +3490,7 @@ static int smoke_apply_loop_state(int state) {
     case SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN: {
         int remote_slot = (g.local_player_slot == 1) ? 2 : 1;
         if (remote_slot >= NET_MAX_PLAYERS) return 0;
-        g.multiplayer_enabled = true;
+        g.net_authority_enabled = true;
         g.local_server.active = false;
         memset(&g.player_interp, 0, sizeof(g.player_interp));
         g.player_interp.interval = 0.1f;
@@ -4268,7 +4284,7 @@ void draw_hud(void) {
 
         draw_station_services(&ui);
         /* Shared post-classify panels also fire in compact mode so a
-         * narrow window doesn't lose signal-lost warnings, MP status,
+         * narrow window doesn't lose signal-lost warnings, net status,
          * the hail sigil, etc. (Previously the compact early-return
          * hid them entirely.) */
         hud_draw_shared_panels(screen_w, screen_h, sig_quality, true);
@@ -4466,7 +4482,7 @@ void draw_hud(void) {
         sdtx_puts("[E] launch");
     }
 
-    /* Shared post-classify panels: MP indicator + alpha banner, nav
+    /* Shared post-classify panels: connection indicator + alpha banner, nav
      * label, hail sigil, module inspect pane, signal-lost warning.
      * Same call also fires from the compact path so a narrow window
      * doesn't silently lose any of these. */

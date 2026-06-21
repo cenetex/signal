@@ -14,6 +14,10 @@
 
 #include <string.h>
 
+#include "protocol.h"
+#include "pubkey_proof.h"
+#include "signal_crypto.h"
+
 static void fill_pubkey(uint8_t pk[32], uint8_t seed) {
     for (int i = 0; i < 32; i++) pk[i] = (uint8_t)(seed + i);
 }
@@ -209,6 +213,104 @@ TEST(test_registry_save_load_roundtrip) {
     remove(TMP("test_registry.sav"));
 }
 
+TEST(test_identity_dispatch_session_register_and_proof) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    server_player_t *sp = &w->players[0];
+    sp->connected = true;
+    sp->id = 0;
+
+    uint8_t tok[8];
+    fill_token(tok, 31);
+    uint8_t session_msg[16] = { NET_MSG_SESSION };
+    memcpy(&session_msg[1], tok, 8);
+    memcpy(&session_msg[9], "PILOT01", 7);
+
+    server_session_message_t session;
+    ASSERT(server_parse_session_message(session_msg, sizeof(session_msg),
+                                        &session));
+    ASSERT(server_apply_session_message(w, 0, &session));
+    ASSERT(sp->session_ready);
+    ASSERT_EQ_INT(memcmp(sp->session_token, tok, 8), 0);
+    ASSERT(strcmp(sp->callsign, "PILOT01") == 0);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+    uint8_t register_msg[REGISTER_PUBKEY_MSG_SIZE] = { NET_MSG_REGISTER_PUBKEY };
+    memcpy(&register_msg[1], pk, 32);
+
+    server_pubkey_register_result_t reg;
+    ASSERT(server_dispatch_register_pubkey_message(
+        w, 0, register_msg, sizeof(register_msg), &reg));
+    ASSERT(reg.accepted);
+    ASSERT(!reg.same_pubkey);
+    ASSERT(sp->pubkey_set);
+    ASSERT(!sp->pubkey_proof_ok);
+
+    uint8_t proof_msg[PROVE_PUBKEY_MSG_SIZE] = { NET_MSG_PROVE_PUBKEY };
+    memcpy(&proof_msg[PROVE_PUBKEY_PUBKEY_OFFSET], pk, 32);
+    memcpy(&proof_msg[PROVE_PUBKEY_TOKEN_OFFSET], tok, 8);
+    ASSERT(pubkey_proof_sign(&proof_msg[PROVE_PUBKEY_SIG_OFFSET],
+                             pk, sk, tok));
+
+    server_pubkey_proof_result_t proof;
+    ASSERT(server_dispatch_pubkey_proof_message(
+        w, 0, proof_msg, sizeof(proof_msg), &proof));
+    ASSERT(proof.verified);
+    ASSERT_EQ_INT(proof.status, SERVER_PUBKEY_PROOF_OK);
+    ASSERT(sp->pubkey_proof_ok);
+    ASSERT(server_finalize_pubkey_identity(w, 0));
+    ASSERT(sp->pubkey_identity_finalized);
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 0);
+
+    server_pubkey_register_result_t same;
+    ASSERT(server_dispatch_register_pubkey_message(
+        w, 0, register_msg, sizeof(register_msg), &same));
+    ASSERT(same.accepted);
+    ASSERT(same.same_pubkey);
+    ASSERT(sp->pubkey_proof_ok);
+    ASSERT(sp->pubkey_identity_finalized);
+}
+
+TEST(test_identity_dispatch_rejects_wrong_session_proof) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    server_player_t *sp = &w->players[0];
+    sp->connected = true;
+    sp->id = 0;
+    uint8_t tok[8], other_tok[8];
+    fill_token(tok, 33);
+    fill_token(other_tok, 34);
+    server_session_message_t session = {0};
+    memcpy(session.token, tok, 8);
+    ASSERT(server_apply_session_message(w, 0, &session));
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(pk, sk);
+    uint8_t register_msg[REGISTER_PUBKEY_MSG_SIZE] = { NET_MSG_REGISTER_PUBKEY };
+    memcpy(&register_msg[1], pk, 32);
+    ASSERT(server_dispatch_register_pubkey_message(
+        w, 0, register_msg, sizeof(register_msg), NULL));
+
+    uint8_t proof_msg[PROVE_PUBKEY_MSG_SIZE] = { NET_MSG_PROVE_PUBKEY };
+    memcpy(&proof_msg[PROVE_PUBKEY_PUBKEY_OFFSET], pk, 32);
+    memcpy(&proof_msg[PROVE_PUBKEY_TOKEN_OFFSET], other_tok, 8);
+    ASSERT(pubkey_proof_sign(&proof_msg[PROVE_PUBKEY_SIG_OFFSET],
+                             pk, sk, other_tok));
+
+    server_pubkey_proof_result_t proof;
+    ASSERT(server_dispatch_pubkey_proof_message(
+        w, 0, proof_msg, sizeof(proof_msg), &proof));
+    ASSERT(!proof.verified);
+    ASSERT_EQ_INT(proof.status, SERVER_PUBKEY_PROOF_SESSION_MISMATCH);
+    ASSERT(!sp->pubkey_proof_ok);
+    ASSERT(!server_finalize_pubkey_identity(w, 0));
+}
+
 void register_registry_tests(void) {
     TEST_SECTION("\nPubkey registry (#479 A.2):\n");
     RUN(test_registry_fresh_registration);
@@ -216,4 +318,6 @@ void register_registry_tests(void) {
     RUN(test_registry_reconnect_with_new_token);
     RUN(test_registry_two_pubkeys_one_machine);
     RUN(test_registry_save_load_roundtrip);
+    RUN(test_identity_dispatch_session_register_and_proof);
+    RUN(test_identity_dispatch_rejects_wrong_session_proof);
 }

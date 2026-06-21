@@ -54,7 +54,6 @@
  */
 #include <stdarg.h>
 #include "input.h"
-#include "local_server.h"
 #include "music.h"
 #include "net.h"
 #include "net_sync.h"
@@ -67,7 +66,7 @@
 
 static float action_predict_window_sec(void) {
     float window = 0.5f;
-    if (g.multiplayer_enabled && g.net_last_ack_rtt > 0.0f) {
+    if (g.net_authority_enabled && g.net_last_ack_rtt > 0.0f) {
         window = 0.25f + g.net_last_ack_rtt * 2.0f;
         if (window < 0.5f) window = 0.5f;
         if (window > 2.0f) window = 2.0f;
@@ -689,7 +688,7 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
         intent->buy_station_pod = true;
         intent->buy_station_pod_index = row->station_pod_index;
     }
-    if (!g.multiplayer_enabled) {
+    if (!g.net_authority_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
         int li = input_local_ledger_index(mst);
         if (li >= 0 && mst->ledger[li].balance >= total_price)
@@ -755,7 +754,7 @@ static void sample_trade_picker(input_intent_t *intent) {
             ? row->total_price
             : row->unit_price);
         float payout = price;
-        if (!g.multiplayer_enabled) {
+        if (!g.net_authority_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
             int idx = input_local_ledger_index(mst);
             if (idx < 0 && mst->ledger_count < STATION_LEDGER_MAX) {
@@ -1171,16 +1170,6 @@ void submit_input(const input_intent_t *intent, float dt) {
         world_sim_step_player_only(&g.world, g.local_player_slot, dt);
     }
 
-    /* Authoritative step: local server or remote */
-    if (g.local_server.active) {
-        /* Forward client's predicted target so server damages the same asteroid */
-        input_intent_t server_intent = *intent;
-        server_intent.mining_target_hint = LOCAL_PLAYER.hover_asteroid;
-        local_server_step(&g.local_server, g.local_player_slot, &server_intent, dt);
-        local_server_sync_to_client(&g.local_server);
-    }
-
-
     /* Detect one-shot actions for prediction suppression and network send */
     bool has_action = intent->interact || intent->service_sell ||
         intent->service_repair || intent->upgrade_mining ||
@@ -1194,10 +1183,10 @@ void submit_input(const input_intent_t *intent, float dt) {
     if (has_action)
         g.action_predict_timer = action_predict_window_sec();
 
-    /* Multiplayer: plan intents ride a dedicated message — they carry
-     * richer payloads (target station/ring/slot/type or world position)
-     * that don't fit in the 1-byte action slot. Send them directly. */
-    if (g.multiplayer_enabled && net_is_connected()) {
+    /* Networked authority: plan intents ride a dedicated message — they
+     * carry richer payloads (target station/ring/slot/type or world
+     * position) that don't fit in the 1-byte action slot. */
+    if (g.net_authority_enabled && net_is_connected()) {
         bool plan_send_failed = false;
         if (intent->create_planned_outpost && intent->add_plan &&
             intent->plan_station == -2) {
@@ -1248,8 +1237,8 @@ void submit_input(const input_intent_t *intent, float dt) {
         }
     }
 
-    /* Multiplayer: encode the action and queue for network send */
-    if (has_action && g.multiplayer_enabled && net_is_connected()) {
+    /* Networked authority: encode the action and queue for send. */
+    if (has_action && g.net_authority_enabled && net_is_connected()) {
         if (intent->interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
             if (LOCAL_PLAYER.docked) {

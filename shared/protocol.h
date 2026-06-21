@@ -721,6 +721,7 @@ enum {
 #define NET_LATENCY_PING_SIZE 9
 #define NET_LATENCY_PONG_SIZE 17
 #define NET_CLIENT_METRICS_SIZE 21
+#define NET_DEATH_MSG_SIZE 43
 
 /* Input prediction horizon, in fixed SIM_DT ticks. The server only accepts
  * future-dated movement this far ahead; the client should rebase before replay

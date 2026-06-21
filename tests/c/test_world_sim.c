@@ -2659,6 +2659,86 @@ TEST(test_world_sim_step_mining_damages_asteroid) {
     ASSERT(w.asteroids[target].hp < hp_before);
 }
 
+static mining_beam_t test_fire_once_at_asteroid(world_t *w, asteroid_t *a,
+                                                int mining_level) {
+    int target = (int)(a - w->asteroids);
+    return sim_mining_beam_step(w, v2(0.0f, 0.0f), v2(1.0f, 0.0f),
+                                target, mining_level, 60.0f, 1.0f, -1,
+                                1.0f / 60.0f);
+}
+
+static void test_seed_gate_asteroid(world_t *w, asteroid_tier_t tier,
+                                    commodity_t commodity) {
+    memset(w->asteroids, 0, sizeof(w->asteroids));
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = tier;
+    a->commodity = commodity;
+    a->radius = 30.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2(80.0f, 0.0f);
+}
+
+TEST(test_mining_laser_size_gate_starts_at_m) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    ASSERT_EQ_INT(max_mineable_tier(0), ASTEROID_TIER_M);
+    ASSERT_EQ_INT(max_mineable_tier(1), ASTEROID_TIER_L);
+    ASSERT_EQ_INT(max_mineable_tier(2), ASTEROID_TIER_XL);
+    ASSERT_EQ_INT(max_mineable_tier(3), ASTEROID_TIER_XXL);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_L, COMMODITY_FERRITE_ORE);
+    mining_beam_t l1_on_l = test_fire_once_at_asteroid(&w, &w.asteroids[0], 0);
+    ASSERT(l1_on_l.hit);
+    ASSERT(l1_on_l.ineffective);
+    ASSERT(!l1_on_l.fired);
+    ASSERT_EQ_FLOAT(w.asteroids[0].hp, 40.0f, 0.001f);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_FERRITE_ORE);
+    mining_beam_t l1_on_m = test_fire_once_at_asteroid(&w, &w.asteroids[0], 0);
+    ASSERT(l1_on_m.hit);
+    ASSERT(!l1_on_m.ineffective);
+    ASSERT(l1_on_m.fired);
+    ASSERT(w.asteroids[0].hp < 40.0f);
+}
+
+TEST(test_mining_laser_material_gate_requires_upgrades) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    ASSERT_EQ_INT(mining_required_level_for_commodity(COMMODITY_FERRITE_ORE), 0);
+    ASSERT_EQ_INT(mining_required_level_for_commodity(COMMODITY_CUPRITE_ORE), 1);
+    ASSERT_EQ_INT(mining_required_level_for_commodity(COMMODITY_CRYSTAL_ORE), 2);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
+    mining_beam_t l1_on_cuprite = test_fire_once_at_asteroid(&w, &w.asteroids[0], 0);
+    ASSERT(l1_on_cuprite.hit);
+    ASSERT(l1_on_cuprite.ineffective);
+    ASSERT_EQ_FLOAT(w.asteroids[0].hp, 40.0f, 0.001f);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
+    mining_beam_t l2_on_cuprite = test_fire_once_at_asteroid(&w, &w.asteroids[0], 1);
+    ASSERT(l2_on_cuprite.hit);
+    ASSERT(!l2_on_cuprite.ineffective);
+    ASSERT(l2_on_cuprite.fired);
+    ASSERT(w.asteroids[0].hp < 40.0f);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
+    mining_beam_t l2_on_crystal = test_fire_once_at_asteroid(&w, &w.asteroids[0], 1);
+    ASSERT(l2_on_crystal.hit);
+    ASSERT(l2_on_crystal.ineffective);
+    ASSERT_EQ_FLOAT(w.asteroids[0].hp, 40.0f, 0.001f);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
+    mining_beam_t l3_on_crystal = test_fire_once_at_asteroid(&w, &w.asteroids[0], 2);
+    ASSERT(l3_on_crystal.hit);
+    ASSERT(!l3_on_crystal.ineffective);
+    ASSERT(l3_on_crystal.fired);
+    ASSERT(w.asteroids[0].hp < 40.0f);
+}
+
 TEST(test_world_sim_step_laser_scans_cargo_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -4223,6 +4303,7 @@ TEST(test_miner_inside_station_nav_envelope_routes_to_outer_gap) {
     npc->target_asteroid = target_a;
     npc->towed_fragment = -1;
     npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    npc->ship.mining_level = 1;
     npc->ship.pos = v2_add(w.stations[2].pos, v2(292.0f, -485.0f));
     npc->ship.vel = v2(0.0f, 0.0f);
     npc->ship.angle = -1.12f;
@@ -7566,6 +7647,7 @@ TEST(test_autopilot_prioritizes_raw_ore_contract_mining_target) {
     sp->nearby_station = 2;
     sp->docked = false;
     sp->in_dock_range = false;
+    sp->ship.mining_level = 2;
     sp->ship.pos = (vec2){ helios->pos.x, helios->pos.y + 700.0f };
     sp->ship.vel = (vec2){0};
 
@@ -7928,6 +8010,7 @@ TEST(test_npc_miners_avoid_zero_signal_asteroids) {
     w.npc_ships[0].active = true;
     w.npc_ships[0].role = NPC_ROLE_MINER;
     w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].ship.mining_level = 1;
     w.npc_ships[0].home_station = 0;
     w.npc_ships[0].state = NPC_STATE_DOCKED;
     w.npc_ships[0].state_timer = 0.0f;
@@ -7973,6 +8056,7 @@ TEST(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock) {
     w.npc_ships[0].active = true;
     w.npc_ships[0].role = NPC_ROLE_MINER;
     w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].ship.mining_level = 2;
     w.npc_ships[0].home_station = 2;
     w.npc_ships[0].state = NPC_STATE_DOCKED;
     w.npc_ships[0].state_timer = 0.0f;
@@ -8439,6 +8523,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_ship_brake_stops_without_overshoot);
     RUN(test_ship_reverse_requires_reverse_flag);
     RUN(test_world_sim_step_mining_damages_asteroid);
+    RUN(test_mining_laser_size_gate_starts_at_m);
+    RUN(test_mining_laser_material_gate_requires_upgrades);
     RUN(test_world_sim_step_laser_scans_cargo_pod);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_hopper_path_retired);

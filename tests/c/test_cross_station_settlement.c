@@ -21,6 +21,7 @@
 #include "chain_log.h"
 #include "handoff_flow.h"
 #include "handoff_ticket.h"
+#include "protocol.h"
 #include "signal_crypto.h"
 #include "station_authority.h"
 
@@ -67,6 +68,63 @@ static void crs_world_init(world_t *w, uint32_t seed) {
 /* Synthesize a deterministic player pubkey + cargo pub for a test. */
 static void fill_test_pubkey(uint8_t out[32], uint8_t seed) {
     for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
+}
+
+static void crs_write_u32_le(uint8_t *buf, uint32_t v) {
+    buf[0] = (uint8_t)(v & 0xFFu);
+    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
+    buf[2] = (uint8_t)((v >> 16) & 0xFFu);
+    buf[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void crs_write_u16_le(uint8_t *buf, uint16_t v) {
+    buf[0] = (uint8_t)(v & 0xFFu);
+    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+typedef struct {
+    int calls;
+    uint8_t status;
+    uint8_t source_station;
+    uint8_t dest_station;
+    bool has_ticket;
+    handoff_ticket_t ticket;
+} crs_handoff_ticket_capture_t;
+
+static void crs_capture_handoff_ticket(void *user, uint8_t status,
+                                       uint8_t source_station,
+                                       uint8_t dest_station,
+                                       const handoff_ticket_t *ticket) {
+    crs_handoff_ticket_capture_t *cap =
+        (crs_handoff_ticket_capture_t *)user;
+    cap->calls++;
+    cap->status = status;
+    cap->source_station = source_station;
+    cap->dest_station = dest_station;
+    cap->has_ticket = ticket != NULL;
+    if (ticket) cap->ticket = *ticket;
+}
+
+typedef struct {
+    int calls;
+    uint8_t status;
+    uint8_t reason;
+    uint8_t dest_station;
+    uint8_t ticket_hash[32];
+} crs_handoff_result_capture_t;
+
+static void crs_capture_handoff_result(void *user, uint8_t status,
+                                       uint8_t reason,
+                                       uint8_t dest_station,
+                                       const uint8_t ticket_hash[32]) {
+    crs_handoff_result_capture_t *cap =
+        (crs_handoff_result_capture_t *)user;
+    cap->calls++;
+    cap->status = status;
+    cap->reason = reason;
+    cap->dest_station = dest_station;
+    if (ticket_hash) memcpy(cap->ticket_hash, ticket_hash, 32);
+    else memset(cap->ticket_hash, 0, 32);
 }
 
 static bool crs_prepare_player_carrier(world_t *w,
@@ -522,7 +580,40 @@ TEST(test_present_receipt_chain_to_carried_cargo) {
     crs_teardown();
 }
 
-/* ---------------- Test 11: foreign authority is accepted ------------ */
+/* ---------------- Test 11: presented chain dispatch attaches -------- */
+
+TEST(test_present_receipt_chain_dispatch_attaches) {
+    crs_setup("present_dispatch_attach");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD01F);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xB2);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xE2);
+    cargo_receipt_t r1;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+
+    uint8_t msg[35 + CARGO_RECEIPT_SIZE];
+    msg[0] = NET_MSG_PRESENT_RECEIPT_CHAIN;
+    memcpy(&msg[1], cargo_pk, 32);
+    crs_write_u16_le(&msg[33], 1);
+    cargo_receipt_pack(&r1, &msg[35]);
+
+    server_receipt_presentation_dispatch_result_t result;
+    ASSERT(server_dispatch_receipt_presentation_message(
+        w, 0, msg, sizeof(msg), &result));
+    ASSERT(result.evaluated);
+    ASSERT_EQ_INT(result.result, CARGO_RECEIPT_PRESENT_OK);
+
+    ship_receipts_t *rcpts = ship_get_receipts(&w->players[0].ship);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT((int)rcpts->count, 1);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
+    ASSERT(memcmp(&rcpts->chains[0].links[0], &r1, sizeof(r1)) == 0);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 12: foreign authority is accepted ------------ */
 
 TEST(test_present_foreign_authority_receipt_chain) {
     crs_setup("present_foreign");
@@ -865,7 +956,91 @@ TEST(test_handoff_flow_accept_hydrates_destination_ship) {
     crs_teardown();
 }
 
-/* ---------------- Test 20: handoff replay/tamper rejection ---------- */
+/* ---------------- Test 20: shared handoff request dispatch ---------- */
+
+TEST(test_handoff_dispatch_request_emits_ticket) {
+    crs_setup("handoff_dispatch_request");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD020);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xB0);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xE0);
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+    server_player_t *sp = &w->players[0];
+    sp->current_station = 2;
+    w->tick = 100u;
+
+    uint8_t req[NET_HANDOFF_REQUEST_SIZE] = {
+        NET_MSG_HANDOFF_REQUEST, 0xFFu, 1u, 0, 0, 0, 0
+    };
+    crs_write_u32_le(&req[3], 240u);
+
+    crs_handoff_ticket_capture_t cap = {0};
+    ASSERT(server_dispatch_handoff_request(w, 0, req, sizeof(req),
+                                           crs_capture_handoff_ticket,
+                                           &cap));
+    ASSERT_EQ_INT(cap.calls, 1);
+    ASSERT_EQ_INT(cap.status, NET_HANDOFF_STATUS_OK);
+    ASSERT_EQ_INT(cap.source_station, 2);
+    ASSERT_EQ_INT(cap.dest_station, 1);
+    ASSERT(cap.has_ticket);
+    ASSERT(handoff_ticket_verify_for_ship(
+        &cap.ticket, (uint64_t)w->tick,
+        w->stations[2].station_pubkey,
+        w->stations[1].station_pubkey,
+        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+
+    crs_teardown();
+}
+
+/* ---------------- Test 21: shared handoff present dispatch ---------- */
+
+TEST(test_handoff_dispatch_present_emits_result) {
+    crs_setup("handoff_dispatch_present");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD021);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xB1);
+    uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0xE1);
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+    server_player_t *sp = &w->players[0];
+    sp->current_station = 2;
+    w->tick = 100u;
+
+    handoff_ticket_t ticket;
+    ASSERT(handoff_issue_ticket_to_station(w, 0, 2, 1, 240u, &ticket));
+    size_t snapshot_len = handoff_ship_snapshot_size(&sp->ship);
+    ASSERT(snapshot_len > 0);
+    size_t msg_len = 1u + HANDOFF_TICKET_SIZE + 4u + snapshot_len;
+    uint8_t *msg = malloc(msg_len); ASSERT(msg != NULL);
+    msg[0] = NET_MSG_HANDOFF_PRESENT;
+    handoff_ticket_pack(&ticket, &msg[1]);
+    crs_write_u32_le(&msg[1 + HANDOFF_TICKET_SIZE],
+                     (uint32_t)snapshot_len);
+    size_t packed = 0;
+    ASSERT(handoff_ship_snapshot_pack(&sp->ship,
+                                      &msg[1 + HANDOFF_TICKET_SIZE + 4u],
+                                      snapshot_len, &packed));
+    ASSERT_EQ_INT((int)packed, (int)snapshot_len);
+
+    uint8_t expected_hash[32];
+    handoff_ticket_hash(&ticket, expected_hash);
+    crs_handoff_result_capture_t cap = {0};
+    ASSERT(server_dispatch_handoff_present(w, 0, msg, (int)msg_len,
+                                           crs_capture_handoff_result,
+                                           &cap));
+    ASSERT_EQ_INT(cap.calls, 1);
+    ASSERT_EQ_INT(cap.status, NET_HANDOFF_STATUS_OK);
+    ASSERT_EQ_INT(cap.reason, HANDOFF_FLOW_OK);
+    ASSERT_EQ_INT(cap.dest_station, 1);
+    ASSERT(memcmp(cap.ticket_hash, expected_hash, 32) == 0);
+    ASSERT_EQ_INT(sp->nearby_station, 1);
+    ASSERT(!sp->docked);
+    ASSERT(sp->force_authoritative_resync);
+
+    free(msg);
+    crs_teardown();
+}
+
+/* ---------------- Test 22: handoff replay/tamper rejection ---------- */
 
 TEST(test_handoff_flow_rejects_replay_and_tamper) {
     crs_setup("handoff_flow_rejects");
@@ -954,6 +1129,7 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_cross_station_save_load_preserves_receipts);
     RUN(test_cross_station_chain_length_cap);
     RUN(test_present_receipt_chain_to_carried_cargo);
+    RUN(test_present_receipt_chain_dispatch_attaches);
     RUN(test_present_foreign_authority_receipt_chain);
     RUN(test_present_receipt_chain_rejects_wrong_recipient);
     RUN(test_present_receipt_chain_rejects_existing_mismatch);
@@ -963,6 +1139,8 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery);
     RUN(test_handoff_snapshot_roundtrip_preserves_bound_hashes);
     RUN(test_handoff_flow_accept_hydrates_destination_ship);
+    RUN(test_handoff_dispatch_request_emits_ticket);
+    RUN(test_handoff_dispatch_present_emits_result);
     RUN(test_handoff_flow_rejects_replay_and_tamper);
     RUN(test_handoff_flow_rejects_unknown_source_authority);
 }

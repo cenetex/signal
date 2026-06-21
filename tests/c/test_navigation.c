@@ -804,13 +804,12 @@ TEST(test_autopilot_path_matches_preview) {
         w->asteroids[server_target].active) {
         /* Compute what the client preview would target:
          * nearest mineable asteroid matching server logic. */
-        asteroid_tier_t min_tier = max_mineable_tier(w->players[0].ship.mining_level);
         int client_target = -1;
         float best_d = 1e18f;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             const asteroid_t *a = &w->asteroids[i];
-            if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-            if ((int)a->tier < (int)min_tier) continue;
+            if (!mining_level_can_fracture_asteroid(w->players[0].ship.mining_level, a))
+                continue;
             if (!test_asteroid_clear_of_station_traffic(w, a)) continue;
             if (signal_strength_at(w, a->pos) <= 0.0f) continue;
             float d = v2_dist_sq(a->pos, w->players[0].ship.pos);

@@ -68,7 +68,7 @@ function addQueryParam(rawUrl: string, key: string, value: string): string {
 }
 
 function smokeUrl(options: { singleplayer?: boolean } = {}): string {
-  let url = process.env.SMOKE_URL || '/signal.html?singleplayer=1';
+  let url = process.env.SMOKE_URL || '/play.html?singleplayer=1';
   url = addQueryParam(url, 'smoke', '1');
   if (options.singleplayer) url = addQueryParam(url, 'singleplayer', '1');
   return url;
@@ -286,6 +286,16 @@ async function playerCameraSnapshot(page: Page): Promise<PlayerCameraSnapshot | 
     const narrowFocus = mod.ccall('get_camera_narrow_focus', 'number', [], []);
     if (![offsetX, offsetY, narrowFocus].every(Number.isFinite)) return null;
     return { offsetX, offsetY, narrowFocus };
+  });
+}
+
+async function heldControlMask(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return -1;
+    return mod.ccall('signal_debug_held_control_mask', 'number', [], []) | 0;
   });
 }
 
@@ -687,11 +697,50 @@ test.describe('Browser smoke tests', () => {
       .toContain('SIGNAL // GUIDE // LAUNCH FROM DOCK');
 
     await driveCoreControls(page, canvas);
+    if (!usesLiveSmokeUrl()) {
+      await expect
+        .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+          timeout: 5_000,
+          message: 'singleplayer loopback should produce authoritative input ACKs',
+        })
+        .toBeGreaterThan(0);
+    }
     await expect
       .poll(async () => (await readCanvasStats(canvas)).uniqueBuckets, { timeout: 5_000 })
       .toBeGreaterThan(8);
 
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('play page clears held flight controls when browser focus leaves', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires the local play.html build with debug input exports');
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+
+    await canvas.click();
+    await page.keyboard.down('w');
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 2_000,
+          message: 'W should register as a held flight control before blur',
+        })
+        .toBe(1);
+
+      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 2_000,
+          message: 'blur should release held controls so launch cannot inherit stale thrust',
+        })
+        .toBe(0);
+    } finally {
+      await page.keyboard.up('w');
+    }
+
+    expectNoFatalErrors(logs);
   });
 
   rootBundleSmokeTest('visual saturation follows signal strength and H resaturates weak signal', async ({ page }) => {

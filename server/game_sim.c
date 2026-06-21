@@ -41,10 +41,15 @@
 #include "sim_construction.h"
 #include "sim_mining.h"
 #include "signal_model.h"
+#include "cargo_receipt_issue.h"
+#include "handoff_flow.h"
+#include "mining.h"
+#include "pubkey_proof.h"
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
 #include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
 #include "station_authority.h"
+#include "net_protocol.h"
 
 /* Imported from main.c — aws-swarm avatar keypair */
 extern bool g_has_avatar_keypair;
@@ -2733,19 +2738,35 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
 /* Mining target                                                      */
 /* ================================================================== */
 
-/* Max asteroid tier mineable at each laser level:
- * Level 0: M, Level 1: L, Level 2: XL, Level 3: XXL, Level 4: all */
+/* Max asteroid tier mineable at each laser level. UI calls starter gear an
+ * L1 laser; internally that is mining_level 0.
+ *   L1/level 0: M
+ *   L2/level 1: L
+ *   L3/level 2: XL
+ *   L4+/level 3: XXL */
 asteroid_tier_t max_mineable_tier(int mining_level) {
-    /* Tier enum is inverted: TIER_XXL=0 (toughest) → TIER_S=4 (softest).
-     * Post-#285 belt is denser near spawn, so level-0 miners kept hitting
-     * L rocks that showed the beam but did no damage ("laser broken").
-     * Starter laser now mines L-and-softer so the common belt rock is
-     * always a valid target; upgrades unlock XL, XXL. */
+    /* Tier enum is inverted: TIER_XXL=0 (toughest) -> TIER_S=4 (softest). */
     switch (mining_level) {
-        case 0: return ASTEROID_TIER_L;
-        case 1: return ASTEROID_TIER_XL;
+        case 0: return ASTEROID_TIER_M;
+        case 1: return ASTEROID_TIER_L;
+        case 2: return ASTEROID_TIER_XL;
         default: return ASTEROID_TIER_XXL;
     }
+}
+
+int mining_required_level_for_commodity(commodity_t commodity) {
+    switch (commodity) {
+    case COMMODITY_CUPRITE_ORE: return 1; /* L2 laser */
+    case COMMODITY_CRYSTAL_ORE: return 2; /* L3 laser */
+    default: return 0;
+    }
+}
+
+bool mining_level_can_fracture_asteroid(int mining_level, const asteroid_t *a) {
+    if (!a || !a->active || asteroid_is_collectible(a)) return false;
+    if (mining_level < mining_required_level_for_commodity(a->commodity))
+        return false;
+    return (int)a->tier >= (int)max_mineable_tier(mining_level);
 }
 
 static bool hinted_target_in_mining_cone(vec2 muzzle, vec2 forward, const asteroid_t *a) {
@@ -9455,6 +9476,773 @@ void server_player_queue_movement_input(server_player_t *sp,
     sp->movement_queue_count = (uint8_t)(count + 1u);
 }
 
+uint32_t server_input_apply_tick_for_world(const world_t *w,
+                                           uint32_t client_tick) {
+    if (!w) return 1u;
+    const uint32_t max_future_ticks = NET_INPUT_APPLY_FUTURE_MAX_TICKS;
+    uint32_t next_tick = w->tick + 1u;
+    if (client_tick == 0 || !sim_tick_after(client_tick, w->tick))
+        return next_tick;
+    if (sim_tick_after(client_tick, w->tick + max_future_ticks))
+        return w->tick + max_future_ticks;
+    return client_tick;
+}
+
+void server_merge_one_shot_input(input_intent_t *dst,
+                                 const input_intent_t *src) {
+    if (!dst || !src) return;
+    if (src->dock) {
+        dst->dock = true;
+        dst->interact = true;
+    }
+    if (src->launch) {
+        dst->launch = true;
+        dst->interact = true;
+    }
+    if (src->interact) dst->interact = true;
+    if (src->service_sell) {
+        dst->service_sell = true;
+        dst->service_sell_only = src->service_sell_only;
+        dst->service_sell_grade = src->service_sell_grade;
+        dst->service_sell_one = src->service_sell_one;
+    }
+    if (src->service_repair) dst->service_repair = true;
+    if (src->upgrade_mining) dst->upgrade_mining = true;
+    if (src->upgrade_hold) dst->upgrade_hold = true;
+    if (src->upgrade_tractor) dst->upgrade_tractor = true;
+    if (src->place_outpost) {
+        dst->place_outpost = true;
+        dst->place_target_station = src->place_target_station;
+        dst->place_target_ring = src->place_target_ring;
+        dst->place_target_slot = src->place_target_slot;
+    }
+    if (src->buy_scaffold_kit) {
+        dst->buy_scaffold_kit = true;
+        dst->scaffold_kit_module = src->scaffold_kit_module;
+    }
+    if (src->commission_ship) {
+        dst->commission_ship = true;
+        dst->commission_hull_class = src->commission_hull_class;
+    }
+    if (src->buy_product) {
+        dst->buy_product = true;
+        dst->buy_commodity = src->buy_commodity;
+        dst->buy_grade = src->buy_grade;
+        dst->buy_station_pod = src->buy_station_pod;
+        dst->buy_station_pod_index = src->buy_station_pod_index;
+    }
+    if (src->hail) dst->hail = true;
+    if (src->release_tow) dst->release_tow = true;
+    if (src->reset) dst->reset = true;
+    if (src->toggle_autopilot) dst->toggle_autopilot = true;
+}
+
+static void server_input_intent_wire_defaults(input_intent_t *intent) {
+    if (!intent) return;
+    memset(intent, 0, sizeof(*intent));
+    intent->mining_target_hint = -1;
+    intent->buy_grade = MINING_GRADE_COUNT;
+    intent->service_sell_only = COMMODITY_COUNT;
+    intent->service_sell_grade = MINING_GRADE_COUNT;
+}
+
+bool server_dispatch_input_message(world_t *w, int player_idx,
+                                   const uint8_t *data, int len,
+                                   server_input_dispatch_result_t *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->station_identity_dirty = -1;
+    }
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS ||
+        !data || len < 4) {
+        return false;
+    }
+
+    server_player_t *sp = &w->players[player_idx];
+    const uint8_t *input_data = data;
+    uint8_t input_copy[NET_INPUT_MSG_SIZE];
+    int input_len = len;
+    uint8_t original_action = (len >= 3) ? data[2] : NET_ACTION_NONE;
+    uint8_t effective_action = original_action;
+    uint16_t input_seq = (len >= 10)
+        ? (uint16_t)data[8] | ((uint16_t)data[9] << 8)
+        : 0;
+    uint16_t action_id = 0;
+    uint8_t ack_status = 0;
+    uint32_t client_tick = input_client_tick(data, len);
+    bool rejected_unsigned_action = false;
+
+    if (effective_action != NET_ACTION_NONE && sp->pubkey_set) {
+        rejected_unsigned_action = true;
+        ack_status = NET_ACTION_ACK_REJECTED;
+        size_t copy_len = (size_t)len;
+        if (copy_len > sizeof(input_copy)) copy_len = sizeof(input_copy);
+        memcpy(input_copy, data, copy_len);
+        input_copy[2] = NET_ACTION_NONE;
+        input_data = input_copy;
+        input_len = (int)copy_len;
+        effective_action = NET_ACTION_NONE;
+        if (len >= 14) action_id = input_action_id(data, len);
+    } else if (len >= 14 && effective_action != NET_ACTION_NONE) {
+        action_id = input_action_id(data, len);
+        if (action_id != 0 && sp->last_input_action_id_valid &&
+            sp->last_input_action_id == action_id) {
+            ack_status = NET_ACTION_ACK_DUPLICATE;
+            size_t copy_len = (size_t)len;
+            if (copy_len > sizeof(input_copy)) copy_len = sizeof(input_copy);
+            memcpy(input_copy, data, copy_len);
+            input_copy[2] = NET_ACTION_NONE;
+            input_data = input_copy;
+            input_len = (int)copy_len;
+            effective_action = NET_ACTION_NONE;
+        } else if (action_id != 0) {
+            sp->last_input_action_id = action_id;
+            sp->last_input_action_id_valid = true;
+            ack_status = NET_ACTION_ACK_RECEIVED;
+        }
+    }
+
+    input_intent_t parsed;
+    server_input_intent_wire_defaults(&parsed);
+    parse_input(input_data, input_len, &parsed);
+    uint32_t apply_tick = server_input_apply_tick_for_world(w, client_tick);
+    server_player_queue_movement_input(sp, &parsed, input_seq, apply_tick);
+
+    int station_dirty = -1;
+    if ((effective_action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
+         effective_action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
+        effective_action == NET_ACTION_BUY_SCAFFOLD) {
+        int s = sp->current_station;
+        if (s >= 0 && s < MAX_STATIONS) station_dirty = s;
+    }
+
+    if (out) {
+        out->intent = parsed;
+        out->action = original_action;
+        out->ack_status = ack_status;
+        out->action_id = action_id;
+        out->input_seq = input_seq;
+        out->client_tick = client_tick;
+        out->apply_tick = apply_tick;
+        out->rejected_unsigned_action = rejected_unsigned_action;
+        out->force_authoritative_resync =
+            ack_status == NET_ACTION_ACK_REJECTED &&
+            original_action != NET_ACTION_NONE &&
+            (action_id != 0 || sp->pubkey_set);
+        out->station_identity_dirty = station_dirty;
+    }
+    return true;
+}
+
+uint16_t server_signed_action_payload_id(const uint8_t *payload,
+                                         uint16_t payload_len,
+                                         uint16_t fixed_len) {
+    if (!payload || payload_len < (uint16_t)(fixed_len + 2u)) return 0;
+    return read_u16_le(&payload[fixed_len]);
+}
+
+bool server_parse_signed_input_action_payload(const uint8_t *payload,
+                                              uint16_t payload_len,
+                                              input_intent_t *out_intent,
+                                              uint16_t *out_action_id,
+                                              uint8_t *out_action) {
+    if (out_action_id) *out_action_id = 0;
+    if (out_action) *out_action = NET_ACTION_NONE;
+    if (out_intent) server_input_intent_wire_defaults(out_intent);
+    if (!payload || payload_len < 5) return false;
+
+    uint8_t action = payload[0];
+    uint16_t action_id = (payload_len >= 7) ? read_u16_le(&payload[5]) : 0;
+    uint8_t buf[8] = {
+        NET_MSG_INPUT,
+        0,
+        action,
+        0xFF,
+        payload[1],
+        payload[2],
+        payload[3],
+        payload[4],
+    };
+    input_intent_t parsed;
+    server_input_intent_wire_defaults(&parsed);
+    parse_input(buf, (int)sizeof(buf), &parsed);
+
+    if (out_intent) *out_intent = parsed;
+    if (out_action_id) *out_action_id = action_id;
+    if (out_action) *out_action = action;
+    return true;
+}
+
+bool server_apply_signed_plan_payload(server_player_t *sp,
+                                      const uint8_t *payload,
+                                      uint16_t payload_len) {
+    if (!sp || !payload) return false;
+    if (payload_len != NET_PLAN_MSG_SIZE - 1) return false;
+    uint8_t buf[NET_PLAN_MSG_SIZE];
+    buf[0] = NET_MSG_PLAN;
+    memcpy(&buf[1], payload, NET_PLAN_MSG_SIZE - 1);
+    parse_plan(buf, NET_PLAN_MSG_SIZE, &sp->input);
+    return true;
+}
+
+static void server_dispatch_receipt_chain(
+    server_receipt_chain_sink_fn sink,
+    void *user,
+    const cargo_receipt_chain_t *chain) {
+    if (sink && chain && chain->len > 0 &&
+        chain->len <= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        sink(user, chain);
+    }
+}
+
+static void server_dispatch_buy_named_ingot(
+    world_t *w,
+    server_player_t *sp,
+    int pid,
+    const uint8_t pubkey[32],
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user) {
+    if (!w || !sp || !pubkey || !sp->docked) return;
+    int sidx = sp->current_station;
+    if (sidx < 0 || sidx >= MAX_STATIONS) return;
+    station_t *st = &w->stations[sidx];
+    ship_t *ship = &sp->ship;
+    int slot = manifest_find(&st->manifest, pubkey);
+    if (slot < 0) return;
+    cargo_unit_t *src = &st->manifest.units[slot];
+    if ((cargo_kind_t)src->kind != CARGO_KIND_INGOT) return;
+    if ((ingot_prefix_t)src->prefix_class == INGOT_PREFIX_ANONYMOUS)
+        return;
+
+    int price = (int)lroundf(station_sell_price_unit(st, src));
+    if (price <= 0) return;
+    if (!station_manifest_bootstrap(st) || !ship_manifest_bootstrap(ship))
+        return;
+
+    ship_receipts_t *station_receipts = station_get_receipts(st);
+    cargo_receipt_chain_t station_chain = {0};
+    if (station_receipts && slot < (int)station_receipts->count)
+        station_chain = station_receipts->chains[slot];
+    if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return;
+
+    bool spent = server_player_can_use_pubkey_persistence(sp)
+        ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
+        : ledger_spend(st, sp->session_token, (float)price, ship);
+    if (!spent) return;
+
+    cargo_unit_t copy = {0};
+    if (!station_manifest_remove_with_chain(st, (uint16_t)slot, &copy,
+                                            &station_chain)) {
+        return;
+    }
+
+    cargo_receipt_t receipt = {0};
+    uint8_t prev_hash[32] = {0};
+    cargo_receipt_chain_t outgoing_chain = station_chain;
+    if (station_chain.len > 0)
+        cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
+                           prev_hash);
+    uint64_t xfer_id = cargo_receipt_emit_transfer(
+        w, st,
+        st->station_pubkey,
+        sp->pubkey,
+        copy.pub,
+        (uint8_t)CARGO_KIND_INGOT,
+        station_chain.len > 0 ? prev_hash : st->chain_last_hash,
+        &receipt);
+    if (xfer_id != 0 && outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
+        outgoing_chain.links[outgoing_chain.len++] = receipt;
+
+    if (!ship_manifest_push_with_chain(ship, &copy, &outgoing_chain)) {
+        (void)station_manifest_push_with_chain(st, &copy, &station_chain);
+        return;
+    }
+
+    if (xfer_id != 0) {
+        server_dispatch_receipt_chain(receipt_sink, receipt_user,
+                                      &outgoing_chain);
+        chain_payload_trade_t trade = {0};
+        trade.transfer_event_id = xfer_id;
+        trade.ledger_delta_signed = -(int64_t)price;
+        memcpy(trade.ledger_pubkey, sp->pubkey, 32);
+        (void)chain_log_emit(w, st, CHAIN_EVT_TRADE,
+                             &trade, (uint16_t)sizeof(trade));
+    }
+
+    char cs[12];
+    mining_render_callsign(copy.pub, cs);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "%s purchased %s for %d",
+             sp->callsign, cs, price);
+    signal_channel_post(w, sidx, msg, "");
+    (void)pid;
+}
+
+static void server_dispatch_deliver_named_ingot(
+    world_t *w,
+    server_player_t *sp,
+    int pid,
+    uint8_t target,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user) {
+    if (!w || !sp || !sp->docked) return;
+    int sidx = sp->current_station;
+    if (sidx < 0 || sidx >= MAX_STATIONS) return;
+    station_t *st = &w->stations[sidx];
+    ship_t *ship = &sp->ship;
+    int hidx = -1;
+    int seen = 0;
+    for (uint16_t u = 0; u < ship->manifest.count; u++) {
+        const cargo_unit_t *cu = &ship->manifest.units[u];
+        if ((cargo_kind_t)cu->kind != CARGO_KIND_INGOT) continue;
+        if ((ingot_prefix_t)cu->prefix_class == INGOT_PREFIX_ANONYMOUS)
+            continue;
+        if (seen == target) { hidx = (int)u; break; }
+        seen++;
+    }
+    if (hidx < 0) return;
+
+    cargo_unit_t copy = ship->manifest.units[hidx];
+    cargo_receipt_chain_t attached_chain = {0};
+    ship_receipts_t *rcpts = ship_get_receipts(ship);
+    if (rcpts && hidx < (int)rcpts->count) {
+        const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
+        attached_chain = *attached;
+        if (attached->len > 0) {
+            cargo_receipt_result_t vr = cargo_receipt_chain_verify(
+                attached->links, attached->len, copy.pub);
+            if (vr != CARGO_RECEIPT_OK) {
+                printf("[server] receipt_chain_invalid: deliver from player %d, reason=%d\n",
+                       pid, (int)vr);
+                return;
+            }
+            if (attached->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n",
+                       pid);
+                return;
+            }
+        }
+    }
+
+    if (st->manifest.count >= st->manifest.cap) {
+        cargo_unit_t evicted = {0};
+        if (station_manifest_remove_with_chain(st, 0, &evicted, NULL) &&
+            (ingot_prefix_t)evicted.prefix_class != INGOT_PREFIX_ANONYMOUS) {
+            char ev_cs[12];
+            mining_render_callsign(evicted.pub, ev_cs);
+            char ev_msg[96];
+            snprintf(ev_msg, sizeof(ev_msg), "stockpile full - voided %s",
+                     ev_cs);
+            signal_channel_post(w, sidx, ev_msg, "");
+        }
+    }
+
+    uint8_t prev_hash[32] = {0};
+    bool have_prev = false;
+    if (attached_chain.len > 0) {
+        cargo_receipt_hash(&attached_chain.links[attached_chain.len - 1],
+                           prev_hash);
+        have_prev = true;
+    }
+
+    cargo_receipt_chain_t removed_chain = {0};
+    if (!ship_manifest_remove_with_chain(ship, (uint16_t)hidx,
+                                         &copy, &removed_chain)) {
+        return;
+    }
+
+    cargo_receipt_t receipt = {0};
+    cargo_receipt_chain_t station_chain = removed_chain;
+    uint64_t xfer_id = cargo_receipt_emit_transfer(
+        w, st,
+        sp->pubkey,
+        st->station_pubkey,
+        copy.pub,
+        (uint8_t)CARGO_KIND_INGOT,
+        have_prev ? prev_hash : st->chain_last_hash,
+        &receipt);
+    if (xfer_id != 0 && station_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
+        station_chain.links[station_chain.len++] = receipt;
+
+    if (!station_manifest_push_with_chain(st, &copy, &station_chain)) {
+        (void)ship_manifest_push_with_chain(ship, &copy, &removed_chain);
+        return;
+    }
+
+    float delivery_f = station_buy_price_unit(st, &copy);
+    float floor_f = (float)INGOT_DELIVERY_CREDIT;
+    if (delivery_f < floor_f) delivery_f = floor_f;
+    int delivery_int = (int)lroundf(delivery_f);
+    if (server_player_can_use_pubkey_persistence(sp)) {
+        ledger_credit_supply_by_pubkey(st, sp->pubkey, (float)delivery_int);
+    } else {
+        ledger_credit_supply(st, sp->session_token, (float)delivery_int);
+    }
+
+    if (xfer_id != 0) {
+        server_dispatch_receipt_chain(receipt_sink, receipt_user,
+                                      &station_chain);
+        chain_payload_trade_t trade = {0};
+        trade.transfer_event_id = xfer_id;
+        trade.ledger_delta_signed = (int64_t)delivery_int;
+        memcpy(trade.ledger_pubkey, sp->pubkey, 32);
+        (void)chain_log_emit(w, st, CHAIN_EVT_TRADE,
+                             &trade, (uint16_t)sizeof(trade));
+    }
+
+    char cs[12];
+    mining_render_callsign(copy.pub, cs);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "%s delivered %s", sp->callsign, cs);
+    signal_channel_post(w, sidx, msg, "");
+}
+
+bool server_dispatch_legacy_plan_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_unsigned_dispatch_result_t *out) {
+    if (out) out->rejected_unsigned_action = false;
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (sp->pubkey_set) {
+        if (out) out->rejected_unsigned_action = true;
+        return true;
+    }
+    parse_plan(data, len, &sp->input);
+    return true;
+}
+
+bool server_dispatch_legacy_buy_ingot_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_legacy_cargo_dispatch_result_t *out) {
+    if (out) out->rejected_unsigned_action = false;
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (sp->pubkey_set) {
+        if (out) out->rejected_unsigned_action = true;
+        return true;
+    }
+    if (len >= 33) {
+        server_dispatch_buy_named_ingot(w, sp, player_idx, &data[1],
+                                        receipt_sink, receipt_user);
+    }
+    return true;
+}
+
+bool server_dispatch_legacy_deliver_ingot_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_legacy_cargo_dispatch_result_t *out) {
+    if (out) out->rejected_unsigned_action = false;
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (sp->pubkey_set) {
+        if (out) out->rejected_unsigned_action = true;
+        return true;
+    }
+    if (len >= 2) {
+        server_dispatch_deliver_named_ingot(w, sp, player_idx, data[1],
+                                            receipt_sink, receipt_user);
+    }
+    return true;
+}
+
+bool server_dispatch_receipt_presentation_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_presentation_dispatch_result_t *out) {
+    if (out) {
+        out->evaluated = false;
+        out->result = CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS;
+    }
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    if (len < 35) return true;
+
+    const uint8_t *cargo_pub = &data[1];
+    uint16_t chain_len = read_u16_le(&data[33]);
+    size_t expected = 35u + (size_t)chain_len * CARGO_RECEIPT_SIZE;
+    if (chain_len == 0 || chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+        return true;
+    if ((size_t)len < expected) return true;
+
+    cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN];
+    for (uint16_t i = 0; i < chain_len; i++) {
+        const uint8_t *p = &data[35u + (size_t)i * CARGO_RECEIPT_SIZE];
+        (void)cargo_receipt_unpack(p, &chain[i]);
+    }
+
+    cargo_receipt_present_result_t result = cargo_receipt_present_to_ship(
+        &w->players[player_idx], cargo_pub, chain, (uint8_t)chain_len);
+    if (out) {
+        out->evaluated = true;
+        out->result = result;
+    }
+    return true;
+}
+
+bool server_dispatch_fracture_claim_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_unsigned_dispatch_result_t *out) {
+    if (out) out->rejected_unsigned_action = false;
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (sp->pubkey_set) {
+        if (out) out->rejected_unsigned_action = true;
+        return true;
+    }
+    if (len >= FRACTURE_CLAIM_SIZE) {
+        uint32_t fracture_id = read_u32_le(&data[1]);
+        uint32_t burst_nonce = read_u32_le(&data[5]);
+        (void)submit_fracture_claim(w, player_idx, fracture_id,
+                                    burst_nonce, data[9]);
+    }
+    return true;
+}
+
+bool server_dispatch_signed_action_payload(
+    world_t *w,
+    int player_idx,
+    uint8_t action_type,
+    const uint8_t *payload,
+    uint16_t payload_len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_signed_action_dispatch_result_t *out) {
+    if (out) out->station_identity_dirty = -1;
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+
+    switch ((signed_action_type_t)action_type) {
+    case SIGNED_ACTION_BUY_PRODUCT:
+        if (payload_len >= 2) {
+            uint8_t commodity = payload[0];
+            uint8_t grade = payload[1];
+            uint16_t action_id = server_signed_action_payload_id(
+                payload, payload_len, 2);
+            uint8_t action = (commodity < COMMODITY_COUNT)
+                ? (uint8_t)(NET_ACTION_BUY_PRODUCT + commodity)
+                : NET_ACTION_BUY_PRODUCT;
+            server_begin_pending_action_result(w, sp, action_id, 0, action);
+            if (commodity < COMMODITY_COUNT) {
+                sp->input.buy_product = true;
+                sp->input.buy_commodity = (commodity_t)commodity;
+                sp->input.buy_grade = (grade <= MINING_GRADE_COUNT)
+                    ? (mining_grade_t)grade
+                    : MINING_GRADE_COUNT;
+            }
+        }
+        return true;
+    case SIGNED_ACTION_BUY_INGOT:
+        if (payload_len >= 32) {
+            uint16_t action_id = server_signed_action_payload_id(
+                payload, payload_len, 32);
+            server_begin_pending_action_result(
+                w, sp, action_id, 0, NET_ACTION_BUY_INGOT);
+            server_dispatch_buy_named_ingot(
+                w, sp, player_idx, payload, receipt_sink, receipt_user);
+        }
+        return true;
+    case SIGNED_ACTION_SELL_CARGO:
+        if (payload_len >= 2) {
+            uint8_t commodity = payload[0];
+            uint8_t grade = payload[1];
+            uint16_t action_id = server_signed_action_payload_id(
+                payload, payload_len, 2);
+            uint8_t action = (commodity < COMMODITY_COUNT)
+                ? (uint8_t)(NET_ACTION_DELIVER_COMMODITY + commodity)
+                : NET_ACTION_SELL_CARGO;
+            server_begin_pending_action_result(w, sp, action_id, 0, action);
+            sp->input.service_sell = true;
+            sp->input.service_sell_only = (commodity < COMMODITY_COUNT)
+                ? (commodity_t)commodity
+                : COMMODITY_COUNT;
+            if (grade < MINING_GRADE_COUNT) {
+                sp->input.service_sell_grade = (mining_grade_t)grade;
+                sp->input.service_sell_one = true;
+            } else {
+                sp->input.service_sell_grade = MINING_GRADE_COUNT;
+                sp->input.service_sell_one = false;
+            }
+        }
+        return true;
+    case SIGNED_ACTION_DELIVER:
+        if (payload_len >= 1) {
+            uint16_t action_id = server_signed_action_payload_id(
+                payload, payload_len, 1);
+            server_begin_pending_action_result(
+                w, sp, action_id, 0, NET_ACTION_SELL_CARGO);
+            server_dispatch_deliver_named_ingot(
+                w, sp, player_idx, payload[0], receipt_sink, receipt_user);
+        }
+        return true;
+    case SIGNED_ACTION_PLACE_OUTPOST:
+        if (payload_len >= 3) {
+            uint16_t action_id = server_signed_action_payload_id(
+                payload, payload_len, 3);
+            server_begin_pending_action_result(
+                w, sp, action_id, 0, NET_ACTION_PLACE_OUTPOST);
+            sp->input.place_outpost = true;
+            sp->input.place_target_station = (int8_t)payload[0];
+            sp->input.place_target_ring = (int8_t)payload[1];
+            sp->input.place_target_slot = (int8_t)payload[2];
+        }
+        return true;
+    case SIGNED_ACTION_FRACTURE_CLAIM:
+        if (payload_len >= 9) {
+            uint32_t fracture_id = (uint32_t)payload[0]
+                                 | ((uint32_t)payload[1] << 8)
+                                 | ((uint32_t)payload[2] << 16)
+                                 | ((uint32_t)payload[3] << 24);
+            uint32_t burst_nonce = (uint32_t)payload[4]
+                                 | ((uint32_t)payload[5] << 8)
+                                 | ((uint32_t)payload[6] << 16)
+                                 | ((uint32_t)payload[7] << 24);
+            (void)submit_fracture_claim(w, player_idx, fracture_id,
+                                        burst_nonce, payload[8]);
+        }
+        return true;
+    case SIGNED_ACTION_INPUT_ACTION:
+    {
+        input_intent_t intent;
+        uint16_t action_id = 0;
+        uint8_t action = NET_ACTION_NONE;
+        if (!server_parse_signed_input_action_payload(payload, payload_len,
+                                                      &intent, &action_id,
+                                                      &action)) {
+            return true;
+        }
+        if (action_id != 0)
+            server_begin_pending_action_result(w, sp, action_id, 0, action);
+        server_merge_one_shot_input(&sp->input, &intent);
+        if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
+             action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
+            action == NET_ACTION_BUY_SCAFFOLD) {
+            int s = sp->current_station;
+            if (out && s >= 0 && s < MAX_STATIONS)
+                out->station_identity_dirty = s;
+        }
+        return true;
+    }
+    case SIGNED_ACTION_PLAN:
+        (void)server_apply_signed_plan_payload(sp, payload, payload_len);
+        return true;
+    case SIGNED_ACTION_CLAIM_CONTRACT:
+    case SIGNED_ACTION_CANCEL_CONTRACT:
+        return true;
+    case SIGNED_ACTION_COUNT:
+    default:
+        return false;
+    }
+}
+
+bool server_dispatch_handoff_request(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_handoff_ticket_sink_fn ticket_sink,
+    void *ticket_user) {
+    if (!w || !data || len < NET_HANDOFF_REQUEST_SIZE ||
+        player_idx < 0 || player_idx >= MAX_PLAYERS) {
+        return false;
+    }
+
+    uint8_t source_wire = data[1];
+    uint8_t dest_wire = data[2];
+    int source_station = (source_wire == 0xFFu)
+        ? w->players[player_idx].current_station
+        : (int)source_wire;
+    int dest_station = (int)dest_wire;
+    uint32_t ttl_ticks = read_u32_le(&data[3]);
+    handoff_ticket_t ticket;
+    memset(&ticket, 0, sizeof(ticket));
+    bool ok = handoff_issue_ticket_to_station(
+        w, player_idx, source_station, dest_station, ttl_ticks, &ticket);
+
+    if (ticket_sink) {
+        ticket_sink(ticket_user,
+                    ok ? NET_HANDOFF_STATUS_OK : NET_HANDOFF_STATUS_REJECTED,
+                    (uint8_t)(source_station >= 0 && source_station < 256
+                              ? source_station : 0xFF),
+                    dest_wire,
+                    ok ? &ticket : NULL);
+    }
+    return true;
+}
+
+bool server_dispatch_handoff_present(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_handoff_result_sink_fn result_sink,
+    void *result_user) {
+    if (!w || !data ||
+        (size_t)len < 1u + HANDOFF_TICKET_SIZE + 4u ||
+        player_idx < 0 || player_idx >= MAX_PLAYERS) {
+        return false;
+    }
+
+    handoff_ticket_t ticket;
+    uint8_t ticket_hash[32];
+    ship_t presented;
+    size_t consumed = 0;
+    int dest_station = -1;
+    handoff_flow_result_t hr = HANDOFF_FLOW_REJECT_BAD_ARGS;
+    uint32_t snapshot_len = read_u32_le(&data[1 + HANDOFF_TICKET_SIZE]);
+    size_t snapshot_off = 1u + HANDOFF_TICKET_SIZE + 4u;
+    memset(&ticket, 0, sizeof(ticket));
+    memset(ticket_hash, 0, sizeof(ticket_hash));
+    memset(&presented, 0, sizeof(presented));
+
+    if (handoff_ticket_unpack(&data[1], &ticket))
+        handoff_ticket_hash(&ticket, ticket_hash);
+
+    if (snapshot_len <= HANDOFF_SHIP_SNAPSHOT_MAX_SIZE &&
+        (size_t)len >= snapshot_off + (size_t)snapshot_len &&
+        handoff_ship_snapshot_unpack(&data[snapshot_off],
+                                     (size_t)snapshot_len,
+                                     &presented, &consumed) &&
+        consumed == (size_t)snapshot_len) {
+        hr = handoff_accept_presented_ship(w, player_idx, &ticket,
+                                           &presented, &dest_station);
+    }
+
+    if (result_sink) {
+        result_sink(result_user,
+                    hr == HANDOFF_FLOW_OK ? NET_HANDOFF_STATUS_OK
+                                          : NET_HANDOFF_STATUS_REJECTED,
+                    (uint8_t)hr,
+                    (uint8_t)(dest_station >= 0 && dest_station < 256
+                              ? dest_station : 0xFF),
+                    ticket_hash);
+    }
+    ship_cleanup(&presented);
+    return true;
+}
+
 static void server_player_apply_queued_movement(server_player_t *sp,
                                                 uint32_t tick) {
     if (!sp) return;
@@ -10312,6 +11100,130 @@ bool server_player_can_use_pubkey_persistence(const server_player_t *sp) {
            sp->pubkey_set &&
            sp->pubkey_proof_ok &&
            !pubkey_is_zero(sp->pubkey);
+}
+
+bool server_finalize_pubkey_identity(world_t *w, int player_idx) {
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS) return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (!server_player_can_use_pubkey_persistence(sp)) return false;
+    (void)registry_register_pubkey(w, sp->pubkey, sp->session_token);
+    sp->pubkey_identity_finalized = true;
+    return true;
+}
+
+bool server_parse_session_message(const uint8_t *data, int len,
+                                  server_session_message_t *out) {
+    if (!data || !out || len < 9) return false;
+    if (data[0] != NET_MSG_SESSION) return false;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->token, &data[1], 8);
+    if (len >= 16) {
+        memcpy(out->callsign, &data[9], 7);
+        out->callsign[7] = '\0';
+        out->has_callsign = true;
+    }
+    return true;
+}
+
+bool server_apply_session_message(world_t *w, int player_idx,
+                                  const server_session_message_t *msg) {
+    if (!w || !msg || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_idx];
+    if (sp->session_ready) return false;
+    memcpy(sp->session_token, msg->token, 8);
+    sp->session_ready = true;
+    if (msg->has_callsign) {
+        memcpy(sp->callsign, msg->callsign, sizeof(sp->callsign));
+        sp->callsign[sizeof(sp->callsign) - 1] = '\0';
+    }
+    sp->last_input_action_id = 0;
+    sp->last_input_action_id_valid = false;
+    sp->pending_action_result_valid = false;
+    return true;
+}
+
+bool server_dispatch_register_pubkey_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_pubkey_register_result_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    if (len < REGISTER_PUBKEY_MSG_SIZE || data[0] != NET_MSG_REGISTER_PUBKEY)
+        return false;
+
+    const uint8_t *pk = &data[1];
+    server_player_t *sp = &w->players[player_idx];
+    bool same_pubkey = sp->pubkey_set && memcmp(sp->pubkey, pk, 32) == 0;
+    if (out) {
+        out->accepted = true;
+        out->same_pubkey = same_pubkey;
+        memcpy(out->pubkey, pk, 32);
+    }
+    if (same_pubkey) return true;
+
+    memcpy(sp->pubkey, pk, 32);
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = false;
+    sp->pubkey_identity_finalized = false;
+    return true;
+}
+
+bool server_dispatch_pubkey_proof_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_pubkey_proof_result_t *out) {
+    if (out) {
+        out->status = SERVER_PUBKEY_PROOF_MALFORMED;
+        out->verified = false;
+    }
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return false;
+    if (len < PROVE_PUBKEY_MSG_SIZE || data[0] != NET_MSG_PROVE_PUBKEY)
+        return false;
+
+    server_player_t *sp = &w->players[player_idx];
+    const uint8_t *pk = &data[PROVE_PUBKEY_PUBKEY_OFFSET];
+    const uint8_t *token = &data[PROVE_PUBKEY_TOKEN_OFFSET];
+    const uint8_t *sig = &data[PROVE_PUBKEY_SIG_OFFSET];
+    server_pubkey_proof_status_t status = SERVER_PUBKEY_PROOF_OK;
+
+    if (!sp->pubkey_set || !sp->session_ready) {
+        status = SERVER_PUBKEY_PROOF_NO_REGISTRATION;
+    } else if (memcmp(pk, sp->pubkey, 32) != 0) {
+        status = SERVER_PUBKEY_PROOF_PUBKEY_MISMATCH;
+    } else if (memcmp(token, sp->session_token, 8) != 0) {
+        status = SERVER_PUBKEY_PROOF_SESSION_MISMATCH;
+    } else if (!pubkey_proof_verify(pk, token, sig)) {
+        status = SERVER_PUBKEY_PROOF_BAD_SIGNATURE;
+    }
+
+    if (status == SERVER_PUBKEY_PROOF_OK) {
+        sp->pubkey_proof_ok = true;
+    }
+    if (out) {
+        out->status = status;
+        out->verified = status == SERVER_PUBKEY_PROOF_OK;
+    }
+    return true;
+}
+
+const char *server_pubkey_proof_status_name(
+    server_pubkey_proof_status_t status) {
+    switch (status) {
+    case SERVER_PUBKEY_PROOF_OK: return "ok";
+    case SERVER_PUBKEY_PROOF_MALFORMED: return "malformed";
+    case SERVER_PUBKEY_PROOF_NO_REGISTRATION: return "no-registration";
+    case SERVER_PUBKEY_PROOF_PUBKEY_MISMATCH: return "pubkey-mismatch";
+    case SERVER_PUBKEY_PROOF_SESSION_MISMATCH: return "session-mismatch";
+    case SERVER_PUBKEY_PROOF_BAD_SIGNATURE: return "bad-signature";
+    default: return "unknown";
+    }
 }
 
 /* ================================================================== */

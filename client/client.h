@@ -356,17 +356,16 @@ typedef struct {
         int row_count;
     } scoreboard;
     /* Per-station manifest summary — [commodity][grade] unit counts.
-     * Unified read path for the TRADE UI whether we're in singleplayer
-     * (populated every frame from g.world.stations[s].manifest) or
-     * multiplayer (populated from the server's manifest-summary broadcast
-     * — see Phase 2 wire TODO in server/main.c / client/net.c). Kept off
+     * Unified read path for the TRADE UI. Network-authoritative sessions
+     * populate it from server manifest-summary broadcasts; the offline
+     * fallback can rebuild it from g.world.stations[s].manifest. Kept off
      * station_t because station_t is the authoritative save/wire format
      * and this is derived. */
     uint16_t station_manifest_summary[MAX_STATIONS][COMMODITY_COUNT][MINING_GRADE_COUNT];
-    /* Multiplayer provenance mirror for the local hold. HOLD_INGOTS
-     * arrives just before PLAYER_MANIFEST; the latter rebuilds
-     * ship.manifest from summary counts and grafts these detailed
-     * named-ingot units back in where commodity+grade match. */
+    /* Network provenance mirror for the local hold. HOLD_INGOTS arrives
+     * just before PLAYER_MANIFEST; the latter rebuilds ship.manifest from
+     * summary counts and grafts these detailed named-ingot units back in
+     * where commodity+grade match. */
     NetNamedIngotEntry remote_hold_named_ingots[NET_NAMED_INGOT_MAX];
     int remote_hold_named_ingot_count;
 
@@ -394,9 +393,9 @@ typedef struct {
     int local_player_slot;
     /* Per-player gossip-contract visibility mask. Bit i set iff
      * world.contracts[i] is in this player's ship known_contracts pool.
-     * Multiplayer keeps world.contracts[] compacted from NET_MSG_CONTRACTS
-     * and receives the mask in that same compact ordinal space; singleplayer
-     * computes the equivalent from the local server mirror. */
+     * Network authority keeps world.contracts[] compacted from
+     * NET_MSG_CONTRACTS and receives the mask in that same compact ordinal
+     * space. */
     uint32_t player_known_contract_mask;
     NetDeliveryLedgerEntry delivery_ledger[DELIVERY_LEDGER_MAX_RECORDS];
     int delivery_ledger_count;
@@ -409,8 +408,8 @@ typedef struct {
      * HELLO frame, sign inputs, and migrate save files. */
     player_identity_t identity;
     char identity_pub_b58[48];   /* base58 of pubkey, null-terminated */
-    /* --- Multiplayer --- */
-    bool multiplayer_enabled;
+    /* --- Network authority (remote WebSocket or local loopback) --- */
+    bool net_authority_enabled;
     float net_send_timer;
     bool scanned_players[NET_MAX_PLAYERS];
     uint8_t pending_net_action;
@@ -422,8 +421,8 @@ typedef struct {
      * NET_ACTION_PLACE_OUTPOST: which (station, ring, slot) did the
      * client's reticle pick? -1 means "let the server auto-snap" (the
      * old auto-place path for SIGNAL_RELAY founding moments). Without
-     * these, MP would snap to default 0/0/0 and the slot-taken check
-     * would silently fail. */
+     * these, the network action would snap to default 0/0/0 and the
+     * slot-taken check would silently fail. */
     int8_t  pending_net_place_station;
     int8_t  pending_net_place_ring;
     int8_t  pending_net_place_slot;
@@ -502,7 +501,7 @@ typedef struct {
     uint8_t death_respawn_station;
     float   death_respawn_fee;
     /* Global leaderboard from server (top-N by credits earned at death).
-     * Populated on join + after every death in MP. SP leaves it empty.
+     * Populated on join + after every network-authoritative death event.
      * Highscores are projected from chain-log CHAIN_EVT_DEATH events at
      * server boot; world_id/build_id/killed_by come along for the ride. */
     struct {
@@ -609,7 +608,7 @@ typedef struct {
     char hail_station[64];       /* station name */
     char hail_message[256];      /* station MOTD */
     float hail_credits;          /* balance at hailed station */
-    float station_balance;       /* balance at current/nearby station (multiplayer) */
+    float station_balance;       /* balance at current/nearby station */
     int hail_station_index;      /* which station was hailed (-1 = none) */
     bool local_credit_hint_shown; /* one-shot: station credits are local */
     /* Hail ping visual: expanding ring from the ship on H-press. Driven
@@ -651,8 +650,8 @@ typedef struct {
     bool nav_pip_active;
     vec2 nav_pip_pos;
     bool nav_pip_is_blueprint;  /* false = station, true = placed blueprint */
-    /* --- Interpolation (multiplayer) --- */
-    vec2 local_player_render_offset; /* visual-only correction smoothing for local MP ship */
+    /* --- Network interpolation --- */
+    vec2 local_player_render_offset; /* visual-only correction smoothing for local ship */
     struct {
         float packet_interval;
         float correction_dist;

@@ -213,8 +213,7 @@ signal/
 │
 ├── web/                     # Static web assets
 │   ├── index.html           # Landing page
-│   ├── shell.html           # Browser build shell
-│   ├── play.html            # Multiplayer launcher
+│   ├── play.html            # Canonical browser game wrapper
 │   ├── signal-touch-controls.js # On-screen touch controls
 │   └── ...
 │

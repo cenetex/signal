@@ -109,6 +109,104 @@ TEST(test_signed_action_happy_path) {
     ASSERT(got_payload[1] == MINING_GRADE_COMMON);
 }
 
+TEST(test_signed_action_dispatch_buy_product_payload) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+    server_player_t *sp = &w->players[0];
+
+    uint8_t payload[4] = {
+        (uint8_t)COMMODITY_FERRITE_INGOT,
+        (uint8_t)MINING_GRADE_RARE,
+        0x34,
+        0x12,
+    };
+    server_signed_action_dispatch_result_t result;
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_BUY_PRODUCT, payload, sizeof(payload),
+        NULL, NULL, &result));
+
+    ASSERT(sp->input.buy_product);
+    ASSERT_EQ_INT(sp->input.buy_commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(sp->input.buy_grade, MINING_GRADE_RARE);
+    ASSERT(sp->pending_action_result_valid);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x1234);
+    ASSERT_EQ_INT(sp->pending_action_result_action,
+                  NET_ACTION_BUY_PRODUCT + COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(result.station_identity_dirty, -1);
+}
+
+TEST(test_signed_action_dispatch_input_action_marks_station_dirty) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+    server_player_t *sp = &w->players[0];
+    sp->docked = true;
+    sp->current_station = 2;
+
+    uint8_t payload[7] = {
+        (uint8_t)(NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_FURNACE),
+        MINING_GRADE_COUNT,
+        0xFF,
+        0xFF,
+        0xFF,
+        0x78,
+        0x56,
+    };
+    server_signed_action_dispatch_result_t result;
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_INPUT_ACTION, payload, sizeof(payload),
+        NULL, NULL, &result));
+
+    ASSERT(sp->input.buy_scaffold_kit);
+    ASSERT_EQ_INT(sp->input.scaffold_kit_module, MODULE_FURNACE);
+    ASSERT(sp->pending_action_result_valid);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x5678);
+    ASSERT_EQ_INT(sp->pending_action_result_action,
+                  NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_FURNACE);
+    ASSERT_EQ_INT(result.station_identity_dirty, 2);
+}
+
+TEST(test_legacy_unsigned_dispatch_rejects_pubkey_player) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+
+    uint8_t plan_msg[NET_PLAN_MSG_SIZE] = { NET_MSG_PLAN };
+    uint8_t buy_msg[33] = { NET_MSG_BUY_INGOT };
+    uint8_t deliver_msg[2] = { NET_MSG_DELIVER_INGOT, 0 };
+    uint8_t fracture_msg[FRACTURE_CLAIM_SIZE] = { NET_MSG_FRACTURE_CLAIM };
+    server_unsigned_dispatch_result_t result;
+
+    ASSERT(server_dispatch_legacy_plan_message(
+        w, 0, plan_msg, sizeof(plan_msg), &result));
+    ASSERT(result.rejected_unsigned_action);
+    result.rejected_unsigned_action = false;
+
+    ASSERT(server_dispatch_legacy_buy_ingot_message(
+        w, 0, buy_msg, sizeof(buy_msg), NULL, NULL, &result));
+    ASSERT(result.rejected_unsigned_action);
+    result.rejected_unsigned_action = false;
+
+    ASSERT(server_dispatch_legacy_deliver_ingot_message(
+        w, 0, deliver_msg, sizeof(deliver_msg), NULL, NULL, &result));
+    ASSERT(result.rejected_unsigned_action);
+    result.rejected_unsigned_action = false;
+
+    ASSERT(server_dispatch_fracture_claim_message(
+        w, 0, fracture_msg, sizeof(fracture_msg), &result));
+    ASSERT(result.rejected_unsigned_action);
+}
+
 TEST(test_signed_action_invalid_signature_rejected) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -303,6 +401,9 @@ void register_signed_action_tests(void);
 void register_signed_action_tests(void) {
     TEST_SECTION("\nSigned actions (#479 A.3):\n");
     RUN(test_signed_action_happy_path);
+    RUN(test_signed_action_dispatch_buy_product_payload);
+    RUN(test_signed_action_dispatch_input_action_marks_station_dirty);
+    RUN(test_legacy_unsigned_dispatch_rejects_pubkey_player);
     RUN(test_signed_action_invalid_signature_rejected);
     RUN(test_signed_action_replay_rejected);
     RUN(test_signed_action_out_of_order_nonce_rejected);

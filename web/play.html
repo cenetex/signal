@@ -95,8 +95,27 @@
       };
 
       window.SignalGameModule = Module;
+
+      function signalClearHeldControls() {
+        try {
+          var m = window.SignalGameModule || window.Module;
+          if (m && typeof m.ccall === 'function') {
+            m.ccall('signal_mobile_clear', null, [], []);
+          }
+        } catch (err) {
+          console.warn('[input] unable to clear held controls', err);
+        }
+      }
+
+      window.addEventListener('blur', signalClearHeldControls);
+      window.addEventListener('pagehide', signalClearHeldControls);
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) signalClearHeldControls();
+      });
+      canvas.addEventListener('blur', signalClearHeldControls);
     </script>
     <script src="./signal-hail-llm.js"></script>
+    <script src="./signal-touch-controls.js"></script>
     <script>
 
       /* ?singleplayer=1 forces the in-process server.

@@ -61,6 +61,10 @@ static struct {
     uint32_t latency_ping_seq;
 } net_state;
 
+static bool net_loopback_active = false;
+static net_loopback_send_fn net_loopback_send = NULL;
+static void *net_loopback_user = NULL;
+
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
 
 static void write_f32_le(uint8_t* buf, float v) {
@@ -156,6 +160,22 @@ static void send_pubkey_proof(void);
 static void send_session_token(void);
 static void handle_message(const uint8_t* data, int len);
 
+static void preserve_identity(uint8_t pubkey[32], uint8_t secret[64],
+                              bool *pub_ready, bool *secret_ready) {
+    if (pubkey) memcpy(pubkey, net_state.identity_pubkey, 32);
+    if (secret) memcpy(secret, net_state.identity_secret, 64);
+    if (pub_ready) *pub_ready = net_state.identity_pubkey_ready;
+    if (secret_ready) *secret_ready = net_state.identity_secret_ready;
+}
+
+static void restore_identity(const uint8_t pubkey[32], const uint8_t secret[64],
+                             bool pub_ready, bool secret_ready) {
+    if (pubkey) memcpy(net_state.identity_pubkey, pubkey, 32);
+    if (secret) memcpy(net_state.identity_secret, secret, 64);
+    net_state.identity_pubkey_ready = pub_ready;
+    net_state.identity_secret_ready = secret_ready;
+}
+
 static void transport_connected(const char *label) {
     net_state.connected = true;
     printf("[net] connected to %s\n", label ? label : "transport");
@@ -176,6 +196,44 @@ static void transport_message(const uint8_t *data, int len) {
 static void transport_disconnected(const char *label) {
     printf("[net] disconnected from %s\n", label ? label : "transport");
     net_state.connected = false;
+}
+
+void net_set_loopback_send(net_loopback_send_fn send_fn, void *user) {
+    net_loopback_send = send_fn;
+    net_loopback_user = user;
+}
+
+bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id) {
+    uint8_t saved_pubkey[32];
+    uint8_t saved_secret[64];
+    bool saved_pub_ready = false;
+    bool saved_secret_ready = false;
+    preserve_identity(saved_pubkey, saved_secret,
+                      &saved_pub_ready, &saved_secret_ready);
+
+    memset(&net_state, 0, sizeof(net_state));
+    restore_identity(saved_pubkey, saved_secret,
+                     saved_pub_ready, saved_secret_ready);
+    if (callbacks) net_state.callbacks = *callbacks;
+    net_state.local_id = local_id;
+    net_state.connected = true;
+    net_loopback_active = true;
+    net_state.server_hash[0] = '\0';
+    if (local_id < NET_MAX_PLAYERS) {
+        net_state.players[local_id].player_id = local_id;
+        net_state.players[local_id].active = true;
+    }
+
+    transport_connected("local server loopback");
+    return true;
+}
+
+bool net_is_loopback(void) {
+    return net_loopback_active;
+}
+
+void net_loopback_receive(const uint8_t *data, int len) {
+    handle_message(data, len);
 }
 
 void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
@@ -1362,7 +1420,7 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_DEATH:
-        if (len >= 43 && net_state.callbacks.on_death) {
+        if (len >= NET_DEATH_MSG_SIZE && net_state.callbacks.on_death) {
             uint8_t pid = data[1];
             float px = read_f32_le(&data[2]);
             float py = read_f32_le(&data[6]);
@@ -1791,6 +1849,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     memcpy(saved_secret, net_state.identity_secret, sizeof(saved_secret));
 
     memset(&net_state, 0, sizeof(net_state));
+    net_loopback_active = false;
     net_state.local_id = 0xFF;
     if (callbacks) net_state.callbacks = *callbacks;
 
@@ -1886,6 +1945,7 @@ bool net_reconnect(void) {
 }
 
 void net_shutdown(void) {
+    net_loopback_active = false;
     if (wasm_use_webrtc) {
         signal_webrtc_close_js();
         net_state.connected = false;
@@ -1901,6 +1961,10 @@ void net_shutdown(void) {
 }
 
 static void ws_send_binary(const uint8_t* data, int len) {
+    if (net_loopback_active) {
+        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return;
+    }
     if (wasm_use_webrtc) {
         if (!net_state.connected) return;
         (void)signal_webrtc_send_js(data, len);
@@ -1927,6 +1991,10 @@ static struct mg_connection *ws_conn = NULL;
 static bool mgr_initialized = false;
 
 static void ws_send_binary(const uint8_t* data, int len) {
+    if (net_loopback_active) {
+        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return;
+    }
     if (!net_state.connected || !ws_conn) return;
     mg_ws_send(ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY);
 }
@@ -1962,6 +2030,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     memcpy(saved_secret, net_state.identity_secret, sizeof(saved_secret));
 
     memset(&net_state, 0, sizeof(net_state));
+    net_loopback_active = false;
     net_state.local_id = 0xFF;
     if (callbacks) net_state.callbacks = *callbacks;
 
@@ -1999,6 +2068,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 }
 
 void net_shutdown(void) {
+    net_loopback_active = false;
     if (ws_conn) {
         mg_ws_send(ws_conn, "", 0, WEBSOCKET_OP_CLOSE);
         ws_conn = NULL;

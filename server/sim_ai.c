@@ -1790,8 +1790,7 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
 static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
     if (npc->target_asteroid < 0 || npc->target_asteroid >= MAX_ASTEROIDS) return false;
     const asteroid_t *a = &w->asteroids[npc->target_asteroid];
-    if (!a->active || a->tier == ASTEROID_TIER_S) return false;
-    return a->tier >= max_mineable_tier(npc->ship.mining_level);
+    return mining_level_can_fracture_asteroid(npc->ship.mining_level, a);
 }
 
 /* Asteroid-already-taken check, reading from the controller layer
@@ -1909,8 +1908,6 @@ static bool npc_home_has_no_ore_need(const world_t *w, const npc_ship_t *npc) {
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     int self_npc_slot = (int)(npc - w->npc_ships);
     int self_char = character_for_npc_slot(w, self_npc_slot);
-    asteroid_tier_t max_tier = max_mineable_tier(npc->ship.mining_level);
-
     /* Priority: DESTROY contract targets first — but only if reasonably
      * nearby. Without the distance cap, a Helios miner would pick up a
      * FRACTURE distress posted near Prospect and drift halfway across
@@ -1921,7 +1918,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
-        if (w->asteroids[idx].tier < max_tier) continue;
+        if (!mining_level_can_fracture_asteroid(npc->ship.mining_level, &w->asteroids[idx])) continue;
         if (v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
@@ -1940,8 +1937,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     float best_d = 1e18f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
-        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-        if (a->tier < max_tier) continue;
+        if (!mining_level_can_fracture_asteroid(npc->ship.mining_level, a)) continue;
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         if (miner_target_taken(w, i, self_char)) continue;
         if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
@@ -3430,8 +3426,7 @@ static bool npc_make_scout_job_offer(const world_t *w,
         const asteroid_t *a = &w->asteroids[idx];
         if (!a->active) continue;
         if (!contract_asteroid_target_matches(ct, a)) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if (a->tier < max_mineable_tier(npc->ship.mining_level)) continue;
+        if (!mining_level_can_fracture_asteroid(npc->ship.mining_level, a)) continue;
         float dist = fmaxf(1.0f, v2_len(v2_sub(a->pos, npc->ship.pos)));
         float urgency = 1.0f + clampf(ct->age / 30.0f, 0.0f, 1.0f);
         float score = (contract_price(ct) * 2.0f * urgency) +
@@ -6442,7 +6437,7 @@ void step_npc_ships(world_t *w, float dt) {
                     if (w->contracts[k].action != CONTRACT_FRACTURE) continue;
                     int idx = w->contracts[k].target_index;
                     if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
-                    if (w->asteroids[idx].tier < max_mineable_tier(npc->ship.mining_level)) continue;
+                    if (!mining_level_can_fracture_asteroid(npc->ship.mining_level, &w->asteroids[idx])) continue;
                     if (idx == npc->target_asteroid) break;
                     float new_d2 = v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos);
                     if (new_d2 > MAX_DISTRESS_PREEMPT_SQ) continue;

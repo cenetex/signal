@@ -1,6 +1,6 @@
 /*
  * world_draw.c -- World-space rendering: camera/frustum, VFX, ships,
- * asteroids, stations, and multiplayer players.
+ * asteroids, stations, and networked players.
  * Split from main.c for Phase 3 refactoring.
  */
 #include "client.h"
@@ -2886,7 +2886,7 @@ void draw_hopper_tractors(void) {
     }
 
     bool drew_authoritative = draw_published_cargo_pod_module_tractors();
-    if (g.local_server.active || drew_authoritative) return;
+    if (drew_authoritative) return;
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
@@ -2959,11 +2959,11 @@ static void local_player_beam_render_line(vec2 *beam_start, vec2 *beam_end) {
     *beam_start = LOCAL_PLAYER.beam_start;
     *beam_end = LOCAL_PLAYER.beam_end;
 
-    if (!g.multiplayer_enabled || g.local_server.active) {
+    if (!g.net_authority_enabled) {
         return;
     }
 
-    /* The local multiplayer ship can be drawn with a visual-only
+    /* The local network-authoritative ship can be drawn with a visual-only
      * reconciliation offset in render_frame(). Anchor the beam to that
      * same render pose while leaving authoritative hit endpoints alone. */
     *beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
@@ -3111,7 +3111,7 @@ void draw_collision_sparks(void) {
 void draw_autopilot_path(void) {
     if (!LOCAL_PLAYER.autopilot_mode) return;
 
-    /* In MP mode, the server syncs its actual A* path waypoints via
+    /* Under network authority, the server syncs its actual A* path waypoints via
      * PLAYER_SHIP message. g.autopilot_path is already populated by
      * apply_remote_player_ship in net_sync.c. No client computation. */
 
@@ -3270,15 +3270,10 @@ void draw_compass_ring(void) {
         float best_d = 1e18f;
         vec2 best_pos = ship;
         bool found = false;
-        /* Inline max_mineable_tier: level 0→M, 1→L, 2→XL */
-        asteroid_tier_t max_tier = (LOCAL_PLAYER.ship.mining_level >= 2) ? ASTEROID_TIER_XL
-                                 : (LOCAL_PLAYER.ship.mining_level >= 1) ? ASTEROID_TIER_L
-                                 : ASTEROID_TIER_M;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             const asteroid_t *a = &g.world.asteroids[i];
-            if (!a->active) continue;
-            if (a->tier == ASTEROID_TIER_S) continue;
-            if ((int)a->tier < (int)max_tier) continue; /* too tough */
+            if (!mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship.mining_level, a))
+                continue;
             float d = v2_dist_sq(a->pos, ship);
             if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
         }
@@ -3300,7 +3295,7 @@ void draw_compass_ring(void) {
     }
 
     /* Nearest 3 remote players (colored pips) */
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         const NetPlayerState *rp = net_get_interpolated_players();
         int nearest[3] = {-1, -1, -1};
         float nearest_d[3] = {1e18f, 1e18f, 1e18f};
@@ -3336,7 +3331,7 @@ void draw_compass_ring(void) {
 
 /* --- Multiplayer: draw remote players as colored triangles --- */
 void draw_remote_players(void) {
-    if (!g.multiplayer_enabled) return;
+    if (!g.net_authority_enabled) return;
     const NetPlayerState* players = net_get_interpolated_players();
     net_update_remote_player_scans(players);
     static const float colors[][3] = {
@@ -3373,7 +3368,7 @@ void draw_remote_players(void) {
         bool mining = (players[i].flags & 2) != 0;
         bool tractor_on = (players[i].flags & 16) != 0;
         /* Compute tractor range from level (mirrors ship_tractor_range).
-         * Remote snapshots don't carry hull class yet; multiplayer player
+         * Remote snapshots don't carry hull class yet; networked player
          * ships are currently the default miner hull. */
         float base_range = 150.0f;
         float tr = base_range + (float)players[i].tractor_level * SHIP_TRACTOR_UPGRADE_STEP;
@@ -3505,7 +3500,7 @@ void draw_callsigns(void) {
     sdtx_origin(0, 0);
 
     /* Remote player callsigns */
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         const NetPlayerState *players = net_get_interpolated_players();
         net_update_remote_player_scans(players);
         int local_id = (int)net_local_id();

@@ -237,8 +237,7 @@ static int autopilot_find_refinery(const world_t *w, const server_player_t *sp) 
 
 
 static bool autopilot_can_mine_asteroid(const server_player_t *sp, const asteroid_t *a) {
-    if (!a->active || asteroid_is_collectible(a)) return false;
-    return (int)a->tier >= (int)max_mineable_tier(sp->ship.mining_level);
+    return sp && mining_level_can_fracture_asteroid(sp->ship.mining_level, a);
 }
 
 static bool autopilot_clear_mining_approach(const world_t *w, const server_player_t *sp,

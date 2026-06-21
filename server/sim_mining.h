@@ -21,8 +21,8 @@
 #include "game_sim.h"  /* world_t lives here, not in shared/types.h */
 
 typedef struct {
-    bool fired;          /* beam was in range, in cone, tier OK; damage applied this tick */
-    bool ineffective;    /* beam hit a rock but the laser tier is too low to chip it */
+    bool fired;          /* beam was in range, in cone, laser OK; damage applied this tick */
+    bool ineffective;    /* beam hit a rock but laser tier/material gate refused damage */
     bool fractured;      /* this tick drove hp to zero and called fracture_asteroid */
     bool hit;            /* beam_end terminates on a target (vs free space) */
     vec2 beam_end;       /* surface hit point, or muzzle + forward·MINING_RANGE when no hit */
@@ -45,7 +45,7 @@ bool sim_mining_target_hit(vec2 muzzle, vec2 forward,
                            const asteroid_t *asteroid,
                            vec2 *out_hit, vec2 *out_normal);
 
-/* Apply one tick of mining beam fire. Validates range/cone/tier, applies
+/* Apply one tick of mining beam fire. Validates range/cone/laser gates, applies
  * signal-scaled damage to `world->asteroids[target_idx]`, fractures it
  * when hp drops to zero. `fracturer_id` is the player slot id used for
  * fracture-claim attribution; pass -1 for NPC fire. Returns beam render

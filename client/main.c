@@ -149,6 +149,53 @@ static void on_remote_handoff_result(uint8_t status, uint8_t reason,
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
                                      float server_turnaround_ms);
 
+static void configure_net_callbacks(NetCallbacks *cbs) {
+    if (!cbs) return;
+    memset(cbs, 0, sizeof(*cbs));
+    cbs->on_join = on_player_join;
+    cbs->on_leave = on_player_leave;
+    cbs->on_players_begin = begin_player_state_batch;
+    cbs->on_state = apply_remote_player_state;
+    cbs->on_asteroids = apply_remote_asteroids;
+    cbs->on_npcs = apply_remote_npcs;
+    cbs->on_stations = apply_remote_stations;
+    cbs->on_station_identity = apply_remote_station_identity;
+    cbs->on_station_diag = apply_remote_station_diag;
+    cbs->on_scaffolds = apply_remote_scaffolds;
+    cbs->on_cargo_pods = apply_remote_cargo_pods;
+    cbs->on_hail_response = apply_remote_hail_response;
+    cbs->on_player_ship = apply_remote_player_ship;
+    cbs->on_contracts = apply_remote_contracts;
+    cbs->on_player_known_contracts = apply_remote_player_known_contracts;
+    cbs->on_delivery_ledger = apply_remote_delivery_ledger;
+    cbs->on_death = on_remote_death;
+    cbs->on_world_time = on_remote_world_time;
+    cbs->on_events = apply_remote_events;
+    cbs->on_signal_channel = apply_remote_signal_channel;
+    cbs->on_station_manifest = apply_remote_station_manifest;
+    cbs->on_player_manifest = apply_remote_player_manifest;
+    cbs->on_cargo_receipt_bundle = apply_remote_cargo_receipt_bundle;
+    cbs->on_station_ingots = apply_remote_station_ingots;
+    cbs->on_hold_ingots = apply_remote_hold_ingots;
+    cbs->on_inspect_snapshot = apply_remote_inspect_snapshot;
+    cbs->on_highscores = apply_remote_highscores;
+    cbs->on_action_ack = on_remote_action_ack;
+    cbs->on_action_result = on_remote_action_result;
+    cbs->on_latency_sample = on_remote_latency_sample;
+    cbs->on_handoff_ticket = on_remote_handoff_ticket;
+    cbs->on_handoff_result = on_remote_handoff_result;
+}
+
+static bool start_local_loopback_authority(const NetCallbacks *cbs) {
+    local_server_attach_loopback(&g.local_server);
+    if (!net_init_loopback(cbs, 0))
+        return false;
+    reset_remote_dynamic_sync();
+    local_server_send_initial_snapshot(&g.local_server, g.local_player_slot);
+    sync_local_player_slot_from_network();
+    return true;
+}
+
 static bool net_tick_after_u32(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
 }
@@ -207,17 +254,18 @@ static void reset_world(void) {
     world_cleanup(&g.world);
     memset(&g.world, 0, sizeof(g.world));
 
-    if (!g.multiplayer_enabled) {
-        /* Singleplayer: use local server as authoritative sim */
+    if (!g.net_authority_enabled) {
+        /* Singleplayer boots an in-process server, then connects through
+         * net.c loopback so the client still consumes serialized snapshots. */
         world_cleanup(&g.local_server.world);
         local_server_init(&g.local_server, 0);
-        local_server_sync_to_client(&g.local_server);
-    } else {
-        /* Multiplayer: server manages world, client just predicts */
-        world_reset(&g.world);
-        player_init_ship(&LOCAL_PLAYER, &g.world);
-        LOCAL_PLAYER.connected = true;
     }
+
+    /* Server-managed world: the client predicts until authoritative snapshots
+     * arrive over either remote WebSocket or local loopback. */
+    world_reset(&g.world);
+    player_init_ship(&LOCAL_PLAYER, &g.world);
+    LOCAL_PLAYER.connected = true;
 
     g.tracked_contract = -1;
     g.selected_contract = -1;
@@ -235,15 +283,15 @@ static void reset_world(void) {
     g.inspect_receipt_browser = false;
     g.inspect_was_active = false;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    g.asteroid_interp.interval = 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
-    g.npc_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    g.npc_interp.interval = 0.1f;
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
-    g.scaffold_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    g.scaffold_interp.interval = 0.1f;
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
-    g.cargo_pod_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    g.cargo_pod_interp.interval = 0.1f;
     memset(&g.player_interp, 0, sizeof(g.player_interp));
-    g.player_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    g.player_interp.interval = 0.1f;
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
     reset_station_ring_smoothing();
 
@@ -315,12 +363,10 @@ static void reset_world(void) {
 
 static void reset_step_feedback(void) {
     LOCAL_PLAYER.hover_asteroid = -1;
-    /* Beam prediction: in multiplayer, predict beam START position from
-     * local ship state (eliminates 10Hz lag on muzzle position). Server
-     * owns beam_active, beam_hit, beam_ineffective, and beam_end — those
-     * arrive via WORLD_PLAYERS and are not overwritten here.
-     * In singleplayer, local server provides everything each tick. */
-    if (g.multiplayer_enabled) {
+    /* Beam prediction under network authority: predict beam START position
+     * from local ship state (eliminates snapshot-rate lag on muzzle position).
+     * Server owns beam_active, beam_hit, beam_ineffective, and beam_end. */
+    if (g.net_authority_enabled) {
         /* Only predict the muzzle — server owns everything else */
         if (LOCAL_PLAYER.beam_active) {
             LOCAL_PLAYER.beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
@@ -336,11 +382,9 @@ static void reset_step_feedback(void) {
 /* sample_input_intent: see input.h/c */
 
 /* Rebuild g.station_manifest_summary from local station manifests.
- * Called once per frame in singleplayer (where the client has direct
- * read access to g.world.stations[s].manifest). In multiplayer the
- * server owns the manifest and pushes NET_MSG_STATION_MANIFEST; the
- * summary is populated via apply_remote_station_manifest in
- * net_sync.c. */
+ * Offline fallback: rebuild g.station_manifest_summary from local station
+ * manifests. Network-authoritative sessions receive
+ * NET_MSG_STATION_MANIFEST and populate the summary in net_sync.c. */
 static void refresh_station_manifest_summaries(void) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         /* Zero the row — a station with no manifest units should read zero. */
@@ -614,17 +658,15 @@ static bool token_matches_local(const uint8_t token[8]) {
 static void sim_on_npc_kill(const sim_event_t *ev) {
     /* Kill-feed line. Prefer the local player's perspective: if I'm
      * the killer, prepend "You killed"; otherwise show the killer's
-     * callsign if we know it (multiplayer player kills NPC). For now
-     * we don't have a token-to-callsign cache, so the bare role +
-     * cause cover the singleplayer case where the local player is
-     * always the killer. */
+     * callsign if we know it. For now we don't have a token-to-callsign
+     * cache, so the bare role + cause cover anonymous killer tokens. */
     const char *role = (ev->npc_kill.npc_role == NPC_ROLE_MINER) ? "Miner"
                      : (ev->npc_kill.npc_role == NPC_ROLE_HAULER) ? "Hauler"
                      : "Worker";
     const char *weapon = (ev->npc_kill.cause == DEATH_CAUSE_THROWN_ROCK) ? "thrown rock"
                        : (ev->npc_kill.cause == DEATH_CAUSE_RAM) ? "ramming"
                        : "collision";
-    bool you_killed = !g.multiplayer_enabled ||
+    bool you_killed = !g.net_authority_enabled ||
         (memcmp(ev->npc_kill.killer_token,
                 g.world.players[g.local_player_slot].session_token, 8) == 0);
     if (you_killed) {
@@ -766,12 +808,12 @@ static void sim_on_death(const sim_event_t *ev) {
 
     if (!ev_is_local(ev)) return;
     g.death_count_session++;
-    /* In MP the cinematic + payload come via NET_MSG_DEATH (only the
-     * victim receives that). The broadcast SIM_EVENT_DEATH stream
-     * exists only for kill-confirm + scoreboard attribution and
-     * carries zeroed cinematic fields, so don't try to render off it
-     * in MP. */
-    if (g.multiplayer_enabled) return;
+    /* Under network authority the cinematic + payload come via
+     * NET_MSG_DEATH (only the victim receives that). The broadcast
+     * SIM_EVENT_DEATH stream exists only for kill-confirm + scoreboard
+     * attribution and carries zeroed cinematic fields, so don't try to
+     * render off it here. */
+    if (g.net_authority_enabled) return;
     g.death_ore_mined = ev->death.ore_mined;
     g.death_credits_earned = ev->death.credits_earned;
     g.death_credits_spent = ev->death.credits_spent;
@@ -806,7 +848,7 @@ static const char *hail_choose_message(int station_idx) {
 
 static bool local_station_balance_for_player(int station_idx, float *out) {
     if (out) *out = 0.0f;
-    if (g.multiplayer_enabled) return false;
+    if (g.net_authority_enabled) return false;
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
     const station_t *st = &g.world.stations[station_idx];
     if (!station_exists(st)) return false;
@@ -822,7 +864,7 @@ static bool local_station_balance_for_player(int station_idx, float *out) {
 }
 
 static bool local_player_has_other_station_credit(int current_station) {
-    if (g.multiplayer_enabled) return false;
+    if (g.net_authority_enabled) return false;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (s == current_station) continue;
         float bal = 0.0f;
@@ -836,7 +878,7 @@ static int local_player_best_other_station_credit(int current_station,
                                                   float *out_balance)
 {
     if (out_balance) *out_balance = 0.0f;
-    if (g.multiplayer_enabled) return -1;
+    if (g.net_authority_enabled) return -1;
     int best_station = -1;
     float best_balance = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -1067,13 +1109,17 @@ static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
 
-    /* Advance world time locally in multiplayer (server doesn't send it).
+    /* Advance world time locally under network authority.
      * Ring rotations are authoritative server-side; client prediction
      * integrates omega each frame, while net_sync eases any phase correction
      * from the latest station-identity snapshot instead of snapping. */
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         g.world.time += dt;
         step_remote_station_rings(dt);
+    }
+
+    if (g.local_server.active && net_is_loopback()) {
+        local_server_step_loopback(&g.local_server, g.local_player_slot, dt);
     }
 
     /* Commission flash countdown */
@@ -1242,7 +1288,7 @@ static void sim_step(float dt) {
      * Only reload if we haven't already tried (check ?v= in URL).
      * deploy-client runs before deploy-server, so the new client
      * is on CDN by the time the new server sends its hash. */
-    if (g.multiplayer_enabled && net_is_connected()) {
+    if (g.net_authority_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
 #ifdef GIT_HASH
         const char *cli = GIT_HASH;
@@ -1274,15 +1320,15 @@ static void sim_step(float dt) {
     g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
     /* Thrust flame: local input for manual, server input for autopilot.
-     * In SP the local server mirrors input.thrust; in MP the PLAYER_STATE
-     * flags carry bit0=thrust which we decode into g.server_thrusting. */
+     * PLAYER_STATE flags carry bit0=thrust, decoded into
+     * g.server_thrusting. */
     if (LOCAL_PLAYER.autopilot_mode) {
         g.thrusting = g.server_thrusting && !LOCAL_PLAYER.docked;
     } else {
         g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
     }
 
-    /* Play audio + trigger UI from sim events (both local and multiplayer) */
+    /* Play audio + trigger UI from sim events from the authoritative stream. */
     process_sim_events(&g.world.events);
     g.world.events.count = 0;  /* consume — don't replay on next sim step */
 
@@ -1313,7 +1359,9 @@ static void sim_step(float dt) {
     }
     g.was_autopilot = LOCAL_PLAYER.autopilot_mode;
 
-    /* Death: handled by SIM_EVENT_DEATH (singleplayer) or NET_MSG_DEATH (multiplayer) */
+    /* Death cinematic payload arrives through NET_MSG_DEATH in both remote
+     * remote WebSocket and local loopback; SIM_EVENT_DEATH still drives shared
+     * scoreboard/kill attribution. */
 
     /* Update was_docked AFTER transition checks */
     g.was_docked = LOCAL_PLAYER.docked;
@@ -1451,12 +1499,12 @@ static void init(void) {
 
     onboarding_load();
     mining_client_init();
-    /* Bind to whatever session token the local server seeded — the
-     * multiplayer connect path will rebind to the real one once the
-     * WS handshake completes. */
+    /* Bind to whatever session token the bootstrap world seeded. Remote
+     * WebSocket connect rebinds to the authoritative token once the
+     * handshake completes. */
     mining_client_set_session_token(g.world.players[g.local_player_slot].session_token);
 
-    /* --- Multiplayer: auto-connect if server URL is available --- */
+    /* --- Network authority: remote server URL when present, local loopback otherwise. --- */
     {
         const char* server_url = NULL;
 #ifdef __EMSCRIPTEN__
@@ -1471,64 +1519,34 @@ static void init(void) {
 #else
         /* Native: check SIGNAL_SERVER environment variable or command line */
         server_url = getenv("SIGNAL_SERVER");
-        /* Load neural brain for singleplayer if no server */
+        /* Load neural brain for local loopback if no remote server is set. */
         extern bool neural_singleplayer_init(void);
         if (!server_url || server_url[0] == '\0') {
             neural_singleplayer_init();
         }
 #endif
         signal_brain_holographic_init();
-        if (server_url && server_url[0] != '\0') {
-            NetCallbacks cbs = {0};
-            cbs.on_join = on_player_join;
-            cbs.on_leave = on_player_leave;
-            cbs.on_players_begin = begin_player_state_batch;
-            cbs.on_state = apply_remote_player_state;
-            cbs.on_asteroids = apply_remote_asteroids;
-            cbs.on_npcs = apply_remote_npcs;
-            cbs.on_stations = apply_remote_stations;
-            cbs.on_station_identity = apply_remote_station_identity;
-            cbs.on_station_diag = apply_remote_station_diag;
-            cbs.on_scaffolds = apply_remote_scaffolds;
-            cbs.on_cargo_pods = apply_remote_cargo_pods;
-            cbs.on_hail_response = apply_remote_hail_response;
-            cbs.on_player_ship = apply_remote_player_ship;
-            cbs.on_contracts = apply_remote_contracts;
-            cbs.on_player_known_contracts = apply_remote_player_known_contracts;
-            cbs.on_delivery_ledger = apply_remote_delivery_ledger;
-            cbs.on_death = on_remote_death;
-            cbs.on_world_time = on_remote_world_time;
-            cbs.on_events = apply_remote_events;
-            cbs.on_signal_channel = apply_remote_signal_channel;
-            cbs.on_station_manifest = apply_remote_station_manifest;
-            cbs.on_player_manifest = apply_remote_player_manifest;
-            cbs.on_cargo_receipt_bundle = apply_remote_cargo_receipt_bundle;
-            cbs.on_station_ingots = apply_remote_station_ingots;
-            cbs.on_hold_ingots = apply_remote_hold_ingots;
-            cbs.on_inspect_snapshot = apply_remote_inspect_snapshot;
-            cbs.on_highscores = apply_remote_highscores;
-            cbs.on_action_ack = on_remote_action_ack;
-            cbs.on_action_result = on_remote_action_result;
-            cbs.on_latency_sample = on_remote_latency_sample;
-            cbs.on_handoff_ticket = on_remote_handoff_ticket;
-            cbs.on_handoff_result = on_remote_handoff_result;
-            /* Layer A.2 of #479 — hand the persistent pubkey to net.c
-             * BEFORE net_init so the first WebSocket on_open already
-             * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
+        {
+            NetCallbacks cbs;
+            configure_net_callbacks(&cbs);
             net_set_identity_pubkey(g.identity.pubkey);
-            /* Layer A.3 of #479 — install the secret so the client can
-             * sign state-changing actions on the NET_MSG_SIGNED_ACTION
-             * channel. The secret never leaves the process. */
             net_set_identity_secret(g.identity.secret);
-            g.multiplayer_enabled = net_init(server_url, &cbs);
-            if (g.multiplayer_enabled) {
-                /* Deactivate the local server — the remote server is authoritative.
-                 * The local server was started by reset_world() before we knew
-                 * multiplayer was available. Clear dynamic state seeded by that
-                 * bootstrap world so active-only remote snapshots cannot leave
-                 * local-only asteroid/NPC ghosts behind. */
-                g.local_server.active = false;
-                reset_remote_dynamic_sync();
+            if (server_url && server_url[0] != '\0') {
+                g.net_authority_enabled = net_init(server_url, &cbs);
+                if (g.net_authority_enabled) {
+                    /* Deactivate the local server — the remote server is authoritative.
+                     * The local server was started by reset_world() before we knew
+                     * a remote server was available. Clear dynamic state seeded by that
+                     * bootstrap world so active-only remote snapshots cannot leave
+                     * local-only asteroid/NPC ghosts behind. */
+                    g.local_server.active = false;
+                    reset_remote_dynamic_sync();
+                } else {
+                    set_notice("Remote unavailable; using local server.");
+                }
+            }
+            if (!g.net_authority_enabled) {
+                g.net_authority_enabled = start_local_loopback_authority(&cbs);
             }
         }
     }
@@ -1881,7 +1899,7 @@ static void render_world(void) {
             }
 
             station_flow_diag_t flow = station_module_flow_diag_view(
-                tst, g.target_module, g.multiplayer_enabled && net_is_connected());
+                tst, g.target_module, g.net_authority_enabled && net_is_connected());
             if (flow != STATION_FLOW_DIAG_NONE) {
                 if (flow == STATION_FLOW_DIAG_RUNNING)
                     sdtx_color3b(120, 230, 180);
@@ -1966,8 +1984,8 @@ static void render_ui(void) {
 /* interpolate_world_for_render: see net_sync.h/c */
 
 static void step_local_player_render_offset(float dt) {
-    if (!g.multiplayer_enabled || g.local_server.active ||
-        g.death_cinematic.active || LOCAL_PLAYER.docked) {
+    if (!g.net_authority_enabled || g.death_cinematic.active ||
+        LOCAL_PLAYER.docked) {
         g.local_player_render_offset = v2(0.0f, 0.0f);
         return;
     }
@@ -2917,8 +2935,8 @@ static void frame(void) {
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
     g.net_time += frame_dt;
 
-    /* --- Multiplayer: poll incoming and send input BEFORE sim --- */
-    if (g.multiplayer_enabled) {
+    /* --- Network authority: poll incoming and send input before sim. --- */
+    if (g.net_authority_enabled) {
         bool was_connected = net_is_connected();
         net_poll();
         if (net_is_connected()) {
@@ -2950,11 +2968,7 @@ static void frame(void) {
         net_queue_pending_action_if_any();
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Reload to reconnect.");
-            /* world_t owns station/player manifest buffers; never copy it
-             * by value. Use a fresh local sim as the crash-safe fallback. */
-            world_cleanup(&g.local_server.world);
-            local_server_init(&g.local_server, g.world.rng);
-            local_server_sync_to_client(&g.local_server);
+            g.local_server.active = false;
         }
         /* P key (offline): hard-reload the page. The HUD prompt is
          * "offline [P] reconnect" but a graceful net_reconnect()
@@ -2962,14 +2976,12 @@ static void frame(void) {
          * state, and the existing world snapshot all need a clean
          * boot to come back fully consistent. Just refresh. Native
          * builds keep the in-process reconnect path. */
-        if (!net_is_connected() && g.local_server.active &&
-            is_key_pressed(SAPP_KEYCODE_P)) {
+        if (!net_is_connected() && is_key_pressed(SAPP_KEYCODE_P)) {
 #ifdef __EMSCRIPTEN__
             emscripten_run_script("window.location.reload()");
 #else
             if (net_reconnect()) {
                 set_notice("Reconnecting...");
-                g.local_server.active = false;
                 reset_remote_dynamic_sync();
             }
 #endif
@@ -3050,10 +3062,9 @@ static void frame(void) {
 
     advance_simulation_frame(frame_dt);
 
-    /* Phase 2: keep the client-side manifest summary fresh. In SP this
-     * reads the local manifest; in MP it's a no-op relative to the net
-     * path which fills the summary directly (see TODO in client/net.c). */
-    if (!g.multiplayer_enabled) refresh_station_manifest_summaries();
+    /* Offline fallback: keep the client-side manifest summary fresh. The
+     * network path fills the summary directly from server packets. */
+    if (!g.net_authority_enabled) refresh_station_manifest_summaries();
 
 
     audio_generate_stream(&g.audio);
@@ -3070,7 +3081,7 @@ static void cleanup(void) {
     avatar_shutdown();
     episode_shutdown(&g.episode);
     music_shutdown(&g.music);
-    if (g.multiplayer_enabled) {
+    if (g.net_authority_enabled) {
         net_shutdown();
     }
     saudio_shutdown();
@@ -3434,6 +3445,26 @@ void signal_mobile_key(int action, int down) {
 EMSCRIPTEN_KEEPALIVE
 void signal_mobile_clear(void) {
     clear_input_state();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_debug_held_control_mask(void) {
+    int mask = 0;
+    if (is_key_down(SAPP_KEYCODE_W) || is_key_down(SAPP_KEYCODE_UP))
+        mask |= 1 << 0;
+    if (is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN))
+        mask |= 1 << 1;
+    if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT))
+        mask |= 1 << 2;
+    if (is_key_down(SAPP_KEYCODE_D) || is_key_down(SAPP_KEYCODE_RIGHT))
+        mask |= 1 << 3;
+    if (is_key_down(SAPP_KEYCODE_M))
+        mask |= 1 << 4;
+    if (is_key_down(SAPP_KEYCODE_SPACE))
+        mask |= 1 << 5;
+    if (is_key_down(SAPP_KEYCODE_LEFT_SHIFT) || is_key_down(SAPP_KEYCODE_RIGHT_SHIFT))
+        mask |= 1 << 6;
+    return mask;
 }
 #endif
 

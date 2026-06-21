@@ -311,6 +311,293 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(p[37], 2);
 }
 
+TEST(test_relevance_filtered_world_snapshots) {
+    vec2 player_pos = v2(0.0f, 0.0f);
+
+    npc_ship_t npcs[MAX_NPC_SHIPS];
+    memset(npcs, 0, sizeof(npcs));
+    npcs[1].active = true;
+    npcs[1].role = NPC_ROLE_HAULER;
+    npcs[1].ship.pos = v2(200.0f, 0.0f);
+    npcs[2].active = true;
+    npcs[2].role = NPC_ROLE_MINER;
+    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+
+    uint8_t npc_buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
+    int npc_len = serialize_npcs_for_player(npc_buf, npcs, player_pos);
+    ASSERT_EQ_INT(npc_buf[0], NET_MSG_WORLD_NPCS);
+    ASSERT_EQ_INT(npc_buf[1], 1);
+    ASSERT_EQ_INT(npc_len, 2 + NPC_RECORD_SIZE);
+    ASSERT_EQ_INT(npc_buf[2], 1);
+
+    scaffold_t scaffolds[MAX_SCAFFOLDS];
+    memset(scaffolds, 0, sizeof(scaffolds));
+    scaffolds[3].active = true;
+    scaffolds[3].state = SCAFFOLD_LOOSE;
+    scaffolds[3].module_type = MODULE_DOCK;
+    scaffolds[3].pos = v2(100.0f, 100.0f);
+    scaffolds[4].active = true;
+    scaffolds[4].state = SCAFFOLD_LOOSE;
+    scaffolds[4].module_type = MODULE_FURNACE;
+    scaffolds[4].pos = v2(-4000.0f, 0.0f);
+
+    uint8_t sc_buf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
+    int sc_len = serialize_scaffolds_for_player(sc_buf, scaffolds, player_pos);
+    ASSERT_EQ_INT(sc_buf[0], NET_MSG_WORLD_SCAFFOLDS);
+    ASSERT_EQ_INT(sc_buf[1], 1);
+    ASSERT_EQ_INT(sc_len, 2 + SCAFFOLD_RECORD_SIZE);
+    ASSERT_EQ_INT(sc_buf[2], 3);
+
+    sc_len = serialize_scaffolds_for_player(sc_buf, scaffolds, v2(9000.0f, 0.0f));
+    ASSERT_EQ_INT(sc_buf[0], NET_MSG_WORLD_SCAFFOLDS);
+    ASSERT_EQ_INT(sc_buf[1], 0);
+    ASSERT_EQ_INT(sc_len, 2);
+
+    cargo_pod_t pods[MAX_CARGO_PODS];
+    memset(pods, 0, sizeof(pods));
+    pods[5].active = true;
+    pods[5].kind = CARGO_POD_CARGO;
+    pods[5].commodity = COMMODITY_FERRITE_INGOT;
+    pods[5].pos = v2(10.0f, -10.0f);
+    pods[6].active = true;
+    pods[6].kind = CARGO_POD_CARGO;
+    pods[6].commodity = COMMODITY_CUPRITE_INGOT;
+    pods[6].pos = v2(0.0f, 5000.0f);
+
+    uint8_t pod_buf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+    int pod_len = serialize_cargo_pods_for_player(pod_buf, pods, player_pos);
+    ASSERT_EQ_INT(pod_buf[0], NET_MSG_WORLD_CARGO_PODS);
+    ASSERT_EQ_INT(pod_buf[1], 1);
+    ASSERT_EQ_INT(pod_len, 2 + CARGO_POD_RECORD_SIZE);
+    ASSERT_EQ_INT(pod_buf[2], 5);
+}
+
+typedef struct {
+    uint8_t type[8];
+    int len[8];
+    int slot[8];
+    int count;
+} packet_capture_t;
+
+static void packet_capture_sink(void *user, const uint8_t *data, int len) {
+    packet_capture_t *cap = (packet_capture_t *)user;
+    if (!cap || !data || len <= 0 || cap->count >= 8) return;
+    cap->type[cap->count] = data[0];
+    cap->len[cap->count] = len;
+    cap->slot[cap->count] = -1;
+    cap->count++;
+}
+
+static void player_packet_capture_sink(void *user, int player_slot,
+                                       const uint8_t *data, int len) {
+    packet_capture_t *cap = (packet_capture_t *)user;
+    if (!cap || !data || len <= 0 || cap->count >= 8) return;
+    cap->type[cap->count] = data[0];
+    cap->len[cap->count] = len;
+    cap->slot[cap->count] = player_slot;
+    cap->count++;
+}
+
+TEST(test_world_snapshot_emitter_sequence_shared) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    w.players[0].connected = true;
+    w.players[0].id = 0;
+    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.asteroids[2].active = true;
+    w.asteroids[2].pos = v2(100.0f, 0.0f);
+    w.asteroids[2].net_dirty = true;
+    w.tick = 77;
+    w.time = 12.5f;
+
+    static server_world_snapshot_scratch_t scratch;
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    server_emit_world_snapshot_for_player(&w, 0, true,
+                                          packet_capture_sink, &cap,
+                                          &scratch);
+
+    ASSERT_EQ_INT(cap.count, 6);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS);
+    ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_PLAYERS);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_NPCS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_SCAFFOLDS);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_CARGO_PODS);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.len[0], ASTEROID_MSG_HEADER + ASTEROID_RECORD_SIZE);
+    ASSERT_EQ_INT(cap.len[1], 2 + PLAYER_RECORD_SIZE);
+    ASSERT_EQ_INT(cap.len[2], 2);
+    ASSERT_EQ_INT(cap.len[3], 2);
+    ASSERT_EQ_INT(cap.len[4], 2);
+    ASSERT_EQ_INT(cap.len[5], 5);
+
+    ASSERT(w.asteroids[2].net_dirty);
+    server_clear_asteroid_net_dirty(&w);
+    ASSERT(!w.asteroids[2].net_dirty);
+}
+
+TEST(test_private_snapshot_emitter_sequence_shared) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    w.players[0].connected = true;
+    w.players[0].id = 0;
+    w.players[0].ship.hull = 88.0f;
+    ASSERT(ship_manifest_bootstrap(&w.players[0].ship));
+
+    static server_private_snapshot_scratch_t scratch;
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    server_emit_private_snapshot_for_player(&w, 0,
+                                            packet_capture_sink, &cap,
+                                            &scratch);
+
+    ASSERT_EQ_INT(cap.count, 6);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_PLAYER_SHIP);
+    ASSERT_EQ_INT(cap.type[1], NET_MSG_HOLD_INGOTS);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_PLAYER_MANIFEST);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_PLAYER_KNOWN_CONTRACTS);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_DELIVERY_LEDGER);
+    ASSERT(cap.len[0] > 16);
+    ASSERT(cap.len[1] >= HOLD_INGOTS_HEADER);
+    ASSERT(cap.len[2] >= PLAYER_MANIFEST_HEADER);
+    ASSERT(cap.len[3] > 0);
+    ASSERT_EQ_INT(cap.len[4], 5);
+    ASSERT(cap.len[5] >= DELIVERY_LEDGER_HEADER);
+}
+
+TEST(test_station_snapshot_emitter_sequence_shared) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    w.station_count = 1;
+    w.stations[0].id = 1;
+    snprintf(w.stations[0].name, sizeof(w.stations[0].name), "Test Station");
+    w.stations[0].dock_radius = 120.0f;
+    w.stations[0].signal_range = 1000.0f;
+    ASSERT(station_manifest_bootstrap(&w.stations[0]));
+
+    static server_station_snapshot_scratch_t scratch;
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    server_emit_station_snapshot(&w, true, packet_capture_sink, &cap,
+                                 &scratch);
+
+    ASSERT_EQ_INT(cap.count, 5);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_STATION_IDENTITY);
+    ASSERT_EQ_INT(cap.type[1], NET_MSG_STATION_DIAG);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_STATION_INGOTS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_STATION_MANIFEST);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_STATIONS);
+    ASSERT(cap.len[0] >= STATION_IDENTITY_SIZE);
+    ASSERT_EQ_INT(cap.len[1], STATION_DIAG_SIZE);
+    ASSERT(cap.len[2] >= STATION_INGOTS_HEADER);
+    ASSERT(cap.len[3] >= STATION_MANIFEST_HEADER);
+    ASSERT_EQ_INT(cap.len[4], 2 + STATION_RECORD_SIZE);
+}
+
+TEST(test_fracture_update_emitter_shared) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    w.stations[0].signal_range = 1000.0f;
+    w.stations[0].signal_connected = true;
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[1].connected = true;
+    w.players[1].session_ready = true;
+    w.players[1].ship.pos = v2(100000.0f, 0.0f);
+    w.asteroids[3].active = true;
+    w.asteroids[3].pos = v2(100.0f, 0.0f);
+    w.asteroids[3].hp = 50.0f;
+    w.fracture_claims[3].challenge_dirty = true;
+    w.fracture_claims[3].fracture_id = 1234u;
+    w.fracture_claims[3].deadline_ms = 5000u;
+    w.fracture_claims[3].burst_cap = 17u;
+    w.fracture_claims[3].resolved_dirty = true;
+    memset(w.asteroids[3].fragment_pub, 0x11,
+           sizeof(w.asteroids[3].fragment_pub));
+    memset(w.fracture_claims[3].best_player_pub, 0x22,
+           sizeof(w.fracture_claims[3].best_player_pub));
+    w.fracture_claims[3].best_grade = MINING_GRADE_RARE;
+
+    w.pending_resolves[0].active = true;
+    w.pending_resolves[0].fracture_id = 4321u;
+    memset(w.pending_resolves[0].fragment_pub, 0x33,
+           sizeof(w.pending_resolves[0].fragment_pub));
+    memset(w.pending_resolves[0].winner_pub, 0x44,
+           sizeof(w.pending_resolves[0].winner_pub));
+    w.pending_resolves[0].grade = MINING_GRADE_COMMON;
+
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
+
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.slot[0], 0);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_FRACTURE_CHALLENGE);
+    ASSERT_EQ_INT(cap.slot[1], 0);
+    ASSERT_EQ_INT(cap.type[1], NET_MSG_FRACTURE_RESOLVED);
+    ASSERT_EQ_INT(cap.slot[2], 0);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_FRACTURE_RESOLVED);
+    ASSERT_EQ_INT(cap.slot[3], 1);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_FRACTURE_RESOLVED);
+    ASSERT_EQ_INT(cap.len[0], FRACTURE_CHALLENGE_SIZE);
+    ASSERT_EQ_INT(cap.len[1], FRACTURE_RESOLVED_SIZE);
+    ASSERT_EQ_INT(cap.len[2], FRACTURE_RESOLVED_SIZE);
+    ASSERT_EQ_INT(cap.len[3], FRACTURE_RESOLVED_SIZE);
+    ASSERT(!w.fracture_claims[3].challenge_dirty);
+    ASSERT(!w.fracture_claims[3].resolved_dirty);
+    ASSERT_EQ_INT(w.pending_resolves[0].tx_count, 1);
+    ASSERT(w.pending_resolves[0].active);
+
+    memset(&cap, 0, sizeof(cap));
+    server_emit_fracture_updates(&w, 0, player_packet_capture_sink, &cap);
+    ASSERT_EQ_INT(cap.count, 0);
+}
+
+TEST(test_pending_action_result_status_shared) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    sp->nearby_station = 0;
+    sp->current_station = 0;
+    sp->ship.hull = 50.0f;
+
+    sim_events_t events;
+    memset(&events, 0, sizeof(events));
+    server_begin_pending_action_result(&w, sp, 11, 22, NET_ACTION_REPAIR);
+    events.count = 1;
+    events.events[0].player_id = 0;
+    events.events[0].type = SIM_EVENT_REPAIR;
+    ASSERT_EQ_INT(server_pending_action_result_status(&w, sp, &events),
+                  NET_ACTION_RESULT_OK);
+
+    memset(&events, 0, sizeof(events));
+    server_begin_pending_action_result(&w, sp, 12, 23, NET_ACTION_DOCK);
+    ASSERT_EQ_INT(server_pending_action_result_status(&w, sp, &events),
+                  NET_ACTION_RESULT_NOOP);
+
+    sp->docked = true;
+    sp->current_station = 0;
+    ASSERT_EQ_INT(server_pending_action_result_status(&w, sp, &events),
+                  NET_ACTION_RESULT_OK);
+
+    sp->docked = false;
+    memset(&events, 0, sizeof(events));
+    server_begin_pending_action_result(&w, sp, 13, 24, NET_ACTION_REPAIR);
+    events.count = 1;
+    events.events[0].player_id = 0;
+    events.events[0].type = SIM_EVENT_ORDER_REJECTED;
+    ASSERT_EQ_INT(server_pending_action_result_status(&w, sp, &events),
+                  NET_ACTION_RESULT_REJECTED);
+}
+
 TEST(test_npc_role_default_hull_mapping_covers_tow) {
     ASSERT_EQ_INT(npc_default_hull_class_for_role(NPC_ROLE_MINER),
                   HULL_CLASS_NPC_MINER);
@@ -1825,6 +2112,25 @@ TEST(test_action_result_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[7]), (int)0xAABBCCDDu);
 }
 
+TEST(test_cargo_receipt_bundle_roundtrip) {
+    cargo_receipt_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.len = 1;
+    chain.links[0].event_id = 0x1122334455667788ull;
+
+    uint8_t buf[3 + CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE];
+    int len = serialize_cargo_receipt_bundle(buf, &chain);
+
+    ASSERT_EQ_INT(len, 3 + CARGO_RECEIPT_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_CARGO_RECEIPT_BUNDLE);
+    ASSERT_EQ_INT((int)read_u16_le(&buf[1]), 1);
+
+    cargo_receipt_t unpacked;
+    memset(&unpacked, 0, sizeof(unpacked));
+    ASSERT(cargo_receipt_unpack(&buf[3], &unpacked));
+    ASSERT(unpacked.event_id == chain.links[0].event_id);
+}
+
 TEST(test_latency_pong_roundtrip) {
     uint8_t buf[NET_LATENCY_PONG_SIZE];
     int len = serialize_latency_pong(buf, 0x11223344u, 0x55667788u,
@@ -2009,6 +2315,12 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_npcs);
+    RUN(test_relevance_filtered_world_snapshots);
+    RUN(test_world_snapshot_emitter_sequence_shared);
+    RUN(test_private_snapshot_emitter_sequence_shared);
+    RUN(test_station_snapshot_emitter_sequence_shared);
+    RUN(test_fracture_update_emitter_shared);
+    RUN(test_pending_action_result_status_shared);
     RUN(test_npc_role_default_hull_mapping_covers_tow);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_npc_expands_matching_receipt_chain);
@@ -2043,6 +2355,7 @@ void register_protocol_main_tests(void) {
     RUN(test_latency_pong_can_arrive_before_authoritative_input_ack);
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
+    RUN(test_cargo_receipt_bundle_roundtrip);
     RUN(test_latency_pong_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);
     RUN(test_buy_event_serializes_cost_and_quantity);

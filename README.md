@@ -65,6 +65,24 @@ station chain before clients see it.
 - `Outposts`: begin as scaffolded relay hubs, then gain planned slots and
   shipyard-printed module scaffolds.
 
+## Mining And Economy Chain
+
+The starter mining laser is an L1 tool: it can fracture M-size ferrite rocks.
+Each mining-laser upgrade raises the largest supported rock size by one step:
+L2 reaches L rocks and unlocks cuprite, L3 reaches XL rocks and unlocks
+crystal, and L4 reaches XXL rocks.
+
+Station production currently flows through the physical fragment economy:
+
+1. Fracture asteroids into S fragments and tractor them into ore hoppers or
+   furnace beams.
+2. Furnaces smelt ferrite, cuprite, and crystal fragments into matching ingots.
+3. Frame Presses turn 1 ferrite ingot into 2 frames.
+4. Laser Fabs turn 1 cuprite ingot + 1 frame into 1 laser module.
+5. Tractor Fabs turn 1 crystal ingot + 1 frame into 1 tractor module.
+6. Shipyards consume frames, laser modules, and tractor modules to commission
+   ships, print scaffolds, and fabricate repair kits.
+
 ## Current Station Ops
 
 Press `H` to send a hail/scan ping. If you are docked, the docked station
@@ -154,12 +172,12 @@ cmake --build build-web
 python3 -m http.server 8080 --directory build-web
 ```
 
-That produces `build-web/signal.html`, `build-web/play.html`, plus the `.js`
-and `.wasm` files.
+That produces `build-web/play.html` plus the `signal.js` and `signal.wasm`
+runtime files.
 
-Open `http://127.0.0.1:8080/signal.html` for singleplayer, or
+Open `http://127.0.0.1:8080/play.html?singleplayer=1` for singleplayer, or
 `http://127.0.0.1:8080/play.html?server=ws://127.0.0.1:9091/ws` when paired
-with a local server.
+with a local relay.
 
 Local multiplayer dev:
 

@@ -19,6 +19,7 @@
 #include "economy.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL for outpost placement gate */
 #include "cargo_receipt.h"
+#include "handoff_ticket.h"
 #include "tractor.h"
 
 /* ------------------------------------------------------------------ */
@@ -624,6 +625,136 @@ void server_player_queue_movement_input(server_player_t *sp,
                                         const input_intent_t *intent,
                                         uint16_t input_seq,
                                         uint32_t apply_tick);
+
+typedef struct {
+    input_intent_t intent;
+    uint8_t action;
+    uint8_t ack_status;
+    uint16_t action_id;
+    uint16_t input_seq;
+    uint32_t client_tick;
+    uint32_t apply_tick;
+    bool rejected_unsigned_action;
+    bool force_authoritative_resync;
+    int station_identity_dirty;
+} server_input_dispatch_result_t;
+
+uint32_t server_input_apply_tick_for_world(const world_t *w,
+                                           uint32_t client_tick);
+void server_merge_one_shot_input(input_intent_t *dst,
+                                 const input_intent_t *src);
+bool server_dispatch_input_message(world_t *w, int player_idx,
+                                   const uint8_t *data, int len,
+                                   server_input_dispatch_result_t *out);
+uint16_t server_signed_action_payload_id(const uint8_t *payload,
+                                         uint16_t payload_len,
+                                         uint16_t fixed_len);
+bool server_parse_signed_input_action_payload(const uint8_t *payload,
+                                              uint16_t payload_len,
+                                              input_intent_t *out_intent,
+                                              uint16_t *out_action_id,
+                                              uint8_t *out_action);
+bool server_apply_signed_plan_payload(server_player_t *sp,
+                                      const uint8_t *payload,
+                                      uint16_t payload_len);
+
+typedef void (*server_receipt_chain_sink_fn)(
+    void *user,
+    const cargo_receipt_chain_t *chain);
+
+typedef struct {
+    int station_identity_dirty;
+} server_signed_action_dispatch_result_t;
+
+typedef struct {
+    bool rejected_unsigned_action;
+} server_unsigned_dispatch_result_t;
+
+typedef server_unsigned_dispatch_result_t server_legacy_cargo_dispatch_result_t;
+
+bool server_dispatch_legacy_plan_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_unsigned_dispatch_result_t *out);
+
+bool server_dispatch_legacy_buy_ingot_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_legacy_cargo_dispatch_result_t *out);
+
+bool server_dispatch_legacy_deliver_ingot_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_legacy_cargo_dispatch_result_t *out);
+
+typedef struct {
+    bool evaluated;
+    int result;
+} server_receipt_presentation_dispatch_result_t;
+
+bool server_dispatch_receipt_presentation_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_receipt_presentation_dispatch_result_t *out);
+
+bool server_dispatch_fracture_claim_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_unsigned_dispatch_result_t *out);
+
+bool server_dispatch_signed_action_payload(
+    world_t *w,
+    int player_idx,
+    uint8_t action_type,
+    const uint8_t *payload,
+    uint16_t payload_len,
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    server_signed_action_dispatch_result_t *out);
+
+typedef void (*server_handoff_ticket_sink_fn)(
+    void *user,
+    uint8_t status,
+    uint8_t source_station,
+    uint8_t dest_station,
+    const handoff_ticket_t *ticket);
+
+typedef void (*server_handoff_result_sink_fn)(
+    void *user,
+    uint8_t status,
+    uint8_t reason,
+    uint8_t dest_station,
+    const uint8_t ticket_hash[32]);
+
+bool server_dispatch_handoff_request(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_handoff_ticket_sink_fn ticket_sink,
+    void *ticket_user);
+
+bool server_dispatch_handoff_present(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_handoff_result_sink_fn result_sink,
+    void *result_user);
 void player_init_ship(server_player_t *sp, world_t *w);
 
 /* Layer A.2 of #479 — pubkey registry. */
@@ -642,6 +773,52 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
 bool server_player_can_use_pubkey_persistence(const server_player_t *sp);
+bool server_finalize_pubkey_identity(world_t *w, int player_idx);
+
+typedef struct {
+    uint8_t token[8];
+    char callsign[8];
+    bool has_callsign;
+} server_session_message_t;
+
+typedef struct {
+    bool accepted;
+    bool same_pubkey;
+    uint8_t pubkey[32];
+} server_pubkey_register_result_t;
+
+typedef enum {
+    SERVER_PUBKEY_PROOF_OK = 0,
+    SERVER_PUBKEY_PROOF_MALFORMED,
+    SERVER_PUBKEY_PROOF_NO_REGISTRATION,
+    SERVER_PUBKEY_PROOF_PUBKEY_MISMATCH,
+    SERVER_PUBKEY_PROOF_SESSION_MISMATCH,
+    SERVER_PUBKEY_PROOF_BAD_SIGNATURE
+} server_pubkey_proof_status_t;
+
+typedef struct {
+    server_pubkey_proof_status_t status;
+    bool verified;
+} server_pubkey_proof_result_t;
+
+bool server_parse_session_message(const uint8_t *data, int len,
+                                  server_session_message_t *out);
+bool server_apply_session_message(world_t *w, int player_idx,
+                                  const server_session_message_t *msg);
+bool server_dispatch_register_pubkey_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_pubkey_register_result_t *out);
+bool server_dispatch_pubkey_proof_message(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_pubkey_proof_result_t *out);
+const char *server_pubkey_proof_status_name(
+    server_pubkey_proof_status_t status);
 
 /* Layer A.3 of #479 — signed-action verification.
  *
@@ -827,6 +1004,8 @@ bool player_save_audit_legacy_claim(const char *dir,
 /* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c. */
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
+int mining_required_level_for_commodity(commodity_t commodity);
+bool mining_level_can_fracture_asteroid(int mining_level, const asteroid_t *asteroid);
 /* Station traffic waypoints:
  *   entry    = outside mouth of the outermost ring's open roadway
  *   approach = inner dock lane nearest the caller

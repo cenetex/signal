@@ -360,6 +360,8 @@ typedef void (*net_on_handoff_result_fn)(uint8_t status, uint8_t reason,
                                          uint8_t dest_station,
                                          const uint8_t ticket_hash[32]);
 
+typedef bool (*net_loopback_send_fn)(const uint8_t *data, int len, void *user);
+
 typedef struct {
     uint8_t msg_type;
     uint8_t stream_class;
@@ -423,6 +425,15 @@ typedef struct {
  * url: WebSocket URL, e.g. "ws://localhost:8080/ws"
  * Returns true if connection was initiated. */
 bool net_init(const char* url, const NetCallbacks* callbacks);
+
+/* Initialize the normal net decoder/callback stack without opening a socket.
+ * Client-to-server packets are delivered to the callback registered with
+ * net_set_loopback_send(); server-to-client packets should be fed back through
+ * net_loopback_receive(). */
+bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id);
+void net_set_loopback_send(net_loopback_send_fn send_fn, void *user);
+bool net_is_loopback(void);
+void net_loopback_receive(const uint8_t *data, int len);
 
 /* Reconnect to the same server using stored URL + session token. */
 bool net_reconnect(void);
