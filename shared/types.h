@@ -1092,13 +1092,11 @@ typedef struct {
      * delivery to that one commodity, so the player can keep e.g. their
      * crystal cargo while still delivering ferrite. */
     commodity_t service_sell_only;
-    /* Per-row sell mirror of the buy path. When `service_sell_one` is
-     * true the server sells exactly one (commodity, grade) unit per
-     * input message — matching the [1]/[2]/… buy hotkeys. Bulk paths
-     * (sell-all hotkey [S], contract delivery from the yard tab) leave
-     * `service_sell_one` false and continue draining everything that
-     * fits. `service_sell_grade` selects which manifest unit is
-     * dequeued; MINING_GRADE_COUNT means "any grade, FIFO". */
+    /* Per-row delivery mirror of the buy path. Towed pod rows leave
+     * `service_sell_one` false and hand off a whole physical crate.
+     * `service_sell_one` is reserved for selective bound-cargo /
+     * black-market delivery paths, where `service_sell_grade` narrows
+     * the matching unit; MINING_GRADE_COUNT means "any grade". */
     mining_grade_t service_sell_grade;
     bool service_sell_one;
     bool service_repair;
@@ -1567,6 +1565,50 @@ typedef struct {
     sim_event_t events[SIM_MAX_EVENTS];
     int count;
 } sim_events_t;
+
+typedef enum {
+    SIM_INTERACTION_NONE = 0,
+    SIM_INTERACTION_TRACTOR_BEAM = 1,
+} sim_interaction_type_t;
+
+typedef enum {
+    SIM_INTERACTION_ENTITY_NONE = 0,
+    SIM_INTERACTION_ENTITY_STATION_MODULE = 1,
+    SIM_INTERACTION_ENTITY_CARGO_POD = 2,
+    SIM_INTERACTION_ENTITY_PLAYER_SHIP = 3,
+    SIM_INTERACTION_ENTITY_ASTEROID = 4,
+    SIM_INTERACTION_ENTITY_SCAFFOLD = 5,
+} sim_interaction_entity_type_t;
+
+typedef enum {
+    SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR = 0,
+    SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR = 1,
+} sim_interaction_visual_t;
+
+typedef struct {
+    uint8_t type;      /* sim_interaction_type_t */
+    int16_t index;    /* entity index; for station modules, station index */
+    int16_t aux;      /* extra index; for station modules, module index */
+} sim_interaction_entity_ref_t;
+
+typedef struct {
+    uint8_t type;      /* sim_interaction_type_t */
+    uint8_t visual;    /* sim_interaction_visual_t */
+    uint8_t commodity; /* COMMODITY_COUNT when not commodity-tinted */
+    uint8_t flags;
+    sim_interaction_entity_ref_t source;
+    sim_interaction_entity_ref_t target;
+    vec2 source_pos;
+    vec2 target_pos;
+    float range;
+    float intensity;
+} sim_interaction_t;
+
+#define SIM_MAX_INTERACTIONS 128
+typedef struct {
+    sim_interaction_t items[SIM_MAX_INTERACTIONS];
+    int count;
+} sim_interactions_t;
 
 enum { MAX_CONTRACTS = 24 };
 

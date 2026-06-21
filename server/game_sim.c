@@ -276,6 +276,15 @@ void emit_event(world_t *w, sim_event_t ev) {
     }
 }
 
+static void sim_interactions_clear(world_t *w) {
+    if (w) w->interactions.count = 0;
+}
+
+static void emit_interaction(world_t *w, sim_interaction_t interaction) {
+    if (!w || w->interactions.count >= SIM_MAX_INTERACTIONS) return;
+    w->interactions.items[w->interactions.count++] = interaction;
+}
+
 /* ================================================================== */
 /* Hull definitions                                                   */
 /* ================================================================== */
@@ -4713,7 +4722,6 @@ static bool station_hopper_can_tractor_pod(const station_t *st,
            station_hopper_matches_pod(st, module_idx, pod);
 }
 
-#define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
 #define CARGO_POD_BREAK_SPEED 360.0f
 #define CARGO_POD_BOUNCE_SCALE 1.65f
 
@@ -5294,10 +5302,10 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
                                               pod, anchor);
     const station_module_t *held_module = &st->modules[module_idx];
-    float valid_range = (held_module->type == MODULE_DOCK)
-        ? CARGO_POD_DOCK_TRACTOR_RANGE
-        : HOPPER_PULL_RANGE;
-    if (v2_dist_sq(pod->pos, anchor) > valid_range * valid_range) {
+    float valid_range = cargo_pod_module_tractor_range(held_module->type);
+    tractor_beam_t pod_tractor =
+        CARGO_POD_MODULE_TRACTOR_BEAM_INIT(valid_range);
+    if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor)) {
         cargo_pod_clear_module_tractor(pod);
         return false;
     }
@@ -5441,18 +5449,6 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
 
 void step_station_cargo_pod_tractors(world_t *w, float dt) {
     if (!w) return;
-    static const tractor_beam_t HOPPER_POD_TRACTOR = {
-        .rest_length     = 0.0f,
-        .pull_strength   = 0.0f,
-        .push_strength   = 0.0f,
-        .pull_constant   = HOPPER_PULL_ACCEL * 3.60f,
-        .push_constant   = 0.0f,
-        .range           = CARGO_POD_DOCK_TRACTOR_RANGE,
-        .axial_damping   = 9.0f,
-        .tangent_damping = 3.6f,
-        .speed_cap       = 320.0f,
-        .falloff         = TRACTOR_FALLOFF_LINEAR,
-    };
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
@@ -5481,12 +5477,75 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
             tractor_anchor_t tgt = {
                 .pos = pod->pos, .vel = &pod->vel, .inv_mass = 1.0f
             };
-            (void)tractor_apply(&src, &tgt, &HOPPER_POD_TRACTOR, dt);
+            const station_module_t *module =
+                &w->stations[station_idx].modules[module_idx];
+            float tractor_range =
+                cargo_pod_module_tractor_range(module->type);
+            tractor_beam_t pod_tractor =
+                CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+            (void)tractor_apply(&src, &tgt, &pod_tractor, dt);
             if (station_idx >= 0 && station_idx < MAX_STATIONS &&
                 pulse_module >= 0 && pulse_module < MAX_MODULES_PER_STATION) {
                 w->stations[station_idx].module_active_pulse[pulse_module] = 1.0f;
             }
         }
+    }
+}
+
+static void cargo_pod_revalidate_module_tractor(world_t *w, cargo_pod_t *pod) {
+    if (!cargo_pod_has_module_tractor(pod)) return;
+    (void)cargo_pod_current_module_tractor_valid(w, pod, NULL, NULL, NULL, NULL);
+}
+
+static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || !cargo_pod_has_module_tractor(pod)) continue;
+
+        int station_idx = -1;
+        int module_idx = -1;
+        vec2 anchor = pod->pos;
+        if (!cargo_pod_current_module_tractor_valid(
+                w, pod, &station_idx, &module_idx, &anchor, NULL)) {
+            continue;
+        }
+        if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+            module_idx < 0 || module_idx >= MAX_MODULES_PER_STATION) {
+            continue;
+        }
+
+        const station_t *st = &w->stations[station_idx];
+        if (module_idx >= st->module_count) continue;
+        const station_module_t *module = &st->modules[module_idx];
+        float tractor_range = cargo_pod_module_tractor_range(module->type);
+        tractor_beam_t pod_tractor =
+            CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+        float intensity = tractor_beam_range_fraction(
+            anchor, pod->pos, &pod_tractor);
+        if (intensity <= 0.0f) continue;
+
+        emit_interaction(w, (sim_interaction_t){
+            .type = SIM_INTERACTION_TRACTOR_BEAM,
+            .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
+            .commodity = pod->commodity < COMMODITY_COUNT
+                ? (uint8_t)pod->commodity
+                : (uint8_t)COMMODITY_COUNT,
+            .source = {
+                .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+                .index = (int16_t)station_idx,
+                .aux = (int16_t)module_idx,
+            },
+            .target = {
+                .type = SIM_INTERACTION_ENTITY_CARGO_POD,
+                .index = (int16_t)i,
+                .aux = -1,
+            },
+            .source_pos = anchor,
+            .target_pos = pod->pos,
+            .range = tractor_range,
+            .intensity = intensity,
+        });
     }
 }
 
@@ -5733,6 +5792,11 @@ static void step_cargo_pods(world_t *w, float dt) {
         }
     }
     resolve_cargo_pod_pair_collisions(w);
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        cargo_pod_revalidate_module_tractor(w, pod);
+    }
 }
 
 /* ---- Scaffold tow physics ---- */
@@ -6990,22 +7054,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     int just_created_planned_station = -1;
     if (sp->input.create_planned_outpost && !w->player_only_mode) {
         vec2 pos = sp->input.planned_outpost_pos;
-        /* Faction-shared: only one planned outpost in the world at a time.
-         * Any player creating a new blueprint cancels every existing one. */
-        for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
-            station_t *old = &w->stations[s];
-            if (old->planned) {
-                SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
-                    sp->id, s, old->planned_owner);
-                station_cleanup(old);
-                memset(old, 0, sizeof(*old));
-                (void)station_manifest_bootstrap(old);
-            }
-        }
         /* Validate position */
         bool too_close = false;
         for (int s = 0; s < MAX_STATIONS; s++) {
             if (!station_exists(&w->stations[s])) continue;
+            if (w->stations[s].planned) continue;
             if (v2_dist_sq(w->stations[s].pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
                 too_close = true; break;
             }
@@ -7017,9 +7070,24 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         if (!too_close && plan_sig > 0.0f && plan_sig < OUTPOST_MAX_SIGNAL) {
             int slot = -1;
             for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
-                if (!station_exists(&w->stations[s])) { slot = s; break; }
+                if (!station_exists(&w->stations[s]) || w->stations[s].planned) {
+                    slot = s; break;
+                }
             }
             if (slot >= 0) {
+                /* Faction-shared: only one planned outpost in the world at
+                 * a time. Clear the old blueprint only after the replacement
+                 * location has passed authoritative validation. */
+                for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
+                    station_t *old = &w->stations[s];
+                    if (old->planned) {
+                        SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
+                            sp->id, s, old->planned_owner);
+                        station_cleanup(old);
+                        memset(old, 0, sizeof(*old));
+                        (void)station_manifest_bootstrap(old);
+                    }
+                }
                 if (slot >= w->station_count) w->station_count = slot + 1;
                 station_t *st = &w->stations[slot];
                 station_cleanup(st);
@@ -9406,6 +9474,7 @@ static void server_player_apply_queued_movement(server_player_t *sp,
 
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
+    sim_interactions_clear(w);
     w->tick++;
     w->time += dt;
     step_station_ring_dynamics(w, dt);
@@ -9614,6 +9683,7 @@ void world_sim_step(world_t *w, float dt) {
         if (w->npc_ships[n].active)
             (void)world_ship_asset_sync_from_npc(w, n);
     }
+    publish_cargo_pod_module_tractor_interactions(w);
     world_refresh_station_hull_inventories(w);
 }
 
@@ -9623,6 +9693,7 @@ void world_sim_step(world_t *w, float dt) {
 
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
+    sim_interactions_clear(w);
     /* Do NOT advance w->time or w->tick — both are server-authoritative. */
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_idx];

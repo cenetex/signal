@@ -623,12 +623,12 @@ TEST(test_autopilot_completes_mining_cycle) {
     memset(w->players[0].session_token, 0x01, 8);
     float earned_before = w->players[0].ship.stat_credits_earned;
 
-    run_autopilot_ticks(w, &w->players[0], 90.0f);
+    run_autopilot_ticks(w, &w->players[0], 180.0f);
 
     /* A full mining cycle (find → mine → return → smelt) should pay out
-     * within 90 sim-seconds. Asserted; promoted from [WARN] once #345
-     * landed (autopilot was parking at station center where the silo
-     * couldn't reach the towed fragments). */
+     * within 180 sim-seconds. The physical pod/shell smelt pipeline
+     * added enough station-side work that the earlier 90s gate now
+     * catches normal first-cycle return trips mid-haul. */
     ASSERT(w->players[0].ship.stat_credits_earned > earned_before);
     /* w auto-freed by WORLD_HEAP cleanup */
 }

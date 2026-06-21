@@ -979,9 +979,10 @@ static int station_manifest_count_c(const station_t *st, commodity_t commodity)
     return total;
 }
 
-static int manifest_lineage_count_cg(const manifest_t *manifest,
-                                     commodity_t commodity,
-                                     mining_grade_t grade)
+static int SIGNAL_MAYBE_UNUSED
+manifest_lineage_count_cg(const manifest_t *manifest,
+                          commodity_t commodity,
+                          mining_grade_t grade)
 {
     if (!manifest || !manifest->units) return 0;
     int n = 0;
@@ -1039,9 +1040,10 @@ static void trade_row_attach_inspect(trade_row_t *row,
  * rebuilds the local ship manifest from PLAYER_MANIFEST plus any detailed
  * HOLD_INGOTS provenance snapshot, so the trade UI can read the same
  * local manifest path in SP and MP. */
-static int ship_manifest_count_cg(const ship_t *ship,
-                                  commodity_t commodity,
-                                  mining_grade_t grade)
+static int SIGNAL_MAYBE_UNUSED
+ship_manifest_count_cg(const ship_t *ship,
+                       commodity_t commodity,
+                       mining_grade_t grade)
 {
     if (!ship || !ship->manifest.units) return 0;
     int n = 0;
@@ -1683,9 +1685,10 @@ static bool can_afford_upgrade_manifest_ui(const station_t *station,
 /* Representative SELL unit for a (commodity, grade) row. The server's
  * per-row sell path picks the highest prefix multiplier in the bucket,
  * so the UI quotes that same unit instead of an arbitrary FIFO unit. */
-static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
-                                          commodity_t commodity,
-                                          mining_grade_t grade)
+static int SIGNAL_MAYBE_UNUSED
+manifest_find_top_sell_unit_cg(const manifest_t *manifest,
+                               commodity_t commodity,
+                               mining_grade_t grade)
 {
     if (!manifest || !manifest->units) return -1;
     int top_idx = -1;
@@ -1853,102 +1856,6 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         (void)station_space_units;
     }
 
-    /* Legacy manifest-held cargo stays grouped by commodity/grade while
-     * old saves and transitional systems still carry internal manifests. */
-    for (int c = 0; c < COMMODITY_COUNT && row_count < max; c++) {
-        bool station_accepts_manifest = station_consumes(st, (commodity_t)c);
-        if (!station_accepts_manifest) continue;
-        float price_base = station_buy_price(st, (commodity_t)c);
-        if (price_base <= FLOAT_EPSILON) continue;
-        bool finished_good = c >= COMMODITY_RAW_ORE_COUNT;
-        int row_capacity = finished_good
-            ? (int)lroundf(MAX_PRODUCT_STOCK)
-            : (int)lroundf(REFINERY_HOPPER_CAPACITY);
-        float station_total_amount = finished_good
-            ? (float)station_manifest_count_c(st, (commodity_t)c)
-            : station_inventory_amount(st, (commodity_t)c);
-        station_total_amount += (float)trade_station_market_pod_units(
-            st, station_idx, (commodity_t)c, MINING_GRADE_COUNT);
-        int station_total_inv =
-            (int)floorf(station_total_amount + 0.0001f);
-        int station_space_units =
-            (int)floorf((float)row_capacity - station_total_amount + 0.0001f);
-        bool station_full = station_space_units <= 0;
-        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int manifest_g = (finished_good && station_accepts_manifest)
-                ? ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi)
-                : 0;
-            int held = manifest_g;
-            if (held <= 0) continue;
-            int row_quantity = 1;
-            int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
-                                                         (commodity_t)c,
-                                                         (mining_grade_t)gi);
-            int top_cls = (int)INGOT_PREFIX_ANONYMOUS;
-            if (rep_idx >= 0)
-                top_cls = (int)ship->manifest.units[rep_idx].prefix_class;
-            float prefix_mult = prefix_class_price_multiplier(top_cls);
-            int price = (int)lroundf(price_base
-                    * mining_payout_multiplier((mining_grade_t)gi)
-                    * prefix_mult);
-            uint8_t blk = TRADE_BLOCK_NONE;
-            if (held <= 0) blk = TRADE_BLOCK_NO_CARGO;
-            else if (station_full) blk = TRADE_BLOCK_STATION_FULL;
-            /* Per-grade station count — manifest entries of (c, gi) at
-             * the station — so the row reflects what's actually on the
-             * shelf at this grade, not the commodity total (which would
-             * read identically across all grade rows of the same item). */
-            int station_grade_count =
-                finished_good
-                    ? station_manifest_count_cg(st, (commodity_t)c,
-                                                (mining_grade_t)gi)
-                    : station_total_inv;
-            station_grade_count += trade_station_market_pod_units(
-                st, station_idx, (commodity_t)c, (mining_grade_t)gi);
-            /* Lineage comes from the FIFO-first matching unit in the
-             * SHIP manifest, but only when every unit in this row has a
-             * provenance tag. In MP, any anonymous or non-wired unit is
-             * reconstructed as a legacy-migrate placeholder, so mixed
-             * buckets intentionally render without a lineage line. */
-            uint8_t origin_idx = 0;
-            uint64_t mined_blk = 0;
-            bool has_lineage = false;
-            const cargo_unit_t *inspect_unit = NULL;
-            const cargo_receipt_chain_t *inspect_chain = NULL;
-            int lineage_count = manifest_lineage_count_cg(&ship->manifest,
-                                                          (commodity_t)c,
-                                                          (mining_grade_t)gi);
-            if (held > 0) {
-                if (rep_idx >= 0) {
-                    const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
-                    origin_idx = rep->origin_station;
-                    mined_blk = rep->mined_block;
-                    has_lineage = (lineage_count >= held && mined_blk != 0) ||
-                                  cargo_unit_has_player_origin(rep);
-                    inspect_unit = rep;
-                    const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
-                    if (rcpts && (uint16_t)rep_idx < rcpts->count)
-                        inspect_chain = &rcpts->chains[rep_idx];
-                }
-            }
-            trade_row_t row = (trade_row_t){
-                .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = held, .quantity = row_quantity,
-                .unit_price = price, .total_price = price * row_quantity,
-                .actionable = (blk == TRADE_BLOCK_NONE),
-                .station_stock = station_grade_count, .station_capacity = row_capacity,
-                .held = held, .towed_held = 0,
-                .towed_pod_quantity = 0,
-                .block_reason = blk,
-                .prefix_class = (uint8_t)top_cls,
-                .has_lineage = has_lineage,
-                .origin_station_idx = origin_idx,
-                .mined_block = mined_blk,
-            };
-            trade_row_attach_inspect(&row, inspect_unit, inspect_chain);
-            out[row_count++] = row;
-        }
-    }
     return row_count;
 }
 

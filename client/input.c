@@ -737,21 +737,20 @@ static void sample_trade_picker(input_intent_t *intent) {
         trade_apply_buy_row(intent, st, ship, row);
     } else if (row->kind == 1) {
         /* Per-row sell — mirror of the buy click. One press sells one
-         * matching towed pod when cargo is in pods; manifest-held legacy
-         * cargo still transfers one matching cargo_unit. */
+         * matching towed pod. Legacy manifest-held cargo is no longer
+         * an authoritative sell surface. */
         if (row->held <= 0) {
             set_notice("Out of %s.", commodity_short_name(row->commodity));
             return;
         }
+        if (!row->is_towed_pod) {
+            set_notice("Cargo must be in a pod.");
+            return;
+        }
         intent->service_sell = true;
         intent->service_sell_only = row->commodity;
-        if (row->is_towed_pod) {
-            intent->service_sell_grade = MINING_GRADE_COUNT;
-            intent->service_sell_one = false;
-        } else {
-            intent->service_sell_grade = row->grade;
-            intent->service_sell_one = true;
-        }
+        intent->service_sell_grade = MINING_GRADE_COUNT;
+        intent->service_sell_one = false;
         float price = (float)(row->total_price > 0
             ? row->total_price
             : row->unit_price);

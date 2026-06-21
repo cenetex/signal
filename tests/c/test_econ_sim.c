@@ -815,6 +815,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     if (!w) return -1.0f;
     world_reset(w);
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
     /* Drain auto-spawned contracts so the fab-fallback branch handles
      * the sell (deterministic price = station_buy_price, not contract). */
     for (int k = 0; k < MAX_CONTRACTS; k++) w->contracts[k].active = false;
@@ -832,32 +833,51 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     w->players[0].session_ready = true;
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
-    w->players[0].docked = true;
     w->players[0].current_station = kepler;
-    w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
-    ship_manifest_bootstrap(&w->players[0].ship);
-    cargo_unit_t u; memset(&u, 0, sizeof(u));
-    u.commodity = COMMODITY_FERRITE_INGOT; u.kind = CARGO_KIND_INGOT;
-    u.grade = (uint8_t)g0; u.pub[0] = 1; manifest_push(&w->players[0].ship.manifest, &u);
-    u.grade = (uint8_t)g1; u.pub[0] = 2; manifest_push(&w->players[0].ship.manifest, &u);
-    u.grade = (uint8_t)g2; u.pub[0] = 3; manifest_push(&w->players[0].ship.manifest, &u);
+
+    int hopper_idx = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    if (hopper_idx < 0) return -1.0f;
+    vec2 hopper_pos = module_world_pos_ring(
+        st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
+    cargo_unit_t units[3];
+    memset(units, 0, sizeof(units));
+    int grades[3] = { g0, g1, g2 };
+    for (int i = 0; i < 3; i++) {
+        units[i].commodity = COMMODITY_FERRITE_INGOT;
+        units[i].kind = CARGO_KIND_INGOT;
+        units[i].grade = (uint8_t)grades[i];
+        units[i].prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+        units[i].pub[0] = (uint8_t)(i + 1);
+    }
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, hopper_pos, v2(0.0f, 0.0f), COMMODITY_FERRITE_INGOT,
+        units, 3, CARGO_POD_CARGO);
+    if (pod_idx < 0) return -1.0f;
+    w->cargo_pods[pod_idx].towed_by = 0;
+    w->players[0].ship.towed_pods[0] = (int16_t)pod_idx;
+    w->players[0].ship.towed_pod_count = 1;
 
     float bal_before = ledger_balance(st, token);
-    w->players[0].input.service_sell = true;
     world_sim_step(w, SIM_DT);
-    w->players[0].input.service_sell = false;
     float earned = ledger_balance(st, token) - bal_before;
 
     int common = 0, rare = 0;
-    for (uint16_t i = 0; i < st->manifest.count; i++) {
-        if (st->manifest.units[i].commodity != COMMODITY_FERRITE_INGOT) continue;
-        if (st->manifest.units[i].grade == MINING_GRADE_COMMON) common++;
-        if (st->manifest.units[i].grade == MINING_GRADE_RARE)   rare++;
+    const cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (pod->active && pod->towed_by < 0 &&
+        cargo_pod_has_module_tractor(pod)) {
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            if (pod->manifest_units[i].commodity != COMMODITY_FERRITE_INGOT) continue;
+            if (pod->manifest_units[i].grade == MINING_GRADE_COMMON) common++;
+            if (pod->manifest_units[i].grade == MINING_GRADE_RARE)   rare++;
+        }
     }
     if (out_common) *out_common = common;
     if (out_rare)   *out_rare   = rare;
     if (out_ship_inventory_remaining)
-        *out_ship_inventory_remaining = w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT];
+        *out_ship_inventory_remaining =
+            w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT] +
+            (float)ship_towed_pods_manifest_count(
+                w, &w->players[0].ship, COMMODITY_FERRITE_INGOT);
     return earned;
     /* WORLD_HEAP cleanup attribute frees w on scope exit. */
 }
@@ -874,10 +894,9 @@ TEST(test_grade_aware_sell_pays_per_unit_grade) {
         MINING_GRADE_COMMON, MINING_GRADE_RARE, MINING_GRADE_COMMON,
         &common_b, &rare_b, &remain_b);
 
-    /* Both runs delivered all 3 units to station manifest with grades
-     * preserved. Proves the transfer walked the same units the pricing
-     * walk priced — if it had reordered, station_rare would land in
-     * the wrong slot or stay 0. */
+    /* Both runs hand the whole pod to station custody with grades
+     * preserved. Proves the physical pod path priced and retained the
+     * same manifest units. */
     ASSERT_EQ_FLOAT(remain_a, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(remain_b, 0.0f, 0.001f);
     ASSERT_EQ_INT(common_a, 3);

@@ -19,6 +19,7 @@
 #include "economy.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL for outpost placement gate */
 #include "cargo_receipt.h"
+#include "tractor.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */
@@ -564,6 +565,7 @@ typedef struct {
      * gets a fresh ledger identity. */
     uint16_t next_npc_token;
     sim_events_t events;
+    sim_interactions_t interactions;
     contract_t contracts[MAX_CONTRACTS];
     delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
     uint16_t next_delivery_shipment_id;
@@ -897,5 +899,27 @@ void activate_outpost(world_t *w, int station_idx);
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
 #define HOPPER_PULL_ACCEL 500.0f    /* base pull strength */
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
+
+/* Cargo-pod module tractor tuning. Docks hold market pods farther out than
+ * hoppers/producers, but the beam model and range predicate are shared. */
+#define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
+#define CARGO_POD_MODULE_TRACTOR_BEAM_INIT(range_value) { \
+    .rest_length     = 0.0f, \
+    .pull_strength   = 0.0f, \
+    .push_strength   = 0.0f, \
+    .pull_constant   = HOPPER_PULL_ACCEL * 3.60f, \
+    .push_constant   = 0.0f, \
+    .range           = (range_value), \
+    .axial_damping   = 9.0f, \
+    .tangent_damping = 3.6f, \
+    .speed_cap       = 320.0f, \
+    .falloff         = TRACTOR_FALLOFF_LINEAR, \
+}
+
+static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
+    return module_type == MODULE_DOCK
+        ? CARGO_POD_DOCK_TRACTOR_RANGE
+        : HOPPER_PULL_RANGE;
+}
 
 #endif /* GAME_SIM_H */

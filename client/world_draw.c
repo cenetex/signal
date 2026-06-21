@@ -17,6 +17,7 @@
 #include "station_palette.h"
 #include "sim_mining.h"
 #include "sim_ship.h"
+#include "tractor.h"
 #include "npc_radio.h"
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
@@ -2715,7 +2716,8 @@ static bool cargo_pod_visual_hopper_input_anchor(const station_t *st,
 }
 
 static bool cargo_pod_visual_tractor_anchor(const cargo_pod_t *pod,
-                                            vec2 *out_anchor) {
+                                            vec2 *out_anchor,
+                                            float *out_range) {
     int station_idx = -1;
     int module_idx = -1;
     if (!pod ||
@@ -2737,8 +2739,78 @@ static bool cargo_pod_visual_tractor_anchor(const cargo_pod_t *pod,
     }
     anchor = cargo_pod_visual_hold_anchor(st, station_idx, module_idx,
                                           pod, anchor);
+    float tractor_range = cargo_pod_module_tractor_range(module->type);
+    tractor_beam_t pod_tractor =
+        CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+    if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor))
+        return false;
     if (out_anchor) *out_anchor = anchor;
+    if (out_range) *out_range = tractor_range;
     return true;
+}
+
+static void draw_cargo_pod_module_tractor_beam(vec2 anchor,
+                                               vec2 pod_pos,
+                                               const cargo_pod_t *pod,
+                                               commodity_t commodity,
+                                               float intensity,
+                                               int seed) {
+    float radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
+    if (!on_screen(pod_pos.x, pod_pos.y, radius + 80.0f) &&
+        !on_screen(anchor.x, anchor.y, 80.0f)) {
+        return;
+    }
+
+    float cr = 0.78f, cg = 0.60f, cb = 0.30f;
+    if (commodity < COMMODITY_COUNT)
+        commodity_color(commodity, &cr, &cg, &cb);
+
+    float t = clampf(intensity, 0.0f, 1.0f);
+    if (t <= 0.0f) return;
+
+    float pulse = 0.50f + 0.24f *
+        sinf(g.world.time * 7.0f + (float)seed * 1.37f);
+    float zap = sinf(g.world.time * 41.0f + (float)seed * 5.9f);
+    vec2 mid = v2_scale(v2_add(anchor, pod_pos), 0.5f);
+    vec2 perp = v2(-(pod_pos.y - anchor.y), pod_pos.x - anchor.x);
+    float plen = sqrtf(v2_len_sq(perp));
+    if (plen > 0.1f)
+        perp = v2_scale(perp, 3.0f * zap / plen);
+    mid = v2_add(mid, perp);
+    float alpha = (0.24f + 0.42f * t) * pulse;
+    draw_segment(anchor, mid, cr, cg, cb, alpha);
+    draw_segment(mid, pod_pos, cr, cg, cb, alpha);
+    draw_segment(anchor, pod_pos,
+                 fminf(1.0f, cr * 1.4f),
+                 fminf(1.0f, cg * 1.3f),
+                 fminf(1.0f, cb * 1.3f),
+                 alpha * 0.42f);
+}
+
+static bool draw_published_cargo_pod_module_tractors(void) {
+    bool authoritative = false;
+    for (int i = 0; i < g.world.interactions.count; i++) {
+        const sim_interaction_t *it = &g.world.interactions.items[i];
+        if (it->type != SIM_INTERACTION_TRACTOR_BEAM ||
+            it->visual != SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR ||
+            it->target.type != SIM_INTERACTION_ENTITY_CARGO_POD) {
+            continue;
+        }
+        authoritative = true;
+
+        int pod_idx = it->target.index;
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        if (!pod->active) continue;
+
+        commodity_t commodity = it->commodity < COMMODITY_COUNT
+            ? (commodity_t)it->commodity
+            : pod->commodity;
+        draw_cargo_pod_module_tractor_beam(
+            it->source_pos, it->target_pos, pod, commodity,
+            it->intensity, pod_idx);
+    }
+    return authoritative;
 }
 
 /* Draw furnace tractor beams: orange tendrils to nearby S-tier fragments,
@@ -2812,38 +2884,22 @@ void draw_hopper_tractors(void) {
         }
     }
 
+    bool drew_authoritative = draw_published_cargo_pod_module_tractors();
+    if (g.local_server.active || drew_authoritative) return;
+
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
         if (!pod->active || !cargo_pod_has_module_tractor(pod)) continue;
         vec2 anchor = pod->pos;
-        if (!cargo_pod_visual_tractor_anchor(pod, &anchor)) continue;
-        if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 80.0f) &&
-            !on_screen(anchor.x, anchor.y, 80.0f)) {
+        float tractor_range = HOPPER_PULL_RANGE;
+        if (!cargo_pod_visual_tractor_anchor(pod, &anchor, &tractor_range))
             continue;
-        }
-
-        float cr = 0.78f, cg = 0.60f, cb = 0.30f;
-        if (pod->commodity < COMMODITY_COUNT)
-            commodity_color(pod->commodity, &cr, &cg, &cb);
-
-        float d = sqrtf(v2_dist_sq(anchor, pod->pos));
-        float t = 1.0f - fminf(d / pull_range, 1.0f);
-        float pulse = 0.50f + 0.24f * sinf(g.world.time * 7.0f + (float)i * 1.37f);
-        float zap = sinf(g.world.time * 41.0f + (float)i * 5.9f);
-        vec2 mid = v2_scale(v2_add(anchor, pod->pos), 0.5f);
-        vec2 perp = v2(-(pod->pos.y - anchor.y), pod->pos.x - anchor.x);
-        float plen = sqrtf(v2_len_sq(perp));
-        if (plen > 0.1f)
-            perp = v2_scale(perp, 3.0f * zap / plen);
-        mid = v2_add(mid, perp);
-        float alpha = (0.24f + 0.42f * t) * pulse;
-        draw_segment(anchor, mid, cr, cg, cb, alpha);
-        draw_segment(mid, pod->pos, cr, cg, cb, alpha);
-        draw_segment(anchor, pod->pos,
-                     fminf(1.0f, cr * 1.4f),
-                     fminf(1.0f, cg * 1.3f),
-                     fminf(1.0f, cb * 1.3f),
-                     alpha * 0.42f);
+        tractor_beam_t pod_tractor =
+            CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+        float t = tractor_beam_range_fraction(anchor, pod->pos, &pod_tractor);
+        if (t <= 0.0f) continue;
+        draw_cargo_pod_module_tractor_beam(anchor, pod->pos, pod,
+                                           pod->commodity, t, i);
     }
 }
 

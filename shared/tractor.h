@@ -115,6 +115,26 @@ typedef struct {
     tractor_falloff_t falloff;
 } tractor_beam_t;
 
+static inline bool tractor_beam_points_in_range(vec2 src,
+                                                vec2 tgt,
+                                                const tractor_beam_t *beam) {
+    if (!beam) return false;
+    if (beam->range <= 0.0f) return true;
+    return v2_dist_sq(src, tgt) <= beam->range * beam->range;
+}
+
+static inline float tractor_beam_range_fraction(vec2 src,
+                                                vec2 tgt,
+                                                const tractor_beam_t *beam) {
+    if (!beam) return 0.0f;
+    if (beam->range <= 0.0f) return 1.0f;
+    float d_sq = v2_dist_sq(src, tgt);
+    float range_sq = beam->range * beam->range;
+    if (d_sq >= range_sq) return 0.0f;
+    float d = v2_len(v2_sub(tgt, src));
+    return clampf(1.0f - d / beam->range, 0.0f, 1.0f);
+}
+
 /* Apply one beam tick. Returns true iff the beam was active
  * (target was within `range`). Mutates tgt->vel always; mutates
  * src->vel iff src->vel != NULL && src->inv_mass > 0. */

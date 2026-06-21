@@ -172,6 +172,7 @@ static void mirror_whole_world(const world_t *src) {
     memcpy(g.world.scaffolds, src->scaffolds, sizeof(g.world.scaffolds));
     memcpy(g.world.cargo_pods, src->cargo_pods, sizeof(g.world.cargo_pods));
     g.world.events = src->events;
+    g.world.interactions = src->interactions;
     g.world.time   = src->time;
 
     /* Singleplayer mirror of NET_MSG_PLAYER_KNOWN_CONTRACTS. The local

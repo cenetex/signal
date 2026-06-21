@@ -11,10 +11,9 @@ bool tractor_apply(const tractor_anchor_t *src,
     if (!src || !tgt || !beam) return false;
 
     vec2 to_target = v2_sub(tgt->pos, src->pos);
-    float d_sq = v2_len_sq(to_target);
 
     /* Range gate. Test in squared form to avoid sqrt when disengaged. */
-    if (beam->range > 0.0f && d_sq > beam->range * beam->range) return false;
+    if (!tractor_beam_points_in_range(src->pos, tgt->pos, beam)) return false;
 
     /* Co-located bodies: report active but apply no force this tick.
      * Avoids divide-by-zero on the line-of-action unit vector. */

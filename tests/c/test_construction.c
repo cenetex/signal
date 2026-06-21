@@ -2457,6 +2457,38 @@ TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
                                         v2(OUTPOST_MIN_DISTANCE * 0.5f, 0.0f))) == false);
 }
 
+TEST(test_invalid_outpost_plan_preserves_existing_blueprint) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    vec2 valid_pos = v2_add(w.stations[1].pos, v2(4000.0f, 0.0f));
+    sp->input.create_planned_outpost = true;
+    sp->input.planned_outpost_pos = valid_pos;
+    world_sim_step(&w, SIM_DT);
+
+    int plan_slot = -1;
+    for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
+        if (w.stations[s].planned) { plan_slot = s; break; }
+    }
+    ASSERT(plan_slot >= SIGNAL_FIRST_OUTPOST_INDEX);
+    uint32_t plan_id = w.stations[plan_slot].id;
+    vec2 plan_pos = w.stations[plan_slot].pos;
+
+    sp->input.create_planned_outpost = true;
+    sp->input.planned_outpost_pos = w.stations[1].pos; /* too close */
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(test_count_planned_frontier_outposts(&w), 1);
+    ASSERT(w.stations[plan_slot].planned);
+    ASSERT_EQ_INT((int)w.stations[plan_slot].id, (int)plan_id);
+    ASSERT_EQ_FLOAT(w.stations[plan_slot].pos.x, plan_pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[plan_slot].pos.y, plan_pos.y, 0.001f);
+}
+
 TEST(test_frontier_virtual_pilots_scale_planned_queue) {
     WORLD_DECL;
     world_reset(&w);
@@ -3797,6 +3829,7 @@ void register_construction_scaffold_tests(void) {
     RUN(test_build_outpost_full_economy);
     RUN(test_scaffold_ship_drag);
     RUN(test_frontier_virtual_pilots_plan_and_order_relay);
+    RUN(test_invalid_outpost_plan_preserves_existing_blueprint);
     RUN(test_frontier_virtual_pilots_scale_planned_queue);
     RUN(test_frontier_virtual_pilots_execute_growth_loop);
     RUN(test_hauler_delivers_to_planned_outpost);
