@@ -77,10 +77,21 @@ Open the browser client with:
 https://signal-relay-kind-pond-4338.fly.dev/play
 ```
 
-Once DNS is pointed at Fly, the canonical URL is:
+The canonical URL is:
 
 ```text
 https://signal.ratimics.com/play
+```
+
+That hostname is currently served by the `signal-fly-proxy` Cloudflare Worker
+route in `wrangler.toml`. The Worker is intentionally thin: it proxies all
+requests, including `/ws` WebSocket upgrades, to the Fly app while preserving
+the public hostname. If Cloudflare DNS write access is available later, the
+route can be replaced with direct DNS-only records to Fly:
+
+```text
+A    signal.ratimics.com -> 66.241.124.20
+AAAA signal.ratimics.com -> 2a09:8280:1::130:a002:0
 ```
 
 ## Local Relay Check

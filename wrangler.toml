@@ -1,10 +1,6 @@
-name = "signal-arweave"
-main = "workers/arweave-proxy.js"
+name = "signal-fly-proxy"
+main = "workers/fly-proxy.js"
 compatibility_date = "2025-01-01"
-
-[[kv_namespaces]]
-binding = "SIGNAL_MANIFEST"
-id = "935ce1bc4d3349709edbe9b424a527a4"
 
 [[routes]]
 pattern = "signal.ratimics.com/*"
