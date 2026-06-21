@@ -708,6 +708,87 @@ TEST(test_launch_carries_towed_pod_to_clear_lane) {
     }
 }
 
+TEST(test_launch_scrubs_stale_flight_input) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    ASSERT(sp->docked);
+
+    sp->input.launch = true;
+    sp->input.thrust = -1.0f;
+    sp->input.turn = 1.0f;
+    sp->input.reverse_thrust = true;
+    sp->input.boost = true;
+    sp->input.tractor_hold = true;
+    sp->ship.tractor_active = true;
+    sp->boost_hold_timer = 1.0f;
+    sp->last_input_seq = 77;
+    sp->last_input_tick = 1234;
+    sp->movement_queue_count = 2;
+    sp->movement_queue[0] = (movement_input_cmd_t){
+        .apply_tick = 1,
+        .input_seq = 78,
+        .intent = { .thrust = -1.0f, .turn = 1.0f, .reverse_thrust = true },
+    };
+    sp->movement_queue[1] = (movement_input_cmd_t){
+        .apply_tick = 10,
+        .input_seq = 79,
+        .intent = { .thrust = -1.0f, .turn = -1.0f, .reverse_thrust = true },
+    };
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!sp->docked);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
+    ASSERT(!sp->input.reverse_thrust);
+    ASSERT(!sp->input.boost);
+    ASSERT(!sp->input.tractor_hold);
+    ASSERT(!sp->ship.tractor_active);
+    ASSERT_EQ_FLOAT(sp->boost_hold_timer, 0.0f, 0.001f);
+    ASSERT_EQ_INT(sp->movement_queue_count, 0);
+    ASSERT_EQ_INT(sp->last_input_seq, 0);
+    ASSERT_EQ_INT((int)sp->last_input_tick, 0);
+
+    vec2 away = v2_sub(sp->ship.pos, w.stations[sp->current_station].pos);
+    float away_len = v2_len(away);
+    ASSERT(away_len > 1.0f);
+    away = v2_scale(away, 1.0f / away_len);
+    ASSERT(v2_dot(sp->ship.vel, away) > 50.0f);
+}
+
+TEST(test_movement_queue_rejects_late_older_sequence) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(5000.0f, 5000.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    input_intent_t thrust = { .thrust = 1.0f };
+    input_intent_t stale_zero = { 0 };
+    server_player_queue_movement_input(sp, &thrust, 2, 2);
+    server_player_queue_movement_input(sp, &stale_zero, 1, 3);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_INT(sp->last_input_seq, 0);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
+    ASSERT_EQ_INT(sp->last_input_seq, 2);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
+    ASSERT_EQ_INT(sp->last_input_seq, 2);
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1703,6 +1784,8 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_clears_dock_berth_under_thrust);
     RUN(test_launch_uses_clear_lane_when_actor_blocks_exit);
     RUN(test_launch_carries_towed_pod_to_clear_lane);
+    RUN(test_launch_scrubs_stale_flight_input);
+    RUN(test_movement_queue_rejects_late_older_sequence);
     RUN(test_bug40_no_player_player_collision);
 }
 

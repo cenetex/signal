@@ -1768,6 +1768,7 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
+    server_player_clear_transient_input(sp);
     /* Kick and face the ship away from station so the player's first
      * forward thrust clears the berth instead of driving back into it. */
     const station_t *st = &w->stations[sp->current_station];
@@ -10317,9 +10318,12 @@ static void server_player_apply_queued_movement(server_player_t *sp,
     while (sp->movement_queue_count > 0) {
         const movement_input_cmd_t *cmd = &sp->movement_queue[0];
         if (sim_tick_after(cmd->apply_tick, tick)) break;
-        apply_movement_intent(sp, &cmd->intent);
-        sp->last_input_seq = cmd->input_seq;
-        sp->last_input_tick = tick;
+        if (cmd->input_seq == 0 || sp->last_input_seq == 0 ||
+            input_seq_after(cmd->input_seq, sp->last_input_seq)) {
+            apply_movement_intent(sp, &cmd->intent);
+            sp->last_input_seq = cmd->input_seq;
+            sp->last_input_tick = tick;
+        }
         sp->movement_queue_count--;
         if (sp->movement_queue_count > 0) {
             memmove(&sp->movement_queue[0], &sp->movement_queue[1],

@@ -72,7 +72,7 @@
     <div id="loading">Linking signal chain...</div>
 
 
-    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
     <script>
       var canvas = document.getElementById('canvas');
       var signalBundleVersion = String(Date.now());
@@ -96,21 +96,105 @@
 
       window.SignalGameModule = Module;
 
-      function signalClearHeldControls() {
+      function signalWasmCall(name, returnType, argTypes, args) {
         try {
           var m = window.SignalGameModule || window.Module;
           if (m && typeof m.ccall === 'function') {
-            m.ccall('signal_mobile_clear', null, [], []);
+            return m.ccall(name, returnType || null, argTypes || [], args || []);
+          }
+          if (m && typeof m['_' + name] === 'function') {
+            return m['_' + name].apply(m, args || []);
           }
         } catch (err) {
-          console.warn('[input] unable to clear held controls', err);
+          console.warn('[input] wasm call failed: ' + name, err);
         }
+        return null;
       }
+
+      function signalClearHeldControls() {
+        signalWasmCall('signal_mobile_clear', null, [], []);
+      }
+
+      function signalFocusCanvas() {
+        if (document.hidden || !document.hasFocus()) return;
+        if (document.activeElement === canvas) return;
+        try { canvas.focus({ preventScroll: true }); }
+        catch (_) { canvas.focus(); }
+      }
+
+      var signalKeyActions = {
+        KeyW: 1, ArrowUp: 1,
+        KeyS: 2, ArrowDown: 2,
+        KeyA: 3, ArrowLeft: 3,
+        KeyD: 4, ArrowRight: 4,
+        KeyM: 5,
+        Space: 6,
+        KeyE: 7,
+        KeyH: 8,
+        ShiftLeft: 9, ShiftRight: 9,
+        KeyB: 10,
+        KeyR: 11,
+        Tab: 12,
+        KeyF: 13,
+        KeyC: 15,
+        KeyT: 16,
+        Digit1: 20,
+        Digit2: 21,
+        Digit3: 22,
+        Digit4: 23,
+        Digit5: 24,
+        KeyO: 30,
+        Escape: 31
+      };
+
+      function signalKeyboardTargetIsGame(e) {
+        var target = e.target || document.activeElement;
+        if (target === canvas || target === document.body ||
+            target === document.documentElement || target === window) return true;
+        if (!target || !target.tagName) return true;
+        var tag = target.tagName.toLowerCase();
+        return tag !== 'input' && tag !== 'textarea' && tag !== 'select' &&
+          !target.isContentEditable;
+      }
+
+      function signalKeyboardFallback(e, down) {
+        if (!signalKeyboardTargetIsGame(e)) return;
+        var action = signalKeyActions[e.code] || signalKeyActions[e.key];
+        if (!action) return;
+        signalFocusCanvas();
+        signalWasmCall('signal_mobile_key', null, ['number', 'number'], [action, down ? 1 : 0]);
+      }
+
+      window.signalInputStatus = function() {
+        var active = document.activeElement;
+        return {
+          activeElement: active ? (active.id || active.tagName || String(active)) : null,
+          canvasFocused: document.activeElement === canvas,
+          documentHidden: document.hidden,
+          documentHasFocus: document.hasFocus(),
+          heldMask: signalWasmCall('signal_debug_held_control_mask', 'number', [], []) || 0
+        };
+      };
+
+      window.addEventListener('keydown', function(e) {
+        signalKeyboardFallback(e, true);
+      }, true);
+
+      window.addEventListener('keyup', function(e) {
+        signalKeyboardFallback(e, false);
+      }, true);
+
+      window.addEventListener('focus', signalFocusCanvas);
+      window.addEventListener('pageshow', signalFocusCanvas);
+      document.addEventListener('pointerdown', function(e) {
+        if (e.target === canvas || e.target === document.body) signalFocusCanvas();
+      }, true);
 
       window.addEventListener('blur', signalClearHeldControls);
       window.addEventListener('pagehide', signalClearHeldControls);
       document.addEventListener('visibilitychange', function() {
         if (document.hidden) signalClearHeldControls();
+        else signalFocusCanvas();
       });
       canvas.addEventListener('blur', signalClearHeldControls);
     </script>
@@ -135,14 +219,14 @@
       }
 
       canvas.addEventListener('pointerdown', function() {
-        canvas.focus();
+        signalFocusCanvas();
       });
 
       /* Prevent browser from stealing game keys. Tab is a docked-UI key
        * now (tab strip cycling) so we must preventDefault on it too;
        * otherwise focus escapes the canvas on the first Tab press. */
       window.addEventListener('keydown', function(e) {
-        if (document.activeElement === canvas || e.target === document.body) {
+        if (signalKeyboardTargetIsGame(e)) {
           if (['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].indexOf(e.key) === -1) {
             e.preventDefault();
           }
@@ -154,7 +238,7 @@
         s.src = src;
         s.onload = function() {
           document.getElementById('loading').classList.add('done');
-          canvas.focus();
+          signalFocusCanvas();
         };
         document.body.appendChild(s);
       }
