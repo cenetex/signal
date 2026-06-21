@@ -97,8 +97,21 @@
       </div>
     </div>
     <script>
+      var signalBundleVersion = String(Date.now());
+
+      function signalVersionedAsset(path) {
+        var join = path.indexOf('?') === -1 ? '?' : '&';
+        return path + join + 'v=' + encodeURIComponent(signalBundleVersion);
+      }
+
       var Module = {
         canvas: document.getElementById("canvas"),
+        locateFile: function(path, prefix) {
+          if (path === "signal.wasm") {
+            return signalVersionedAsset((prefix || "") + path);
+          }
+          return (prefix || "") + path;
+        },
         print: function (text) {
           console.log(text);
         },
