@@ -73,6 +73,126 @@ static int test_active_ship_asset_count(const world_t *w) {
     return count;
 }
 
+static int test_count_exact_pod_units(const world_t *w, commodity_t c) {
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != c) continue;
+        if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
+            continue;
+        bool exact = true;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if ((commodity_t)pod->manifest_units[u].commodity != c) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) total += (int)pod->manifest_count;
+    }
+    return total;
+}
+
+static const cargo_pod_t *test_first_exact_pod_with_units(const world_t *w,
+                                                          commodity_t c,
+                                                          uint16_t units) {
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != c) continue;
+        if (pod->manifest_count != units || pod->quantity != units) continue;
+        bool exact = true;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if ((commodity_t)pod->manifest_units[u].commodity != c) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) return pod;
+    }
+    return NULL;
+}
+
+static bool test_hopper_pos_for(const station_t *st,
+                                commodity_t commodity,
+                                vec2 *out_pos) {
+    if (!st || !out_pos || commodity >= COMMODITY_COUNT) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->scaffold || m->type != MODULE_HOPPER) continue;
+        if ((commodity_t)m->commodity != commodity) continue;
+        *out_pos = module_world_pos_ring(st, m->ring, m->slot);
+        return true;
+    }
+    return false;
+}
+
+static int test_spawn_exact_pod(world_t *w,
+                                vec2 pos,
+                                commodity_t commodity,
+                                uint16_t units) {
+    if (!w || commodity >= COMMODITY_COUNT ||
+        units == 0 || units > CARGO_POD_MANIFEST_CAP) {
+        return -1;
+    }
+    cargo_unit_t cargo[CARGO_POD_MANIFEST_CAP];
+    memset(cargo, 0, sizeof(cargo));
+    const uint8_t origin[8] = { 'T','E','S','T','P','O','D','S' };
+    for (uint16_t i = 0; i < units; i++) {
+        if (!hash_legacy_migrate_unit(origin, commodity, i, &cargo[i]))
+            return -1;
+    }
+    return spawn_cargo_pod_with_manifest(
+        w, pos, v2(0.0f, 0.0f), commodity, cargo, units,
+        CARGO_POD_CARGO);
+}
+
+static int test_spawn_frame_pod(world_t *w, vec2 pos, uint16_t units) {
+    if (!w || units == 0 || units > CARGO_POD_MANIFEST_CAP) return -1;
+    cargo_unit_t frames[CARGO_POD_MANIFEST_CAP];
+    memset(frames, 0, sizeof(frames));
+    const uint8_t origin[8] = { 'T','E','S','T','F','R','M','E' };
+    for (uint16_t i = 0; i < units; i++) {
+        if (!hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i,
+                                      &frames[i])) {
+            return -1;
+        }
+    }
+    return spawn_cargo_pod_with_manifest(
+        w, pos, v2(0.0f, 0.0f), COMMODITY_FRAME, frames, units,
+        CARGO_POD_CARGO);
+}
+
+static int test_first_dock_module_idx(const station_t *st) {
+    if (!st) return -1;
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            return m;
+        }
+    }
+    return -1;
+}
+
+static int test_spawn_station_market_exact_pod(world_t *w,
+                                               int station_idx,
+                                               commodity_t commodity,
+                                               uint16_t units) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return -1;
+    station_t *st = &w->stations[station_idx];
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx < 0) return -1;
+    vec2 pos = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    int pod_idx = test_spawn_exact_pod(w, pos, commodity, units);
+    if (pod_idx < 0) return -1;
+    w->cargo_pods[pod_idx].towed_by = -1;
+    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
+                                 station_idx, dock_idx);
+    return pod_idx;
+}
+
 static int test_destroy_stored_station_loaners(world_t *w, int station_idx) {
     int count = 0;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
@@ -862,7 +982,7 @@ TEST(test_ship_death_drops_cargo_pods) {
     ASSERT_EQ_INT(total, 45);
 }
 
-TEST(test_towed_cargo_pod_sells_at_dock) {
+TEST(test_towed_cargo_pod_sells_at_matching_intake) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -873,30 +993,499 @@ TEST(test_towed_cargo_pod_sells_at_dock) {
     sp->connected = true;
     sp->id = 0;
     memset(sp->session_token, 0x55, sizeof(sp->session_token));
-    sp->docked = true;
-    sp->current_station = 0;
-    w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+    station_t *st = &w.stations[1];
+    st->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    float before = st->_inventory_cache[COMMODITY_FERRITE_INGOT];
+    int hopper_idx = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper_idx >= 0);
+    vec2 hopper_pos = module_world_pos_ring(
+        st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
 
-    int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
-                                  COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
+    int pod_idx = test_spawn_exact_pod(&w, hopper_pos,
+                                       COMMODITY_FERRITE_INGOT, 7);
     ASSERT(pod_idx >= 0);
     sp->ship.towed_pods[0] = (int16_t)pod_idx;
     sp->ship.towed_pod_count = 1;
     w.cargo_pods[pod_idx].towed_by = 0;
-    sp->input.service_sell = true;
-    sp->input.service_sell_only = COMMODITY_COUNT;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 7);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            1, hopper_idx));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FERRITE_INGOT], before, 0.01f);
+    ASSERT(sp->ship.stat_credits_earned >= 70.0f);
+}
+
+TEST(test_towed_shell_pod_keeps_shell_after_intake_custody_sale) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    station_t *st = &w.stations[1];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x5a, sizeof(sp->session_token));
+    st->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    int hopper_idx = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper_idx >= 0);
+    vec2 hopper_pos = module_world_pos_ring(
+        st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
+
+    cargo_unit_t ingot = {0};
+    cargo_unit_t shell = {0};
+    uint8_t fragment_pub[32] = {0};
+    const uint8_t shell_origin[8] = { 'S','H','E','L','L','S','A','L' };
+    fragment_pub[31] = 0x5a;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 0, &ingot));
+    ASSERT(hash_legacy_migrate_unit(shell_origin, COMMODITY_FRAME, 0,
+                                    &shell));
+
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        &w, hopper_pos, v2(0.0f, 0.0f), COMMODITY_FERRITE_INGOT,
+        &ingot, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_set_shell_frame(&w.cargo_pods[pod_idx], &shell);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 1);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].manifest_count, 1);
+    ASSERT(w.cargo_pods[pod_idx].has_shell_frame);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            1, hopper_idx));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT(memcmp(w.cargo_pods[pod_idx].manifest_units[0].pub,
+                  ingot.pub, 32) == 0);
+    ASSERT(memcmp(w.cargo_pods[pod_idx].shell_frame.pub,
+                  shell.pub, 32) == 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FERRITE_INGOT), 0);
+}
+
+TEST(test_buy_station_held_pod_transfers_custody_to_ship) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    station_t *st = &w.stations[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x44, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    st->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    ledger_earn(st, sp->session_token, 1000.0f);
+
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+
+    int pod_idx = spawn_cargo_pod(&w, st->pos, v2(0.0f, 0.0f),
+                                  COMMODITY_FERRITE_INGOT, 5,
+                                  CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = -1;
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_idx], 0, dock_idx);
+
+    float before = ledger_balance(st, sp->session_token);
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COUNT;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+    ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[pod_idx]));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT(ledger_balance(st, sp->session_token) < before);
+}
+
+TEST(test_buy_selected_station_held_pod_transfers_that_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    station_t *st = &w.stations[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x71, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    st->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    ledger_earn(st, sp->session_token, 1000.0f);
+
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+
+    int first = spawn_cargo_pod(&w, st->pos, v2(0.0f, 0.0f),
+                                COMMODITY_FERRITE_INGOT, 3,
+                                CARGO_POD_CARGO);
+    int selected = spawn_cargo_pod(&w, v2_add(st->pos, v2(12.0f, 0.0f)),
+                                   v2(0.0f, 0.0f),
+                                   COMMODITY_FERRITE_INGOT, 5,
+                                   CARGO_POD_CARGO);
+    ASSERT(first >= 0);
+    ASSERT(selected >= 0);
+    w.cargo_pods[first].towed_by = -1;
+    w.cargo_pods[selected].towed_by = -1;
+    cargo_pod_set_module_tractor(&w.cargo_pods[first], 0, dock_idx);
+    cargo_pod_set_module_tractor(&w.cargo_pods[selected], 0, dock_idx);
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COUNT;
+    sp->input.buy_station_pod = true;
+    sp->input.buy_station_pod_index = (uint16_t)selected;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], selected);
+    ASSERT_EQ_INT(w.cargo_pods[selected].towed_by, 0);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[first],
+                                            0, dock_idx));
+    ASSERT_EQ_INT(w.cargo_pods[first].towed_by, -1);
+}
+
+TEST(test_cargo_pods_collide_and_separate) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    vec2 pos = v2(5000.0f, 5000.0f);
+    int pod_a = spawn_cargo_pod(&w, pos, v2(0.0f, 0.0f),
+                                COMMODITY_FRAME, 1, CARGO_POD_CARGO);
+    int pod_b = spawn_cargo_pod(&w, pos, v2(0.0f, 0.0f),
+                                COMMODITY_FRAME, 1, CARGO_POD_CARGO);
+    ASSERT(pod_a >= 0);
+    ASSERT(pod_b >= 0);
+    w.cargo_pods[pod_a].towed_by = -1;
+    w.cargo_pods[pod_b].towed_by = -1;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_a].active);
+    ASSERT(w.cargo_pods[pod_b].active);
+    float dist = v2_len(v2_sub(w.cargo_pods[pod_b].pos,
+                               w.cargo_pods[pod_a].pos));
+    ASSERT(dist >= w.cargo_pods[pod_a].radius +
+                   w.cargo_pods[pod_b].radius);
+}
+
+TEST(test_station_dock_tractor_spreads_market_pods) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+
+    const station_module_t *dock = &st->modules[dock_idx];
+    vec2 module_pos = module_world_pos_ring(st, dock->ring, dock->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float out_len = v2_len(outward);
+    ASSERT(out_len > 0.001f);
+    outward = v2_scale(outward, 1.0f / out_len);
+    vec2 hold = v2_add(module_pos, v2_scale(outward,
+        STATION_MODULE_COL_RADIUS + 26.0f));
+
+    int pod_a = spawn_cargo_pod(&w, hold, v2(0.0f, 0.0f),
+                                COMMODITY_FERRITE_INGOT, 3,
+                                CARGO_POD_CARGO);
+    int pod_b = spawn_cargo_pod(&w, hold, v2(0.0f, 0.0f),
+                                COMMODITY_FERRITE_INGOT, 4,
+                                CARGO_POD_CARGO);
+    ASSERT(pod_a >= 0);
+    ASSERT(pod_b >= 0);
+    w.cargo_pods[pod_a].towed_by = -1;
+    w.cargo_pods[pod_b].towed_by = -1;
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_a], 0, dock_idx);
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_b], 0, dock_idx);
+
+    for (int i = 0; i < 60; i++)
+        world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_a].active);
+    ASSERT(w.cargo_pods[pod_b].active);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_a],
+                                            0, dock_idx));
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_b],
+                                            0, dock_idx));
+    float dist = v2_len(v2_sub(w.cargo_pods[pod_b].pos,
+                               w.cargo_pods[pod_a].pos));
+    ASSERT(dist >= w.cargo_pods[pod_a].radius +
+                   w.cargo_pods[pod_b].radius);
+}
+
+TEST(test_station_dock_adopts_finished_output_pod_for_market) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    for (int a = 0; a < MAX_ARMS; a++) {
+        st->arm_speed[a] = 0.0f;
+        st->arm_omega[a] = 0.0f;
+        st->arm_rotation[a] = 0.0f;
+    }
+
+    int dock_idx = -1;
+    int furnace_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            dock_idx = m;
+        }
+        if (st->modules[m].type == MODULE_FURNACE &&
+            !st->modules[m].scaffold) {
+            furnace_idx = m;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+    ASSERT(furnace_idx >= 0);
+
+    vec2 furnace_pos = module_world_pos_ring(
+        st, st->modules[furnace_idx].ring, st->modules[furnace_idx].slot);
+    vec2 furnace_out = v2_norm(v2_sub(furnace_pos, st->pos));
+    if (v2_len_sq(furnace_out) < 0.5f)
+        furnace_out = v2_from_angle(module_angle_ring(
+            st, st->modules[furnace_idx].ring, st->modules[furnace_idx].slot));
+    vec2 output_pos = v2_add(furnace_pos, v2_scale(
+        furnace_out, STATION_MODULE_COL_RADIUS + 18.0f + 20.0f));
+    int pod_idx = test_spawn_exact_pod(
+        &w, output_pos, COMMODITY_FERRITE_INGOT, 6);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = -1;
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_idx], 0, furnace_idx);
+
+    for (int i = 0; i < 240; i++)
+        world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, dock_idx));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xE8, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->ship.pos = st->pos;
+    ledger_earn(st, sp->session_token, 100000.0f);
+    float before = ledger_balance(st, sp->session_token);
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COUNT;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+    ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[pod_idx]));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT(ledger_balance(st, sp->session_token) < before);
+}
+
+TEST(test_cargo_pod_high_speed_station_impact_destroys_shell) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    const station_t *st = &w.stations[0];
+    cargo_unit_t ingot = {0};
+    cargo_unit_t shell = {0};
+    uint8_t fragment_pub[32] = {0};
+    const uint8_t shell_origin[8] = { 'S','M','A','S','H','P','O','D' };
+    fragment_pub[31] = 0x6a;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 0, &ingot));
+    ASSERT(hash_legacy_migrate_unit(shell_origin, COMMODITY_FRAME, 0,
+                                    &shell));
+
+    vec2 relay_pos = module_world_pos_ring(st, 1, 1);
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        &w, v2_add(relay_pos, v2(-20.0f, 0.0f)),
+        v2(420.0f, 0.0f), COMMODITY_FERRITE_INGOT,
+        &ingot, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_set_shell_frame(&w.cargo_pods[pod_idx], &shell);
 
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
-                    before + 7.0f, 0.01f);
-    ASSERT(sp->ship.stat_credits_earned >= 70.0f);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME), 0);
 }
 
-TEST(test_towed_cargo_pod_row_sell_sells_one_unit) {
+TEST(test_cargo_pod_bounces_off_station_corridor_ring) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    for (int a = 0; a < MAX_ARMS; a++) {
+        st->arm_speed[a] = 0.0f;
+        st->arm_omega[a] = 0.0f;
+        st->arm_rotation[a] = 0.0f;
+    }
+
+    float ang1 = module_angle_ring(st, 1, 1);
+    float ang2 = module_angle_ring(st, 1, 2);
+    float mid_ang = (ang1 + ang2) * 0.5f;
+    float ring_r = STATION_RING_RADIUS[1];
+    float pod_r = 18.0f;
+    float outer_edge = ring_r + STATION_CORRIDOR_HW + pod_r;
+    vec2 radial = v2(cosf(mid_ang), sinf(mid_ang));
+    vec2 pos = v2_add(st->pos, v2_scale(radial, outer_edge - 4.0f));
+
+    int pod_idx = test_spawn_exact_pod(&w, pos, COMMODITY_LASER_MODULE, 1);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].vel = v2_scale(radial, -110.0f);
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    float dist = v2_len(v2_sub(w.cargo_pods[pod_idx].pos, st->pos));
+    ASSERT(dist >= outer_edge);
+    ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, radial) > 0.0f);
+}
+
+TEST(test_cargo_pod_bounces_off_asteroid) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->radius = 26.0f;
+    a->hp = 100.0f;
+    a->max_hp = 100.0f;
+    a->pos = v2_add(w.stations[0].pos, v2(1800.0f, 0.0f));
+    a->vel = v2(0.0f, 0.0f);
+
+    float pod_r = 18.0f;
+    vec2 normal = v2(-1.0f, 0.0f);
+    vec2 pod_pos = v2_add(a->pos,
+                          v2_scale(normal, a->radius + pod_r - 4.0f));
+    int pod_idx = test_spawn_exact_pod(&w, pod_pos,
+                                       COMMODITY_TRACTOR_MODULE, 1);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].vel = v2(120.0f, 0.0f);
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, normal) > 0.0f);
+    ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, a->pos) >=
+           (a->radius + pod_r) * (a->radius + pod_r));
+}
+
+TEST(test_towed_cargo_pod_bulk_sell_no_longer_uses_dock_custody) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x58, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+    int pod_a = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
+                                COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
+    int pod_b = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
+                                COMMODITY_FERRITE_ORE, 5, CARGO_POD_CARGO);
+    ASSERT(pod_a >= 0);
+    ASSERT(pod_b >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_a;
+    sp->ship.towed_pods[1] = (int16_t)pod_b;
+    sp->ship.towed_pod_count = 2;
+    w.cargo_pods[pod_a].towed_by = 0;
+    w.cargo_pods[pod_b].towed_by = 0;
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_COUNT;
+    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+    sp->input.service_sell_one = false;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_a].active);
+    ASSERT(w.cargo_pods[pod_b].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_a].towed_by, 0);
+    ASSERT_EQ_INT(w.cargo_pods[pod_b].towed_by, 0);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 2);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_a);
+    ASSERT_EQ_INT(sp->ship.towed_pods[1], pod_b);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    before, 0.01f);
+    ASSERT_EQ_FLOAT(sp->ship.stat_credits_earned, 0.0f, 0.01f);
+}
+
+TEST(test_towed_cargo_pod_row_sell_no_longer_uses_dock_custody) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -911,7 +1500,6 @@ TEST(test_towed_cargo_pod_row_sell_sells_one_unit) {
     sp->current_station = 0;
     w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     float before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
-
     int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
                                   COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
@@ -926,14 +1514,67 @@ TEST(test_towed_cargo_pod_row_sell_sells_one_unit) {
     world_sim_step(&w, SIM_DT);
 
     ASSERT(w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 6);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
     ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
-                    before + 1.0f, 0.01f);
-    ASSERT(sp->ship.stat_credits_earned >= 10.0f);
+                    before, 0.01f);
+    ASSERT_EQ_FLOAT(sp->ship.stat_credits_earned, 0.0f, 0.01f);
 }
 
-TEST(test_towed_cargo_pod_row_sell_refuses_full_hopper) {
+TEST(test_manifest_cargo_pod_sale_preserves_exact_units) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x57, sizeof(sp->session_token));
+    station_t *st = &w.stations[1];
+    ASSERT(station_manifest_bootstrap(st));
+    manifest_clear(&st->manifest);
+    st->_inventory_cache[COMMODITY_FRAME] = 0.0f;
+    st->base_price[COMMODITY_FRAME] = 20.0f;
+    int hopper_idx = station_find_hopper_for(st, COMMODITY_FRAME);
+    ASSERT(hopper_idx >= 0);
+    vec2 hopper_pos = module_world_pos_ring(
+        st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
+
+    cargo_unit_t units[2] = {{0}};
+    const uint8_t origin[8] = { 'P','O','D','T','E','S','T','1' };
+    ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, 0, &units[0]));
+    ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, 1, &units[1]));
+    units[0].origin_station = 1;
+    units[1].origin_station = 1;
+
+    int pod_idx = spawn_cargo_pod_with_manifest(&w, hopper_pos,
+                                                v2(0.0f, 0.0f),
+                                                COMMODITY_FRAME, units, 2,
+                                                CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            1, hopper_idx));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].manifest_count, 2);
+    ASSERT(memcmp(w.cargo_pods[pod_idx].manifest_units[0].pub,
+                  units[0].pub, 32) == 0);
+    ASSERT(memcmp(w.cargo_pods[pod_idx].manifest_units[1].pub,
+                  units[1].pub, 32) == 0);
+    ASSERT(sp->ship.stat_credits_earned >= 40.0f);
+}
+
+TEST(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -949,7 +1590,6 @@ TEST(test_towed_cargo_pod_row_sell_refuses_full_hopper) {
     w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] =
         REFINERY_HOPPER_CAPACITY;
-
     int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
                                   COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
@@ -965,13 +1605,14 @@ TEST(test_towed_cargo_pod_row_sell_refuses_full_hopper) {
 
     ASSERT(w.cargo_pods[pod_idx].active);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 7);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
     ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
                     REFINERY_HOPPER_CAPACITY, 0.01f);
     ASSERT_EQ_FLOAT(sp->ship.stat_credits_earned, 0.0f, 0.01f);
 }
 
-TEST(test_towed_cargo_pod_bulk_sell_clamps_to_hopper_space) {
+TEST(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -982,28 +1623,29 @@ TEST(test_towed_cargo_pod_bulk_sell_clamps_to_hopper_space) {
     sp->connected = true;
     sp->id = 0;
     memset(sp->session_token, 0x58, sizeof(sp->session_token));
-    sp->docked = true;
-    sp->current_station = 0;
-    w.stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] =
-        REFINERY_HOPPER_CAPACITY - 2.0f;
+    station_t *kepler = &w.stations[1];
+    int hopper_idx = station_find_hopper_for(kepler, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper_idx >= 0);
+    vec2 hopper_pos = module_world_pos_ring(
+        kepler, kepler->modules[hopper_idx].ring,
+        kepler->modules[hopper_idx].slot);
+    float before = ledger_balance(kepler, sp->session_token);
 
-    int pod_idx = spawn_cargo_pod(&w, sp->ship.pos, v2(0.0f, 0.0f),
-                                  COMMODITY_FERRITE_ORE, 7, CARGO_POD_CARGO);
+    int pod_idx = test_spawn_exact_pod(&w, hopper_pos,
+                                       COMMODITY_FERRITE_INGOT, 7);
     ASSERT(pod_idx >= 0);
     sp->ship.towed_pods[0] = (int16_t)pod_idx;
     sp->ship.towed_pod_count = 1;
     w.cargo_pods[pod_idx].towed_by = 0;
-    sp->input.service_sell = true;
-    sp->input.service_sell_only = COMMODITY_COUNT;
-
     world_sim_step(&w, SIM_DT);
 
     ASSERT(w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 5);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
-                    REFINERY_HOPPER_CAPACITY, 0.01f);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 7);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            1, hopper_idx));
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT(ledger_balance(kepler, sp->session_token) > before);
     ASSERT(sp->ship.stat_credits_earned > 0.0f);
 }
 
@@ -1102,6 +1744,19 @@ static const sim_event_t *find_hail_response_event(const world_t *w) {
     return NULL;
 }
 
+static bool test_first_dock_berth_pos(const station_t *st, vec2 *out) {
+    if (!st || !out) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->type != MODULE_DOCK || m->scaffold) continue;
+        vec2 mod_pos = module_world_pos_ring(st, m->ring, m->slot);
+        vec2 radial = v2_from_angle(module_angle_ring(st, m->ring, m->slot));
+        *out = v2_add(mod_pos, v2_scale(radial, 55.0f));
+        return true;
+    }
+    return false;
+}
+
 TEST(test_hail_responds_while_docked) {
     WORLD_DECL;
     world_reset(&w);
@@ -1120,6 +1775,39 @@ TEST(test_hail_responds_while_docked) {
     ASSERT(ev != NULL);
     ASSERT_EQ_INT(ev->hail_response.station, 0);
     ASSERT(ev->hail_response.credits >= 0.0f);
+}
+
+TEST(test_docking_auto_reports_station_balance) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x46, sizeof(sp->session_token));
+    ledger_earn(&w.stations[0], sp->session_token, 321.0f);
+
+    sp->input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    sp->input.interact = false;
+
+    vec2 berth = {0};
+    ASSERT(test_first_dock_berth_pos(&w.stations[0], &berth));
+    sp->ship.pos = berth;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.interact = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(sp->docked);
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 0);
+    ASSERT_EQ_FLOAT(ev->hail_response.credits, 321.0f, 0.01f);
+    ASSERT_EQ_INT(ev->hail_response.contract_index, -1);
 }
 
 TEST(test_hail_does_not_spawn_nearest_rock_contract) {
@@ -1250,6 +1938,7 @@ TEST(test_dead_neural_worker_auto_respawns) {
      * stored hull on a later roster tick. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
     station_t *kepler = &w->stations[1];
     ASSERT(station_finished_mint(kepler, COMMODITY_FRAME, 2, NULL) == 2);
     ASSERT(station_finished_mint(kepler, COMMODITY_TRACTOR_MODULE, 1, NULL) == 1);
@@ -1688,15 +2377,18 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
 
     for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
 
-    int helios_workers_after = 0;
+    int helios_miners_after = 0;
+    int helios_tows_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
         if (w->npc_ships[n].home_station != 2) continue;
-        helios_workers_after++;
+        if (w->npc_ships[n].role == NPC_ROLE_MINER) helios_miners_after++;
+        if (w->npc_ships[n].role == NPC_ROLE_TOW) helios_tows_after++;
         ASSERT(w->npc_ships[n].ship_asset_id != SHIP_ASSET_ID_NONE);
     }
-    ASSERT_EQ_INT(helios_workers_after, 1);
-    ASSERT(world_station_stored_hull_count(w, 2, HULL_CLASS_NPC_MINER) >= 1);
+    ASSERT_EQ_INT(helios_miners_after, 1);
+    ASSERT_EQ_INT(helios_tows_after, 1);
+    ASSERT_EQ_INT(helios->pending_ship_build_count, 0);
 }
 
 TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
@@ -1899,6 +2591,38 @@ TEST(test_world_sim_step_mining_damages_asteroid) {
     ASSERT(w.asteroids[target].hp < hp_before);
 }
 
+TEST(test_world_sim_step_laser_scans_cargo_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->nearby_station = -1;
+    sp->current_station = -1;
+    sp->ship.pos = v2(10000.0f, 10000.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+    sp->input.mine = true;
+
+    vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
+    int pod_idx = test_spawn_frame_pod(&w, v2_add(muzzle, v2(90.0f, 0.0f)), 1);
+    ASSERT(pod_idx >= 0);
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(sp->scan_active);
+    ASSERT(sp->beam_hit);
+    ASSERT_EQ_INT(sp->scan_target_type, INSPECT_TARGET_CARGO_POD);
+    ASSERT_EQ_INT(sp->scan_target_index, pod_idx);
+}
+
 TEST(test_world_sim_step_docking) {
     WORLD_DECL;
     world_reset(&w);
@@ -2058,20 +2782,29 @@ TEST(test_refinery_deposits_named_ingot) {
 
     /* Run sim until smelt completes (smelt_progress accumulates ~0.5/s). */
     int initial_manifest = w->stations[0].manifest.count;
+    int initial_frames = station_finished_count(&w->stations[0], COMMODITY_FRAME);
+    int initial_frame_pod_units =
+        test_count_exact_pod_units(w, COMMODITY_FRAME);
+    ASSERT(initial_frame_pod_units > 0);
     float initial_bulk = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
         world_sim_step(w, 1.0f / 120.0f);
     /* Asteroid should be consumed. */
     ASSERT(!w->asteroids[slot].active);
-    /* Smelt always lands the units in the manifest now (single source
-     * of truth — no separate named-ingot stockpile). The float
-     * inventory bumps in lockstep. */
-    bool got_bulk = (w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > initial_bulk);
-    ASSERT(got_bulk);
-    ASSERT_EQ_INT(w->stations[0].manifest.count - initial_manifest, 10);
+    ASSERT_EQ_FLOAT(w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+                    initial_bulk, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(&w->stations[0], COMMODITY_FRAME),
+                  initial_frames);
+    ASSERT_EQ_INT(test_count_exact_pod_units(w, COMMODITY_FRAME),
+                  initial_frame_pod_units - 1);
+    ASSERT_EQ_INT(w->stations[0].manifest.count, initial_manifest);
+    ASSERT(test_count_exact_pod_units(w, COMMODITY_FERRITE_INGOT) >= 10);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        w, COMMODITY_FERRITE_INGOT, 10);
+    ASSERT(pod != NULL);
     bool any_named = false;
-    for (int i = initial_manifest; i < w->stations[0].manifest.count; i++) {
-        cargo_unit_t *unit = &w->stations[0].manifest.units[i];
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        const cargo_unit_t *unit = &pod->manifest_units[i];
         ASSERT_EQ_INT(unit->kind, CARGO_KIND_INGOT);
         ASSERT_EQ_INT(unit->commodity, COMMODITY_FERRITE_INGOT);
         ASSERT_EQ_INT(unit->grade, MINING_GRADE_RATI);
@@ -2082,17 +2815,17 @@ TEST(test_refinery_deposits_named_ingot) {
         ASSERT_EQ_INT(unit->prefix_class, mining_pubkey_class(unit->pub));
         if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) any_named = true;
     }
-    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].parent_merkle,
-                  w->stations[0].manifest.units[w->stations[0].manifest.count - 1].parent_merkle,
+    ASSERT(memcmp(pod->manifest_units[0].parent_merkle,
+                  pod->manifest_units[pod->manifest_count - 1].parent_merkle,
                   32) == 0);
-    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].pub,
-                  w->stations[0].manifest.units[w->stations[0].manifest.count - 1].pub,
+    ASSERT(memcmp(pod->manifest_units[0].pub,
+                  pod->manifest_units[pod->manifest_count - 1].pub,
                   32) != 0);
     /* The first non-anonymous unit gets a non-zero mined_block stamped
      * after the signal_channel post; anonymous units stay at 0. */
     if (any_named) {
-        for (int i = initial_manifest; i < w->stations[0].manifest.count; i++) {
-            cargo_unit_t *unit = &w->stations[0].manifest.units[i];
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            const cargo_unit_t *unit = &pod->manifest_units[i];
             if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
                 ASSERT(unit->mined_block != 0);
                 break;
@@ -2217,6 +2950,7 @@ TEST(test_crystal_requires_two_distinct_furnace_passes) {
     }
     ASSERT_EQ_INT(pair_count, 2);
     ASSERT(station_can_smelt(helios, COMMODITY_CRYSTAL_ORE));
+    ASSERT(station_finished_mint(helios, COMMODITY_FRAME, 1, NULL) == 1);
 
     int frag = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2237,6 +2971,9 @@ TEST(test_crystal_requires_two_distinct_furnace_passes) {
     a->pos = midpoint[0];
 
     int initial_manifest = helios->manifest.count;
+    int initial_frames = station_finished_count(helios, COMMODITY_FRAME);
+    int initial_pod_units =
+        test_count_exact_pod_units(&w, COMMODITY_CRYSTAL_INGOT);
     for (int i = 0; i < 400 &&
                     a->active &&
                     a->crystal_stage != CRYSTAL_STAGE_INTERMEDIATE; i++) {
@@ -2257,20 +2994,26 @@ TEST(test_crystal_requires_two_distinct_furnace_passes) {
     }
 
     ASSERT(!w.asteroids[frag].active);
-    ASSERT_EQ_INT(helios->manifest.count - initial_manifest, 3);
-    for (int i = initial_manifest; i < helios->manifest.count; i++) {
-        ASSERT_EQ_INT(helios->manifest.units[i].commodity,
+    ASSERT_EQ_INT(helios->manifest.count, initial_manifest - 1);
+    ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FRAME),
+                  initial_frames - 1);
+    ASSERT(test_count_exact_pod_units(&w, COMMODITY_CRYSTAL_INGOT) >=
+           initial_pod_units + 3);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_CRYSTAL_INGOT, 3);
+    ASSERT(pod != NULL);
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        ASSERT_EQ_INT(pod->manifest_units[i].commodity,
                       COMMODITY_CRYSTAL_INGOT);
     }
 }
 
-TEST(test_station_production_dual_writes_frame_manifest) {
+TEST(test_station_production_ejects_frame_pod) {
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
     cargo_unit_t input = {0};
     cargo_unit_t expected_first = {0};
-    cargo_unit_t expected_last = {0};
     int press_idx = -1;
     uint8_t fragment_a[32] = {0};
 
@@ -2287,28 +3030,372 @@ TEST(test_station_production_dual_writes_frame_manifest) {
     memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI, fragment_a, 0, &input));
     ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 0, &expected_first));
-    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 9, &expected_last));
     ASSERT(manifest_push(&st->manifest, &input));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
 
     st->module_input[press_idx] = 1.0f;
     sim_step_station_production(&w, 1.0f);
 
-    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 10.0f, 0.001f);
-    ASSERT_EQ_INT(st->manifest.count, 10);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 0);
     ASSERT_EQ_INT(manifest_find(&st->manifest, input.pub), -1);
-    ASSERT(memcmp(st->manifest.units[0].pub, expected_first.pub, 32) == 0);
-    ASSERT(memcmp(st->manifest.units[9].pub, expected_last.pub, 32) == 0);
-    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected_first.parent_merkle, 32) == 0);
-    ASSERT_EQ_INT(st->manifest.units[0].kind, CARGO_KIND_FRAME);
-    ASSERT_EQ_INT(st->manifest.units[0].commodity, COMMODITY_FRAME);
-    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_RATI);
-    ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_FRAME_BASIC);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, 2);
+    ASSERT(pod != NULL);
+    ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
+    ASSERT(memcmp(pod->manifest_units[0].parent_merkle,
+                  expected_first.parent_merkle, 32) == 0);
+    ASSERT_EQ_INT(pod->manifest_units[0].kind, CARGO_KIND_FRAME);
+    ASSERT_EQ_INT(pod->manifest_units[0].commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(pod->manifest_units[0].grade, MINING_GRADE_RATI);
+    ASSERT_EQ_INT(pod->manifest_units[0].recipe_id, RECIPE_FRAME_BASIC);
+    ASSERT(pod->has_shell_frame);
+    ASSERT_EQ_INT(pod->shell_frame.commodity, COMMODITY_FRAME);
 }
 
-TEST(test_station_production_dual_writes_laser_manifest) {
+TEST(test_station_production_fills_existing_frame_output_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t inputs[2] = {{0}};
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+    uint8_t fragment_b[32] = {0};
+
+    fragment_a[31] = 0x24;
+    fragment_b[31] = 0x25;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI,
+                      fragment_a, 0, &inputs[0]));
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_b, 0, &inputs[1]));
+    ASSERT(manifest_push(&st->manifest, &inputs[0]));
+    ASSERT(manifest_push(&st->manifest, &inputs[1]));
+
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    int output_pod = test_spawn_frame_pod(&w, press_pos, 1);
+    ASSERT(output_pod >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[output_pod], 1, press_idx);
+
+    st->module_input[press_idx] = 2.0f;
+    sim_step_station_production(&w, 2.0f);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME), 5);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].manifest_count, 5);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].quantity, 5);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[output_pod],
+                                            1, press_idx));
+    ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_FRAME, 1) == NULL);
+}
+
+TEST(test_station_production_consumes_loose_ingot_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t input = {0};
+    cargo_unit_t expected_first = {0};
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+
+    fragment_a[31] = 0x22;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_a, 0, &input));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 0, &expected_first));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
+
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    vec2 ferrite_hopper_pos = st->pos;
+    ASSERT(test_hopper_pos_for(st, COMMODITY_FERRITE_INGOT,
+                               &ferrite_hopper_pos));
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, v2_add(press_pos, v2(28.0f, 0.0f)), v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, &input, 1, CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(st->manifest.count, 0);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->module_input[press_idx], 0.0f, 0.001f);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, 2);
+    ASSERT(pod != NULL);
+    ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
+    ASSERT_EQ_INT(pod->manifest_units[0].kind, CARGO_KIND_FRAME);
+    ASSERT_EQ_INT(pod->manifest_units[0].commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(pod->manifest_units[0].grade, MINING_GRADE_RARE);
+    ASSERT_EQ_INT(pod->manifest_units[0].recipe_id, RECIPE_FRAME_BASIC);
+    ASSERT(pod->has_shell_frame);
+}
+
+TEST(test_frame_press_accepts_player_towed_ingot_pod_at_press) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    server_player_t *sp = &w.players[0];
+    cargo_unit_t input = {0};
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+
+    fragment_a[31] = 0x26;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_a, 0, &input));
+
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    vec2 ferrite_hopper_pos = st->pos;
+    ASSERT(test_hopper_pos_for(st, COMMODITY_FERRITE_INGOT,
+                               &ferrite_hopper_pos));
+    vec2 midpoint = v2_scale(v2_add(press_pos, ferrite_hopper_pos), 0.5f);
+
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, v2_add(press_pos, v2(24.0f, 0.0f)), v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, &input, 1, CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->ship.towed_pods[0] = (int16_t)input_pod;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[input_pod].towed_by = 0;
+
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.cargo_pods[input_pod].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[input_pod],
+                                            1, press_idx));
+    ASSERT_EQ_FLOAT(st->module_active_pulse[press_idx], 1.0f, 0.001f);
+    vec2 to_mid = v2_sub(midpoint, w.cargo_pods[input_pod].pos);
+    ASSERT(v2_dot(w.cargo_pods[input_pod].vel, to_mid) > 0.0f);
+}
+
+TEST(test_station_hopper_accepts_player_towed_ingot_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    server_player_t *sp = &w.players[0];
+    cargo_unit_t input = {0};
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+
+    fragment_a[31] = 0x23;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_a, 0, &input));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
+
+    vec2 ferrite_hopper_pos = st->pos;
+    ASSERT(test_hopper_pos_for(st, COMMODITY_FERRITE_INGOT,
+                               &ferrite_hopper_pos));
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, ferrite_hopper_pos, v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, &input, 1, CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->ship.towed_pods[0] = (int16_t)input_pod;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[input_pod].towed_by = 0;
+
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_FRAME, 2) != NULL);
+}
+
+TEST(test_furnace_accepts_player_towed_frame_shell_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[0];
+    server_player_t *sp = &w.players[0];
+    int furnace_idx = -1;
+
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FURNACE &&
+            module_instance_input_ore(&st->modules[i]) == COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+            break;
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+    vec2 furnace_pos = module_world_pos_ring(
+        st, st->modules[furnace_idx].ring,
+        st->modules[furnace_idx].slot);
+    int pod_idx = test_spawn_frame_pod(&w, furnace_pos, 1);
+    ASSERT(pod_idx >= 0);
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    step_station_cargo_pod_tractors(&w, 0.0f);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, furnace_idx));
+}
+
+TEST(test_furnace_accepts_frame_shell_pod_near_smelt_beam) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[0];
+    server_player_t *sp = &w.players[0];
+    int furnace_idx = -1;
+    int ore_hopper_idx = -1;
+
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        st->arm_speed[arm] = 0.0f;
+        st->arm_rotation[arm] = 0.0f;
+    }
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (m->type == MODULE_FURNACE &&
+            module_instance_input_ore(m) == COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+        }
+        if (m->type == MODULE_HOPPER &&
+            (commodity_t)m->commodity == COMMODITY_FERRITE_ORE) {
+            ore_hopper_idx = i;
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+    ASSERT(ore_hopper_idx >= 0);
+
+    vec2 furnace_pos = module_world_pos_ring(st,
+        st->modules[furnace_idx].ring, st->modules[furnace_idx].slot);
+    vec2 ore_hopper_pos = module_world_pos_ring(st,
+        st->modules[ore_hopper_idx].ring, st->modules[ore_hopper_idx].slot);
+    (void)ore_hopper_pos;
+
+    int pod_idx = test_spawn_frame_pod(&w, furnace_pos, 1);
+    ASSERT(pod_idx >= 0);
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    step_station_cargo_pod_tractors(&w, 0.0f);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, furnace_idx));
+}
+
+TEST(test_furnace_tractor_holds_frame_pod_outside_module) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    for (int a = 0; a < MAX_ARMS; a++) {
+        st->arm_speed[a] = 0.0f;
+        st->arm_omega[a] = 0.0f;
+        st->arm_rotation[a] = 0.0f;
+    }
+
+    int furnace_idx = -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FURNACE &&
+            module_instance_input_ore(&st->modules[i]) == COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+            break;
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+
+    vec2 furnace_pos = module_world_pos_ring(st,
+        st->modules[furnace_idx].ring, st->modules[furnace_idx].slot);
+    int pod_idx = test_spawn_frame_pod(&w, furnace_pos, 1);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_idx], 0, furnace_idx);
+
+    for (int i = 0; i < 180; i++)
+        world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, furnace_idx));
+    float dist = v2_len(v2_sub(w.cargo_pods[pod_idx].pos, furnace_pos));
+    ASSERT(dist >= STATION_MODULE_COL_RADIUS + w.cargo_pods[pod_idx].radius - 0.5f);
+    vec2 outward = v2_norm(v2_sub(furnace_pos, st->pos));
+    ASSERT(v2_dot(v2_sub(w.cargo_pods[pod_idx].pos, furnace_pos), outward) > 0.0f);
+}
+
+TEST(test_station_production_ejects_laser_pod) {
     WORLD_DECL;
     world_reset(&w);
     /* LASER_FAB lives on Helios (st[2]) under the minimal layout —
@@ -2334,6 +3421,7 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
     ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE, fragment_cu, 0, &inputs[0]));
     inputs[1].kind = (uint8_t)CARGO_KIND_FRAME;
@@ -2344,22 +3432,83 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     ASSERT(hash_product(RECIPE_LASER_BASIC, inputs, 2, 0, &expected));
     ASSERT(manifest_push(&st->manifest, &inputs[0]));
     ASSERT(manifest_push(&st->manifest, &inputs[1]));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
+
+    st->module_input[laser_idx] = 1.0f;
+    st->_inventory_cache[COMMODITY_FRAME] = 2.0f;
+    sim_step_station_production(&w, 2.0f);
+
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_LASER_MODULE], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 0);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_LASER_MODULE, 1);
+    ASSERT(pod != NULL);
+    ASSERT(memcmp(pod->manifest_units[0].pub, expected.pub, 32) == 0);
+    ASSERT(memcmp(pod->manifest_units[0].parent_merkle,
+                  expected.parent_merkle, 32) == 0);
+    ASSERT_EQ_INT(pod->manifest_units[0].kind, CARGO_KIND_LASER);
+    ASSERT_EQ_INT(pod->manifest_units[0].commodity, COMMODITY_LASER_MODULE);
+    ASSERT_EQ_INT(pod->manifest_units[0].grade, MINING_GRADE_FINE);
+    ASSERT_EQ_INT(pod->manifest_units[0].recipe_id, RECIPE_LASER_BASIC);
+    ASSERT(pod->has_shell_frame);
+    ASSERT_EQ_INT(pod->shell_frame.commodity, COMMODITY_FRAME);
+}
+
+TEST(test_station_production_fills_existing_laser_output_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[2];
+    cargo_unit_t inputs[2] = {{0}};
+    int laser_idx = -1;
+    uint8_t fragment_cu[32] = {0};
+    uint8_t frame_pub[32] = {0};
+
+    fragment_cu[31] = 0x35;
+    frame_pub[31] = 0x45;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_LASER_FAB) {
+            laser_idx = i;
+            break;
+        }
+    }
+    ASSERT(laser_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_cu, 0, &inputs[0]));
+    inputs[1].kind = (uint8_t)CARGO_KIND_FRAME;
+    inputs[1].commodity = (uint8_t)COMMODITY_FRAME;
+    inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
+    inputs[1].quantity = 1;
+    memcpy(inputs[1].pub, frame_pub, sizeof(frame_pub));
+    ASSERT(manifest_push(&st->manifest, &inputs[0]));
+    ASSERT(manifest_push(&st->manifest, &inputs[1]));
+
+    vec2 laser_pos = module_world_pos_ring(
+        st, st->modules[laser_idx].ring, st->modules[laser_idx].slot);
+    int output_pod = test_spawn_exact_pod(
+        &w, laser_pos, COMMODITY_LASER_MODULE, 1);
+    ASSERT(output_pod >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[output_pod], 2, laser_idx);
 
     st->module_input[laser_idx] = 1.0f;
     st->_inventory_cache[COMMODITY_FRAME] = 1.0f;
     sim_step_station_production(&w, 2.0f);
 
-    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_LASER_MODULE], 1.0f, 0.001f);
-    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
-    ASSERT_EQ_INT(st->manifest.count, 1);
-    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
-    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
-    ASSERT(memcmp(st->manifest.units[0].pub, expected.pub, 32) == 0);
-    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected.parent_merkle, 32) == 0);
-    ASSERT_EQ_INT(st->manifest.units[0].kind, CARGO_KIND_LASER);
-    ASSERT_EQ_INT(st->manifest.units[0].commodity, COMMODITY_LASER_MODULE);
-    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_FINE);
-    ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_LASER_BASIC);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_LASER_MODULE), 2);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].manifest_count, 2);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].quantity, 2);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[output_pod],
+                                            2, laser_idx));
+    ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_LASER_MODULE, 1) == NULL);
 }
 
 /* Manifest-as-truth invariant: production refuses to mint orphan
@@ -2583,6 +3732,7 @@ TEST(test_scenario_full_mining_cycle) {
            w.players[0].session_token, sizeof(w.asteroids[frag].last_fractured_token));
     w.players[0].ship.pos = v2_add(midpoint, v2(100.0f, 0.0f));
     w.players[0].ship.vel = v2(0.0f, 0.0f);
+    ASSERT(station_finished_mint(&w.stations[0], COMMODITY_FRAME, 1, NULL) == 1);
     /* Run enough steps for smelt_progress to reach 1.0 (~2 seconds at 120Hz) */
     for (int i = 0; i < 300; i++) world_sim_step(&w, SIM_DT);
 
@@ -2594,10 +3744,9 @@ TEST(test_scenario_full_mining_cycle) {
 }
 
 /* Phase 1-3 manifest-first invariant:
- *   Across every station + every connected ship, no pub appears twice,
- *   and the count of manifest units per commodity never exceeds the
- *   combined integer float inventory. Runs a smelt + a dock delivery +
- *   a buyback through the normal sim code paths. */
+ *   Across every station, connected ship, and loose cargo pod, no pub
+ *   appears twice. Runs a smelt + a dock delivery + a buyback through
+ *   the normal sim code paths. */
 TEST(test_manifest_conservation_across_transactions) {
     WORLD_DECL;
     world_reset(&w);
@@ -2607,7 +3756,7 @@ TEST(test_manifest_conservation_across_transactions) {
     w.players[0].connected = true;
     w.players[0].docked = false;
 
-    /* Smelt one fragment to populate a station manifest unit. */
+    /* Smelt one fragment to populate a loose manifest-bearing cargo pod. */
     int frag = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++)
         if (!w.asteroids[i].active) { frag = i; break; }
@@ -2618,7 +3767,7 @@ TEST(test_manifest_conservation_across_transactions) {
     w.asteroids[frag].radius = 8.0f;
     w.asteroids[frag].hp = 1.0f;
     w.asteroids[frag].max_hp = 1.0f;
-    w.asteroids[frag].ore = 3.0f;       /* 3 whole units → 3 manifest entries */
+    w.asteroids[frag].ore = 3.0f;       /* 3 whole units -> 3 pod entries */
     w.asteroids[frag].max_ore = 3.0f;
     w.asteroids[frag].commodity = COMMODITY_FERRITE_ORE;
     w.asteroids[frag].fracture_child = true;
@@ -2662,12 +3811,13 @@ TEST(test_manifest_conservation_across_transactions) {
     vec2 spos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[silo_idx].ring, w.stations[0].modules[silo_idx].slot);
     w.asteroids[frag].pos = v2_scale(v2_add(fpos, spos), 0.5f);
+    ASSERT(station_finished_mint(&w.stations[0], COMMODITY_FRAME, 1, NULL) == 1);
     for (int i = 0; i < 400; i++) world_sim_step(&w, SIM_DT);
 
-    /* Post-smelt: station 0 manifest should carry 3 COMMON ferrite ingots. */
-    int station_manifest_ferrite =
-        manifest_count_by_commodity(&w.stations[0].manifest, COMMODITY_FERRITE_INGOT);
-    ASSERT(station_manifest_ferrite == 3);
+    /* Post-smelt: a loose pod should carry 3 COMMON ferrite ingots. */
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_FERRITE_INGOT, 3);
+    ASSERT(pod != NULL);
 
     /* Invariant sweep: no pub repeats anywhere. */
     static uint8_t seen_pubs[64][32]; int seen_n = 0;
@@ -2692,6 +3842,18 @@ TEST(test_manifest_conservation_across_transactions) {
             }
             if (seen_n < (int)(sizeof(seen_pubs) / sizeof(seen_pubs[0]))) {
                 memcpy(seen_pubs[seen_n++], ship->manifest.units[i].pub, 32);
+            }
+        }
+    }
+    for (int c = 0; c < MAX_CARGO_PODS; c++) {
+        const cargo_pod_t *cp = &w.cargo_pods[c];
+        if (!cp->active) continue;
+        for (uint16_t i = 0; i < cp->manifest_count; i++) {
+            for (int k = 0; k < seen_n; k++) {
+                ASSERT(memcmp(seen_pubs[k], cp->manifest_units[i].pub, 32) != 0);
+            }
+            if (seen_n < (int)(sizeof(seen_pubs) / sizeof(seen_pubs[0]))) {
+                memcpy(seen_pubs[seen_n++], cp->manifest_units[i].pub, 32);
             }
         }
     }
@@ -2795,17 +3957,24 @@ TEST(test_scenario_npc_economy_30_seconds) {
     }
     ASSERT(any_mined);
 
-    /* Verify: at least one station has either an ingot in stock or
-     * raw ore mid-smelt. Originally checked station[0] only, but Helios
-     * also has active furnace pairs; on machines where Prospect's
-     * ferrite pipeline runs slower than Helios's cuprite/crystal one,
-     * station[0] can stay quiet for the first minute even though the
-     * economy is clearly working. Looking at every station catches both
-     * ends. */
+    /* Verify: at least one station has either old-style finished stock,
+     * a new physical finished-good pod, or raw ore mid-smelt. Originally
+     * checked station[0] only, but Helios also has active furnace pairs;
+     * on machines where Prospect's ferrite pipeline runs slower than
+     * Helios's cuprite/crystal one, station[0] can stay quiet for the
+     * first minute even though the economy is clearly working. Looking at
+     * every station and loose pod catches both ends. */
     bool any_ingot = false;
     for (int s = 0; s < MAX_STATIONS && !any_ingot; s++) {
         for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
             if (w.stations[s]._inventory_cache[i] > 0.0f) { any_ingot = true; break; }
+        }
+    }
+    bool any_pod_ingot = false;
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+        if (test_count_exact_pod_units(&w, (commodity_t)i) > 0) {
+            any_pod_ingot = true;
+            break;
         }
     }
     bool ore_consumed = false;
@@ -2814,7 +3983,7 @@ TEST(test_scenario_npc_economy_30_seconds) {
             if (w.stations[s]._inventory_cache[i] > 0.0f) { ore_consumed = true; break; }
         }
     }
-    ASSERT(any_ingot || ore_consumed);
+    ASSERT(any_ingot || any_pod_ingot || ore_consumed);
 
     /* Verify: no negative values anywhere */
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -3457,6 +4626,114 @@ static int test_spawn_collectible_fragment(world_t *w,
     return frag;
 }
 
+static int test_spawn_smelt_fragment(world_t *w,
+                                     commodity_t ore,
+                                     float amount,
+                                     vec2 pos) {
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) {
+            frag = i;
+            break;
+        }
+    }
+    if (frag < 0) return -1;
+    asteroid_t *a = &w->asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = ore;
+    a->radius = 8.0f;
+    a->ore = amount;
+    a->max_ore = amount;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    a->pos = pos;
+    a->vel = v2(0.0f, 0.0f);
+    return frag;
+}
+
+TEST(test_furnace_smelting_requires_frame_shell) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    station_t *prospect = &w.stations[0];
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        prospect->arm_speed[arm] = 0.0f;
+        prospect->arm_rotation[arm] = 0.0f;
+    }
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FRAME, 0));
+
+    vec2 smelt_target = prospect->pos;
+    ASSERT(test_station_smelt_endpoint_for_ore(prospect, COMMODITY_FERRITE_ORE,
+                                               &smelt_target));
+    int pod_units_before =
+        test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
+    int frag = test_spawn_smelt_fragment(
+        &w, COMMODITY_FERRITE_ORE, 4.0f, smelt_target);
+    ASSERT(frag >= 0);
+
+    for (int i = 0; i < 600 && w.asteroids[frag].active; i++)
+        step_furnace_smelting(&w, SIM_DT);
+
+    ASSERT(w.asteroids[frag].active);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT),
+                  pod_units_before);
+}
+
+TEST(test_furnace_smelting_consumes_loose_frame_shell) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    station_t *prospect = &w.stations[0];
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        prospect->arm_speed[arm] = 0.0f;
+        prospect->arm_rotation[arm] = 0.0f;
+    }
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FRAME, 0));
+
+    vec2 smelt_target = prospect->pos;
+    ASSERT(test_station_smelt_endpoint_for_ore(prospect, COMMODITY_FERRITE_ORE,
+                                               &smelt_target));
+    int furnace_idx = -1;
+    for (int i = 0; i < prospect->module_count; i++) {
+        if (prospect->modules[i].type == MODULE_FURNACE &&
+            module_instance_input_ore(&prospect->modules[i]) ==
+                COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+            break;
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+    vec2 frame_shell_pos = module_world_pos_ring(
+        prospect, prospect->modules[furnace_idx].ring,
+        prospect->modules[furnace_idx].slot);
+    int frame_units_before =
+        test_count_exact_pod_units(&w, COMMODITY_FRAME);
+    ASSERT(test_spawn_frame_pod(&w, frame_shell_pos, 1) >= 0);
+    int frame_units_with_shell =
+        test_count_exact_pod_units(&w, COMMODITY_FRAME);
+    ASSERT_EQ_INT(frame_units_with_shell, frame_units_before + 1);
+
+    int frag = test_spawn_smelt_fragment(
+        &w, COMMODITY_FERRITE_ORE, 4.0f, smelt_target);
+    ASSERT(frag >= 0);
+
+    for (int i = 0; i < 600 && w.asteroids[frag].active; i++)
+        step_furnace_smelting(&w, SIM_DT);
+
+    ASSERT(!w.asteroids[frag].active);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME),
+                  frame_units_with_shell - 1);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_FERRITE_INGOT, 4);
+    ASSERT(pod != NULL);
+}
+
 TEST(test_autopilot_routes_towed_fragment_to_smelt_even_near_station) {
     WORLD_DECL;
     world_reset(&w);
@@ -3542,7 +4819,7 @@ TEST(test_autopilot_smelt_delivery_preempts_repair_dock) {
     ASSERT(!sp->input.interact);
 }
 
-TEST(test_fragment_smelt_vents_overflow_instead_of_stranding) {
+TEST(test_fragment_smelt_full_stock_still_emits_pod) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -3579,17 +4856,30 @@ TEST(test_fragment_smelt_vents_overflow_instead_of_stranding) {
     a->pos = smelt_target;
 
     int initial_count = station_finished_count(prospect, COMMODITY_FERRITE_INGOT);
+    float initial_stock = prospect->_inventory_cache[COMMODITY_FERRITE_INGOT];
+    int initial_frames = station_finished_count(prospect, COMMODITY_FRAME);
+    int initial_frame_pod_units =
+        test_count_exact_pod_units(&w, COMMODITY_FRAME);
+    ASSERT(initial_frame_pod_units > 0);
+    int pod_units_before =
+        test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
     for (int i = 0; i < 600 && w.asteroids[frag].active; i++)
         world_sim_step(&w, 1.0f / 120.0f);
 
     ASSERT(!w.asteroids[frag].active);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
-                  initial_count + 5);
+                  initial_count);
     ASSERT_EQ_FLOAT(prospect->_inventory_cache[COMMODITY_FERRITE_INGOT],
-                    MAX_PRODUCT_STOCK, 0.001f);
+                    initial_stock, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
+                  initial_frames);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME),
+                  initial_frame_pod_units - 1);
+    ASSERT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT) >=
+           pod_units_before + 12);
 }
 
-TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
+TEST(test_fragment_smelt_at_full_stock_keeps_station_stock_and_emits_pod) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -3626,6 +4916,13 @@ TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
     a->pos = smelt_target;
 
     int initial_count = station_finished_count(prospect, COMMODITY_FERRITE_INGOT);
+    float initial_stock = prospect->_inventory_cache[COMMODITY_FERRITE_INGOT];
+    int initial_frames = station_finished_count(prospect, COMMODITY_FRAME);
+    int initial_frame_pod_units =
+        test_count_exact_pod_units(&w, COMMODITY_FRAME);
+    ASSERT(initial_frame_pod_units > 0);
+    int pod_units_before =
+        test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
     for (int i = 0; i < 600 && w.asteroids[frag].active; i++)
         world_sim_step(&w, 1.0f / 120.0f);
 
@@ -3633,7 +4930,13 @@ TEST(test_fragment_smelt_at_full_stock_vents_all_overflow) {
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
                   initial_count);
     ASSERT_EQ_FLOAT(prospect->_inventory_cache[COMMODITY_FERRITE_INGOT],
-                    MAX_PRODUCT_STOCK, 0.001f);
+                    initial_stock, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
+                  initial_frames);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME),
+                  initial_frame_pod_units - 1);
+    ASSERT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT) >=
+           pod_units_before + 12);
 }
 
 TEST(test_neural_npc_assignment_preserves_miner_hull_for_hauler_work) {
@@ -5970,11 +7273,16 @@ TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
     station_t *prospect = &w.stations[0];
     station_t *kepler = &w.stations[1];
     ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 4));
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FRAME, 1));
     ASSERT(test_set_station_finished_units(kepler, COMMODITY_FERRITE_INGOT, 0));
+    int prospect_market_pod = test_spawn_station_market_exact_pod(
+        &w, 0, COMMODITY_FERRITE_INGOT, 1);
+    ASSERT(prospect_market_pod >= 0);
 
     w.contracts[0] = (contract_t){
         .active = true,
@@ -6022,8 +7330,12 @@ TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
     ASSERT_EQ_INT(sp->autopilot_cargo, COMMODITY_FERRITE_INGOT);
 
     world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
-    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 3);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], prospect_market_pod);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 4);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME), 1);
 
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_TRAVEL);
@@ -6037,12 +7349,22 @@ TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
     sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, &w);
 
+    int delivered_pod = sp->ship.towed_pods[0];
+    int kepler_hopper_idx =
+        station_find_hopper_for(kepler, COMMODITY_FERRITE_INGOT);
+    ASSERT(delivered_pod >= 0);
+    ASSERT(kepler_hopper_idx >= 0);
     int kepler_before = station_finished_count(kepler, COMMODITY_FERRITE_INGOT);
     world_sim_step(&w, SIM_DT);
 
     ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT(w.cargo_pods[delivered_pod].active);
+    ASSERT_EQ_INT(w.cargo_pods[delivered_pod].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[delivered_pod],
+                                            1, kepler_hopper_idx));
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FERRITE_INGOT),
-                  kepler_before + 1);
+                  kepler_before);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.001f);
 
     bool sold_at_kepler = false;
@@ -6061,9 +7383,14 @@ TEST(test_neural_bot_logistics_buys_on_station_credit) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
     station_t *prospect = &w.stations[0];
     ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT, 4));
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FRAME, 1));
+    int prospect_market_pod = test_spawn_station_market_exact_pod(
+        &w, 0, COMMODITY_FERRITE_INGOT, 1);
+    ASSERT(prospect_market_pod >= 0);
 
     w.contracts[0] = (contract_t){
         .active = true,
@@ -6105,8 +7432,12 @@ TEST(test_neural_bot_logistics_buys_on_station_credit) {
     ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_BUY);
 
     world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
-    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 3);
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], prospect_market_pod);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 4);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME), 1);
     ASSERT(ledger_balance(prospect, sp->session_token) < 0.0f);
 }
 
@@ -7000,13 +8331,25 @@ void register_world_sim_basic_tests(void) {
     RUN(test_neural_worker_refits_only_from_home_credit_and_modules);
     RUN(test_neural_worker_posts_home_refit_import_contract);
     RUN(test_ship_death_drops_cargo_pods);
-    RUN(test_towed_cargo_pod_sells_at_dock);
-    RUN(test_towed_cargo_pod_row_sell_sells_one_unit);
-    RUN(test_towed_cargo_pod_row_sell_refuses_full_hopper);
-    RUN(test_towed_cargo_pod_bulk_sell_clamps_to_hopper_space);
+    RUN(test_towed_cargo_pod_sells_at_matching_intake);
+    RUN(test_towed_shell_pod_keeps_shell_after_intake_custody_sale);
+    RUN(test_buy_station_held_pod_transfers_custody_to_ship);
+    RUN(test_buy_selected_station_held_pod_transfers_that_pod);
+    RUN(test_cargo_pods_collide_and_separate);
+    RUN(test_station_dock_tractor_spreads_market_pods);
+    RUN(test_station_dock_adopts_finished_output_pod_for_market);
+    RUN(test_cargo_pod_high_speed_station_impact_destroys_shell);
+    RUN(test_cargo_pod_bounces_off_station_corridor_ring);
+    RUN(test_cargo_pod_bounces_off_asteroid);
+    RUN(test_towed_cargo_pod_bulk_sell_no_longer_uses_dock_custody);
+    RUN(test_towed_cargo_pod_row_sell_no_longer_uses_dock_custody);
+    RUN(test_manifest_cargo_pod_sale_preserves_exact_units);
+    RUN(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full);
+    RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
     RUN(test_hail_responds_while_docked);
+    RUN(test_docking_auto_reports_station_balance);
     RUN(test_hail_does_not_spawn_nearest_rock_contract);
     RUN(test_hail_claims_existing_station_work);
     RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
@@ -7027,17 +8370,28 @@ void register_world_sim_basic_tests(void) {
     RUN(test_ship_brake_stops_without_overshoot);
     RUN(test_ship_reverse_requires_reverse_flag);
     RUN(test_world_sim_step_mining_damages_asteroid);
+    RUN(test_world_sim_step_laser_scans_cargo_pod);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_hopper_path_retired);
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
     RUN(test_furnace_smelting_accepts_beam_corridor_delivery);
+    RUN(test_furnace_smelting_requires_frame_shell);
+    RUN(test_furnace_smelting_consumes_loose_frame_shell);
     RUN(test_crystal_requires_two_distinct_furnace_passes);
     RUN(test_neural_bot_contract_logistics_buys_and_delivers_ingot);
     RUN(test_neural_bot_logistics_buys_on_station_credit);
     RUN(test_autopilot_prioritizes_raw_ore_contract_mining_target);
-    RUN(test_station_production_dual_writes_frame_manifest);
-    RUN(test_station_production_dual_writes_laser_manifest);
+    RUN(test_station_production_ejects_frame_pod);
+    RUN(test_station_production_fills_existing_frame_output_pod);
+    RUN(test_station_production_consumes_loose_ingot_pod);
+    RUN(test_frame_press_accepts_player_towed_ingot_pod_at_press);
+    RUN(test_station_hopper_accepts_player_towed_ingot_pod);
+    RUN(test_furnace_accepts_player_towed_frame_shell_pod);
+    RUN(test_furnace_accepts_frame_shell_pod_near_smelt_beam);
+    RUN(test_furnace_tractor_holds_frame_pod_outside_module);
+    RUN(test_station_production_ejects_laser_pod);
+    RUN(test_station_production_fills_existing_laser_output_pod);
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
@@ -7067,8 +8421,8 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_autopilot_routes_towed_fragment_to_smelt_even_near_station);
     RUN(test_autopilot_does_not_mix_ore_fragments_while_returning);
     RUN(test_autopilot_smelt_delivery_preempts_repair_dock);
-    RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
-    RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
+    RUN(test_fragment_smelt_full_stock_still_emits_pod);
+    RUN(test_fragment_smelt_at_full_stock_keeps_station_stock_and_emits_pod);
     RUN(test_neural_npc_assignment_preserves_miner_hull_for_hauler_work);
     RUN(test_neural_npc_assignment_keeps_mining_over_weak_haul_offer);
     RUN(test_neural_npc_assignment_uses_hauler_hull_for_scaffold_tow);

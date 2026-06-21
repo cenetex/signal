@@ -75,9 +75,21 @@
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
     <script>
       var canvas = document.getElementById('canvas');
+      var signalBundleVersion = String(Date.now());
+
+      function signalVersionedAsset(path) {
+        var join = path.indexOf('?') === -1 ? '?' : '&';
+        return path + join + 'v=' + encodeURIComponent(signalBundleVersion);
+      }
 
       var Module = {
         canvas: canvas,
+        locateFile: function(path, prefix) {
+          if (path === 'signal.wasm') {
+            return signalVersionedAsset((prefix || '') + path);
+          }
+          return (prefix || '') + path;
+        },
         print: function(text) { console.log(text); },
         printErr: function(text) { console.error(text); }
       };
@@ -133,7 +145,7 @@
         setLoading(message);
       }
 
-      loadGame('./signal.js');
+      loadGame(signalVersionedAsset('./signal.js'));
     </script>
 
   </body>

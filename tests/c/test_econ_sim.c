@@ -13,6 +13,79 @@ static bool first_manifest_pub_for_commodity(const station_t *st,
     return false;
 }
 
+static int test_find_towed_exact_pod(const world_t *w,
+                                     const server_player_t *sp,
+                                     commodity_t commodity) {
+    if (!w || !sp) return -1;
+    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != commodity) continue;
+        if (pod->manifest_count != pod->quantity || pod->manifest_count == 0)
+            continue;
+        return idx;
+    }
+    return -1;
+}
+
+static int test_first_dock_module_idx(const station_t *st) {
+    if (!st) return -1;
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        if (st->modules[m].type == MODULE_DOCK &&
+            !st->modules[m].scaffold) {
+            return m;
+        }
+    }
+    return -1;
+}
+
+static int test_spawn_station_market_exact_pod(world_t *w,
+                                               int station_idx,
+                                               commodity_t commodity,
+                                               uint16_t count) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        commodity >= COMMODITY_COUNT || count == 0 ||
+        count > CARGO_POD_MANIFEST_CAP) {
+        return -1;
+    }
+    station_t *st = &w->stations[station_idx];
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx < 0) return -1;
+    cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
+    memset(units, 0, sizeof(units));
+    const uint8_t origin[8] = { 'T','E','S','T','E','2','E','P' };
+    for (uint16_t i = 0; i < count; i++) {
+        if (!hash_legacy_migrate_unit(origin, commodity, i, &units[i]))
+            return -1;
+    }
+    vec2 pos = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, pos, v2(0.0f, 0.0f), commodity, units, count, CARGO_POD_CARGO);
+    if (pod_idx < 0) return -1;
+    w->cargo_pods[pod_idx].towed_by = -1;
+    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
+                                 station_idx, dock_idx);
+    return pod_idx;
+}
+
+static float test_station_market_pod_sell_quote(const station_t *st,
+                                                const cargo_pod_t *pod) {
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->manifest_count == 0 || pod->manifest_count != pod->quantity) {
+        return 0.0f;
+    }
+    float quote = 0.0f;
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        const cargo_unit_t *unit = &pod->manifest_units[i];
+        quote += station_sell_price_unit(st, unit) *
+                 mining_payout_multiplier((mining_grade_t)unit->grade);
+    }
+    return quote;
+}
+
 static void apply_scripted_input(server_player_t *sp, uint8_t flags,
                                  uint8_t action, uint8_t grade) {
     memset(&sp->input, 0, sizeof(sp->input));
@@ -151,6 +224,8 @@ TEST(test_econ_sim_credit_circulation) {
     w.players[0].current_station = 0;
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_FERRITE_INGOT, 50));
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FRAME, 1));
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FERRITE_INGOT;
     world_sim_step(&w, SIM_DT);
@@ -252,6 +327,12 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     station_t *prospect = &w.stations[0];
     ASSERT(test_set_station_finished_units(prospect,
                                            COMMODITY_FERRITE_INGOT, 2));
+    ASSERT(test_set_station_finished_units(prospect,
+                                           COMMODITY_FRAME, 1));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    int market_pod = test_spawn_station_market_exact_pod(
+        &w, 0, COMMODITY_FERRITE_INGOT, 1);
+    ASSERT(market_pod >= 0);
     ledger_earn_by_pubkey(prospect, sp->pubkey, 1000.0f);
     ledger_earn(prospect, sp->session_token, 333.0f);
 
@@ -263,12 +344,16 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     sp->nearby_station = 0;
 
     int ship_before = ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT);
+    int tow_before = sp->ship.towed_pod_count;
     int station_before = station_finished_count(prospect,
                                                 COMMODITY_FERRITE_INGOT);
+    int frames_before = station_finished_count(prospect,
+                                               COMMODITY_FRAME);
     float pubkey_before = ledger_balance_by_pubkey(prospect, sp->pubkey);
     float session_before = ledger_balance(prospect, sp->session_token);
-    float expected_cost = station_sell_price(prospect,
-                                             COMMODITY_FERRITE_INGOT);
+    float expected_cost = test_station_market_pod_sell_quote(
+        prospect, &w.cargo_pods[market_pod]);
+    ASSERT(expected_cost > 0.0f);
 
     apply_scripted_input(sp, 0,
                          (uint8_t)(NET_ACTION_BUY_PRODUCT +
@@ -278,9 +363,16 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
 
     ASSERT(sp->docked);
     ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT),
-                  ship_before + 1);
+                  ship_before);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, tow_before + 1);
+    int bought_pod = test_find_towed_exact_pod(&w, sp, COMMODITY_FERRITE_INGOT);
+    ASSERT(bought_pod >= 0);
+    ASSERT_EQ_INT(bought_pod, market_pod);
+    ASSERT_EQ_INT(w.cargo_pods[bought_pod].quantity, 1);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
-                  station_before - 1);
+                  station_before);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
+                  frames_before);
     ASSERT_EQ_FLOAT(pubkey_before -
                     ledger_balance_by_pubkey(prospect, sp->pubkey),
                     expected_cost, 0.01f);

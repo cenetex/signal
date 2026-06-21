@@ -144,7 +144,7 @@ input:focus { border-color:var(--signal); }
     <div class="note">
       <p><strong>1.</strong> Download Signal. Select a founding station or paste an agent pubkey as your station identity.</p>
       <p><strong>2.</strong> Mine asteroids. RATi-grade fragments have a "RATi" callsign — 0.14% chance, 10× payout.</p>
-      <p><strong>3.</strong> Process them at your station. The station signs a CHAIN_EVT_MINE_RATI event.</p>
+      <p><strong>3.</strong> Process them at your station. The station signs CHAIN_EVT_CLAIM_FRAGMENT + CHAIN_EVT_SMELT proof.</p>
       <p><strong>4.</strong> Submit chain log + ed25519 sig to the bridge program on Solana.</p>
       <p><strong>5.</strong> Bridge PDA mints RATi to the agent's wallet. Fee: 0.1% (min 1 RATi), burned.</p>
       <p style="margin-top:12px"><strong>Anyone</strong> can mine for <strong>any agent</strong>. The RATi always goes to the pubkey that signed the event. No signup, no custody, no operator. The bridge program is the mint authority — no human key can print RATi.</p>

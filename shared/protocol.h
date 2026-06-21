@@ -55,7 +55,7 @@ enum {
     NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32] */
     NET_MSG_PLAN            = 0x23, /* client -> server: outpost planning intents */
     NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: active scaffold pool */
-    NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: hail collected payout */
+    NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: station hail/balance response */
     NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
     NET_MSG_STATION_INGOTS  = 0x28, /* server -> client: station's named-ingot stockpile (RATi v2) */
@@ -497,7 +497,7 @@ enum {
  * origin_station_pub = source_hash, latest_station_pub = witness_hash.
  *
  * target_type mirrors server_player_t.scan_target_type:
- *   0 none, 1 station/module, 2 NPC, 3 player.
+ *   0 none, 1 station/module, 2 NPC, 3 player, 4 cargo pod.
  * For NPC targets, role/state are npc_role_t/npc_state_t. For player
  * targets, role is hull_class_t and state is rounded hull, clamped to
  * one byte. target_index/module_index/home_station/dest_station use 0xFF as
@@ -511,6 +511,7 @@ enum {
     INSPECT_TARGET_STATION = 1,
     INSPECT_TARGET_NPC     = 2,
     INSPECT_TARGET_PLAYER  = 3,
+    INSPECT_TARGET_CARGO_POD = 4,
 
     INSPECT_SNAPSHOT_MAX_ROWS = 8,
     INSPECT_SNAPSHOT_HEADER   = 11,
@@ -681,7 +682,7 @@ enum {
     NET_ACTION_PLACE_OUTPOST  = 8,
     NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED #259 — legacy build menu, no-op on server */
     NET_ACTION_BUY_SCAFFOLD   = 25,
-    NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
+    NET_ACTION_HAIL           = 26,  /* signal hail/contact scan */
     NET_ACTION_RELEASE_TOW    = 27,  /* tap R: release towed fragments (no longer toggles) */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_INGOT      = 29,  /* direct named-ingot purchase; result/telemetry only */
@@ -793,8 +794,17 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 #define ASTEROID_RECORD_SIZE 35  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 + phase:u8 */
 
 /* Cargo pod record: [index:1][kind:1][commodity:1][towed_by:1][pos:2xf32]
- * [vel:2xf32][radius:f32][rotation:f32][quantity:u16] */
-#define CARGO_POD_RECORD_SIZE 30
+ * [vel:2xf32][radius:f32][rotation:f32][quantity:u16]
+ * [manifest_count:u16][shipment_id:u16][flags:1][best_grade:1]
+ * [tractor_station_tag:1][tractor_module_tag:1].
+ * Manifest unit rows are not present on this live stream; the flags carry
+ * server-derived summary truth for UI gates that need to agree with
+ * authoritative material intake. */
+#define CARGO_POD_RECORD_SIZE 38
+enum {
+    CARGO_POD_SUMMARY_EXACT_MATERIAL = 1u << 0, /* exact, unbound manifest matching commodity */
+    CARGO_POD_SUMMARY_SHIPMENT_BOUND = 1u << 1,
+};
 
 /* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
  * [target:u16][towed_fragment:u16][rarity_tint:3][session_token:8][home_station:1],

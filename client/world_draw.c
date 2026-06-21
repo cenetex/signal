@@ -2552,8 +2552,197 @@ void draw_npc_ships(void) {
     }
 }
 
-/* Draw furnace tractor beams: orange tendrils to nearby S-tier fragments.
- * Fragments being smelted glow brighter with sparks. */
+static bool cargo_pod_visual_input_anchor(const station_t *st,
+                                          int module_idx,
+                                          const cargo_pod_t *pod,
+                                          vec2 *out_anchor) {
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        module_idx < 0 || module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold || module->type == MODULE_FURNACE) return false;
+    const module_schema_t *schema = module_schema(module->type);
+    if (!schema || schema->kind != MODULE_KIND_PRODUCER) return false;
+
+    module_inputs_t req = module_instance_required_inputs(module);
+    bool wants = false;
+    for (int i = 0; i < req.count; i++) {
+        if (req.commodities[i] == pod->commodity) {
+            wants = true;
+            break;
+        }
+    }
+    if (!wants) return false;
+
+    int hopper_idx = station_find_hopper_for(st, pod->commodity);
+    if (hopper_idx < 0 || hopper_idx >= st->module_count ||
+        hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
+        (commodity_t)hopper->commodity != pod->commodity) {
+        return false;
+    }
+
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
+    if (out_anchor)
+        *out_anchor = v2_scale(v2_add(module_pos, hopper_pos), 0.5f);
+    return true;
+}
+
+static vec2 cargo_pod_visual_module_mouth(const station_t *st,
+                                          const station_module_t *module,
+                                          const cargo_pod_t *pod) {
+    if (!st || !module) return v2(0.0f, 0.0f);
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float len = v2_len(outward);
+    if (len > 0.001f) {
+        outward = v2_scale(outward, 1.0f / len);
+    } else {
+        outward = v2_from_angle(module_angle_ring(st, module->ring,
+                                                  module->slot));
+    }
+    float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
+    return v2_add(module_pos, v2_scale(outward,
+        STATION_MODULE_COL_RADIUS + pod_radius + 8.0f));
+}
+
+static int cargo_pod_visual_hold_slot(const cargo_pod_t *pod,
+                                      int station_idx,
+                                      int module_idx,
+                                      int *out_total) {
+    if (out_total) *out_total = 1;
+    if (!pod || station_idx < 0 || module_idx < 0)
+        return 0;
+
+    int self = -1;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (&g.world.cargo_pods[i] == pod) {
+            self = i;
+            break;
+        }
+    }
+
+    int slot = 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *other = &g.world.cargo_pods[i];
+        int ps = -1;
+        int pm = -1;
+        if (!other->active ||
+            !cargo_pod_module_tractor_indices(other, &ps, &pm) ||
+            ps != station_idx || pm != module_idx) {
+            continue;
+        }
+        if (i == self) slot = total;
+        total++;
+    }
+
+    if (out_total) *out_total = total > 0 ? total : 1;
+    return slot;
+}
+
+static vec2 cargo_pod_visual_hold_anchor(const station_t *st,
+                                         int station_idx,
+                                         int module_idx,
+                                         const cargo_pod_t *pod,
+                                         vec2 base_anchor) {
+    if (!st || module_idx < 0 || module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return base_anchor;
+    }
+
+    const station_module_t *module = &st->modules[module_idx];
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float len = v2_len(outward);
+    if (len > 0.001f) {
+        outward = v2_scale(outward, 1.0f / len);
+    } else {
+        outward = v2_from_angle(module_angle_ring(st, module->ring,
+                                                  module->slot));
+    }
+    vec2 tangent = v2(-outward.y, outward.x);
+
+    int total = 1;
+    int slot = cargo_pod_visual_hold_slot(pod, station_idx, module_idx,
+                                          &total);
+    enum { POD_HOLD_LANES = 4 };
+    int row = slot / POD_HOLD_LANES;
+    int lane = slot % POD_HOLD_LANES;
+    int remaining = total - row * POD_HOLD_LANES;
+    int lanes_this_row = remaining < POD_HOLD_LANES ? remaining : POD_HOLD_LANES;
+    if (lanes_this_row < 1) lanes_this_row = 1;
+
+    float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
+    float lane_spacing = pod_radius * 2.90f + 16.0f;
+    float row_spacing = pod_radius * 2.20f + 20.0f;
+    float centered_lane = (float)lane - ((float)lanes_this_row - 1.0f) * 0.5f;
+    vec2 spread = v2_add(v2_scale(tangent, centered_lane * lane_spacing),
+                         v2_scale(outward, (float)row * row_spacing));
+    return v2_add(base_anchor, spread);
+}
+
+static bool cargo_pod_visual_hopper_input_anchor(const station_t *st,
+                                                 int hopper_idx,
+                                                 const cargo_pod_t *pod,
+                                                 vec2 *out_anchor) {
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        hopper_idx < 0 || hopper_idx >= st->module_count ||
+        hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
+        (commodity_t)hopper->commodity != pod->commodity) {
+        return false;
+    }
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        vec2 anchor = st->pos;
+        if (!cargo_pod_visual_input_anchor(st, m, pod, &anchor))
+            continue;
+        if (station_find_hopper_for(st, pod->commodity) != hopper_idx)
+            continue;
+        if (out_anchor) *out_anchor = anchor;
+        return true;
+    }
+    return false;
+}
+
+static bool cargo_pod_visual_tractor_anchor(const cargo_pod_t *pod,
+                                            vec2 *out_anchor) {
+    int station_idx = -1;
+    int module_idx = -1;
+    if (!pod ||
+        !cargo_pod_module_tractor_indices(pod, &station_idx, &module_idx)) {
+        return false;
+    }
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_exists(st) || module_idx < 0 ||
+        module_idx >= st->module_count) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold) return false;
+    vec2 anchor = cargo_pod_visual_module_mouth(st, module, pod);
+    if (!cargo_pod_visual_input_anchor(st, module_idx, pod, &anchor)) {
+        (void)cargo_pod_visual_hopper_input_anchor(st, module_idx, pod,
+                                                   &anchor);
+    }
+    anchor = cargo_pod_visual_hold_anchor(st, station_idx, module_idx,
+                                          pod, anchor);
+    if (out_anchor) *out_anchor = anchor;
+    return true;
+}
+
+/* Draw furnace tractor beams: orange tendrils to nearby S-tier fragments,
+ * plus cargo-pod tractor beams from typed hoppers/producers. */
 void draw_hopper_tractors(void) {
     float pull_range = 300.0f;
     float pull_sq = pull_range * pull_range;
@@ -2621,6 +2810,40 @@ void draw_hopper_tractors(void) {
                 }
             }
         }
+    }
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        if (!pod->active || !cargo_pod_has_module_tractor(pod)) continue;
+        vec2 anchor = pod->pos;
+        if (!cargo_pod_visual_tractor_anchor(pod, &anchor)) continue;
+        if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 80.0f) &&
+            !on_screen(anchor.x, anchor.y, 80.0f)) {
+            continue;
+        }
+
+        float cr = 0.78f, cg = 0.60f, cb = 0.30f;
+        if (pod->commodity < COMMODITY_COUNT)
+            commodity_color(pod->commodity, &cr, &cg, &cb);
+
+        float d = sqrtf(v2_dist_sq(anchor, pod->pos));
+        float t = 1.0f - fminf(d / pull_range, 1.0f);
+        float pulse = 0.50f + 0.24f * sinf(g.world.time * 7.0f + (float)i * 1.37f);
+        float zap = sinf(g.world.time * 41.0f + (float)i * 5.9f);
+        vec2 mid = v2_scale(v2_add(anchor, pod->pos), 0.5f);
+        vec2 perp = v2(-(pod->pos.y - anchor.y), pod->pos.x - anchor.x);
+        float plen = sqrtf(v2_len_sq(perp));
+        if (plen > 0.1f)
+            perp = v2_scale(perp, 3.0f * zap / plen);
+        mid = v2_add(mid, perp);
+        float alpha = (0.24f + 0.42f * t) * pulse;
+        draw_segment(anchor, mid, cr, cg, cb, alpha);
+        draw_segment(mid, pod->pos, cr, cg, cb, alpha);
+        draw_segment(anchor, pod->pos,
+                     fminf(1.0f, cr * 1.4f),
+                     fminf(1.0f, cg * 1.3f),
+                     fminf(1.0f, cb * 1.3f),
+                     alpha * 0.42f);
     }
 }
 
@@ -3607,15 +3830,53 @@ void draw_damage_flash(float screen_w, float screen_h) {
 /* Scaffold world objects                                             */
 /* ================================================================== */
 
+static uint8_t cargo_pod_visual_best_grade(const cargo_pod_t *pod) {
+    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
+    if (!pod || !pod->active) return best;
+    bool exact_local = pod->manifest_count > 0 &&
+                       pod->manifest_count == pod->quantity;
+    if (exact_local) {
+        bool all_match = true;
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            const cargo_unit_t *unit = &pod->manifest_units[i];
+            if ((commodity_t)unit->commodity != pod->commodity) {
+                all_match = false;
+                break;
+            }
+            if (unit->grade < (uint8_t)MINING_GRADE_COUNT &&
+                unit->grade > best) {
+                best = unit->grade;
+            }
+        }
+        if (all_match) return best;
+    }
+    if (pod->summary_grade < (uint8_t)MINING_GRADE_COUNT) {
+        return pod->summary_grade;
+    }
+    return best;
+}
+
+static void cargo_pod_content_color(const cargo_pod_t *pod,
+                                    float *r, float *g0, float *b) {
+    if (!pod || pod->kind == CARGO_POD_GAS) {
+        *r = 0.20f; *g0 = 0.86f; *b = 0.78f;
+        return;
+    }
+    if (pod->commodity < COMMODITY_COUNT) {
+        commodity_color(pod->commodity, r, g0, b);
+        return;
+    }
+    *r = 0.78f; *g0 = 0.60f; *b = 0.30f;
+}
+
 void draw_cargo_pods(void) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
         if (!pod->active) continue;
         if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 24.0f)) continue;
 
-        float r = pod->kind == CARGO_POD_GAS ? 0.20f : 0.78f;
-        float g0 = pod->kind == CARGO_POD_GAS ? 0.86f : 0.60f;
-        float b = pod->kind == CARGO_POD_GAS ? 0.78f : 0.30f;
+        float r, g0, b;
+        cargo_pod_content_color(pod, &r, &g0, &b);
         float pulse = 1.0f + 0.08f * sinf(g.world.time * 4.0f + pod->rotation);
 
         if (pod->kind == CARGO_POD_GAS) {
@@ -3629,7 +3890,7 @@ void draw_cargo_pods(void) {
 
         float half = pod->radius * 0.72f;
         sgl_begin_quads();
-        sgl_c4f(r * 0.72f, g0 * 0.72f, b * 0.72f, 0.86f);
+        sgl_c4f(r * 0.58f, g0 * 0.58f, b * 0.58f, 0.86f);
         sgl_v2f(-half, -half);
         sgl_v2f( half, -half);
         sgl_v2f( half,  half);
@@ -3637,8 +3898,8 @@ void draw_cargo_pods(void) {
         sgl_end();
 
         sgl_begin_lines();
-        sgl_c4f(fminf(1.0f, r * 1.45f), fminf(1.0f, g0 * 1.35f),
-                fminf(1.0f, b * 1.35f), 0.95f);
+        sgl_c4f(fminf(1.0f, r * 1.62f), fminf(1.0f, g0 * 1.48f),
+                fminf(1.0f, b * 1.48f), 0.96f);
         sgl_v2f(-half, -half); sgl_v2f( half, -half);
         sgl_v2f( half, -half); sgl_v2f( half,  half);
         sgl_v2f( half,  half); sgl_v2f(-half,  half);
@@ -3648,6 +3909,20 @@ void draw_cargo_pods(void) {
         sgl_end();
 
         sgl_pop_matrix();
+
+        bool scan_reveal =
+            LOCAL_PLAYER.scan_active &&
+            LOCAL_PLAYER.scan_target_type == INSPECT_TARGET_CARGO_POD &&
+            LOCAL_PLAYER.scan_target_index == i;
+        uint8_t grade = cargo_pod_visual_best_grade(pod);
+        if (scan_reveal && grade > (uint8_t)MINING_GRADE_COMMON) {
+            float gr, gg, gb;
+            grade_tint(grade, &gr, &gg, &gb);
+            draw_circle_outline(pod->pos, pod->radius * 1.18f * pulse, 18,
+                                gr, gg, gb, 0.58f);
+            draw_circle_filled(pod->pos, pod->radius * 0.16f, 10,
+                               gr, gg, gb, 0.82f);
+        }
 
         if (pod->towed_by >= 0 && pod->towed_by < MAX_PLAYERS) {
             const ship_t *ship = &g.world.players[pod->towed_by].ship;

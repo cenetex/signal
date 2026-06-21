@@ -80,6 +80,11 @@ static const float MAX_PRODUCT_STOCK = 120.0f;
  * 6 ingots is enough for one player to top off a hold; surplus flows. */
 static const float HAULER_RESERVE = 6.0f;
 
+/* Black-market docks buy whole pods as custody transfers, not as normal
+ * station demand. They pay a steep markdown because they accept cargo
+ * regular markets may not, including destination-bound freight. */
+static const float BLACK_MARKET_CARGO_MARKDOWN = 0.35f;
+
 /* --- Shipyard repair-kit fab --- */
 /* A station with MODULE_SHIPYARD consumes 1 frame + 1 laser + 1 tractor
  * and produces REPAIR_KIT_PER_BATCH kits every REPAIR_KIT_FAB_PERIOD

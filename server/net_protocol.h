@@ -1339,7 +1339,7 @@ _Static_assert(
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(
-    4 + 6 * 4 + 2 == CARGO_POD_RECORD_SIZE,
+    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 == CARGO_POD_RECORD_SIZE,
     "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
 _Static_assert(
@@ -1614,6 +1614,27 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
     write_f32_le(&p[20], pod->radius);
     write_f32_le(&p[24], pod->rotation);
     write_u16_le(&p[28], pod->quantity);
+    write_u16_le(&p[30], pod->manifest_count);
+    write_u16_le(&p[32], pod->shipment_id);
+    uint8_t flags = 0;
+    uint8_t best_grade = (uint8_t)MINING_GRADE_COMMON;
+    if (pod->shipment_id != 0)
+        flags |= CARGO_POD_SUMMARY_SHIPMENT_BOUND;
+    if (pod->manifest_count > 0 &&
+        pod->manifest_count <= CARGO_POD_MANIFEST_CAP) {
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            uint8_t grade = pod->manifest_units[i].grade;
+            if (grade < (uint8_t)MINING_GRADE_COUNT && grade > best_grade)
+                best_grade = grade;
+        }
+    }
+    if (cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        flags |= CARGO_POD_SUMMARY_EXACT_MATERIAL;
+    }
+    p[34] = flags;
+    p[35] = best_grade;
+    p[36] = pod->tractor_station;
+    p[37] = pod->tractor_module;
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
@@ -1806,18 +1827,14 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
         uint16_t held_bound = 0;
         if (player_id < MAX_PLAYERS) {
             const ship_t *ship = &w->players[player_id].ship;
-            if (ship->manifest.units) {
-                for (uint16_t m = 0; m < ship->manifest.count; m++) {
-                    const cargo_unit_t *unit = &ship->manifest.units[m];
-                    if (unit->commodity != s->commodity) continue;
-                    for (uint16_t b = 0; b < s->quantity_bound &&
-                                          b < MAX_DELIVERY_BOUND_CARGO; b++) {
-                        if (memcmp(s->cargo_pub[b], unit->pub, 32) == 0) {
-                            held_bound++;
-                            break;
-                        }
-                    }
-                }
+            for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+                int pod_idx = ship->towed_pods[t];
+                if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+                const cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+                if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+                if (pod->shipment_id != s->shipment_id) continue;
+                held_bound = pod->quantity;
+                break;
             }
         }
         write_u16_le(&p[29], held_bound);
@@ -1967,9 +1984,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             }
             /* NET_ACTION_DELIVER_COMMODITY + commodity (70..70+COMMODITY_COUNT)
              * — selective fulfillment. Two callers share this action:
-             *   (a) Yard contracts tab [S] → sells everything matching
-             *       the contract's commodity. 4-byte message: 5th byte
-             *       defaults to MINING_GRADE_COUNT below ⇒ bulk.
+             *   (a) Yard contracts tab [S] → sells the next matching
+             *       pod or legacy cargo batch. 4-byte message: 5th byte
+             *       defaults to MINING_GRADE_COUNT below.
              *   (b) Trade tab per-row sell click → sells one unit of a
              *       specific (commodity, grade). 5-byte message with
              *       the 5th byte holding a grade index < GRADE_COUNT.

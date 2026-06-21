@@ -31,8 +31,9 @@
  *   [R]   SHIP panel → repair; plan mode → cycle module type.
  *   [M]   SHIP panel → upgrade mining laser; undocked → mining laser.
  *   [C]   SHIP panel → upgrade cargo hold.
- *   [H]   Hail ping + collect pending credits. Undocked hail can reveal
- *         contracts, but cargo pickup requires docking and [S].
+ *   [H]   Hail ping / contact scan. Undocked hail can reveal contracts, but
+ *         cargo pickup requires docking and [S]. Station credits settle when
+ *         you dock; there is no separate collect action.
  *   [T]   SHIP panel → upgrade tractor.
  *
  *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
@@ -60,6 +61,7 @@
 #include "onboarding.h"
 #include "signal_model.h"
 #include "mining.h"
+#include "manifest.h"
 #include "contract_fit.h"
 #include "npc_radio.h"
 
@@ -166,21 +168,6 @@ static int input_contract_quantity_goal(const contract_t *ct) {
             ? (int)ceilf(ct->quantity_needed)
             : 1;
     return qty > 0 ? qty : 1;
-}
-
-static float input_ship_manifest_backed_cargo_volume(const ship_t *ship) {
-    if (!ship) return 0.0f;
-    float total = 0.0f;
-    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++)
-        total += ship->cargo[c] * commodity_volume((commodity_t)c);
-    if (ship->manifest.units) {
-        for (uint16_t i = 0; i < ship->manifest.count; i++) {
-            const cargo_unit_t *u = &ship->manifest.units[i];
-            if (u->commodity >= COMMODITY_COUNT) continue;
-            total += commodity_volume((commodity_t)u->commodity);
-        }
-    }
-    return total;
 }
 
 bool is_key_down(sapp_keycode key) {
@@ -456,10 +443,6 @@ static void sample_station_tab(void) {
     g.selected_contract = -1;
 }
 
-/* YARD tab keys: [1-9] order a scaffold kit. Surface every unlocked
- * module type this yard can fabricate. (Plans are still useful for
- * slot reservation, but no longer required to *order* a kit — the
- * chicken-and-egg for the very first SIGNAL_RELAY would be unsolvable.) */
 void station_panel_input_yard(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_YARD) return;
     const station_t *st = current_station_ptr();
@@ -476,8 +459,8 @@ void station_panel_input_yard(input_intent_t *intent) {
     };
     for (size_t i = 0; i < sizeof(ship_keys) / sizeof(ship_keys[0]); i++) {
         if (!is_key_pressed(ship_keys[i].key)) continue;
-        if (!shipyard_can_commission_hull(st, ship_keys[i].hull)) {
-            set_notice("Ship commission needs yard stock.");
+        if (!station_shipyard_can_commission_hull_local(st, ship_keys[i].hull)) {
+            set_notice("Ship commission needs yard stock or hopper-staged pods.");
         } else {
             intent->commission_ship = true;
             intent->commission_hull_class = ship_keys[i].hull;
@@ -563,7 +546,8 @@ void station_panel_input_work(input_intent_t *intent) {
 
     if (!is_key_pressed(SAPP_KEYCODE_S)) return;
 
-    /* [S] deliver. Selective if a slot is selected, else everything. */
+    /* [S] acts on the selected contract. If nothing is selected, it
+     * sells/delivers everything accepted here. */
     if (g.selected_contract >= 0 && g.selected_contract < MAX_CONTRACTS) {
         const contract_t *ct = &g.world.contracts[g.selected_contract];
         if (ct->active) {
@@ -599,7 +583,7 @@ void station_panel_input_work(input_intent_t *intent) {
                            held > 0) {
                     intent->service_sell = true;
                     intent->service_sell_only = ct->commodity;
-                    set_notice("Unloading %s...",
+                    set_notice("Unloading %s pod...",
                                cargo_route);
                 } else {
                     intent->hail = true;
@@ -613,7 +597,7 @@ void station_panel_input_work(input_intent_t *intent) {
                     set_notice("Loading %s...",
                                commodity_short_name(ct->commodity));
                 } else if (ct->action == CONTRACT_TRACTOR) {
-                    set_notice("Unloading %s...",
+                    set_notice("Unloading %s pod...",
                                commodity_short_name(ct->commodity));
                 } else {
                     set_notice("Delivering %s...",
@@ -624,14 +608,18 @@ void station_panel_input_work(input_intent_t *intent) {
             /* Selected contract was completed/cancelled; fall back. */
             intent->service_sell = true;
             intent->service_sell_only = COMMODITY_COUNT;
-            set_notice("Delivering all matching cargo...");
+            set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+                ? "Tow cargo crates to matching intakes."
+                : "Selling accepted cargo...");
         }
         g.selected_contract = -1;
         return;
     }
     intent->service_sell = true;
     intent->service_sell_only = COMMODITY_COUNT;
-    set_notice("Delivering all matching cargo...");
+    set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+        ? "Tow cargo crates to matching intakes."
+        : "Selling accepted cargo...");
 }
 
 /* SHIP panel keys:
@@ -660,13 +648,15 @@ void station_panel_input_dock(input_intent_t *intent) {
     intent->upgrade_tractor = is_key_pressed(SAPP_KEYCODE_T);
 }
 
-/* TRADE tab [S] — sell every commodity this station accepts. */
+/* TRADE tab [S] — sell the next accepted pod, then legacy cargo fallback. */
 static void sample_trade_sell_all(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_TRADE) return;
     if (!is_key_pressed(SAPP_KEYCODE_S)) return;
     intent->service_sell = true;
     intent->service_sell_only = COMMODITY_COUNT;
-    set_notice("Selling...");
+    set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+        ? "Tow cargo crates to matching intakes."
+        : "Selling accepted cargo...");
 }
 
 /* TRADE picker — page through the unified row list and dispatch on the
@@ -678,12 +668,12 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     int quantity = row->quantity > 0 ? row->quantity : 1;
     float total_price = (float)(row->total_price > 0
         ? row->total_price : row->unit_price * quantity);
-    float free_volume = ship_cargo_capacity(ship) -
-                        input_ship_manifest_backed_cargo_volume(ship);
-    float vol = commodity_volume(row->commodity);
+    int tow_cap = 2 + (ship ? ship->tractor_level : 0) * 2;
+    if (tow_cap > 10) tow_cap = 10;
+    int tow_space = tow_cap - (ship ? ship->towed_pod_count : 0);
     float balance = player_current_balance();
-    if (free_volume + FLOAT_EPSILON < vol * (float)quantity) {
-        set_notice("Hold full.");
+    if (tow_space <= 0) {
+        set_notice("Tow slots full.");
         return;
     }
     if (balance + FLOAT_EPSILON < total_price) {
@@ -695,17 +685,28 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     intent->buy_product = true;
     intent->buy_commodity = row->commodity;
     intent->buy_grade = row->grade;
+    if (row->is_station_pod) {
+        intent->buy_station_pod = true;
+        intent->buy_station_pod_index = row->station_pod_index;
+    }
     if (!g.multiplayer_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
         int li = input_local_ledger_index(mst);
         if (li >= 0 && mst->ledger[li].balance >= total_price)
             mst->ledger[li].balance -= total_price;
     }
-    set_notice("-%d %s  %s %s x%d",
-               (int)lroundf(total_price),
-               input_station_currency(st),
-               mining_grade_label(row->grade),
-               commodity_short_name(row->commodity), quantity);
+    if (row->is_station_pod) {
+        set_notice("-%d %s  %s crate x%d",
+                   (int)lroundf(total_price),
+                   input_station_currency(st),
+                   commodity_short_name(row->commodity), quantity);
+    } else {
+        set_notice("-%d %s  %s %s x%d",
+                   (int)lroundf(total_price),
+                   input_station_currency(st),
+                   mining_grade_label(row->grade),
+                   commodity_short_name(row->commodity), quantity);
+    }
     (void)st;
 }
 
@@ -735,19 +736,25 @@ static void sample_trade_picker(input_intent_t *intent) {
     if (row->kind == 0) {
         trade_apply_buy_row(intent, st, ship, row);
     } else if (row->kind == 1) {
-        /* Per-row sell — mirror of the buy click. One press = one unit
-         * of (commodity, grade). The bulk [S] hotkey still drains the
-         * hold, but clicking a specific row only nibbles the matching
-         * cargo_unit so the rest stays on board. */
+        /* Per-row sell — mirror of the buy click. One press sells one
+         * matching towed pod when cargo is in pods; manifest-held legacy
+         * cargo still transfers one matching cargo_unit. */
         if (row->held <= 0) {
             set_notice("Out of %s.", commodity_short_name(row->commodity));
             return;
         }
         intent->service_sell = true;
         intent->service_sell_only = row->commodity;
-        intent->service_sell_grade = row->grade;
-        intent->service_sell_one = true;
-        float price = (float)row->unit_price;
+        if (row->is_towed_pod) {
+            intent->service_sell_grade = MINING_GRADE_COUNT;
+            intent->service_sell_one = false;
+        } else {
+            intent->service_sell_grade = row->grade;
+            intent->service_sell_one = true;
+        }
+        float price = (float)(row->total_price > 0
+            ? row->total_price
+            : row->unit_price);
         float payout = price;
         if (!g.multiplayer_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
@@ -761,11 +768,20 @@ static void sample_trade_picker(input_intent_t *intent) {
             }
             if (idx >= 0) mst->ledger[idx].balance += payout;
         }
-        set_notice("+%d %s  %s %s",
-                   (int)lroundf(payout),
-                   input_station_currency(st),
-                   mining_grade_label(row->grade),
-                   commodity_short_name(row->commodity));
+        if (row->is_towed_pod) {
+            set_notice("+%d %s  %s crate x%d",
+                       (int)lroundf(payout),
+                       input_station_currency(st),
+                       commodity_short_name(row->commodity),
+                       row->towed_pod_quantity > 0 ? row->towed_pod_quantity
+                                                   : row->quantity);
+        } else {
+            set_notice("+%d %s  %s %s",
+                       (int)lroundf(payout),
+                       input_station_currency(st),
+                       mining_grade_label(row->grade),
+                       commodity_short_name(row->commodity));
+        }
     }
 }
 
@@ -1124,7 +1140,7 @@ input_intent_t sample_input_intent(void) {
     intent.plan_ring = -1;
     intent.plan_slot = -1;
     intent.cancel_planned_station = -1;
-    intent.service_sell_only = COMMODITY_COUNT; /* default: deliver all */
+    intent.service_sell_only = COMMODITY_COUNT; /* default: dock-selected service */
     intent.service_sell_grade = MINING_GRADE_COUNT; /* default: any grade */
     intent.service_sell_one = false;
 
@@ -1244,9 +1260,9 @@ void submit_input(const input_intent_t *intent, float dt) {
         } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;
             /* Per-row sell rides the same 5th-byte slot as buy_grade.
-             * Server treats `grade < MINING_GRADE_COUNT` as the
-             * single-unit signal; bulk-sell branches keep the sentinel
-             * so the existing behavior is unchanged. */
+             * Server treats `grade < MINING_GRADE_COUNT` as the selective
+             * row signal: one whole pod for pod cargo, one cargo_unit for
+             * legacy manifest cargo. */
             if (intent->service_sell_one && intent->service_sell_grade < MINING_GRADE_COUNT)
                 g.pending_net_buy_grade = (uint8_t)intent->service_sell_grade;
         }

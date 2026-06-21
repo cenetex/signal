@@ -19,6 +19,12 @@
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
+#if defined(__GNUC__) || defined(__clang__)
+#define SIGNAL_MAYBE_UNUSED __attribute__((unused))
+#else
+#define SIGNAL_MAYBE_UNUSED
+#endif
+
 static const uint8_t COL_TRACKED_JOB[3] = { 255, 222, 51 };
 
 /* ------------------------------------------------------------------ */
@@ -161,6 +167,17 @@ static const NetDeliveryLedgerEntry *ui_delivery_ledger_for_contract(
         const NetDeliveryLedgerEntry *entry = &g.delivery_ledger[i];
         if (entry->contract_index == (uint8_t)contract_index)
             return entry;
+    }
+    return NULL;
+}
+
+static const NetDeliveryLedgerEntry *ui_delivery_ledger_for_shipment(
+    uint16_t shipment_id)
+{
+    if (shipment_id == 0) return NULL;
+    for (int i = 0; i < g.delivery_ledger_count; i++) {
+        const NetDeliveryLedgerEntry *entry = &g.delivery_ledger[i];
+        if (entry->shipment_id == shipment_id) return entry;
     }
     return NULL;
 }
@@ -976,66 +993,12 @@ static int manifest_lineage_count_cg(const manifest_t *manifest,
     return n;
 }
 
-static bool trade_unit_is_named_ingot(const cargo_unit_t *u)
-{
-    return u && (cargo_kind_t)u->kind == CARGO_KIND_INGOT &&
-           (ingot_prefix_t)u->prefix_class != INGOT_PREFIX_ANONYMOUS;
-}
-
 static bool trade_unit_matches_cg(const cargo_unit_t *u,
                                   commodity_t commodity,
                                   mining_grade_t grade)
 {
     return u && u->commodity == (uint8_t)commodity &&
            u->grade == (uint8_t)grade;
-}
-
-static bool trade_unit_is_market_buy_unit(const cargo_unit_t *u,
-                                          commodity_t commodity,
-                                          mining_grade_t grade)
-{
-    if (!trade_unit_matches_cg(u, commodity, grade)) return false;
-    return !trade_unit_is_named_ingot(u);
-}
-
-static int manifest_named_count_cg_direct(const manifest_t *manifest,
-                                          commodity_t commodity,
-                                          mining_grade_t grade)
-{
-    if (!manifest || !manifest->units) return 0;
-    int n = 0;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        const cargo_unit_t *u = &manifest->units[i];
-        if (trade_unit_matches_cg(u, commodity, grade) &&
-            trade_unit_is_named_ingot(u)) n++;
-    }
-    return n;
-}
-
-static int manifest_market_count_cg_direct(const manifest_t *manifest,
-                                           commodity_t commodity,
-                                           mining_grade_t grade)
-{
-    if (!manifest || !manifest->units) return 0;
-    int n = 0;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        if (trade_unit_is_market_buy_unit(&manifest->units[i], commodity, grade)) n++;
-    }
-    return n;
-}
-
-static int manifest_market_lineage_count_cg(const manifest_t *manifest,
-                                            commodity_t commodity,
-                                            mining_grade_t grade)
-{
-    if (!manifest || !manifest->units) return 0;
-    int n = 0;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        const cargo_unit_t *u = &manifest->units[i];
-        if (!trade_unit_is_market_buy_unit(u, commodity, grade)) continue;
-        if (u->mined_block != 0) n++;
-    }
-    return n;
 }
 
 static bool station_ui_hash_is_zero(const uint8_t hash[32])
@@ -1065,33 +1028,6 @@ static void trade_row_attach_inspect(trade_row_t *row,
         ? chain->len : 0;
     memcpy(row->inspect_pub, unit->pub, sizeof(row->inspect_pub));
     memcpy(row->inspect_parent, unit->parent_merkle, sizeof(row->inspect_parent));
-}
-
-static int manifest_find_first_market_cg(const manifest_t *manifest,
-                                         commodity_t commodity,
-                                         mining_grade_t grade)
-{
-    if (!manifest || !manifest->units) return -1;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        if (trade_unit_is_market_buy_unit(&manifest->units[i], commodity, grade))
-            return (int)i;
-    }
-    return -1;
-}
-
-static int station_market_stock_cg(const station_t *st,
-                                   commodity_t commodity,
-                                   mining_grade_t grade)
-{
-    int total = station_manifest_count_cg(st, commodity, grade);
-    if (commodity == COMMODITY_FERRITE_INGOT ||
-        commodity == COMMODITY_CUPRITE_INGOT ||
-        commodity == COMMODITY_CRYSTAL_INGOT) {
-        int named = manifest_named_count_cg_direct(st ? &st->manifest : NULL,
-                                                   commodity, grade);
-        total -= named;
-    }
-    return total > 0 ? total : 0;
 }
 
 /* station_manifest_has_commodity / ship_manifest_has_commodity removed —
@@ -1137,6 +1073,14 @@ static float ship_manifest_backed_cargo_volume(const ship_t *ship)
     return total;
 }
 
+static int ship_towed_pod_capacity_local(const ship_t *ship)
+{
+    int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
+    if (cap < 0) cap = 0;
+    if (cap > 10) cap = 10;
+    return cap;
+}
+
 static bool local_ship_lists_towed_pod(const ship_t *ship, int pod_idx)
 {
     if (!ship || pod_idx < 0) return false;
@@ -1158,17 +1102,540 @@ static bool local_player_tows_pod(const ship_t *ship, int pod_idx)
     return local_ship_lists_towed_pod(ship, pod_idx);
 }
 
-static int local_towed_cargo_count_c(const ship_t *ship, commodity_t commodity)
+static int station_index_local(const station_t *st)
 {
-    if ((unsigned)commodity >= COMMODITY_COUNT) return 0;
-    int total = 0;
+    if (!st) return -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (st == &g.world.stations[i]) return i;
+    }
+    return -1;
+}
+
+static bool station_shipyard_pod_staged_at_hopper_local(const station_t *st,
+                                                        const cargo_pod_t *pod,
+                                                        commodity_t commodity)
+{
+    if (!st || !pod || commodity >= COMMODITY_COUNT) return false;
+    int station_idx = station_index_local(st);
+    const float hopper_range_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    const float yard_range_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != commodity) continue;
+        vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                hopper->slot);
+        bool serves_yard = false;
+        for (int y = 0; y < st->module_count; y++) {
+            const station_module_t *yard = &st->modules[y];
+            if (yard->scaffold || yard->type != MODULE_SHIPYARD) continue;
+            module_inputs_t req = module_required_inputs(MODULE_SHIPYARD);
+            bool accepts = false;
+            for (int r = 0; r < req.count; r++) {
+                if (req.commodities[r] == commodity) {
+                    accepts = true;
+                    break;
+                }
+            }
+            if (!accepts) continue;
+            vec2 yard_pos = module_world_pos_ring(st, yard->ring,
+                                                  yard->slot);
+            if (v2_dist_sq(hopper_pos, yard_pos) <= yard_range_sq) {
+                serves_yard = true;
+                break;
+            }
+        }
+        if (!serves_yard) continue;
+        if (station_idx >= 0 &&
+            cargo_pod_is_tractored_by_module(pod, station_idx, i))
+            return true;
+        if (pod->towed_by >= 0 &&
+            v2_dist_sq(pod->pos, hopper_pos) <= hopper_range_sq)
+            return true;
+    }
+    return false;
+}
+
+static bool station_shipyard_pod_is_exact_material_local(const cargo_pod_t *pod,
+                                                        commodity_t commodity)
+{
+    if (!pod || commodity >= COMMODITY_COUNT) return false;
+    if (!pod->active || pod->kind != CARGO_POD_CARGO) return false;
+    if (pod->shipment_id != 0 || pod->commodity != commodity) return false;
+    if (pod->quantity == 0) return false;
+    if (pod->summary_flags & CARGO_POD_SUMMARY_EXACT_MATERIAL)
+        return pod->manifest_count == pod->quantity;
+    if (pod->manifest_count == 0 ||
+        pod->manifest_count != pod->quantity ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((commodity_t)pod->manifest_units[i].commodity != commodity)
+            return false;
+    }
+    return true;
+}
+
+static int station_shipyard_station_material_available_local(const station_t *st,
+                                                             commodity_t commodity)
+{
+    if (!st || commodity >= COMMODITY_COUNT) return 0;
+    int stored = station_finished_count(st, commodity);
+    if (stored <= 0) return 0;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity == commodity) return stored;
+    }
+    return 0;
+}
+
+int station_shipyard_material_available_local(const station_t *st,
+                                              commodity_t commodity)
+{
+    if (!st || commodity >= COMMODITY_COUNT) return 0;
+    int total =
+        station_shipyard_station_material_available_local(st, commodity);
+    const ship_t *ship = &LOCAL_PLAYER.ship;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
-        if (!local_player_tows_pod(ship, i)) continue;
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
-        if (pod->commodity != commodity) continue;
+        if (!station_shipyard_pod_is_exact_material_local(pod, commodity))
+            continue;
+        if (pod->towed_by >= 0 && !local_player_tows_pod(ship, i))
+            continue;
+        if (!station_shipyard_pod_staged_at_hopper_local(st, pod, commodity))
+            continue;
         total += (int)pod->quantity;
     }
     return total;
+}
+
+bool station_shipyard_can_commission_hull_local(const station_t *st,
+                                                hull_class_t hull_class)
+{
+    if (!st || station_active_shipyard_count(st) < 1) return false;
+    int frames = 0, lasers = 0, tractors = 0;
+    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors))
+        return false;
+    return station_shipyard_material_available_local(st, COMMODITY_FRAME) >= frames &&
+           station_shipyard_material_available_local(st, COMMODITY_LASER_MODULE) >= lasers &&
+           station_shipyard_material_available_local(st, COMMODITY_TRACTOR_MODULE) >= tractors;
+}
+
+static bool trade_is_finished_good(commodity_t c)
+{
+    return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
+}
+
+static bool local_pod_has_exact_commodity_manifest(const cargo_pod_t *pod)
+{
+    if (!pod || pod->manifest_count == 0 ||
+        pod->manifest_count != pod->quantity ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    if (pod->summary_flags & CARGO_POD_SUMMARY_EXACT_MATERIAL)
+        return true;
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((commodity_t)pod->manifest_units[i].commodity != pod->commodity)
+            return false;
+    }
+    return true;
+}
+
+static bool local_pod_has_detailed_manifest(const cargo_pod_t *pod)
+{
+    if (!pod || pod->manifest_count == 0 ||
+        pod->manifest_count != pod->quantity ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((commodity_t)pod->manifest_units[i].commodity != pod->commodity)
+            return false;
+    }
+    return true;
+}
+
+static mining_grade_t local_pod_summary_grade(const cargo_pod_t *pod)
+{
+    if (!pod || pod->summary_grade >= (uint8_t)MINING_GRADE_COUNT)
+        return MINING_GRADE_COMMON;
+    return (mining_grade_t)pod->summary_grade;
+}
+
+static float trade_unit_price_with_summary_grade(float unit_price,
+                                                 const cargo_pod_t *pod)
+{
+    if (unit_price <= FLOAT_EPSILON) return 0.0f;
+    return unit_price * mining_payout_multiplier(local_pod_summary_grade(pod));
+}
+
+static bool trade_cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
+                                                const contract_t *ct)
+{
+    if (!pod || !ct || !ct->active) return false;
+    if (ct->action != CONTRACT_TRACTOR) return false;
+    if (ct->commodity < COMMODITY_RAW_ORE_COUNT) return false;
+    if (pod->shipment_id != 0 || pod->commodity != ct->commodity)
+        return false;
+    if (!local_pod_has_exact_commodity_manifest(pod)) return false;
+    int needed = (int)floorf(ct->quantity_needed + 0.0001f);
+    if (needed < (int)pod->quantity) return false;
+    if (!local_pod_has_detailed_manifest(pod)) {
+        if (ct->proof_flags != 0 || ct->required_recipe_id != 0)
+            return false;
+        if (ct->required_grade < MINING_GRADE_COUNT &&
+            local_pod_summary_grade(pod) < (mining_grade_t)ct->required_grade) {
+            return false;
+        }
+        return true;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(
+                ct, &pod->manifest_units[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static const contract_t *trade_matching_pod_contract(const station_t *st,
+                                                     const cargo_pod_t *pod)
+{
+    int station_idx = station_index_of(st);
+    if (station_idx < 0) return NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &g.world.contracts[k];
+        if (!ct->active || ct->station_index != station_idx) continue;
+        if (trade_cargo_pod_fits_contract_exact(pod, ct)) return ct;
+    }
+    return NULL;
+}
+
+static float trade_black_market_pod_quote(const station_t *st,
+                                          const cargo_pod_t *pod)
+{
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->quantity == 0 || pod->commodity >= COMMODITY_COUNT ||
+        !station_policy_accepts_contract_bound_cargo(st)) {
+        return 0.0f;
+    }
+
+    commodity_t c = pod->commodity;
+    float value = 0.0f;
+    if (pod->manifest_count > 0) {
+        if (!local_pod_has_exact_commodity_manifest(pod)) return 0.0f;
+        if (local_pod_has_detailed_manifest(pod)) {
+            for (uint16_t i = 0; i < pod->manifest_count; i++) {
+                const cargo_unit_t *unit = &pod->manifest_units[i];
+                float unit_value = station_buy_price_unit(st, unit);
+                if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON) {
+                    unit_value = st->base_price[c] *
+                        prefix_class_price_multiplier((int)unit->prefix_class);
+                }
+                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+                value += unit_value;
+            }
+        } else {
+            float unit_value = station_buy_price(st, c);
+            if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+                unit_value = st->base_price[c];
+            value = trade_unit_price_with_summary_grade(unit_value, pod) *
+                    (float)pod->quantity;
+        }
+    } else {
+        float unit_value = station_buy_price(st, c);
+        if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+            unit_value = st->base_price[c];
+        value = unit_value * (float)pod->quantity;
+    }
+
+    return value > FLOAT_EPSILON
+        ? value * BLACK_MARKET_CARGO_MARKDOWN
+        : 0.0f;
+}
+
+static float trade_towed_pod_quote(const station_t *st,
+                                   const cargo_pod_t *pod,
+                                   bool *out_actionable,
+                                   uint8_t *out_block_reason)
+{
+    if (out_actionable) *out_actionable = false;
+    if (out_block_reason) *out_block_reason = TRADE_BLOCK_NONE;
+    if (!st || !pod || !pod->active || pod->commodity >= COMMODITY_COUNT ||
+        pod->quantity == 0) {
+        if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_CARGO;
+        return 0.0f;
+    }
+
+    commodity_t c = pod->commodity;
+    int quantity = (int)pod->quantity;
+    if (pod->shipment_id != 0) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_shipment(pod->shipment_id);
+        int here_idx = station_index_of(st);
+        bool at_dest = ledger && here_idx >= 0 &&
+                       here_idx == (int)ledger->destination_station;
+        bool black_market = station_policy_accepts_contract_bound_cargo(st);
+        bool accepted = at_dest || black_market;
+        if (!accepted) {
+            if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_BUYER;
+            return 0.0f;
+        }
+        float value = 0.0f;
+        if (at_dest && ledger && ledger->quantity_total > 0) {
+            value = (ledger->destination_payout /
+                     (float)ledger->quantity_total) * (float)quantity;
+        } else {
+            float unit_price = station_buy_price(st, c);
+            if (unit_price <= FLOAT_EPSILON &&
+                st->base_price[c] > FLOAT_EPSILON) {
+                unit_price = st->base_price[c];
+            }
+            value = unit_price * BLACK_MARKET_CARGO_MARKDOWN * (float)quantity;
+        }
+        if (value <= FLOAT_EPSILON) {
+            if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_BUYER;
+            return 0.0f;
+        }
+        if (out_actionable) *out_actionable = true;
+        return value;
+    }
+
+    const contract_t *ct = trade_matching_pod_contract(st, pod);
+    if (!ct && station_policy_accepts_contract_bound_cargo(st)) {
+        float value = trade_black_market_pod_quote(st, pod);
+        if (value > FLOAT_EPSILON) {
+            if (out_actionable) *out_actionable = true;
+            return value;
+        }
+    }
+    float price = ct ? contract_price(ct) : station_buy_price(st, c);
+    if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+        price = st->base_price[c];
+    if (price <= FLOAT_EPSILON) {
+        if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_BUYER;
+        return 0.0f;
+    }
+
+    float value = 0.0f;
+    if (pod->manifest_count > 0) {
+        if (!local_pod_has_exact_commodity_manifest(pod) ||
+            !trade_is_finished_good(c)) {
+            if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_BUYER;
+            return 0.0f;
+        }
+        if (local_pod_has_detailed_manifest(pod)) {
+            for (uint16_t i = 0; i < pod->manifest_count; i++) {
+                const cargo_unit_t *unit = &pod->manifest_units[i];
+                float unit_value = ct ? price : station_buy_price_unit(st, unit);
+                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+                value += unit_value;
+            }
+        } else {
+            float unit_value = ct ? price : station_buy_price(st, c);
+            if (unit_value <= FLOAT_EPSILON &&
+                st->base_price[c] > FLOAT_EPSILON) {
+                unit_value = st->base_price[c];
+            }
+            value = trade_unit_price_with_summary_grade(unit_value, pod) *
+                    (float)quantity;
+        }
+    } else {
+        value = price * (float)quantity;
+    }
+    if (value <= FLOAT_EPSILON) {
+        if (out_block_reason) *out_block_reason = TRADE_BLOCK_NO_BUYER;
+        return 0.0f;
+    }
+    if (out_actionable) *out_actionable = true;
+    return value;
+}
+
+static bool trade_station_market_pod(const station_t *st, int station_idx,
+                                     int pod_idx) {
+    if (!st || station_idx < 0 || pod_idx < 0 ||
+        pod_idx >= MAX_CARGO_PODS) {
+        return false;
+    }
+    const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+    if (!pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->quantity == 0 || pod->commodity >= COMMODITY_COUNT ||
+        pod->towed_by >= 0 || pod->shipment_id != 0) {
+        return false;
+    }
+    int ps = -1;
+    int pm = -1;
+    if (!cargo_pod_module_tractor_indices(pod, &ps, &pm) ||
+        ps != station_idx || pm < 0 || pm >= st->module_count ||
+        pm >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[pm];
+    return !module->scaffold && module->type == MODULE_DOCK;
+}
+
+static float trade_station_pod_quote(const station_t *st,
+                                     const cargo_pod_t *pod) {
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->quantity == 0 || pod->commodity >= COMMODITY_COUNT ||
+        pod->shipment_id != 0) {
+        return 0.0f;
+    }
+    commodity_t c = pod->commodity;
+    float price = station_sell_price(st, c);
+    if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+        price = st->base_price[c];
+    if (price <= FLOAT_EPSILON) return 0.0f;
+
+    if (pod->manifest_count > 0) {
+        if (!local_pod_has_exact_commodity_manifest(pod) ||
+            !trade_is_finished_good(c)) {
+            return 0.0f;
+        }
+        if (local_pod_has_detailed_manifest(pod)) {
+            float value = 0.0f;
+            for (uint16_t i = 0; i < pod->manifest_count; i++) {
+                const cargo_unit_t *unit = &pod->manifest_units[i];
+                float unit_value = station_sell_price_unit(st, unit);
+                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+                value += unit_value;
+            }
+            return value;
+        }
+        return trade_unit_price_with_summary_grade(price, pod) *
+               (float)pod->quantity;
+    }
+    return price * (float)pod->quantity;
+}
+
+static mining_grade_t trade_pod_display_grade(const cargo_pod_t *pod) {
+    if (!pod || pod->manifest_count == 0)
+        return MINING_GRADE_COUNT;
+    if (!local_pod_has_detailed_manifest(pod))
+        return local_pod_summary_grade(pod);
+    mining_grade_t grade = (mining_grade_t)pod->manifest_units[0].grade;
+    for (uint16_t i = 1; i < pod->manifest_count; i++) {
+        if ((mining_grade_t)pod->manifest_units[i].grade != grade)
+            return MINING_GRADE_COUNT;
+    }
+    return grade;
+}
+
+static int trade_station_market_pod_units(const station_t *st,
+                                          int station_idx,
+                                          commodity_t commodity,
+                                          mining_grade_t grade)
+{
+    if (!st || station_idx < 0 || commodity >= COMMODITY_COUNT)
+        return 0;
+    int total = 0;
+    for (int pod_idx = 0; pod_idx < MAX_CARGO_PODS; pod_idx++) {
+        if (!trade_station_market_pod(st, station_idx, pod_idx))
+            continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        if (pod->commodity != commodity) continue;
+        if (grade < MINING_GRADE_COUNT) {
+            mining_grade_t pod_grade = trade_pod_display_grade(pod);
+            if (pod_grade != grade) continue;
+        }
+        total += (int)pod->quantity;
+    }
+    return total;
+}
+
+static bool trade_station_has_matching_intake(const station_t *st,
+                                             const cargo_pod_t *pod)
+{
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        !local_pod_has_exact_commodity_manifest(pod)) {
+        return false;
+    }
+    commodity_t c = pod->commodity;
+    if (station_find_hopper_for(st, c) >= 0)
+        return true;
+    if (c == COMMODITY_FRAME) {
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            const station_module_t *module = &st->modules[m];
+            if (module->scaffold) continue;
+            if (module->type == MODULE_FURNACE)
+                return true;
+            const module_schema_t *schema = module_schema(module->type);
+            if (schema && schema->kind == MODULE_KIND_PRODUCER)
+                return true;
+        }
+    }
+    return false;
+}
+
+typedef struct {
+    int towed_crates;
+    int towed_units;
+    int station_crates;
+    int station_units;
+    int accepted_crates;
+    int accepted_units;
+    int exact_contracts;
+    int exact_ready_crates;
+    bool black_market;
+} trade_custody_board_t;
+
+static void trade_custody_board_build(const station_t *st,
+                                      const ship_t *ship,
+                                      trade_custody_board_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    int station_idx = station_index_of(st);
+    if (!st || !ship || station_idx < 0) return;
+    out->black_market = station_policy_accepts_contract_bound_cargo(st);
+
+    for (int pod_idx = 0; pod_idx < MAX_CARGO_PODS; pod_idx++) {
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO ||
+            pod->quantity == 0 || pod->commodity >= COMMODITY_COUNT) {
+            continue;
+        }
+        if (local_player_tows_pod(ship, pod_idx)) {
+            bool actionable = false;
+            uint8_t blk = TRADE_BLOCK_NONE;
+            out->towed_crates++;
+            out->towed_units += (int)pod->quantity;
+            (void)trade_towed_pod_quote(st, pod, &actionable, &blk);
+            if (actionable && trade_station_has_matching_intake(st, pod)) {
+                out->accepted_crates++;
+                out->accepted_units += (int)pod->quantity;
+            }
+        }
+        if (trade_station_market_pod(st, station_idx, pod_idx) &&
+            trade_station_pod_quote(st, pod) > FLOAT_EPSILON) {
+            out->station_crates++;
+            out->station_units += (int)pod->quantity;
+        }
+    }
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &g.world.contracts[k];
+        if (!ct->active || ct->station_index != station_idx ||
+            ct->action != CONTRACT_TRACTOR ||
+            ct->commodity < COMMODITY_RAW_ORE_COUNT ||
+            ct->quantity_needed <= 0.01f) {
+            continue;
+        }
+        out->exact_contracts++;
+        for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+            int pod_idx = ship->towed_pods[t];
+            if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+            const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+            if (trade_cargo_pod_fits_contract_exact(pod, ct)) {
+                out->exact_ready_crates++;
+                break;
+            }
+        }
+    }
 }
 
 static float local_towed_cargo_volume(const ship_t *ship)
@@ -1248,99 +1715,149 @@ static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
 int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max) {
     if (!st || !ship || !out || max <= 0) return 0;
-    if (trade_session_station_index(st) < 0) return 0;
+    int station_idx = trade_session_station_index(st);
+    if (station_idx < 0) return 0;
     int row_count = 0;
-    float free_volume = ship_cargo_capacity(ship) - ship_manifest_backed_cargo_volume(ship);
     float credits = player_current_balance();
-    int capacity = (int)lroundf(MAX_PRODUCT_STOCK);
+    int tow_space = ship_towed_pod_capacity_local(ship) - ship->towed_pod_count;
+    if (tow_space < 0) tow_space = 0;
 
-    /* BUY rows -- one per stocked (commodity, grade) the station produces.
-     * Empty catalog lines stay hidden so TRADE reads as the current local
-     * market rather than a stale inventory ledger. */
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
-        if (!station_produces(st, (commodity_t)c)) continue;
-        float price_base = station_sell_price(st, (commodity_t)c);
-        if (price_base <= FLOAT_EPSILON) continue;
-        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int stock = station_market_stock_cg(st, (commodity_t)c, (mining_grade_t)gi);
-            if (stock <= 0) continue;
-            int price = (int)lroundf(price_base
-                    * mining_payout_multiplier((mining_grade_t)gi));
-            float vol = commodity_volume((commodity_t)c);
-            int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
-            if (per_press < 1) per_press = 1;
-            int volume_cap = (vol > FLOAT_EPSILON)
-                ? (int)floorf((free_volume + FLOAT_EPSILON) / vol) : per_press;
-            int funds_cap = (price > 0)
-                ? (int)floorf((credits + FLOAT_EPSILON) / (float)price) : 0;
-            int qty = per_press;
-            if (qty > stock) qty = stock;
-            if (qty > volume_cap) qty = volume_cap;
-            if (qty > funds_cap) qty = funds_cap;
-            uint8_t blk = TRADE_BLOCK_NONE;
-            if (stock <= 0) blk = TRADE_BLOCK_STATION_EMPTY;
-            else if (volume_cap <= 0) blk = TRADE_BLOCK_HOLD_FULL;
-            else if (funds_cap <= 0) blk = TRADE_BLOCK_NO_FUNDS;
-            /* Per-grade stock is what the row offers; that's already
-             * `stock` from the manifest count above. The total cap is
-             * shared with other grades of this commodity, so the
-             * passive line below also references the per-commodity
-             * inventory. */
-            /* Pull representative-unit lineage from the station's
-             * manifest only when the whole row has provenance locally.
-             * In MP, station manifests are partial named-ingot mirrors;
-             * if anonymous cargo shares the bucket, we hide lineage
-             * rather than imply the next BUY is known. */
-            uint8_t origin_idx = 0;
-            uint64_t mined_blk = 0;
-            bool has_lineage = false;
-            const cargo_unit_t *inspect_unit = NULL;
-            const cargo_receipt_chain_t *inspect_chain = NULL;
-            int represented = manifest_market_count_cg_direct(&st->manifest,
-                                                              (commodity_t)c,
-                                                              (mining_grade_t)gi);
-            int lineage_count = manifest_market_lineage_count_cg(&st->manifest,
-                                                                 (commodity_t)c,
-                                                                 (mining_grade_t)gi);
-            if (represented == stock) {
-                int rep_idx = manifest_find_first_market_cg(&st->manifest,
-                                                            (commodity_t)c,
-                                                            (mining_grade_t)gi);
-                if (rep_idx >= 0) {
-                    const cargo_unit_t *rep = &st->manifest.units[rep_idx];
-                    origin_idx = rep->origin_station;
-                    mined_blk = rep->mined_block;
-                    has_lineage = (lineage_count == stock && mined_blk != 0) ||
-                                  cargo_unit_has_player_origin(rep);
-                    inspect_unit = rep;
-                    const ship_receipts_t *rcpts = station_get_receipts_const(st);
-                    if (rcpts && (uint16_t)rep_idx < rcpts->count)
-                        inspect_chain = &rcpts->chains[rep_idx];
-                }
-            }
-            trade_row_t row = (trade_row_t){
-                .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = stock, .quantity = qty,
-                .unit_price = price, .total_price = price * qty,
-                .actionable = (blk == TRADE_BLOCK_NONE && qty > 0),
-                .station_stock = stock, .station_capacity = capacity,
-                .held = 0, .block_reason = blk,
-                .has_lineage = has_lineage,
-                .origin_station_idx = origin_idx,
-                .mined_block = mined_blk,
-            };
-            trade_row_attach_inspect(&row, inspect_unit, inspect_chain);
-            out[row_count++] = row;
+    /* BUY rows backed by physical dock-held pods. These are the crate
+     * economy's primary market surface: buying transfers custody of the
+     * whole visible pod instead of minting a new pod from station stock. */
+    for (int pod_idx = 0; pod_idx < MAX_CARGO_PODS && row_count < max; pod_idx++) {
+        if (!trade_station_market_pod(st, station_idx, pod_idx)) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        float quote = trade_station_pod_quote(st, pod);
+        if (quote <= FLOAT_EPSILON) continue;
+        int quantity = (int)pod->quantity;
+        int total_price = (int)lroundf(quote);
+        int unit_price = quantity > 0
+            ? (int)lroundf(quote / (float)quantity)
+            : total_price;
+        uint8_t blk = TRADE_BLOCK_NONE;
+        if (tow_space <= 0) blk = TRADE_BLOCK_TOW_FULL;
+        else if (credits + FLOAT_EPSILON < quote) blk = TRADE_BLOCK_NO_FUNDS;
+
+        uint8_t origin_idx = 0;
+        uint64_t mined_blk = 0;
+        bool has_lineage = false;
+        const cargo_unit_t *inspect_unit = NULL;
+        mining_grade_t row_grade = trade_pod_display_grade(pod);
+        if (pod->manifest_count > 0) {
+            inspect_unit = &pod->manifest_units[0];
+            origin_idx = inspect_unit->origin_station;
+            mined_blk = inspect_unit->mined_block;
+            has_lineage = (mined_blk != 0) ||
+                          cargo_unit_has_player_origin(inspect_unit);
         }
+
+        trade_row_t row = (trade_row_t){
+            .kind = 0, .commodity = pod->commodity, .grade = row_grade,
+            .stock = quantity, .quantity = quantity,
+            .unit_price = unit_price, .total_price = total_price,
+            .actionable = (blk == TRADE_BLOCK_NONE),
+            .station_stock = quantity,
+            .station_capacity = CARGO_POD_UNIT_CAPACITY,
+            .held = 0, .block_reason = blk,
+            .towed_pod_quantity = quantity,
+            .is_station_pod = true,
+            .station_pod_index = (uint16_t)pod_idx,
+            .prefix_class = inspect_unit
+                ? inspect_unit->prefix_class
+                : (uint8_t)INGOT_PREFIX_ANONYMOUS,
+            .has_lineage = has_lineage,
+            .origin_station_idx = origin_idx,
+            .mined_block = mined_blk,
+        };
+        trade_row_attach_inspect(&row, inspect_unit, NULL);
+        out[row_count++] = row;
     }
 
-    /* SELL rows -- every held commodity/grade this station consumes.
-     * Cargo-free lines stay hidden; the CONTRACTS panel carries demand
-     * browsing, while TRADE stays focused on immediate buy/sell actions. */
+    /* SELL rows -- visible pods first, one row per pod. Server pod sale
+     * consumes from the end of ship.towed_pods[], so the UI presents the
+     * same order and a digit key sells the pod the player sees. */
+    int tow_count = ship->towed_pod_count;
+    if (tow_count > 10) tow_count = 10;
+    for (int t = tow_count - 1; t >= 0 && row_count < max; t--) {
+        int pod_idx = ship->towed_pods[t];
+        if (!local_player_tows_pod(ship, pod_idx)) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO ||
+            pod->commodity >= COMMODITY_COUNT || pod->quantity == 0) {
+            continue;
+        }
+        if (pod->shipment_id == 0)
+            continue;
+        commodity_t c = pod->commodity;
+        bool finished_good = trade_is_finished_good(c);
+        int row_capacity = finished_good
+            ? (int)lroundf(MAX_PRODUCT_STOCK)
+            : (int)lroundf(REFINERY_HOPPER_CAPACITY);
+        int dock_stock_units = trade_station_market_pod_units(
+            st, station_idx, c, MINING_GRADE_COUNT);
+        float station_total_amount = (finished_good
+            ? (float)station_manifest_count_c(st, c)
+            : station_inventory_amount(st, c)) + (float)dock_stock_units;
+        int station_total_inv =
+            (int)floorf(station_total_amount + 0.0001f);
+        int station_space_units =
+            (int)floorf((float)row_capacity - station_total_amount + 0.0001f);
+
+        bool pod_actionable = false;
+        uint8_t blk = TRADE_BLOCK_NONE;
+        float quote = trade_towed_pod_quote(st, pod, &pod_actionable, &blk);
+        if (!pod_actionable && blk == TRADE_BLOCK_NO_BUYER &&
+            pod->shipment_id == 0) {
+            continue;
+        }
+
+        int quantity = (int)pod->quantity;
+        int total_price = (int)lroundf(quote);
+        int unit_price = quantity > 0
+            ? (int)lroundf(quote / (float)quantity)
+            : total_price;
+
+        uint8_t origin_idx = 0;
+        uint64_t mined_blk = 0;
+        bool has_lineage = false;
+        const cargo_unit_t *inspect_unit = NULL;
+        if (pod->manifest_count > 0) {
+            inspect_unit = &pod->manifest_units[0];
+            origin_idx = inspect_unit->origin_station;
+            mined_blk = inspect_unit->mined_block;
+            has_lineage = (mined_blk != 0) ||
+                          cargo_unit_has_player_origin(inspect_unit);
+        }
+
+        trade_row_t row = (trade_row_t){
+            .kind = 1, .commodity = c, .grade = MINING_GRADE_COMMON,
+            .stock = quantity, .quantity = quantity,
+            .unit_price = unit_price, .total_price = total_price,
+            .actionable = pod_actionable,
+            .station_stock = station_total_inv,
+            .station_capacity = row_capacity,
+            .held = quantity, .towed_held = quantity,
+            .towed_pod_quantity = quantity,
+            .is_towed_pod = true,
+            .towed_pod_index = (uint16_t)pod_idx,
+            .shipment_id = pod->shipment_id,
+            .block_reason = blk,
+            .prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS,
+            .has_lineage = has_lineage,
+            .origin_station_idx = origin_idx,
+            .mined_block = mined_blk,
+        };
+        trade_row_attach_inspect(&row, inspect_unit, NULL);
+        out[row_count++] = row;
+        (void)station_space_units;
+    }
+
+    /* Legacy manifest-held cargo stays grouped by commodity/grade while
+     * old saves and transitional systems still carry internal manifests. */
     for (int c = 0; c < COMMODITY_COUNT && row_count < max; c++) {
-        int towed_total = local_towed_cargo_count_c(ship, (commodity_t)c);
         bool station_accepts_manifest = station_consumes(st, (commodity_t)c);
-        if (!station_accepts_manifest && towed_total <= 0) continue;
+        if (!station_accepts_manifest) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
         bool finished_good = c >= COMMODITY_RAW_ORE_COUNT;
@@ -1350,23 +1867,25 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         float station_total_amount = finished_good
             ? (float)station_manifest_count_c(st, (commodity_t)c)
             : station_inventory_amount(st, (commodity_t)c);
+        station_total_amount += (float)trade_station_market_pod_units(
+            st, station_idx, (commodity_t)c, MINING_GRADE_COUNT);
         int station_total_inv =
             (int)floorf(station_total_amount + 0.0001f);
         int station_space_units =
             (int)floorf((float)row_capacity - station_total_amount + 0.0001f);
         bool station_full = station_space_units <= 0;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int towed_g = (gi == MINING_GRADE_COMMON) ? towed_total : 0;
             int manifest_g = (finished_good && station_accepts_manifest)
                 ? ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi)
                 : 0;
-            int held = manifest_g + towed_g;
+            int held = manifest_g;
             if (held <= 0) continue;
+            int row_quantity = 1;
             int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
                                                          (commodity_t)c,
                                                          (mining_grade_t)gi);
             int top_cls = (int)INGOT_PREFIX_ANONYMOUS;
-            if (towed_g <= 0 && rep_idx >= 0)
+            if (rep_idx >= 0)
                 top_cls = (int)ship->manifest.units[rep_idx].prefix_class;
             float prefix_mult = prefix_class_price_multiplier(top_cls);
             int price = (int)lroundf(price_base
@@ -1384,6 +1903,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                     ? station_manifest_count_cg(st, (commodity_t)c,
                                                 (mining_grade_t)gi)
                     : station_total_inv;
+            station_grade_count += trade_station_market_pod_units(
+                st, station_idx, (commodity_t)c, (mining_grade_t)gi);
             /* Lineage comes from the FIFO-first matching unit in the
              * SHIP manifest, but only when every unit in this row has a
              * provenance tag. In MP, any anonymous or non-wired unit is
@@ -1397,7 +1918,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             int lineage_count = manifest_lineage_count_cg(&ship->manifest,
                                                           (commodity_t)c,
                                                           (mining_grade_t)gi);
-            if (held > 0 && towed_g <= 0) {
+            if (held > 0) {
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
@@ -1412,11 +1933,13 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             }
             trade_row_t row = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = held, .quantity = held > 0 ? 1 : 0,
-                .unit_price = price, .total_price = price,
+                .stock = held, .quantity = row_quantity,
+                .unit_price = price, .total_price = price * row_quantity,
                 .actionable = (blk == TRADE_BLOCK_NONE),
                 .station_stock = station_grade_count, .station_capacity = row_capacity,
-                .held = held, .towed_held = towed_g, .block_reason = blk,
+                .held = held, .towed_held = 0,
+                .towed_pod_quantity = 0,
+                .block_reason = blk,
                 .prefix_class = (uint8_t)top_cls,
                 .has_lineage = has_lineage,
                 .origin_station_idx = origin_idx,
@@ -1534,6 +2057,33 @@ static bool trade_row_tracked_note(const station_t *st,
 {
     if (!out || out_size == 0) return false;
     out[0] = '\0';
+    if (row && row->is_towed_pod && row->shipment_id != 0) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_shipment(row->shipment_id);
+        int here_idx = station_index_of(st);
+        if (ledger) {
+            bool at_dest = here_idx >= 0 &&
+                           here_idx == (int)ledger->destination_station;
+            if (at_dest &&
+                ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
+                ledger->held_bound > 0) {
+                snprintf(out, out_size, "ready to deliver");
+                return true;
+            }
+            if (!at_dest && station_policy_accepts_contract_bound_cargo(st)) {
+                snprintf(out, out_size, "black-market markdown");
+                return true;
+            }
+            char dest[12];
+            ui_station_name_short(ledger->destination_station,
+                                  dest, sizeof(dest));
+            snprintf(out, out_size, "to %s", dest);
+            return true;
+        }
+        snprintf(out, out_size, "credit cargo");
+        return true;
+    }
+
     contract_objective_t objective;
     const contract_t *ct = tracked_contract_for_station_ui(&objective);
     if (!contract_accepts_trade_row(ct, row)) return false;
@@ -1588,6 +2138,21 @@ static bool trade_row_credit_cargo_label(const station_t *st,
     if (!out || out_size == 0) return false;
     out[0] = '\0';
     if (!row || row->kind != 1) return false;
+    if (row->is_towed_pod && row->shipment_id != 0) {
+        const NetDeliveryLedgerEntry *ledger =
+            ui_delivery_ledger_for_shipment(row->shipment_id);
+        if (!ledger) {
+            snprintf(out, out_size, "cargo shipment");
+            return true;
+        }
+        char origin[12];
+        char dest[12];
+        ui_station_name_short(ledger->origin_station, origin, sizeof(origin));
+        ui_station_name_short(ledger->destination_station, dest, sizeof(dest));
+        snprintf(out, out_size, "cargo %s>%s", origin, dest);
+        (void)st;
+        return true;
+    }
     contract_objective_t objective;
     const contract_t *ct = tracked_contract_for_station_ui(&objective);
     if (!ct || ct->action != CONTRACT_DELIVERY ||
@@ -1634,14 +2199,14 @@ static bool contract_row_tracked_note(int here_idx,
             int source_stock = station_contract_source_stock_count(
                 &g.world.stations[here_idx], ct);
             if (source_stock > 0)
-                snprintf(out, out_size, "load cargo");
+                snprintf(out, out_size, "load pod");
             else
                 snprintf(out, out_size, "origin out of stock");
             return true;
         }
         if (at_dest && ledger &&
             ledger->status == DELIVERY_SHIPMENT_PICKED_UP && held > 0) {
-            snprintf(out, out_size, "unload cargo");
+            snprintf(out, out_size, "unload pod");
             return true;
         }
         if (held > 0 && !at_dest) {
@@ -1659,7 +2224,9 @@ static bool contract_row_tracked_note(int here_idx,
             ct->commodity < COMMODITY_RAW_ORE_COUNT) {
             snprintf(out, out_size, "load ore");
         } else if (ct->action == CONTRACT_TRACTOR) {
-            snprintf(out, out_size, "unload cargo");
+            snprintf(out, out_size, "unload pod");
+        } else if (ct->action == CONTRACT_FRACTURE) {
+            snprintf(out, out_size, "claim bounty");
         } else {
             snprintf(out, out_size, "deliver cargo");
         }
@@ -1698,10 +2265,11 @@ static float ui_towed_matching_ore(const contract_t *ct)
 static bool contract_row_note_is_action(const char *note)
 {
     if (!note || !note[0]) return false;
-    return strcmp(note, "load cargo") == 0 ||
+    return strcmp(note, "load pod") == 0 ||
            strcmp(note, "load ore") == 0 ||
-           strcmp(note, "unload cargo") == 0 ||
+           strcmp(note, "unload pod") == 0 ||
            strcmp(note, "deliver cargo") == 0 ||
+           strcmp(note, "claim bounty") == 0 ||
            strcmp(note, "return proof") == 0;
 }
 
@@ -1735,7 +2303,7 @@ static bool station_contract_s_action_label(const station_t *station,
         }
         if (at_dest && ledger &&
             ledger->status == DELIVERY_SHIPMENT_PICKED_UP && held > 0) {
-            snprintf(out, out_size, "unload cargo");
+            snprintf(out, out_size, "unload pod");
             return true;
         }
         snprintf(out, out_size, "contact");
@@ -1755,7 +2323,7 @@ static bool station_contract_s_action_label(const station_t *station,
         }
         snprintf(out, out_size,
                  contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0
-                    ? "unload cargo" : "track cargo");
+                    ? "unload pod" : "track cargo");
         return true;
     }
 
@@ -2183,7 +2751,7 @@ static const char *contract_ready_action_label(int here_idx,
         if (at_dest && ledger &&
             ledger->status == DELIVERY_SHIPMENT_PICKED_UP &&
             ledger->held_bound > 0)
-            return "unload cargo";
+            return "unload pod";
         return "track route";
     }
     if (fulfillable_here) {
@@ -2191,7 +2759,7 @@ static const char *contract_ready_action_label(int here_idx,
             ct->commodity < COMMODITY_RAW_ORE_COUNT)
             return "load ore";
         if (ct->action == CONTRACT_TRACTOR)
-            return "unload cargo";
+            return "unload pod";
         if (ct->action == CONTRACT_FRACTURE)
             return "claim bounty";
     }
@@ -2235,6 +2803,77 @@ static bool station_contract_arrival_line(const station_t *st,
     }
     snprintf(out, cap, "Nearest job: [%d] %s contract.", 1, type);
     return true;
+}
+
+static bool station_trade_page_has_pod_rows(const trade_row_t *rows,
+                                            int first,
+                                            int last)
+{
+    if (!rows) return false;
+    for (int i = first; i < last; i++) {
+        if (rows[i].is_station_pod ||
+            (rows[i].kind == 1 && rows[i].towed_pod_quantity > 0))
+            return true;
+    }
+    return false;
+}
+
+bool station_panel_legend_text(station_view_t view,
+                               const station_t *station,
+                               char *out,
+                               size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    const station_panel_descriptor_t *panel = station_panel_descriptor(view);
+    if (!panel) return false;
+
+    if (view == STATION_VIEW_TRADE && station) {
+        trade_row_t rows[TRADE_MAX_ROWS];
+        int row_count = build_trade_rows(station, &LOCAL_PLAYER.ship,
+                                         rows, TRADE_MAX_ROWS);
+        int first = 0, last = 0, total_pages = 1;
+        trade_page_range(rows, row_count, (int)g.trade_page,
+                         &first, &last, &total_pages);
+        if ((int)g.trade_page >= total_pages) {
+            trade_page_range(rows, row_count, 0,
+                             &first, &last, &total_pages);
+        }
+
+        const char *row_action = "trade";
+        if (first < last) {
+            if (rows[first].kind == 1) {
+                row_action = station_trade_page_has_pod_rows(rows, first, last)
+                    ? "unload freight"
+                    : "sell unit";
+            } else {
+                row_action = "buy crate";
+            }
+        }
+        const char *sell_action = LOCAL_PLAYER.ship.towed_pod_count > 0
+            ? "tow to intake"
+            : "sell all";
+        snprintf(out, out_size,
+                 "[1-5] %s  [F] page  [S] %s  [TAB] panel",
+                 row_action, sell_action);
+        return true;
+    }
+
+    if (view == STATION_VIEW_WORK && station) {
+        char action[32];
+        if (station_contract_s_action_label(station, action,
+                                            sizeof(action))) {
+            snprintf(out, out_size,
+                     "[1-3] select  [S] %s  [TAB] panel", action);
+            return true;
+        }
+    }
+
+    if (panel->legend && panel->legend[0]) {
+        snprintf(out, out_size, "%s", panel->legend);
+        return true;
+    }
+    return false;
 }
 
 static int build_station_arrival_lines(const station_t *st,
@@ -2550,6 +3189,42 @@ static void draw_trade_view(const station_ui_state_t *ui,
      * a [1] keypress always hits the same row drawn here). */
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    trade_custody_board_t board;
+    trade_custody_board_build(st, ship, &board);
+
+    {
+        char right[64];
+        snprintf(right, sizeof(right), "%d crates / %d units",
+                 board.towed_crates, board.towed_units);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "Your towed crates",
+                    board.towed_crates > 0 ? COL_TEXT : COL_FADED, right);
+        my += row_h;
+
+        snprintf(right, sizeof(right), "%d crates / %d units",
+                 board.station_crates, board.station_units);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "Station crates for sale",
+                    board.station_crates > 0 ? COL_TEXT : COL_FADED, right);
+        my += row_h;
+
+        snprintf(right, sizeof(right), "%d/%d crates",
+                 board.accepted_crates, board.towed_crates);
+        draw_row_lr(cx, my, inner_right,
+                    board.accepted_crates > 0 ? COL_GAIN : COL_TEXT,
+                    board.black_market ? "Intakes accept (black market)"
+                                       : "Intakes accept",
+                    board.accepted_crates > 0 ? COL_GAIN : COL_FADED,
+                    right);
+        my += row_h;
+
+        snprintf(right, sizeof(right), "%d open / %d ready",
+                 board.exact_contracts, board.exact_ready_crates);
+        draw_row_lr(cx, my, inner_right,
+                    board.exact_ready_crates > 0 ? COL_GAIN : COL_TEXT,
+                    "Contracts needing exact crates",
+                    board.exact_contracts > 0 ? COL_TEXT : COL_FADED,
+                    right);
+        my += row_h + (compact ? 3.0f : 5.0f);
+    }
 
     /* Pagination — BUY and SELL are paginated independently so SELL
      * always starts on a fresh page (see trade_page_range). [F] still
@@ -2579,9 +3254,11 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
                      page + 1, total_pages);
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
-        const char *page_kind = (first < last && rows[first].kind == 1)
-            ? (compact ? "SELL" : "SELL TO STATION")
-            : (compact ? "BUY" : "BUY FROM STATION");
+        bool sell_page = first < last && rows[first].kind == 1;
+        bool pod_page = station_trade_page_has_pod_rows(rows, first, last);
+        const char *page_kind = sell_page
+            ? (compact ? "SELL" : (pod_page ? "YOUR TOWED FREIGHT" : "DOCK SERVICE"))
+            : (compact ? "BUY" : "DOCK CRATES FOR SALE");
         char page_left[128];
         const uint8_t *page_left_rgb = COL_ACTIVE;
         if (flow_line[0]) {
@@ -2636,9 +3313,18 @@ static void draw_trade_view(const station_ui_state_t *ui,
          * cargo. Empty SELL rows already explain themselves in the reason
          * column, so avoid "(0 held) (none held)" duplication. */
         char status_buf[40];
-        if (r->kind == 0) {
+        if (r->kind == 0 && r->is_station_pod) {
+            snprintf(status_buf, sizeof(status_buf), "dock crate x%d",
+                     r->towed_pod_quantity > 0 ? r->towed_pod_quantity
+                                               : r->quantity);
+        } else if (r->kind == 0) {
             snprintf(status_buf, sizeof(status_buf), "%d/%d",
                      r->station_stock, r->station_capacity);
+        } else if (r->is_towed_pod) {
+            snprintf(status_buf, sizeof(status_buf), "%d/%d  (crate x%d)",
+                     r->station_stock, r->station_capacity,
+                     r->towed_pod_quantity > 0 ? r->towed_pod_quantity
+                                               : r->quantity);
         } else if (r->held > 0) {
             int internal_held = r->held - r->towed_held;
             if (internal_held > 0 && r->towed_held > 0) {
@@ -2673,9 +3359,12 @@ static void draw_trade_view(const station_ui_state_t *ui,
             switch (r->block_reason) {
             case TRADE_BLOCK_STATION_FULL:  why = "(full)";       break;
             case TRADE_BLOCK_STATION_EMPTY: why = "(empty)";      break;
-            case TRADE_BLOCK_HOLD_FULL:     why = "(hold full)";  break;
+            case TRADE_BLOCK_TOW_FULL:      why = "(tow full)";   break;
             case TRADE_BLOCK_NO_FUNDS:      why = "(no funds)";   break;
             case TRADE_BLOCK_NO_CARGO:      why = "(none held)";  break;
+            case TRADE_BLOCK_NO_BUYER:      why = "(no buyer)";   break;
+            case TRADE_BLOCK_NO_SELLER:     why = "(no seller)";  break;
+            case TRADE_BLOCK_NO_POD_FRAME:  why = "(need frame)"; break;
             default:                        why = "";             break;
             }
             snprintf(total_buf, sizeof(total_buf), "%s", why);
@@ -2684,35 +3373,44 @@ static void draw_trade_view(const station_ui_state_t *ui,
         /* Prefix-class indicator (#prefix-pricing): drop "M-", "RATi-",
          * etc. before the commodity name so the row's premium price is
          * legible to the player. Anonymous-prefix rows render with no
-         * indicator and behave like the legacy bulk path. */
+         * indicator and behave like the legacy cargo path. */
         char commodity_label[48];
         const char *cname = commodity_short_name(r->commodity);
         bool credit_cargo_row =
             trade_row_credit_cargo_label(st, r, commodity_label,
                                          sizeof(commodity_label));
         if (!credit_cargo_row) {
-            const char *cls_prefix = NULL;
-            switch ((ingot_prefix_t)r->prefix_class) {
-            case INGOT_PREFIX_M:            cls_prefix = "M-"; break;
-            case INGOT_PREFIX_H:            cls_prefix = "H-"; break;
-            case INGOT_PREFIX_T:            cls_prefix = "T-"; break;
-            case INGOT_PREFIX_S:            cls_prefix = "S-"; break;
-            case INGOT_PREFIX_F:            cls_prefix = "F-"; break;
-            case INGOT_PREFIX_K:            cls_prefix = "K-"; break;
-            case INGOT_PREFIX_RATI:         cls_prefix = "RATi-"; break;
-            case INGOT_PREFIX_COMMISSIONED: cls_prefix = "RATi*-"; break;
-            case INGOT_PREFIX_ANONYMOUS:
-            default:                        cls_prefix = NULL; break;
-            }
-            if (cls_prefix) {
-                snprintf(commodity_label, sizeof(commodity_label), "%s%s",
-                         cls_prefix, cname);
+            if (r->is_towed_pod || r->is_station_pod) {
+                snprintf(commodity_label, sizeof(commodity_label), "%s crate",
+                         cname);
             } else {
-                snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
+                const char *cls_prefix = NULL;
+                switch ((ingot_prefix_t)r->prefix_class) {
+                case INGOT_PREFIX_M:            cls_prefix = "M-"; break;
+                case INGOT_PREFIX_H:            cls_prefix = "H-"; break;
+                case INGOT_PREFIX_T:            cls_prefix = "T-"; break;
+                case INGOT_PREFIX_S:            cls_prefix = "S-"; break;
+                case INGOT_PREFIX_F:            cls_prefix = "F-"; break;
+                case INGOT_PREFIX_K:            cls_prefix = "K-"; break;
+                case INGOT_PREFIX_RATI:         cls_prefix = "RATi-"; break;
+                case INGOT_PREFIX_COMMISSIONED: cls_prefix = "RATi*-"; break;
+                case INGOT_PREFIX_ANONYMOUS:
+                default:                        cls_prefix = NULL; break;
+                }
+                if (cls_prefix) {
+                    snprintf(commodity_label, sizeof(commodity_label), "%s%s",
+                             cls_prefix, cname);
+                } else {
+                    snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
+                }
             }
         } else {
             grade_label = "";
             grade_rgb_ptr = COL_FADED;
+        }
+        if ((r->is_towed_pod || r->is_station_pod) && !credit_cargo_row) {
+            grade_label = "crate";
+            grade_rgb_ptr = r->actionable ? COL_TRACKED_JOB : COL_FADED;
         }
 
         /* Lineage tag — default view keeps provenance player-readable.
@@ -3031,7 +3729,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
 
         if (held > 0) {
-            snprintf(left_buf, sizeof(left_buf), "[S] deliver %s",
+            snprintf(left_buf, sizeof(left_buf), "ready to supply %s",
                      commodity_short_label(build_need.material));
             snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
                      held, remaining);
@@ -3435,12 +4133,20 @@ static void draw_yard_view(const station_ui_state_t *ui,
         }
         int frames = 0, lasers = 0, tractors = 0;
         (void)shipyard_hull_cost(hull_rows[i].hull, &frames, &lasers, &tractors);
-        bool ready = shipyard_can_commission_hull(st, hull_rows[i].hull);
+        int have_frames =
+            station_shipyard_material_available_local(st, COMMODITY_FRAME);
+        int have_lasers =
+            station_shipyard_material_available_local(st, COMMODITY_LASER_MODULE);
+        int have_tractors =
+            station_shipyard_material_available_local(st, COMMODITY_TRACTOR_MODULE);
+        bool ready = station_shipyard_can_commission_hull_local(
+            st, hull_rows[i].hull);
         char left[64], right[32];
         snprintf(left, sizeof(left), "[%s] %s",
                  hull_rows[i].key, ship_loadout_name(hull_rows[i].hull));
-        snprintf(right, sizeof(right), "%df %dl %dt",
-                 frames, lasers, tractors);
+        snprintf(right, sizeof(right), "%d/%df %d/%dl %d/%dt",
+                 have_frames, frames, have_lasers, lasers,
+                 have_tractors, tractors);
         draw_row_lr(cx, my, inner_right,
                     ready ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
                           : (const uint8_t[3]){ PAL_CANNOT_AFFORD },
@@ -3685,7 +4391,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_TRADE] = {
         .view = STATION_VIEW_TRADE,
         .label = "TRADE",
-        .legend = "[1-5] trade  [F] page  [S] deliver  [TAB] panel",
+        .legend = "[1-5] trade  [F] page  [S] sell  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_trade_view,
         .input_fn = station_panel_input_trade,
@@ -3693,7 +4399,7 @@ static const station_panel_descriptor_t STATION_PANELS[STATION_VIEW_COUNT] = {
     [STATION_VIEW_WORK] = {
         .view = STATION_VIEW_WORK,
         .label = "CONTRACTS",
-        .legend = "[1-3] select  [S] deliver all  [TAB] panel",
+        .legend = "[1-3] select  [S] track  [TAB] panel",
         .visible_fn = station_panel_visible_always,
         .draw_fn = draw_contracts_view,
         .input_fn = station_panel_input_work,
@@ -3902,19 +4608,12 @@ void draw_station_services(const station_ui_state_t* ui) {
     if (active_panel && active_panel->draw_fn)
         active_panel->draw_fn(ui, cx, cy, inner_w, compact);
 
-    const char *hint = (active_panel && active_panel->legend)
-        ? active_panel->legend
-        : "[TAB] panels";
     char dynamic_hint[96];
-    if (active_panel && active_panel->view == STATION_VIEW_WORK) {
-        char action[32];
-        if (station_contract_s_action_label(ui->station, action,
-                                            sizeof(action))) {
-            snprintf(dynamic_hint, sizeof(dynamic_hint),
-                     "[1-3] select  [S] %s  [TAB] panel", action);
-            hint = dynamic_hint;
-        }
-    }
+    const char *hint = station_panel_legend_text(
+        active_panel ? active_panel->view : STATION_VIEW_DOCK,
+        ui->station, dynamic_hint, sizeof(dynamic_hint))
+        ? dynamic_hint
+        : "[TAB] panels";
     char hint_fit[96];
     int hint_chars = (int)floorf((panel_w - 40.0f) / 8.0f);
     ui_fit_text(hint, hint_chars, hint_fit, sizeof(hint_fit));

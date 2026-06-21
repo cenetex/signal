@@ -48,8 +48,10 @@ assets/voice/kokoro/
 _site/
 arweave-wallet.json
 .arweave-cache.json
+.arweave-manifest.json
 .arweave-manifest-tx
 .arweave-paths.json
+.arweave-play-url
 .arweave-previous-paths.json
 
 # Local Cloudflare/Wrangler runtime state.

@@ -4,6 +4,8 @@
     "smoke": "playwright test",
     "smoke:headed": "playwright test --headed",
     "test:latency-proxy": "node scripts/test-ws-latency-proxy.mjs",
+    "test:rati-anchor-batch": "node scripts/test-rati-anchor-batch.mjs",
+    "test:rati-anchor-stamp": "node scripts/test-rati-anchor-stamp.mjs",
     "test:relay-broker": "node scripts/test-relay-region-broker.mjs"
   },
   "devDependencies": {

@@ -83,11 +83,11 @@ float player_current_balance(void) {
  * Fills `strongest_idx` with the station holding the largest pending
  * balance for the local player, `strongest_balance` with that amount,
  * and `other_count` with how many *other* stations also have a
- * positive balance. Returns true when there's anything to collect.
+ * positive balance. Returns true when there's any station-local balance to show.
  * Singleplayer only — MP doesn't push per-station ledgers. */
-static bool client_pending_summary(int *strongest_idx,
-                                   float *strongest_balance,
-                                   int *other_count);
+static bool client_ledger_balance_summary(int *strongest_idx,
+                                          float *strongest_balance,
+                                          int *other_count);
 
 /* Center `text` horizontally around screen-pixel x = `center_x` and
  * place its baseline at row index `row_idx` (already in canvas-cell
@@ -150,15 +150,16 @@ typedef enum {
     HUD_ACTION_SCAN_MODULE,        /* str_a = station name, str_b = module name (or NULL = core hub) */
     HUD_ACTION_SCAN_NPC,           /* str_a = "miner"/"hauler", int_a = total cargo */
     HUD_ACTION_SCAN_PILOT,         /* int_a = pilot id, int_b = hull, str_a = callsign when known */
+    HUD_ACTION_SCAN_CARGO_POD,     /* commodity/grade/int_a quantity, int_b = cargo_pod_kind_t */
     HUD_ACTION_MINING,             /* claim window after fracture */
     HUD_ACTION_TOWING,             /* int_a = towed_count, int_b = tractor_active (1/0) */
     HUD_ACTION_TRACTOR_LOCK,       /* int_a = tractor_fragments, int_b = nearby_fragments */
     HUD_ACTION_TRACTOR_REACHING,   /* tractor active, no frag yet — int_b = nearby_fragments */
     HUD_ACTION_FRAGMENTS_NEARBY,   /* tractor inactive, frags in range — int_b = nearby_fragments */
     HUD_ACTION_HOLD_FULL,
-    HUD_ACTION_PENDING_COLLECT,    /* int_a = strongest-station balance,
-                                    * int_b = other stations with pending,
-                                    * str_a = strongest station's currency_name */
+    HUD_ACTION_LEDGER_BALANCE,     /* int_a = strongest station balance,
+                                    * int_b = other stations with balance,
+                                    * str_a = strongest station currency */
     HUD_ACTION_IDLE,
 } hud_action_kind_t;
 
@@ -195,6 +196,32 @@ static uint8_t hud_best_nearby_fragment_grade(void) {
         if (v2_dist_sq(a->pos, LOCAL_PLAYER.ship.pos) > range_sq) continue;
         if (a->grade < (uint8_t)MINING_GRADE_COUNT && a->grade > best)
             best = a->grade;
+    }
+    return best;
+}
+
+static uint8_t hud_cargo_pod_best_grade(const cargo_pod_t *pod) {
+    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
+    if (!pod || !pod->active) return best;
+    bool exact_local = pod->manifest_count > 0 &&
+                       pod->manifest_count == pod->quantity;
+    if (exact_local) {
+        bool all_match = true;
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            const cargo_unit_t *unit = &pod->manifest_units[i];
+            if ((commodity_t)unit->commodity != pod->commodity) {
+                all_match = false;
+                break;
+            }
+            if (unit->grade < (uint8_t)MINING_GRADE_COUNT &&
+                unit->grade > best) {
+                best = unit->grade;
+            }
+        }
+        if (all_match) return best;
+    }
+    if (pod->summary_grade < (uint8_t)MINING_GRADE_COUNT) {
+        return pod->summary_grade;
     }
     return best;
 }
@@ -331,6 +358,21 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
             out.int_b = (int)lroundf(g.world.players[LOCAL_PLAYER.scan_target_index].ship.hull);
         return out;
     }
+    if (LOCAL_PLAYER.scan_active &&
+        LOCAL_PLAYER.scan_target_type == INSPECT_TARGET_CARGO_POD) {
+        int idx = LOCAL_PLAYER.scan_target_index;
+        if (idx >= 0 && idx < MAX_CARGO_PODS) {
+            const cargo_pod_t *pod = &g.world.cargo_pods[idx];
+            if (pod->active) {
+                out.kind = HUD_ACTION_SCAN_CARGO_POD;
+                out.commodity = pod->commodity;
+                out.grade = (int)hud_cargo_pod_best_grade(pod);
+                out.int_a = pod->quantity;
+                out.int_b = pod->kind;
+                return out;
+            }
+        }
+    }
     if (mining_client_get()->fracture_search_timer > 0.0f) {
         out.kind = HUD_ACTION_MINING;
         return out;
@@ -373,16 +415,14 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.kind = HUD_ACTION_HOLD_FULL;
         return out;
     }
-    /* Pending ledger credits — only surface when in usable signal so we
-     * don't tease "collect" while H couldn't do anything. Names the
-     * single largest-pending station so the per-station ledger model is
-     * legible from the action row instead of being flattened into one
-     * global number. */
+    /* Station-local ledger balances are passive: docking makes the balance
+     * usable automatically, while H remains a hail/contact action. Surface the
+     * largest off-ship balance without implying a separate collect button. */
     if (sig_quality >= 0.90f) {
         int best_idx = -1, others = 0;
         float best_bal = 0.0f;
-        if (client_pending_summary(&best_idx, &best_bal, &others)) {
-            out.kind = HUD_ACTION_PENDING_COLLECT;
+        if (client_ledger_balance_summary(&best_idx, &best_bal, &others)) {
+            out.kind = HUD_ACTION_LEDGER_BALANCE;
             out.int_a = (int)lroundf(best_bal);
             out.int_b = others;
             const char *cn = g.world.stations[best_idx].currency_name;
@@ -427,6 +467,19 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         if (a->str_a) snprintf(out, out_size, "SCAN PILOT // %s", a->str_a);
         else          snprintf(out, out_size, "SCAN PILOT // ID %d", a->int_a);
         return;
+    case HUD_ACTION_SCAN_CARGO_POD:
+        if (a->commodity >= 0 && a->commodity < COMMODITY_COUNT) {
+            snprintf(out, out_size, "SCAN %s // %s x%d // %s",
+                     a->int_b == CARGO_POD_GAS ? "GAS" : "CRATE",
+                     commodity_code((commodity_t)a->commodity),
+                     a->int_a,
+                     mining_grade_label((mining_grade_t)a->grade));
+        } else {
+            snprintf(out, out_size, "SCAN %s // x%d",
+                     a->int_b == CARGO_POD_GAS ? "GAS" : "CRATE",
+                     a->int_a);
+        }
+        return;
     case HUD_ACTION_MINING:
         snprintf(out, out_size, "MINING... // CLAIM WINDOW");
         return;
@@ -447,12 +500,12 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
     case HUD_ACTION_HOLD_FULL:
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
-    case HUD_ACTION_PENDING_COLLECT:
+    case HUD_ACTION_LEDGER_BALANCE:
         if (a->int_b > 0) {
-            snprintf(out, out_size, "[H] collect %d %s (+%d)",
+            snprintf(out, out_size, "%d %s (+%d) // dock",
                      a->int_a, a->str_a ? a->str_a : "credits", a->int_b);
         } else {
-            snprintf(out, out_size, "[H] collect %d %s",
+            snprintf(out, out_size, "%d %s // dock",
                      a->int_a, a->str_a ? a->str_a : "credits");
         }
         return;
@@ -503,6 +556,19 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         else
             snprintf(out, out_size, "Scan pilot %d", a->int_a);
         return;
+    case HUD_ACTION_SCAN_CARGO_POD:
+        if (a->commodity >= 0 && a->commodity < COMMODITY_COUNT) {
+            snprintf(out, out_size, "Scan %s // %s x%d // %s grade",
+                     a->int_b == CARGO_POD_GAS ? "gas" : "crate",
+                     commodity_short_name((commodity_t)a->commodity),
+                     a->int_a,
+                     mining_grade_label((mining_grade_t)a->grade));
+        } else {
+            snprintf(out, out_size, "Scan %s // x%d",
+                     a->int_b == CARGO_POD_GAS ? "gas" : "crate",
+                     a->int_a);
+        }
+        return;
     case HUD_ACTION_MINING:
         snprintf(out, out_size, "Mining... // claim window");
         return;
@@ -524,12 +590,12 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
     case HUD_ACTION_HOLD_FULL:
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
-    case HUD_ACTION_PENDING_COLLECT:
+    case HUD_ACTION_LEDGER_BALANCE:
         if (a->int_b > 0) {
-            snprintf(out, out_size, "H to hail // collect %d %s (+%d more)",
+            snprintf(out, out_size, "%d %s available // dock to spend (+%d more)",
                      a->int_a, a->str_a ? a->str_a : "credits", a->int_b);
         } else {
-            snprintf(out, out_size, "H to hail // collect %d %s",
+            snprintf(out, out_size, "%d %s available // dock to spend",
                      a->int_a, a->str_a ? a->str_a : "credits");
         }
         return;
@@ -547,11 +613,14 @@ static void hud_set_action_color(const hud_action_t *a) {
     case HUD_ACTION_SCAN_PILOT:
         sdtx_color3b(PAL_SCAN_ACTIVE);
         return;
+    case HUD_ACTION_SCAN_CARGO_POD:
+        hud_set_grade_color((uint8_t)a->grade);
+        return;
     case HUD_ACTION_FRAGMENTS_NEARBY:
         hud_set_grade_color((uint8_t)a->grade);
         return;
     case HUD_ACTION_HOLD_FULL:
-    case HUD_ACTION_PENDING_COLLECT:
+    case HUD_ACTION_LEDGER_BALANCE:
         sdtx_color3b(PAL_ORE_AMBER);
         return;
     case HUD_ACTION_IDLE:
@@ -2359,16 +2428,15 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     draw_damage_flash(screen_w, screen_h);
 }
 
-/* Pending credits, broken out per station. Reports the station holding
- * the largest player-owned balance plus how many *other* stations also
- * have a positive balance, so the HUD can name the strongest station
- * and surface multi-ledger spread without flattening it into one
- * generic number. Singleplayer only: in MP the server doesn't push a
- * per-station ledger and this returns false. Cheap O(stations × ledger)
- * walk; reused per-frame by both HUD variants. */
-static bool client_pending_summary(int *strongest_idx,
-                                   float *strongest_balance,
-                                   int *other_count) {
+/* Station-local balances, broken out per station. Reports the station holding
+ * the largest player-owned balance plus how many *other* stations also have a
+ * positive balance, so the HUD can show local-credit spread without flattening
+ * it into one global number. Singleplayer only: in MP the server doesn't push a
+ * per-station ledger and this returns false. Cheap O(stations × ledger) walk;
+ * reused per-frame by both HUD variants. */
+static bool client_ledger_balance_summary(int *strongest_idx,
+                                          float *strongest_balance,
+                                          int *other_count) {
     if (strongest_idx) *strongest_idx = -1;
     if (strongest_balance) *strongest_balance = 0.0f;
     if (other_count) *other_count = 0;

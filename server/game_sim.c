@@ -61,6 +61,12 @@ extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B
 #include <dirent.h>
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define SIGNAL_MAYBE_UNUSED __attribute__((unused))
+#else
+#define SIGNAL_MAYBE_UNUSED
+#endif
+
 /* SIM_LOG moved to game_sim.h so all sim_*.c files share the same macro. */
 
 /* --- Station-local ledger economy ---
@@ -703,7 +709,8 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    int held = ship_finished_count(&sp->ship, COMMODITY_FRAME);
+    int held = ship_finished_count(&sp->ship, COMMODITY_FRAME) +
+               ship_towed_pods_manifest_count(w, &sp->ship, COMMODITY_FRAME);
     if (held <= 0) return;
     float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
     int needed = (int)ceilf(needed_f - 0.0001f);
@@ -728,6 +735,19 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
         cargo_unit_t unit = {0};
         if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)idx,
                                              &unit, NULL)) {
+            break;
+        }
+        float progress_after = st->scaffold_progress +
+            (float)(accepted + 1) / SCAFFOLD_MATERIAL_NEEDED;
+        if (progress_after > 1.0f) progress_after = 1.0f;
+        emit_station_construction_contribution(w, st, sp->current_station,
+                                               &unit, progress_after);
+        accepted++;
+    }
+    while (accepted < request) {
+        cargo_unit_t unit = {0};
+        if (!ship_towed_pods_take_manifest_unit(w, &sp->ship,
+                                                COMMODITY_FRAME, &unit)) {
             break;
         }
         float progress_after = st->scaffold_progress +
@@ -830,6 +850,15 @@ static int station_berth_count(const station_t *st);
 static vec2 dock_berth_pos(const station_t *st, int berth);
 static float dock_berth_angle(const station_t *st, int berth);
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
+static vec2 station_module_cargo_mouth(const station_t *st,
+                                       const station_module_t *module,
+                                       const cargo_pod_t *pod);
+static vec2 station_module_cargo_hold_anchor(const world_t *w,
+                                             const station_t *st,
+                                             int station_idx,
+                                             int module_idx,
+                                             const cargo_pod_t *pod,
+                                             vec2 base_anchor);
 
 /* Asteroid lifecycle, dynamics, fracture → sim_asteroid.c
  * sim_can_smelt_ore, sim_step_refinery_production, sim_step_station_production,
@@ -941,6 +970,36 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
 static void release_towed_scaffold(world_t *w, server_player_t *sp);
 static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot);
 
+static float player_station_balance_at(const world_t *w,
+                                       const server_player_t *sp,
+                                       int station_idx) {
+    if (!w || !sp || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return 0.0f;
+    const station_t *st = &w->stations[station_idx];
+    if (server_player_can_use_pubkey_persistence(sp))
+        return ledger_balance_by_pubkey(st, sp->pubkey);
+    return ledger_balance(st, sp->session_token);
+}
+
+static void emit_dock_balance_response(world_t *w,
+                                       server_player_t *sp,
+                                       int station_idx) {
+    if (!w || !sp || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return;
+    if (!station_is_active(&w->stations[station_idx])) return;
+    float balance = player_station_balance_at(w, sp, station_idx);
+    if (balance <= 0.5f) return;
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_HAIL_RESPONSE,
+        .player_id = sp->id,
+        .hail_response = {
+            .station = station_idx,
+            .credits = balance,
+            .contract_index = -1,
+        },
+    });
+}
+
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
     sp->docked = true;
@@ -966,6 +1025,7 @@ static void dock_ship(world_t *w, server_player_t *sp) {
                               &sp->ship.known_contract_count,
                               SHIP_KNOWN_CONTRACT_CAP,
                               &sp->ship.knowledge);
+        emit_dock_balance_response(w, sp, sp->current_station);
     }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
@@ -1555,7 +1615,6 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
 
 static bool is_finished_good(commodity_t c);
 static void sync_station_finished_inventory(station_t *st, commodity_t c);
-static float station_cargo_space(const station_t *st, commodity_t c);
 
 static void launch_ship(world_t *w, server_player_t *sp) {
     if (!player_claim_waiting_ship_asset(w, sp)) {
@@ -1596,6 +1655,183 @@ static void remove_towed_pod_slot(ship_t *ship, int tow_slot) {
     ship->towed_pods[ship->towed_pod_count] = -1;
 }
 
+static int ship_towed_pod_capacity(const ship_t *ship) {
+    int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
+    if (cap < 0) cap = 0;
+    if (cap > 10) cap = 10;
+    return cap;
+}
+
+static int station_first_dock_module(const station_t *st) {
+    if (!st) return -1;
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+        const station_module_t *module = &st->modules[i];
+        if (!module->scaffold && module->type == MODULE_DOCK)
+            return i;
+    }
+    return -1;
+}
+
+static bool station_dock_can_tractor_trade_pod(const station_t *st,
+                                               int module_idx,
+                                               const cargo_pod_t *pod) {
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->towed_by >= 0 || module_idx < 0 ||
+        module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    return !module->scaffold && module->type == MODULE_DOCK;
+}
+
+static bool cargo_pod_is_station_market_pod(const world_t *w,
+                                            const cargo_pod_t *pod,
+                                            int station_idx) {
+    int ps = -1, pm = -1;
+    if (!w || !pod || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    if (!cargo_pod_module_tractor_indices(pod, &ps, &pm) ||
+        ps != station_idx) {
+        return false;
+    }
+    return station_dock_can_tractor_trade_pod(&w->stations[station_idx],
+                                              pm, pod);
+}
+
+static bool cargo_pod_set_station_dock_custody(world_t *w,
+                                               int pod_idx,
+                                               int station_idx) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+        station_idx < 0 || station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    station_t *st = &w->stations[station_idx];
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active || pod->kind != CARGO_POD_CARGO) return false;
+    int dock_idx = station_first_dock_module(st);
+    if (dock_idx < 0) return false;
+
+    pod->towed_by = -1;
+    cargo_pod_set_module_tractor(pod, station_idx, dock_idx);
+
+    vec2 anchor = station_module_cargo_hold_anchor(
+        w, st, station_idx, dock_idx, pod,
+        station_module_cargo_mouth(st, &st->modules[dock_idx], pod));
+    vec2 away = v2_sub(pod->pos, anchor);
+    float dist = v2_len(away);
+    float max_hold = HOPPER_PULL_RANGE * 0.78f;
+    if (dist > max_hold) {
+        if (dist > 0.001f) {
+            away = v2_scale(away, 1.0f / dist);
+        } else {
+            away = v2_from_angle(module_angle_ring(st, st->modules[dock_idx].ring,
+                                                   st->modules[dock_idx].slot));
+        }
+        pod->pos = v2_add(anchor, v2_scale(away, max_hold));
+        pod->vel = v2_scale(pod->vel, 0.25f);
+    }
+    st->module_active_pulse[dock_idx] = 1.0f;
+    return true;
+}
+
+bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
+                                  commodity_t commodity) {
+    if (!pod || !pod->active || pod->kind != CARGO_POD_CARGO) return false;
+    if (pod->shipment_id != 0) return false;
+    if (pod->commodity != commodity) return false;
+    if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
+        return false;
+    if (pod->manifest_count > CARGO_POD_MANIFEST_CAP) return false;
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((commodity_t)pod->manifest_units[i].commodity != commodity)
+            return false;
+    }
+    return true;
+}
+
+void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame) {
+    if (!pod || !frame || (commodity_t)frame->commodity != COMMODITY_FRAME)
+        return;
+    pod->shell_frame = *frame;
+    pod->shell_frame.quantity = 1;
+    pod->has_shell_frame = true;
+}
+
+bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
+    if (!pod || !pod->active || !pod->has_shell_frame ||
+        (commodity_t)pod->shell_frame.commodity != COMMODITY_FRAME) {
+        return false;
+    }
+
+    cargo_unit_t shell = pod->shell_frame;
+    vec2 pos = pod->pos;
+    vec2 vel = pod->vel;
+    float radius = pod->radius;
+    float rotation = pod->rotation;
+    float spin = pod->spin;
+    float age = pod->age;
+    int8_t towed_by = pod->towed_by;
+
+    memset(pod, 0, sizeof(*pod));
+    pod->active = true;
+    pod->kind = CARGO_POD_CARGO;
+    pod->commodity = COMMODITY_FRAME;
+    pod->quantity = 1;
+    pod->manifest_count = 1;
+    pod->manifest_units[0] = shell;
+    pod->pos = pos;
+    pod->vel = vel;
+    pod->radius = radius > 0.0f ? radius : 18.0f;
+    pod->rotation = rotation;
+    pod->spin = spin;
+    pod->age = age;
+    pod->towed_by = towed_by;
+    return true;
+}
+
+int ship_towed_pods_manifest_count(const world_t *w, const ship_t *ship,
+                                   commodity_t commodity) {
+    if (!w || !ship || commodity >= COMMODITY_COUNT) return 0;
+    int total = 0;
+    for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+        int idx = ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
+        total += (int)pod->manifest_count;
+    }
+    return total;
+}
+
+bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
+                                        commodity_t commodity,
+                                        cargo_unit_t *out_unit) {
+    if (!w || !ship || !out_unit || commodity >= COMMODITY_COUNT)
+        return false;
+    for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+        int idx = ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
+        uint16_t unit_idx = (uint16_t)(pod->manifest_count - 1u);
+        *out_unit = pod->manifest_units[unit_idx];
+        memset(&pod->manifest_units[unit_idx], 0,
+               sizeof(pod->manifest_units[unit_idx]));
+        pod->manifest_count--;
+        pod->quantity--;
+        if (pod->manifest_count == 0) {
+            if (!cargo_pod_fold_shell_to_frame(pod)) {
+                memset(pod, 0, sizeof(*pod));
+                pod->towed_by = -1;
+                remove_towed_pod_slot(ship, t);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind) {
     if (!w || commodity >= COMMODITY_COUNT || quantity == 0 ||
@@ -1622,6 +1858,82 @@ int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
     return -1;
 }
 
+static bool cargo_pod_manifest_units_valid(commodity_t commodity,
+                                           const cargo_unit_t *units,
+                                           uint16_t unit_count) {
+    if (commodity >= COMMODITY_COUNT || !units || unit_count == 0 ||
+        unit_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t i = 0; i < unit_count; i++) {
+        if ((commodity_t)units[i].commodity != commodity)
+            return false;
+    }
+    return true;
+}
+
+static int spawn_cargo_pod_with_manifest_internal(world_t *w, vec2 pos,
+                                                  vec2 vel,
+                                                  commodity_t commodity,
+                                                  const cargo_unit_t *units,
+                                                  uint16_t unit_count,
+                                                  cargo_pod_kind_t kind,
+                                                  float rotation,
+                                                  float spin) {
+    if (!w || kind == CARGO_POD_NONE ||
+        !cargo_pod_manifest_units_valid(commodity, units, unit_count)) {
+        return -1;
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (pod->active) continue;
+        memset(pod, 0, sizeof(*pod));
+        pod->active = true;
+        pod->kind = kind;
+        pod->commodity = commodity;
+        pod->quantity = unit_count;
+        pod->manifest_count = unit_count;
+        memcpy(pod->manifest_units, units,
+               (size_t)unit_count * sizeof(pod->manifest_units[0]));
+        pod->pos = pos;
+        pod->vel = vel;
+        pod->radius = (kind == CARGO_POD_GAS) ? 15.0f : 18.0f;
+        pod->rotation = rotation;
+        pod->spin = spin;
+        pod->age = 0.0f;
+        pod->towed_by = -1;
+        return i;
+    }
+    return -1;
+}
+
+int spawn_cargo_pod_with_manifest(world_t *w, vec2 pos, vec2 vel,
+                                  commodity_t commodity,
+                                  const cargo_unit_t *units,
+                                  uint16_t unit_count,
+                                  cargo_pod_kind_t kind) {
+    if (!w || kind == CARGO_POD_NONE ||
+        !cargo_pod_manifest_units_valid(commodity, units, unit_count)) {
+        return -1;
+    }
+    return spawn_cargo_pod_with_manifest_internal(
+        w, pos, vel, commodity, units, unit_count, kind,
+        rand_range(&w->rng, 0.0f, TWO_PI_F),
+        rand_range(&w->rng, -1.4f, 1.4f));
+}
+
+int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
+                                                vec2 vel,
+                                                commodity_t commodity,
+                                                const cargo_unit_t *units,
+                                                uint16_t unit_count,
+                                                cargo_pod_kind_t kind,
+                                                float rotation,
+                                                float spin) {
+    return spawn_cargo_pod_with_manifest_internal(
+        w, pos, vel, commodity, units, unit_count, kind, rotation, spin);
+}
+
 static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
     if (!w || !sp) return;
     for (int c = 0; c < COMMODITY_COUNT; c++) {
@@ -1641,16 +1953,232 @@ static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
     }
 }
 
-static float try_sell_towed_pods(world_t *w, server_player_t *sp,
-                                 station_t *st, int station_idx,
-                                 commodity_t filter,
-                                 mining_grade_t grade_filter,
-                                 bool single_unit) {
+static void world_seed_frame_pod_near(world_t *w,
+                                      int station_idx,
+                                      vec2 pos,
+                                      uint16_t count,
+                                      const uint8_t origin[8],
+                                      float rotation) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx]) ||
+        !origin || count == 0 || count > CARGO_POD_MANIFEST_CAP) {
+        return;
+    }
+    cargo_unit_t frames[16] = {{0}};
+    for (uint16_t i = 0; i < count; i++) {
+        if (!hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i, &frames[i]))
+            return;
+        frames[i].origin_station = (uint8_t)station_idx;
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (pod->active) continue;
+        memset(pod, 0, sizeof(*pod));
+        pod->active = true;
+        pod->kind = CARGO_POD_CARGO;
+        pod->commodity = COMMODITY_FRAME;
+        pod->quantity = count;
+        pod->manifest_count = count;
+        memcpy(pod->manifest_units, frames,
+               (size_t)count * sizeof(frames[0]));
+        pod->pos = pos;
+        pod->vel = v2(0.0f, 0.0f);
+        pod->radius = 18.0f;
+        pod->rotation = rotation;
+        pod->spin = 0.0f;
+        pod->towed_by = -1;
+        return;
+    }
+}
+
+static void world_seed_kepler_frame_pod(world_t *w) {
+    if (!w || !station_exists(&w->stations[1])) return;
+    const uint8_t origin[8] = { 'K','E','P','L','E','R','v','1' };
+    vec2 pos = v2_add(w->stations[1].pos, v2(320.0f, -80.0f));
+    world_seed_frame_pod_near(w, 1, pos, 16, origin, 0.35f);
+}
+
+static void world_seed_prospect_frame_shell_pod(world_t *w) {
+    if (!w || !station_exists(&w->stations[0])) return;
+    const station_t *prospect = &w->stations[0];
+    int furnace_idx = -1;
+    for (int i = 0; i < prospect->module_count; i++) {
+        if (prospect->modules[i].type == MODULE_FURNACE &&
+            module_instance_input_ore(&prospect->modules[i]) ==
+                COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+            break;
+        }
+    }
+    if (furnace_idx < 0) return;
+    const station_module_t *furnace = &prospect->modules[furnace_idx];
+    vec2 shell_pos = module_world_pos_ring(prospect, furnace->ring,
+                                           furnace->slot);
+    const uint8_t origin[8] = { 'P','R','O','S','H','E','L','L' };
+    world_seed_frame_pod_near(w, 0, shell_pos, 16, origin, 0.70f);
+}
+
+static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
+                                          const contract_t *ct);
+
+static float black_market_pod_quote(const station_t *st,
+                                    const cargo_pod_t *pod) {
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->commodity >= COMMODITY_COUNT || pod->quantity == 0 ||
+        !station_policy_accepts_contract_bound_cargo(st)) {
+        return 0.0f;
+    }
+
+    commodity_t c = pod->commodity;
+    float value = 0.0f;
+    if (pod->manifest_count > 0) {
+        if (pod->manifest_count != pod->quantity ||
+            pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+            return 0.0f;
+        }
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            const cargo_unit_t *unit = &pod->manifest_units[u];
+            if ((commodity_t)unit->commodity != c) return 0.0f;
+            float unit_value = station_buy_price_unit(st, unit);
+            if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON) {
+                unit_value = st->base_price[c] *
+                    prefix_class_price_multiplier((int)unit->prefix_class);
+            }
+            unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+            value += unit_value;
+        }
+    } else {
+        float unit_value = station_buy_price(st, c);
+        if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+            unit_value = st->base_price[c];
+        value = unit_value * (float)pod->quantity;
+    }
+
+    return value > FLOAT_EPSILON
+        ? value * BLACK_MARKET_CARGO_MARKDOWN
+        : 0.0f;
+}
+
+static float station_intake_pod_quote(world_t *w,
+                                      station_t *st,
+                                      int station_idx,
+                                      const cargo_pod_t *pod,
+                                      bool *out_by_contract) {
+    if (out_by_contract) *out_by_contract = false;
+    if (!w || !st || !pod || !pod->active ||
+        pod->shipment_id != 0 || pod->commodity >= COMMODITY_COUNT ||
+        pod->quantity == 0) {
+        return 0.0f;
+    }
+    commodity_t c = pod->commodity;
+    int matched_contract = -1;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->station_index != station_idx) continue;
+        if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
+        matched_contract = k;
+        break;
+    }
+
+    if (matched_contract < 0 &&
+        station_policy_accepts_contract_bound_cargo(st)) {
+        float value = black_market_pod_quote(st, pod);
+        if (value > FLOAT_EPSILON) {
+            if (out_by_contract) *out_by_contract = true;
+            return value;
+        }
+    }
+
+    float price = matched_contract >= 0
+        ? contract_price(&w->contracts[matched_contract])
+        : station_buy_price(st, c);
+    if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+        price = st->base_price[c];
+    if (price <= FLOAT_EPSILON) return 0.0f;
+
+    float value = 0.0f;
+    if (pod->manifest_count > 0) {
+        if (pod->manifest_count != pod->quantity ||
+            pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+            return 0.0f;
+        }
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            const cargo_unit_t *unit = &pod->manifest_units[u];
+            if ((commodity_t)unit->commodity != c) return 0.0f;
+            float unit_value = matched_contract >= 0
+                ? price
+                : station_buy_price_unit(st, unit);
+            if (unit_value <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON) {
+                unit_value = st->base_price[c] *
+                    prefix_class_price_multiplier((int)unit->prefix_class);
+            }
+            unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+            value += unit_value;
+        }
+    } else {
+        value = price * (float)pod->quantity;
+    }
+    if (value <= FLOAT_EPSILON) return 0.0f;
+    if (out_by_contract && matched_contract >= 0) *out_by_contract = true;
+    return value;
+}
+
+static bool station_intake_pay_for_pod(world_t *w,
+                                       server_player_t *sp,
+                                       station_t *st,
+                                       int station_idx,
+                                       cargo_pod_t *pod) {
+    if (!w || !sp || !st || !pod) return false;
+    bool by_contract = false;
+    float value = station_intake_pod_quote(w, st, station_idx, pod,
+                                           &by_contract);
+    if (value <= FLOAT_EPSILON) return false;
+
+    uint16_t units = pod->quantity;
+    if (server_player_can_use_pubkey_persistence(sp)) {
+        ledger_earn_by_pubkey(st, sp->pubkey, value);
+        ledger_record_ore_sold(st, sp->pubkey, units,
+                               (uint8_t)pod->commodity);
+    } else {
+        ledger_earn(st, sp->session_token, value);
+    }
+    sp->ship.stat_credits_earned += value;
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->station_index != station_idx) continue;
+        if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
+        ct->quantity_needed -= (float)units;
+        if (ct->quantity_needed <= 0.01f) {
+            ct->active = false;
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_CONTRACT_COMPLETE,
+                .contract_complete.action = CONTRACT_TRACTOR});
+        }
+        break;
+    }
+
+    SIM_LOG("[intake] player %d sold %s crate (%u units) for %.0f cr at %s\n",
+            sp->id, commodity_short_name(pod->commodity),
+            (unsigned)units, value, st->name);
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_SELL, .player_id = sp->id,
+        .sell = { .station = station_idx,
+                  .grade = MINING_GRADE_COMMON,
+                  .base_cr = (int)lroundf(value),
+                  .bonus_cr = 0,
+                  .by_contract = by_contract ? 1u : 0u }});
+    return true;
+}
+
+static float SIGNAL_MAYBE_UNUSED
+try_sell_towed_pods(world_t *w, server_player_t *sp,
+                    station_t *st, int station_idx,
+                    commodity_t filter,
+                    mining_grade_t grade_filter) {
     if (!w || !sp || !st) return 0.0f;
     float payout = 0.0f;
-    bool blocked_full = false;
-    if (single_unit &&
-        grade_filter < MINING_GRADE_COUNT &&
+    if (grade_filter < MINING_GRADE_COUNT &&
         grade_filter != MINING_GRADE_COMMON) {
         return 0.0f;
     }
@@ -1662,6 +2190,7 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
             continue;
         }
         cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (pod->shipment_id != 0) continue;
         commodity_t c = pod->commodity;
         if (c >= COMMODITY_COUNT) continue;
         if (filter != COMMODITY_COUNT && filter != c) continue;
@@ -1673,34 +2202,56 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
             remove_towed_pod_slot(&sp->ship, t);
             continue;
         }
+        int contract_idx = -1;
+        contract_t *matched_contract = NULL;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            contract_t *ct = &w->contracts[k];
+            if (!ct->active || ct->station_index != station_idx) continue;
+            if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
+            contract_idx = k;
+            matched_contract = ct;
+            break;
+        }
         float price = station_buy_price(st, c);
+        if (matched_contract) price = contract_price(matched_contract);
         if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
             price = st->base_price[c];
         if (price <= FLOAT_EPSILON) continue;
 
-        float space = station_cargo_space(st, c);
-        int space_units = (int)floorf(space + 0.0001f);
-        if (space_units <= 0) {
-            blocked_full = true;
-            continue;
-        }
-
-        int sell_units = single_unit ? 1 : units;
-        if (sell_units > units) sell_units = units;
-        if (sell_units > space_units) sell_units = space_units;
+        int sell_units = units;
         if (sell_units <= 0) continue;
 
-        if (is_finished_good(c)) {
-            uint8_t origin[8] = { 'C','R','A','T','E','v','1',' ' };
-            int minted = station_finished_mint(st, c, sell_units, origin);
-            if (minted <= 0) continue;
-            sell_units = minted;
-            sync_station_finished_inventory(st, c);
+        float value = 0.0f;
+        if (!matched_contract && station_policy_accepts_contract_bound_cargo(st)) {
+            value = black_market_pod_quote(st, pod);
+        } else if (pod->manifest_count > 0) {
+            if (pod->manifest_count != pod->quantity ||
+                pod->manifest_count > CARGO_POD_MANIFEST_CAP ||
+                !is_finished_good(c)) {
+                continue;
+            }
+            bool ok = true;
+            for (uint16_t u = 0; u < pod->manifest_count; u++) {
+                const cargo_unit_t *unit = &pod->manifest_units[u];
+                if ((commodity_t)unit->commodity != c) {
+                    ok = false;
+                    break;
+                }
+                float unit_value = matched_contract
+                    ? price
+                    : station_buy_price_unit(st, unit);
+                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+                value += unit_value;
+            }
+            if (!ok) continue;
         } else {
-            st->_inventory_cache[c] += (float)sell_units;
+            value = price * (float)sell_units;
         }
+        if (value <= FLOAT_EPSILON) continue;
+        if (!cargo_pod_set_station_dock_custody(w, idx, station_idx))
+            continue;
+        remove_towed_pod_slot(&sp->ship, t);
 
-        float value = price * (float)sell_units;
         if (server_player_can_use_pubkey_persistence(sp)) {
             ledger_earn_by_pubkey(st, sp->pubkey, value);
             ledger_record_ore_sold(st, sp->pubkey, (uint32_t)sell_units, (uint8_t)c);
@@ -1709,34 +2260,196 @@ static float try_sell_towed_pods(world_t *w, server_player_t *sp,
         }
         sp->ship.stat_credits_earned += value;
         payout += value;
+        if (matched_contract) {
+            matched_contract->quantity_needed -= (float)sell_units;
+            if (matched_contract->quantity_needed <= 0.01f) {
+                matched_contract->active = false;
+                emit_event(w, (sim_event_t){
+                    .type = SIM_EVENT_CONTRACT_COMPLETE,
+                    .contract_complete.action = CONTRACT_TRACTOR});
+            }
+            (void)contract_idx;
+        }
 
         SIM_LOG("[sim] player %d sold towed %s pod (%d units) for %.0f cr at %s\n",
                 sp->id, commodity_short_name(c), sell_units, value, st->name);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_SELL, .player_id = sp->id,
             .sell = { .station = station_idx,
-                      .grade = MINING_GRADE_COMMON,
-                      .base_cr = (int)lroundf(value),
-                      .bonus_cr = 0,
-                      .by_contract = 0 }});
-        if (pod->quantity > (uint16_t)sell_units) {
-            pod->quantity = (uint16_t)(pod->quantity - (uint16_t)sell_units);
-        } else {
-            memset(pod, 0, sizeof(*pod));
-            pod->towed_by = -1;
-            remove_towed_pod_slot(&sp->ship, t);
-        }
-        if (single_unit) break;
-    }
-
-    if (payout < 0.01f && blocked_full) {
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_ORDER_REJECTED,
-            .player_id = sp->id,
-            .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
-        });
+		                      .grade = MINING_GRADE_COMMON,
+		                      .base_cr = (int)lroundf(value),
+		                      .bonus_cr = 0,
+		                      .by_contract = matched_contract ||
+                                      station_policy_accepts_contract_bound_cargo(st)
+                                  ? 1u : 0u }});
+        break;
     }
     return payout;
+}
+
+static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
+                                        mining_grade_t grade) {
+    if (!pod || grade >= MINING_GRADE_COUNT) return true;
+    if (pod->manifest_count == 0)
+        return grade == MINING_GRADE_COMMON;
+    if (pod->manifest_count != pod->quantity) return false;
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((mining_grade_t)pod->manifest_units[i].grade != grade)
+            return false;
+    }
+    return true;
+}
+
+static float station_market_pod_sell_quote(const station_t *st,
+                                           const cargo_pod_t *pod) {
+    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->commodity >= COMMODITY_COUNT || pod->quantity == 0 ||
+        pod->shipment_id != 0) {
+        return 0.0f;
+    }
+    commodity_t c = pod->commodity;
+    float fallback = station_sell_price(st, c);
+    if (fallback <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
+        fallback = st->base_price[c];
+    if (fallback <= FLOAT_EPSILON) return 0.0f;
+
+    if (pod->manifest_count > 0) {
+        if (pod->manifest_count != pod->quantity ||
+            pod->manifest_count > CARGO_POD_MANIFEST_CAP ||
+            !is_finished_good(c)) {
+            return 0.0f;
+        }
+        float value = 0.0f;
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            const cargo_unit_t *unit = &pod->manifest_units[i];
+            if ((commodity_t)unit->commodity != c) return 0.0f;
+            float unit_value = station_sell_price_unit(st, unit);
+            unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
+            value += unit_value;
+        }
+        return value;
+    }
+    return fallback * (float)pod->quantity;
+}
+
+static int try_buy_station_market_pod(world_t *w,
+                                      server_player_t *sp,
+                                      station_t *st,
+                                      int station_idx,
+                                      commodity_t commodity,
+                                      mining_grade_t grade,
+                                      bool prefer_pod,
+                                      uint16_t preferred_pod_idx) {
+    if (!w || !sp || !st || station_idx < 0 ||
+        station_idx >= MAX_STATIONS || commodity >= COMMODITY_COUNT) {
+        return 0;
+    }
+
+    int best_idx = -1;
+    float best_quote = 0.0f;
+    int start = 0;
+    int end = MAX_CARGO_PODS;
+    if (prefer_pod) {
+        if (preferred_pod_idx >= MAX_CARGO_PODS) return 0;
+        start = (int)preferred_pod_idx;
+        end = start + 1;
+    }
+    for (int i = start; i < end; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!cargo_pod_is_station_market_pod(w, pod, station_idx))
+            continue;
+        if (pod->commodity != commodity || pod->shipment_id != 0)
+            continue;
+        if (!cargo_pod_matches_buy_grade(pod, grade))
+            continue;
+        float quote = station_market_pod_sell_quote(st, pod);
+        if (quote <= FLOAT_EPSILON) continue;
+        best_idx = i;
+        best_quote = quote;
+        break;
+    }
+    if (best_idx < 0) return 0;
+
+    int tow_space = ship_towed_pod_capacity(&sp->ship) -
+        sp->ship.towed_pod_count;
+    if (tow_space <= 0) {
+        SIM_LOG("[buy-pod] REJECT: tow slots full for c=%d\n", (int)commodity);
+        return -1;
+    }
+
+    bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
+    float balance = pubkey_ledger
+        ? ledger_balance_by_pubkey(st, sp->pubkey)
+        : ledger_balance(st, sp->session_token);
+    bool neural_bot_credit =
+        (sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
+         sp->server_brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) &&
+        sp->autopilot_mode != 0 &&
+        sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_BUY &&
+        sp->autopilot_cargo == commodity &&
+        sp->autopilot_station_target >= 0 &&
+        sp->autopilot_station_target < MAX_STATIONS;
+    bool spent = false;
+    if (neural_bot_credit) {
+        if (pubkey_ledger) {
+            ledger_force_debit_by_pubkey(st, sp->pubkey, best_quote,
+                                         &sp->ship);
+        } else {
+            ledger_force_debit(st, sp->session_token, best_quote,
+                               &sp->ship);
+        }
+        spent = true;
+    } else if (balance + FLOAT_EPSILON >= best_quote) {
+        spent = pubkey_ledger
+            ? ledger_spend_by_pubkey(st, sp->pubkey, best_quote, &sp->ship)
+            : ledger_spend(st, sp->session_token, best_quote, &sp->ship);
+    }
+    if (!spent) {
+        SIM_LOG("[buy-pod] REJECT: c=%d cost=%.2f bal=%.2f\n",
+                (int)commodity, best_quote, balance);
+        return -1;
+    }
+
+    cargo_pod_t *pod = &w->cargo_pods[best_idx];
+    cargo_pod_clear_module_tractor(pod);
+    pod->towed_by = (int8_t)sp->id;
+    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
+    float spacing = 46.0f + 8.0f * (float)sp->ship.towed_pod_count;
+    pod->pos = v2_add(sp->ship.pos, v2_scale(pod_dir, spacing));
+    pod->vel = sp->ship.vel;
+    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)best_idx;
+
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_BUY, .player_id = sp->id,
+        .buy = { .station = station_idx,
+                 .commodity = (uint8_t)commodity,
+                 .grade = (uint8_t)grade,
+                 .cost = (int)lroundf(best_quote),
+                 .quantity = (uint16_t)pod->quantity }});
+    SIM_LOG("[buy-pod] OK player %d bought station-held %s pod (%u units) for %.0f cr at %s\n",
+            sp->id, commodity_short_name(commodity),
+            (unsigned)pod->quantity, best_quote, st->name);
+    return 1;
+}
+
+static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
+                                          const contract_t *ct) {
+    if (!pod || !ct || !ct->active) return false;
+    if (ct->action != CONTRACT_TRACTOR) return false;
+    if (ct->commodity < COMMODITY_RAW_ORE_COUNT) return false;
+    if (pod->shipment_id != 0 || pod->commodity != ct->commodity) return false;
+    if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
+        return false;
+    if (pod->quantity <= 0) return false;
+    int needed = (int)floorf(ct->quantity_needed + 0.0001f);
+    if (needed < (int)pod->quantity) return false;
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(
+                ct, &pod->manifest_units[i]))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
@@ -2021,9 +2734,10 @@ static bool manifest_unit_matches_market_buy(const cargo_unit_t *u,
     return !manifest_unit_is_named_ingot(u);
 }
 
-static int manifest_count_market_buy_units(const manifest_t *manifest,
-                                           commodity_t commodity,
-                                           mining_grade_t preferred_grade) {
+static int SIGNAL_MAYBE_UNUSED
+manifest_count_market_buy_units(const manifest_t *manifest,
+                                commodity_t commodity,
+                                mining_grade_t preferred_grade) {
     if (!manifest || !manifest->units) return 0;
     int n = 0;
     for (uint16_t i = 0; i < manifest->count; i++) {
@@ -2033,9 +2747,10 @@ static int manifest_count_market_buy_units(const manifest_t *manifest,
     return n;
 }
 
-static int manifest_find_market_buy_unit(const manifest_t *manifest,
-                                         commodity_t commodity,
-                                         mining_grade_t preferred_grade) {
+static int SIGNAL_MAYBE_UNUSED
+manifest_find_market_buy_unit(const manifest_t *manifest,
+                              commodity_t commodity,
+                              mining_grade_t preferred_grade) {
     if (!manifest || !manifest->units) return -1;
     for (uint16_t i = 0; i < manifest->count; i++) {
         if (manifest_unit_matches_market_buy(&manifest->units[i],
@@ -2043,19 +2758,6 @@ static int manifest_find_market_buy_unit(const manifest_t *manifest,
             return (int)i;
     }
     return -1;
-}
-
-static bool transfer_ship_unit_to_station(ship_t *src, station_t *dst, uint16_t idx) {
-    cargo_unit_t unit = {0};
-    cargo_receipt_chain_t chain = {0};
-
-    if (!src || !dst) return false;
-    if (!ship_manifest_remove_with_chain(src, idx, &unit, &chain)) return false;
-    if (!station_manifest_push_with_chain(dst, &unit, &chain)) {
-        (void)ship_manifest_push_with_chain(src, &unit, &chain);
-        return false;
-    }
-    return true;
 }
 
 static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t idx) {
@@ -2071,45 +2773,11 @@ static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t 
     return true;
 }
 
-static bool delivery_cargo_bound_to_player(world_t *w, int player_id,
-                                           const cargo_unit_t *unit);
-
-static int transfer_ship_to_station_by_contract(world_t *w, server_player_t *sp,
-                                                ship_t *src, station_t *dst,
-                                                const contract_t *contract,
-                                                int n) {
-    if (!w || !sp || !src || !dst || !contract || n <= 0) return 0;
-    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
-    int moved = 0;
-    while (moved < n) {
-        int idx = -1;
-        for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (delivery_cargo_bound_to_player(w, sp->id,
-                                               &src->manifest.units[i])) {
-                continue;
-            }
-            if (!contract_fit_is_ok(contract_fit_cargo_unit(contract,
-                                                            &src->manifest.units[i]))) {
-                continue;
-            }
-            cargo_legality_result_t legality =
-                classify_ship_manifest_unit_at_station(
-                    w, src, i, sp->current_station);
-            if (!cargo_legality_station_accepts(legality)) continue;
-            idx = (int)i;
-            break;
-        }
-        if (idx < 0) break;
-        if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
-        moved++;
-    }
-    return moved;
-}
-
-static int transfer_station_to_ship_by_commodity_ex(station_t *src, ship_t *dst,
-                                                    commodity_t commodity,
-                                                    mining_grade_t preferred_grade,
-                                                    int n) {
+static int SIGNAL_MAYBE_UNUSED
+transfer_station_to_ship_by_commodity_ex(station_t *src, ship_t *dst,
+                                         commodity_t commodity,
+                                         mining_grade_t preferred_grade,
+                                         int n) {
     if (!src || !dst || n <= 0) return 0;
     if (!station_manifest_bootstrap(src) || !ship_manifest_bootstrap(dst)) return 0;
     int moved = 0;
@@ -2133,56 +2801,29 @@ static int transfer_station_to_ship_by_commodity_ex(station_t *src, ship_t *dst,
     return moved;
 }
 
-static int transfer_station_to_ship_market_buy(station_t *src, ship_t *dst,
-                                               commodity_t commodity,
-                                               mining_grade_t preferred_grade,
-                                               int n) {
-    if (!src || !dst || n <= 0) return 0;
-    if (!station_manifest_bootstrap(src) || !ship_manifest_bootstrap(dst)) return 0;
-    int moved = 0;
-    while (moved < n) {
-        int idx = manifest_find_market_buy_unit(&src->manifest,
-                                                commodity, preferred_grade);
-        if (idx < 0) break;
-        if (!transfer_station_unit_to_ship(src, dst, (uint16_t)idx)) break;
-        moved++;
-    }
-    return moved;
-}
-
-static int transfer_ship_tail_to_station(ship_t *src, station_t *dst, int n) {
-    if (!src || !dst || n <= 0) return 0;
-    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
-    int moved = 0;
-    while (moved < n && src->manifest.count > 0) {
-        uint16_t idx = (uint16_t)(src->manifest.count - 1u);
-        if (!transfer_ship_unit_to_station(src, dst, idx)) break;
-        moved++;
-    }
-    return moved;
-}
-
-static int manifest_find_top_sell_unit(world_t *w, int player_id,
-                                       const manifest_t *manifest,
-                                       commodity_t commodity,
-                                       mining_grade_t grade,
-                                       bool allow_bound) {
-    if (!manifest || !manifest->units) return -1;
-    int top_idx = -1;
-    float top_mult = 1.0f;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        const cargo_unit_t *u = &manifest->units[i];
-        if (u->commodity != (uint8_t)commodity) continue;
-        if (grade < MINING_GRADE_COUNT && u->grade != (uint8_t)grade) continue;
-        if (!allow_bound && delivery_cargo_bound_to_player(w, player_id, u))
+static bool station_take_pod_shell_frame(station_t *st,
+                                         cargo_unit_t *unit,
+                                         cargo_receipt_chain_t *chain) {
+    if (!st || !unit || !chain) return false;
+    if (!station_manifest_bootstrap(st)) return false;
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        if (st->manifest.units[i].commodity != (uint8_t)COMMODITY_FRAME)
             continue;
-        float mult = prefix_class_price_multiplier((int)u->prefix_class);
-        if (top_idx < 0 || mult > top_mult) {
-            top_idx = (int)i;
-            top_mult = mult;
-        }
+        if (!station_manifest_remove_with_chain(st, i, unit, chain))
+            return false;
+        sync_station_finished_inventory(st, COMMODITY_FRAME);
+        return true;
     }
-    return top_idx;
+    return false;
+}
+
+static void station_restore_pod_shell_frame(station_t *st,
+                                            const cargo_unit_t *unit,
+                                            const cargo_receipt_chain_t *chain) {
+    if (!st || !unit || !chain) return;
+    if ((commodity_t)unit->commodity != COMMODITY_FRAME) return;
+    (void)station_manifest_push_with_chain(st, unit, chain);
+    sync_station_finished_inventory(st, COMMODITY_FRAME);
 }
 
 static const cargo_receipt_chain_t *ship_receipt_chain_at(
@@ -2211,36 +2852,6 @@ static cargo_legality_result_t classify_ship_manifest_unit_at_station(
         ship_receipt_chain_at(ship, index));
 }
 
-static int transfer_ship_to_station_by_commodity_legal(
-    world_t *w, server_player_t *sp, station_t *dst,
-    commodity_t commodity, int n) {
-    if (!w || !sp || !dst || n <= 0) return 0;
-    if (!ship_manifest_bootstrap(&sp->ship) ||
-        !station_manifest_bootstrap(dst)) {
-        return 0;
-    }
-    int moved = 0;
-    while (moved < n) {
-        int idx = -1;
-        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
-            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
-            if (unit->commodity != (uint8_t)commodity) continue;
-            if (delivery_cargo_bound_to_player(w, sp->id, unit)) continue;
-            cargo_legality_result_t legality =
-                classify_ship_manifest_unit_at_station(
-                    w, &sp->ship, i, sp->current_station);
-            if (legality.status == CARGO_LEGALITY_CONTRABAND) continue;
-            idx = (int)i;
-            break;
-        }
-        if (idx < 0) break;
-        if (!transfer_ship_unit_to_station(&sp->ship, dst, (uint16_t)idx))
-            break;
-        moved++;
-    }
-    return moved;
-}
-
 static bool is_finished_good(commodity_t c) {
     return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
 }
@@ -2252,24 +2863,6 @@ static float station_finished_fraction(const station_t *st, commodity_t c) {
     float frac = v - floor_v;
     if (frac < 0.0f || frac >= 1.0f) frac = 0.0f;
     return frac;
-}
-
-static float station_finished_space(const station_t *st, commodity_t c) {
-    if (!st || !is_finished_good(c)) return 0.0f;
-    float stock = (float)manifest_count_by_commodity(&st->manifest, c) +
-                  station_finished_fraction(st, c);
-    return fmaxf(0.0f, MAX_PRODUCT_STOCK - stock);
-}
-
-static float station_cargo_space(const station_t *st, commodity_t c) {
-    if (!st || c >= COMMODITY_COUNT) return 0.0f;
-    if (is_finished_good(c)) return station_finished_space(st, c);
-    return fmaxf(0.0f, REFINERY_HOPPER_CAPACITY - st->_inventory_cache[c]);
-}
-
-static void sync_ship_finished_cargo(ship_t *ship, commodity_t c) {
-    if (!ship || !is_finished_good(c)) return;
-    ship->cargo[c] = (float)manifest_count_by_commodity(&ship->manifest, c);
 }
 
 static void sync_station_finished_inventory(station_t *st, commodity_t c) {
@@ -2285,7 +2878,6 @@ static void sync_station_finished_inventory(station_t *st, commodity_t c) {
 /* ================================================================== */
 
 static const float DELIVERY_ORIGIN_CREDIT_RATE = 0.10f;
-static const float DELIVERY_BLACK_MARKET_MARKDOWN = 0.35f;
 static const uint32_t DELIVERY_DUE_TICKS = 120u * 60u * 8u; /* 8 minutes */
 
 static void player_ledger_earn_at(server_player_t *sp, station_t *st,
@@ -2307,21 +2899,99 @@ static void player_ledger_force_debit_at(server_player_t *sp, station_t *st,
         ledger_force_debit(st, sp->session_token, amount, &sp->ship);
 }
 
-static bool delivery_status_cargo_still_bound(uint8_t status) {
-    return status == DELIVERY_SHIPMENT_PICKED_UP ||
-           status == DELIVERY_SHIPMENT_BLACK_MARKET_SOLD ||
-           status == DELIVERY_SHIPMENT_DEFAULTED;
-}
-
-static bool delivery_shipment_has_pub(const delivery_shipment_t *shipment,
-                                      const uint8_t pub[32]) {
-    if (!shipment || !pub) return false;
-    for (uint16_t i = 0; i < shipment->quantity_bound &&
-                         i < MAX_DELIVERY_BOUND_CARGO; i++) {
-        if (memcmp(shipment->cargo_pub[i], pub, 32) == 0)
-            return true;
+static bool delivery_shipment_pod_active(const world_t *w,
+                                         const delivery_shipment_t *shipment) {
+    if (!w || !shipment || shipment->shipment_id == 0) return false;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id == shipment->shipment_id) return true;
     }
     return false;
+}
+
+static int delivery_towed_pod_slot_for_shipment(const world_t *w,
+                                                const server_player_t *sp,
+                                                const delivery_shipment_t *shipment) {
+    if (!w || !sp || !shipment || shipment->shipment_id == 0) return -1;
+    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != shipment->shipment_id) continue;
+        if (pod->commodity != (commodity_t)shipment->commodity) continue;
+        if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
+        return t;
+    }
+    return -1;
+}
+
+static bool delivery_materialize_pod_manifest(cargo_pod_t *pod,
+                                              const delivery_shipment_t *shipment,
+                                              uint16_t cargo_offset,
+                                              uint16_t expected_quantity) {
+    if (!pod || !shipment || expected_quantity == 0 ||
+        expected_quantity > CARGO_POD_MANIFEST_CAP ||
+        cargo_offset > shipment->quantity_bound ||
+        cargo_offset + expected_quantity > shipment->quantity_bound ||
+        cargo_offset + expected_quantity > MAX_DELIVERY_BOUND_CARGO) {
+        return false;
+    }
+    if (!pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->commodity != (commodity_t)shipment->commodity ||
+        pod->quantity != expected_quantity ||
+        pod->shipment_id != shipment->shipment_id) {
+        return false;
+    }
+    if (pod->manifest_count > 0) {
+        if (pod->manifest_count != expected_quantity) return false;
+        for (uint16_t i = 0; i < expected_quantity; i++) {
+            const cargo_unit_t *want =
+                &shipment->cargo_units[cargo_offset + i];
+            const cargo_unit_t *have = &pod->manifest_units[i];
+            if ((commodity_t)have->commodity != (commodity_t)shipment->commodity ||
+                memcmp(have->pub, want->pub, sizeof(have->pub)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    memset(pod->manifest_units, 0, sizeof(pod->manifest_units));
+    for (uint16_t i = 0; i < expected_quantity; i++) {
+        const cargo_unit_t *unit = &shipment->cargo_units[cargo_offset + i];
+        if ((commodity_t)unit->commodity != (commodity_t)shipment->commodity)
+            return false;
+        pod->manifest_units[i] = *unit;
+    }
+    pod->manifest_count = expected_quantity;
+    pod->quantity = expected_quantity;
+    return true;
+}
+
+static bool delivery_transfer_towed_pod_to_station_custody(
+                                       world_t *w,
+                                       server_player_t *sp,
+                                       delivery_shipment_t *shipment,
+                                       uint16_t cargo_offset,
+                                       uint16_t expected_quantity,
+                                       int station_idx) {
+    int tow_slot = delivery_towed_pod_slot_for_shipment(w, sp, shipment);
+    if (!w || !sp || !shipment || tow_slot < 0 ||
+        station_idx < 0 || station_idx >= MAX_STATIONS ||
+        station_first_dock_module(&w->stations[station_idx]) < 0) {
+        return false;
+    }
+    int pod_idx = sp->ship.towed_pods[tow_slot];
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!delivery_materialize_pod_manifest(pod, shipment, cargo_offset,
+                                           expected_quantity)) {
+        return false;
+    }
+    pod->shipment_id = 0;
+    remove_towed_pod_slot(&sp->ship, tow_slot);
+    return cargo_pod_set_station_dock_custody(w, pod_idx, station_idx);
 }
 
 static uint64_t delivery_receipt_nonce(const delivery_shipment_t *shipment) {
@@ -2489,26 +3159,6 @@ static void delivery_emit_default_memory(world_t *w,
     }
 }
 
-static delivery_shipment_t *delivery_shipment_for_cargo(
-    world_t *w, int player_id, const uint8_t pub[32])
-{
-    if (!w || player_id < 0 || !pub) return NULL;
-    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-        delivery_shipment_t *shipment = &w->delivery_shipments[i];
-        if (!shipment->active) continue;
-        if (shipment->debtor_player != (uint8_t)player_id) continue;
-        if (!delivery_status_cargo_still_bound(shipment->status)) continue;
-        if (delivery_shipment_has_pub(shipment, pub))
-            return shipment;
-    }
-    return NULL;
-}
-
-static bool delivery_cargo_bound_to_player(world_t *w, int player_id,
-                                           const cargo_unit_t *unit) {
-    return unit && delivery_shipment_for_cargo(w, player_id, unit->pub) != NULL;
-}
-
 static delivery_shipment_t *delivery_active_for_contract(world_t *w,
                                                          int player_id,
                                                          int contract_index) {
@@ -2518,7 +3168,10 @@ static delivery_shipment_t *delivery_active_for_contract(world_t *w,
         if (!shipment->active) continue;
         if (shipment->debtor_player != (uint8_t)player_id) continue;
         if (shipment->contract_index != (uint8_t)contract_index) continue;
-        if (shipment->status == DELIVERY_SHIPMENT_CLEARED) continue;
+        if (shipment->status == DELIVERY_SHIPMENT_CLEARED ||
+            shipment->status == DELIVERY_SHIPMENT_BLACK_MARKET_SOLD) {
+            continue;
+        }
         return shipment;
     }
     return NULL;
@@ -2530,7 +3183,8 @@ static delivery_shipment_t *delivery_alloc_shipment(world_t *w) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (shipment->active &&
             shipment->status != DELIVERY_SHIPMENT_CLEARED &&
-            shipment->status != DELIVERY_SHIPMENT_DEFAULTED) {
+            shipment->status != DELIVERY_SHIPMENT_DEFAULTED &&
+            shipment->status != DELIVERY_SHIPMENT_BLACK_MARKET_SOLD) {
             continue;
         }
         memset(shipment, 0, sizeof(*shipment));
@@ -2584,21 +3238,17 @@ static int delivery_source_stock_count(const station_t *origin,
     return count;
 }
 
-static bool delivery_move_station_unit_to_ship(station_t *origin,
-                                               ship_t *ship,
-                                               uint16_t idx,
-                                               cargo_unit_t *out_unit) {
-    cargo_unit_t unit = {0};
-    cargo_receipt_chain_t chain = {0};
-    if (!origin || !ship || !out_unit) return false;
-    if (!station_manifest_remove_with_chain(origin, idx, &unit, &chain))
-        return false;
-    if (!ship_manifest_push_with_chain(ship, &unit, &chain)) {
-        (void)station_manifest_push_with_chain(origin, &unit, &chain);
-        return false;
+static void delivery_restore_shipment_to_origin(station_t *origin,
+                                                delivery_shipment_t *shipment,
+                                                int count) {
+    if (!origin || !shipment || count <= 0) return;
+    if (count > MAX_DELIVERY_BOUND_CARGO) count = MAX_DELIVERY_BOUND_CARGO;
+    for (int i = 0; i < count; i++) {
+        if (shipment->cargo_units[i].commodity >= COMMODITY_COUNT) continue;
+        (void)station_manifest_push_with_chain(origin,
+                                               &shipment->cargo_units[i],
+                                               &shipment->cargo_chains[i]);
     }
-    *out_unit = unit;
-    return true;
 }
 
 static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
@@ -2610,25 +3260,23 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     if (delivery_active_for_contract(w, sp->id, contract_index)) return 0;
     station_t *origin = &w->stations[origin_idx];
     if (!station_exists(origin)) return 0;
-    if (!station_manifest_bootstrap(origin) ||
-        !ship_manifest_bootstrap(&sp->ship)) {
+    if (!station_manifest_bootstrap(origin)) {
         return 0;
     }
+    int max_tow = 2 + sp->ship.tractor_level * 2;
+    if (sp->ship.towed_pod_count >= max_tow) return 0;
     int stock = delivery_source_stock_count(origin, ct);
     if (stock <= 0) return 0;
-    float free_volume = ship_cargo_capacity(&sp->ship) -
-                        ship_total_cargo(&sp->ship);
-    float vol = commodity_volume(ct->commodity);
-    int room = (vol > FLOAT_EPSILON) ? (int)floorf(free_volume / vol)
-                                     : (int)floorf(free_volume);
-    if (room <= 0) return 0;
     int needed = (int)ceilf(ct->quantity_needed);
     if (needed <= 0) needed = 1;
     int take = needed;
     if (take > stock) take = stock;
-    if (take > room) take = room;
     if (take > MAX_DELIVERY_BOUND_CARGO) take = MAX_DELIVERY_BOUND_CARGO;
     if (take <= 0) return 0;
+    cargo_unit_t shell_frame = {0};
+    cargo_receipt_chain_t shell_chain = {0};
+    if (!station_take_pod_shell_frame(origin, &shell_frame, &shell_chain))
+        return 0;
 
     delivery_shipment_t scratch = {0};
     scratch.active = true;
@@ -2646,23 +3294,29 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
         int idx = delivery_find_source_stock_unit(origin, ct);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        if (!delivery_move_station_unit_to_ship(origin, &sp->ship,
-                                                (uint16_t)idx, &unit)) {
+        cargo_receipt_chain_t chain = {0};
+        if (!station_manifest_remove_with_chain(origin, (uint16_t)idx,
+                                                &unit, &chain)) {
             break;
         }
         memcpy(scratch.cargo_pub[moved], unit.pub, 32);
+        scratch.cargo_units[moved] = unit;
+        scratch.cargo_chains[moved] = chain;
         moved++;
         float unit_debt = station_sell_price(origin, ct->commodity);
         if (unit_debt <= 0.0f)
             unit_debt = station_buy_price(origin, ct->commodity);
         debt += unit_debt;
     }
-    if (moved <= 0) return 0;
+    if (moved <= 0) {
+        station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
+        return 0;
+    }
 
     delivery_shipment_t *shipment = delivery_alloc_shipment(w);
     if (!shipment) {
-        (void)transfer_ship_tail_to_station(&sp->ship, origin, moved);
-        sync_ship_finished_cargo(&sp->ship, ct->commodity);
+        station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
+        delivery_restore_shipment_to_origin(origin, &scratch, moved);
         sync_station_finished_inventory(origin, ct->commodity);
         return 0;
     }
@@ -2675,51 +3329,31 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     shipment->debt_principal = debt;
     shipment->destination_payout = contract_price(ct) * (float)moved;
     shipment->origin_completion_credit = debt * DELIVERY_ORIGIN_CREDIT_RATE;
+    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
+    vec2 pod_pos = v2_add(sp->ship.pos, v2_scale(pod_dir, 46.0f));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, pod_pos, sp->ship.vel, ct->commodity,
+        scratch.cargo_units, (uint16_t)moved, CARGO_POD_CARGO);
+    if (pod_idx < 0 || sp->ship.towed_pod_count >= max_tow) {
+        station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
+        delivery_restore_shipment_to_origin(origin, shipment, moved);
+        sync_station_finished_inventory(origin, ct->commodity);
+        memset(shipment, 0, sizeof(*shipment));
+        return 0;
+    }
+    w->cargo_pods[pod_idx].shipment_id = shipment->shipment_id;
+    cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx], &shell_frame);
+    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
+    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
     player_ledger_force_debit_at(sp, origin, debt);
     ct->claimed_by = (int8_t)sp->id;
-    sync_ship_finished_cargo(&sp->ship, ct->commodity);
     sync_station_finished_inventory(origin, ct->commodity);
+    sync_station_finished_inventory(origin, COMMODITY_FRAME);
     SIM_LOG("[delivery] player %d took shipment %u: %d %s %s -> %s debt %.0f\n",
             sp->id, shipment->shipment_id, moved,
             commodity_short_name(ct->commodity),
             origin->name, w->stations[ct->station_index].name, debt);
     return moved;
-}
-
-static bool delivery_transfer_ship_idx_to_station(ship_t *ship, station_t *st,
-                                                  uint16_t idx,
-                                                  cargo_unit_t *out_unit) {
-    cargo_unit_t unit = {0};
-    cargo_receipt_chain_t chain = {0};
-    if (!ship || !st || !out_unit) return false;
-    if (!ship_manifest_remove_with_chain(ship, idx, &unit, &chain))
-        return false;
-    if (!station_manifest_push_with_chain(st, &unit, &chain)) {
-        (void)ship_manifest_push_with_chain(ship, &unit, &chain);
-        return false;
-    }
-    *out_unit = unit;
-    return true;
-}
-
-static int delivery_find_bound_ship_unit(world_t *w, server_player_t *sp,
-                                         delivery_shipment_t *shipment,
-                                         commodity_t filter,
-                                         mining_grade_t grade) {
-    if (!w || !sp || !shipment || !sp->ship.manifest.units) return -1;
-    for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
-        const cargo_unit_t *unit = &sp->ship.manifest.units[i];
-        if (filter < COMMODITY_COUNT &&
-            unit->commodity != (uint8_t)filter) {
-            continue;
-        }
-        if (grade < MINING_GRADE_COUNT && unit->grade != (uint8_t)grade)
-            continue;
-        if (unit->commodity != shipment->commodity) continue;
-        if (delivery_shipment_has_pub(shipment, unit->pub))
-            return (int)i;
-    }
-    return -1;
 }
 
 static float delivery_try_deliver_bound_cargo(world_t *w,
@@ -2737,31 +3371,46 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
         commodity_t c = (commodity_t)shipment->commodity;
         if (filter < COMMODITY_COUNT && filter != c) continue;
-
         uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
             ? (uint16_t)(shipment->quantity_total - shipment->quantity_delivered)
             : 0;
+        if (remaining == 0) continue;
+        int tow_slot = delivery_towed_pod_slot_for_shipment(w, sp, shipment);
+        if (tow_slot < 0) continue;
+        int pod_idx = sp->ship.towed_pods[tow_slot];
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+        if (pod->quantity != remaining) continue;
+
         float shipment_payout = 0.0f;
-        while (remaining > 0) {
-            int idx = delivery_find_bound_ship_unit(w, sp, shipment, c,
-                                                    MINING_GRADE_COUNT);
-            if (idx < 0) break;
-            cargo_unit_t unit = {0};
-            if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
-                                                       (uint16_t)idx,
-                                                       &unit)) {
+        bool ok = true;
+        for (uint16_t i = 0; i < remaining; i++) {
+            uint16_t cargo_idx =
+                (uint16_t)(shipment->quantity_delivered + i);
+            if (cargo_idx >= shipment->quantity_bound ||
+                cargo_idx >= MAX_DELIVERY_BOUND_CARGO) {
+                ok = false;
                 break;
             }
-            shipment->quantity_delivered++;
-            remaining--;
+            cargo_unit_t unit = shipment->cargo_units[cargo_idx];
+            if (unit.commodity != (uint8_t)c) {
+                ok = false;
+                break;
+            }
             float unit_pay = shipment->quantity_total > 0
                 ? shipment->destination_payout / (float)shipment->quantity_total
                 : 0.0f;
-            payout += unit_pay;
             shipment_payout += unit_pay;
-            sync_ship_finished_cargo(&sp->ship, c);
-            sync_station_finished_inventory(st, c);
         }
+        if (!ok ||
+            !delivery_transfer_towed_pod_to_station_custody(
+                w, sp, shipment, shipment->quantity_delivered,
+                remaining, station_idx)) {
+            continue;
+        }
+        shipment->quantity_delivered =
+            (uint16_t)(shipment->quantity_delivered + remaining);
+        payout += shipment_payout;
         if (shipment->quantity_delivered >= shipment->quantity_total) {
             shipment->status = DELIVERY_SHIPMENT_DELIVERED;
             int ci = shipment->contract_index;
@@ -2795,53 +3444,69 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                                             mining_grade_t grade,
                                             bool single_unit) {
     if (!w || !sp || !st) return 0.0f;
+    (void)grade;
     station_policy_refresh(st, sp->current_station, w->tick);
     if (!station_policy_accepts_contract_bound_cargo(st)) return 0.0f;
 
     float payout = 0.0f;
     bool sold_any = false;
     bool sold_bound_any = false;
-    while (true) {
-        delivery_shipment_t *shipment = NULL;
-        int idx = -1;
-        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
-            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
-            if (filter < COMMODITY_COUNT &&
-                unit->commodity != (uint8_t)filter) {
-                continue;
-            }
-            if (grade < MINING_GRADE_COUNT &&
-                unit->grade != (uint8_t)grade) {
-                continue;
-            }
-            shipment = delivery_shipment_for_cargo(w, sp->id, unit->pub);
-            if (shipment) {
-                idx = (int)i;
-                break;
-            }
-            cargo_legality_result_t legality =
-                classify_ship_manifest_unit_at_station(
-                    w, &sp->ship, i, sp->current_station);
-            if (legality.status == CARGO_LEGALITY_CONTRABAND &&
-                cargo_legality_station_accepts(legality)) {
-                idx = (int)i;
-                break;
-            }
-        }
-        if (idx < 0) break;
+    for (int si = 0; si < MAX_DELIVERY_SHIPMENTS; si++) {
+        delivery_shipment_t *shipment = &w->delivery_shipments[si];
+        if (!shipment->active) continue;
+        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        commodity_t c = (commodity_t)shipment->commodity;
+        if (filter < COMMODITY_COUNT && filter != c) continue;
+        uint16_t remaining =
+            shipment->quantity_total >
+                shipment->quantity_delivered + shipment->quantity_black_market_sold
+                ? (uint16_t)(shipment->quantity_total -
+                             shipment->quantity_delivered -
+                             shipment->quantity_black_market_sold)
+                : 0;
+        if (remaining == 0) continue;
+        int tow_slot = delivery_towed_pod_slot_for_shipment(w, sp, shipment);
+        if (tow_slot < 0) continue;
+        int pod_idx = sp->ship.towed_pods[tow_slot];
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+        if (pod->quantity != remaining) continue;
 
-        cargo_unit_t unit = {0};
-        if (!delivery_transfer_ship_idx_to_station(&sp->ship, st,
-                                                   (uint16_t)idx, &unit)) {
-            break;
+        float shipment_payout = 0.0f;
+        bool ok = true;
+        uint16_t cargo_offset =
+            (uint16_t)(shipment->quantity_delivered +
+                       shipment->quantity_black_market_sold);
+        for (uint16_t i = 0; i < remaining; i++) {
+            uint16_t cargo_idx = (uint16_t)(shipment->quantity_delivered +
+                                            shipment->quantity_black_market_sold +
+                                            i);
+            if (cargo_idx >= shipment->quantity_bound ||
+                cargo_idx >= MAX_DELIVERY_BOUND_CARGO) {
+                ok = false;
+                break;
+            }
+            cargo_unit_t unit = shipment->cargo_units[cargo_idx];
+            float unit_price = station_buy_price_unit(st, &unit);
+            if (unit_price <= 0.0f)
+                unit_price = station_buy_price(st, c);
+            shipment_payout += unit_price * BLACK_MARKET_CARGO_MARKDOWN;
         }
-        commodity_t c = (commodity_t)unit.commodity;
-        float unit_price = station_buy_price_unit(st, &unit);
-        if (unit_price <= 0.0f)
-            unit_price = station_buy_price(st, c);
-        payout += unit_price * DELIVERY_BLACK_MARKET_MARKDOWN;
-        if (shipment) {
-            shipment->quantity_black_market_sold++;
+        if (!ok ||
+            !delivery_transfer_towed_pod_to_station_custody(
+                w, sp, shipment, cargo_offset, remaining,
+                sp->current_station)) {
+            continue;
+        }
+        payout += shipment_payout;
+        shipment->quantity_black_market_sold =
+            (uint16_t)(shipment->quantity_black_market_sold + remaining);
+        sold_any = true;
+        sold_bound_any = true;
+        if (shipment->quantity_black_market_sold +
+                shipment->quantity_delivered >=
+            shipment->quantity_total) {
             delivery_emit_default_memory(w, sp, st, shipment,
                                          shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
@@ -2851,14 +3516,9 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                 w->contracts[ci].action == CONTRACT_DELIVERY) {
                 w->contracts[ci].active = false;
             }
-            sold_bound_any = true;
         }
-        sync_ship_finished_cargo(&sp->ship, c);
-        sync_station_finished_inventory(st, c);
-        sold_any = true;
-        if (single_unit) break;
+        if (single_unit && sold_bound_any) break;
     }
-
     if (payout > 0.01f) {
         player_ledger_earn_at(sp, st, payout);
         emit_event(w, (sim_event_t){
@@ -2927,13 +3587,8 @@ static void step_delivery_shipments(world_t *w) {
         int pid = shipment->debtor_player;
         if (pid < 0 || pid >= MAX_PLAYERS || !w->players[pid].connected)
             continue;
-        ship_t *ship = &w->players[pid].ship;
-        int carried = 0;
-        for (uint16_t m = 0; m < ship->manifest.count; m++) {
-            if (delivery_shipment_has_pub(shipment, ship->manifest.units[m].pub))
-                carried++;
-        }
-        if (carried == 0 && shipment->quantity_delivered == 0) {
+        if (!delivery_shipment_pod_active(w, shipment) &&
+            shipment->quantity_delivered == 0) {
             delivery_emit_default_memory(w, &w->players[pid], NULL, shipment,
                                          shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
@@ -2945,118 +3600,6 @@ static void step_delivery_shipments(world_t *w) {
             }
         }
     }
-}
-
-static float manifest_grade_bonus_from_range(const manifest_t *manifest,
-                                             uint16_t start,
-                                             commodity_t commodity,
-                                             float price_per) {
-    if (!manifest || start >= manifest->count || price_per <= 0.0f) return 0.0f;
-    float bonus = 0.0f;
-    for (uint16_t u = start; u < manifest->count; u++) {
-        const cargo_unit_t *cu = &manifest->units[u];
-        if (cu->commodity != commodity) continue;
-        float mult = mining_payout_multiplier((mining_grade_t)cu->grade) *
-                     prefix_class_price_multiplier((int)cu->prefix_class);
-        bonus += (mult - 1.0f) * price_per;
-    }
-    return bonus;
-}
-
-/* Sell exactly one (commodity, grade) unit — the trade-tab per-row
- * counterpart to `trade_apply_buy_row`. Pulls one cargo_unit_t from the
- * ship manifest matching `grade` (or the FIFO-first matching commodity
- * when `grade == MINING_GRADE_COUNT`), credits the player at this
- * station's buy price + the unit's grade bonus, transfers the manifest
- * entry to the station, then syncs the derived float cargo/cache.
- *
- * Returns true when a unit actually sold, so the caller can skip the
- * bulk path and not also drain the rest of the cargo. */
-static bool try_sell_one_unit(world_t *w, server_player_t *sp,
-                              commodity_t commodity, mining_grade_t grade) {
-    if (commodity >= COMMODITY_COUNT) return false;
-    /* Raw ore lives in towed fragments now (#259), not in ship.cargo,
-     * so it can't be sold by the per-row path. */
-    if (commodity < COMMODITY_RAW_ORE_COUNT) return false;
-    station_t *st = &w->stations[sp->current_station];
-    if (!station_consumes(st, commodity)) {
-        return delivery_try_black_market_sell(w, sp, st, commodity, grade, true) > 0.01f;
-    }
-    float space = station_finished_space(st, commodity);
-    if (space < 0.999f) {
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_ORDER_REJECTED,
-            .player_id = sp->id,
-            .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
-        });
-        return false;
-    }
-
-    /* Match the TRADE row quote: sell the highest prefix multiplier in
-     * this commodity/grade bucket, not whichever unit happens to be FIFO. */
-    int unit_idx = manifest_find_top_sell_unit(w, sp->id, &sp->ship.manifest,
-                                               commodity, grade, false);
-    if (unit_idx < 0 &&
-        delivery_try_black_market_sell(w, sp, st, commodity, grade, true) > 0.01f) {
-        return true;
-    }
-    /* Without a manifest unit we'd be selling provenance-less float
-     * cargo, which the player UI shouldn't have offered. Fall through
-     * to refusal (and keep the cargo) so we don't silently mint a
-     * common-grade payout that breaks the chain. */
-    if (unit_idx < 0) return false;
-
-    const cargo_unit_t *quoted = &sp->ship.manifest.units[unit_idx];
-    cargo_legality_result_t legality =
-        classify_ship_manifest_unit_at_station(
-            w, &sp->ship, (uint16_t)unit_idx, sp->current_station);
-    if (legality.status == CARGO_LEGALITY_CONTRABAND) {
-        if (cargo_legality_station_accepts(legality)) {
-            return delivery_try_black_market_sell(w, sp, st, commodity,
-                                                  grade, true) > 0.01f;
-        }
-        return false;
-    }
-    mining_grade_t actual_grade = (mining_grade_t)quoted->grade;
-    float price = station_buy_price(st, commodity);
-    float mult = mining_payout_multiplier(actual_grade);
-    float graded_price = station_buy_price_unit(st, quoted) * mult;
-    int base_cr = (int)lroundf(price);
-    int bonus_cr = (int)lroundf(graded_price - price);
-
-    cargo_unit_t sold_unit;
-    cargo_receipt_chain_t sold_chain = {0};
-    if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)unit_idx,
-                                         &sold_unit, &sold_chain))
-        return false;
-    if (!station_manifest_push_with_chain(st, &sold_unit, &sold_chain)) {
-        (void)ship_manifest_push_with_chain(&sp->ship, &sold_unit, &sold_chain);
-        return false;
-    }
-    sync_ship_finished_cargo(&sp->ship, commodity);
-    sync_station_finished_inventory(st, commodity);
-
-    /* Pool decrement is implicit via ledger_earn; pool is now derived
-     * from -Σ(balance), so the credit on the player's ledger naturally
-     * shows up as a deeper net-issuance for the station. */
-    if (server_player_can_use_pubkey_persistence(sp)) {
-        ledger_earn_by_pubkey(st, sp->pubkey, graded_price);
-        ledger_record_ore_sold(st, sp->pubkey, 1, commodity);
-    } else {
-        ledger_earn(st, sp->session_token, graded_price);
-    }
-    sp->ship.stat_credits_earned += graded_price;
-    SIM_LOG("[sim] player %d sold 1× %s (grade %d) for %.0f cr at %s\n",
-            sp->id, commodity_short_name(commodity), (int)actual_grade,
-            graded_price, st->name);
-    emit_event(w, (sim_event_t){
-        .type = SIM_EVENT_SELL, .player_id = sp->id,
-        .sell = { .station = sp->current_station,
-                  .grade = (uint8_t)actual_grade,
-                  .base_cr = base_cr,
-                  .bonus_cr = bonus_cr,
-                  .by_contract = 0 }});
-    return true;
 }
 
 static float try_deliver_towed_fragments_to_contracts(world_t *w,
@@ -3156,218 +3699,45 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
 
-    /* Per-row sell: trade-tab click on a single grade row drops exactly
-     * one unit — same cadence as the buy hotkeys. Bypasses the bulk
-     * path below so the rest of the hold stays put. */
+    /* Pod economy: SELL is a physical handoff. This fallback only handles
+     * physical things that are not ordinary market pods: destination-bound
+     * freight pods, black-market freight pods, and towed ore fragments.
+     * Legacy ship.manifest / ship.cargo units are intentionally not
+     * transferred here anymore. */
     if (sp->input.service_sell_one) {
         commodity_t commodity = sp->input.service_sell_only;
         mining_grade_t grade  = sp->input.service_sell_grade;
-        try_sell_one_unit(w, sp, commodity, grade);
+        float delivery_payout =
+            delivery_try_deliver_bound_cargo(w, sp, st, commodity);
+        if (delivery_payout <= 0.01f)
+            (void)delivery_try_black_market_sell(
+                w, sp, st, commodity, grade, true);
         sp->input.service_sell_only = COMMODITY_COUNT;
         sp->input.service_sell_grade = MINING_GRADE_COUNT;
         sp->input.service_sell_one = false;
         return;
     }
 
-    float payout = 0.0f;
-    float direct_payout = 0.0f;
-    /* M7: track whether any of the accepted deliveries landed against an
-     * active contract so the client's sell FX can tint yellow. */
-    bool sold_against_contract = false;
     /* Optional one-shot filter: if the client requested selective
      * delivery via NET_ACTION_DELIVER_COMMODITY, only commodities
-     * matching `filter` are delivered. COMMODITY_COUNT (the default)
-     * means "deliver everything that fits", which is the legacy
-     * "deliver all" behavior triggered by NET_ACTION_SELL_CARGO. */
+     * matching `filter` are delivered. COMMODITY_COUNT lets the dock
+     * choose the next accepted target. Ordinary pod cargo is handled
+     * before this path and sells one whole pod per press. */
     commodity_t filter = sp->input.service_sell_only;
-    bool selective = (filter < COMMODITY_COUNT);
-    /* Snapshot the player's cargo of the filtered commodity (if any) so
-     * we can tell at the bottom whether the station refused everything
-     * the player tried to sell — vs the player just having empty hold.
-     * Only the selective-filter path needs this notice; the bulk
-     * SELL_CARGO already drops what fits and ignores the rest. */
-    float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
-    bool tried_but_full = false;
-    bool had_sellable_cargo = false;
 
     float fragment_payout = try_deliver_towed_fragments_to_contracts(
         w, sp, st, filter);
-    if (fragment_payout > 0.01f) {
-        direct_payout += fragment_payout;
-        sold_against_contract = true;
-        had_sellable_cargo = true;
-    }
+    (void)fragment_payout;
 
     float delivery_payout = delivery_try_deliver_bound_cargo(w, sp, st, filter);
-    if (delivery_payout > 0.01f) {
-        direct_payout += delivery_payout;
-        sold_against_contract = true;
-        had_sellable_cargo = true;
-    }
-
-    /* Deliver any cargo matching active supply contracts at this station.
-     *
-     * Raw ore contracts (c < COMMODITY_RAW_ORE_COUNT) are intentionally
-     * skipped: since physical ore towing replaced cargo vacuum (#259),
-     * players no longer carry raw ore in ship.cargo[] — fragments ride
-     * in ship.towed_fragments[] and are consumed by furnaces at dock.
-     * Ore-contract fulfillment is driven by smelter-throughput bumping
-     * station._inventory_cache[ORE], not by this delivery path. Leaving the
-     * ore branch in would be a silent no-op. */
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        contract_t *ct = &w->contracts[k];
-        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
-        if (ct->station_index != sp->current_station) continue;
-        commodity_t c = ct->commodity;
-        if (c < COMMODITY_RAW_ORE_COUNT) continue; /* see comment above */
-        if (selective && filter != c) continue;
-        int held = contract_fit_manifest_count(ct, &sp->ship.manifest);
-        if (held <= 0) continue;
-        had_sellable_cargo = true;
-        float space = station_finished_space(st, c);
-        int space_units = (int)floorf(space + 0.0001f);
-        if (space_units <= 0) {
-            tried_but_full = true;
-            continue;
-        }
-        int needed = (int)floorf(ct->quantity_needed + 0.0001f);
-        int deliver_units = held;
-        if (deliver_units > needed) deliver_units = needed;
-        if (deliver_units > space_units) deliver_units = space_units;
-        if (deliver_units <= 0) continue;
-        float price_per = contract_price(ct);
-        uint16_t station_count_before = st->manifest.count;
-        int moved = transfer_ship_to_station_by_contract(w, sp, &sp->ship,
-                                                         st, ct, deliver_units);
-        if (moved <= 0) continue;
-        float bonus = manifest_grade_bonus_from_range(&st->manifest,
-                                                      station_count_before,
-                                                      c, price_per);
-        payout += ((float)moved * price_per) + bonus;
-        sold_against_contract = true;
-        sync_ship_finished_cargo(&sp->ship, c);
-        sync_station_finished_inventory(st, c);
-        float deliver = (float)moved;
-        ct->quantity_needed -= deliver;
-        if (ct->quantity_needed <= 0.01f) {
-            /* Don't close if scaffold modules still need this material */
-            bool scaffold_still_needs = false;
-            for (int m2 = 0; m2 < st->module_count; m2++) {
-                if (module_build_state(&st->modules[m2]) == MODULE_BUILD_AWAITING_SUPPLY
-                    && module_build_material(st->modules[m2].type) == c) {
-                    scaffold_still_needs = true; break;
-                }
-            }
-            if (!scaffold_still_needs) {
-                ct->active = false;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                    .contract_complete.action = CONTRACT_TRACTOR});
-            }
-        }
-    }
-
-    /* Fallback: fab stations accept any ingot they consume, even without
-     * an active contract. This lets multi-input recipes source their
-     * secondary ingredient through the normal station sell path. */
-    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
-        commodity_t buy = (commodity_t)i;
-        if (!station_consumes(st, buy)) continue;
-        if (selective && filter != buy) continue;
-        int held = manifest_count_by_commodity(&sp->ship.manifest, buy);
-        if (held <= 0) continue;
-        had_sellable_cargo = true;
-        {
-            float space = station_finished_space(st, buy);
-            int space_units = (int)floorf(space + 0.0001f);
-            if (space_units <= 0) tried_but_full = true;
-            if (space_units > 0) {
-                int accepted_units = held < space_units ? held : space_units;
-                if (accepted_units <= 0) continue;
-                float price = station_buy_price(st, buy);
-                uint16_t station_count_before = st->manifest.count;
-                int moved = transfer_ship_to_station_by_commodity_legal(
-                    w, sp, st, buy, accepted_units);
-                if (moved <= 0) continue;
-                float bonus = manifest_grade_bonus_from_range(&st->manifest,
-                                                              station_count_before,
-                                                              buy, price);
-                payout += ((float)moved * price) + bonus;
-                sync_ship_finished_cargo(&sp->ship, buy);
-                sync_station_finished_inventory(st, buy);
-            }
-        }
-    }
+    (void)delivery_payout;
 
     float black_market_payout = delivery_try_black_market_sell(
         w, sp, st, filter, MINING_GRADE_COUNT, false);
-    if (black_market_payout > 0.01f) {
-        direct_payout += black_market_payout;
-        sold_against_contract = true;
-        had_sellable_cargo = true;
-    }
+    (void)black_market_payout;
 
-    if (payout > 0.01f) {
-        /* Stations carry the debt — pool is derived from -Σ(balance),
-         * so crediting the player's ledger naturally pushes the station's
-         * net issuance more negative. Conservation is structural.
-         *
-         * Use ledger_earn_by_pubkey (full credit). DON'T route through
-         * ledger_credit_supply_by_pubkey — that one applies the 35%
-         * smelt-station cut and is meant for raw ore → ingot deliveries
-         * where the destination station does the smelting work. Contract
-         * delivery and the consume-fallback below are pure trade
-         * settlements; the player gets the full quoted price.
-         *
-         * Bug history: until now the pubkey branch silently dropped 35%
-         * of every inter-station ingot delivery on the floor — the
-         * popup showed the full payout (`payout`) but the ledger only
-         * received `payout * 0.65`. Reported as "press S, popup says
-         * +152, wallet only sees +99." */
-        {
-            if (server_player_can_use_pubkey_persistence(sp)) {
-                ledger_earn_by_pubkey(st, sp->pubkey, payout);
-            } else {
-                ledger_earn(st, sp->session_token, payout);
-            }
-            sp->ship.stat_credits_earned += payout;
-            SIM_LOG("[sim] player %d sold cargo for %.0f cr at %s\n", sp->id, payout, st->name);
-            /* M7: populate the sell event with station + amount so the
-             * client's +$N popup and hint-bar batch actually animate dock
-             * deliveries (previously the event carried zero payload). Grade
-             * stays MINING_GRADE_COMMON — ingot deliveries don't have a
-             * per-unit grade at this call site. */
-            emit_event(w, (sim_event_t){
-                .type = SIM_EVENT_SELL, .player_id = sp->id,
-                .sell = { .station = sp->current_station,
-                          .grade = (uint8_t)MINING_GRADE_COMMON,
-                          .base_cr = (int)lroundf(payout),
-                          .bonus_cr = 0,
-                          .by_contract = sold_against_contract ? 1u : 0u }});
-        }
-    }
-    /* Surface a notice when the press did nothing — distinguish "no
-     * consumer here" from "consumer present but glutted". Fires for
-     * both selective and bulk sell so the player isn't left wondering
-     * why the dock ate their input silently. */
-    if (payout < 0.01f && direct_payout < 0.01f) {
-        if (tried_but_full) {
-            emit_event(w, (sim_event_t){
-                .type = SIM_EVENT_ORDER_REJECTED,
-                .player_id = sp->id,
-                .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
-            });
-        } else if (selective && pre_cargo > 0.01f
-                   && sp->ship.cargo[filter] > pre_cargo - 0.01f) {
-            emit_event(w, (sim_event_t){
-                .type = SIM_EVENT_ORDER_REJECTED,
-                .player_id = sp->id,
-                .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
-            });
-        }
-        (void)had_sellable_cargo;
-    }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
-     * resumes the default "deliver all" behavior. */
+     * resumes the default dock-selected behavior. */
     sp->input.service_sell_only = COMMODITY_COUNT;
     sp->input.service_sell_grade = MINING_GRADE_COUNT;
     sp->input.service_sell_one = false;
@@ -4157,6 +4527,7 @@ static void step_towed_pod_forces(world_t *w, server_player_t *sp, float dt) {
         }
         cargo_pod_t *pod = &w->cargo_pods[idx];
         pod->towed_by = (int8_t)sp->id;
+        cargo_pod_clear_module_tractor(pod);
         apply_pod_band_force(sp, pod, dt);
 
         resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
@@ -4177,11 +4548,13 @@ static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt)
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
         if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
+        if (cargo_pod_has_module_tractor(pod)) continue;
         if (tow_filter != COMMODITY_COUNT && pod->commodity != tow_filter) continue;
         if (ship_is_towing_pod(&sp->ship, i)) continue;
         if (v2_dist_sq(sp->ship.pos, pod->pos) > tr_sq) continue;
         sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)i;
         pod->towed_by = (int8_t)sp->id;
+        cargo_pod_clear_module_tractor(pod);
         emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                     .pickup = {.ore = (float)pod->quantity, .fragments = 1}});
     }
@@ -4252,6 +4625,1029 @@ static void release_towed_pods(world_t *w, server_player_t *sp) {
     memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
 }
 
+static bool station_hopper_matches_pod(const station_t *st,
+                                       int module_idx,
+                                       const cargo_pod_t *pod) {
+    if (!st || !pod || module_idx < 0 ||
+        module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    if (!pod->active || pod->shipment_id != 0 ||
+        pod->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+    if (!cargo_pod_has_exact_manifest(pod, pod->commodity)) return false;
+    const station_module_t *hopper = &st->modules[module_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER) return false;
+    return (commodity_t)hopper->commodity == pod->commodity;
+}
+
+static bool station_hopper_can_tractor_pod(const station_t *st,
+                                           int module_idx,
+                                           const cargo_pod_t *pod) {
+    return pod && pod->towed_by < 0 &&
+           station_hopper_matches_pod(st, module_idx, pod);
+}
+
+#define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
+#define CARGO_POD_BREAK_SPEED 360.0f
+#define CARGO_POD_BOUNCE_SCALE 1.65f
+
+static vec2 station_module_cargo_mouth(const station_t *st,
+                                       const station_module_t *module,
+                                       const cargo_pod_t *pod) {
+    if (!st || !module) return v2(0.0f, 0.0f);
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float len = v2_len(outward);
+    if (len > 0.001f) {
+        outward = v2_scale(outward, 1.0f / len);
+    } else {
+        outward = v2_from_angle(module_angle_ring(st, module->ring,
+                                                  module->slot));
+    }
+    float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
+    float holdout = STATION_MODULE_COL_RADIUS + pod_radius + 8.0f;
+    return v2_add(module_pos, v2_scale(outward, holdout));
+}
+
+static int cargo_pod_module_hold_slot(const world_t *w,
+                                      const cargo_pod_t *pod,
+                                      int station_idx,
+                                      int module_idx,
+                                      int *out_total) {
+    if (out_total) *out_total = 1;
+    if (!w || !pod || station_idx < 0 || module_idx < 0)
+        return 0;
+
+    int self = -1;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (&w->cargo_pods[i] == pod) {
+            self = i;
+            break;
+        }
+    }
+
+    int slot = 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *other = &w->cargo_pods[i];
+        int ps = -1;
+        int pm = -1;
+        if (!other->active ||
+            !cargo_pod_module_tractor_indices(other, &ps, &pm) ||
+            ps != station_idx || pm != module_idx) {
+            continue;
+        }
+        if (i == self) slot = total;
+        total++;
+    }
+
+    if (out_total) *out_total = total > 0 ? total : 1;
+    return slot;
+}
+
+static vec2 station_module_cargo_hold_anchor(const world_t *w,
+                                             const station_t *st,
+                                             int station_idx,
+                                             int module_idx,
+                                             const cargo_pod_t *pod,
+                                             vec2 base_anchor) {
+    if (!st || module_idx < 0 || module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return base_anchor;
+    }
+
+    const station_module_t *module = &st->modules[module_idx];
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float len = v2_len(outward);
+    if (len > 0.001f) {
+        outward = v2_scale(outward, 1.0f / len);
+    } else {
+        outward = v2_from_angle(module_angle_ring(st, module->ring,
+                                                  module->slot));
+    }
+    vec2 tangent = v2(-outward.y, outward.x);
+
+    int total = 1;
+    int slot = cargo_pod_module_hold_slot(w, pod, station_idx, module_idx,
+                                          &total);
+    enum { POD_HOLD_LANES = 4 };
+    int row = slot / POD_HOLD_LANES;
+    int lane = slot % POD_HOLD_LANES;
+    int remaining = total - row * POD_HOLD_LANES;
+    int lanes_this_row = remaining < POD_HOLD_LANES ? remaining : POD_HOLD_LANES;
+    if (lanes_this_row < 1) lanes_this_row = 1;
+
+    float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
+    float lane_spacing = pod_radius * 2.90f + 16.0f;
+    float row_spacing = pod_radius * 2.20f + 20.0f;
+    float centered_lane = (float)lane - ((float)lanes_this_row - 1.0f) * 0.5f;
+    vec2 spread = v2_add(v2_scale(tangent, centered_lane * lane_spacing),
+                         v2_scale(outward, (float)row * row_spacing));
+    return v2_add(base_anchor, spread);
+}
+
+static bool station_producer_can_tractor_output_pod(const station_t *st,
+                                                    int module_idx,
+                                                    const cargo_pod_t *pod) {
+    if (!st || !pod || module_idx < 0 ||
+        module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    if (pod->commodity >= COMMODITY_COUNT)
+        return false;
+    if (!cargo_pod_has_exact_manifest(pod, pod->commodity))
+        return false;
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold)
+        return false;
+    if (module->type == MODULE_FURNACE)
+        return false;
+    if (pod->manifest_count >= CARGO_POD_UNIT_CAPACITY)
+        return false;
+    const module_schema_t *schema = module_schema(module->type);
+    if (!schema || schema->kind != MODULE_KIND_PRODUCER)
+        return false;
+    return module_instance_output(module) == pod->commodity;
+}
+
+static bool station_module_can_tractor_shell_frame_pod(const station_t *st,
+                                                       int module_idx,
+                                                       const cargo_pod_t *pod) {
+    if (!st || !pod || module_idx < 0 ||
+        module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    if (!cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME)) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold) return false;
+    if (module->type == MODULE_FURNACE) return true;
+    const module_schema_t *schema = module_schema(module->type);
+    return schema && schema->kind == MODULE_KIND_PRODUCER;
+}
+
+static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b);
+
+static bool station_producer_input_hopper_for_pod(const station_t *st,
+                                                  int module_idx,
+                                                  const cargo_pod_t *pod,
+                                                  int *out_hopper,
+                                                  vec2 *out_anchor) {
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        module_idx < 0 || module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    if (!cargo_pod_has_exact_manifest(pod, pod->commodity)) return false;
+
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold || module->type == MODULE_FURNACE) return false;
+    const module_schema_t *schema = module_schema(module->type);
+    if (!schema || schema->kind != MODULE_KIND_PRODUCER) return false;
+
+    module_inputs_t req = module_instance_required_inputs(module);
+    bool wants = false;
+    for (int i = 0; i < req.count; i++) {
+        if (req.commodities[i] == pod->commodity) {
+            wants = true;
+            break;
+        }
+    }
+    if (!wants) return false;
+
+    int hopper_idx = station_find_hopper_for(st, pod->commodity);
+    if (hopper_idx < 0 || hopper_idx >= st->module_count ||
+        hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
+        (commodity_t)hopper->commodity != pod->commodity) {
+        return false;
+    }
+
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
+    if (v2_dist_sq(module_pos, hopper_pos) >
+        HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) {
+        return false;
+    }
+
+    if (out_hopper) *out_hopper = hopper_idx;
+    if (out_anchor) *out_anchor = v2_scale(v2_add(module_pos, hopper_pos), 0.5f);
+    return true;
+}
+
+static bool station_hopper_input_anchor_for_pod(const station_t *st,
+                                                int hopper_idx,
+                                                const cargo_pod_t *pod,
+                                                int *out_producer,
+                                                vec2 *out_anchor) {
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        hopper_idx < 0 || hopper_idx >= st->module_count ||
+        hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
+        (commodity_t)hopper->commodity != pod->commodity) {
+        return false;
+    }
+
+    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
+    int best_producer = -1;
+    float best_d = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    vec2 best_anchor = hopper_pos;
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        int matched_hopper = -1;
+        vec2 anchor = hopper_pos;
+        if (!station_producer_input_hopper_for_pod(st, m, pod,
+                                                   &matched_hopper,
+                                                   &anchor) ||
+            matched_hopper != hopper_idx) {
+            continue;
+        }
+        const station_module_t *module = &st->modules[m];
+        vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+        float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
+        if (d <= best_d) {
+            best_d = d;
+            best_producer = m;
+            best_anchor = anchor;
+        }
+    }
+
+    if (best_producer < 0) return false;
+    if (out_producer) *out_producer = best_producer;
+    if (out_anchor) *out_anchor = best_anchor;
+    return true;
+}
+
+static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b) {
+    vec2 ab = v2_sub(b, a);
+    float ab_sq = v2_len_sq(ab);
+    if (ab_sq <= 0.0001f) return v2_dist_sq(p, a);
+    float t = v2_dot(v2_sub(p, a), ab) / ab_sq;
+    t = clampf(t, 0.0f, 1.0f);
+    vec2 closest = v2_add(a, v2_scale(ab, t));
+    return v2_dist_sq(p, closest);
+}
+
+static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
+                                                const cargo_pod_t *pod,
+                                                int *out_station,
+                                                int *out_module) {
+    if (!w || !cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME))
+        return false;
+
+    const float beam_intake_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    const float shell_reach_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = beam_intake_sq;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+
+        for (int f = 0; f < st->module_count && f < MAX_MODULES_PER_STATION; f++) {
+            const station_module_t *furnace = &st->modules[f];
+            if (furnace->scaffold || furnace->type != MODULE_FURNACE) continue;
+            commodity_t ore = module_instance_input_ore(furnace);
+            if (ore >= COMMODITY_RAW_ORE_COUNT) continue;
+            vec2 furnace_pos = module_world_pos_ring(st, furnace->ring,
+                                                     furnace->slot);
+
+            int adj_rings[] = { furnace->ring + 1, furnace->ring - 1 };
+            for (int ri = 0; ri < 2; ri++) {
+                int adj = adj_rings[ri];
+                if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+                for (int h = 0; h < st->module_count && h < MAX_MODULES_PER_STATION; h++) {
+                    const station_module_t *ore_hopper = &st->modules[h];
+                    if (ore_hopper->scaffold ||
+                        ore_hopper->type != MODULE_HOPPER ||
+                        ore_hopper->ring != adj ||
+                        (commodity_t)ore_hopper->commodity != ore) {
+                        continue;
+                    }
+                    vec2 ore_hopper_pos = module_world_pos_ring(
+                        st, ore_hopper->ring, ore_hopper->slot);
+                    float pod_d = point_segment_dist_sq(pod->pos,
+                                                        furnace_pos,
+                                                        ore_hopper_pos);
+                    if (pod_d > best_d) continue;
+                    vec2 smelt_target = v2_scale(
+                        v2_add(furnace_pos, ore_hopper_pos), 0.5f);
+
+                    for (int fh = 0; fh < st->module_count &&
+                                     fh < MAX_MODULES_PER_STATION; fh++) {
+                        const station_module_t *frame_hopper = &st->modules[fh];
+                        if (frame_hopper->scaffold ||
+                            frame_hopper->type != MODULE_HOPPER ||
+                            (commodity_t)frame_hopper->commodity != COMMODITY_FRAME) {
+                            continue;
+                        }
+                        vec2 frame_hopper_pos = module_world_pos_ring(
+                            st, frame_hopper->ring, frame_hopper->slot);
+                        if (v2_dist_sq(frame_hopper_pos, smelt_target) >
+                            shell_reach_sq) {
+                            continue;
+                        }
+                        best_d = pod_d;
+                        best_station = s;
+                        best_module = fh;
+                    }
+                }
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_producer_output_module(const world_t *w,
+                                                  const cargo_pod_t *pod,
+                                                  int *out_station,
+                                                  int *out_module) {
+    if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
+        return false;
+    if (pod->manifest_count >= CARGO_POD_UNIT_CAPACITY)
+        return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_producer_can_tractor_output_pod(st, m, pod))
+                continue;
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_producer_input_module(const world_t *w,
+                                                 const cargo_pod_t *pod,
+                                                 int *out_station,
+                                                 int *out_module) {
+    if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
+        return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            int hopper_idx = -1;
+            if (!station_producer_input_hopper_for_pod(st, m, pod,
+                                                       &hopper_idx, NULL))
+                continue;
+            const station_module_t *module = &st->modules[m];
+            const station_module_t *hopper = &st->modules[hopper_idx];
+            vec2 module_pos = module_world_pos_ring(st, module->ring,
+                                                    module->slot);
+            vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                    hopper->slot);
+            float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_shell_frame_module(const world_t *w,
+                                              const cargo_pod_t *pod,
+                                              int *out_station,
+                                              int *out_module) {
+    if (!w || !cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME))
+        return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_module_can_tractor_shell_frame_pod(st, m, pod))
+                continue;
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_station_dock_module(const world_t *w,
+                                               const cargo_pod_t *pod,
+                                               int *out_station,
+                                               int *out_module) {
+    if (!w || !pod || pod->shipment_id != 0 ||
+        !cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        return false;
+    }
+    const float catch_speed = CARGO_POD_BREAK_SPEED * 0.85f;
+    if (v2_len_sq(pod->vel) > catch_speed * catch_speed)
+        return false;
+
+    const float acquire_sq =
+        CARGO_POD_DOCK_TRACTOR_RANGE * CARGO_POD_DOCK_TRACTOR_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        bool station_origin = pod->manifest_count > 0;
+        for (uint16_t u = 0; u < pod->manifest_count && station_origin; u++) {
+            if (pod->manifest_units[u].origin_station != (uint8_t)s)
+                station_origin = false;
+        }
+        if (!station_origin) continue;
+        bool hopper_claim_nearby = false;
+        for (int h = 0; h < st->module_count && h < MAX_MODULES_PER_STATION; h++) {
+            if (!station_hopper_matches_pod(st, h, pod)) continue;
+            vec2 hopper_pos = module_world_pos_ring(st, st->modules[h].ring,
+                                                    st->modules[h].slot);
+            if (v2_dist_sq(pod->pos, hopper_pos) <=
+                HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) {
+                hopper_claim_nearby = true;
+                break;
+            }
+        }
+        if (hopper_claim_nearby) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_dock_can_tractor_trade_pod(st, m, pod)) continue;
+            vec2 anchor = station_module_cargo_mouth(st, &st->modules[m], pod);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_black_market_dock_module(world_t *w,
+                                                    const cargo_pod_t *pod,
+                                                    int *out_station,
+                                                    int *out_module) {
+    if (!w || !pod || pod->shipment_id != 0 ||
+        !cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        return false;
+    }
+    const float acquire_sq =
+        CARGO_POD_DOCK_TRACTOR_RANGE * CARGO_POD_DOCK_TRACTOR_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if ((!station_exists(st) || st->scaffold || st->planned) ||
+            !station_policy_accepts_contract_bound_cargo(st) ||
+            black_market_pod_quote(st, pod) <= FLOAT_EPSILON) {
+            continue;
+        }
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            const station_module_t *module = &st->modules[m];
+            if (module->scaffold || module->type != MODULE_DOCK) continue;
+            vec2 anchor = station_module_cargo_mouth(st, module, pod);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_current_module_tractor_valid(const world_t *w,
+                                                   cargo_pod_t *pod,
+                                                   int *out_station,
+                                                   int *out_module,
+                                                   vec2 *out_anchor,
+                                                   int *out_pulse_module) {
+    int station_idx = -1;
+    int module_idx = -1;
+    if (!w || !pod ||
+        !cargo_pod_module_tractor_indices(pod, &station_idx, &module_idx)) {
+        return false;
+    }
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    const station_t *st = &w->stations[station_idx];
+    bool dock_owner = station_dock_can_tractor_trade_pod(st, module_idx, pod);
+    bool valid_owner = station_hopper_can_tractor_pod(st, module_idx, pod) ||
+                       dock_owner ||
+                       station_producer_input_hopper_for_pod(st, module_idx, pod,
+                                                             NULL, NULL) ||
+                       station_producer_can_tractor_output_pod(st, module_idx, pod) ||
+                       station_module_can_tractor_shell_frame_pod(st, module_idx, pod);
+    bool station_can_hold = station_is_active(st) ||
+        (dock_owner && station_provides_docking(st) &&
+         station_policy_accepts_contract_bound_cargo(st));
+    if (!station_can_hold || !valid_owner) {
+        cargo_pod_clear_module_tractor(pod);
+        return false;
+    }
+    vec2 anchor = station_module_cargo_mouth(st, &st->modules[module_idx],
+                                             pod);
+    int pulse_module = module_idx;
+    if (station_producer_input_hopper_for_pod(st, module_idx, pod,
+                                              NULL, &anchor)) {
+        pulse_module = module_idx;
+    } else {
+        int producer_idx = -1;
+        vec2 input_anchor = anchor;
+        if (station_hopper_input_anchor_for_pod(st, module_idx, pod,
+                                                &producer_idx,
+                                                &input_anchor)) {
+            anchor = input_anchor;
+            pulse_module = producer_idx;
+        }
+    }
+    anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
+                                              pod, anchor);
+    const station_module_t *held_module = &st->modules[module_idx];
+    float valid_range = (held_module->type == MODULE_DOCK)
+        ? CARGO_POD_DOCK_TRACTOR_RANGE
+        : HOPPER_PULL_RANGE;
+    if (v2_dist_sq(pod->pos, anchor) > valid_range * valid_range) {
+        cargo_pod_clear_module_tractor(pod);
+        return false;
+    }
+    if (out_station) *out_station = station_idx;
+    if (out_module) *out_module = module_idx;
+    if (out_anchor) *out_anchor = anchor;
+    if (out_pulse_module) *out_pulse_module = pulse_module;
+    return true;
+}
+
+static bool cargo_pod_try_acquire_module_tractor(world_t *w,
+                                                 cargo_pod_t *pod) {
+    if (!w || !pod || !pod->active || pod->towed_by >= 0 ||
+        cargo_pod_has_module_tractor(pod)) {
+        return false;
+    }
+    if (!cargo_pod_has_exact_manifest(pod, pod->commodity)) return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_hopper_can_tractor_pod(st, m, pod)) continue;
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+    if (best_station < 0 || best_module < 0) {
+        if (!cargo_pod_find_producer_input_module(w, pod,
+                                                  &best_station,
+                                                  &best_module)) {
+                if (!cargo_pod_find_furnace_shell_hopper(w, pod,
+                                                         &best_station,
+                                                         &best_module)) {
+                    if (!cargo_pod_find_producer_output_module(w, pod,
+                                                               &best_station,
+                                                               &best_module)) {
+                        if (!cargo_pod_find_shell_frame_module(w, pod,
+                                                               &best_station,
+                                                               &best_module)) {
+                            if (!cargo_pod_find_station_dock_module(w, pod,
+                                                                    &best_station,
+                                                                    &best_module)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+        }
+    }
+    cargo_pod_set_module_tractor(pod, best_station, best_module);
+    return true;
+}
+
+static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
+                                                     int pod_idx,
+                                                     cargo_pod_t *pod) {
+    if (!w || !pod || !pod->active || pod_idx < 0 ||
+        pod_idx >= MAX_CARGO_PODS || pod->towed_by < 0 ||
+        pod->towed_by >= MAX_PLAYERS) {
+        return false;
+    }
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_d = acquire_sq;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_hopper_matches_pod(st, m, pod)) continue;
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d <= best_d) {
+                best_d = d;
+                best_station = s;
+                best_module = m;
+            }
+        }
+    }
+    if (best_station < 0 || best_module < 0) {
+        if (!cargo_pod_find_producer_input_module(w, pod,
+                                                  &best_station,
+                                                  &best_module)) {
+            if (!cargo_pod_find_furnace_shell_hopper(w, pod,
+                                                     &best_station,
+                                                     &best_module)) {
+                if (!cargo_pod_find_producer_output_module(w, pod,
+                                                           &best_station,
+                                                           &best_module)) {
+                    if (!cargo_pod_find_shell_frame_module(w, pod,
+                                                           &best_station,
+                                                           &best_module)) {
+                        if (!cargo_pod_find_black_market_dock_module(
+                                w, pod, &best_station, &best_module)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    server_player_t *sp = &w->players[pod->towed_by];
+    station_t *st = &w->stations[best_station];
+    if (!station_intake_pay_for_pod(w, sp, st, best_station, pod))
+        return false;
+
+    bool removed = false;
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        if (sp->ship.towed_pods[t] == pod_idx) {
+            remove_towed_pod_slot(&sp->ship, t);
+            removed = true;
+            break;
+        }
+    }
+    if (!removed) return false;
+
+    pod->towed_by = -1;
+    cargo_pod_set_module_tractor(pod, best_station, best_module);
+    if (best_station >= 0 && best_station < MAX_STATIONS &&
+        best_module >= 0 && best_module < MAX_MODULES_PER_STATION) {
+        w->stations[best_station].module_active_pulse[best_module] = 1.0f;
+    }
+    return true;
+}
+
+void step_station_cargo_pod_tractors(world_t *w, float dt) {
+    if (!w) return;
+    static const tractor_beam_t HOPPER_POD_TRACTOR = {
+        .rest_length     = 0.0f,
+        .pull_strength   = 0.0f,
+        .push_strength   = 0.0f,
+        .pull_constant   = HOPPER_PULL_ACCEL * 3.60f,
+        .push_constant   = 0.0f,
+        .range           = CARGO_POD_DOCK_TRACTOR_RANGE,
+        .axial_damping   = 9.0f,
+        .tangent_damping = 3.6f,
+        .speed_cap       = 320.0f,
+        .falloff         = TRACTOR_FALLOFF_LINEAR,
+    };
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        if (pod->towed_by >= 0) {
+            if (!cargo_pod_try_handoff_to_matching_hopper(w, i, pod)) {
+                cargo_pod_clear_module_tractor(pod);
+                continue;
+            }
+        }
+        if (!cargo_pod_has_module_tractor(pod))
+            (void)cargo_pod_try_acquire_module_tractor(w, pod);
+
+        int station_idx = -1;
+        int module_idx = -1;
+        int pulse_module = -1;
+        vec2 anchor = pod->pos;
+        if (!cargo_pod_current_module_tractor_valid(
+                w, pod, &station_idx, &module_idx, &anchor, &pulse_module)) {
+            continue;
+        }
+        if (dt > 0.0f) {
+            tractor_anchor_t src = {
+                .pos = anchor, .vel = NULL, .inv_mass = 0.0f
+            };
+            tractor_anchor_t tgt = {
+                .pos = pod->pos, .vel = &pod->vel, .inv_mass = 1.0f
+            };
+            (void)tractor_apply(&src, &tgt, &HOPPER_POD_TRACTOR, dt);
+            if (station_idx >= 0 && station_idx < MAX_STATIONS &&
+                pulse_module >= 0 && pulse_module < MAX_MODULES_PER_STATION) {
+                w->stations[station_idx].module_active_pulse[pulse_module] = 1.0f;
+            }
+        }
+    }
+}
+
+static void clear_cargo_pod_and_tow_refs(world_t *w, int pod_idx) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        ship_t *ship = &w->players[p].ship;
+        for (int t = ship->towed_pod_count - 1; t >= 0; t--) {
+            if (ship->towed_pods[t] == pod_idx)
+                remove_towed_pod_slot(ship, t);
+        }
+    }
+    memset(&w->cargo_pods[pod_idx], 0, sizeof(w->cargo_pods[pod_idx]));
+    w->cargo_pods[pod_idx].towed_by = -1;
+}
+
+static bool resolve_cargo_pod_circle_collision(world_t *w,
+                                               int pod_idx,
+                                               vec2 center,
+                                               float radius,
+                                               vec2 obstacle_vel) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active) return false;
+
+    float min_dist = pod->radius + radius;
+    vec2 delta = v2_sub(pod->pos, center);
+    float dist_sq = v2_len_sq(delta);
+    if (dist_sq >= min_dist * min_dist) return false;
+
+    float dist = v2_len(delta);
+    if (dist < 0.001f) {
+        dist = 0.001f;
+        delta = v2(1.0f, 0.0f);
+    }
+    vec2 normal = v2_scale(delta, 1.0f / dist);
+    float closing = -v2_dot(v2_sub(pod->vel, obstacle_vel), normal);
+    if (closing > CARGO_POD_BREAK_SPEED) {
+        clear_cargo_pod_and_tow_refs(w, pod_idx);
+        return true;
+    }
+
+    float overlap = min_dist - dist;
+    pod->pos = v2_add(pod->pos, v2_scale(normal, overlap + 1.0f));
+    float vel_along = v2_dot(v2_sub(pod->vel, obstacle_vel), normal);
+    if (vel_along < 0.0f)
+        pod->vel = v2_sub(pod->vel, v2_scale(normal,
+                                             vel_along * CARGO_POD_BOUNCE_SCALE));
+    return false;
+}
+
+static bool cargo_pod_near_corridor_module(const cargo_pod_t *pod,
+                                           const station_geom_t *geom,
+                                           const geom_corridor_t *cor) {
+    if (!pod || !geom || !cor) return false;
+    vec2 delta = v2_sub(pod->pos, geom->center);
+    float dist = v2_len(delta);
+    if (fabsf(dist - cor->ring_radius) >=
+        STATION_CORRIDOR_HW + pod->radius + STATION_MODULE_COL_RADIUS) {
+        return false;
+    }
+
+    float pod_ang = fixp_atan2f(delta.y, delta.x);
+    for (int mi = 0; mi < geom->circle_count; mi++) {
+        const geom_circle_t *circle = &geom->circles[mi];
+        if (circle->ring != cor->ring) continue;
+        float angular_size = (cor->ring_radius > 1.0f)
+            ? (STATION_MODULE_COL_RADIUS + pod->radius) / cor->ring_radius
+            : 0.0f;
+        if (fabsf(wrap_angle(pod_ang - circle->angle)) < angular_size)
+            return true;
+    }
+    return false;
+}
+
+static bool resolve_cargo_pod_corridor_collision(world_t *w,
+                                                 int pod_idx,
+                                                 vec2 center,
+                                                 float ring_r,
+                                                 float angle_a,
+                                                 float arc_delta,
+                                                 vec2 obstacle_vel) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active) return false;
+
+    vec2 delta = v2_sub(pod->pos, center);
+    float dist = v2_len(delta);
+    if (dist < 1.0f) return false;
+
+    float r_inner = ring_r - STATION_CORRIDOR_HW - pod->radius;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + pod->radius;
+    if (dist <= r_inner || dist >= r_outer) return false;
+
+    float pod_angle = fixp_atan2f(delta.y, delta.x);
+    float angular_margin = fixp_asinf(fminf(pod->radius / dist, 1.0f));
+    float expanded_start = angle_a - angular_margin;
+    float expanded_delta = arc_delta + 2.0f * angular_margin;
+    if (angle_in_arc(pod_angle, expanded_start, expanded_delta) < 0.0f)
+        return false;
+
+    vec2 radial = v2_scale(delta, 1.0f / dist);
+    vec2 push_normal;
+    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
+    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
+    if (d_inner < d_outer) {
+        pod->pos = v2_add(center, v2_scale(radial,
+            ring_r - STATION_CORRIDOR_HW - pod->radius - 1.0f));
+        push_normal = v2_scale(radial, -1.0f);
+    } else {
+        pod->pos = v2_add(center, v2_scale(radial,
+            ring_r + STATION_CORRIDOR_HW + pod->radius + 1.0f));
+        push_normal = radial;
+    }
+
+    float closing = -v2_dot(v2_sub(pod->vel, obstacle_vel), push_normal);
+    if (closing > CARGO_POD_BREAK_SPEED) {
+        clear_cargo_pod_and_tow_refs(w, pod_idx);
+        return true;
+    }
+    float vel_along = v2_dot(v2_sub(pod->vel, obstacle_vel), push_normal);
+    if (vel_along < 0.0f)
+        pod->vel = v2_sub(pod->vel, v2_scale(push_normal,
+                                             vel_along * CARGO_POD_BOUNCE_SCALE));
+    return false;
+}
+
+static bool resolve_cargo_pod_station_collisions(world_t *w, int pod_idx) {
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active)
+        return false;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+        if (geom.has_core) {
+            if (resolve_cargo_pod_circle_collision(
+                    w, pod_idx, geom.core.center, geom.core.radius,
+                    st->jostle_vel)) {
+                return true;
+            }
+            if (!w->cargo_pods[pod_idx].active) return true;
+        }
+        for (int i = 0; i < geom.circle_count; i++) {
+            if (resolve_cargo_pod_circle_collision(
+                    w, pod_idx, geom.circles[i].center,
+                    geom.circles[i].radius, st->jostle_vel)) {
+                return true;
+            }
+            if (!w->cargo_pods[pod_idx].active) return true;
+        }
+        for (int i = 0; i < geom.corridor_count; i++) {
+            const geom_corridor_t *cor = &geom.corridors[i];
+            if (cargo_pod_near_corridor_module(pod, &geom, cor)) continue;
+            if (resolve_cargo_pod_corridor_collision(
+                    w, pod_idx, geom.center, cor->ring_radius,
+                    cor->angle_a, cor->arc_delta, st->jostle_vel)) {
+                return true;
+            }
+            if (!w->cargo_pods[pod_idx].active) return true;
+        }
+    }
+    return false;
+}
+
+static bool resolve_cargo_pod_asteroid_collisions(world_t *w, int pod_idx) {
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active) return false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (resolve_cargo_pod_circle_collision(w, pod_idx, a->pos,
+                                               a->radius, a->vel)) {
+            return true;
+        }
+        if (!w->cargo_pods[pod_idx].active) return true;
+    }
+    return false;
+}
+
+static void resolve_cargo_pod_pair_collisions(world_t *w) {
+    if (!w) return;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            cargo_pod_t *a = &w->cargo_pods[i];
+            if (!a->active) continue;
+            for (int j = i + 1; j < MAX_CARGO_PODS; j++) {
+                cargo_pod_t *b = &w->cargo_pods[j];
+                if (!b->active) continue;
+
+                float min_dist = a->radius + b->radius + 8.0f;
+                vec2 ab = v2_sub(b->pos, a->pos);
+                float d_sq = v2_len_sq(ab);
+                if (d_sq >= min_dist * min_dist) continue;
+
+                float d = 0.0f;
+                vec2 n = v2(1.0f, 0.0f);
+                if (d_sq > 0.1f) {
+                    d = fixp_sqrtf(d_sq);
+                    n = v2_scale(ab, 1.0f / d);
+                } else {
+                    float angle = (float)((i * 73 + j * 41 + pass * 29) % 360) *
+                                  (PI_F / 180.0f);
+                    n = v2_from_angle(angle);
+                }
+
+                float overlap = min_dist - d;
+                vec2 shift = v2_scale(n, overlap * 0.5f + 0.75f);
+                a->pos = v2_sub(a->pos, shift);
+                b->pos = v2_add(b->pos, shift);
+
+                float closing = v2_dot(v2_sub(b->vel, a->vel), n);
+                if (closing < 0.0f) {
+                    vec2 impulse = v2_scale(n, -closing * 0.62f);
+                    a->vel = v2_sub(a->vel, impulse);
+                    b->vel = v2_add(b->vel, impulse);
+                }
+            }
+        }
+    }
+}
+
 static void step_cargo_pods(world_t *w, float dt) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
@@ -4260,12 +5656,20 @@ static void step_cargo_pods(world_t *w, float dt) {
         pod->vel = v2_scale(pod->vel, 1.0f / (1.0f + 0.35f * dt));
         pod->rotation += pod->spin * dt;
         pod->age += dt;
-        if (pod->quantity == 0 ||
-            (pod->age > 30.0f && signal_strength_at(w, pod->pos) <= 0.001f)) {
-            memset(pod, 0, sizeof(*pod));
-            pod->towed_by = -1;
+        if (pod->quantity == 0) {
+            if (!cargo_pod_fold_shell_to_frame(pod))
+                clear_cargo_pod_and_tow_refs(w, i);
+            continue;
+        }
+        if (resolve_cargo_pod_station_collisions(w, i) ||
+            resolve_cargo_pod_asteroid_collisions(w, i)) {
+            continue;
+        }
+        if (pod->age > 30.0f && signal_strength_at(w, pod->pos) <= 0.001f) {
+            clear_cargo_pod_and_tow_refs(w, i);
         }
     }
+    resolve_cargo_pod_pair_collisions(w);
 }
 
 /* ---- Scaffold tow physics ---- */
@@ -4605,11 +6009,11 @@ static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
     }
 }
 
-/* Find scan target (station module, NPC, or player) along beam ray.
+/* Find scan target (station module, cargo pod, NPC, or player) along beam ray.
  * Returns true if a scan target was found, populating sp->scan_* fields. */
 static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 forward) {
     float best_dist = MINING_RANGE;
-    sp->scan_target_type = 0;
+    sp->scan_target_type = INSPECT_TARGET_NONE;
     sp->scan_target_index = -1;
     sp->scan_module_index = -1;
 
@@ -4684,6 +6088,24 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         }
     }
 
+    /* Check towable cargo pods. Crates are deliberately small on-screen, so
+     * give the scan ray a slight practical margin while still ranking by
+     * actual hit distance. */
+    for (int ci = 0; ci < MAX_CARGO_PODS; ci++) {
+        const cargo_pod_t *pod = &w->cargo_pods[ci];
+        if (!pod->active) continue;
+        float scan_r = fmaxf(10.0f, pod->radius * 0.95f + 4.0f);
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, pod->pos, scan_r, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = INSPECT_TARGET_CARGO_POD;
+            sp->scan_target_index = ci;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
+        }
+    }
+
     /* Check NPC ships */
     for (int ni = 0; ni < MAX_NPC_SHIPS; ni++) {
         const npc_ship_t *npc = &w->npc_ships[ni];
@@ -4716,7 +6138,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         }
     }
 
-    return sp->scan_target_type != 0;
+    return sp->scan_target_type != INSPECT_TARGET_NONE;
 }
 
 static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward, float cached_signal) {
@@ -5175,22 +6597,15 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             SIM_LOG("[sim] player %d delivered build materials for %.0f cr at %s\n",
                     sp->id, build_payout, docked_st->name);
         }
-        float towed_payout = try_sell_towed_pods(
-            w, sp, docked_st, sp->current_station, filter,
-            intent->service_sell_grade, intent->service_sell_one);
-        if (intent->service_sell_one && towed_payout > 0.01f) {
-            sp->input.service_sell_only = COMMODITY_COUNT;
-            sp->input.service_sell_grade = MINING_GRADE_COUNT;
-            sp->input.service_sell_one = false;
-        } else {
-            try_sell_station_cargo(w, sp);
-        }
+        try_sell_station_cargo(w, sp);
     }
     else if (intent->service_repair) try_repair_ship(w, sp);
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);
     else if (intent->upgrade_tractor)try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_TRACTOR);
-    /* Buy ingots from station inventory */
+    /* Buy visible station-owned crates. Trade is custody transfer: if no
+     * dock-held pod exists, there is nothing physical for the dock to hand
+     * to the ship. */
     if (intent->buy_product && !w->player_only_mode) {
         commodity_t c = intent->buy_commodity;
         SIM_LOG("[buy] player %d req c=%d grade=%d at station %d (produces=%d)\n",
@@ -5198,156 +6613,12 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 sp->current_station,
                 (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) ?
                     station_produces(docked_st, c) : -1);
-        if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT
-            && station_produces(docked_st, c)) {
-            /* Manifest is authoritative for finished goods. Reading the
-             * float here previously rejected buys that the picker had
-             * advertised. Named ingots are deliberately excluded from
-             * generic BUY_PRODUCT so the market cannot transfer a prefix-
-             * premium collectible at bulk price; those use BUY_INGOT. */
-            float available = (float)manifest_count_market_buy_units(
-                &docked_st->manifest, c, intent->buy_grade);
-            float free_volume = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            float vol = commodity_volume(c);
-            float space = (vol > FLOAT_EPSILON) ? (free_volume / vol) : free_volume;
-            float price_base = station_sell_price(docked_st, c);
-            /* Grade-aware pricing: if the client picked a specific-grade row
-             * in TRADE the row's displayed price was base * grade_multiplier,
-             * so charge the same here. Sentinel MINING_GRADE_COUNT keeps the
-             * legacy any-grade path at 1.0x. */
-            float grade_mult = (intent->buy_grade < MINING_GRADE_COUNT)
-                ? mining_payout_multiplier((mining_grade_t)intent->buy_grade)
-                : 1.0f;
-            float price_per = price_base * grade_mult;
-            /* One unit per intent. The TRADE picker advertises a row
-             * as "buy 1 frame for $X" — the old "buy as much as you
-             * can afford" behavior could drain a station's stock and
-             * the player's wallet from a single keypress, charging the
-             * row's grade-multiplied price across the whole quantity
-             * even though manifest_transfer falls back to other grades
-             * once the named ones run out. Bulk-buy can come back as
-             * an explicit `buy_quantity` intent if/when needed. */
-            /* Balance and spend MUST use the same identity the SELL path
-             * credits — pubkey when verified (the real Ed25519 entry),
-             * else the session-token pseudokey. Mismatch here was
-             * the "client predicts buy, server snaps it back" bug:
-             * earnings landed on the pubkey ledger entry but the buy
-             * path was reading the (empty) session-token entry. */
-            bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
-            float bal = pubkey_ledger
-                ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
-                : ledger_balance(docked_st, sp->session_token);
-            bool neural_bot_credit =
-                (sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
-                 sp->server_brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) &&
-                sp->autopilot_mode != 0 &&
-                sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_BUY &&
-                sp->autopilot_cargo == c &&
-                sp->autopilot_station_target >= 0 &&
-                sp->autopilot_station_target < MAX_STATIONS;
-            SIM_LOG("[buy-bal] player %d at station %d: pubkey_ledger=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
-                    sp->id, sp->current_station, pubkey_ledger ? 1 : 0,
-                    sp->pubkey[0], sp->pubkey[1], sp->pubkey[2], sp->pubkey[3],
-                    bal, docked_st->ledger_count);
-            for (int li = 0; li < docked_st->ledger_count; li++) {
-                const uint8_t *lpk = docked_st->ledger[li].player_pubkey;
-                (void)lpk;
-                SIM_LOG("[buy-bal]   ledger[%d] pk=%02x%02x%02x%02x bal=%.2f\n",
-                        li, lpk[0], lpk[1], lpk[2], lpk[3],
-                        docked_st->ledger[li].balance);
-            }
-            float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
-            /* Per-press unit cap scales by commodity density: standard
-             * goods (vol = 1.0) buy 1 per press; dense goods like
-             * repair kits (vol = 0.1) buy 10 per press so a single
-             * keystroke fills one cargo unit's worth. */
-            int per_press_cap = (vol > FLOAT_EPSILON)
-                ? (int)lroundf(1.0f / vol) : 1;
-            if (per_press_cap < 1) per_press_cap = 1;
-            if (neural_bot_credit)
-                afford = (float)per_press_cap;
-            float amount = fminf(fminf(fminf(available, space), afford), (float)per_press_cap);
-            float total_cost = amount * price_per;
-            SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
-                    available, space, price_per, bal, afford, amount);
-            /* Finished goods: manifest is authoritative. Move the unit
-             * first, then charge for what actually moved. Prevents the
-             * silent-drift bug where float said "got 1 frame" but the
-             * manifest had nothing to give and the player paid anyway. */
-            bool finished = (c >= COMMODITY_RAW_ORE_COUNT);
-            int whole = (int)floorf(amount + 0.0001f);
-            int moved = 0;
-            float charge_amount = amount;
-            float charge_cost = total_cost;
-            if (finished) {
-                if (whole <= 0) {
-                    SIM_LOG("[buy] REJECT: finished good but whole=%d (amount=%.2f)\n",
-                            whole, amount);
-                    return;
-                }
-                moved = transfer_station_to_ship_market_buy(
-                    docked_st, &sp->ship, c, intent->buy_grade, whole);
-                if (moved <= 0) {
-                    SIM_LOG("[buy] REJECT: manifest had no transferable unit for c=%d\n", (int)c);
-                    return;
-                }
-                charge_amount = (float)moved;
-                charge_cost = charge_amount * price_per;
-            }
-            bool spent = false;
-            if (charge_amount > 0.01f) {
-                if (neural_bot_credit) {
-                    if (pubkey_ledger) {
-                        ledger_force_debit_by_pubkey(docked_st, sp->pubkey,
-                                                     charge_cost, &sp->ship);
-                    } else {
-                        ledger_force_debit(docked_st, sp->session_token,
-                                           charge_cost, &sp->ship);
-                    }
-                    spent = true;
-                } else {
-                    spent = pubkey_ledger
-                        ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
-                        : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
-                }
-            }
-            if (spent) {
-                if (finished) {
-                    sync_ship_finished_cargo(&sp->ship, c);
-                    sync_station_finished_inventory(docked_st, c);
-                } else {
-                    sp->ship.cargo[c] += charge_amount;
-                    docked_st->_inventory_cache[c] -= charge_amount;
-                    if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
-                }
-                if (!finished && whole > 0) {
-                    moved = transfer_station_to_ship_by_commodity_ex(
-                        docked_st, &sp->ship, c, intent->buy_grade, whole);
-                }
-                emit_event(w, (sim_event_t){
-                    .type = SIM_EVENT_BUY, .player_id = sp->id,
-                    .buy = { .station = sp->current_station,
-                             .commodity = (uint8_t)c,
-                             .grade = (uint8_t)intent->buy_grade,
-                             .cost = (int)lroundf(charge_cost),
-                             .quantity = (uint16_t)lroundf(charge_amount) }});
-                SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
-                        sp->id, charge_amount, c, charge_cost, moved);
-            } else if (charge_amount > 0.01f) {
-                if (finished && moved > 0) {
-                    /* Roll back the manifest move — payment failed. */
-                    (void)transfer_ship_tail_to_station(&sp->ship,
-                                                        docked_st, moved);
-                }
-                SIM_LOG("[buy] REJECT: ledger_spend failed (bal=%.2f cost=%.2f)\n",
-                        bal, total_cost);
-            } else {
-                SIM_LOG("[buy] REJECT: amount=%.2f too small (avail=%.2f space=%.2f afford=%.0f)\n",
-                        amount, available, space, afford);
-            }
-        } else {
-            SIM_LOG("[buy] REJECT: c=%d out of range or station doesn't produce\n", (int)c);
-        }
+        int physical_pod_buy = try_buy_station_market_pod(
+            w, sp, docked_st, sp->current_station, c, intent->buy_grade,
+            intent->buy_station_pod, intent->buy_station_pod_index);
+        if (physical_pod_buy == 0)
+            SIM_LOG("[buy] REJECT: no station-owned %s pod at %s dock\n",
+                    commodity_short_name(c), docked_st->name);
     }
 }
 
@@ -5567,44 +6838,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             station_t *nearby_st = &w->stations[sp->nearby_station];
             if (sp->input.buy_product) {
                 commodity_t c = sp->input.buy_commodity;
-                if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
-                    float available = (float)manifest_count_market_buy_units(
-                        &nearby_st->manifest, c, sp->input.buy_grade);
-                    float base = station_sell_price(nearby_st, c);
-                    float gmult = (sp->input.buy_grade < MINING_GRADE_COUNT)
-                        ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
-                        : 1.0f;
-                    float price_per = base * gmult;
-                    /* Same pubkey-vs-session-token identity rule as the
-                     * docked-buy path. */
-                    bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
-                    float nbal = pubkey_ledger
-                        ? ledger_balance_by_pubkey(nearby_st, sp->pubkey)
-                        : ledger_balance(nearby_st, sp->session_token);
-                    float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
-                    float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
-                    if (amount > FLOAT_EPSILON) {
-                        int whole = (int)floorf(amount + 0.0001f);
-                        int moved = transfer_station_to_ship_market_buy(
-                            nearby_st, &sp->ship, c, sp->input.buy_grade, whole);
-                        if (moved <= 0) {
-                            sp->input.buy_product = false;
-                            return;
-                        }
-                        float cost = (float)moved * price_per;
-                        bool spent = pubkey_ledger
-                            ? ledger_spend_by_pubkey(nearby_st, sp->pubkey, cost, &sp->ship)
-                            : ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
-                        if (spent) {
-                            sync_ship_finished_cargo(&sp->ship, c);
-                            sync_station_finished_inventory(nearby_st, c);
-                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
-                        } else {
-                            (void)transfer_ship_tail_to_station(&sp->ship,
-                                                                nearby_st, moved);
-                        }
-                    }
-                }
+                int physical_pod_buy = try_buy_station_market_pod(
+                    w, sp, nearby_st, sp->nearby_station, c,
+                    sp->input.buy_grade, sp->input.buy_station_pod,
+                    sp->input.buy_station_pod_index);
+                if (physical_pod_buy == 0)
+                    SIM_LOG("[buy] REJECT: no station-owned %s pod near %s\n",
+                            commodity_short_name(c), nearby_st->name);
             }
             /* Repair is now passive while docked — no laser interaction needed */
         }
@@ -5674,7 +6914,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             step_station_interaction_system(w, sp, &sp->input);
     }
 
-    /* Hail: collect pending credits from nearby station(s) */
+    /* Hail: contact nearby station(s) and report station-local balance. */
     if (sp->input.hail) {
         handle_hail(w, sp);
     }
@@ -5861,6 +7101,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.buy_scaffold_kit = false;
     sp->input.commission_ship = false;
     sp->input.buy_product = false;
+    sp->input.buy_station_pod = false;
     sp->input.hail = false;
     sp->input.release_tow = false;
     sp->input.add_plan = false;
@@ -6571,6 +7812,203 @@ static int find_nascent_scaffold(const world_t *w, int station_idx) {
                                           station_idx);
 }
 
+static void clear_loose_cargo_pod(cargo_pod_t *pod) {
+    if (!pod) return;
+    memset(pod, 0, sizeof(*pod));
+    pod->towed_by = -1;
+}
+
+bool cargo_pod_take_manifest_unit(cargo_pod_t *pod,
+                                  commodity_t commodity,
+                                  cargo_unit_t *out_unit) {
+    if (!out_unit || !cargo_pod_has_exact_manifest(pod, commodity))
+        return false;
+    uint16_t unit_idx = (uint16_t)(pod->manifest_count - 1u);
+    *out_unit = pod->manifest_units[unit_idx];
+    memset(&pod->manifest_units[unit_idx], 0,
+           sizeof(pod->manifest_units[unit_idx]));
+    pod->manifest_count--;
+    pod->quantity--;
+    if (pod->manifest_count == 0 &&
+        !cargo_pod_fold_shell_to_frame(pod))
+        clear_loose_cargo_pod(pod);
+    return true;
+}
+
+static bool shipyard_hopper_serves_yard(const station_t *st,
+                                        int hopper_idx,
+                                        commodity_t material,
+                                        int specific_yard_idx) {
+    if (!st || hopper_idx < 0 || hopper_idx >= st->module_count ||
+        material >= COMMODITY_COUNT) {
+        return false;
+    }
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    if (hopper->scaffold || hopper->type != MODULE_HOPPER) return false;
+    if ((commodity_t)hopper->commodity != material) return false;
+    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
+    float reach_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int i = 0; i < st->module_count; i++) {
+        if (specific_yard_idx >= 0 && i != specific_yard_idx) continue;
+        const station_module_t *yard = &st->modules[i];
+        if (yard->scaffold || yard->type != MODULE_SHIPYARD) continue;
+        module_inputs_t req = module_required_inputs(MODULE_SHIPYARD);
+        bool accepts = false;
+        for (int r = 0; r < req.count; r++) {
+            if (req.commodities[r] == material) {
+                accepts = true;
+                break;
+            }
+        }
+        if (!accepts) continue;
+        vec2 yard_pos = module_world_pos_ring(st, yard->ring, yard->slot);
+        if (v2_dist_sq(hopper_pos, yard_pos) <= reach_sq)
+            return true;
+    }
+    return false;
+}
+
+static int shipyard_feed_nascent_from_loose_pods(world_t *w,
+                                                 const station_t *st,
+                                                 int station_idx,
+                                                 int yard_idx,
+                                                 const scaffold_t *nascent,
+                                                 commodity_t material,
+                                                 int max_units) {
+    if (!w || !st || !nascent || material >= COMMODITY_COUNT ||
+        max_units <= 0) {
+        return 0;
+    }
+    (void)nascent;
+    int accepted = 0;
+    for (int i = 0; i < MAX_CARGO_PODS && accepted < max_units; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!cargo_pod_has_exact_manifest(pod, material)) continue;
+        if (pod->towed_by >= 0) continue;
+        bool staged = false;
+        for (int h = 0; h < st->module_count; h++) {
+            const station_module_t *hopper = &st->modules[h];
+            if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+            if ((commodity_t)hopper->commodity != material) continue;
+            if (!shipyard_hopper_serves_yard(st, h, material, yard_idx))
+                continue;
+            if (cargo_pod_is_tractored_by_module(pod, station_idx, h)) {
+                staged = true;
+                break;
+            }
+        }
+        if (!staged) continue;
+        while (accepted < max_units &&
+               cargo_pod_has_exact_manifest(pod, material)) {
+            cargo_unit_t unit = {0};
+            if (!cargo_pod_take_manifest_unit(pod, material, &unit))
+                break;
+            accepted++;
+        }
+    }
+    return accepted;
+}
+
+static bool shipyard_material_pod_staged_at_hopper(const station_t *st,
+                                                   int station_idx,
+                                                   const cargo_pod_t *pod,
+                                                   commodity_t material,
+                                                   int yard_idx,
+                                                   bool allow_player_tow) {
+    if (!st || !pod || material >= COMMODITY_COUNT) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != material) continue;
+        if (!shipyard_hopper_serves_yard(st, i, material, yard_idx)) continue;
+        if (cargo_pod_is_tractored_by_module(pod, station_idx, i))
+            return true;
+        if (allow_player_tow && pod->towed_by >= 0) {
+            vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                    hopper->slot);
+            if (v2_dist_sq(pod->pos, hopper_pos) <=
+                HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE)
+                return true;
+        }
+    }
+    return false;
+}
+
+static int shipyard_ship_tow_slot_for_pod(const ship_t *ship, int pod_idx) {
+    if (!ship || pod_idx < 0) return -1;
+    for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+        if (ship->towed_pods[t] == pod_idx) return t;
+    }
+    return -1;
+}
+
+static int shipyard_staged_material_count(const world_t *w,
+                                          const station_t *st,
+                                          int station_idx,
+                                          const ship_t *ship,
+                                          commodity_t c,
+                                          bool include_towed_pods,
+                                          int yard_idx) {
+    if (!w || !st || c >= COMMODITY_COUNT) return 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!cargo_pod_has_exact_manifest(pod, c)) continue;
+        int tow_slot = shipyard_ship_tow_slot_for_pod(ship, i);
+        bool allow_player_tow = pod->towed_by >= 0 && include_towed_pods &&
+                                tow_slot >= 0;
+        if (pod->towed_by >= 0 &&
+            (!include_towed_pods ||
+             tow_slot < 0)) {
+            continue;
+        }
+        if (!shipyard_material_pod_staged_at_hopper(st, station_idx, pod, c,
+                                                    yard_idx,
+                                                    allow_player_tow))
+            continue;
+        total += (int)pod->manifest_count;
+    }
+    return total;
+}
+
+static int shipyard_take_staged_material_units(world_t *w,
+                                               const station_t *st,
+                                               int station_idx,
+                                               ship_t *ship,
+                                               commodity_t c,
+                                               int needed,
+                                               bool include_towed_pods,
+                                               int yard_idx) {
+    if (!w || !st || c >= COMMODITY_COUNT || needed <= 0) return 0;
+    int taken = 0;
+    for (int i = 0; i < MAX_CARGO_PODS && taken < needed; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!cargo_pod_has_exact_manifest(pod, c)) continue;
+        int tow_slot = shipyard_ship_tow_slot_for_pod(ship, i);
+        bool allow_player_tow = pod->towed_by >= 0 && include_towed_pods &&
+                                tow_slot >= 0;
+        if (pod->towed_by >= 0 &&
+            (!include_towed_pods || tow_slot < 0)) {
+            continue;
+        }
+        if (!shipyard_material_pod_staged_at_hopper(st, station_idx, pod, c,
+                                                    yard_idx,
+                                                    allow_player_tow))
+            continue;
+        while (taken < needed && cargo_pod_has_exact_manifest(pod, c)) {
+            cargo_unit_t unit = {0};
+            if (!cargo_pod_take_manifest_unit(pod, c, &unit))
+                break;
+            taken++;
+            if (!pod->active && tow_slot >= 0) {
+                remove_towed_pod_slot(ship, tow_slot);
+                break;
+            }
+        }
+    }
+    return taken;
+}
+
 /* Is there a LOOSE scaffold still occupying the construction area near
  * this station's center? Used to gate spawning the next nascent. */
 static bool construction_area_blocked(const world_t *w, int station_idx) {
@@ -6593,18 +8031,6 @@ bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
     return true;
 }
 
-static float shipyard_hull_credit_cost(const station_t *st,
-                                       hull_class_t hull_class) {
-    int frames = 0, lasers = 0, tractors = 0;
-    if (!st || !shipyard_hull_cost(hull_class, &frames, &lasers, &tractors))
-        return 0.0f;
-    float cost = 0.0f;
-    cost += (float)frames * station_sell_price(st, COMMODITY_FRAME);
-    cost += (float)lasers * station_sell_price(st, COMMODITY_LASER_MODULE);
-    cost += (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE);
-    return cost;
-}
-
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) {
     if (!st || station_active_shipyard_count(st) < 1) return false;
     int frames = 0, lasers = 0, tractors = 0;
@@ -6612,6 +8038,83 @@ bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) 
     return station_finished_count(st, COMMODITY_FRAME) >= frames &&
            station_finished_count(st, COMMODITY_LASER_MODULE) >= lasers &&
            station_finished_count(st, COMMODITY_TRACTOR_MODULE) >= tractors;
+}
+
+static int shipyard_station_material_available(const station_t *st,
+                                               commodity_t c,
+                                               int yard_idx) {
+    if (!st || c >= COMMODITY_COUNT) return 0;
+    (void)yard_idx;
+    int stored = station_finished_count(st, c);
+    if (stored <= 0) return 0;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != c) continue;
+        return stored;
+    }
+    return 0;
+}
+
+static int shipyard_material_available(const station_t *st, const world_t *w,
+                                       int station_idx, const ship_t *ship,
+                                       commodity_t c,
+                                       bool include_towed_pods,
+                                       int yard_idx) {
+    int total = shipyard_station_material_available(st, c, yard_idx);
+    total += shipyard_staged_material_count(w, st, station_idx, ship, c,
+                                            include_towed_pods, yard_idx);
+    return total;
+}
+
+static bool shipyard_can_commission_hull_at_yard(const world_t *w,
+                                                 const station_t *st,
+                                                 int station_idx,
+                                                 const ship_t *ship,
+                                                 hull_class_t hull_class,
+                                                 bool include_towed_pods,
+                                                 int yard_idx) {
+    if (!w || !st || yard_idx < 0 || yard_idx >= st->module_count)
+        return false;
+    const station_module_t *yard = &st->modules[yard_idx];
+    if (yard->scaffold || yard->type != MODULE_SHIPYARD) return false;
+    int frames = 0, lasers = 0, tractors = 0;
+    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
+    return shipyard_material_available(st, w, station_idx, ship, COMMODITY_FRAME,
+                                       include_towed_pods, yard_idx) >= frames &&
+           shipyard_material_available(st, w, station_idx, ship, COMMODITY_LASER_MODULE,
+                                       include_towed_pods, yard_idx) >= lasers &&
+           shipyard_material_available(st, w, station_idx, ship, COMMODITY_TRACTOR_MODULE,
+                                       include_towed_pods, yard_idx) >= tractors;
+}
+
+static bool shipyard_find_ready_yard_for_hull(const world_t *w,
+                                              const station_t *st,
+                                              int station_idx,
+                                              const ship_t *ship,
+                                              hull_class_t hull_class,
+                                              bool include_towed_pods,
+                                              int *out_yard_idx) {
+    if (out_yard_idx) *out_yard_idx = -1;
+    if (!w || !st || station_active_shipyard_count(st) < 1) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        if (shipyard_can_commission_hull_at_yard(
+                w, st, station_idx, ship, hull_class, include_towed_pods, i)) {
+            if (out_yard_idx) *out_yard_idx = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool shipyard_can_commission_hull_from_ship(const world_t *w,
+                                                   const station_t *st,
+                                                   int station_idx,
+                                                   const ship_t *ship,
+                                                   hull_class_t hull_class,
+                                                   bool include_towed_pods) {
+    return shipyard_find_ready_yard_for_hull(w, st, station_idx, ship, hull_class,
+                                             include_towed_pods, NULL);
 }
 
 static bool shipyard_build_owner_valid(int owner, bool debit_player) {
@@ -6652,14 +8155,56 @@ static bool shipyard_prepare_pending_ship_build(world_t *w,
     return false;
 }
 
+static int shipyard_consume_material_for_build(world_t *w, station_t *st,
+                                               int station_idx,
+                                               ship_t *ship, commodity_t c,
+                                               int needed,
+                                               bool include_towed_pods,
+                                               int yard_idx) {
+    if (!w || !st || needed <= 0) return 0;
+    int from_staged = shipyard_staged_material_count(w, st, station_idx, ship, c,
+                                                     include_towed_pods,
+                                                     yard_idx);
+    if (from_staged > needed) from_staged = needed;
+    int from_station = needed - from_staged;
+    if (shipyard_station_material_available(st, c, yard_idx) < from_station)
+        return -1;
+
+    if (from_staged > 0 &&
+        shipyard_take_staged_material_units(w, st, station_idx, ship, c,
+                                            from_staged,
+                                            include_towed_pods,
+                                            yard_idx) != from_staged) {
+        return -1;
+    }
+    if (from_station > 0 &&
+        station_finished_drain(st, c, from_station) != from_station) {
+        return -1;
+    }
+    return from_station;
+}
+
 static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
                                       hull_class_t hull_class,
                                       bool debit_player) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return false;
     if (!shipyard_build_owner_valid(owner, debit_player)) return false;
     station_t *st = &w->stations[station_idx];
+    step_station_cargo_pod_tractors(w, 0.0f);
     if (st->pending_ship_build_count >= 4) return false;
-    if (!shipyard_can_commission_hull(st, hull_class)) return false;
+    server_player_t *sp = NULL;
+    bool include_towed_pods = false;
+    if (debit_player && owner >= 0 && owner < MAX_PLAYERS) {
+        sp = &w->players[owner];
+        include_towed_pods = sp->connected && sp->docked &&
+                             sp->current_station == station_idx;
+    }
+    int yard_idx = -1;
+    if (!shipyard_find_ready_yard_for_hull(
+            w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+            hull_class, include_towed_pods, &yard_idx)) {
+        return false;
+    }
     pending_ship_build_t build;
     if (!shipyard_prepare_pending_ship_build(w, &build, owner, hull_class,
                                              debit_player)) {
@@ -6668,22 +8213,41 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
 
     int frames = 0, lasers = 0, tractors = 0;
     if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
-    float commission_cost = shipyard_hull_credit_cost(st, hull_class);
-    if (station_finished_drain(st, COMMODITY_FRAME, frames) != frames) return false;
-    if (lasers > 0 &&
-        station_finished_drain(st, COMMODITY_LASER_MODULE, lasers) != lasers) {
-        (void)station_finished_mint(st, COMMODITY_FRAME, frames, NULL);
+    float frame_price = station_sell_price(st, COMMODITY_FRAME);
+    float laser_price = station_sell_price(st, COMMODITY_LASER_MODULE);
+    float tractor_price = station_sell_price(st, COMMODITY_TRACTOR_MODULE);
+    int station_frames = shipyard_consume_material_for_build(
+        w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+        COMMODITY_FRAME,
+        frames, include_towed_pods, yard_idx);
+    if (station_frames < 0) return false;
+    int station_lasers = shipyard_consume_material_for_build(
+        w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+        COMMODITY_LASER_MODULE,
+        lasers, include_towed_pods, yard_idx);
+    if (station_lasers < 0) {
+        (void)station_finished_mint(st, COMMODITY_FRAME, station_frames, NULL);
         return false;
     }
-    if (tractors > 0 &&
-        station_finished_drain(st, COMMODITY_TRACTOR_MODULE, tractors) != tractors) {
-        (void)station_finished_mint(st, COMMODITY_FRAME, frames, NULL);
-        (void)station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL);
+    int station_tractors = shipyard_consume_material_for_build(
+        w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+        COMMODITY_TRACTOR_MODULE, tractors, include_towed_pods, yard_idx);
+    if (station_tractors < 0) {
+        (void)station_finished_mint(st, COMMODITY_FRAME, station_frames, NULL);
+        (void)station_finished_mint(st, COMMODITY_LASER_MODULE,
+                                    station_lasers, NULL);
         return false;
     }
 
-    if (debit_player && owner >= 0 && owner < MAX_PLAYERS) {
-        server_player_t *sp = &w->players[owner];
+    float commission_cost = 0.0f;
+    (void)station_frames;
+    (void)station_lasers;
+    (void)station_tractors;
+    commission_cost += (float)frames * frame_price;
+    commission_cost += (float)lasers * laser_price;
+    commission_cost += (float)tractors * tractor_price;
+
+    if (debit_player && sp) {
         if (sp->connected && sp->docked && sp->current_station == station_idx)
             player_ledger_force_debit_at(sp, st, commission_cost);
     }
@@ -6705,6 +8269,7 @@ bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
     if (!station_exists(&w->stations[requester_station])) return false;
     int owner_code = shipyard_station_request_owner_code(requester_station);
     if (!shipyard_owner_code_is_station_request(owner_code)) return false;
+    step_station_cargo_pod_tractors(w, 0.0f);
 
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
@@ -6724,7 +8289,8 @@ bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         if (st->pending_ship_build_count >= 4) continue;
-        if (!shipyard_can_commission_hull(st, hull_class)) continue;
+        if (!shipyard_can_commission_hull_from_ship(
+                w, st, s, NULL, hull_class, false)) continue;
         float d = (s == requester_station)
             ? -1.0f
             : v2_dist_sq(requester_pos, st->pos);
@@ -6815,6 +8381,7 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
 /* module_flow_rate, module_accepts_input, step_module_flow → sim_production.c */
 
 static void step_shipyard_manufacture(world_t *w, float dt) {
+    step_station_cargo_pod_tractors(w, 0.0f);
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -6851,17 +8418,29 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
         }
         scaffold_t *nascent = &w->scaffolds[nidx];
 
-        /* Pull material from station inventory into the nascent scaffold's
-         * build pool at a layout-aware rate. */
+        /* Pull physical loose pod units first; station inventory remains as
+         * a transitional fallback for legacy saves and NPC flows. */
         if (nascent->build_amount < needed) {
-            float rate = shipyard_intake_rate(st, yard_idx, mat);
-            float pull = rate * dt;
-            if (pull > st->_inventory_cache[mat]) pull = st->_inventory_cache[mat];
             float room = needed - nascent->build_amount;
-            if (pull > room) pull = room;
-            if (pull > 0.0f) {
-                st->_inventory_cache[mat] -= pull;
-                nascent->build_amount += pull;
+            int room_units = (int)ceilf(room - 0.0001f);
+            int pod_units = shipyard_feed_nascent_from_loose_pods(
+                w, st, s, yard_idx, nascent, mat, room_units);
+            if (pod_units > 0) {
+                nascent->build_amount += (float)pod_units;
+                if (nascent->build_amount > needed)
+                    nascent->build_amount = needed;
+            }
+
+            room = needed - nascent->build_amount;
+            if (room > 0.01f) {
+                float rate = shipyard_intake_rate(st, yard_idx, mat);
+                float pull = rate * dt;
+                if (pull > st->_inventory_cache[mat]) pull = st->_inventory_cache[mat];
+                if (pull > room) pull = room;
+                if (pull > 0.0f) {
+                    st->_inventory_cache[mat] -= pull;
+                    nascent->build_amount += pull;
+                }
             }
         }
 
@@ -7769,6 +9348,7 @@ void world_sim_step(world_t *w, float dt) {
     step_station_ring_dynamics(w, dt);
     step_station_jostle(w, dt);
     sim_step_asteroid_dynamics(w, dt);
+    step_station_cargo_pod_tractors(w, dt);
     step_cargo_pods(w, dt);
     maintain_asteroid_field(w, dt);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
@@ -7791,7 +9371,7 @@ void world_sim_step(world_t *w, float dt) {
     /* Manifest-as-truth reconciliation: snap floor(inventory[c]) ==
      * manifest_count(c) for every finished commodity at every station.
      * Now bidirectional — production paths mint manifest in lockstep
-     * with float increments, NPC unload + delivery + buy/sell all drain
+     * with float increments, NPC unload + delivery + trade sales drain
      * both, so the only remaining sources of drift are legacy float-only
      * test fixtures (which the SELL/upgrade path can still consume). For
      * the LIVE simulation, manifest is the source of truth.
@@ -8308,12 +9888,11 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[0], 1, 2, COMMODITY_FERRITE_INGOT);
     /* Ring 2: ferrite-ore intake at slot 4 (240°, cross-ring opposite
-     * the furnace at ring 1 slot 2). No output hopper — Prospect has
-     * no downstream local consumer of ferrite ingots (no frame press
-     * here), so smelt-completed ingots go straight to station
-     * inventory and ride out via haulers to Kepler. */
+     * the furnace at ring 1 slot 2). Folded frame pods are packaging stock:
+     * the furnace tractors them directly as shell supply, so Prospect does
+     * not need a separate visible frame hopper. */
     add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
-    w->stations[0].arm_count = 2;
+    w->stations[0].arm_count = 3;
     /* Drift bias on ring 2 — under the all-passive Slice 1.5a dynamics
      * this is the per-ring ambient torque. Ring 1 co-rotates via the
      * cross-ring spoke spring. Prospect has light spoke load (one
@@ -8510,6 +10089,9 @@ void world_reset(world_t *w) {
         (void)ship_asset_claim_for_npc(w, 2, NPC_ROLE_MINER);
         (void)ship_asset_claim_for_npc(w, 2, NPC_ROLE_TOW);
     }
+
+    world_seed_kepler_frame_pod(w);
+    world_seed_prospect_frame_shell_pod(w);
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to

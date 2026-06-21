@@ -92,6 +92,10 @@ typedef enum {
      * history. This records reputation only; payouts and cargo movement still
      * resolve through exact contracts, ledgers, manifests, and receipts. */
     CHAIN_EVT_ROUTE_HISTORY    = 12,
+    /* Fracture-claim resolution: persists enough preimage material for
+     * offline verifiers to recompute fragment_pub and the rarity grade
+     * before a later SMELT consumes that fragment into a cargo unit. */
+    CHAIN_EVT_CLAIM_FRAGMENT   = 13,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -281,6 +285,19 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_route_history_t;
 SIGNAL_PACK_POP
 
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  fracture_seed[32];
+    uint8_t  fragment_pub[32];
+    uint8_t  claimant_pubkey[32]; /* zero for unclaimed fallback resolution */
+    uint32_t fracture_id;
+    uint32_t burst_nonce;
+    uint16_t burst_cap;
+    uint8_t  grade;               /* mining_grade_t */
+    uint8_t  asteroid_slot;        /* diagnostic slot at resolution time */
+} SIGNAL_PACKED chain_payload_claim_fragment_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
@@ -294,6 +311,7 @@ _Static_assert(sizeof(chain_payload_fragment_release_t) == 88,  "fragment_releas
 _Static_assert(sizeof(chain_payload_death_t)            == 96,  "death payload size");
 _Static_assert(sizeof(chain_payload_construction_t)     == 56,  "construction payload size");
 _Static_assert(sizeof(chain_payload_route_history_t)    == 24,  "route_history payload size");
+_Static_assert(sizeof(chain_payload_claim_fragment_t)   == 108, "claim_fragment payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");

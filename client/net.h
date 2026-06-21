@@ -234,6 +234,12 @@ typedef struct {
     float radius;
     float rotation;
     uint16_t quantity;
+    uint16_t manifest_count;
+    uint16_t shipment_id;
+    uint8_t summary_flags;
+    uint8_t summary_grade;
+    uint8_t tractor_station;
+    uint8_t tractor_module;
 } NetCargoPodState;
 typedef void (*net_on_cargo_pods_fn)(const NetCargoPodState* pods, int count);
 

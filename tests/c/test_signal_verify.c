@@ -406,6 +406,25 @@ static const char *sv_find_signal_chain_assets_bin(void) {
     return NULL;
 }
 
+static const char *sv_find_signal_rati_receipt_bin(void) {
+    static const char *candidates[] = {
+        "build-test/signal_rati_receipt",
+        "build-coverage/signal_rati_receipt",
+        "build/signal_rati_receipt",
+        "./signal_rati_receipt",
+        "../build-test/signal_rati_receipt",
+        "../build-coverage/signal_rati_receipt",
+        "../build/signal_rati_receipt",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        fclose(f);
+        return candidates[i];
+    }
+    return NULL;
+}
+
 static void sv_hex32(const uint8_t in[32], char out[65]) {
     static const char h[] = "0123456789abcdef";
     for (int i = 0; i < 32; i++) {
@@ -639,6 +658,96 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     ASSERT(strstr(output, "prefix=K") != NULL);
     sv_teardown();
 }
+
+TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
+    sv_setup("rati_receipt");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50002u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t fracture_seed[32];
+    uint8_t claimant_pubkey[32];
+    uint32_t burst_nonce = 0;
+    mining_grade_t grade = MINING_GRADE_COMMON;
+    for (int b = 0; b < 32; b++) {
+        fracture_seed[b] = (uint8_t)(0x20 + b);
+        claimant_pubkey[b] = (uint8_t)(0xA0 + b);
+    }
+    for (; burst_nonce < 65535u; burst_nonce++) {
+        mining_keypair_t kp;
+        char callsign[8];
+        mining_keypair_derive(fracture_seed, claimant_pubkey,
+                              burst_nonce, &kp);
+        mining_callsign_from_pubkey(kp.pub, callsign);
+        grade = mining_classify_base58(callsign);
+        if (grade == MINING_GRADE_RATI) break;
+    }
+    ASSERT(grade == MINING_GRADE_RATI);
+
+    chain_payload_claim_fragment_t claim = {0};
+    memcpy(claim.fracture_seed, fracture_seed, 32);
+    memcpy(claim.claimant_pubkey, claimant_pubkey, 32);
+    mining_fragment_pub_compute(fracture_seed, claimant_pubkey,
+                                burst_nonce, claim.fragment_pub);
+    claim.fracture_id = 1234;
+    claim.burst_nonce = burst_nonce;
+    claim.burst_cap = 65535u;
+    claim.grade = (uint8_t)grade;
+    claim.asteroid_slot = 7;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CLAIM_FRAGMENT,
+                          &claim, sizeof(claim)) == 1);
+
+    chain_payload_smelt_t smelt = {0};
+    for (int b = 0; b < 32; b++) {
+        smelt.ingot_pub[b] = (uint8_t)(0x60 + b);
+    }
+    memcpy(smelt.fragment_pub, claim.fragment_pub, 32);
+    smelt.prefix_class = INGOT_PREFIX_RATI;
+    smelt.mined_block = 777;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 2);
+
+    const char *receipt_bin = sv_find_signal_rati_receipt_bin();
+    if (!receipt_bin) {
+        TEST_WARN("signal_rati_receipt binary not built; skipping CLI receipt subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    char fragment_hex[65];
+    char ingot_hex[65];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, log_path, sizeof(log_path)));
+    sv_hex32(smelt.fragment_pub, fragment_hex);
+    sv_hex32(smelt.ingot_pub, ingot_hex);
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=RATi %s 2>/dev/null",
+             receipt_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[8192] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    pclose(p);
+    ASSERT(got > 0);
+
+    ASSERT(strstr(output, "\"schema\":\"signal.rati_mining_receipts.v1\"") != NULL);
+    ASSERT(strstr(output, "\"receipt_count\":1") != NULL);
+    ASSERT(strstr(output, "\"version\":\"rati_mining_receipt_v1\"") != NULL);
+    ASSERT(strstr(output, "\"kind\":\"CHAIN_EVT_SMELT\"") != NULL);
+    ASSERT(strstr(output, "\"kind\":\"CHAIN_EVT_CLAIM_FRAGMENT\"") != NULL);
+    ASSERT(strstr(output, "\"prefix_class\":\"RATi\"") != NULL);
+    ASSERT(strstr(output, "\"grade\":\"RATi\"") != NULL);
+    ASSERT(strstr(output, "\"grade_verified\":true") != NULL);
+    ASSERT(strstr(output, fragment_hex) != NULL);
+    ASSERT(strstr(output, ingot_hex) != NULL);
+
+    sv_teardown();
+}
 #endif
 
 void register_signal_verify_tests(void);
@@ -655,5 +764,6 @@ void register_signal_verify_tests(void) {
 #ifndef _WIN32
     RUN(test_signal_verify_tower_chain_invariant_detects_orphan);
     RUN(test_signal_chain_assets_lineage_cli_prints_craft_tree);
+    RUN(test_signal_rati_receipt_cli_emits_smelt_receipt);
 #endif
 }

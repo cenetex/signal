@@ -421,6 +421,8 @@ static void merge_one_shot_input(input_intent_t *dst,
         dst->buy_product = true;
         dst->buy_commodity = src->buy_commodity;
         dst->buy_grade = src->buy_grade;
+        dst->buy_station_pod = src->buy_station_pod;
+        dst->buy_station_pod_index = src->buy_station_pod_index;
     }
     if (src->hail) dst->hail = true;
     if (src->release_tow) dst->release_tow = true;
@@ -1775,7 +1777,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             break;
         case SIGNED_ACTION_SELL_CARGO:
             /* Payload: [commodity:1][grade:1]. commodity==COMMODITY_COUNT
-             * means "sell all" (legacy bulk path). */
+             * lets the dock choose the next accepted sale target. */
             if (payload_len >= 2) {
                 uint8_t commodity = payload[0];
                 uint8_t grade     = payload[1];

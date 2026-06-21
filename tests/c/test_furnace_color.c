@@ -167,21 +167,25 @@ TEST(test_furnace_color_non_furnace_modules_unaffected) {
 }
 
 /* Prospect: ring 1 = DOCK + RELAY + FURNACE (tagged FERRITE_INGOT);
- * ring 2 = single FERRITE_ORE intake at slot 4. 4 modules total --
- * no output hopper because nothing on Prospect locally consumes
- * ferrite ingots (no frame press here). */
+ * ring 2 = FERRITE_ORE intake at slot 4. Folded-frame pod shells are
+ * tractored by the furnace directly, so there is no special frame hopper. */
 TEST(test_prospect_modules_after_silo_cleanup) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
     ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
     int has_dock = 0, has_relay = 0, has_furnace = 0, has_hopper = 0;
+    int has_frame_hopper = 0;
     for (int i = 0; i < w->stations[0].module_count; i++) {
         switch (w->stations[0].modules[i].type) {
         case MODULE_DOCK:         has_dock++; break;
         case MODULE_SIGNAL_RELAY: has_relay++; break;
         case MODULE_FURNACE:      has_furnace++; break;
-        case MODULE_HOPPER:       has_hopper++; break;
+        case MODULE_HOPPER:
+            has_hopper++;
+            if ((commodity_t)w->stations[0].modules[i].commodity == COMMODITY_FRAME)
+                has_frame_hopper++;
+            break;
         default: break;
         }
     }
@@ -189,6 +193,7 @@ TEST(test_prospect_modules_after_silo_cleanup) {
     ASSERT_EQ_INT(has_relay, 1);
     ASSERT_EQ_INT(has_furnace, 1);
     ASSERT_EQ_INT(has_hopper, 1);
+    ASSERT_EQ_INT(has_frame_hopper, 0);
 }
 
 /* (6) Middle-ring dynamic glow: the helper reads

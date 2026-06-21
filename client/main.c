@@ -1786,7 +1786,6 @@ static void render_world(void) {
     }
 
     draw_asteroids();
-    draw_cargo_pods();
     draw_scaffolds();
     draw_shipyard_intake_beams();
     draw_placement_reticle();
@@ -1817,6 +1816,7 @@ static void render_world(void) {
         draw_station_rings(st, is_current, is_nearby);
     }
     draw_hopper_tractors();
+    draw_cargo_pods();
 
     /* Module target highlight + info panel */
     if (g.target_station >= 0 && g.target_module >= 0) {
@@ -3264,7 +3264,14 @@ const char *signal_station_panel_label(void) {
 EMSCRIPTEN_KEEPALIVE
 const char *signal_station_panel_legend(void) {
     const station_panel_descriptor_t *panel = mobile_active_station_panel();
-    return (panel && panel->legend) ? panel->legend : "";
+    static char legend[96];
+    legend[0] = '\0';
+    const station_t *st = current_station_ptr();
+    if (panel && station_panel_legend_text(panel->view, st, legend,
+                                           sizeof(legend))) {
+        return legend;
+    }
+    return "";
 }
 
 EMSCRIPTEN_KEEPALIVE

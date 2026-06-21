@@ -129,6 +129,10 @@ station_view_t station_panel_first_visible(const station_t *station);
 station_view_t station_panel_next_visible(station_view_t current,
                                           const station_t *station,
                                           int direction);
+bool station_panel_legend_text(station_view_t view,
+                               const station_t *station,
+                               char *out,
+                               size_t out_size);
 void station_panel_sample_current(input_intent_t *intent);
 
 enum {
@@ -156,6 +160,12 @@ typedef struct {
     int            station_capacity;/* MAX_PRODUCT_STOCK */
     int            held;            /* player's cargo of this (commodity,grade) */
     int            towed_held;      /* subset of held riding in towed cargo pods */
+    int            towed_pod_quantity; /* units in the next whole pod sold by row */
+    bool           is_towed_pod;    /* row represents one visible towed pod */
+    uint16_t       towed_pod_index; /* world cargo_pods[] index for pod rows */
+    bool           is_station_pod;  /* BUY row represents a dock-held pod */
+    uint16_t       station_pod_index;
+    uint16_t       shipment_id;     /* nonzero when the pod wraps credit cargo */
     uint8_t        block_reason;    /* see TRADE_BLOCK_* below; 0 if actionable */
     uint8_t        prefix_class;    /* ingot_prefix_t for the row's representative
                                       * unit; INGOT_PREFIX_ANONYMOUS = bulk row. Drives
@@ -195,9 +205,10 @@ enum {
     TRADE_BLOCK_STATION_EMPTY = 2, /* buy:  station has none on the shelf */
     TRADE_BLOCK_NO_BUYER      = 3, /* sell: this station doesn't consume it */
     TRADE_BLOCK_NO_SELLER     = 4, /* buy:  this station doesn't produce it */
-    TRADE_BLOCK_HOLD_FULL     = 5, /* buy:  ship cargo would overflow */
+    TRADE_BLOCK_TOW_FULL      = 5, /* buy:  no free tow slot for the pod */
     TRADE_BLOCK_NO_FUNDS      = 6, /* buy:  ledger short for unit price */
     TRADE_BLOCK_NO_CARGO      = 7, /* sell: player carries none of this */
+    TRADE_BLOCK_NO_POD_FRAME  = 8, /* buy:  station lacks a frame pod shell */
 };
 
 /* Build the unified row list for `st` against the player's `ship`.
@@ -812,6 +823,10 @@ int build_work_slots(int here_idx, vec2 here_pos,
                      int out_held[3]);
 int station_contract_source_stock_count(const station_t *st,
                                         const contract_t *ct);
+int station_shipyard_material_available_local(const station_t *st,
+                                              commodity_t commodity);
+bool station_shipyard_can_commission_hull_local(const station_t *st,
+                                                hull_class_t hull_class);
 
 /* Station label/color helpers */
 const char* station_role_hub_label(const station_t* station);

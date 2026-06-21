@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-arweave site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -159,6 +159,78 @@ chain-assets: build-chain-assets
 		$(if $(CHAIN_ASSETS_BUILT_FROM),--built-from=$(CHAIN_ASSETS_BUILT_FROM),) \
 		$(CHAIN_ASSETS_INPUT)
 
+# --- RATi mining receipt export ---
+RATI_RECEIPT_INPUT ?=
+RATI_RECEIPT_MIN_PREFIX ?= anonymous
+RATI_RECEIPT_EVENT_ID ?=
+RATI_RECEIPT_SEGMENT_ID ?=
+RATI_RECEIPT_CARGO_PUB ?=
+RATI_ANCHOR_RECEIPTS ?=
+RATI_ANCHOR_OUT ?= rati-anchor-batch.json
+RATI_ANCHOR_PREVIOUS_BATCH_ROOT ?= 0000000000000000000000000000000000000000000000000000000000000000
+RATI_ANCHOR_SETTLEMENT_CHECKPOINT_ROOT ?=
+RATI_ANCHOR_ARWEAVE_MANIFEST_TX ?=
+RATI_ANCHOR_CREATED_AT ?= 0
+RATI_ANCHOR_ALLOW_UNVERIFIED ?=
+RATI_STAMP_BATCH ?= $(RATI_ANCHOR_OUT)
+RATI_STAMP_OTS_OUT ?=
+RATI_STAMP_MANIFEST_OUT ?=
+RATI_STAMP_OTS_COMMAND ?=
+RATI_STAMP_CREATED_AT ?= now
+RATI_STAMP_DRY_RUN ?=
+RATI_STAMP_OVERWRITE ?=
+
+build-rati-receipt:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	@ln -sf build/compile_commands.json compile_commands.json
+	cmake --build build --target signal_rati_receipt --parallel
+
+rati-receipt: build-rati-receipt
+	@if [ -z "$(RATI_RECEIPT_INPUT)" ]; then \
+		echo "Set RATI_RECEIPT_INPUT=<station-chain-log>"; \
+		exit 2; \
+	fi
+	./build/signal_rati_receipt \
+		--min-prefix=$(RATI_RECEIPT_MIN_PREFIX) \
+		$(if $(RATI_RECEIPT_EVENT_ID),--event-id=$(RATI_RECEIPT_EVENT_ID),) \
+		$(if $(RATI_RECEIPT_SEGMENT_ID),--segment-id=$(RATI_RECEIPT_SEGMENT_ID),) \
+		$(if $(RATI_RECEIPT_CARGO_PUB),--cargo-pub=$(RATI_RECEIPT_CARGO_PUB),) \
+		$(RATI_RECEIPT_INPUT)
+
+rati-anchor-batch:
+	@if [ -z "$(RATI_ANCHOR_RECEIPTS)" ]; then \
+		echo "Set RATI_ANCHOR_RECEIPTS=<receipt-json...>"; \
+		exit 2; \
+	fi
+	node scripts/build-rati-anchor-batch.mjs \
+		--out=$(RATI_ANCHOR_OUT) \
+		--created-at-unix=$(RATI_ANCHOR_CREATED_AT) \
+		--previous-batch-root=$(RATI_ANCHOR_PREVIOUS_BATCH_ROOT) \
+		$(if $(RATI_ANCHOR_SETTLEMENT_CHECKPOINT_ROOT),--settlement-checkpoint-root=$(RATI_ANCHOR_SETTLEMENT_CHECKPOINT_ROOT),) \
+		$(if $(RATI_ANCHOR_ARWEAVE_MANIFEST_TX),--arweave-manifest-tx=$(RATI_ANCHOR_ARWEAVE_MANIFEST_TX),) \
+		$(if $(RATI_ANCHOR_ALLOW_UNVERIFIED),--allow-unverified,) \
+		$(RATI_ANCHOR_RECEIPTS)
+
+test-rati-anchor-batch:
+	node scripts/test-rati-anchor-batch.mjs
+
+rati-anchor-stamp:
+	@if [ -z "$(RATI_STAMP_BATCH)" ]; then \
+		echo "Set RATI_STAMP_BATCH=<rati-anchor-batch.json>"; \
+		exit 2; \
+	fi
+	node scripts/stamp-rati-anchor.mjs \
+		--created-at-unix=$(RATI_STAMP_CREATED_AT) \
+		$(if $(RATI_STAMP_OTS_OUT),--ots-out=$(RATI_STAMP_OTS_OUT),) \
+		$(if $(RATI_STAMP_MANIFEST_OUT),--manifest-out=$(RATI_STAMP_MANIFEST_OUT),) \
+		$(if $(RATI_STAMP_OTS_COMMAND),--ots-command=$(RATI_STAMP_OTS_COMMAND),) \
+		$(if $(RATI_STAMP_DRY_RUN),--dry-run,) \
+		$(if $(RATI_STAMP_OVERWRITE),--overwrite,) \
+		$(RATI_STAMP_BATCH)
+
+test-rati-anchor-stamp:
+	node scripts/test-rati-anchor-stamp.mjs
+
 # --- Live bot behavior A/B gap harness ---
 NEURAL_GAP_DURATION ?= 120
 NEURAL_GAP_BOTS ?= 31
@@ -200,6 +272,7 @@ build-test:
 	# tool binary can make the sharded suite fail or pass incorrectly.
 	cmake --build build --target signal_verify --parallel
 	cmake --build build --target signal_chain_assets --parallel
+	cmake --build build --target signal_rati_receipt --parallel
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
@@ -316,7 +389,7 @@ deterministic-build-flags:
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/flight_trace.c tools/signal_replay.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/signal_rati_receipt.c tools/flight_trace.c tools/signal_replay.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \

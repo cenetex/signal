@@ -1071,6 +1071,13 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->radius = received[i].radius;
         pod->rotation = received[i].rotation;
         pod->quantity = received[i].quantity;
+        pod->manifest_count = received[i].manifest_count;
+        memset(pod->manifest_units, 0, sizeof(pod->manifest_units));
+        pod->shipment_id = received[i].shipment_id;
+        pod->summary_flags = received[i].summary_flags;
+        pod->summary_grade = received[i].summary_grade;
+        pod->tractor_station = received[i].tractor_station;
+        pod->tractor_module = received[i].tractor_module;
         seen[idx] = true;
     }
     for (int i = 0; i < MAX_CARGO_PODS; i++) {

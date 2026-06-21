@@ -109,7 +109,18 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 66  /* v66: station faction identity/diplomacy persists.
+#define SAVE_VERSION 70  /* v70: cargo pod saves persist the folded frame unit
+                          * unfolded into each pod shell, so emptied pods can
+                          * fold back into their exact frame.
+                          * v69: cargo pod saves persist exact manifest units
+                          * when a pod wraps real cargo_unit_t payloads.
+                          * v68: active cargo pods persist as durable economy
+                          * objects, including shipment_id and towed_by so
+                          * in-flight pod cargo survives restarts.
+                          * v67: active delivery shipments persist their exact
+                          * cargo_unit_t payloads and receipt chains while
+                          * cargo rides in towable pods instead of ship holds.
+                          * v66: station faction identity/diplomacy persists.
                           * v65: pending shipyard hull builds persist captured
                           * owner identity (pubkey/session) instead of only a
                           * mutable player slot. v64: contract-origin ship
@@ -1441,10 +1452,23 @@ static bool write_delivery_shipment(FILE *f, const delivery_shipment_t *s) {
     WRITE_FIELD(f, s->due_tick);
     WRITE_FIELD(f, s->status);
     if (fwrite(s->cargo_pub, sizeof(s->cargo_pub), 1, f) != 1) return false;
+    if (s->active) {
+        uint16_t payload_count = s->quantity_bound;
+        if (payload_count > MAX_DELIVERY_BOUND_CARGO)
+            payload_count = MAX_DELIVERY_BOUND_CARGO;
+        WRITE_FIELD(f, payload_count);
+        if (payload_count > 0) {
+            if (fwrite(s->cargo_units, sizeof(s->cargo_units[0]),
+                       payload_count, f) != payload_count) return false;
+            if (fwrite(s->cargo_chains, sizeof(s->cargo_chains[0]),
+                       payload_count, f) != payload_count) return false;
+        }
+    }
     return true;
 }
 
-static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s) {
+static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s,
+                                   uint32_t version) {
     memset(s, 0, sizeof(*s));
     READ_FIELD(f, s->active);
     READ_FIELD(f, s->shipment_id);
@@ -1465,6 +1489,110 @@ static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s) {
     if (fread(s->cargo_pub, sizeof(s->cargo_pub), 1, f) != 1) return false;
     if (s->quantity_bound > MAX_DELIVERY_BOUND_CARGO) return false;
     if (s->status > DELIVERY_SHIPMENT_DEFAULTED) return false;
+    if (version >= 67 && s->active) {
+        uint16_t payload_count = 0;
+        READ_FIELD(f, payload_count);
+        if (payload_count > MAX_DELIVERY_BOUND_CARGO) return false;
+        if (payload_count > 0) {
+            if (fread(s->cargo_units, sizeof(s->cargo_units[0]),
+                      payload_count, f) != payload_count) return false;
+            if (fread(s->cargo_chains, sizeof(s->cargo_chains[0]),
+                      payload_count, f) != payload_count) return false;
+        }
+    }
+    return true;
+}
+
+static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
+    uint8_t kind = (uint8_t)pod->kind;
+    uint8_t commodity = (uint8_t)pod->commodity;
+    int8_t towed_by = pod->towed_by;
+    WRITE_FIELD(f, index);
+    WRITE_FIELD(f, kind);
+    WRITE_FIELD(f, commodity);
+    WRITE_FIELD(f, pod->quantity);
+    WRITE_FIELD(f, pod->shipment_id);
+    WRITE_FIELD(f, pod->pos);
+    WRITE_FIELD(f, pod->vel);
+    WRITE_FIELD(f, pod->radius);
+    WRITE_FIELD(f, pod->rotation);
+    WRITE_FIELD(f, pod->spin);
+    WRITE_FIELD(f, pod->age);
+    WRITE_FIELD(f, towed_by);
+    WRITE_FIELD(f, pod->manifest_count);
+    if (pod->manifest_count > 0) {
+        if (pod->manifest_count > CARGO_POD_MANIFEST_CAP) return false;
+        if (fwrite(pod->manifest_units, sizeof(pod->manifest_units[0]),
+                   pod->manifest_count, f) != pod->manifest_count) {
+            return false;
+        }
+    }
+    {
+        uint8_t has_shell_frame = pod->has_shell_frame ? 1u : 0u;
+        WRITE_FIELD(f, has_shell_frame);
+        if (has_shell_frame) {
+            if (pod->shell_frame.commodity != (uint8_t)COMMODITY_FRAME)
+                return false;
+            if (fwrite(&pod->shell_frame, sizeof(pod->shell_frame), 1, f) != 1)
+                return false;
+        }
+    }
+    return true;
+}
+
+static bool read_cargo_pod(FILE *f, world_t *w, int version) {
+    uint16_t index = 0;
+    uint8_t kind = 0;
+    uint8_t commodity = 0;
+    cargo_pod_t pod = {0};
+    int8_t towed_by = -1;
+    READ_FIELD(f, index);
+    READ_FIELD(f, kind);
+    READ_FIELD(f, commodity);
+    READ_FIELD(f, pod.quantity);
+    READ_FIELD(f, pod.shipment_id);
+    READ_FIELD(f, pod.pos);
+    READ_FIELD(f, pod.vel);
+    READ_FIELD(f, pod.radius);
+    READ_FIELD(f, pod.rotation);
+    READ_FIELD(f, pod.spin);
+    READ_FIELD(f, pod.age);
+    READ_FIELD(f, towed_by);
+    if (version >= 69) {
+        READ_FIELD(f, pod.manifest_count);
+        if (pod.manifest_count > CARGO_POD_MANIFEST_CAP) return false;
+        if (pod.manifest_count > 0) {
+            if (fread(pod.manifest_units, sizeof(pod.manifest_units[0]),
+                      pod.manifest_count, f) != pod.manifest_count) {
+                return false;
+            }
+        }
+    }
+    if (version >= 70) {
+        uint8_t has_shell_frame = 0;
+        READ_FIELD(f, has_shell_frame);
+        if (has_shell_frame) {
+            if (fread(&pod.shell_frame, sizeof(pod.shell_frame), 1, f) != 1)
+                return false;
+            if (pod.shell_frame.commodity != (uint8_t)COMMODITY_FRAME)
+                return false;
+            pod.has_shell_frame = true;
+        }
+    }
+    if (index >= MAX_CARGO_PODS) return false;
+    if (kind == CARGO_POD_NONE || kind > CARGO_POD_CARGO) return false;
+    if (commodity >= COMMODITY_COUNT) return false;
+    if (pod.manifest_count > pod.quantity) return false;
+    for (uint16_t i = 0; i < pod.manifest_count; i++) {
+        if (pod.manifest_units[i].commodity != commodity) return false;
+        if (pod.manifest_units[i].quantity == 0)
+            pod.manifest_units[i].quantity = 1;
+    }
+    pod.active = true;
+    pod.kind = (cargo_pod_kind_t)kind;
+    pod.commodity = (commodity_t)commodity;
+    pod.towed_by = (towed_by >= 0 && towed_by < MAX_PLAYERS) ? towed_by : -1;
+    w->cargo_pods[index] = pod;
     return true;
 }
 
@@ -1590,6 +1718,23 @@ bool world_save(const world_t *w, const char *path) {
             fclose(f);
             remove(tmp_path);
             return false;
+        }
+    }
+
+    /* v68: active cargo pod tail. Sparse by slot so ship tow indices and
+     * shipment-pod references remain stable across reload. */
+    {
+        uint16_t pod_count = 0;
+        for (int i = 0; i < MAX_CARGO_PODS; i++)
+            if (w->cargo_pods[i].active) pod_count++;
+        WRITE_FIELD(f, pod_count);
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            if (!w->cargo_pods[i].active) continue;
+            if (!write_cargo_pod(f, (uint16_t)i, &w->cargo_pods[i])) {
+                fclose(f);
+                remove(tmp_path);
+                return false;
+            }
         }
     }
 
@@ -1742,7 +1887,7 @@ bool world_load(world_t *w, const char *path) {
         if (w->next_delivery_shipment_id == 0)
             w->next_delivery_shipment_id = 1;
         for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-            if (!read_delivery_shipment(f, &w->delivery_shipments[i])) {
+            if (!read_delivery_shipment(f, &w->delivery_shipments[i], version)) {
                 fclose(f);
                 return false;
             }
@@ -1811,6 +1956,22 @@ bool world_load(world_t *w, const char *path) {
             w->next_ship_asset_id = 1;
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
             if (!read_ship_asset(f, &w->ship_assets[i])) {
+                fclose(f);
+                return false;
+            }
+        }
+    }
+
+    if (version >= 68) {
+        uint16_t pod_count = 0;
+        memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+        READ_FIELD(f, pod_count);
+        if (pod_count > MAX_CARGO_PODS) {
+            fclose(f);
+            return false;
+        }
+        for (uint16_t i = 0; i < pod_count; i++) {
+            if (!read_cargo_pod(f, w, version)) {
                 fclose(f);
                 return false;
             }
@@ -3028,6 +3189,32 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
     sp->ship_asset_id = asset->asset_id;
 }
 
+static void player_restore_towed_cargo_pods(server_player_t *sp,
+                                            world_t *w,
+                                            int slot) {
+    if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
+    int max_tow = 2 + sp->ship.tractor_level * 2;
+    if (max_tow > 10) max_tow = 10;
+    sp->ship.towed_pod_count = 0;
+    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->towed_by != slot) continue;
+        if (sp->ship.towed_pod_count >= max_tow) {
+            pod->towed_by = -1;
+            continue;
+        }
+        int tow_slot = sp->ship.towed_pod_count++;
+        sp->ship.towed_pods[tow_slot] = (int16_t)i;
+        float angle = sp->ship.angle + PI_F + 0.18f * (float)(tow_slot - 1);
+        float dist = 52.0f + 24.0f * (float)tow_slot;
+        pod->pos = v2_add(sp->ship.pos, v2_scale(v2_from_angle(angle), dist));
+        pod->vel = sp->ship.vel;
+        pod->towed_by = (int8_t)slot;
+    }
+}
+
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
     if (!sp || !w || !path) return false;
     server_player_t staged = *sp;
@@ -3040,6 +3227,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     ship_cleanup(&sp->ship);
     *sp = staged;
     player_bind_loaded_ship_asset(sp, w, slot);
+    player_restore_towed_cargo_pods(sp, w, slot);
     return true;
 }
 

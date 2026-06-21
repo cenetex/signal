@@ -18,6 +18,7 @@
 #include "asteroid.h"
 #include "economy.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL for outpost placement gate */
+#include "cargo_receipt.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */
@@ -238,7 +239,7 @@ typedef struct {
     bool beam_hit;
     bool beam_ineffective; /* hitting a rock too tough for current laser level */
     bool scan_active;      /* laser scanning a non-asteroid target */
-    int scan_target_type;  /* 0=none, 1=station_module, 2=npc, 3=player */
+    int scan_target_type;  /* 0=none, 1=station_module, 2=npc, 3=player, 4=cargo_pod */
     int scan_target_index; /* index into stations/npc_ships/players array */
     int scan_module_index; /* module index within station (for type=1) */
     int hover_asteroid;
@@ -361,6 +362,8 @@ typedef struct {
     uint32_t due_tick;
     uint8_t status;
     uint8_t cargo_pub[MAX_DELIVERY_BOUND_CARGO][32];
+    cargo_unit_t cargo_units[MAX_DELIVERY_BOUND_CARGO];
+    cargo_receipt_chain_t cargo_chains[MAX_DELIVERY_BOUND_CARGO];
 } delivery_shipment_t;
 
 typedef struct {
@@ -748,6 +751,31 @@ bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
 bool world_ship_assets_ensure_legacy_bindings(world_t *w);
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind);
+int spawn_cargo_pod_with_manifest(world_t *w, vec2 pos, vec2 vel,
+                                  commodity_t commodity,
+                                  const cargo_unit_t *units,
+                                  uint16_t unit_count,
+                                  cargo_pod_kind_t kind);
+int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
+                                                vec2 vel,
+                                                commodity_t commodity,
+                                                const cargo_unit_t *units,
+                                                uint16_t unit_count,
+                                                cargo_pod_kind_t kind,
+                                                float rotation,
+                                                float spin);
+bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
+                                  commodity_t commodity);
+void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame);
+bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod);
+bool cargo_pod_take_manifest_unit(cargo_pod_t *pod, commodity_t commodity,
+                                  cargo_unit_t *out_unit);
+void step_station_cargo_pod_tractors(world_t *w, float dt);
+int ship_towed_pods_manifest_count(const world_t *w, const ship_t *ship,
+                                   commodity_t commodity);
+bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
+                                        commodity_t commodity,
+                                        cargo_unit_t *out_unit);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 /* v51 cargo-in-space schema migration: tag untagged furnaces by
@@ -867,6 +895,7 @@ void activate_outpost(world_t *w, int station_idx);
 
 /* Hopper/furnace constants — shared between game_sim.c and sim_production.c */
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
-#define HOPPER_PULL_ACCEL 500.0f    /* pull strength */
+#define HOPPER_PULL_ACCEL 500.0f    /* base pull strength */
+#define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
 #endif /* GAME_SIM_H */

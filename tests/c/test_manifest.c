@@ -6,6 +6,27 @@ static void test_fill_bytes(uint8_t out[32], uint8_t seed) {
     for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
 }
 
+static const cargo_pod_t *test_first_exact_pod(const world_t *w,
+                                               commodity_t c,
+                                               uint16_t units) {
+    if (!w) return NULL;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != c) continue;
+        if (pod->manifest_count != units || pod->quantity != units) continue;
+        bool exact = true;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if ((commodity_t)pod->manifest_units[u].commodity != c) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) return pod;
+    }
+    return NULL;
+}
+
 static bool test_signed_receipt_chain(station_t *st, const uint8_t cargo_pub[32],
                                       cargo_receipt_chain_t *out_chain) {
     uint8_t recipient[32];
@@ -332,7 +353,7 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     ASSERT(frame != NULL);
     ASSERT_EQ_INT(frame->input_count, 1);
     ASSERT_EQ_INT(frame->input_commodities[0], COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(frame->output_count, 10);
+    ASSERT_EQ_INT(frame->output_count, 2);
 
     ASSERT(laser != NULL);
     ASSERT_EQ_INT(laser->input_count, 2);
@@ -653,18 +674,21 @@ TEST(test_smelt_manifest_uses_resolved_fragment_pub) {
     a->pos = midpoint;
     memcpy(a->fragment_pub, fragment_pub, sizeof(fragment_pub));
 
+    ASSERT(test_first_exact_pod(w, COMMODITY_FRAME, 16) != NULL);
     initial_manifest = w->stations[0].manifest.count;
     for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
         world_sim_step(w, 1.0f / 120.0f);
 
     ASSERT(!w->asteroids[slot].active);
-    ASSERT_EQ_INT(w->stations[0].manifest.count - initial_manifest, 1);
-    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].parent_merkle,
+    ASSERT_EQ_INT(w->stations[0].manifest.count, initial_manifest);
+    ASSERT(test_first_exact_pod(w, COMMODITY_FRAME, 15) != NULL);
+    const cargo_pod_t *pod = test_first_exact_pod(
+        w, COMMODITY_FERRITE_INGOT, 1);
+    ASSERT(pod != NULL);
+    ASSERT(memcmp(pod->manifest_units[0].parent_merkle,
                   expected.parent_merkle, 32) == 0);
-    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].pub,
-                  expected.pub, 32) == 0);
-    ASSERT_EQ_INT(w->stations[0].manifest.units[initial_manifest].grade,
-                  MINING_GRADE_RARE);
+    ASSERT(memcmp(pod->manifest_units[0].pub, expected.pub, 32) == 0);
+    ASSERT_EQ_INT(pod->manifest_units[0].grade, MINING_GRADE_RARE);
 }
 
 /* Forward-declared so the rebroadcast / pending-queue tests below can
@@ -1008,6 +1032,7 @@ TEST(test_smelt_credit_ignores_claim_winner_identity) {
     memcpy(a->last_fractured_token, w->players[worker].session_token, 8);
     a->last_fractured_by = (int8_t)worker;
 
+    ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
     initial_bystander = ledger_balance(&w->stations[0],
                                        w->players[bystander].session_token);
     initial_worker    = ledger_balance(&w->stations[0],

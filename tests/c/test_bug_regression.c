@@ -1,6 +1,29 @@
 #include "test_harness.h"
 #include "sim_physics.h"
 
+static bool bug_test_spawn_towed_exact_pod(world_t *w,
+                                           server_player_t *sp,
+                                           commodity_t c,
+                                           uint16_t count) {
+    if (!w || !sp || c >= COMMODITY_COUNT || count == 0 ||
+        count > CARGO_POD_MANIFEST_CAP || sp->ship.towed_pod_count >= 10) {
+        return false;
+    }
+    cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
+    memset(units, 0, sizeof(units));
+    const uint8_t origin[8] = { 'B','U','G','T','E','S','T','0' };
+    for (uint16_t i = 0; i < count; i++) {
+        if (!hash_legacy_migrate_unit(origin, c, i, &units[i]))
+            return false;
+    }
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, sp->ship.pos, v2(0.0f, 0.0f), c, units, count, CARGO_POD_CARGO);
+    if (pod_idx < 0) return false;
+    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
+    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
+    return true;
+}
+
 TEST(test_bug2_angle_lerp_wraparound) {
     /* FIXED: apply_remote_player_state should use wrap-aware lerp.
      * Naive lerpf across ±pi boundary should NOT be used. */
@@ -1012,19 +1035,27 @@ TEST(test_bug62_sell_event_no_payout) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    /* Deliver ingots via contract to trigger a sell event */
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
-                                        COMMODITY_FERRITE_INGOT, 20,
-                                        MINING_GRADE_COMMON));
+    w.players[0].id = 0;
+    memset(w.players[0].session_token, 0x62, sizeof(w.players[0].session_token));
+    /* Deliver an ingot crate through Kepler's physical intake to trigger
+     * a sell event. */
+    ASSERT(bug_test_spawn_towed_exact_pod(
+        &w, &w.players[0], COMMODITY_FERRITE_INGOT, 15));
     w.contracts[0] = (contract_t){
         .active = true, .action = CONTRACT_TRACTOR,
-        .station_index = 0,
+        .station_index = 1,
         .commodity = COMMODITY_FERRITE_INGOT,
         .quantity_needed = 15.0f,
         .base_price = 20.0f,
         .target_index = -1, .claimed_by = -1,
     };
-    w.players[0].input.service_sell = true;
+    int hopper_idx = station_find_hopper_for(&w.stations[1],
+                                             COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper_idx >= 0);
+    int pod_idx = w.players[0].ship.towed_pods[0];
+    w.cargo_pods[pod_idx].pos = module_world_pos_ring(
+        &w.stations[1], w.stations[1].modules[hopper_idx].ring,
+        w.stations[1].modules[hopper_idx].slot);
     world_sim_step(&w, SIM_DT);
     /* Find the sell event */
     bool found = false;

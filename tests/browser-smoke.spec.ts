@@ -625,7 +625,7 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
   await hold(page, 'A', 220);
   await hold(page, 'D', 220);
   await hold(page, 'Shift', 300);
-  await tap(page, 'H');        // hail / collect credits
+  await tap(page, 'H');        // hail / contact scan
   await hold(page, 'M', 500);  // mining beam
   await hold(page, 'Space', 550);
   await tap(page, 'Space');    // release tow tap path
@@ -756,7 +756,7 @@ test.describe('Browser smoke tests', () => {
     expect(await hudActionText(page)).toContain('Towing 1 // tap [Space] to release');
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
-    expect(await hudActionText(page)).toContain('H to hail // collect 123 prospect vouchers');
+    expect(await hudActionText(page)).toContain('123 prospect vouchers available // dock to spend');
 
     await setSmokeLoopState(page, smokeLoopState.hailNotice);
     expect(await hudHintText(page)).toContain('Prospect: channel open. Balance 123 cr.');
@@ -880,7 +880,7 @@ test.describe('Browser smoke tests', () => {
 
     await tap(page, 'Tab');
     await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
-    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] trade  [F] page  [S] deliver  [TAB] panel');
+    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] trade  [F] page  [S] sell all  [TAB] panel');
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationTrade)
       .toBe(mobileFlag.stationTrade);

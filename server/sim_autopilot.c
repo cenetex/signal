@@ -485,9 +485,43 @@ static bool autopilot_finished_good(commodity_t c) {
     return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
 }
 
-static bool autopilot_ship_has_finished(const server_player_t *sp, commodity_t c) {
+static bool autopilot_ship_has_finished(const world_t *w,
+                                        const server_player_t *sp,
+                                        commodity_t c) {
     return sp && autopilot_finished_good(c) &&
-           ship_finished_count(&sp->ship, c) > 0;
+           (ship_finished_count(&sp->ship, c) > 0 ||
+            ship_towed_pods_manifest_count(w, &sp->ship, c) > 0);
+}
+
+static bool autopilot_stage_towed_cargo_at_intake(world_t *w,
+                                                  server_player_t *sp,
+                                                  int station_idx,
+                                                  commodity_t cargo) {
+    if (!w || !sp || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        cargo >= COMMODITY_COUNT) {
+        return false;
+    }
+    station_t *st = &w->stations[station_idx];
+    int hopper_idx = station_find_hopper_for(st, cargo);
+    if (hopper_idx < 0 || hopper_idx >= st->module_count ||
+        hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    vec2 hopper_pos = module_world_pos_ring(
+        st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
+    bool staged = false;
+    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO ||
+            pod->shipment_id != 0 || pod->commodity != cargo) {
+            continue;
+        }
+        pod->pos = hopper_pos;
+        staged = true;
+    }
+    return staged;
 }
 
 static float autopilot_station_exit_radius(const station_t *st) {
@@ -576,7 +610,7 @@ static void autopilot_resume_after_station_exit(world_t *w,
     if (sp->autopilot_station_target >= 0 &&
         sp->autopilot_station_target < MAX_STATIONS &&
         sp->autopilot_cargo < COMMODITY_COUNT &&
-        autopilot_ship_has_finished(sp, sp->autopilot_cargo)) {
+        autopilot_ship_has_finished(w, sp, sp->autopilot_cargo)) {
         sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
         return;
     }
@@ -591,12 +625,13 @@ static void autopilot_resume_after_station_exit(world_t *w,
     sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
 }
 
-static bool autopilot_first_ship_finished(const server_player_t *sp,
+static bool autopilot_first_ship_finished(const world_t *w,
+                                          const server_player_t *sp,
                                           commodity_t *out) {
     if (!sp) return false;
     for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
         commodity_t c = (commodity_t)i;
-        if (ship_finished_count(&sp->ship, c) > 0) {
+        if (autopilot_ship_has_finished(w, sp, c)) {
             if (out) *out = c;
             return true;
         }
@@ -724,7 +759,7 @@ static int autopilot_append_contract_candidates(
 
     int count = 0;
     commodity_t held = COMMODITY_COUNT;
-    if (autopilot_first_ship_finished(sp, &held) &&
+    if (autopilot_first_ship_finished(w, sp, &held) &&
         autopilot_has_delivery_demand(w, source_station, held)) {
         const contract_t *best_ct = NULL;
         float best_price = 0.0f;
@@ -1281,7 +1316,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
         sp->input.service_repair = true;
-        if (autopilot_ship_has_finished(sp, cargo)) {
+        if (autopilot_ship_has_finished(w, sp, cargo)) {
             sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_TRAVEL;
             sp->autopilot_timer = 0.0f;
             break;
@@ -1319,7 +1354,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         commodity_t cargo = sp->autopilot_cargo;
         if (!autopilot_valid_dock_station(w, dest) ||
             !autopilot_finished_good(cargo) ||
-            !autopilot_ship_has_finished(sp, cargo)) {
+            !autopilot_ship_has_finished(w, sp, cargo)) {
             autopilot_clear_logistics(sp);
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_timer = 0.0f;
@@ -1410,7 +1445,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         commodity_t cargo = sp->autopilot_cargo;
         if (!autopilot_valid_dock_station(w, dest) ||
             !autopilot_finished_good(cargo) ||
-            !autopilot_ship_has_finished(sp, cargo)) {
+            !autopilot_ship_has_finished(w, sp, cargo)) {
             autopilot_clear_logistics(sp);
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_timer = 0.0f;
@@ -1435,7 +1470,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         int dest = sp->autopilot_station_target;
         commodity_t cargo = sp->autopilot_cargo;
         if (!autopilot_finished_good(cargo) ||
-            !autopilot_ship_has_finished(sp, cargo)) {
+            !autopilot_ship_has_finished(w, sp, cargo)) {
             autopilot_clear_logistics(sp);
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_timer = 0.0f;
@@ -1452,9 +1487,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_timer = 0.0f;
             break;
         }
-        sp->input.service_sell = true;
-        sp->input.service_sell_only = cargo;
-        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        bool staged = autopilot_stage_towed_cargo_at_intake(
+            w, sp, sp->current_station, cargo);
+        if (!staged) {
+            sp->input.service_sell = true;
+            sp->input.service_sell_only = cargo;
+            sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        } else {
+            step_station_cargo_pod_tractors(w, 0.0f);
+        }
         sp->input.service_repair = true;
         if (sp->autopilot_timer > 1.25f) {
             autopilot_clear_logistics(sp);
@@ -1475,7 +1516,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
         sp->input.service_repair = true;
-        if (autopilot_ship_has_finished(sp, cargo) &&
+        if (autopilot_ship_has_finished(w, sp, cargo) &&
             autopilot_has_delivery_demand(w, source, cargo)) {
             sp->autopilot_station_target = source;
             sp->autopilot_state = AUTOPILOT_STEP_LOGISTICS_DELIVER;

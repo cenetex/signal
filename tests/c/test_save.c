@@ -23,6 +23,26 @@ static bool test_issue_station_receipt(station_t *st, const uint8_t cargo_pub[32
                                       cargo_pub) == CARGO_RECEIPT_OK;
 }
 
+static int test_find_exact_pod(const world_t *w, commodity_t c) {
+    if (!w) return -1;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != c) continue;
+        if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
+            continue;
+        bool exact = true;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if ((commodity_t)pod->manifest_units[u].commodity != c) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) return i;
+    }
+    return -1;
+}
+
 static uint32_t test_crc32_update(uint32_t crc, const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     crc = ~crc;
@@ -1162,9 +1182,9 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Prospect's furnace at ring 1 slot 2, ferrite-ore intake hopper at
-     * ring 2 slot 4. 4 modules total — no ingot output hopper because
-     * Prospect has no on-station consumer of ferrite ingots. */
+    /* Prospect's furnace at ring 1 slot 2 and ferrite-ore intake hopper at
+     * ring 2 slot 4. Folded frame pods are tractored by the furnace directly;
+     * no dedicated frame-shell hopper is seeded here. */
     ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
@@ -1307,7 +1327,7 @@ TEST(test_v51_migration_furnace_count_heuristic) {
     ASSERT(station_find_hopper_for(st3, COMMODITY_CRYSTAL_INGOT) >= 0);
 }
 
-TEST(test_world_save_load_preserves_smelted_ingots) {
+TEST(test_world_save_load_preserves_smelted_ingot_pod) {
     /* world_t is ~600KB — use heap to avoid stack overflow on CI. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -1355,17 +1375,30 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     a->pos = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
     a->vel = v2(0.0f, 0.0f);
 
+    ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
     for (int i = 0; i < (int)(10.0f / SIM_DT) && w->asteroids[frag].active; i++)
         world_sim_step(w, SIM_DT);
     ASSERT(!w->asteroids[frag].active);
-    float ingots_before = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
-    ASSERT(ingots_before > 0.0f);
+    int pod_idx = test_find_exact_pod(w, COMMODITY_FERRITE_INGOT);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_t expected = w->cargo_pods[pod_idx];
+    ASSERT_EQ_INT(expected.manifest_count, 20);
+    ASSERT_EQ_INT(expected.quantity, 20);
     ASSERT_EQ_INT((int)w->hopper_smelt_events, 0);
     ASSERT(world_save(w, TMP("test_ingots.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
     ASSERT(world_load(loaded, TMP("test_ingots.sav")));
-    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
+    int loaded_pod_idx = test_find_exact_pod(loaded, COMMODITY_FERRITE_INGOT);
+    ASSERT(loaded_pod_idx >= 0);
+    const cargo_pod_t *loaded_pod = &loaded->cargo_pods[loaded_pod_idx];
+    ASSERT_EQ_INT(loaded_pod->manifest_count, expected.manifest_count);
+    ASSERT_EQ_INT(loaded_pod->quantity, expected.quantity);
+    ASSERT(memcmp(loaded_pod->manifest_units[0].pub,
+                  expected.manifest_units[0].pub, 32) == 0);
+    ASSERT(memcmp(loaded_pod->manifest_units[expected.manifest_count - 1].pub,
+                  expected.manifest_units[expected.manifest_count - 1].pub,
+                  32) == 0);
     remove(TMP("test_ingots.sav"));
     /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
@@ -1582,6 +1615,39 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     };
     memset(w->delivery_shipments[0].cargo_pub[0], 0xa1, 32);
     memset(w->delivery_shipments[0].cargo_pub[1], 0xb2, 32);
+    w->delivery_shipments[0].cargo_units[0] = (cargo_unit_t){
+        .kind = CARGO_KIND_INGOT,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity = 1,
+    };
+    w->delivery_shipments[0].cargo_units[1] =
+        w->delivery_shipments[0].cargo_units[0];
+    memcpy(w->delivery_shipments[0].cargo_units[0].pub,
+           w->delivery_shipments[0].cargo_pub[0], 32);
+    memcpy(w->delivery_shipments[0].cargo_units[1].pub,
+           w->delivery_shipments[0].cargo_pub[1], 32);
+    w->delivery_shipments[0].cargo_chains[0].len = 1;
+    memset(&w->delivery_shipments[0].cargo_chains[0].links[0],
+           0xc3, sizeof(w->delivery_shipments[0].cargo_chains[0].links[0]));
+    memset(&w->cargo_pods[7], 0, sizeof(w->cargo_pods[7]));
+    w->cargo_pods[7] = (cargo_pod_t){
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity = 1,
+        .shipment_id = 11,
+        .pos = { 44.0f, -12.0f },
+        .vel = { 1.0f, 2.0f },
+        .radius = 18.0f,
+        .rotation = 0.7f,
+        .spin = 0.25f,
+        .age = 3.0f,
+        .towed_by = 0,
+    };
+    w->cargo_pods[7].has_shell_frame = true;
+    ASSERT(hash_legacy_migrate_unit((const uint8_t *)"SAVESHEL",
+                                    COMMODITY_FRAME, 0,
+                                    &w->cargo_pods[7].shell_frame));
 
     ASSERT(world_save(w, TMP("test_delivery_shipments.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
@@ -1597,7 +1663,85 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_FLOAT(shipment->debt_principal, 40.0f, 0.001f);
     ASSERT(memcmp(shipment->cargo_pub[0], w->delivery_shipments[0].cargo_pub[0], 32) == 0);
     ASSERT(memcmp(shipment->cargo_pub[1], w->delivery_shipments[0].cargo_pub[1], 32) == 0);
+    ASSERT(memcmp(shipment->cargo_units[0].pub, w->delivery_shipments[0].cargo_pub[0], 32) == 0);
+    ASSERT(memcmp(shipment->cargo_units[1].pub, w->delivery_shipments[0].cargo_pub[1], 32) == 0);
+    ASSERT_EQ_INT(shipment->cargo_chains[0].len, 1);
+    ASSERT(memcmp(&shipment->cargo_chains[0].links[0],
+                  &w->delivery_shipments[0].cargo_chains[0].links[0],
+                  sizeof(shipment->cargo_chains[0].links[0])) == 0);
+    const cargo_pod_t *pod = &loaded->cargo_pods[7];
+    ASSERT(pod->active);
+    ASSERT_EQ_INT(pod->kind, CARGO_POD_CARGO);
+    ASSERT_EQ_INT(pod->commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(pod->quantity, 1);
+    ASSERT_EQ_INT(pod->shipment_id, 11);
+    ASSERT_EQ_INT(pod->towed_by, 0);
+    ASSERT(pod->has_shell_frame);
+    ASSERT_EQ_INT(pod->shell_frame.commodity, COMMODITY_FRAME);
+    ASSERT(memcmp(pod->shell_frame.pub,
+                  w->cargo_pods[7].shell_frame.pub, 32) == 0);
+    ASSERT_EQ_FLOAT(pod->pos.x, 44.0f, 0.001f);
+    ASSERT_EQ_FLOAT(pod->pos.y, -12.0f, 0.001f);
     remove(TMP("test_delivery_shipments.sav"));
+}
+
+TEST(test_player_load_restores_towed_cargo_pods_from_world) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x72, sizeof(sp->session_token));
+    sp->current_station = 0;
+    sp->ship.pos = v2(120.0f, -30.0f);
+    sp->ship.angle = 0.5f;
+    cargo_unit_t frame_units[8] = {{0}};
+    const uint8_t origin[8] = { 'S','A','V','E','P','O','D','1' };
+    for (uint16_t i = 0; i < 8; i++) {
+        ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i,
+                                        &frame_units[i]));
+    }
+    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship.pos,
+                                                v2(0.0f, 0.0f),
+                                                COMMODITY_FRAME,
+                                                frame_units, 8,
+                                                CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    w->cargo_pods[pod_idx].towed_by = 0;
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+
+    ASSERT(player_save(sp, test_tmp_dir(), 0));
+    ASSERT(world_save(w, TMP("test_towed_pods_world.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(loaded);
+    ASSERT(world_load(loaded, TMP("test_towed_pods_world.sav")));
+    server_player_t *lp = &loaded->players[0];
+    lp->id = 0;
+    lp->session_ready = true;
+    memset(lp->session_token, 0x72, sizeof(lp->session_token));
+    ASSERT(player_load_by_token(lp, loaded, test_tmp_dir(), sp->session_token));
+
+    ASSERT_EQ_INT(lp->ship.towed_pod_count, 1);
+    int restored_idx = lp->ship.towed_pods[0];
+    ASSERT_EQ_INT(restored_idx, pod_idx);
+    ASSERT(loaded->cargo_pods[restored_idx].active);
+    ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].towed_by, 0);
+    ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].quantity, 8);
+    ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].manifest_count, 8);
+    ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[0].pub,
+                  frame_units[0].pub, 32) == 0);
+    ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[7].pub,
+                  frame_units[7].pub, 32) == 0);
+    ASSERT(v2_dist_sq(loaded->cargo_pods[restored_idx].pos,
+                      lp->ship.pos) < 120.0f * 120.0f);
+
+    remove(TMP("test_towed_pods_world.sav"));
 }
 
 /*
@@ -1676,8 +1820,17 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
 	 * v65: pending ship-build records expand from 12B to 52B so each
 	 * player commission captures the owner's pubkey/session identity.
 	 * v66: +8B per station for faction id/allegiance/ideology and
-	 * compact diplomacy relations. */
-	#define EXPECTED_SAVE_SIZE 764344
+	 * compact diplomacy relations.
+		 * v67: active delivery shipments add variable exact cargo payloads;
+		 * fresh world.sav has no active shipment payload, so unchanged.
+		 * v68: active cargo pod tail persists the starter Kepler frame pod
+		 * in fresh worlds.
+             * v69: cargo pods can persist exact manifest payloads; the fresh
+             * Kepler frame pod now saves its 16 frame units.
+             * Prospect also starts with a 16-frame shell pod for the starter
+             * furnace loop.
+             * v70: active cargo pods persist their folded shell-frame flag. */
+			#define EXPECTED_SAVE_SIZE 766994
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1714,7 +1867,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 66);
+    ASSERT_EQ_INT((int)version, 70);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -1877,9 +2030,10 @@ void register_save_persistence_tests(void) {
     RUN(test_v3_station_catalog_repairs_helios_smelter_layout);
     RUN(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers);
     RUN(test_v51_migration_furnace_count_heuristic);
-    RUN(test_world_save_load_preserves_smelted_ingots);
+    RUN(test_world_save_load_preserves_smelted_ingot_pod);
     RUN(test_world_save_load_preserves_hauler_manifest_cargo);
     RUN(test_world_save_load_preserves_delivery_shipments);
+    RUN(test_player_load_restores_towed_cargo_pods_from_world);
     RUN(test_contract_target_pub_roundtrips);
 }
 

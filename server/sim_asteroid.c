@@ -136,6 +136,23 @@ static float fracture_signal_radius(const world_t *w, vec2 pos) {
     return radius;
 }
 
+static int fracture_witness_station_for_position(const world_t *w, vec2 pos) {
+    int witness = -1;
+    float best_d2 = 0.0f;
+    if (!w) return -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_provides_signal(st)) continue;
+        float sr = st->signal_range;
+        float d2 = v2_dist_sq(pos, st->pos);
+        if (d2 <= sr * sr && (witness < 0 || d2 < best_d2)) {
+            witness = s;
+            best_d2 = d2;
+        }
+    }
+    return witness;
+}
+
 static bool player_can_claim_fracture(const world_t *w, int player_id, int asteroid_idx) {
     const server_player_t *sp;
     float radius;
@@ -219,6 +236,28 @@ static void fracture_commit_resolution(world_t *w, int asteroid_idx,
                                 best_nonce, a->fragment_pub);
     a->grade = (uint8_t)best_grade;
     a->net_dirty = true;
+
+    {
+        int witness = fracture_witness_station_for_position(w, a->pos);
+        if (witness >= 0) {
+            chain_payload_claim_fragment_t payload;
+            memset(&payload, 0, sizeof(payload));
+            memcpy(payload.fracture_seed, a->fracture_seed, 32);
+            memcpy(payload.fragment_pub, a->fragment_pub, 32);
+            memcpy(payload.claimant_pubkey, state->best_player_pub, 32);
+            payload.fracture_id = state->fracture_id;
+            payload.burst_nonce = best_nonce;
+            payload.burst_cap = state->burst_cap;
+            payload.grade = (uint8_t)best_grade;
+            payload.asteroid_slot = (uint8_t)asteroid_idx;
+            (void)chain_log_emit(w, &w->stations[witness],
+                                 CHAIN_EVT_CLAIM_FRAGMENT,
+                                 &payload, (uint16_t)sizeof(payload));
+        } else {
+            SIM_LOG("[chain] fracture claim resolved out of signal range — "
+                    "no witness, no claim event emitted\n");
+        }
+    }
 
     /* Push onto the resolve broadcast queue. The claim state's
      * resolved_dirty flag can get wiped by step_furnace_smelting in
@@ -482,17 +521,7 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
     {
         static const uint8_t zero_pub[32] = {0};
         if (memcmp(parent.rock_pub, zero_pub, 32) != 0) {
-            int witness = -1;
-            float best_d2 = 0.0f;
-            for (int s = 0; s < MAX_STATIONS; s++) {
-                const station_t *st = &w->stations[s];
-                if (!station_provides_signal(st)) continue;
-                float sr = st->signal_range;
-                float d2 = v2_dist_sq(parent.pos, st->pos);
-                if (d2 <= sr * sr && (witness < 0 || d2 < best_d2)) {
-                    witness = s; best_d2 = d2;
-                }
-            }
+            int witness = fracture_witness_station_for_position(w, parent.pos);
             if (witness >= 0) {
                 /* fractured_by is a player slot index (or -1). Look up
                  * their pubkey if we have one; otherwise leave zero. */

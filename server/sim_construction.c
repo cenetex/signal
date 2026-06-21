@@ -3,6 +3,7 @@
  * and outpost founding.  Extracted from game_sim.c.
  */
 #include "sim_construction.h"
+#include "chain_log.h"
 #include "sim_nav.h"
 
 /* ------------------------------------------------------------------ */
@@ -25,6 +26,99 @@ float module_build_cost(module_type_t type) {
  * scaffolds require two active shipyards. */
 bool station_sells_scaffold(const station_t *st, module_type_t type) {
     return station_can_order_scaffold(st, type);
+}
+
+static bool construction_cargo_pub_nonzero(const cargo_unit_t *unit) {
+    static const uint8_t zero[32] = {0};
+    return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
+}
+
+static void emit_module_supply_contribution(world_t *w, station_t *st,
+                                            int station_idx, int module_idx,
+                                            const station_module_t *module,
+                                            commodity_t commodity,
+                                            const cargo_unit_t *unit,
+                                            float progress_after) {
+    if (!w || !st || !module || !construction_cargo_pub_nonzero(unit))
+        return;
+    chain_payload_construction_t payload = {0};
+    memcpy(payload.cargo_pub, unit->pub, sizeof(payload.cargo_pub));
+    payload.target_kind = CONSTRUCTION_TARGET_MODULE;
+    payload.station_index = (station_idx >= 0 && station_idx <= 255)
+        ? (uint8_t)station_idx : 0xff;
+    payload.module_index = (module_idx >= 0 && module_idx <= 255)
+        ? (uint8_t)module_idx : 0xff;
+    payload.module_type = (uint8_t)module->type;
+    payload.commodity = (uint8_t)commodity;
+    payload.target_id = (station_idx >= 0) ? (uint64_t)station_idx : 0u;
+    payload.contributed_units = 1.0f;
+    payload.progress_after = progress_after;
+    (void)chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION,
+                         &payload, sizeof(payload));
+}
+
+static bool construction_pod_staged_at_matching_hopper(const station_t *st,
+                                                       int station_idx,
+                                                       const station_module_t *module,
+                                                       const cargo_pod_t *pod,
+                                                       commodity_t material) {
+    if (!st || !module || !pod || material >= COMMODITY_COUNT) return false;
+    const float consumer_range_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != material) continue;
+        if (!cargo_pod_is_tractored_by_module(pod, station_idx, i)) continue;
+        vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                hopper->slot);
+        if (v2_dist_sq(hopper_pos, module_pos) > consumer_range_sq)
+            continue;
+        return true;
+    }
+    return false;
+}
+
+static int feed_module_supply_from_loose_pods(world_t *w, station_t *st,
+                                              int station_idx,
+                                              int module_idx,
+                                              station_module_t *module,
+                                              commodity_t material,
+                                              float cost,
+                                              float needed) {
+    if (!w || !st || !module || material >= COMMODITY_COUNT ||
+        cost <= 0.0f || needed <= 0.01f) {
+        return 0;
+    }
+    int max_units = (int)ceilf(needed - 0.0001f);
+    if (max_units <= 0) return 0;
+
+    int accepted = 0;
+    for (int i = 0; i < MAX_CARGO_PODS && accepted < max_units; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!cargo_pod_has_exact_manifest(pod, material)) continue;
+        if (pod->towed_by >= 0) continue;
+        if (!construction_pod_staged_at_matching_hopper(st, station_idx,
+                                                        module, pod,
+                                                        material))
+            continue;
+
+        while (accepted < max_units &&
+               cargo_pod_has_exact_manifest(pod, material) &&
+               module_build_state(module) == MODULE_BUILD_AWAITING_SUPPLY) {
+            cargo_unit_t unit = {0};
+            if (!cargo_pod_take_manifest_unit(pod, material, &unit))
+                break;
+            module->build_progress += 1.0f / cost;
+            if (module->build_progress > 1.0f - 0.0001f)
+                module->build_progress = 1.0f;
+            emit_module_supply_contribution(
+                w, st, station_idx, module_idx, module, material, &unit,
+                module_supply_fraction(module));
+            accepted++;
+        }
+    }
+    return accepted;
 }
 
 /* ------------------------------------------------------------------ */
@@ -249,17 +343,25 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
  * see the same constant without having to import a server header. */
 
 void step_module_activation(world_t *w, float dt) {
+    step_station_cargo_pod_tractors(w, 0.0f);
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        /* Route station inventory to scaffold modules (NPC deliveries) */
+        /* Route physical pod units into scaffold modules first, then fall
+         * back to station inventory for legacy saves and NPC deliveries
+         * that have not yet migrated to pods. */
         for (int i = 0; i < st->module_count; i++) {
             station_module_t *m = &st->modules[i];
             if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
             commodity_t mat = module_build_material(m->type);
-            if (st->_inventory_cache[mat] < 0.01f) continue;
             float cost = module_build_cost(m->type);
             float needed = cost * (1.0f - module_supply_fraction(m));
             if (needed < 0.01f) continue;
+            int pod_units = feed_module_supply_from_loose_pods(
+                w, st, s, i, m, mat, cost, needed);
+            if (pod_units > 0)
+                needed = cost * (1.0f - module_supply_fraction(m));
+            if (needed < 0.01f || st->_inventory_cache[mat] < 0.01f)
+                continue;
             float deliver = fminf(st->_inventory_cache[mat], needed);
             st->_inventory_cache[mat] -= deliver;
             m->build_progress += deliver / cost;

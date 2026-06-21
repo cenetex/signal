@@ -37,6 +37,8 @@ enum {
     MAX_NPC_SHIPS = 100,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
+    CARGO_POD_MANIFEST_CAP = 200, /* one rich ore fragment can become one full smelt pod */
+    CARGO_POD_UNIT_CAPACITY = 20, /* normal production crates fill to this many units */
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -908,6 +910,13 @@ typedef struct {
     cargo_pod_kind_t kind;
     commodity_t commodity;
     uint16_t quantity;
+    uint16_t manifest_count;
+    cargo_unit_t manifest_units[CARGO_POD_MANIFEST_CAP];
+    bool has_shell_frame;
+    cargo_unit_t shell_frame; /* folded COMMODITY_FRAME unit unfolded into this pod shell */
+    uint16_t shipment_id; /* delivery_shipment_t::shipment_id when this wraps credit cargo */
+    uint8_t summary_flags; /* live net summary flags; not persisted as authority */
+    uint8_t summary_grade; /* live net best manifest grade; not persisted as authority */
     vec2 pos;
     vec2 vel;
     float radius;
@@ -915,7 +924,53 @@ typedef struct {
     float spin;
     float age;
     int8_t towed_by; /* player id, -1 = loose */
+    uint8_t tractor_station; /* 0 = none, otherwise station index + 1 */
+    uint8_t tractor_module;  /* 0 = none, otherwise module index + 1 */
 } cargo_pod_t;
+
+static inline void cargo_pod_clear_module_tractor(cargo_pod_t *pod) {
+    if (!pod) return;
+    pod->tractor_station = 0;
+    pod->tractor_module = 0;
+}
+
+static inline bool cargo_pod_has_module_tractor(const cargo_pod_t *pod) {
+    return pod && pod->tractor_station != 0 && pod->tractor_module != 0;
+}
+
+static inline bool cargo_pod_module_tractor_indices(const cargo_pod_t *pod,
+                                                    int *out_station,
+                                                    int *out_module) {
+    if (!cargo_pod_has_module_tractor(pod)) return false;
+    int station = (int)pod->tractor_station - 1;
+    int module = (int)pod->tractor_module - 1;
+    if (station < 0 || station >= MAX_STATIONS ||
+        module < 0 || module >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    if (out_station) *out_station = station;
+    if (out_module) *out_module = module;
+    return true;
+}
+
+static inline bool cargo_pod_is_tractored_by_module(const cargo_pod_t *pod,
+                                                    int station_idx,
+                                                    int module_idx) {
+    int ps = -1, pm = -1;
+    return cargo_pod_module_tractor_indices(pod, &ps, &pm) &&
+           ps == station_idx && pm == module_idx;
+}
+
+static inline void cargo_pod_set_module_tractor(cargo_pod_t *pod,
+                                                int station_idx,
+                                                int module_idx) {
+    if (!pod || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        module_idx < 0 || module_idx >= MAX_MODULES_PER_STATION) {
+        return;
+    }
+    pod->tractor_station = (uint8_t)(station_idx + 1);
+    pod->tractor_module = (uint8_t)(module_idx + 1);
+}
 
 typedef enum {
     CRYSTAL_STAGE_RAW = 0,
@@ -1080,6 +1135,8 @@ typedef struct {
     hull_class_t commission_hull_class;
     bool buy_product;
     commodity_t buy_commodity;
+    bool buy_station_pod;
+    uint16_t buy_station_pod_index;
     /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
      * "any grade available, FIFO"; a specific grade means "only transfer
      * a unit of this grade — if none exist, the float path still runs

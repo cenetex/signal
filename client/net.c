@@ -1049,6 +1049,12 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].radius = read_f32_le(&p[20]);
                 pods[i].rotation = read_f32_le(&p[24]);
                 pods[i].quantity = (uint16_t)p[28] | ((uint16_t)p[29] << 8);
+                pods[i].manifest_count = read_u16_le(&p[30]);
+                pods[i].shipment_id = read_u16_le(&p[32]);
+                pods[i].summary_flags = p[34];
+                pods[i].summary_grade = p[35];
+                pods[i].tractor_station = p[36];
+                pods[i].tractor_module = p[37];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }

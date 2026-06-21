@@ -494,6 +494,8 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     a->pos = midpoint;
     a->vel = v2(0, 0);
 
+    ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
+
     /* Run sim until the fragment smelts (smelt_progress accumulates
      * at ~0.5/s; cap at a generous 10 s of sim time). */
     for (int i = 0; i < 1200 && w->asteroids[slot].active; i++)
@@ -585,6 +587,82 @@ TEST(test_chain_log_rock_destroy_emits_event) {
     uint64_t walked = 0;
     ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
     ASSERT(walked >= 1);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_claim_fragment_emits_event) {
+    chain_test_setup("claim_fragment");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9009u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    int slot = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { slot = i; break; }
+    }
+    ASSERT(slot >= 0);
+    asteroid_t *a = &w->asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 1.0f;
+    a->radius = 8.0f;
+    a->pos = w->stations[0].pos;
+    for (int b = 0; b < 32; b++) a->fracture_seed[b] = (uint8_t)(0x50 + b);
+
+    fracture_claim_state_t *claim = &w->fracture_claims[slot];
+    fracture_claim_state_reset(claim);
+    claim->active = true;
+    claim->fracture_id = 44;
+    claim->deadline_ms = 1;
+    claim->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
+    w->time = 1.0;
+
+    step_fracture_claims(w);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT(walked == 1);
+
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              path, sizeof(path)));
+    FILE *fp = fopen(path, "rb");
+    ASSERT(fp != NULL);
+    bool saw_claim = false;
+    chain_event_header_t hdr;
+    while (fread(&hdr, sizeof(hdr), 1, fp) == 1) {
+        uint16_t plen = 0;
+        ASSERT(fread(&plen, sizeof(plen), 1, fp) == 1);
+        if (hdr.type == CHAIN_EVT_CLAIM_FRAGMENT &&
+            plen == sizeof(chain_payload_claim_fragment_t)) {
+            chain_payload_claim_fragment_t pl;
+            ASSERT(fread(&pl, sizeof(pl), 1, fp) == 1);
+            uint8_t zero_pub[32] = {0};
+            uint8_t expected_fragment[32];
+            mining_fragment_pub_compute(a->fracture_seed, zero_pub,
+                                        pl.burst_nonce, expected_fragment);
+            ASSERT(memcmp(pl.fracture_seed, a->fracture_seed, 32) == 0);
+            ASSERT(memcmp(pl.fragment_pub, expected_fragment, 32) == 0);
+            ASSERT(memcmp(pl.fragment_pub, a->fragment_pub, 32) == 0);
+            ASSERT(memcmp(pl.claimant_pubkey, zero_pub, 32) == 0);
+            ASSERT_EQ_INT((int)pl.fracture_id, 44);
+            ASSERT_EQ_INT((int)pl.burst_cap, FRACTURE_CHALLENGE_BURST_CAP);
+            ASSERT_EQ_INT((int)pl.grade, (int)a->grade);
+            ASSERT_EQ_INT((int)pl.asteroid_slot, slot);
+            saw_claim = true;
+        } else {
+            fseek(fp, plen, SEEK_CUR);
+        }
+    }
+    fclose(fp);
+    ASSERT(saw_claim);
+
     chain_test_teardown();
 }
 
@@ -1126,6 +1204,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_hopper_smelt_path_retired);
     RUN(test_chain_log_smelt_emits_event_fragment_path);
     RUN(test_chain_log_rock_destroy_emits_event);
+    RUN(test_chain_log_claim_fragment_emits_event);
     RUN(test_chain_log_operator_post_emit);
     RUN(test_chain_log_operator_post_all_kinds);
     RUN(test_chain_log_operator_post_replay_determinism);

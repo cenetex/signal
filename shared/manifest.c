@@ -44,7 +44,7 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .name = "frame/basic",
         .output_kind = CARGO_KIND_FRAME,
         .output_commodity = COMMODITY_FRAME,
-        .output_count = 10,
+        .output_count = 2,
         .input_count = 1,
         .input_commodities = { COMMODITY_FERRITE_INGOT, COMMODITY_COUNT },
     },

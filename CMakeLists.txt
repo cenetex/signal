@@ -54,10 +54,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # set, every target (server, test, client) is built.
 option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
 option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
-# Layer E of #479: standalone CLI tool for verifying station chain
-# logs post-mortem. Default ON so dev builds get it; the
+# Layer E of #479: standalone CLI tools for verifying/exporting station
+# chain logs post-mortem. Default ON so dev builds get them; the
 # server-only Docker image flips it off.
-option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_replay)" ON)
+option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
@@ -324,6 +324,23 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(signal_chain_assets PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_rati_receipt
+        tools/signal_rati_receipt.c
+        server/chain_log_verify.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_rati_receipt PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_rati_receipt PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_rati_receipt PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_rati_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(flight_trace
         tools/flight_trace.c
         ${SIGNAL_SIM_SOURCES}
@@ -540,6 +557,7 @@ if(EMSCRIPTEN)
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
         "SHELL:-sSTACK_SIZE=8388608"
+        "SHELL:-sDECLARE_ASM_MODULE_EXPORTS=0"
         "SHELL:-sEXPORTED_FUNCTIONS=[${SIGNAL_EMSCRIPTEN_EXPORTS_CSV}]"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
