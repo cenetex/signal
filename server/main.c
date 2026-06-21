@@ -2936,10 +2936,10 @@ static bool serve_static_http(struct mg_connection *c,
             "Expires: 0\r\n"
             "X-Content-Type-Options: nosniff\r\n",
         .mime_types =
-            ".wasm=application/wasm,"
-            ".js=text/javascript,"
-            ".mjs=text/javascript,"
-            ".html=text/html; charset=utf-8",
+            "wasm=application/wasm,"
+            "js=text/javascript,"
+            "mjs=text/javascript,"
+            "html=text/html; charset=utf-8",
     };
     mg_http_serve_dir(c, hm, &opts);
     return true;
