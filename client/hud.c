@@ -250,6 +250,28 @@ static const char *hud_asteroid_usefulness(const asteroid_t *a) {
         }
     }
 
+    if (a->tier == ASTEROID_TIER_S && a->commodity < COMMODITY_COUNT) {
+        int best_station = -1;
+        float best_severity = 0.0f;
+        int station_count = g.world.station_count;
+        if (station_count < 0) station_count = 0;
+        if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+        for (int i = 0; i < station_count; i++) {
+            station_demand_t demand =
+                station_demand_for(&g.world.stations[i], a->commodity);
+            if (demand.severity > best_severity) {
+                best_severity = demand.severity;
+                best_station = i;
+            }
+        }
+        if (best_station >= 0 && best_severity >= 0.20f) {
+            snprintf(label, sizeof(label), "%s at %s",
+                     best_severity >= 0.65f ? "needed" : "wanted",
+                     station_short_name(best_station));
+            return label;
+        }
+    }
+
     if (a->tier == ASTEROID_TIER_S &&
         a->grade >= (uint8_t)MINING_GRADE_RARE) {
         snprintf(label, sizeof(label), "%s grade",
@@ -3298,6 +3320,13 @@ static int smoke_apply_loop_state(int state) {
         sp->ship.tractor_active = true;
         return 1;
     case SMOKE_LOOP_STATE_TOWING:
+        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
+            return 0;
+        smoke_seed_asteroid(0, ASTEROID_TIER_S, COMMODITY_FERRITE_ORE,
+                            v2_add(sp->ship.pos, v2(120.0f, -30.0f)),
+                            12.0f, 1.0f, 7.0f);
+        g.world.asteroids[0].grade = (uint8_t)MINING_GRADE_COMMON;
+        g.world.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
         sp->ship.towed_count = 1;
         sp->ship.towed_fragments[0] = 0;
         return 1;

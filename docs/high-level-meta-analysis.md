@@ -258,14 +258,18 @@ The design center is strongest when every UI surface reinforces this table.
 
 ## Current Strategic Read
 
-The codebase appears to have built a deeper substrate than the average player
-can yet perceive. The sim knows about provenance, station authority, gossip,
-route memory, construction, local currency, and worker decision pressure. The
-main product risk is not absence of systems. It is **legibility debt**.
+The codebase has built a deeper substrate than the average player can yet
+perceive. Recent legibility work made several core rules visible: thrown-rock
+danger, low-signal control loss, single-player station-local money, construction
+consequence, and first-pass fragment demand. The sim still knows more than the
+normal first read exposes: provenance, station authority, gossip, route memory,
+and worker decision pressure. The main product risk is no longer total
+invisibility. It is **synthesis debt**.
 
 The recent UI direction correctly identifies this as the central problem. The
 next product milestone should be judged less by "did we add another system?"
-and more by "can a player feel the systems that already exist?"
+and more by "can a player understand why the systems that already exist matter
+right now?"
 
 The key player questions are:
 
@@ -358,17 +362,18 @@ using routes, failing, repairing, and reinforcing what matters.
 
 ## Highest-Leverage Next Moves
 
-1. **Throw legibility.** The signature verb needs visual tension, lethality,
-   and target feedback.
-2. **Station-local ledger strip.** Make local money impossible to misunderstand.
-3. **NPC contact cards.** Show workers as carriers of cargo, memory, and
+1. **NPC contact cards.** Show workers as carriers of cargo, memory, and
    motive.
+2. **Station memory summary.** Make stations answer what they know, need, and
+   remember about the player before the HISTORY tab.
+3. **Rock economic usefulness.** Go beyond danger and direct demand so fragments
+   can name smelt path, route value, and work fit before docking.
 4. **Route memory surfacing.** Let stations and contracts show why routes
    matter.
 5. **Lineage view.** Make one rock-to-infrastructure story inspectable end to
    end.
-6. **Low-signal experiential UI.** Make signal loss feel like loss of
-   civilization, not just lower stats.
+6. **Multiplayer ledger parity.** Carry known station-local balances over the
+   wire without implying a global wallet.
 7. **History-derived reputation.** Start naming trusted haulers, dangerous
    routes, old outposts, and repaired corridors from chain-log evidence.
 

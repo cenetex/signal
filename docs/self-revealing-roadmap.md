@@ -14,6 +14,13 @@ bands, construction, and thrown-rock combat. The next product step is not to
 add another hidden layer. It is to make the existing layers explain themselves
 through play.
 
+The first implementation pass has already moved several items into baseline:
+throw release vectors and target brackets, low-signal control warnings,
+single-player station ledger strips and local-credit notices, construction
+activation consequence copy, and first-pass fragment usefulness labels for
+tracked work, direct station demand, and rare grade. The next pass should build
+on those cues rather than re-spec them.
+
 Self-revealing does not mean tutorial-heavy. It means the player can infer what
 the world knows, wants, remembers, and withholds by looking at the world and
 acting inside it.
@@ -391,13 +398,17 @@ Weak examples:
 
 ## Suggested Next Backlog
 
-1. Implement world-space throw release vectors and lethal target brackets.
-2. Add a station ledger strip for current and known non-zero station balances.
-3. Convert scan/hail NPC output into clarity-based contact cards.
-4. Add a compact lineage story view for selected cargo.
-5. Add low-signal control warning at frontier/fringe thresholds.
-6. Add construction result feedback that names newly unlocked capability.
-7. Add route memory drill-down for HISTORY once compact rows overflow.
+1. Convert scan/hail NPC output into stable clarity-based contact cards that
+   lead with cargo, destination, and motive.
+2. Add a dock-level station memory summary: "known for" and "you here" from
+   signed local state, with gossip styled as lower certainty.
+3. Deepen fragment usefulness beyond direct demand: smelt destination, route
+   memory, and nearby untracked work.
+4. Add multiplayer known-ledger snapshots so the single-player ledger strip can
+   render honestly in public sessions.
+5. Add a compact lineage story view for selected cargo.
+6. Add route memory drill-down for HISTORY once compact rows overflow.
+7. Tune throw and low-signal cues only from playtest evidence.
 
 ## Final Rule
 
@@ -406,4 +417,3 @@ perceptible.
 
 If making it perceptible would expose that the system is not yet meaningful,
 that is useful product information.
-

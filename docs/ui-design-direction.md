@@ -16,9 +16,9 @@ The rock is the verb. Provenance is the noun. The neural-worker / holographic-go
 
 ## 2. The core tension this report exists to resolve
 
-The sim's intelligence lives where the player cannot see it. The signature mechanic (the thrown rock) has no aim, tension, or target UI. The sovereign per-station economy is not even transmitted to the flying client. The gossip/AI layer is, by its own gap-analysis, "interesting enough to look arbitrary."
+The sim's intelligence lives where the player cannot see it. The first legibility pass closed several acute surfaces: thrown rocks now expose release tension and target locks, low signal now names control loss, construction activation names capability, and single-player station UI explains local credits. The remaining crisis is less about missing warning lights and more about synthesis: NPCs, stations, and rocks need to lead with the strongest state-grounded reason they matter.
 
-This is **one legibility crisis, not three UI bugs.** Recent work raised the sophistication ceiling without raising the legibility floor. The direction below is: *stop adding invisible intelligence; surface the intelligence already computed.*
+This is **one legibility crisis, not three UI bugs.** Recent work raised the legibility floor; the direction below remains: *stop adding invisible intelligence; surface the intelligence already computed.*
 
 ## 3. The organizing principle — **clarity = certainty**
 
@@ -48,7 +48,24 @@ This single rule unifies the throw, the NPC readout, the gossip strip, contract 
 
 ## 5. Prioritized work
 
-### P1 — Throw visualization (the signature mechanic, currently mute)
+### Current shipped baseline
+
+These items moved from direction to implemented baseline:
+
+- Throw visualization: hot/cold release vectors and lethal target brackets.
+- Low-signal control banner: `[ LOW SIGNAL -- CTRL n% ]` before near-zero loss,
+  with `CTRL%` telemetry in the compact path.
+- Station-local ledger legibility in single-player: docked ledger strip and
+  first zero-balance local-credit notice.
+- Construction consequence notices: activation text names relay, furnace,
+  shipyard, dock, storage, or service consequences.
+- Fragment usefulness first pass: tracked contract fit, direct station demand,
+  and rare grade fallback in the target/tow HUD.
+
+The next work should not repaint those shipped cues. It should stabilize NPC
+motive, summarize station memory, and deepen rock value beyond direct demand.
+
+### P1 — Throw visualization (shipped baseline)
 
 The hidden rule: a slack release does ~0 damage; the player must deep-stretch the tractor band toward its snap limit to clear the hull-damage threshold (release speed ≈40 base vs damage threshold ≈115). Per-fragment velocity/stretch is already computed server-side. Draw it as world-space vectors:
 
@@ -68,9 +85,11 @@ The hidden rule: a slack release does ~0 damage; the player must deep-stretch th
 - No tutorial text. The player swings wide, watches a stub turn red, and learns "make it glow, then release" through motion.
 - The lock bracket appears **only when a lethal shot is actually pointed at a target** — so it doubles as "you can hurt that pirate now."
 - Honest caveat: tap-release flings *all* towed fragments along their own axes, so "aim" is really "which fragment is hottest and where it points." The visualization works with that. If true aim is later wanted, the minimal sim change is *tap = throw hottest toward facing; hold = dump all* — the UI is identical either way. **Ship the visualization first; only change the sim if players still can't aim.**
-- Hooks: `world_draw.c` (towed-tether path already brightens with stretch — extend it into release vectors + cone + lock).
+- Hooks: `world_draw.c` now owns release preview, hotness, and lock rendering.
+  Future throw work should be driven by playtest findings or by richer
+  economic usefulness, not more combat chrome.
 
-### P2 — NPC contact readout ("read their story")
+### P1 — NPC contact readout ("read their story")
 
 Replace the hash/diagnostic dump shown on scan/hail with a small contact card in the clarity grammar. Fresh, close contact:
 
@@ -97,30 +116,57 @@ Stale / second-hand contact (heard about, not witnessed):
 - This converts the project's #1 stated legibility gap into a pure UI win on data that already exists, and it is the main thing that makes a solo world feel populated.
 - Hooks: the existing inspect-snapshot wire data + gossip memory fields (subject, confidence, salience, age, hops, route reputation). Render through the existing callsign helper (never raw hex).
 
-### P3 — Overheard gossip at dock
+### P2 — Station memory and overheard gossip at dock
 
-Docking already triggers physical gossip exchange. Surface a tiny decaying rumor strip (2–3 lines, clarity grammar) so a dock feels like a place where news travels:
+Docking already triggers physical gossip exchange, and station UI can already
+show OVERHEARD/HISTORY rows. The next improvement is a first-read station memory
+strip: what this place is known for, and what it remembers about the player.
 
 ```
   · a hauler's been working the Helios run
   · ⚠ rocks thrown near Kepler recently      (faint = old / unconfirmed)
 ```
 
-The cheapest "the world knows things you don't" win; the connective tissue of a solo session.
+This is the connective tissue of a solo session: stations should feel like
+institutions with memory, not only menus with history tabs.
 
-### P4 — Per-station ledger legibility
+### P3 — Rock economic usefulness
 
-The sovereign-currency conceit ("Prospect credits are worthless at Helios") is currently invisible: in multiplayer the client holds a single balance float; other-station ledgers are never sent. Needs a small wire addition (the player's non-zero ledger rows; `STATION_LEDGER_MAX` already sized) plus a compact strip when docked/hailing:
+The target/tow HUD now has a first-pass usefulness line: tracked work, direct
+station demand, and rare grade. Deepen it only where the sim can prove the
+reason:
+
+```
+  needed at Prospect
+  smelts to FE ingot
+  route remembers Prospect>Kepler
+```
+
+Rules:
+
+- direct demand is crisp
+- route/gossip memory uses clarity degradation
+- tracked contract still wins over general usefulness
+- rare grade remains the fallback when no stronger economic reason exists
+
+### P4 — Multiplayer ledger snapshot
+
+The sovereign-currency conceit is legible in single-player. Multiplayer still
+needs a compact known-ledger snapshot before the client can safely show
+cross-station balances:
 
 ```
   PROSPECT 240 · HELIOS 0 · KEPLER 88     (current station highlighted)
 ```
 
-First time the player has credits at A and docks at B with zero, fire one subtitle: *"Credits stay where you earn them. Carry goods, not money."* Lower acuity in SP (you can dock-hop to check) than in MP, but it's the only place the economy pillar becomes legible.
+Do not imply a global wallet. Unknown rows should be absent or explicitly stale,
+not silently zero.
 
-### P5 — Low-signal control banner
+### P5 — Low-signal control banner (shipped baseline)
 
-Control collapses toward 0 at the FRONTIER band, but the on-screen warning fires only near *zero* signal, and the compact HUD omits the control readout entirely. Trigger a "LOW SIGNAL — CONTROL n%" banner at the FRONTIER threshold and add CTRL% to the compact path, so a ship that stops responding always says why.
+Control collapses toward 0 at the FRONTIER band, and the HUD now fires a
+`LOW SIGNAL -- CTRL n%` warning before total collapse. Future work here is
+threshold/intensity tuning, not new conceptual UI.
 
 ## 6. Cleanup to fold into the UI pass (confirmed defects)
 
@@ -129,7 +175,9 @@ These came out of the UI review and should be swept while the surfaces are open:
 - **Compact panels overflow with no clipping** — the compact TRADE panel runs ~100px past its frame; no scissor anywhere in `station_ui.c`. Clip to the panel rect or budget rows against remaining height (drop optional lineage lines first). This violates the narrow-window requirement.
 - **Dead `[S] deliver` label on the SHIP panel** — the construction row advertises a key the SHIP input handler never reads. Either wire it or remove the label.
 - **Native ESC quits the app at the event layer**, bypassing plan-mode / popup modal handling. Gate the quit behind a no-modal-active check and let ESC flow through the intent sampler.
-- **Stale `16` ledger cap in the input layer** — SP trade path mutates the ledger with a hardcoded 16; the ledger expanded to `STATION_LEDGER_MAX` in save v62. Emit intent and apply in shared/server code instead.
+- **Multiplayer ledger snapshot parity** — SP can read local world ledgers;
+  multiplayer still needs explicit known-ledger rows before rendering the same
+  cross-station strip honestly.
 - **Always-on chain-audit lineage dump on trade rows** (`serial / parent / ep / seal`) — forensic detail with no player verb. Gate behind an explicit inspect toggle; keep serial + origin in the default view.
 
 ## 7. What already works — protect it
@@ -146,7 +194,8 @@ Do not regress these while adding the above. (Note: critical HUD *text* currentl
 
 - **Decentralization / trust UI** — Sector-X foundation work; the cryptographic guarantees are not a v0 player-facing surface.
 - **Deep institution / route-history browser** — the compact HISTORY strip is enough for v0; a full browser waits until the reputation layer has more distinct evidence.
-- **Changing the throw to true single-fragment aim** — ship the visualization first.
+- **Changing the throw to true single-fragment aim** — shipped visualization
+  should be playtested first.
 
 ## 9. North star
 
