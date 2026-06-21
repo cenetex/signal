@@ -395,6 +395,26 @@ async function hudActionText(page: Page): Promise<string> {
   });
 }
 
+async function laserRefitSummary(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_laser_refit_summary', 'string', [], []) || '';
+  });
+}
+
+async function stationProductionSummary(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_station_production_summary', 'string', [], []) || '';
+  });
+}
+
 async function remoteTowableInterpCheck(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -529,9 +549,13 @@ const smokeLoopState = {
   supplyNeed: 10,
   yardBlocked: 11,
   abandonedPlan: 12,
+  fractureTableau: 13,
   remotePilotScan: 14,
   weakSignalVisual: 15,
   narrowCameraOffset: 16,
+  cupriteGate: 17,
+  scanLaserFab: 18,
+  trackedCupriteContract: 19,
 } as const;
 
 const mobileFlag = {
@@ -791,6 +815,26 @@ test.describe('Browser smoke tests', () => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });
+
+    const refitSummary = await laserRefitSummary(page);
+    expect(refitSummary).toContain('Laser Modules: Cuprite Ingots + Frames');
+    expect(refitSummary).toContain('Cuprite source requires L2 laser');
+
+    const productionSummary = await stationProductionSummary(page);
+    expect(productionSummary).toContain('Ferrite Ore -> Ferrite Ingots');
+    expect(productionSummary).toContain('missing input');
+
+    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
+    expect(await hudActionText(page)).toContain('needs L2 laser for L rock');
+
+    await setSmokeLoopState(page, smokeLoopState.cupriteGate);
+    expect(await hudActionText(page)).toContain('needs L2 laser for Cuprite');
+
+    await setSmokeLoopState(page, smokeLoopState.scanLaserFab);
+    expect(await hudActionText(page)).toContain('Cuprite Ingots + Frames -> Laser Modules');
+
+    await setSmokeLoopState(page, smokeLoopState.trackedCupriteContract);
+    expect(await hudHintText(page)).toContain('requires L2 laser');
 
     await setSmokeLoopState(page, smokeLoopState.fragmentsNearby);
     expect(await hudActionText(page)).toContain('Hold [Space] tractor // 3 nearby');

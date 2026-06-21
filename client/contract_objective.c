@@ -92,6 +92,25 @@ static void objective_set_asteroid_target(contract_objective_t *out,
     out->world_radius = a->radius + 32.0f;
 }
 
+static const char *objective_upgrade_effect(ship_upgrade_t upgrade) {
+    switch (upgrade) {
+    case SHIP_UPGRADE_MINING:
+        if (LOCAL_PLAYER.ship.mining_level == 0)
+            return "L2 unlocks L rocks and Cuprite";
+        if (LOCAL_PLAYER.ship.mining_level == 1)
+            return "L3 unlocks XL rocks and Crystal";
+        if (LOCAL_PLAYER.ship.mining_level == 2)
+            return "L4 unlocks XXL rocks";
+        return "higher fracture output";
+    case SHIP_UPGRADE_HOLD:
+        return "more cargo space";
+    case SHIP_UPGRADE_TRACTOR:
+        return "longer tow range";
+    default:
+        return "ship refit";
+    }
+}
+
 static void station_name(int station_index, char *out, size_t out_size) {
     if (out_size == 0) return;
     out[0] = '\0';
@@ -229,6 +248,33 @@ static int nearest_compatible_furnace(const station_t *st,
     return -1;
 }
 
+static int objective_required_mining_level_for_tier(asteroid_tier_t tier) {
+    switch (tier) {
+    case ASTEROID_TIER_XXL: return 3;
+    case ASTEROID_TIER_XL:  return 2;
+    case ASTEROID_TIER_L:   return 1;
+    default:                return 0;
+    }
+}
+
+static int objective_required_mining_level_for_asteroid(const asteroid_t *a) {
+    if (!a || !a->active || asteroid_is_collectible(a)) return 0;
+    int material = mining_required_level_for_commodity(a->commodity);
+    int size =
+        objective_required_mining_level_for_tier((asteroid_tier_t)a->tier);
+    return material > size ? material : size;
+}
+
+static bool objective_laser_gate_note(int required,
+                                      char *out,
+                                      size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (required <= LOCAL_PLAYER.ship.mining_level) return false;
+    snprintf(out, cap, "requires L%d laser", required + 1);
+    return true;
+}
+
 static float towed_matching_ore(const contract_t *ct) {
     float held = 0.0f;
     const ship_t *ship = &LOCAL_PLAYER.ship;
@@ -288,19 +334,41 @@ static bool objective_fracture(int contract_index, const contract_t *ct,
     if (idx >= 0 && idx < MAX_ASTEROIDS) {
         const asteroid_t *a = &g.world.asteroids[idx];
         if (a->active && a->tier != ASTEROID_TIER_S) {
+            char gate[64];
+            bool gated = objective_laser_gate_note(
+                objective_required_mining_level_for_asteroid(a),
+                gate, sizeof(gate));
             objective_set_asteroid_target(out, idx,
                                           CONTRACT_OBJECTIVE_TARGET_EXACT);
-            objective_set_copy(out, "SIGNAL // CONTRACT",
-                               "FRACTURE %s TARGET ASTEROID [M]",
-                               commodity_short_name((commodity_t)a->commodity));
+            if (gated) {
+                objective_set_copy(out, "SIGNAL // CONTRACT",
+                                   "FRACTURE %s TARGET ASTEROID [M] // %s",
+                                   commodity_short_name((commodity_t)a->commodity),
+                                   gate);
+            } else {
+                objective_set_copy(out, "SIGNAL // CONTRACT",
+                                   "FRACTURE %s TARGET ASTEROID [M]",
+                                   commodity_short_name((commodity_t)a->commodity));
+            }
             return true;
         }
     }
 
     if (ct->commodity < COMMODITY_COUNT) {
-        objective_set_copy(out, "SIGNAL // CONTRACT",
-                           "FRACTURE %s ASTEROID [M]",
-                           commodity_short_name(ct->commodity));
+        char gate[64];
+        bool gated = objective_laser_gate_note(
+            mining_required_level_for_commodity(ct->commodity),
+            gate, sizeof(gate));
+        if (gated) {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "FRACTURE %s ASTEROID [M] // %s",
+                               commodity_short_name(ct->commodity),
+                               gate);
+        } else {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "FRACTURE %s ASTEROID [M]",
+                               commodity_short_name(ct->commodity));
+        }
     } else {
         objective_set_copy(out, "SIGNAL // CONTRACT",
                            "FRACTURE TARGET ASTEROID [M]");
@@ -356,9 +424,20 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
         out->kind = CONTRACT_OBJECTIVE_FRACTURE;
         out->quantity = 1;
         objective_set_job(out, "fracture");
-        objective_set_copy(out, "SIGNAL // CONTRACT",
-                           "FRACTURE %s ASTEROID FOR FURNACE FEED",
-                           commodity_short_name(ct->commodity));
+        char gate[64];
+        bool gated = objective_laser_gate_note(
+            mining_required_level_for_commodity(ct->commodity),
+            gate, sizeof(gate));
+        if (gated) {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "FRACTURE %s ASTEROID FOR FURNACE FEED // %s",
+                               commodity_short_name(ct->commodity),
+                               gate);
+        } else {
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "FRACTURE %s ASTEROID FOR FURNACE FEED",
+                               commodity_short_name(ct->commodity));
+        }
     }
     return true;
 }
@@ -726,8 +805,9 @@ bool contract_objective_ready_upgrade(contract_objective_t *out) {
         out->kind = CONTRACT_OBJECTIVE_UPGRADE;
         objective_set_job(out, "upgrade");
         objective_set_copy(out, "SIGNAL // UPGRADE",
-                           "%s AT DOCK %s",
-                           checks[i].label, checks[i].key);
+                           "%s AT DOCK %s // %s",
+                           checks[i].label, checks[i].key,
+                           objective_upgrade_effect(checks[i].upgrade));
         return true;
     }
 

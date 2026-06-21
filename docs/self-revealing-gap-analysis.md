@@ -1,7 +1,7 @@
 # Signal Self-Revealing Gap Analysis
 
-**Status:** detailed product/UX gap analysis, refreshed after the first
-self-revealing implementation pass
+**Status:** detailed product/UX gap analysis, refreshed after the second
+self-revealing economy pass
 **Audience:** contributors choosing implementation slices after the legibility
 pass  
 **Scope:** current worktree as of this review; especially
@@ -23,15 +23,28 @@ are live:
 - docked trade rows hide forensic receipt clutter by default and can attach
   representative lineage when the local manifest proves the whole row
 - contract rows show immediate step, route/cargo, and payout currency
+- asteroid target HUD and tracked contract objectives now explain mining gates
+  such as L2 for Cuprite and L3 for Crystal instead of merely failing to mine
+- docked refit rows and upgrade directives name the next laser unlock
+- blocked laser refits now show the Laser Module recipe and the Cuprite input
+  gate, making the first-upgrade bottleneck visible instead of silent
+- station arrival/trade summaries now show a live production recipe and status
+  such as `Ferrite Ore -> Ferrite Ingots; missing input`
+- module scans expose production consequences from live module recipes, such as
+  ore to ingot and ingots plus frames to modules
+- station arrival and hint copy can surface nearest gated work, construction
+  supply needs, and local memory snippets
 - NPC scan output uses the clarity grammar and station/route memory signals
 - station HISTORY can summarize route memory and signed local events
 - module activation notices name the capability that came online
 
 The remaining product risk is subtler: the game often reveals facts, but not
-the rule the player needs to infer from those facts. The biggest remaining gaps
-are NPC contact packaging, player-facing station memory summaries, rock
-economic usefulness beyond tracked contracts, and multiplayer snapshots for
-station-local ledgers.
+the rule the player needs to infer from those facts. This pass also exposed one
+P0 progression risk: the new L2/Cuprite gate and the Laser Module bottleneck
+are legible, but the fresh-world path to produce or import the first Laser
+Modules is not yet proven. Other remaining gaps are NPC contact packaging,
+deeper rock value synthesis beyond direct demand and tracked work, and
+multiplayer snapshots for station-local ledgers.
 
 ## Gap Scale
 
@@ -63,12 +76,13 @@ than against whether a screen has more text.
 
 | Player question | Current state | Gap | Severity | Next slice |
 |---|---:|---|---:|---|
-| Why is this rock valuable? | Partial | Throw danger, tracked-contract fit, station demand, and rare grade are visible; smelt outcome and market-memory usefulness are not unified yet. | P1 | Extend target/tow usefulness into smelt destination, carried memory, and route value. |
+| How do I unlock gated rocks? | Open | The UI now says Cuprite needs L2, Crystal needs L3, and the first laser refit needs Laser Modules made from Cuprite Ingots plus Frames; the fresh NPC-only sim still did not produce Cuprite or Laser Modules in 5 minutes. | P0 | Choose and prove a bootstrap path: seeded Laser Modules, an L2 NPC miner/import route, or an alternate first-upgrade ingredient. |
+| Why is this rock valuable? | Partial | Throw danger, tracked-contract fit, direct station demand, rare grade, and mining gate reasons are visible; smelt outcome and market-memory usefulness are not unified on the same object yet. | P1 | Extend target/tow usefulness into smelt destination, carried memory, and route value. |
 | Why did my ship stop responding? | Closed | Low-signal control loss now has both compact telemetry and a central CTRL warning before near-zero loss. | Done | Tune thresholds only if playtests show confusion. |
 | Why can I spend credits here but not there? | Partial | Single-player dock/hail explains station-local money; multiplayer still needs a compact cross-station ledger snapshot. | P2 | MP known-ledger snapshot or response extension. |
 | Why did that NPC choose that route? | Partial | Inspect data has motive and clarity; the contact card does not consistently lead with cargo, destination, and strongest "why." | P1 | Contact-card rewrite over existing inspect rows. |
-| Who remembers what I did? | Partial | HISTORY exists, but station identity and personal traces are not summarized in normal station framing. | P1 | Station "known for" / "you here" memory rows. |
-| What changed because I built this? | Closed | Module activation notices now name the new capability; persistent station identity rows remain a separate memory problem. | Done | Add station memory rows, not more activation copy. |
+| Who remembers what I did? | Partial | HISTORY exists and station arrival can show "Known for" or "You here"; trust/risk and contribution consequences are still not consistently first-frame reads. | P1 | Expand station memory summary only where live ledger/history evidence exists. |
+| What changed because I built this? | Closed | Module activation notices, station production summaries, and module scans now name the new capability or production recipe; persistent station identity rows remain a separate memory problem. | Done | Keep build consequence tied to real module capability. |
 
 ## Evidence Map
 
@@ -81,12 +95,83 @@ These are the concrete code/doc hooks behind the matrix above.
 | Low-signal HUD | `client/hud.c:2239` draws `[ SIGNAL LOST ]` near zero and `[ LOW SIGNAL -- CTRL n% ]` below operational signal; compact/wide HUD also prints `CTRL%` telemetry below operational signal. |
 | Current-station balance | `shared/types.h:643` stores station currency names; `shared/types.h:656` stores station-local ledgers; `client/station_ui.c:599` builds a single-player ledger strip; `client/main.c:856` explains first zero-balance hails after earning elsewhere. |
 | Contract payout currency | `client/station_ui.c:2749` selects destination-station currency first for contract payout rows. |
+| Mining gates | `server/game_sim.c` defines starter L1 as M-only, L2 as L/Cuprite, and L3 as XL/Crystal; `client/hud.c`, `client/contract_objective.c`, and `client/station_ui.c` now surface those blockers in target, guide, and station-board copy. |
+| Upgrade path | `client/station_ui.c` names next refit unlocks and, for a blocked starter laser refit, shows `Laser Modules: Cuprite Ingots + Frames` plus `Cuprite source requires L2 laser`; `client/contract_objective.c` uses the same unlock grammar for ready-upgrade directives. |
+| Module production consequences | `client/station_ui.c` now summarizes station-level production and status in arrival/trade copy; `client/hud.c` scan copy describes scaffold needs and module input/output chains such as Furnace ore to ingot and Laser Fab ingots plus frames to laser modules. |
+| Station needs | `client/hud.c` names construction supply needs and material sources; `client/station_ui.c` can lead dock arrival with ready/nearest work, gated work, local credit bridging, and local memory. |
+| L2 bootstrap risk | `shared/ship.c` makes the first mining upgrade cost 8 Laser Modules; `server/game_sim.c` applies that requirement from ship cargo or station finished stock; the NPC-only soak `./build/signal_test --soak --filter=test_econ_sim_npc_only_5min` showed Helios with nearby Cuprite rocks but 0 Cuprite ore, 0 Cuprite ingots, 0 frames, and 0 Laser Modules after 5 minutes. |
 | Trade lineage | `client/station_ui.c:1153` only attaches station-stock lineage when the row is fully represented by local manifest data; `client/station_ui.c:1251` applies the same caution for player-held sell rows. |
 | NPC contact/motive | `client/hud.c:1395` renders the NPC contact ticker; `client/hud.c:1451` renders contact identity; `client/hud.c:1461` renders role/state/home/destination; job motive helpers sit around `client/hud.c:928`. |
 | Station gossip/memory | `client/station_ui.c:1633` renders OVERHEARD rows; `client/station_ui.c:1690` renders compact route HISTORY rows; `client/station_ui.c:1836` renders aggregate history; `server/gossip.c:786` promotes repeated route memory into chain-log history. |
 | Construction feedback | `client/station_ui.c` previews scaffold kit ordering and renders construction queue state; `client/main.c:869` maps module activation to capability text such as relay reach, smelting, shipyard ordering, and docking. |
 
 ## Detailed Findings
+
+### 0. Gated Economy Bootstrap
+
+**Status:** Open.
+
+**Evidence of current strength:**
+
+- Starter mining is now intentionally limited: L1 mines M rocks, L2 adds L
+  rocks and Cuprite, and L3 adds XL rocks and Crystal.
+- The HUD, tracked objectives, refit rows, and station work rows now name those
+  gates before the player wastes time on incompatible targets.
+- The blocked laser refit row now shows both the Laser Module recipe and the
+  Cuprite input gate.
+- Laser Fab scan copy exposes the production consequence:
+  `Cuprite Ingots + Frames -> Laser Modules`.
+- Upgrade application already requires real finished modules rather than a
+  hidden currency-only upgrade.
+
+**Remaining gap:**
+
+The first mining upgrade is not yet proven reachable from a fresh world.
+Current rules create a circular-looking path:
+
+- L2 mining requires 8 Laser Modules.
+- Laser Modules are produced from Cuprite Ingots plus Frames.
+- Cuprite Ore now requires L2 mining.
+- Fresh NPC miners appear to start at the same L1 mining level as the player.
+- The 5-minute NPC-only economy soak completed with Helios still at 0 Cuprite
+  ore, 0 Cuprite ingots, 0 frames, and 0 Laser Modules despite nearby Cuprite
+  asteroids.
+
+This may be an intended seeded-stock/import design, but that design is not
+documented or covered by a deterministic fresh-player proof. The new clarity
+copy now exposes the circular-looking dependency, but the game still has to
+prove how the player can overcome it.
+
+**Impact:**
+
+This is the highest-priority product gap because it sits on the first visible
+progression wall. If the bootstrap is truly circular, players cannot progress
+from starter mining into Cuprite without external intervention. If the
+bootstrap is intended to come from seeded station stock, a stronger NPC import
+route, or pre-upgraded industrial workers, the game and test suite need to make
+that path explicit.
+
+**Recommended implementation:**
+
+Pick one bootstrap rule and prove it end to end:
+
+- seed a small finished Laser Module reserve at the station that offers L2
+  refit, then make the refit panel say the station has stock
+- spawn at least one industrial miner/logistics worker that can produce or move
+  the first Laser Modules without player L2 mining
+- change the L1->L2 upgrade recipe to consume Ferrite Frames or another
+  starter-reachable good, reserving Laser Modules for later laser upgrades
+
+Whichever rule wins, add one deterministic C test that starts from `world_reset`
+and proves a fresh player can reach L2 without test-only minting.
+
+**Acceptance test:**
+
+From `world_reset`, a starter player docks at the relevant station, sees the
+source of the first Laser Modules or alternate upgrade ingredient, and can
+complete the first mining upgrade after normal simulated production/import or
+available seeded stock. The test should also prove that Cuprite remains gated
+before L2 and becomes mineable after L2.
 
 ### 1. Rock Value And Throw Legibility
 
@@ -105,13 +190,17 @@ usefulness.
   plausibly hit a player or NPC target.
 - `hud_asteroid_usefulness()` names tracked contract fit, high station demand
   for towed S-tier fragments, and rare grade fallback.
+- `hud_asteroid_gate_reason()` explains size/material blockers directly on the
+  target line, for example `needs L2 laser for Cuprite`.
+- Tracked contract objectives and station work rows now carry the same blocker
+  language before the player chases impossible Cuprite or Crystal work.
 
 **Remaining gap:**
 
-The player can now learn "this release is dangerous" and can get a first useful
-economic hint when a towed fragment fits tracked work or a station shortage.
-The remaining gap is deeper synthesis. The target/tow surface still does not
-combine all of these into one stable rock story:
+The player can now learn "this release is dangerous", "this target needs a
+better laser", and "this fragment is useful for tracked work or a station
+shortage." The remaining gap is deeper synthesis. The target/tow surface still
+does not combine all of these into one stable rock story:
 
 - grade
 - commodity
@@ -125,9 +214,9 @@ much clearer only after smelting, trading, or opening station rows.
 
 **Impact:**
 
-This weakens the core "matter becomes history" loop. A player may understand
-how to throw rocks before understanding why a specific fragment matters
-economically or socially.
+This weakens the core "matter becomes history" loop. A player can understand
+why a rock is gated or immediately wanted before fully understanding why a
+specific fragment matters economically or socially after smelting and memory.
 
 **Recommended implementation:**
 
@@ -311,19 +400,23 @@ answer such as: `hauling ferrite -> Kepler; why Prospect demand, fresh`.
 - HISTORY can show aggregate route memory and recent signed events.
 - Gossip promotes repeated route reputation/risk into chain-log route-history
   events once evidence crosses a threshold.
+- Dock arrival copy can show `Known for: ...` from aggregate route history or
+  `You here: ...` from the local station ledger.
 
 **Remaining gap:**
 
-The player can find signed memory, but station identity is not yet summarized
-as "what this place is known for" or "what this place remembers about you." The
-HISTORY tab is good as a proof-adjacent browser; it is weaker as a dock-level
-identity surface.
+The player can now see a first-frame memory snippet in some dock arrivals, and
+can still find signed memory in HISTORY. The remaining problem is consistency:
+station identity is not yet always summarized as "what this place is known
+for" or "what this place remembers about you." The HISTORY tab is good as a
+proof-adjacent browser; it is weaker as a universal dock-level identity
+surface.
 
 Specific missing reads:
 
-- repeated verified player work at this station
 - current station trust/risk consequence of the player's recent behavior
-- a short "known for" line derived from aggregate route memory
+- repeated verified player work beyond ledger totals
+- a short "known for" line when route evidence is absent or stale
 - distinction between local signed truth, carried gossip, and station
   reputation in the first station frame
 
@@ -335,7 +428,8 @@ identity are shaped by memory.
 
 **Recommended implementation:**
 
-Add one dock-header or SHIP-panel memory strip:
+Extend the existing arrival memory strip only where the station has live
+evidence:
 
 ```text
 Known for: Helios ferrite route x6, fresh

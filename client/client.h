@@ -133,6 +133,8 @@ bool station_panel_legend_text(station_view_t view,
                                const station_t *station,
                                char *out,
                                size_t out_size);
+bool station_laser_refit_summary(char *out, size_t out_size);
+bool station_production_summary(char *out, size_t out_size);
 void station_panel_sample_current(input_intent_t *intent);
 
 enum {

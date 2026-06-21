@@ -261,6 +261,11 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
 
 void input_sample_movement(input_intent_t *intent) {
     const float reverse_start_speed = 2.0f;
+    if (LOCAL_PLAYER.docked) {
+        g.input.brake_stop_latched = false;
+        g.input.reverse_thrust_active = false;
+        return;
+    }
     bool forward_down = is_key_down(SAPP_KEYCODE_W) || is_key_down(SAPP_KEYCODE_UP);
     bool brake_down = is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN);
     bool brake_pressed = is_key_pressed(SAPP_KEYCODE_S) || is_key_pressed(SAPP_KEYCODE_DOWN);
@@ -292,6 +297,10 @@ void input_sample_movement(input_intent_t *intent) {
 
 /* Tractor: hold Space = grab, tap Space (< 200ms) = release. */
 static void sample_tractor(input_intent_t *intent) {
+    if (LOCAL_PLAYER.docked) {
+        g.input.tractor_press_time = 0.0f;
+        return;
+    }
     if (is_key_down(SAPP_KEYCODE_SPACE) && !g.plan_mode_active) {
         if (g.input.tractor_press_time == 0.0f)
             g.input.tractor_press_time = g.world.time;

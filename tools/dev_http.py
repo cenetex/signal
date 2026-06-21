@@ -12,7 +12,10 @@ Usage:   python3 tools/dev_http.py [PORT] [--directory DIR]
 Default: 8082, serving the current working directory.
 """
 import argparse
+import mimetypes
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+mimetypes.add_type("application/wasm", ".wasm")
 
 
 class NoCacheHandler(SimpleHTTPRequestHandler):

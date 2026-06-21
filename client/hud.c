@@ -14,6 +14,7 @@
 #include "mining_client.h"
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "manifest.h"
+#include "module_schema.h"
 #include "signal_model.h"
 #include "palette.h"
 #include "contract_fit.h"
@@ -167,7 +168,7 @@ typedef enum {
 typedef struct {
     hud_action_kind_t kind;
     int int_a, int_b;
-    const char *str_a, *str_b;
+    const char *str_a, *str_b, *str_c;
     /* Asteroid target: separate fields so renderers can format their
      * own short/long flavor of the same data. */
     int tier;            /* asteroid_tier_t */
@@ -282,6 +283,109 @@ static const char *hud_asteroid_usefulness(const asteroid_t *a) {
     return NULL;
 }
 
+static int hud_required_mining_level_for_tier(asteroid_tier_t tier) {
+    switch (tier) {
+    case ASTEROID_TIER_XXL: return 3;
+    case ASTEROID_TIER_XL:  return 2;
+    case ASTEROID_TIER_L:   return 1;
+    default:                return 0;
+    }
+}
+
+static const char *hud_asteroid_gate_reason(const asteroid_t *a) {
+    static char label[80];
+    label[0] = '\0';
+    if (!a || !a->active || asteroid_is_collectible(a)) return NULL;
+    int mining_level = LOCAL_PLAYER.ship.mining_level;
+    int material_level = mining_required_level_for_commodity(a->commodity);
+    int size_level = hud_required_mining_level_for_tier((asteroid_tier_t)a->tier);
+    if (mining_level >= material_level && mining_level >= size_level)
+        return NULL;
+
+    int required = material_level > size_level ? material_level : size_level;
+    const char *laser = required == 0 ? "L1" :
+                        required == 1 ? "L2" :
+                        required == 2 ? "L3" :
+                        required == 3 ? "L4" : "L5";
+    if (material_level >= size_level && mining_level < material_level) {
+        snprintf(label, sizeof(label), "needs %s laser for %s",
+                 laser, commodity_short_name((commodity_t)a->commodity));
+    } else {
+        snprintf(label, sizeof(label), "needs %s laser for %s %s",
+                 laser,
+                 asteroid_tier_name((asteroid_tier_t)a->tier),
+                 asteroid_tier_kind((asteroid_tier_t)a->tier));
+    }
+    return label;
+}
+
+static const char *hud_module_consequence(const station_t *st, int module_idx) {
+    static char label[112];
+    label[0] = '\0';
+    if (!st || module_idx < 0 || module_idx >= st->module_count)
+        return NULL;
+    const station_module_t *m = &st->modules[module_idx];
+    if (m->scaffold) {
+        commodity_t mat = module_build_material_lookup(m->type);
+        float cost = module_build_cost_lookup(m->type);
+        if (mat < COMMODITY_COUNT) {
+            snprintf(label, sizeof(label), "needs %.0f %s to come online",
+                     cost, commodity_short_name(mat));
+            return label;
+        }
+    }
+
+    switch (m->type) {
+    case MODULE_FURNACE: {
+        commodity_t ore = module_instance_input_ore(m);
+        commodity_t out = module_instance_output(m);
+        if (ore < COMMODITY_COUNT && out < COMMODITY_COUNT) {
+            snprintf(label, sizeof(label), "%s -> %s",
+                     commodity_name(ore), commodity_name(out));
+            return label;
+        }
+        break;
+    }
+    case MODULE_FRAME_PRESS:
+    case MODULE_LASER_FAB:
+    case MODULE_TRACTOR_FAB: {
+        module_inputs_t req = module_instance_required_inputs(m);
+        commodity_t out = module_instance_output(m);
+        if (req.count <= 0 || out >= COMMODITY_COUNT) break;
+        char inputs[72] = "";
+        for (int i = 0; i < req.count; i++) {
+            if (i > 0) strncat(inputs, " + ",
+                               sizeof(inputs) - strlen(inputs) - 1);
+            strncat(inputs, commodity_name(req.commodities[i]),
+                    sizeof(inputs) - strlen(inputs) - 1);
+        }
+        snprintf(label, sizeof(label), "%s -> %s",
+                 inputs, commodity_name(out));
+        return label;
+    }
+    case MODULE_SHIPYARD:
+        snprintf(label, sizeof(label),
+                 "Frames + Laser Modules + Tractor Modules -> ships/kits");
+        return label;
+    case MODULE_HOPPER:
+        if ((commodity_t)m->commodity < COMMODITY_COUNT) {
+            snprintf(label, sizeof(label), "feeds %s into station work",
+                     commodity_name((commodity_t)m->commodity));
+            return label;
+        }
+        break;
+    case MODULE_SIGNAL_RELAY:
+        return "extends station signal";
+    case MODULE_DOCK:
+        return "local credits, contracts, refit";
+    case MODULE_REPAIR_BAY:
+        return "turns repair kits into hull";
+    default:
+        break;
+    }
+    return NULL;
+}
+
 static const NetPlayerState *hud_net_player_state(int idx) {
     if (!g.net_authority_enabled || idx < 0 || idx >= NET_MAX_PLAYERS)
         return NULL;
@@ -347,7 +451,10 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.tier = (int)a->tier;
         out.commodity = (int)a->commodity;
         out.grade = (int)a->grade;
-        out.str_a = hud_asteroid_usefulness(a);
+        out.str_a = hud_asteroid_gate_reason(a);
+        out.int_b = out.str_a ? 1 : 0;
+        if (!out.str_a)
+            out.str_a = hud_asteroid_usefulness(a);
         return out;
     }
     /* Scan results take precedence over towing/fragments — the player
@@ -356,8 +463,10 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
         out.kind = HUD_ACTION_SCAN_MODULE;
         out.str_a = st->name;
-        if (LOCAL_PLAYER.scan_module_index >= 0)
+        if (LOCAL_PLAYER.scan_module_index >= 0) {
             out.str_b = module_type_name(st->modules[LOCAL_PLAYER.scan_module_index].type);
+            out.str_c = hud_module_consequence(st, LOCAL_PLAYER.scan_module_index);
+        }
         return out;
     }
     if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
@@ -476,8 +585,13 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         }
         return;
     case HUD_ACTION_SCAN_MODULE:
-        if (a->str_b) snprintf(out, out_size, "SCAN %s // %s", a->str_a, a->str_b);
-        else          snprintf(out, out_size, "SCAN %s // CORE", a->str_a);
+        if (a->str_b && a->str_c)
+            snprintf(out, out_size, "SCAN %s // %s // %s",
+                     a->str_a, a->str_b, a->str_c);
+        else if (a->str_b)
+            snprintf(out, out_size, "SCAN %s // %s", a->str_a, a->str_b);
+        else
+            snprintf(out, out_size, "SCAN %s // CORE", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
         if (a->str_b)
@@ -560,8 +674,13 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         }
         return;
     case HUD_ACTION_SCAN_MODULE:
-        if (a->str_b) snprintf(out, out_size, "Scan %s // %s", a->str_a, a->str_b);
-        else          snprintf(out, out_size, "Scan %s // core hub", a->str_a);
+        if (a->str_b && a->str_c)
+            snprintf(out, out_size, "Scan %s // %s // %s",
+                     a->str_a, a->str_b, a->str_c);
+        else if (a->str_b)
+            snprintf(out, out_size, "Scan %s // %s", a->str_a, a->str_b);
+        else
+            snprintf(out, out_size, "Scan %s // core hub", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
         if (a->str_b)
@@ -650,6 +769,10 @@ static void hud_set_action_color(const hud_action_t *a) {
         sdtx_color3b(PAL_TEXT_MUTED);
         return;
     case HUD_ACTION_TARGET_ASTEROID:
+        if (a->int_b) {
+            sdtx_color3b(PAL_WARNING);
+            return;
+        }
         if (a->tier == (int)ASTEROID_TIER_S) {
             hud_set_grade_color((uint8_t)a->grade);
             return;
@@ -3224,6 +3347,9 @@ enum {
     SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN = 14,
     SMOKE_LOOP_STATE_WEAK_SIGNAL_VISUAL = 15,
     SMOKE_LOOP_STATE_NARROW_CAMERA_OFFSET = 16,
+    SMOKE_LOOP_STATE_CUPRITE_GATE = 17,
+    SMOKE_LOOP_STATE_SCAN_LASER_FAB = 18,
+    SMOKE_LOOP_STATE_TRACKED_CUPRITE_CONTRACT = 19,
 };
 
 static void smoke_clear_loop_state(void) {
@@ -3485,6 +3611,69 @@ static int smoke_apply_loop_state(int state) {
         memset(g.npc_interp.prev, 0, sizeof(g.npc_interp.prev));
         g.npc_interp.t = 0.0f;
         g.npc_interp.interval = 0.1f;
+        return 1;
+    }
+    case SMOKE_LOOP_STATE_CUPRITE_GATE:
+        g.local_server.active = false;
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->nearby_station = -1;
+        sp->ship.mining_level = 0;
+        sp->hover_asteroid = 0;
+        smoke_seed_asteroid(0, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE,
+                            v2_add(sp->ship.pos, v2(90.0f, 0.0f)),
+                            28.0f, 1.0f, 123.0f);
+        return 1;
+    case SMOKE_LOOP_STATE_TRACKED_CUPRITE_CONTRACT:
+        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
+            return 0;
+        g.local_server.active = false;
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->nearby_station = -1;
+        sp->ship.mining_level = 0;
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            g.world.asteroids[i].active = false;
+        g.onboarding.moved = true;
+        g.onboarding.fractured = true;
+        g.onboarding.tractored = true;
+        g.onboarding.threw = true;
+        g.onboarding.hailed = true;
+        g.onboarding.complete = true;
+        g.onboarding.welcomed = true;
+        g.tracked_contract = 0;
+        g.selected_contract = 0;
+        g.player_known_contract_mask = 1u;
+        memset(&g.world.contracts[0], 0, sizeof(g.world.contracts[0]));
+        g.world.contracts[0] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = 0,
+            .commodity = COMMODITY_CUPRITE_ORE,
+            .required_grade = MINING_GRADE_COMMON,
+            .quantity_needed = 10.0f,
+            .base_price = 120.0f,
+            .target_pos = g.world.stations[0].pos,
+            .claimed_by = -1,
+        };
+        return 1;
+    case SMOKE_LOOP_STATE_SCAN_LASER_FAB: {
+        if (g.world.station_count <= 2 || !station_exists(&g.world.stations[2]))
+            return 0;
+        int module_idx = -1;
+        for (int i = 0; i < g.world.stations[2].module_count; i++) {
+            if (g.world.stations[2].modules[i].type == MODULE_LASER_FAB) {
+                module_idx = i;
+                break;
+            }
+        }
+        if (module_idx < 0) return 0;
+        g.local_server.active = false;
+        sp->docked = false;
+        sp->scan_active = true;
+        sp->scan_target_type = 1;
+        sp->scan_target_index = 2;
+        sp->scan_module_index = module_idx;
         return 1;
     }
     case SMOKE_LOOP_STATE_REMOTE_PILOT_SCAN: {

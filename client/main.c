@@ -3009,13 +3009,14 @@ static void frame(void) {
                 flags |= NET_INPUT_BRAKE;
             if (movement_intent.reverse_thrust)
                 flags |= NET_INPUT_REVERSE;
-            if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
+            if (movement_intent.turn > 0.01f)
                 flags |= NET_INPUT_LEFT;
-            if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
+            if (movement_intent.turn < -0.01f)
                 flags |= NET_INPUT_RIGHT;
-            if (g.input.key_down[SAPP_KEYCODE_M])
+            if (movement_intent.mine)
                 flags |= NET_INPUT_FIRE;
-            if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
+            if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active &&
+                !LOCAL_PLAYER.docked)
                 flags |= NET_INPUT_TRACTOR;
             if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
                  g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT]) &&
@@ -3283,6 +3284,22 @@ const char *signal_station_panel_legend(void) {
         return legend;
     }
     return "";
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_laser_refit_summary(void) {
+    static char summary[256];
+    summary[0] = '\0';
+    (void)station_laser_refit_summary(summary, sizeof(summary));
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_station_production_summary(void) {
+    static char summary[256];
+    summary[0] = '\0';
+    (void)station_production_summary(summary, sizeof(summary));
+    return summary;
 }
 
 EMSCRIPTEN_KEEPALIVE

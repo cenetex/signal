@@ -14,12 +14,22 @@ bands, construction, and thrown-rock combat. The next product step is not to
 add another hidden layer. It is to make the existing layers explain themselves
 through play.
 
-The first implementation pass has already moved several items into baseline:
+The first implementation passes have already moved several items into baseline:
 throw release vectors and target brackets, low-signal control warnings,
 single-player station ledger strips and local-credit notices, construction
 activation consequence copy, and first-pass fragment usefulness labels for
-tracked work, direct station demand, and rare grade. The next pass should build
+tracked work, direct station demand, and rare grade. The economy clarity pass
+also made mining gates, laser upgrade unlocks, construction supply needs, and
+module input/output consequences visible in normal HUD, refit, station,
+station-level production summaries, and scan copy. The next pass should build
 on those cues rather than re-spec them.
+
+The immediate exception is the first gated progression step. The UI now
+correctly says that Cuprite requires L2 mining, and blocked starter laser
+refits expose that L2 currently requires Laser Modules made from Cuprite Ingots
+plus Frames. Before adding more economy, prove the intended bootstrap: seeded
+Laser Module stock, an L2-capable NPC/import path, or a starter-reachable first
+upgrade recipe.
 
 Self-revealing does not mean tutorial-heavy. It means the player can infer what
 the world knows, wants, remembers, and withholds by looking at the world and

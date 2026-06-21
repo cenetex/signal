@@ -512,7 +512,7 @@ TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     ASSERT_EQ_INT(dst->nearby_station, 1);
     ASSERT(dst->docked);
     ASSERT(dst->in_dock_range);
-    ASSERT(dst->docking_approach);
+    ASSERT(!dst->docking_approach);
     ASSERT_EQ_INT(dst->dock_berth, 2);
     ASSERT_EQ_FLOAT(dst->ship.hull, 42.0f, 0.001f);
     ASSERT_EQ_FLOAT(dst->ship.angle, 1.25f, 0.001f);
@@ -530,6 +530,79 @@ TEST(test_player_reconnect_transfer_moves_ship_asset_binding) {
     ASSERT_EQ_INT(released->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(released->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(released->operator_slot, -1);
+}
+
+TEST(test_ship_asset_sync_rejects_non_world_player_pointer) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    player_init_ship(sp, &w);
+    uint32_t asset_id = sp->ship_asset_id;
+    ASSERT(asset_id != SHIP_ASSET_ID_NONE);
+
+    server_player_t outsider = {0};
+    ASSERT(ship_copy(&outsider.ship, &sp->ship));
+    outsider.ship_asset_id = asset_id;
+    outsider.ship.hull = 7.0f;
+    ASSERT(!world_ship_asset_sync_from_player(&w, &outsider));
+    ship_cleanup(&outsider.ship);
+
+    const ship_asset_t *asset = world_ship_asset_by_id_const(&w, asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->operator_slot, 0);
+    ASSERT_EQ_FLOAT(asset->ship.hull, sp->ship.hull, 0.001f);
+}
+
+TEST(test_server_player_clear_transient_input_resets_spawn_motion) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    sp->input.thrust = -1.0f;
+    sp->input.turn = 1.0f;
+    sp->input.mine = true;
+    sp->input.reverse_thrust = true;
+    sp->input.boost = true;
+    sp->input.tractor_hold = true;
+    sp->input.mining_target_hint = 12;
+    sp->input.service_sell_only = COMMODITY_FERRITE_ORE;
+    sp->input.service_sell_grade = MINING_GRADE_RARE;
+    sp->movement_queue_count = 1;
+    sp->movement_queue[0].intent.thrust = -1.0f;
+    sp->last_input_seq = 42;
+    sp->last_input_tick = 1234;
+    sp->boost_hold_timer = 2.0f;
+    sp->actual_thrusting = true;
+    sp->docking_approach = true;
+    sp->beam_active = true;
+    sp->scan_active = true;
+    sp->scan_target_index = 9;
+    sp->ship.tractor_active = true;
+
+    server_player_clear_transient_input(sp);
+
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
+    ASSERT(!sp->input.mine);
+    ASSERT(!sp->input.reverse_thrust);
+    ASSERT(!sp->input.boost);
+    ASSERT(!sp->input.tractor_hold);
+    ASSERT_EQ_INT(sp->input.mining_target_hint, -1);
+    ASSERT_EQ_INT(sp->input.service_sell_only, COMMODITY_COUNT);
+    ASSERT_EQ_INT(sp->input.service_sell_grade, MINING_GRADE_COUNT);
+    ASSERT_EQ_INT(sp->movement_queue_count, 0);
+    ASSERT_EQ_INT(sp->last_input_seq, 0);
+    ASSERT_EQ_INT((int)sp->last_input_tick, 0);
+    ASSERT_EQ_FLOAT(sp->boost_hold_timer, 0.0f, 0.001f);
+    ASSERT(!sp->actual_thrusting);
+    ASSERT(!sp->docking_approach);
+    ASSERT(!sp->beam_active);
+    ASSERT(!sp->scan_active);
+    ASSERT_EQ_INT(sp->scan_target_index, -1);
+    ASSERT(!sp->ship.tractor_active);
 }
 
 TEST(test_player_release_returns_provisional_loaner_to_storage) {
@@ -8470,6 +8543,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_ignores_foreign_bound_asset);
     RUN(test_player_init_clears_stale_binding_when_waiting_for_hull);
     RUN(test_player_reconnect_transfer_moves_ship_asset_binding);
+    RUN(test_ship_asset_sync_rejects_non_world_player_pointer);
+    RUN(test_server_player_clear_transient_input_resets_spawn_motion);
     RUN(test_player_release_returns_provisional_loaner_to_storage);
     RUN(test_player_release_stores_owned_hull_for_reclaim);
     RUN(test_player_init_ship_null_context_safe);

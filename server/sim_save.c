@@ -3226,6 +3226,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     }
     ship_cleanup(&sp->ship);
     *sp = staged;
+    server_player_clear_transient_input(sp);
     player_bind_loaded_ship_asset(sp, w, slot);
     player_restore_towed_cargo_pods(sp, w, slot);
     return true;

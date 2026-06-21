@@ -1297,6 +1297,7 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
     dst->in_dock_range = src->in_dock_range;
     dst->docking_approach = src->docking_approach;
     dst->dock_berth = src->dock_berth;
+    server_player_clear_transient_input(dst);
 
     asset->operator_slot = (int16_t)dst_slot;
     (void)world_ship_asset_sync_from_player(w, dst);
@@ -1310,15 +1311,23 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
 
 bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp) {
     if (!w || !sp || sp->ship_asset_id == SHIP_ASSET_ID_NONE) return false;
+    int player_slot = player_slot_for_ptr(w, sp);
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
     ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
     if (!asset || asset->destroyed ||
         asset->status != SHIP_ASSET_STATUS_ASSIGNED ||
         asset->operator_kind != SHIP_ASSET_OPERATOR_PLAYER) {
         return false;
     }
+    if (asset->operator_slot >= 0 &&
+        asset->operator_slot < MAX_PLAYERS &&
+        asset->operator_slot != player_slot &&
+        w->players[asset->operator_slot].ship_asset_id == asset->asset_id) {
+        return false;
+    }
     if (!ship_asset_copy_ship(&asset->ship, &sp->ship)) return false;
     asset->hull_class = sp->ship.hull_class;
-    asset->operator_slot = (int16_t)player_slot_for_ptr(w, sp);
+    asset->operator_slot = (int16_t)player_slot;
     if (sp->docked && sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
         asset->custody_station = (int16_t)sp->current_station;
     return true;
@@ -11140,6 +11149,7 @@ bool server_apply_session_message(world_t *w, int player_idx,
     sp->last_input_action_id = 0;
     sp->last_input_action_id_valid = false;
     sp->pending_action_result_valid = false;
+    server_player_clear_transient_input(sp);
     return true;
 }
 
@@ -11303,6 +11313,41 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
 /* Public: player_init_ship                                           */
 /* ================================================================== */
 
+void server_player_clear_transient_input(server_player_t *sp) {
+    if (!sp) return;
+    sp->input = (input_intent_t){
+        .service_sell_only = COMMODITY_COUNT,
+        .service_sell_grade = MINING_GRADE_COUNT,
+        .place_target_station = -1,
+        .place_target_ring = -1,
+        .place_target_slot = -1,
+        .plan_station = -1,
+        .plan_ring = -1,
+        .plan_slot = -1,
+        .cancel_planned_station = -1,
+        .cancel_plan_st = -1,
+        .cancel_plan_ring = -1,
+        .cancel_plan_sl = -1,
+        .buy_grade = MINING_GRADE_COUNT,
+        .mining_target_hint = -1,
+    };
+    memset(sp->movement_queue, 0, sizeof(sp->movement_queue));
+    sp->movement_queue_count = 0;
+    sp->last_input_seq = 0;
+    sp->last_input_tick = 0;
+    sp->boost_hold_timer = 0.0f;
+    sp->actual_thrusting = false;
+    sp->docking_approach = false;
+    sp->beam_active = false;
+    sp->beam_hit = false;
+    sp->beam_ineffective = false;
+    sp->scan_active = false;
+    sp->scan_target_type = 0;
+    sp->scan_target_index = -1;
+    sp->scan_module_index = -1;
+    sp->ship.tractor_active = false;
+}
+
 void player_init_ship(server_player_t *sp, world_t *w) {
     if (!sp) return;
     int player_slot = player_slot_for_ptr(w, sp);
@@ -11310,6 +11355,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     ship_cleanup(&sp->ship);
     memset(&sp->ship, 0, sizeof(sp->ship));
     (void)ship_manifest_bootstrap(&sp->ship);
+    server_player_clear_transient_input(sp);
     sp->ship_asset_id = prior_asset_id;
     sp->docked          = true;
     sp->current_station = 0;

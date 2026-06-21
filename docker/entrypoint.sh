@@ -37,8 +37,11 @@ SERVER_PID=$!
 # while the websocket server has already moved to the new build.
 python3 - <<'PY' &
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import mimetypes
 import os
 from urllib.parse import urlsplit
+
+mimetypes.add_type("application/wasm", ".wasm")
 
 
 class NoStoreHandler(SimpleHTTPRequestHandler):

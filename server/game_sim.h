@@ -756,6 +756,7 @@ bool server_dispatch_handoff_present(
     server_handoff_result_sink_fn result_sink,
     void *result_user);
 void player_init_ship(server_player_t *sp, world_t *w);
+void server_player_clear_transient_input(server_player_t *sp);
 
 /* Layer A.2 of #479 — pubkey registry. */
 /* Look up a player_idx (into world.players[]) by pubkey. Returns -1 if not
