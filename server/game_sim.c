@@ -11354,6 +11354,7 @@ bool server_dispatch_register_pubkey_message(
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = false;
     sp->pubkey_identity_finalized = false;
+    sp->preserve_live_state_on_pubkey_finalize = false;
     return true;
 }
 
@@ -11507,6 +11508,7 @@ void server_player_clear_live_session_identity(server_player_t *sp) {
     sp->pubkey_set = false;
     sp->pubkey_proof_ok = false;
     sp->pubkey_identity_finalized = false;
+    sp->preserve_live_state_on_pubkey_finalize = false;
     sp->last_signed_nonce = 0;
 }
 

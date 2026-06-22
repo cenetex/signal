@@ -182,6 +182,7 @@ TEST(test_player_clear_live_session_identity) {
     sp.pubkey_set = true;
     sp.pubkey_proof_ok = true;
     sp.pubkey_identity_finalized = true;
+    sp.preserve_live_state_on_pubkey_finalize = true;
     sp.last_signed_nonce = 99;
 
     server_player_clear_live_session_identity(&sp);
@@ -194,6 +195,7 @@ TEST(test_player_clear_live_session_identity) {
     ASSERT(!sp.pubkey_set);
     ASSERT(!sp.pubkey_proof_ok);
     ASSERT(!sp.pubkey_identity_finalized);
+    ASSERT(!sp.preserve_live_state_on_pubkey_finalize);
     ASSERT_EQ_INT((int)sp.last_signed_nonce, 0);
 }
 
@@ -309,6 +311,7 @@ TEST(test_identity_dispatch_session_register_and_proof) {
     ASSERT(server_finalize_pubkey_identity(w, 0));
     ASSERT(sp->pubkey_identity_finalized);
     ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 0);
+    sp->preserve_live_state_on_pubkey_finalize = true;
 
     server_pubkey_register_result_t same;
     ASSERT(server_dispatch_register_pubkey_message(
@@ -317,6 +320,19 @@ TEST(test_identity_dispatch_session_register_and_proof) {
     ASSERT(same.same_pubkey);
     ASSERT(sp->pubkey_proof_ok);
     ASSERT(sp->pubkey_identity_finalized);
+    ASSERT(sp->preserve_live_state_on_pubkey_finalize);
+
+    uint8_t other_pk[32], other_sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    signal_crypto_keypair(other_pk, other_sk);
+    uint8_t other_register_msg[REGISTER_PUBKEY_MSG_SIZE] =
+        { NET_MSG_REGISTER_PUBKEY };
+    memcpy(&other_register_msg[1], other_pk, 32);
+    server_pubkey_register_result_t other;
+    ASSERT(server_dispatch_register_pubkey_message(
+        w, 0, other_register_msg, sizeof(other_register_msg), &other));
+    ASSERT(other.accepted);
+    ASSERT(!other.same_pubkey);
+    ASSERT(!sp->preserve_live_state_on_pubkey_finalize);
 }
 
 TEST(test_identity_dispatch_rejects_wrong_session_proof) {

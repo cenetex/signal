@@ -352,6 +352,10 @@ typedef struct {
     bool    pubkey_set;
     bool    pubkey_proof_ok;
     bool    pubkey_identity_finalized;
+    /* Runtime-only reconnect latch. Session reattach can happen before
+     * PROVE_PUBKEY arrives; when it does, skip the pubkey save reload that
+     * would otherwise overwrite the live transferred ship state. */
+    bool    preserve_live_state_on_pubkey_finalize;
     /* Layer A.3 of #479 — monotonic per-player nonce for NET_MSG_SIGNED_ACTION.
      * Persisted in the player save (PLY6+). Any signed action whose nonce is
      * <= this value is rejected as a replay; on accept, this becomes the

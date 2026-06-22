@@ -787,7 +787,11 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
            pid, pk[0], pk[1], pk[2], pk[3]);
     analytics_log_player_event("player_identity", pid, sp, now, 0);
 
-    if (preserve_live_state || transferred_live_state) {
+    bool keep_live_state = preserve_live_state || transferred_live_state ||
+                           sp->preserve_live_state_on_pubkey_finalize;
+    sp->preserve_live_state_on_pubkey_finalize = false;
+
+    if (keep_live_state) {
         printf("[server] player %d: kept live pubkey reconnect state\n", pid);
     } else if (true &&
         player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
@@ -1160,6 +1164,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
                 reattached_live_state = true;
+                world.players[pid].preserve_live_state_on_pubkey_finalize = true;
             } else {
                 if (!server_apply_session_message(&world, pid, &session))
                     break;
