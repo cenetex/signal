@@ -733,7 +733,8 @@ static bool ws_message_allowed_before_session(uint8_t type) {
 }
 
 static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
-                                              uint64_t now) {
+                                              uint64_t now,
+                                              bool preserve_live_state) {
     if (pid < 0 || pid >= MAX_PLAYERS) return;
     server_player_t *sp = &world.players[pid];
     if (!server_player_can_use_pubkey_persistence(sp)) return;
@@ -786,7 +787,7 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
            pid, pk[0], pk[1], pk[2], pk[3]);
     analytics_log_player_event("player_identity", pid, sp, now, 0);
 
-    if (transferred_live_state) {
+    if (preserve_live_state || transferred_live_state) {
         printf("[server] player %d: kept live pubkey reconnect state\n", pid);
     } else if (true &&
         player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
@@ -1023,7 +1024,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         if (server_dispatch_register_pubkey_message(&world, pid, data, len,
                                                     &result)) {
             if (result.same_pubkey) {
-                finalize_verified_pubkey_identity(c, pid, now);
+                finalize_verified_pubkey_identity(c, pid, now, false);
                 break;
             }
             printf("[server] player %d: registered pubkey pending proof %02x%02x%02x%02x...\n",
@@ -1038,7 +1039,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         if (server_dispatch_pubkey_proof_message(&world, pid, data, len,
                                                  &result) &&
             result.verified) {
-            finalize_verified_pubkey_identity(c, pid, now);
+            finalize_verified_pubkey_identity(c, pid, now, false);
         } else if (result.status != SERVER_PUBKEY_PROOF_MALFORMED) {
             printf("[server] player %d: pubkey proof rejected (%s)\n",
                    pid, server_pubkey_proof_status_name(result.status));
@@ -1141,6 +1142,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     break;
                 }
             }
+            bool reattached_live_state = false;
             if (reattach >= 0) {
                 /* Reattach: copy state from grace slot to new slot */
                 server_player_t *old = &world.players[reattach];
@@ -1157,6 +1159,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
+                reattached_live_state = true;
             } else {
                 if (!server_apply_session_message(&world, pid, &session))
                     break;
@@ -1174,7 +1177,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             world.players[pid].last_input_action_id = 0;
             world.players[pid].last_input_action_id_valid = false;
             world.players[pid].pending_action_result_valid = false;
-            finalize_verified_pubkey_identity(c, pid, now);
+            finalize_verified_pubkey_identity(c, pid, now,
+                                              reattached_live_state);
             uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
             broadcast_except(pid, join_msg, 2);
             analytics_record_activity(&world.players[pid], now);

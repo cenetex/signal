@@ -157,6 +157,15 @@
           !target.isContentEditable;
       }
 
+      function signalFocusInsideTouchControls(target) {
+        return !!(target && target.closest &&
+          target.closest('.signal-touch-controls'));
+      }
+
+      function signalTouchControlHeld() {
+        return !!document.querySelector('.signal-touch-button.is-held');
+      }
+
       function signalKeyboardFallback(e, down) {
         if (!signalKeyboardTargetIsGame(e)) return;
         var action = signalKeyActions[e.code] || signalKeyActions[e.key];
@@ -196,7 +205,11 @@
         if (document.hidden) signalClearHeldControls();
         else signalFocusCanvas();
       });
-      canvas.addEventListener('blur', signalClearHeldControls);
+      canvas.addEventListener('blur', function(e) {
+        if (signalFocusInsideTouchControls(e.relatedTarget) ||
+            signalTouchControlHeld()) return;
+        signalClearHeldControls();
+      });
     </script>
     <script>
 

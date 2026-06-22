@@ -84,6 +84,18 @@ static bool replay_tick_after(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
 }
 
+static bool net_input_seq_after(uint16_t a, uint16_t b) {
+    return (int16_t)(a - b) > 0;
+}
+
+static bool net_latest_input_unacked(const NetPlayerState *state) {
+    if (!state || g.net_input_seq == 0) return false;
+    uint16_t ack = state->input_seq_ack;
+    if (ack == g.net_input_seq) return false;
+    if (ack == 0) return true;
+    return net_input_seq_after(g.net_input_seq, ack);
+}
+
 static input_intent_t replay_movement_intent(const input_intent_t *intent) {
     input_intent_t out = {0};
     if (!intent) return out;
@@ -1345,11 +1357,14 @@ void apply_remote_player_state(const NetPlayerState* state) {
             force_rebase = skew > (int32_t)NET_REPLAY_REBASE_SKEW_TICKS;
         }
         bool has_input_ack = state->input_seq_ack != 0;
-        bool has_unacked_input =
-            has_input_ack && g.net_input_seq != 0 &&
-            state->input_seq_ack != g.net_input_seq;
+        bool has_unacked_input = net_latest_input_unacked(state);
         if (has_input_ack) {
-            g.net_last_server_ack = state->input_seq_ack;
+            if (g.net_last_server_ack == 0 ||
+                state->input_seq_ack == g.net_last_server_ack ||
+                net_input_seq_after(state->input_seq_ack,
+                                    g.net_last_server_ack)) {
+                g.net_last_server_ack = state->input_seq_ack;
+            }
             net_record_input_ack(state->input_seq_ack);
         }
         if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;

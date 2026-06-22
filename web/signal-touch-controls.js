@@ -307,6 +307,14 @@
     el.hidden = !visible;
   }
 
+  function reassertHeldControls() {
+    Object.keys(controls).forEach(function (name) {
+      var el = controls[name];
+      if (!el || el.hidden || !el.classList.contains("is-held")) return;
+      send(Number(el.dataset.action), true);
+    });
+  }
+
   function syncGroups() {
     groups.forEach(function (group) {
       var visible = Array.prototype.some.call(
@@ -381,6 +389,7 @@
     setButton("four", (digitMask & 8) !== 0, "4");
     setButton("five", (digitMask & 16) !== 0, "5");
 
+    reassertHeldControls();
     syncGroups();
   }
 

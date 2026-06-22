@@ -751,6 +751,33 @@ TEST(test_launch_preserves_flight_controls) {
     ASSERT(v2_dot(sp->ship.vel, away) > 50.0f);
 }
 
+TEST(test_launch_does_not_reanchor_docked_position) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    ASSERT(sp->docked);
+
+    station_t *st = &w.stations[sp->current_station];
+    vec2 berth_pos = sp->ship.pos;
+    vec2 docked_pos = v2_add(st->pos, v2(180.0f, -240.0f));
+    ASSERT(v2_dist_sq(docked_pos, berth_pos) > 100.0f * 100.0f);
+
+    sp->ship.pos = docked_pos;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->docked = true;
+    sp->in_dock_range = true;
+    sp->nearby_station = sp->current_station;
+    sp->input.launch = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(!sp->docked);
+    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 0.01f);
+    ASSERT(v2_len(sp->ship.vel) > 50.0f);
+}
+
 TEST(test_launch_applies_queued_thrust_through_physics) {
     WORLD_DECL;
     world_reset(&w);
@@ -790,6 +817,36 @@ TEST(test_launch_applies_queued_thrust_through_physics) {
     ASSERT(v2_dot(sp->ship.vel, away) > 20.0f);
 }
 
+TEST(test_launch_from_freeport_retains_control_authority) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->current_station = SIGNAL_FREEPORT_STATION_INDEX;
+    sp->nearby_station = SIGNAL_FREEPORT_STATION_INDEX;
+    sp->docked = true;
+    sp->dock_berth = -1;
+    anchor_ship_in_station(sp, &w);
+
+    vec2 start = sp->ship.pos;
+    float launch_control =
+        signal_control_scale(signal_strength_at(&w, sp->ship.pos));
+    ASSERT(launch_control > 0.35f);
+
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+
+    sp->input.thrust = 1.0f;
+    for (int i = 0; i < 90; i++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT(!sp->docked);
+    }
+
+    ASSERT(v2_len(v2_sub(sp->ship.pos, start)) > 60.0f);
+}
+
 TEST(test_movement_queue_rejects_late_older_sequence) {
     WORLD_DECL;
     world_reset(&w);
@@ -806,6 +863,7 @@ TEST(test_movement_queue_rejects_late_older_sequence) {
     input_intent_t stale_zero = { 0 };
     server_player_queue_movement_input(sp, &thrust, 2, 2);
     server_player_queue_movement_input(sp, &stale_zero, 1, 3);
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
 
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
@@ -1816,7 +1874,9 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_stays_at_docked_berth_when_actor_blocks_exit);
     RUN(test_launch_carries_towed_pod_to_docked_berth);
     RUN(test_launch_preserves_flight_controls);
+    RUN(test_launch_does_not_reanchor_docked_position);
     RUN(test_launch_applies_queued_thrust_through_physics);
+    RUN(test_launch_from_freeport_retains_control_authority);
     RUN(test_movement_queue_rejects_late_older_sequence);
     RUN(test_bug40_no_player_player_collision);
 }

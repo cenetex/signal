@@ -53,6 +53,27 @@
 
 game_t g;
 
+#ifdef __EMSCRIPTEN__
+static bool g_mobile_virtual_key_down[KEY_COUNT];
+
+static void mobile_restore_virtual_keys(void) {
+    for (int kc = 0; kc < KEY_COUNT; kc++) {
+        if (g_mobile_virtual_key_down[kc]) {
+            g.input.key_down[kc] = true;
+        }
+    }
+}
+
+static void mobile_clear_virtual_keys(void) {
+    memset(g_mobile_virtual_key_down, 0, sizeof(g_mobile_virtual_key_down));
+}
+
+static void clear_input_state_for_canvas_focus_loss(void) {
+    clear_input_state();
+    mobile_restore_virtual_keys();
+}
+#endif
+
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
 
 static float camera_view_narrow_focus(float fallback_w, float fallback_h) {
@@ -199,6 +220,19 @@ static bool start_local_loopback_authority(const NetCallbacks *cbs) {
 
 static bool net_tick_after_u32(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
+}
+
+static bool net_input_seq_after_u16(uint16_t a, uint16_t b) {
+    return (int16_t)(a - b) > 0;
+}
+
+static uint16_t net_unacked_input_count(void) {
+    if (g.net_input_seq == 0) return 0;
+    if (g.net_last_server_ack == 0) return g.net_input_seq;
+    if (g.net_input_seq == g.net_last_server_ack) return 0;
+    if (!net_input_seq_after_u16(g.net_input_seq, g.net_last_server_ack))
+        return 0;
+    return (uint16_t)(g.net_input_seq - g.net_last_server_ack);
 }
 
 static uint32_t net_input_lead_ticks(void) {
@@ -2399,7 +2433,7 @@ int get_net_motion_replay_depth(void) {
 EMSCRIPTEN_KEEPALIVE
 #endif
 int get_net_motion_unacked_inputs(void) {
-    return (int)((uint16_t)(g.net_input_seq - g.net_last_server_ack));
+    return (int)net_unacked_input_count();
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2857,7 +2891,7 @@ static void frame(void) {
                     get_net_motion_last_ack_gap_ms(),
                     g.net_last_ping_server_turnaround_ms,
                     g.net_motion.packet_interval * 1000.0f,
-                    (uint16_t)(g.net_input_seq - g.net_last_server_ack),
+                    net_unacked_input_count(),
                     g.net_replay_count,
                     g.net_action_queue_count);
                 g.net_metrics_timer = NET_CLIENT_METRICS_SEC;
@@ -3025,8 +3059,18 @@ static void event(const sapp_event* event) {
         }
 
         case SAPP_EVENTTYPE_UNFOCUSED:
+#ifdef __EMSCRIPTEN__
+            clear_input_state_for_canvas_focus_loss();
+#else
+            clear_input_state();
+#endif
+            break;
+
         case SAPP_EVENTTYPE_SUSPENDED:
         case SAPP_EVENTTYPE_ICONIFIED:
+#ifdef __EMSCRIPTEN__
+            mobile_clear_virtual_keys();
+#endif
             clear_input_state();
             break;
 
@@ -3351,16 +3395,19 @@ void signal_mobile_key(int action, int down) {
     if (kc < 0 || kc >= KEY_COUNT) return;
 
     if (down) {
+        g_mobile_virtual_key_down[kc] = true;
         if (!g.input.key_down[kc])
             g.input.key_pressed[kc] = true;
         g.input.key_down[kc] = true;
     } else {
+        g_mobile_virtual_key_down[kc] = false;
         g.input.key_down[kc] = false;
     }
 }
 
 EMSCRIPTEN_KEEPALIVE
 void signal_mobile_clear(void) {
+    mobile_clear_virtual_keys();
     clear_input_state();
 }
 

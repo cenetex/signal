@@ -575,6 +575,39 @@ static float signal_strength_unboosted(const world_t *w, vec2 pos) {
     return best;
 }
 
+#define OFF_RELAY_DOCK_BEACON_RANGE 180.0f
+
+/* Off-relay docks still need a short-range local beacon so launches don't
+ * immediately fall into near-zero control. This does not reconnect the
+ * station to the relay network; it only restores handling right at the berth. */
+static float off_relay_dock_beacon_strength(const station_t *st, vec2 pos) {
+    if (!st || !station_provides_docking(st) || st->planned || st->scaffold ||
+        st->signal_range > 0.0f)
+        return 0.0f;
+
+    float best = 0.0f;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *module = &st->modules[i];
+        if (module->scaffold || module->type != MODULE_DOCK) continue;
+        vec2 dock_pos = module_world_pos_ring(st, module->ring, module->slot);
+        float dist = v2_len(v2_sub(pos, dock_pos));
+        float strength =
+            fmaxf(0.0f, 1.0f - dist / OFF_RELAY_DOCK_BEACON_RANGE);
+        if (strength > best) best = strength;
+    }
+    return best;
+}
+
+static float off_relay_dock_beacon_strength_world(const world_t *w, vec2 pos) {
+    if (!w) return 0.0f;
+    float best = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        float strength = off_relay_dock_beacon_strength(&w->stations[s], pos);
+        if (strength > best) best = strength;
+    }
+    return best;
+}
+
 /* Raw signal computation — scans all stations. Used to build the cache
  * and as fallback for positions outside the cached grid.
  *
@@ -595,9 +628,15 @@ static float signal_strength_raw(const world_t *w, vec2 pos) {
         if (strength > 0.0f) overlap_count++;
         if (strength > best) best = strength;
     }
-    if (overlap_count <= 1) return best;
-    int boost = overlap_count < 3 ? overlap_count : 3;
-    return fminf(1.0f, best * (float)boost);
+    float signal = best;
+    if (overlap_count > 1) {
+        int boost = overlap_count < 3 ? overlap_count : 3;
+        signal = fminf(1.0f, best * (float)boost);
+    }
+
+    float beacon = off_relay_dock_beacon_strength_world(w, pos);
+    if (beacon > signal) signal = beacon;
+    return signal;
 }
 
 /* Build/rebuild the signal cache grid. Called after topology changes
@@ -635,8 +674,12 @@ static void signal_grid_build(world_t *w) {
  * Falls back to raw computation for out-of-bounds positions or
  * when the cache hasn't been built yet. */
 float signal_strength_at(const world_t *w, vec2 pos) {
+    float dock_beacon = off_relay_dock_beacon_strength_world(w, pos);
     const signal_grid_t *sg = &w->signal_cache;
-    if (!sg->valid || !sg->strength) return signal_strength_raw(w, pos);
+    if (!sg->valid || !sg->strength) {
+        float raw = signal_strength_raw(w, pos);
+        return dock_beacon > raw ? dock_beacon : raw;
+    }
 
     /* Map world position to continuous grid coordinate. */
     float gx = (pos.x + sg->offset_x) / SIGNAL_CELL_SIZE - 0.5f;
@@ -644,8 +687,10 @@ float signal_strength_at(const world_t *w, vec2 pos) {
 
     /* Bounds check — fall back to raw for positions outside the grid. */
     if (gx < 0.0f || gy < 0.0f ||
-        gx >= (float)(SIGNAL_GRID_DIM - 1) || gy >= (float)(SIGNAL_GRID_DIM - 1))
-        return signal_strength_raw(w, pos);
+        gx >= (float)(SIGNAL_GRID_DIM - 1) || gy >= (float)(SIGNAL_GRID_DIM - 1)) {
+        float raw = signal_strength_raw(w, pos);
+        return dock_beacon > raw ? dock_beacon : raw;
+    }
 
     /* Bilinear interpolation from the 4 nearest cell centers. */
     int x0 = (int)gx, y0 = (int)gy;
@@ -656,7 +701,8 @@ float signal_strength_at(const world_t *w, vec2 pos) {
     float s11 = sg->strength[(y0 + 1) * SIGNAL_GRID_DIM + x0 + 1];
     float top = s00 + (s10 - s00) * fx;
     float bot = s01 + (s11 - s01) * fx;
-    return top + (bot - top) * fy;
+    float signal = top + (bot - top) * fy;
+    return dock_beacon > signal ? dock_beacon : signal;
 }
 
 /* ================================================================== */
@@ -1730,20 +1776,6 @@ vec2 player_launch_lane_for_berth(const station_t *st, int dock_berth,
     return v2_from_angle(angle);
 }
 
-static void translate_towed_pods_for_ship_snap(world_t *w,
-                                               const server_player_t *sp,
-                                               vec2 delta) {
-    if (!w || !sp) return;
-    if (v2_len_sq(delta) <= 0.001f) return;
-    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
-        cargo_pod_t *pod = &w->cargo_pods[idx];
-        if (!pod->active) continue;
-        pod->pos = v2_add(pod->pos, delta);
-    }
-}
-
 static void launch_ship(world_t *w, server_player_t *sp) {
     if (!player_claim_waiting_ship_asset(w, sp)) {
         if (sp) {
@@ -1761,17 +1793,15 @@ static void launch_ship(world_t *w, server_player_t *sp) {
             ? sp->nearby_station
             : 0;
     }
-    int player_slot = player_slot_for_ptr(w, sp);
-    vec2 pre_anchor_pos = sp->ship.pos;
-    anchor_ship_in_station(sp, w);
     vec2 launch_pos = sp->ship.pos;
+    int player_slot = player_slot_for_ptr(w, sp);
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
     sp->boost_hold_timer = 0.0f;
     sp->ship.tractor_active = false;
-    /* Launch from the exact docked berth: no relocation, just an outward kick.
+    /* Launch from the current docked position: no relocation, just an outward kick.
      * Preserve continuous flight input so controls respond immediately after
      * undock; one-shot launch/dock flags are cleared at the end of step_player. */
     const station_t *st = &w->stations[sp->current_station];
@@ -1782,15 +1812,14 @@ static void launch_ship(world_t *w, server_player_t *sp) {
         away = v2(0.0f, -1.0f);
         len = 1.0f;
     }
-    sp->ship.pos = launch_pos;
     sp->ship.angle = fixp_atan2f(away.y, away.x);
     sp->ship.vel = v2_scale(away, 95.0f / len);
     /* First launch: "Hull integrity 94%" */
     if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
         sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
-    translate_towed_pods_for_ship_snap(
-        w, sp, v2_sub(launch_pos, pre_anchor_pos));
-    SIM_LOG("[sim] player %d launched\n", sp->id);
+    SIM_LOG("[sim] player %d launched station=%d pos=(%.1f,%.1f) vel=(%.1f,%.1f)\n",
+            sp->id, sp->current_station, sp->ship.pos.x, sp->ship.pos.y,
+            sp->ship.vel.x, sp->ship.vel.y);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
 
@@ -7166,8 +7195,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             }
         }
     } else {
-        update_docking_state(w, sp, dt);
-        if (!w->player_only_mode)
+        bool launch_requested =
+            !w->player_only_mode && (sp->input.launch || sp->input.interact);
+        if (launch_requested)
+            step_station_interaction_system(w, sp, &sp->input);
+        if (sp->docked)
+            update_docking_state(w, sp, dt);
+        if (!launch_requested && !w->player_only_mode)
             step_station_interaction_system(w, sp, &sp->input);
     }
 
@@ -9558,6 +9592,10 @@ void server_player_queue_movement_input(server_player_t *sp,
             movement_input_cmd_t *cmd = &sp->movement_queue[i];
             if (cmd->input_seq == input_seq) {
                 cmd->intent = movement;
+                return;
+            }
+            if (cmd->input_seq != 0 &&
+                !input_seq_after(input_seq, cmd->input_seq)) {
                 return;
             }
         }

@@ -893,6 +893,76 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
+  test('touch controls stay synced when canvas focus moves to overlay', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires the local play.html build with debug input exports');
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    await page.locator('[data-control="use"]').click();
+    await expect
+      .poll(async () => {
+        const flags = await mobileControlFlags(page);
+        return (flags & mobileFlag.docked) === 0 &&
+          (flags & mobileFlag.canFlight) !== 0;
+      }, {
+        timeout: 8_000,
+        message: 'touch launch should enter flight mode',
+      })
+      .toBeTruthy();
+
+    const thrust = page.locator('[data-control="thrust"]');
+    await expect(thrust).toBeVisible();
+    const box = await thrust.boundingBox();
+    expect(box).toBeTruthy();
+
+    await page.mouse.move(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await page.mouse.down();
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 2_000,
+          message: 'touch Accel should register as held thrust',
+        })
+        .toBe(1);
+
+      await page.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        const thrustButton = document.querySelector('[data-control="thrust"]');
+        canvas?.dispatchEvent(new FocusEvent('blur', {
+          bubbles: false,
+          relatedTarget: thrustButton,
+        }));
+      });
+      expect(await heldControlMask(page)).toBe(1);
+
+      await page.evaluate(() => {
+        const mod = (window as unknown as {
+          SignalGameModule?: { ccall?: (name: string, returnType: string | null, argTypes: unknown[], args: unknown[]) => void };
+        }).SignalGameModule;
+        mod?.ccall?.('signal_mobile_clear', null, [], []);
+      });
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 1_000,
+          message: 'visually held touch controls should reassert into WASM',
+        })
+        .toBe(1);
+    } finally {
+      await page.mouse.up();
+    }
+
+    await expect
+      .poll(async () => heldControlMask(page), {
+        timeout: 1_000,
+        message: 'releasing touch Accel should clear thrust',
+      })
+      .toBe(0);
+    expectNoFatalErrors(logs);
+  });
+
   test('play page clears held flight controls when browser focus leaves', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires the local play.html build with debug input exports');
 

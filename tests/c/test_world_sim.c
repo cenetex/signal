@@ -8003,6 +8003,28 @@ TEST(test_sector_one_broken_helios_corridor) {
     ASSERT(signal_strength_at(&w, w.stations[2].pos) > 0.95f);
 }
 
+TEST(test_freeport_dock_beacon_restores_local_control) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    station_t *freeport = &w.stations[SIGNAL_FREEPORT_STATION_INDEX];
+    ASSERT(station_exists(freeport));
+    ASSERT(!station_provides_signal(freeport));
+    ASSERT(signal_strength_at(&w, freeport->pos) < 0.25f);
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->current_station = SIGNAL_FREEPORT_STATION_INDEX;
+    sp->nearby_station = SIGNAL_FREEPORT_STATION_INDEX;
+    sp->docked = true;
+    sp->dock_berth = -1;
+    anchor_ship_in_station(sp, &w);
+
+    float berth_signal = signal_strength_at(&w, sp->ship.pos);
+    ASSERT(berth_signal > 0.35f);
+    ASSERT(signal_control_scale(berth_signal) > 0.35f);
+}
+
 TEST(test_signal_zero_outside_range) {
     /* Far from all stations, signal should be 0.0 */
     WORLD_DECL;
@@ -8699,6 +8721,7 @@ void register_world_sim_signal_tests(void) {
     RUN(test_signal_strength_falls_off);
     RUN(test_signal_overlap_boosts_strength);
     RUN(test_sector_one_broken_helios_corridor);
+    RUN(test_freeport_dock_beacon_restores_local_control);
     RUN(test_signal_zero_outside_range);
     RUN(test_signal_max_of_stations);
     RUN(test_ship_thrust_scales_with_signal);

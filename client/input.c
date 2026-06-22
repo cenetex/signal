@@ -74,17 +74,6 @@ static float action_predict_window_sec(void) {
     return window;
 }
 
-static void translate_towed_pods_for_local_launch(vec2 delta) {
-    if (v2_len_sq(delta) <= 0.001f) return;
-    for (int t = 0; t < LOCAL_PLAYER.ship.towed_pod_count && t < 10; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
-        cargo_pod_t *pod = &g.world.cargo_pods[idx];
-        if (!pod->active) continue;
-        pod->pos = v2_add(pod->pos, delta);
-    }
-}
-
 static void frame_camera_on_local_launch(void) {
     g.camera_pos = LOCAL_PLAYER.ship.pos;
     g.camera_initialized = true;
@@ -109,8 +98,6 @@ static void predict_local_launch_from_dock(void) {
     const station_t *st = &g.world.stations[station_idx];
     if (!station_exists(st)) return;
 
-    vec2 pre_anchor_pos = LOCAL_PLAYER.ship.pos;
-    anchor_ship_in_station(&LOCAL_PLAYER, &g.world);
     vec2 launch_pos = LOCAL_PLAYER.ship.pos;
 
     LOCAL_PLAYER.docked = false;
@@ -129,11 +116,8 @@ static void predict_local_launch_from_dock(void) {
         len = 1.0f;
     }
 
-    LOCAL_PLAYER.ship.pos = launch_pos;
     LOCAL_PLAYER.ship.angle = fixp_atan2f(away.y, away.x);
     LOCAL_PLAYER.ship.vel = v2_scale(away, 95.0f / len);
-    translate_towed_pods_for_local_launch(
-        v2_sub(launch_pos, pre_anchor_pos));
     frame_camera_on_local_launch();
 }
 
