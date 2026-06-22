@@ -794,6 +794,8 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
     sp->preserve_live_state_on_pubkey_finalize = false;
 
     if (keep_live_state) {
+        server_player_reset_input_stream(sp);
+        force_player_authoritative_resync(sp);
         printf("[server] player %d: kept live pubkey reconnect state\n", pid);
     } else if (true &&
         player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
@@ -1181,8 +1183,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 /* Seed starting credits now that session_token is set */
                 player_seed_credits(&world.players[pid], &world);
             }
-            world.players[pid].last_input_action_id = 0;
-            world.players[pid].last_input_action_id_valid = false;
+            server_player_reset_input_stream(&world.players[pid]);
+            force_player_authoritative_resync(&world.players[pid]);
             world.players[pid].pending_action_result_valid = false;
             finalize_verified_pubkey_identity(c, pid, now,
                                               reattached_live_state);

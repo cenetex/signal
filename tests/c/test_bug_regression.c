@@ -878,6 +878,32 @@ TEST(test_movement_queue_rejects_late_older_sequence) {
     ASSERT_EQ_INT(sp->last_input_seq, 2);
 }
 
+TEST(test_reset_input_stream_accepts_reconnected_low_sequence) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(0.0f, -2400.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+    sp->last_input_seq = 77;
+    sp->last_input_tick = 9001;
+
+    server_player_reset_input_stream(sp);
+    input_intent_t turn = { .turn = 1.0f };
+    server_player_queue_movement_input(sp, &turn, 1, w.tick + 1u);
+
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->last_input_seq, 1);
+    ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
+    ASSERT(sp->ship.angle > 0.001f);
+}
+
 TEST(test_bug40_no_player_player_collision) {
     WORLD_DECL;
     world_reset(&w);
@@ -1878,6 +1904,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_applies_queued_thrust_through_physics);
     RUN(test_launch_from_freeport_retains_control_authority);
     RUN(test_movement_queue_rejects_late_older_sequence);
+    RUN(test_reset_input_stream_accepts_reconnected_low_sequence);
     RUN(test_bug40_no_player_player_collision);
 }
 

@@ -11564,6 +11564,16 @@ void server_player_clear_live_session_identity(server_player_t *sp) {
     sp->last_signed_nonce = 0;
 }
 
+void server_player_reset_input_stream(server_player_t *sp) {
+    if (!sp) return;
+    memset(sp->movement_queue, 0, sizeof(sp->movement_queue));
+    sp->movement_queue_count = 0;
+    sp->last_input_seq = 0;
+    sp->last_input_tick = 0;
+    sp->last_input_action_id = 0;
+    sp->last_input_action_id_valid = false;
+}
+
 void server_player_clear_transient_input(server_player_t *sp) {
     if (!sp) return;
     sp->input = (input_intent_t){
@@ -11582,10 +11592,7 @@ void server_player_clear_transient_input(server_player_t *sp) {
         .buy_grade = MINING_GRADE_COUNT,
         .mining_target_hint = -1,
     };
-    memset(sp->movement_queue, 0, sizeof(sp->movement_queue));
-    sp->movement_queue_count = 0;
-    sp->last_input_seq = 0;
-    sp->last_input_tick = 0;
+    server_player_reset_input_stream(sp);
     sp->boost_hold_timer = 0.0f;
     sp->actual_thrusting = false;
     sp->docking_approach = false;

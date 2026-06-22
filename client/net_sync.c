@@ -1374,6 +1374,14 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool has_input_ack = state->input_seq_ack != 0;
         bool has_unacked_input = net_latest_input_unacked(state);
         if (has_input_ack) {
+            /* A restored/reconnected ship can briefly carry an ack from a
+             * previous browser input stream. Fast-forward so fresh held
+             * controls advance past it instead of being treated as stale. */
+            if (g.net_input_seq == 0 ||
+                net_input_seq_after(state->input_seq_ack, g.net_input_seq)) {
+                g.net_input_seq = state->input_seq_ack;
+                g.net_input_have_last = false;
+            }
             if (g.net_last_server_ack == 0 ||
                 state->input_seq_ack == g.net_last_server_ack ||
                 net_input_seq_after(state->input_seq_ack,

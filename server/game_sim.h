@@ -777,6 +777,7 @@ void player_init_ship(server_player_t *sp, world_t *w);
 bool server_player_has_live_session(const server_player_t *sp);
 bool server_player_is_gameplay_ready(const server_player_t *sp);
 void server_player_clear_live_session_identity(server_player_t *sp);
+void server_player_reset_input_stream(server_player_t *sp);
 void server_player_clear_transient_input(server_player_t *sp);
 
 /* Layer A.2 of #479 — pubkey registry. */

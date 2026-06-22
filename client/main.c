@@ -2968,7 +2968,8 @@ static void frame(void) {
             bool heartbeat_due = g.net_input_timer <= 0.0f;
             if (input_changed || heartbeat_due || action_due) {
                 bool seq_advanced = false;
-                if (input_changed || action != NET_ACTION_NONE) {
+                if (input_changed || action != NET_ACTION_NONE ||
+                    (active_controls && heartbeat_due)) {
                     g.net_input_seq++;
                     if (g.net_input_seq == 0) g.net_input_seq++;
                     seq_advanced = true;
