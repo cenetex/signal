@@ -640,7 +640,7 @@ TEST(test_launch_clears_dock_berth_under_thrust) {
     ASSERT(end_center_dist > start_center_dist + 50.0f);
 }
 
-TEST(test_launch_uses_clear_lane_when_actor_blocks_exit) {
+TEST(test_launch_stays_at_docked_berth_when_actor_blocks_exit) {
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
@@ -655,10 +655,7 @@ TEST(test_launch_uses_clear_lane_when_actor_blocks_exit) {
     away = v2_scale(away, 1.0f / away_len);
 
     float ship_r = ship_hull_def(&w.players[0].ship)->ship_radius;
-    float launch_r = st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
-    float min_r = st->radius + ship_r + 180.0f;
-    if (launch_r < min_r) launch_r = min_r;
-    vec2 blocked_exit = v2_add(st->pos, v2_scale(away, launch_r));
+    vec2 blocked_exit = v2_add(berth, v2_scale(away, ship_r + 36.0f));
 
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
@@ -670,14 +667,11 @@ TEST(test_launch_uses_clear_lane_when_actor_blocks_exit) {
 
     ASSERT(!w.players[0].docked);
     float moved_from_berth = v2_len(v2_sub(w.players[0].ship.pos, berth));
-    ASSERT(moved_from_berth > 80.0f);
-    float sep = v2_len(v2_sub(w.players[0].ship.pos, w.npc_ships[0].ship.pos));
-    float npc_r = npc_hull_def(&w.npc_ships[0])->ship_radius;
-    ASSERT(sep > ship_r + npc_r + 20.0f);
+    ASSERT(moved_from_berth < 2.0f);
     ASSERT(signal_strength_at(&w, w.players[0].ship.pos) > 0.01f);
 }
 
-TEST(test_launch_carries_towed_pod_to_clear_lane) {
+TEST(test_launch_carries_towed_pod_to_docked_berth) {
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
@@ -698,6 +692,7 @@ TEST(test_launch_carries_towed_pod_to_clear_lane) {
     ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
     vec2 ship_delta = v2_sub(w.players[0].ship.pos, docked_ship_pos);
+    ASSERT(v2_len(ship_delta) < 2.0f);
     vec2 expected_pod_pos = v2_add(docked_pod_pos, ship_delta);
     ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, expected_pod_pos) < 1.0f);
 
@@ -738,9 +733,11 @@ TEST(test_launch_scrubs_stale_flight_input) {
         .intent = { .thrust = -1.0f, .turn = -1.0f, .reverse_thrust = true },
     };
 
+    vec2 docked_pos = sp->ship.pos;
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!sp->docked);
+    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 2.0f);
     ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
     ASSERT(!sp->input.reverse_thrust);
@@ -1782,8 +1779,8 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug39_launch_immediate_redock);
     RUN(test_bug39_duplicate_launch_action_no_redock);
     RUN(test_launch_clears_dock_berth_under_thrust);
-    RUN(test_launch_uses_clear_lane_when_actor_blocks_exit);
-    RUN(test_launch_carries_towed_pod_to_clear_lane);
+    RUN(test_launch_stays_at_docked_berth_when_actor_blocks_exit);
+    RUN(test_launch_carries_towed_pod_to_docked_berth);
     RUN(test_launch_scrubs_stale_flight_input);
     RUN(test_movement_queue_rejects_late_older_sequence);
     RUN(test_bug40_no_player_player_collision);

@@ -1651,57 +1651,6 @@ static vec2 actor_stack_normal(int a, int b) {
     return v2_from_angle(angle);
 }
 
-static bool launch_candidate_clear(const world_t *w, int player_slot,
-                                   vec2 pos, float radius) {
-    if (!w) return true;
-    for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (p == player_slot) continue;
-        const server_player_t *other = &w->players[p];
-        if (!other->connected || other->docked) continue;
-        const hull_def_t *hull = ship_hull_def(&other->ship);
-        float min_d = radius + hull->ship_radius + 32.0f;
-        if (v2_dist_sq(pos, other->ship.pos) < min_d * min_d)
-            return false;
-    }
-    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-        const npc_ship_t *npc = &w->npc_ships[n];
-        if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
-        const hull_def_t *hull = npc_hull_def(npc);
-        float min_d = radius + hull->ship_radius + 32.0f;
-        if (v2_dist_sq(pos, npc->ship.pos) < min_d * min_d)
-            return false;
-    }
-    return true;
-}
-
-static vec2 launch_clear_position(const world_t *w, int player_slot,
-                                  const station_t *st, const ship_t *ship,
-                                  vec2 away) {
-    const hull_def_t *hull = ship_hull_def(ship);
-    float ship_r = hull ? hull->ship_radius : 18.0f;
-    float len = v2_len(away);
-    if (len <= 1.0f) away = v2(0.0f, -1.0f);
-    else away = v2_scale(away, 1.0f / len);
-
-    float launch_r = st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
-    float min_r = st->radius + ship_r + 180.0f;
-    if (launch_r < min_r) launch_r = min_r;
-    vec2 base = v2_add(st->pos, v2_scale(away, launch_r));
-    if (launch_candidate_clear(w, player_slot, base, ship_r)) return base;
-
-    vec2 tangent = v2(-away.y, away.x);
-    float step = ship_r * 2.0f + 44.0f;
-    for (int i = 1; i <= 6; i++) {
-        float side = (i & 1) ? 1.0f : -1.0f;
-        float lane = (float)((i + 1) / 2);
-        vec2 candidate = v2_add(base, v2_scale(tangent, side * lane * step));
-        candidate = v2_add(candidate, v2_scale(away, lane * 18.0f));
-        if (launch_candidate_clear(w, player_slot, candidate, ship_r))
-            return candidate;
-    }
-    return base;
-}
-
 static vec2 launch_lane_for_berth(const station_t *st, int dock_berth,
                                   int player_slot, vec2 away) {
     float len = v2_len(away);
@@ -1762,34 +1711,31 @@ static void launch_ship(world_t *w, server_player_t *sp) {
             : 0;
     }
     int player_slot = player_slot_for_ptr(w, sp);
-    vec2 pre_launch_pos = sp->ship.pos;
+    vec2 pre_anchor_pos = sp->ship.pos;
     anchor_ship_in_station(sp, w);
+    vec2 launch_pos = sp->ship.pos;
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
     server_player_clear_transient_input(sp);
-    /* Kick and face the ship away from station so the player's first
-     * forward thrust clears the berth instead of driving back into it. */
+    /* Launch from the exact docked berth: no relocation, just an outward kick. */
     const station_t *st = &w->stations[sp->current_station];
-    vec2 away = v2_sub(sp->ship.pos, st->pos);
+    vec2 away = v2_sub(launch_pos, st->pos);
     away = launch_lane_for_berth(st, sp->dock_berth, player_slot, away);
     float len = v2_len(away);
-    if (len > 1.0f) {
-        sp->ship.pos = launch_clear_position(w, player_slot, st, &sp->ship, away);
-        sp->ship.angle = fixp_atan2f(away.y, away.x);
-        sp->ship.vel = v2_scale(away, 95.0f / len);
-    } else {
-        sp->ship.pos = launch_clear_position(
-            w, player_slot_for_ptr(w, sp), st, &sp->ship, v2(0.0f, -1.0f));
-        sp->ship.angle = -PI_F * 0.5f;
-        sp->ship.vel = v2(0.0f, -95.0f);
+    if (len <= 0.001f) {
+        away = v2(0.0f, -1.0f);
+        len = 1.0f;
     }
+    sp->ship.pos = launch_pos;
+    sp->ship.angle = fixp_atan2f(away.y, away.x);
+    sp->ship.vel = v2_scale(away, 95.0f / len);
     /* First launch: "Hull integrity 94%" */
     if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
         sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
     translate_towed_pods_for_ship_snap(
-        w, sp, v2_sub(sp->ship.pos, pre_launch_pos));
+        w, sp, v2_sub(launch_pos, pre_anchor_pos));
     SIM_LOG("[sim] player %d launched\n", sp->id);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
