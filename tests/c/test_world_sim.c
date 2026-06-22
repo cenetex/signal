@@ -8068,6 +8068,27 @@ TEST(test_ship_thrust_scales_with_signal) {
     ASSERT(vel_low_signal < vel_full_signal * 0.7f);
 }
 
+TEST(test_zero_signal_preserves_ship_momentum_without_boundary_pull) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship.pos = v2(40000.0f, 0.0f);
+    sp->ship.vel = v2(120.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+    ASSERT(signal_strength_at(&w, sp->ship.pos) < 0.01f);
+
+    vec2 start = sp->ship.pos;
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    ASSERT(sp->ship.pos.x > start.x);
+    ASSERT(sp->ship.vel.x > 0.0f);
+    ASSERT(sp->ship.vel.x < 120.0f);
+    ASSERT_EQ_FLOAT(sp->ship.vel.y, 0.0f, 0.001f);
+}
+
 TEST(test_asteroid_outside_signal_despawns) {
     WORLD_DECL;
     world_reset(&w);
@@ -8725,6 +8746,7 @@ void register_world_sim_signal_tests(void) {
     RUN(test_signal_zero_outside_range);
     RUN(test_signal_max_of_stations);
     RUN(test_ship_thrust_scales_with_signal);
+    RUN(test_zero_signal_preserves_ship_momentum_without_boundary_pull);
     RUN(test_asteroid_outside_signal_despawns);
     RUN(test_npc_miners_avoid_zero_signal_asteroids);
     RUN(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock);

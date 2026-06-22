@@ -173,6 +173,55 @@ TEST(test_registry_lookup_skips_disconnected_stale_session) {
     ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 5);
 }
 
+TEST(test_registry_same_token_takeover_moves_live_ship) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32];  fill_pubkey(pk, 44);
+    uint8_t tok[8];  fill_token(tok, 45);
+
+    server_player_t *old = &w->players[0];
+    player_init_ship(old, w);
+    setup_registered_player(w, 0, pk, tok);
+    old->docked = false;
+    old->ship.pos = v2(1234.0f, 5678.0f);
+    old->ship.vel = v2(11.0f, -3.0f);
+    old->ship.angle = 0.75f;
+    old->ship.stat_credits_earned = 91.0f;
+    uint32_t old_asset_id = old->ship_asset_id;
+    ASSERT(old_asset_id != SHIP_ASSET_ID_NONE);
+
+    server_player_t *new_slot = &w->players[5];
+    player_init_ship(new_slot, w);
+    new_slot->connected = true;
+    new_slot->id = 5;
+    memcpy(new_slot->session_token, tok, 8);
+    new_slot->session_ready = true;
+    memcpy(new_slot->pubkey, pk, 32);
+    new_slot->pubkey_set = true;
+    new_slot->pubkey_proof_ok = true;
+
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 0);
+    ASSERT(world_player_transfer_ship_state(w, 5, 0));
+    old->connected = false;
+    old->grace_period = false;
+    server_player_clear_live_session_identity(old);
+    server_player_clear_transient_input(old);
+    ASSERT(registry_register_pubkey(w, pk, tok));
+
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 5);
+    ASSERT_EQ_INT(old->ship_asset_id, SHIP_ASSET_ID_NONE);
+    ASSERT_EQ_INT(new_slot->ship_asset_id, old_asset_id);
+    ASSERT(!new_slot->docked);
+    ASSERT_EQ_FLOAT(new_slot->ship.pos.x, 1234.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship.pos.y, 5678.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship.vel.x, 11.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship.vel.y, -3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship.angle, 0.75f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship.stat_credits_earned, 91.0f, 0.001f);
+}
+
 TEST(test_player_clear_live_session_identity) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
@@ -378,6 +427,7 @@ void register_registry_tests(void) {
     RUN(test_registry_idempotent_reregistration);
     RUN(test_registry_reconnect_with_new_token);
     RUN(test_registry_lookup_skips_disconnected_stale_session);
+    RUN(test_registry_same_token_takeover_moves_live_ship);
     RUN(test_player_clear_live_session_identity);
     RUN(test_registry_two_pubkeys_one_machine);
     RUN(test_registry_save_load_roundtrip);

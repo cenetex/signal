@@ -174,26 +174,8 @@ float resolve_ship_asteroid_pushback(ship_t *ship, asteroid_t *a) {
 }
 
 void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
+    (void)w;
+    (void)cached_signal;
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
-
-    /* Signal-based boundary: push back when in frontier zone. */
-    float boundary = signal_boundary_push(cached_signal);
-    if (boundary > 0.0f) {
-        float best_d_sq = 1e18f;
-        int best_s = 0;
-        for (int i = 0; i < MAX_STATIONS; i++) {
-            float d_sq = v2_dist_sq(s->pos, w->stations[i].pos);
-            if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
-        }
-        vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
-        float d = v2_len(to_station);
-        if (d > 0.001f) {
-            /* Strong pull — at zero signal this is the only way back.
-             * Scales with boundary (0 at frontier, 1 at zero signal). */
-            float push_strength = boundary * 2.0f;
-            vec2 push = v2_scale(to_station, push_strength / d);
-            s->vel = v2_add(s->vel, push);
-        }
-    }
 }

@@ -7,7 +7,7 @@
  *
  * Signal bands:
  *   0.00–0.15  FRONTIER  No NPC support, heavy control penalty,
- *                        minimal mining efficiency, boundary push.
+ *                        minimal mining efficiency, drift only.
  *   0.15–0.50  FRINGE    Some mining viability, NPCs cautious,
  *                        moderate control penalty.
  *   0.50–0.80  OPERATIONAL  NPCs operate normally, reasonable mining,
@@ -53,11 +53,11 @@ static inline float signal_npc_confidence(float quality) {
     return (quality - SIGNAL_BAND_FRONTIER) / (SIGNAL_BAND_OPERATIONAL - SIGNAL_BAND_FRONTIER);
 }
 
-/* Boundary push strength: returns >0 when signal is in frontier band.
- * Used to gently push ships back toward coverage. */
+/* Boundary push is intentionally disabled for player ships. Low signal
+ * attenuates controls; it must not inject hidden velocity toward a station. */
 static inline float signal_boundary_push(float quality) {
-    if (quality >= SIGNAL_BAND_FRONTIER) return 0.0f;
-    return (SIGNAL_BAND_FRONTIER - quality) / SIGNAL_BAND_FRONTIER;
+    (void)quality;
+    return 0.0f;
 }
 
 /* Visual saturation: full color in operational/core signal, fading to

@@ -745,10 +745,12 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
     int existing = registry_lookup_by_pubkey(&world, pk);
     if (existing >= 0 && existing != pid) {
         server_player_t *old = &world.players[existing];
-        if (memcmp(old->session_token, sp->session_token, 8) != 0) {
-            if (world_player_transfer_ship_state(&world, pid, existing)) {
-                struct mg_connection *old_conn =
-                    (struct mg_connection *)old->conn;
+        bool session_token_changed =
+            memcmp(old->session_token, sp->session_token, 8) != 0;
+        if (world_player_transfer_ship_state(&world, pid, existing)) {
+            struct mg_connection *old_conn =
+                (struct mg_connection *)old->conn;
+            if (session_token_changed) {
                 uint8_t old_pseudo[32] = {0};
                 uint8_t new_pseudo[32] = {0};
                 memcpy(old_pseudo, old->session_token, 8);
@@ -763,22 +765,22 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
                         }
                     }
                 }
-
-                old->connected = false;
-                old->grace_period = false;
-                old->conn = NULL;
-                server_player_clear_live_session_identity(old);
-                server_player_clear_transient_input(old);
-                if (old_conn && old_conn != c) {
-                    mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
-                    old_conn->is_closing = 1;
-                }
-                uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
-                broadcast(leave_old, 2);
-                transferred_live_state = true;
-                printf("[server] player %d: pubkey reconnect (was slot %d)\n",
-                       pid, existing);
             }
+
+            old->connected = false;
+            old->grace_period = false;
+            old->conn = NULL;
+            server_player_clear_live_session_identity(old);
+            server_player_clear_transient_input(old);
+            if (old_conn && old_conn != c) {
+                mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                old_conn->is_closing = 1;
+            }
+            uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
+            broadcast(leave_old, 2);
+            transferred_live_state = true;
+            printf("[server] player %d: pubkey reconnect (was slot %d)\n",
+                   pid, existing);
         }
     }
 
