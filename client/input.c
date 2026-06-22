@@ -109,32 +109,31 @@ static void predict_local_launch_from_dock(void) {
     const station_t *st = &g.world.stations[station_idx];
     if (!station_exists(st)) return;
 
+    vec2 pre_anchor_pos = LOCAL_PLAYER.ship.pos;
     anchor_ship_in_station(&LOCAL_PLAYER, &g.world);
-    vec2 pre_launch_pos = LOCAL_PLAYER.ship.pos;
+    vec2 launch_pos = LOCAL_PLAYER.ship.pos;
 
     LOCAL_PLAYER.docked = false;
     LOCAL_PLAYER.in_dock_range = false;
     LOCAL_PLAYER.docking_approach = false;
     LOCAL_PLAYER.nearby_station = -1;
-    server_player_clear_transient_input(&LOCAL_PLAYER);
+    LOCAL_PLAYER.boost_hold_timer = 0.0f;
+    LOCAL_PLAYER.ship.tractor_active = false;
 
-    vec2 away = v2_sub(LOCAL_PLAYER.ship.pos, st->pos);
+    vec2 away = v2_sub(launch_pos, st->pos);
     away = player_launch_lane_for_berth(
         st, LOCAL_PLAYER.dock_berth, g.local_player_slot, away);
     float len = v2_len(away);
     if (len <= 0.001f) {
         away = v2(0.0f, -1.0f);
         len = 1.0f;
-    } else {
-        away = v2_scale(away, 1.0f / len);
     }
 
-    LOCAL_PLAYER.ship.pos = player_launch_clear_position(
-        &g.world, g.local_player_slot, st, &LOCAL_PLAYER.ship, away);
+    LOCAL_PLAYER.ship.pos = launch_pos;
     LOCAL_PLAYER.ship.angle = fixp_atan2f(away.y, away.x);
-    LOCAL_PLAYER.ship.vel = v2_scale(away, 95.0f);
+    LOCAL_PLAYER.ship.vel = v2_scale(away, 95.0f / len);
     translate_towed_pods_for_local_launch(
-        v2_sub(LOCAL_PLAYER.ship.pos, pre_launch_pos));
+        v2_sub(launch_pos, pre_anchor_pos));
     frame_camera_on_local_launch();
 }
 

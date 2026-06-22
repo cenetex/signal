@@ -751,6 +751,45 @@ TEST(test_launch_preserves_flight_controls) {
     ASSERT(v2_dot(sp->ship.vel, away) > 50.0f);
 }
 
+TEST(test_launch_applies_queued_thrust_through_physics) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    ASSERT(sp->docked);
+
+    vec2 docked_pos = sp->ship.pos;
+    int station_idx = sp->current_station;
+    float start_center_dist = v2_len(v2_sub(docked_pos, w.stations[station_idx].pos));
+
+    sp->input.launch = true;
+    input_intent_t thrust = { .thrust = 1.0f };
+    server_player_queue_movement_input(sp, &thrust, 1, w.tick + 2u);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 2.0f);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
+    ASSERT_EQ_INT(sp->movement_queue_count, 0);
+
+    for (int i = 0; i < 90; i++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT(!sp->docked);
+    }
+
+    vec2 station_delta = v2_sub(sp->ship.pos, w.stations[station_idx].pos);
+    float end_center_dist = v2_len(station_delta);
+    ASSERT(end_center_dist > start_center_dist + 25.0f);
+    vec2 away = v2_scale(station_delta, 1.0f / end_center_dist);
+    ASSERT(v2_dot(sp->ship.vel, away) > 20.0f);
+}
+
 TEST(test_movement_queue_rejects_late_older_sequence) {
     WORLD_DECL;
     world_reset(&w);
@@ -1777,6 +1816,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_stays_at_docked_berth_when_actor_blocks_exit);
     RUN(test_launch_carries_towed_pod_to_docked_berth);
     RUN(test_launch_preserves_flight_controls);
+    RUN(test_launch_applies_queued_thrust_through_physics);
     RUN(test_movement_queue_rejects_late_older_sequence);
     RUN(test_bug40_no_player_player_collision);
 }
