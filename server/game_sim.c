@@ -1817,8 +1817,9 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     /* First launch: "Hull integrity 94%" */
     if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
         sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
-    SIM_LOG("[sim] player %d launched station=%d pos=(%.1f,%.1f) vel=(%.1f,%.1f)\n",
-            sp->id, sp->current_station, sp->ship.pos.x, sp->ship.pos.y,
+    SIM_LOG("[sim] player %d launched station=%d berth=%d pos=(%.1f,%.1f) vel=(%.1f,%.1f)\n",
+            sp->id, sp->current_station, sp->dock_berth,
+            sp->ship.pos.x, sp->ship.pos.y,
             sp->ship.vel.x, sp->ship.vel.y);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
@@ -4142,6 +4143,40 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
 #define BERTHS_PER_DOCK 3          /* berths per MODULE_DOCK */
 #define DOCK_SNAP_DISTANCE 30.0f   /* snap-to-docked threshold */
 
+static int dock_berth_index(int berth) {
+    return berth >= 0 ? berth : 0;
+}
+
+static float dock_fallback_radial_angle(int berth) {
+    int lane = dock_berth_index(berth) % 8;
+    return -PI_F * 0.5f + (float)lane * (TWO_PI_F / 8.0f);
+}
+
+static float dock_fallback_radius(const station_t *st) {
+    if (!st) return DOCK_BERTH_OFFSET;
+    float r = st->dock_radius;
+    if (!isfinite(r) || r < st->radius)
+        r = st->radius;
+    if (!isfinite(r) || r < 0.0f)
+        r = 0.0f;
+    return r + DOCK_BERTH_OFFSET;
+}
+
+static vec2 dock_fallback_berth_pos(const station_t *st, int berth) {
+    if (!st) return v2(0.0f, 0.0f);
+    float angle = dock_fallback_radial_angle(berth);
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), dock_fallback_radius(st)));
+}
+
+static bool dock_berth_position_is_valid(const station_t *st, vec2 pos) {
+    if (!st) return false;
+    if (!isfinite(pos.x) || !isfinite(pos.y)) return false;
+    float min_r = st->radius + 1.0f;
+    if (!isfinite(min_r) || min_r < 1.0f)
+        min_r = 1.0f;
+    return v2_dist_sq(pos, st->pos) >= min_r * min_r;
+}
+
 /* Count dock modules on a station */
 static int station_dock_count(const station_t *st) {
     int count = 0;
@@ -4170,12 +4205,18 @@ static int station_dock_module(const station_t *st, int dock_index) {
 /* Dock berth position: 0=outward end, 1=left side, 2=right side.
  * End berth is past the dock, side berths flank the module. */
 static vec2 dock_berth_pos(const station_t *st, int berth) {
-    int dock_idx = berth / BERTHS_PER_DOCK;
-    int sub = berth % BERTHS_PER_DOCK;
+    if (!st) return v2(0.0f, 0.0f);
+    int normalized = dock_berth_index(berth);
+    int dock_idx = normalized / BERTHS_PER_DOCK;
+    int sub = normalized % BERTHS_PER_DOCK;
     int mi = station_dock_module(st, dock_idx);
-    if (mi < 0) return st->pos;
+    if (mi < 0) return dock_fallback_berth_pos(st, berth);
     int ring = st->modules[mi].ring;
     int slot = st->modules[mi].slot;
+    if (ring < 1 || ring > STATION_NUM_RINGS ||
+        STATION_RING_SLOTS[ring] <= 0) {
+        return dock_fallback_berth_pos(st, berth);
+    }
     vec2 mod_pos = module_world_pos_ring(st, ring, slot);
     float angle = module_angle_ring(st, ring, slot);
     vec2 radial = v2_from_angle(angle);  /* center → module (outward) */
@@ -4188,32 +4229,43 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
     vec2 gap_dir = v2_from_angle(gap_angle);
     vec2 gap_tangent = v2(-gap_dir.y, gap_dir.x); /* not used but clarifies intent */
     (void)gap_tangent;
+    vec2 pos;
     if (sub == 0) {
         /* Outward berth: radially away from center */
-        return v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
+        pos = v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
     } else if (sub == 1) {
         /* Inward berth: radially toward center */
-        return v2_add(mod_pos, v2_scale(radial, -DOCK_BERTH_OFFSET));
+        pos = v2_add(mod_pos, v2_scale(radial, -DOCK_BERTH_OFFSET));
     } else {
         /* Gap-side berth: tangentially toward the ring gap */
         vec2 gap_tangent_dir = v2(-radial.y, radial.x);
         /* Dock at slot 0: gap is at negative tangent; higher slots: positive */
         float dir = (slot == 0) ? -1.0f : 1.0f;
-        return v2_add(mod_pos, v2_scale(gap_tangent_dir, dir * DOCK_BERTH_OFFSET));
+        pos = v2_add(mod_pos, v2_scale(gap_tangent_dir, dir * DOCK_BERTH_OFFSET));
     }
+    if (!dock_berth_position_is_valid(st, pos))
+        return dock_fallback_berth_pos(st, berth);
+    return pos;
 }
 
 /* Dock berth angle: face toward the dock module */
 static float dock_berth_angle(const station_t *st, int berth) {
-    int dock_idx = berth / BERTHS_PER_DOCK;
-    int sub = berth % BERTHS_PER_DOCK;
+    if (!st) return 0.0f;
+    int normalized = dock_berth_index(berth);
+    int dock_idx = normalized / BERTHS_PER_DOCK;
+    int sub = normalized % BERTHS_PER_DOCK;
     int mi = station_dock_module(st, dock_idx);
-    if (mi < 0) return 0.0f;
-    float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+    if (mi < 0) return dock_fallback_radial_angle(berth) + PI_F;
+    int ring = st->modules[mi].ring;
+    int slot = st->modules[mi].slot;
+    if (ring < 1 || ring > STATION_NUM_RINGS ||
+        STATION_RING_SLOTS[ring] <= 0) {
+        return dock_fallback_radial_angle(berth) + PI_F;
+    }
+    float angle = module_angle_ring(st, ring, slot);
     if (sub == 0) return angle + PI_F;       /* outward: face inward */
     if (sub == 1) return angle;              /* inward: face outward */
     /* Gap-side: face toward dock along tangent */
-    int slot = st->modules[mi].slot;
     float dir = (slot == 0) ? 1.0f : -1.0f;
     float tang_angle = angle + PI_F * 0.5f * dir;
     return tang_angle;

@@ -1146,6 +1146,56 @@ TEST(test_player_load_invalid_station_falls_back) {
     remove(TMP("player_94.sav"));
 }
 
+TEST(test_player_load_repairs_degenerate_dock_berth) {
+    WORLD_DECL;
+    world_reset(&w);
+    SERVER_PLAYER_DECL(saved);
+    player_init_ship(&saved, &w);
+    saved.id = 0;
+    saved.connected = true;
+    saved.current_station = 0;
+    saved.docked = true;
+    saved.ship.pos = w.stations[0].pos;
+    ASSERT(player_save(&saved, test_tmp_dir(), 87));
+
+    station_t *prospect = &w.stations[0];
+    bool corrupted = false;
+    for (int i = 0; i < prospect->module_count; i++) {
+        station_module_t *mod = &prospect->modules[i];
+        if (mod->type != MODULE_DOCK || mod->scaffold) continue;
+        mod->ring = 0;
+        mod->slot = 0;
+        corrupted = true;
+        break;
+    }
+    ASSERT(corrupted);
+
+    server_player_t *loaded = &w.players[0];
+    loaded->id = 0;
+    loaded->connected = true;
+    loaded->session_ready = true;
+    memset(loaded->session_token, 0x87, sizeof(loaded->session_token));
+    ASSERT(player_load(loaded, &w, test_tmp_dir(), 87));
+    ASSERT(loaded->docked);
+    vec2 berth_pos = loaded->ship.pos;
+    ASSERT(v2_len(v2_sub(berth_pos, prospect->pos)) > prospect->radius + 1.0f);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(loaded->docked);
+    ASSERT(v2_len(v2_sub(loaded->ship.pos, prospect->pos)) > prospect->radius + 1.0f);
+    ASSERT(v2_len(v2_sub(loaded->ship.pos, berth_pos)) < 0.01f);
+
+    loaded->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!loaded->docked);
+    ASSERT(v2_len(v2_sub(loaded->ship.pos, berth_pos)) < 2.0f);
+    ASSERT(v2_len(loaded->ship.vel) > 50.0f);
+
+    char path[256];
+    if (player_save_path(path, sizeof(path), test_tmp_dir(), &saved, 87))
+        remove(path);
+}
+
 TEST(test_player_load_bad_magic_fails) {
     /* Write garbage with wrong magic */
     FILE *f = fopen(TMP("player_93.sav"), "wb");
@@ -2024,6 +2074,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_clamps_hull_hp);
     RUN(test_player_load_clamps_upgrade_levels);
     RUN(test_player_load_invalid_station_falls_back);
+    RUN(test_player_load_repairs_degenerate_dock_berth);
     RUN(test_player_load_bad_magic_fails);
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
