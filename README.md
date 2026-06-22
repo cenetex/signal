@@ -106,6 +106,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
 - [`docs/holographic-gossip-network.md`](docs/holographic-gossip-network.md):
   contract gossip, decaying market memory, and neural worker coordination.
+- [`docs/intelligence-vision.md`](docs/intelligence-vision.md): central
+  NSRL/CRLPLRIMES intelligence spine, visibility plan, and next gaps.
 - [`docs/protocol-telemetry.md`](docs/protocol-telemetry.md): protocol
   discovery, stream classes, record sizes, and telemetry split.
 - [`docs/fly-multiplayer.md`](docs/fly-multiplayer.md): cheap headless

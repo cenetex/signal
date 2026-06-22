@@ -2002,6 +2002,55 @@ TEST(test_parse_input_v4_client_tick) {
     ASSERT_EQ_INT((int)input_client_tick(msg, 14), 0);
 }
 
+TEST(test_socket_player_requires_session_for_gameplay) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->conn = (void *)(uintptr_t)1;
+    sp->session_ready = false;
+    sp->docked = false;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->ship.pos = v2(0.0f, 0.0f);
+    sp->input.thrust = 1.0f;
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->actual_thrusting);
+    ASSERT_EQ_FLOAT(sp->ship.pos.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->ship.pos.y, 0.0f, 0.001f);
+
+    uint8_t input_msg[10] = {
+        NET_MSG_INPUT,
+        NET_INPUT_THRUST,
+        NET_ACTION_NONE,
+        0xFF,
+        MINING_GRADE_COUNT,
+        0xFF, 0xFF, 0xFF,
+        0x2A, 0x00
+    };
+    server_input_dispatch_result_t input_result;
+    ASSERT(!server_dispatch_input_message(&w, 0, input_msg,
+                                          sizeof(input_msg), &input_result));
+    ASSERT_EQ_INT(sp->movement_queue_count, 0);
+
+    uint8_t players[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    int players_len = serialize_all_player_states(players, w.players, w.tick);
+    ASSERT_EQ_INT(players_len, 2);
+    ASSERT_EQ_INT(players[0], NET_MSG_WORLD_PLAYERS);
+    ASSERT_EQ_INT(players[1], 0);
+
+    sp->session_ready = true;
+    ASSERT(server_dispatch_input_message(&w, 0, input_msg,
+                                         sizeof(input_msg), &input_result));
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+    players_len = serialize_all_player_states(players, w.players, w.tick);
+    ASSERT_EQ_INT(players_len, 2 + PLAYER_RECORD_SIZE);
+    ASSERT_EQ_INT(players[1], 1);
+    ASSERT_EQ_INT(players[2], 0);
+}
+
 TEST(test_ticked_movement_input_applies_on_sim_tick) {
     world_t w;
     memset(&w, 0, sizeof(w));
@@ -2351,6 +2400,7 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_v2_uint16_mining_target);
     RUN(test_parse_input_v3_action_id);
     RUN(test_parse_input_v4_client_tick);
+    RUN(test_socket_player_requires_session_for_gameplay);
     RUN(test_ticked_movement_input_applies_on_sim_tick);
     RUN(test_latency_pong_can_arrive_before_authoritative_input_ack);
     RUN(test_action_ack_roundtrip);

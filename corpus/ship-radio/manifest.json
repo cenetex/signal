@@ -1,0 +1,30 @@
+{
+  "summary": {
+    "format_version": 1,
+    "choice_records": 90,
+    "line_records": 132,
+    "sft_records": 222,
+    "raw_voice_lines": 90,
+    "salts": 9,
+    "max_speakers": 4
+  },
+  "files": {
+    "ship-radio-sft.jsonl": {
+      "bytes": 181030,
+      "sha256": "c2f3cc0cd57775f755b1628e59599dd38ecaccd76590401274928453b2310661"
+    },
+    "ship-radio-completions.jsonl": {
+      "bytes": 171484,
+      "sha256": "04890865ae7d790ba73a3a33093e0f12ef9bce3d78fd6a1ca524c911faabc996"
+    },
+    "ship-radio-voice.txt": {
+      "bytes": 3917,
+      "sha256": "281b87be562c2ea7ded83cb217f9442f788f4ad148cb0c3c7b1848f052de557e"
+    }
+  },
+  "notes": [
+    "Generated from scripts/build-ship-radio-corpus.mjs.",
+    "The corpus is intentionally small and protocol-shaped for tiny models.",
+    "Regeneration is deterministic for the same script and arguments."
+  ]
+}

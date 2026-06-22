@@ -198,8 +198,6 @@
       });
       canvas.addEventListener('blur', signalClearHeldControls);
     </script>
-    <script src="./signal-hail-llm.js"></script>
-    <script src="./signal-touch-controls.js"></script>
     <script>
 
       /* ?singleplayer=1 forces the in-process server.
@@ -233,14 +231,19 @@
         }
       });
 
-      function loadGame(src) {
+      function loadScript(src, onload) {
         var s = document.createElement('script');
         s.src = src;
-        s.onload = function() {
+        if (onload) s.onload = onload;
+        document.body.appendChild(s);
+        return s;
+      }
+
+      function loadGame(src) {
+        loadScript(src, function() {
           document.getElementById('loading').classList.add('done');
           signalFocusCanvas();
-        };
-        document.body.appendChild(s);
+        });
       }
 
       function failBundle(message) {
@@ -248,6 +251,7 @@
         setLoading(message);
       }
 
+      loadScript(signalVersionedAsset('./signal-touch-controls.js'));
       loadGame(signalVersionedAsset('./signal.js'));
     </script>
 

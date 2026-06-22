@@ -37,6 +37,11 @@ enum {
     MAX_DESTROYED_ROCKS = 4096,
 };
 
+enum {
+    SIGNAL_BRAIN_FLIGHT_ACTION_COUNT = 9,
+    SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT = 48,
+};
+
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
 /* Ledger balances are still floats until the #588 fixed-point rewrite, so
  * keep station-local credit values inside the exact integer range where
@@ -265,6 +270,15 @@ typedef struct {
     float autopilot_timer;
     vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
     float autopilot_stuck_timer;/* seconds since meaningful movement */
+    uint8_t autopilot_teacher_valid;
+    uint8_t autopilot_teacher_forward_blocked;
+    uint16_t autopilot_teacher_allowed_mask;
+    uint32_t autopilot_teacher_tick;
+    int8_t autopilot_teacher_action;
+    int8_t autopilot_teacher_turn;
+    int8_t autopilot_teacher_thrust;
+    float autopilot_teacher_features[
+        SIGNAL_BRAIN_FLIGHT_ACTION_COUNT * SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT];
     uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
@@ -756,6 +770,9 @@ bool server_dispatch_handoff_present(
     server_handoff_result_sink_fn result_sink,
     void *result_user);
 void player_init_ship(server_player_t *sp, world_t *w);
+bool server_player_has_live_session(const server_player_t *sp);
+bool server_player_is_gameplay_ready(const server_player_t *sp);
+void server_player_clear_live_session_identity(server_player_t *sp);
 void server_player_clear_transient_input(server_player_t *sp);
 
 /* Layer A.2 of #479 — pubkey registry. */
@@ -1015,6 +1032,11 @@ bool mining_level_can_fracture_asteroid(int mining_level, const asteroid_t *aste
 vec2 station_entry_target(const station_t *st, vec2 from);
 vec2 station_approach_target(const station_t *st, vec2 from);
 vec2 station_exit_target(const station_t *st, vec2 from);
+vec2 player_launch_lane_for_berth(const station_t *st, int dock_berth,
+                                  int player_slot, vec2 away);
+vec2 player_launch_clear_position(const world_t *w, int player_slot,
+                                  const station_t *st, const ship_t *ship,
+                                  vec2 away);
 void emit_event(world_t *w, sim_event_t ev);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);

@@ -1309,6 +1309,23 @@ static void add_local_player_render_correction(vec2 applied_delta,
         g.net_motion.max_render_offset_run = len;
 }
 
+static void frame_camera_on_authoritative_undock(const server_player_t *sp,
+                                                 bool state_docked) {
+    if (!sp || state_docked) return;
+    if (!(g.was_docked || g.action_predict_timer > 0.0f)) return;
+
+    vec2 offset = v2_sub(sp->ship.pos, g.camera_pos);
+    if (v2_len_sq(offset) < 140.0f * 140.0f) return;
+
+    g.camera_pos = sp->ship.pos;
+    g.camera_initialized = true;
+    g.camera_station_index = -1;
+    g.camera_station_side = 0;
+    g.camera_station_v_side = 0;
+    g.camera_drift_timer = 0.0f;
+    g.local_player_render_offset = v2(0.0f, 0.0f);
+}
+
 void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id >= NET_MAX_PLAYERS) return;
 
@@ -1409,6 +1426,13 @@ void apply_remote_player_state(const NetPlayerState* state) {
         record_local_player_motion_telemetry(
             correction_dist, velocity_error, v2_len(applied_delta),
             defer_motion_correction, replayed_frames);
+        if (!state_docked) {
+            sp->docked = false;
+            sp->in_dock_range = false;
+            sp->docking_approach = false;
+            sp->nearby_station = -1;
+        }
+        frame_camera_on_authoritative_undock(sp, state_docked);
         if (!used_replay && !defer_motion_correction)
             sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
         /* Beam state is server-authoritative for the local player too —
@@ -1488,6 +1512,9 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      *   or the predict window has expired. */
     if (!state->docked) {
         sp->docked = false;
+        sp->in_dock_range = false;
+        sp->docking_approach = false;
+        sp->nearby_station = -1;
     } else if (sp->docked || g.action_predict_timer <= 0.0f) {
         sp->docked = true;
         sp->current_station = (int)state->current_station;

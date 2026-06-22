@@ -6,12 +6,10 @@
     "test:latency-proxy": "node scripts/test-ws-latency-proxy.mjs",
     "test:rati-anchor-batch": "node scripts/test-rati-anchor-batch.mjs",
     "test:rati-anchor-stamp": "node scripts/test-rati-anchor-stamp.mjs",
-    "test:relay-broker": "node scripts/test-relay-region-broker.mjs"
+    "test:relay-broker": "node scripts/test-relay-region-broker.mjs",
+    "brain:shadow": "node scripts/analyze-signal-client-brain-shadow.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"
-  },
-  "dependencies": {
-    "@wllama/wllama": "^3.4.1"
   }
 }

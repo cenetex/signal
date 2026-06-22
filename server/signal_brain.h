@@ -14,10 +14,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct signal_brain_flight_action {
+    const char *name;
+    int turn;
+    int thrust;
+} signal_brain_flight_action_t;
+
 bool signal_brain_load_checkpoint(const char *path, char *err, size_t err_size);
 bool signal_brain_loaded(void);
 uint64_t signal_brain_inference_count(void);
 void signal_brain_drive(world_t *w, server_player_t *sp, float dt);
+
+int signal_brain_flight_action_count(void);
+const signal_brain_flight_action_t *signal_brain_flight_action(int index);
+int signal_brain_flight_action_index_from_intent(const input_intent_t *intent);
+bool signal_brain_build_flight_candidate_features(
+    const world_t *w,
+    const server_player_t *sp,
+    float features_out[SIGNAL_BRAIN_FLIGHT_ACTION_COUNT * SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT],
+    uint8_t allowed_out[SIGNAL_BRAIN_FLIGHT_ACTION_COUNT],
+    int *forward_blocked_out);
 
 /* Score NPC flight toward an explicit target. Returns true when a loaded
  * neural checkpoint produced turn/thrust intent for this tick. */

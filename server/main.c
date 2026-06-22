@@ -14,9 +14,7 @@
 #include "sim_ai.h"
 #include "sim_asteroid.h"
 #include "sim_autopilot.h"
-#include "signal_brain.h"
-#include "signal_contract_brain.h"
-#include "signal_npc_worker_brain.h"
+#include "signal_intelligence.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
@@ -630,7 +628,7 @@ static void send_pending_action_results(const sim_events_t *events) {
                (unsigned)sp->pending_action_result_action,
                server_action_result_status_name(status),
                (unsigned)server_tick);
-        if (sp->connected && sp->conn) {
+        if (server_player_is_gameplay_ready(sp) && sp->conn) {
             send_action_result(sp->conn,
                                sp->pending_action_result_id,
                                sp->pending_action_result_input_seq,
@@ -644,7 +642,8 @@ static void send_pending_action_results(const sim_events_t *events) {
 
 static void broadcast(const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
+        if (server_player_is_gameplay_ready(&world.players[i]) &&
+            world.players[i].conn)
             ws_send(world.players[i].conn, data, len);
     }
 }
@@ -694,14 +693,15 @@ static void ws_player_packet_sink(void *user, int player_slot,
     if (!data || len <= 0) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &world.players[player_slot];
-    if (!sp->connected || !sp->conn) return;
+    if (!server_player_is_gameplay_ready(sp) || !sp->conn) return;
     ws_send(sp->conn, data, (size_t)len);
 }
 
 static void broadcast_except(int exclude, const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (i == exclude) continue;
-        if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
+        if (server_player_is_gameplay_ready(&world.players[i]) &&
+            world.players[i].conn)
             ws_send(world.players[i].conn, data, len);
     }
 }
@@ -719,6 +719,19 @@ static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
 #define WS_RATE_WINDOW_MS 1000
 #define WS_RATE_LIMIT 140 /* 60Hz input + signed/plan bursts without drops */
 
+static bool ws_message_allowed_before_session(uint8_t type) {
+    switch (type) {
+    case NET_MSG_LATENCY_PING:
+    case NET_MSG_CLIENT_METRICS:
+    case NET_MSG_REGISTER_PUBKEY:
+    case NET_MSG_PROVE_PUBKEY:
+    case NET_MSG_SESSION:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
                                               uint64_t now) {
     if (pid < 0 || pid >= MAX_PLAYERS) return;
@@ -727,11 +740,14 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
     if (sp->pubkey_identity_finalized) return;
 
     const uint8_t *pk = sp->pubkey;
+    bool transferred_live_state = false;
     int existing = registry_lookup_by_pubkey(&world, pk);
     if (existing >= 0 && existing != pid) {
         server_player_t *old = &world.players[existing];
         if (memcmp(old->session_token, sp->session_token, 8) != 0) {
             if (world_player_transfer_ship_state(&world, pid, existing)) {
+                struct mg_connection *old_conn =
+                    (struct mg_connection *)old->conn;
                 uint8_t old_pseudo[32] = {0};
                 uint8_t new_pseudo[32] = {0};
                 memcpy(old_pseudo, old->session_token, 8);
@@ -750,12 +766,15 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
                 old->connected = false;
                 old->grace_period = false;
                 old->conn = NULL;
-                memset(old->session_token, 0, 8);
-                old->session_ready = false;
-                old->pubkey_proof_ok = false;
-                old->pubkey_identity_finalized = false;
+                server_player_clear_live_session_identity(old);
+                server_player_clear_transient_input(old);
+                if (old_conn && old_conn != c) {
+                    mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                    old_conn->is_closing = 1;
+                }
                 uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
                 broadcast(leave_old, 2);
+                transferred_live_state = true;
                 printf("[server] player %d: pubkey reconnect (was slot %d)\n",
                        pid, existing);
             }
@@ -767,7 +786,9 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
            pid, pk[0], pk[1], pk[2], pk[3]);
     analytics_log_player_event("player_identity", pid, sp, now, 0);
 
-    if (true &&
+    if (transferred_live_state) {
+        printf("[server] player %d: kept live pubkey reconnect state\n", pid);
+    } else if (true &&
         player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
         printf("[server] player %d: restored save by pubkey\n", pid);
     } else if (true) {
@@ -814,6 +835,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     int len = (int)wm->data.len;
     if (len < 1 || pid < 0 || pid >= MAX_PLAYERS) return;
     analytics_record_activity(&world.players[pid], now);
+    if (!server_player_has_live_session(&world.players[pid]) &&
+        !ws_message_allowed_before_session(data[0])) {
+        return;
+    }
 
     switch (data[0]) {
     case NET_MSG_LATENCY_PING:
@@ -1127,8 +1152,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 old->connected = false;
                 old->grace_period = false;
                 old->conn = NULL;
-                old->pubkey_proof_ok = false;
-                old->pubkey_identity_finalized = false;
+                server_player_clear_live_session_identity(old);
+                server_player_clear_transient_input(old);
                 uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
@@ -1150,6 +1175,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             world.players[pid].last_input_action_id_valid = false;
             world.players[pid].pending_action_result_valid = false;
             finalize_verified_pubkey_identity(c, pid, now);
+            uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
+            broadcast_except(pid, join_msg, 2);
             analytics_record_activity(&world.players[pid], now);
             analytics_log_player_event("player_session", pid, &world.players[pid],
                                        now, 0);
@@ -2036,7 +2063,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     BUF_APPEND(pos, buf, BUFSZ, "],\"visible_players\":[");
     first = true;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!world.players[i].connected || world.players[i].grace_period) continue;
+        if (!server_player_is_gameplay_ready(&world.players[i])) continue;
         if (v2_dist_sq(world.players[i].ship.pos, st->pos) > sr_sq) continue;
         if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
@@ -3138,6 +3165,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"frontier_virtual_scaffold_deliveries\":%u,"
                        "\"frontier_virtual_supply_deliveries\":%u,"
                        "\"server_bot_brain_mode\":\"%s\","
+                       "\"server_intelligence_backend\":\"%s\","
                        "\"server_brain_loaded\":%s,"
                        "\"server_brain_inferences\":%llu,"
                        "\"server_contract_brain_loaded\":%s,"
@@ -3163,16 +3191,17 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        world.frontier_virtual_scaffold_deliveries,
                        world.frontier_virtual_supply_deliveries,
                        server_bot_brain_mode_name,
-                       signal_brain_loaded() ? "true" : "false",
-                       (unsigned long long)signal_brain_inference_count(),
-                       signal_contract_brain_loaded() ? "true" : "false",
-                       (unsigned long long)signal_contract_brain_inference_count(),
-                       (unsigned long long)signal_contract_brain_decision_count(),
-                       (unsigned long long)signal_contract_brain_teacher_decision_count(),
-                       signal_npc_worker_brain_loaded() ? "true" : "false",
-                       (unsigned long long)signal_npc_worker_brain_inference_count(),
-                       (unsigned long long)signal_npc_worker_brain_decision_count(),
-                       (unsigned long long)signal_npc_worker_brain_teacher_decision_count(),
+                       signal_intelligence_backend_name(),
+                       signal_intelligence_flight_loaded() ? "true" : "false",
+                       (unsigned long long)signal_intelligence_flight_inference_count(),
+                       signal_intelligence_contract_loaded() ? "true" : "false",
+                       (unsigned long long)signal_intelligence_contract_inference_count(),
+                       (unsigned long long)signal_intelligence_contract_decision_count(),
+                       (unsigned long long)signal_intelligence_contract_teacher_decision_count(),
+                       signal_intelligence_npc_worker_loaded() ? "true" : "false",
+                       (unsigned long long)signal_intelligence_npc_worker_inference_count(),
+                       (unsigned long long)signal_intelligence_npc_worker_decision_count(),
+                       (unsigned long long)signal_intelligence_npc_worker_teacher_decision_count(),
                        version,
                        "local",
                        true ? "true" : "false",
@@ -3323,11 +3352,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 ws_send(c, proto_msg, (size_t)proto_len);
         }
 
-        /* Notify others and tell new player about existing players. */
-        broadcast_except(pid, join_msg, 2);
+        /* Tell new player about existing gameplay-ready players. Others learn
+         * about this slot after SESSION is accepted. */
         for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (i == pid || !world.players[i].connected) continue;
-            if (world.players[i].grace_period) continue; /* skip ghosts */
+            if (i == pid || !server_player_is_gameplay_ready(&world.players[i]))
+                continue;
             uint8_t exist_msg[] = { NET_MSG_JOIN, (uint8_t)i };
             ws_send(c, exist_msg, 2);
         }
@@ -3406,6 +3435,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     /* No session — immediate full disconnect */
                     (void)world_player_release_ship_asset(&world, i);
                     world.players[i].connected = false;
+                    server_player_clear_live_session_identity(&world.players[i]);
+                    server_player_clear_transient_input(&world.players[i]);
                     uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                     broadcast(leave_msg, 2);
                     printf("[server] player %d left (no session)\n", i);
@@ -4174,7 +4205,7 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
         mark_station_identity_dirty_for_hull_inventory_changes();
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];
-            if (!sp->connected || sp->grace_period) continue;
+            if (!server_player_is_gameplay_ready(sp)) continue;
             if (sp->last_input_seq != 0 &&
                 sp->last_input_seq != input_ack_before[p]) {
                 input_ack_changed = true;
@@ -4214,9 +4245,8 @@ static void tick_session_timers(void) {
                 (void)world_player_release_ship_asset(&world, i);
                 sp->connected = false;
                 sp->grace_period = false;
-                sp->session_ready = false;
-                sp->pubkey_proof_ok = false;
-                sp->pubkey_identity_finalized = false;
+                server_player_clear_live_session_identity(sp);
+                server_player_clear_transient_input(sp);
                 uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                 broadcast(leave_msg, 2);
                 printf("[server] player %d grace expired, fully disconnected\n", i);
@@ -4227,10 +4257,13 @@ static void tick_session_timers(void) {
             sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
             if (sp->grace_timer <= 0.0f) {
                 printf("[server] player %d: session timeout, disconnecting\n", i);
-                mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                if (sp->conn)
+                    mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
                 (void)world_player_release_ship_asset(&world, i);
                 sp->connected = false;
                 sp->conn = NULL;
+                server_player_clear_live_session_identity(sp);
+                server_player_clear_transient_input(sp);
                 uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                 broadcast(leave_msg, 2);
             }
@@ -4302,7 +4335,8 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
         float sr_sq = world.stations[s].signal_range * world.stations[s].signal_range;
         for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!world.players[p].connected || !world.players[p].conn) continue;
+            if (!server_player_is_gameplay_ready(&world.players[p]) ||
+                !world.players[p].conn) continue;
             if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq)
                 ws_send(world.players[p].conn, id_buf, (size_t)id_len);
         }
@@ -4318,14 +4352,16 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         uint8_t buf[STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
         int len = serialize_station_ingots(buf, s, &world.stations[s]);
         for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!world.players[p].connected || !world.players[p].conn) continue;
+            if (!server_player_is_gameplay_ready(&world.players[p]) ||
+                !world.players[p].conn) continue;
             ws_send(world.players[p].conn, buf, (size_t)len);
         }
         uint8_t mbuf[STATION_MANIFEST_HEADER +
                      COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
         int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
         for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!world.players[p].connected || !world.players[p].conn) continue;
+            if (!server_player_is_gameplay_ready(&world.players[p]) ||
+                !world.players[p].conn) continue;
             ws_send(world.players[p].conn, mbuf, (size_t)mlen);
         }
         world.stations[s].manifest_dirty = false;
@@ -4360,10 +4396,11 @@ int main(void) {
     load_world_state();
     server_apply_npc_worker_trace_fixture();
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
-    signal_brain_holographic_init();
+    signal_intelligence_holographic_init();
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
         char err[256];
-        if (!signal_brain_load_checkpoint(server_bot_brain_checkpoint, err, sizeof(err))) {
+        if (!signal_intelligence_load_flight_checkpoint(
+                server_bot_brain_checkpoint, err, sizeof(err))) {
             fprintf(stderr, "[FATAL] failed to load SIGNAL_BOT_BRAIN_CHECKPOINT=%s: %s\n",
                     server_bot_brain_checkpoint, err);
             return 1;
@@ -4373,9 +4410,10 @@ int main(void) {
         if (server_bot_contract_brain_checkpoint &&
             server_bot_contract_brain_checkpoint[0] != '\0') {
             char contract_err[256];
-            if (!signal_contract_brain_load_checkpoint(server_bot_contract_brain_checkpoint,
-                                                       contract_err,
-                                                       sizeof(contract_err))) {
+            if (!signal_intelligence_load_contract_checkpoint(
+                    server_bot_contract_brain_checkpoint,
+                    contract_err,
+                    sizeof(contract_err))) {
                 fprintf(stderr, "[FATAL] failed to load "
                                 "SIGNAL_BOT_CONTRACT_BRAIN_CHECKPOINT=%s: %s\n",
                         server_bot_contract_brain_checkpoint, contract_err);
@@ -4388,7 +4426,7 @@ int main(void) {
     if (server_bot_npc_worker_brain_checkpoint &&
         server_bot_npc_worker_brain_checkpoint[0] != '\0') {
         char worker_err[256];
-        if (!signal_npc_worker_brain_load_checkpoint(
+        if (!signal_intelligence_load_npc_worker_checkpoint(
                 server_bot_npc_worker_brain_checkpoint,
                 worker_err,
                 sizeof(worker_err))) {

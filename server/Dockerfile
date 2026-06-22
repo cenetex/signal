@@ -5,11 +5,6 @@
 FROM emscripten/emsdk:4.0.15 AS web-builder
 
 ARG GIT_HASH=dev
-WORKDIR /deps
-
-RUN npm init -y >/dev/null \
-    && npm install --no-save --ignore-scripts --no-audit --no-fund @wllama/wllama@3.4.1
-
 WORKDIR /src
 COPY CMakeLists.txt ./
 COPY client/ ./client/
@@ -18,18 +13,13 @@ COPY shared/ ./shared/
 COPY vendor/ ./vendor/
 COPY web/ ./web/
 
-RUN mkdir -p node_modules/@wllama \
-    && cp -R /deps/node_modules/@wllama/wllama node_modules/@wllama/wllama \
-    && emcmake cmake -S . -B build-web \
+RUN emcmake cmake -S . -B build-web \
       -DCMAKE_BUILD_TYPE=Release \
       -DGIT_HASH=${GIT_HASH} \
     && emmake cmake --build build-web --parallel \
     && mkdir -p public \
     && cp build-web/signal.js build-web/signal.wasm \
-          build-web/play.html build-web/signal-touch-controls.js \
-          build-web/signal-hail-llm.js build-web/signal-hail-gguf-worker.js \
-          build-web/signal-hail-wllama-runtime.js public/ \
-    && cp -R build-web/wllama public/wllama \
+          build-web/play.html build-web/signal-touch-controls.js public/ \
     && cp web/index.html web/mine.html web/ost.html web/ost-manifest.json \
           web/ost-cover.jpg public/
 

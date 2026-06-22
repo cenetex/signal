@@ -1,0 +1,43 @@
+{
+  "schema": "crlp.signal_client_brain_api.v1",
+  "name": "signal_client_brain",
+  "authority": "typed_client_dispatch_over_static_brain_heads",
+  "public_api": [
+    "float signal_client_brain_score(enum signal_brain_task task, const float *features)",
+    "int signal_client_brain_select_best(enum signal_brain_task task, const float *features, size_t candidate_count, float *scores_out)",
+    "signal_client_brain_task_contract signal_client_brain_contract(enum signal_brain_task task)"
+  ],
+  "tasks": [
+    {
+      "task": "flight",
+      "enum": "SIGNAL_BRAIN_TASK_FLIGHT",
+      "feature_set": "signal-flight-live-v2",
+      "feature_encoder_version": 2,
+      "input_count": 48,
+      "source": "signal_client_flight.c"
+    },
+    {
+      "task": "tactical",
+      "enum": "SIGNAL_BRAIN_TASK_TACTICAL",
+      "feature_set": "signal-mining-grammar-v1",
+      "feature_encoder_version": 3,
+      "input_count": 70,
+      "source": "signal_client_tactical.c"
+    },
+    {
+      "task": "strategic",
+      "enum": "SIGNAL_BRAIN_TASK_STRATEGIC",
+      "feature_set": "signal-npc-worker-v2",
+      "feature_encoder_version": 1,
+      "input_count": 78,
+      "source": "signal_client_strategic.c"
+    }
+  ],
+  "hot_path_contract": [
+    "single typed client entrypoint",
+    "no checkpoint parser",
+    "no heap allocation",
+    "no temporary checkpoint files",
+    "task-specific feature contracts remain explicit"
+  ]
+}
