@@ -1769,8 +1769,11 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
-    server_player_clear_transient_input(sp);
-    /* Launch from the exact docked berth: no relocation, just an outward kick. */
+    sp->boost_hold_timer = 0.0f;
+    sp->ship.tractor_active = false;
+    /* Launch from the exact docked berth: no relocation, just an outward kick.
+     * Preserve continuous flight input so controls respond immediately after
+     * undock; one-shot launch/dock flags are cleared at the end of step_player. */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(launch_pos, st->pos);
     away = player_launch_lane_for_berth(st, sp->dock_berth, player_slot, away);
