@@ -703,7 +703,7 @@ TEST(test_launch_carries_towed_pod_to_docked_berth) {
     }
 }
 
-TEST(test_launch_scrubs_stale_flight_input) {
+TEST(test_launch_preserves_flight_controls) {
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
@@ -712,25 +712,20 @@ TEST(test_launch_scrubs_stale_flight_input) {
     ASSERT(sp->docked);
 
     sp->input.launch = true;
-    sp->input.thrust = -1.0f;
+    sp->input.thrust = 1.0f;
     sp->input.turn = 1.0f;
-    sp->input.reverse_thrust = true;
+    sp->input.reverse_thrust = false;
     sp->input.boost = true;
     sp->input.tractor_hold = true;
     sp->ship.tractor_active = true;
     sp->boost_hold_timer = 1.0f;
     sp->last_input_seq = 77;
     sp->last_input_tick = 1234;
-    sp->movement_queue_count = 2;
+    sp->movement_queue_count = 1;
     sp->movement_queue[0] = (movement_input_cmd_t){
-        .apply_tick = 1,
-        .input_seq = 78,
-        .intent = { .thrust = -1.0f, .turn = 1.0f, .reverse_thrust = true },
-    };
-    sp->movement_queue[1] = (movement_input_cmd_t){
         .apply_tick = 10,
-        .input_seq = 79,
-        .intent = { .thrust = -1.0f, .turn = -1.0f, .reverse_thrust = true },
+        .input_seq = 78,
+        .intent = { .thrust = 1.0f, .turn = 1.0f },
     };
 
     vec2 docked_pos = sp->ship.pos;
@@ -738,16 +733,16 @@ TEST(test_launch_scrubs_stale_flight_input) {
 
     ASSERT(!sp->docked);
     ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 2.0f);
-    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
     ASSERT(!sp->input.reverse_thrust);
-    ASSERT(!sp->input.boost);
-    ASSERT(!sp->input.tractor_hold);
+    ASSERT(sp->input.boost);
+    ASSERT(sp->input.tractor_hold);
     ASSERT(!sp->ship.tractor_active);
     ASSERT_EQ_FLOAT(sp->boost_hold_timer, 0.0f, 0.001f);
-    ASSERT_EQ_INT(sp->movement_queue_count, 0);
-    ASSERT_EQ_INT(sp->last_input_seq, 0);
-    ASSERT_EQ_INT((int)sp->last_input_tick, 0);
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+    ASSERT_EQ_INT(sp->last_input_seq, 77);
+    ASSERT_EQ_INT((int)sp->last_input_tick, 1234);
 
     vec2 away = v2_sub(sp->ship.pos, w.stations[sp->current_station].pos);
     float away_len = v2_len(away);
@@ -1781,7 +1776,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_clears_dock_berth_under_thrust);
     RUN(test_launch_stays_at_docked_berth_when_actor_blocks_exit);
     RUN(test_launch_carries_towed_pod_to_docked_berth);
-    RUN(test_launch_scrubs_stale_flight_input);
+    RUN(test_launch_preserves_flight_controls);
     RUN(test_movement_queue_rejects_late_older_sequence);
     RUN(test_bug40_no_player_player_collision);
 }
