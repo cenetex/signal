@@ -1,0 +1,32 @@
+{
+  "schema": "crlp.signal_client_brain_bundle.v1",
+  "name": "strategic",
+  "symbol": "signal_client_strategic",
+  "checkpoint_path": "/Users/ratimics/develop/crlplrimes/build/float/signal_npc_worker_economy/signal_npc_worker.nnckpt",
+  "checkpoint_hash": "198dd1c89e5c7e2f1add5c409b5acba4d82c46a57ecdf4541aa396a0aad04b67",
+  "scalar_type": "float32",
+  "sizes": [
+    78,
+    32,
+    16,
+    1
+  ],
+  "hidden_activation": "relu",
+  "output_activation": "linear",
+  "feature_encoder_version": 1,
+  "feature_set": "signal-npc-worker-v2",
+  "notes": "Signal NPC worker strategic option scorer trained from Signal simulator state, frontier pressure, faction goals, pirate risk, and certified utility rows",
+  "files": [
+    "signal_client_strategic.h",
+    "signal_client_strategic.c",
+    "signal_client_strategic.manifest.json"
+  ],
+  "generated_at": "2026-06-22T00:14:04.073Z",
+  "authority": "checkpoint_to_static_c_export",
+  "hot_path_contract": [
+    "no checkpoint parser",
+    "no heap allocation",
+    "stack scratch buffers",
+    "static const neuron arrays"
+  ]
+}

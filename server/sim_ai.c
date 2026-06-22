@@ -8,14 +8,12 @@
 #include "tractor.h"
 #include "sim_nav.h"
 #include "sim_flight.h"
-#include "signal_brain.h"
+#include "signal_intelligence.h"
 #include "sim_ship.h"
 #include "sim_physics.h"
 #include "sim_mining.h"
 #include "sim_construction.h"
 #include "signal_model.h"
-#include "signal_contract_brain.h"
-#include "signal_npc_worker_brain.h"
 #include "manifest.h"
 #include "commodity.h"
 #include "contract_fit.h"
@@ -3274,7 +3272,8 @@ static int npc_choose_hauler_job_offer(const world_t *w,
 
     server_player_t shadow;
     npc_contract_shadow_player(npc, ship, &shadow);
-    int choice = signal_contract_brain_choose(w, &shadow, candidates, candidate_count);
+    int choice = signal_intelligence_choose_contract(
+        w, &shadow, candidates, candidate_count);
     npc_contract_shadow_cleanup(&shadow);
     if (choice < 0 || choice >= candidate_count) return -1;
     return choice;
@@ -3961,9 +3960,9 @@ static void npc_worker_write_trace(
             npc->session_token[2], npc->session_token[3],
             npc->session_token[4], npc->session_token[5],
             npc->session_token[6], npc->session_token[7],
-            signal_npc_worker_option_name(heuristic_option),
+            signal_intelligence_npc_worker_option_name(heuristic_option),
             selected >= 0 && selected < count
-                ? signal_npc_worker_option_name(candidates[selected].option)
+                ? signal_intelligence_npc_worker_option_name(candidates[selected].option)
                 : "none",
             selected, count,
             npc_worker_brain_mode_name(mode),
@@ -3989,7 +3988,7 @@ static void npc_worker_write_trace(
                 "\"escort_bonus\":%.3f,\"convoy_bonus\":%.3f,"
                 "\"contract_value\":%.3f,\"credit_delta\":%.3f,"
                 "\"refit_progress\":%.3f}",
-                signal_npc_worker_option_name(c->option),
+                signal_intelligence_npc_worker_option_name(c->option),
                 scores[i],
                 c->teacher_score,
                 c->legal ? "true" : "false",
@@ -4204,7 +4203,7 @@ static bool npc_worker_score_assignment(world_t *w,
                                         bool has_courier,
                                         const npc_job_offer_t *best) {
     bool trace_enabled = npc_worker_trace_file() != NULL;
-    if (!signal_npc_worker_brain_loaded() && !trace_enabled) return false;
+    if (!signal_intelligence_npc_worker_loaded() && !trace_enabled) return false;
 
     signal_npc_worker_candidate_t candidates[SIGNAL_NPC_WORKER_OPTION_COUNT];
     double scores[SIGNAL_NPC_WORKER_OPTION_COUNT] = {0.0};
@@ -4340,19 +4339,19 @@ static bool npc_worker_score_assignment(world_t *w,
         count++;
     }
 
-    int selected = signal_npc_worker_brain_choose_with_scores(
+    int selected = signal_intelligence_choose_npc_worker_with_scores(
         candidates, count, scores, SIGNAL_NPC_WORKER_OPTION_COUNT);
     double margin = npc_worker_selected_margin(scores, count, selected);
     npc_worker_brain_mode_t mode = npc_worker_brain_mode();
     bool activated = false;
     if (selected >= 0 && selected < count &&
-        signal_npc_worker_brain_loaded() &&
+        signal_intelligence_npc_worker_loaded() &&
         mode != NPC_WORKER_BRAIN_MODE_SHADOW &&
         candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
         margin + 1.0e-9 >= npc_worker_activation_margin_threshold()) {
         activated = npc_try_self_upgrade(w, npc_slot, npc, ship);
     } else if (selected >= 0 && selected < count &&
-               signal_npc_worker_brain_loaded() &&
+               signal_intelligence_npc_worker_loaded() &&
                mode != NPC_WORKER_BRAIN_MODE_SHADOW &&
                (candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY ||
                 candidates[selected].option == SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE) &&
@@ -5271,13 +5270,13 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
      * - tests/headless runs without a checkpoint stay deterministic via
      *   flight_steer_to below, but they no longer bypass this shared path. */
     if (npc->brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
-        signal_brain_loaded()) {
+        signal_intelligence_flight_loaded()) {
         const hull_def_t *hull = npc_hull_def(npc);
         float clearance = hull ? (hull->ship_radius + 30.0f) : 46.0f;
         vec2 neural_target = nav_follow_path(w, path, npc->ship.pos, final_target,
                                              clearance, dt);
-        bool neural_ok = signal_brain_drive_npc_to((world_t *)w, npc,
-                                                   neural_target);
+        bool neural_ok = signal_intelligence_drive_npc_to((world_t *)w, npc,
+                                                          neural_target);
         if (neural_ok) {
             vec2 to_target = v2_sub(neural_target, npc->ship.pos);
             float target_dist = v2_len(to_target);
@@ -6326,7 +6325,7 @@ void step_npc_ships(world_t *w, float dt) {
          * is swapped in inside npc_steer_with_path when a model is loaded. */
         if (npc->brain_mode == SERVER_BRAIN_MODE_HOLOGRAPHIC) {
             if (npc->state != NPC_STATE_DOCKED) {
-                signal_brain_drive_npc(w, npc, dt);
+                signal_intelligence_drive_npc(w, npc, dt);
                 /* Apply the brain's turn/thrust output to the ship */
                 step_ship_rotation(&npc->ship, dt, npc->input.turn);
                 {

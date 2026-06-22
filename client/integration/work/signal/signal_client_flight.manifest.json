@@ -1,0 +1,32 @@
+{
+  "schema": "crlp.signal_client_brain_bundle.v1",
+  "name": "flight",
+  "symbol": "signal_client_flight",
+  "checkpoint_path": "/Users/ratimics/develop/crlplrimes/build/signal_flight.nnckpt",
+  "checkpoint_hash": "2fc2f84fce640902a4cbf49a6777cf682f60e92bcbaec5cab0ea766dd67ec83f",
+  "scalar_type": "float32",
+  "sizes": [
+    48,
+    32,
+    16,
+    1
+  ],
+  "hidden_activation": "relu",
+  "output_activation": "linear",
+  "feature_encoder_version": 2,
+  "feature_set": "signal-flight-live-v2",
+  "notes": "Signal flight WASD scorer trained from replay-certified utility with live-observable features",
+  "files": [
+    "signal_client_flight.h",
+    "signal_client_flight.c",
+    "signal_client_flight.manifest.json"
+  ],
+  "generated_at": "2026-06-22T00:14:04.048Z",
+  "authority": "checkpoint_to_static_c_export",
+  "hot_path_contract": [
+    "no checkpoint parser",
+    "no heap allocation",
+    "stack scratch buffers",
+    "static const neuron arrays"
+  ]
+}

@@ -9,7 +9,7 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_model.h"
-#include "signal_contract_brain.h"
+#include "signal_intelligence.h"
 #include "commodity.h"
 #include "manifest.h"
 #include "ship.h"
@@ -821,7 +821,7 @@ static bool autopilot_plan_docked_logistics(world_t *w, server_player_t *sp) {
     signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
     int count = autopilot_append_contract_candidates(
         w, sp, sp->current_station, candidates, MAX_CONTRACTS + 1);
-    int choice = signal_contract_brain_choose(w, sp, candidates, count);
+    int choice = signal_intelligence_choose_contract(w, sp, candidates, count);
     if (choice < 0 || choice >= count) {
         autopilot_clear_logistics(sp);
         return false;
@@ -1324,7 +1324,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
             int count = autopilot_append_contract_candidates(
                 w, sp, source, candidates, MAX_CONTRACTS + 1);
-            int choice = signal_contract_brain_choose(w, sp, candidates, count);
+            int choice = signal_intelligence_choose_contract(w, sp, candidates, count);
             if (choice >= 0 && choice < count &&
                 candidates[choice].action == SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK) {
                 sp->autopilot_station_target = candidates[choice].dest_station;
@@ -1525,7 +1525,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         signal_contract_candidate_t candidates[MAX_CONTRACTS + 1];
         int count = autopilot_append_contract_candidates(
             w, sp, source, candidates, MAX_CONTRACTS + 1);
-        int choice = signal_contract_brain_choose(w, sp, candidates, count);
+        int choice = signal_intelligence_choose_contract(w, sp, candidates, count);
         if (choice >= 0 && choice < count &&
             candidates[choice].action == SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER) {
             sp->autopilot_station_target = candidates[choice].dest_station;

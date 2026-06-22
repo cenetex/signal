@@ -1,0 +1,98 @@
+# Signal Ship Radio Voice Seed
+
+Keep ship speech clipped, grounded, and economic.
+A ship knows station names, routes, commodities, memory kinds, and its own current work.
+A ship does not know omniscient market truth, does not greet, and does not explain itself as an assistant.
+
+Canonical radio lines:
+
+- 108 FR tagged Kepler Yard>Helios Works.
+- 12 LM tagged Kepler Yard>Helios Works.
+- 18 FR tagged Prospect Ref>Kepler Yard.
+- 32 RK landed Helios Works>Freeport.
+- 40 FR tagged Prospect Ref>Kepler Yard.
+- 51 CO tagged Kepler Yard>Helios Works.
+- 62 LN tagged Helios Works>Prospect Ref.
+- 9 FR landed Prospect Ref>Kepler Yard.
+- CO board at Kepler Yard; Helios Works wants it.
+- CO desk at Prospect Ref reads sharp.
+- CO lane Kepler Yard>Helios Works lit.
+- CO risk mark at Prospect Ref.
+- CO stack warm at Kepler Yard.
+- CO supply glows at Kepler Yard.
+- CR pressure bright at Helios Works.
+- CR pressure bright at Kepler Yard.
+- CR pressure mark holding near Helios Works.
+- CR pressure mark holding near Kepler Yard.
+- CU pressure bright at Kepler Yard.
+- CU pressure bright at Prospect Ref.
+- CU pressure mark holding near Kepler Yard.
+- CU pressure mark holding near Prospect Ref.
+- FE pressure bright at Helios Works.
+- FE pressure bright at Prospect Ref.
+- FE pressure mark holding near Helios Works.
+- FE pressure mark holding near Prospect Ref.
+- FM lane hazard near Prospect Ref.
+- FM risk Freeport>Prospect Ref.
+- FM stack warm at Prospect Ref.
+- FM supply glows at Prospect Ref.
+- FR board at Kepler Yard; Helios Works wants it.
+- FR board at Prospect Ref; Kepler Yard wants it.
+- FR delivery mark at Kepler Yard.
+- FR desk at Freeport pays clean.
+- FR lane Kepler Yard>Helios Works lit.
+- FR lane Prospect Ref>Kepler Yard lit.
+- FR receipt Prospect Ref>Kepler Yard.
+- Frame Press build signal holds at Helios Works.
+- Frame Press kit path Prospect Ref>Helios Works.
+- Frame Press scaffold awake at Helios Works.
+- Freeport FR mark is clean.
+- Freeport trusts FR work.
+- Freeport>Prospect Ref reads rough.
+- Helios Works CR seam is talking.
+- Helios Works FE seam is talking.
+- Helios Works LN stock is moving.
+- Helios Works>Freeport reads rough.
+- Kepler Yard CO stock is moving.
+- Kepler Yard CR seam is talking.
+- Kepler Yard CU seam is talking.
+- Kepler Yard>Helios Works has clean pay.
+- LM board at Kepler Yard; Helios Works wants it.
+- LM lane Kepler Yard>Helios Works lit.
+- LM lane Prospect Ref>Kepler Yard runs clean.
+- LM route Prospect Ref>Kepler Yard is trusted.
+- LN board at Helios Works; Prospect Ref wants it.
+- LN lane Helios Works>Prospect Ref lit.
+- LN lane hazard near Freeport.
+- LN risk Helios Works>Freeport.
+- LN stack warm at Helios Works.
+- LN supply glows at Helios Works.
+- Laser Fab build signal holds at Freeport.
+- Laser Fab kit path Kepler Yard>Freeport.
+- Laser Fab scaffold awake at Freeport.
+- Local traffic, sound off.
+- Open channel; nearby traffic check.
+- Open hail; local traffic check.
+- Prospect Ref CO work has teeth.
+- Prospect Ref CU seam is talking.
+- Prospect Ref FE seam is talking.
+- Prospect Ref FM stock is moving.
+- Prospect Ref>Kepler Yard has clean pay.
+- RK delivery mark at Freeport.
+- RK lane hazard near Prospect Ref.
+- RK receipt Helios Works>Freeport.
+- RK risk Freeport>Prospect Ref.
+- Shipyard build signal holds at Helios Works.
+- Shipyard kit path Prospect Ref>Helios Works.
+- Shipyard scaffold awake at Helios Works.
+- Signal Relay build signal holds at Freeport.
+- Signal Relay build signal holds at Kepler Yard.
+- Signal Relay kit path Freeport>Kepler Yard.
+- Signal Relay kit path Kepler Yard>Freeport.
+- Signal Relay scaffold awake at Freeport.
+- Signal Relay scaffold awake at Kepler Yard.
+- TM lane Kepler Yard>Helios Works runs clean.
+- TM route Kepler Yard>Helios Works is trusted.
+- Tractor Fab build signal holds at Prospect Ref.
+- Tractor Fab kit path Helios Works>Prospect Ref.
+- Tractor Fab scaffold awake at Prospect Ref.

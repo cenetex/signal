@@ -1,0 +1,32 @@
+{
+  "schema": "crlp.signal_client_brain_bundle.v1",
+  "name": "tactical",
+  "symbol": "signal_client_tactical",
+  "checkpoint_path": "/Users/ratimics/develop/crlplrimes/build/float/signal_mining_experiment/signal_mining.nnckpt",
+  "checkpoint_hash": "f921e8204d05fbf831051c051ac46050117b291abaef2bda8e329a4615f04428",
+  "scalar_type": "float32",
+  "sizes": [
+    70,
+    32,
+    16,
+    1
+  ],
+  "hidden_activation": "relu",
+  "output_activation": "linear",
+  "feature_encoder_version": 3,
+  "feature_set": "signal-mining-grammar-v1",
+  "notes": "Signal mining/tow/smelt/supply grammar scorer trained from replay-certified utility",
+  "files": [
+    "signal_client_tactical.h",
+    "signal_client_tactical.c",
+    "signal_client_tactical.manifest.json"
+  ],
+  "generated_at": "2026-06-22T00:14:04.054Z",
+  "authority": "checkpoint_to_static_c_export",
+  "hot_path_contract": [
+    "no checkpoint parser",
+    "no heap allocation",
+    "stack scratch buffers",
+    "static const neuron arrays"
+  ]
+}

@@ -32,7 +32,7 @@
 #include "ship.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
-#include "signal_brain.h"
+#include "signal_intelligence.h"
 #include "sim_nav.h"
 #include "sim_asteroid.h"
 #include "sim_physics.h"
@@ -1651,7 +1651,58 @@ static vec2 actor_stack_normal(int a, int b) {
     return v2_from_angle(angle);
 }
 
-static vec2 launch_lane_for_berth(const station_t *st, int dock_berth,
+static bool launch_candidate_clear(const world_t *w, int player_slot,
+                                   vec2 pos, float radius) {
+    if (!w) return true;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (p == player_slot) continue;
+        const server_player_t *other = &w->players[p];
+        if (!server_player_is_gameplay_ready(other) || other->docked) continue;
+        const hull_def_t *hull = ship_hull_def(&other->ship);
+        float min_d = radius + hull->ship_radius + 32.0f;
+        if (v2_dist_sq(pos, other->ship.pos) < min_d * min_d)
+            return false;
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        const npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
+        const hull_def_t *hull = npc_hull_def(npc);
+        float min_d = radius + hull->ship_radius + 32.0f;
+        if (v2_dist_sq(pos, npc->ship.pos) < min_d * min_d)
+            return false;
+    }
+    return true;
+}
+
+vec2 player_launch_clear_position(const world_t *w, int player_slot,
+                                  const station_t *st, const ship_t *ship,
+                                  vec2 away) {
+    const hull_def_t *hull = ship_hull_def(ship);
+    float ship_r = hull ? hull->ship_radius : 18.0f;
+    float len = v2_len(away);
+    if (len <= 0.001f) away = v2(0.0f, -1.0f);
+    else away = v2_scale(away, 1.0f / len);
+
+    float launch_r = st->dock_radius + ship_r + STATION_DOCK_APPROACH_OFFSET + 90.0f;
+    float min_r = st->radius + ship_r + 180.0f;
+    if (launch_r < min_r) launch_r = min_r;
+    vec2 base = v2_add(st->pos, v2_scale(away, launch_r));
+    if (launch_candidate_clear(w, player_slot, base, ship_r)) return base;
+
+    vec2 tangent = v2(-away.y, away.x);
+    float step = ship_r * 2.0f + 44.0f;
+    for (int i = 1; i <= 6; i++) {
+        float side = (i & 1) ? 1.0f : -1.0f;
+        float lane = (float)((i + 1) / 2);
+        vec2 candidate = v2_add(base, v2_scale(tangent, side * lane * step));
+        candidate = v2_add(candidate, v2_scale(away, lane * 18.0f));
+        if (launch_candidate_clear(w, player_slot, candidate, ship_r))
+            return candidate;
+    }
+    return base;
+}
+
+vec2 player_launch_lane_for_berth(const station_t *st, int dock_berth,
                                   int player_slot, vec2 away) {
     float len = v2_len(away);
     if (len <= 1.0f) away = v2(0.0f, -1.0f);
@@ -1722,7 +1773,7 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     /* Launch from the exact docked berth: no relocation, just an outward kick. */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(launch_pos, st->pos);
-    away = launch_lane_for_berth(st, sp->dock_berth, player_slot, away);
+    away = player_launch_lane_for_berth(st, sp->dock_berth, player_slot, away);
     float len = v2_len(away);
     if (len <= 0.001f) {
         away = v2(0.0f, -1.0f);
@@ -4147,7 +4198,8 @@ static int find_best_berth(const world_t *w, const station_t *st, int station_id
         float d = v2_dist_sq(ship_pos, bp);
         bool occupied = false;
         for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!w->players[p].connected || !w->players[p].docked) continue;
+            if (!server_player_is_gameplay_ready(&w->players[p]) ||
+                !w->players[p].docked) continue;
             if (w->players[p].current_station != station_idx) continue;
             if (w->players[p].dock_berth == s) { occupied = true; break; }
         }
@@ -6288,7 +6340,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     /* Check other players */
     for (int pi = 0; pi < MAX_PLAYERS; pi++) {
         const server_player_t *other = &w->players[pi];
-        if (!other->connected || other->id == sp->id) continue;
+        if (!server_player_is_gameplay_ready(other) || other->id == sp->id) continue;
         float pr = ship_hull_def(&other->ship)->ship_radius;
         vec2 hit; float along;
         if (laser_target_in_beam(&ray, other->ship.pos, pr, &hit, &along)
@@ -6797,7 +6849,8 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
 
     /* Other players — strong interference at close range */
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!w->players[i].connected || w->players[i].docked) continue;
+        if (!server_player_is_gameplay_ready(&w->players[i]) ||
+            w->players[i].docked) continue;
         if (&w->players[i] == sp) continue;
         float dist_sq = v2_dist_sq(pos, w->players[i].ship.pos);
         if (dist_sq < 200.0f * 200.0f) {
@@ -6826,10 +6879,47 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
 
 /* Player autopilot extracted to sim_autopilot.c (#272 slice). */
 
+static void player_snapshot_autopilot_teacher(world_t *w, server_player_t *sp) {
+    if (!w || !sp) return;
+
+    uint8_t allowed[SIGNAL_BRAIN_FLIGHT_ACTION_COUNT] = {0};
+    int forward_blocked = 0;
+    if (!signal_brain_build_flight_candidate_features(
+            w,
+            sp,
+            sp->autopilot_teacher_features,
+            allowed,
+            &forward_blocked)) {
+        return;
+    }
+
+    int action = signal_brain_flight_action_index_from_intent(&sp->input);
+    if (action < 0 || action >= SIGNAL_BRAIN_FLIGHT_ACTION_COUNT) return;
+
+    uint16_t allowed_mask = 0;
+    for (int i = 0; i < SIGNAL_BRAIN_FLIGHT_ACTION_COUNT; i++) {
+        if (allowed[i]) allowed_mask |= (uint16_t)(1u << i);
+    }
+
+    sp->autopilot_teacher_valid = 1u;
+    sp->autopilot_teacher_forward_blocked = forward_blocked ? 1u : 0u;
+    sp->autopilot_teacher_allowed_mask = allowed_mask;
+    sp->autopilot_teacher_tick = w->tick;
+    sp->autopilot_teacher_action = (int8_t)action;
+    sp->autopilot_teacher_turn = (int8_t)(sp->input.turn < -0.01f ? -1 :
+                                  sp->input.turn > 0.01f ? 1 : 0);
+    sp->autopilot_teacher_thrust = (int8_t)(sp->input.thrust < -0.01f ? -1 :
+                                    sp->input.thrust > 0.01f ? 1 : 0);
+}
+
 
 
 
 static void step_player(world_t *w, server_player_t *sp, float dt) {
+    sp->autopilot_teacher_valid = 0u;
+    sp->autopilot_teacher_allowed_mask = 0u;
+    sp->autopilot_teacher_action = -1;
+
     /* One-shot: toggle autopilot from network action. */
     if (sp->input.toggle_autopilot) {
         if (sp->autopilot_mode) {
@@ -6893,7 +6983,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_target = -1;
         } else {
             step_autopilot(w, sp, dt);
-            signal_brain_drive(w, sp, dt);
+            signal_intelligence_drive_player(w, sp, dt);
+            player_snapshot_autopilot_teacher(w, sp);
         }
     }
 
@@ -8363,7 +8454,7 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     bool include_towed_pods = false;
     if (debit_player && owner >= 0 && owner < MAX_PLAYERS) {
         sp = &w->players[owner];
-        include_towed_pods = sp->connected && sp->docked &&
+        include_towed_pods = server_player_is_gameplay_ready(sp) && sp->docked &&
                              sp->current_station == station_idx;
     }
     int yard_idx = -1;
@@ -8415,7 +8506,8 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     commission_cost += (float)tractors * tractor_price;
 
     if (debit_player && sp) {
-        if (sp->connected && sp->docked && sp->current_station == station_idx)
+        if (server_player_is_gameplay_ready(sp) && sp->docked &&
+            sp->current_station == station_idx)
             player_ledger_force_debit_at(sp, st, commission_cost);
     }
 
@@ -8512,7 +8604,8 @@ static void step_shipyard_shipbuilding(world_t *w, float dt) {
                 w, hull_class, owner_kind, -1, s,
                 SHIP_ASSET_PROVENANCE_SHIPYARD, false, s,
                 owner_pubkey, owner_session);
-            if (completed_asset && sp->connected && sp->docked &&
+            if (completed_asset && server_player_is_gameplay_ready(sp) &&
+                sp->docked &&
                 sp->current_station == s &&
                 ship_asset_player_matches_owner(completed_asset, sp)) {
                 (void)ship_asset_assign_to_player(w, owner, completed_asset, s);
@@ -9574,6 +9667,8 @@ bool server_dispatch_input_message(world_t *w, int player_idx,
     }
 
     server_player_t *sp = &w->players[player_idx];
+    if (!server_player_is_gameplay_ready(sp)) return false;
+
     const uint8_t *input_data = data;
     uint8_t input_copy[NET_INPUT_MSG_SIZE];
     int input_len = len;
@@ -10347,16 +10442,18 @@ void world_sim_step(world_t *w, float dt) {
     generate_npc_distress_contracts(w, dt);
     delivery_maybe_post_credit_contracts(w);
     for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (!w->players[p].connected) continue;
+        if (!server_player_is_gameplay_ready(&w->players[p])) continue;
         server_player_apply_queued_movement(&w->players[p], w->tick);
         step_player(w, &w->players[p], dt);
     }
 
     /* Player-player collision: ramming damage + signal interference */
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!w->players[i].connected || w->players[i].docked) continue;
+        if (!server_player_is_gameplay_ready(&w->players[i]) ||
+            w->players[i].docked) continue;
         for (int j = i + 1; j < MAX_PLAYERS; j++) {
-            if (!w->players[j].connected || w->players[j].docked) continue;
+            if (!server_player_is_gameplay_ready(&w->players[j]) ||
+                w->players[j].docked) continue;
             float ri = ship_hull_def(&w->players[i].ship)->ship_radius;
             float rj = ship_hull_def(&w->players[j].ship)->ship_radius;
             float minimum = ri + rj;
@@ -10443,7 +10540,7 @@ void world_sim_step(world_t *w, float dt) {
      * lagging one tick behind. */
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &w->players[i];
-        if (!sp->connected || sp->docked) continue;
+        if (!server_player_is_gameplay_ready(sp) || sp->docked) continue;
         float pr = ship_hull_def(&sp->ship)->ship_radius;
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
             npc_ship_t *npc = &w->npc_ships[n];
@@ -10482,7 +10579,7 @@ void world_sim_step(world_t *w, float dt) {
     }
 
     for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (w->players[p].connected)
+        if (server_player_is_gameplay_ready(&w->players[p]))
             (void)world_ship_asset_sync_from_player(w, &w->players[p]);
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -11108,7 +11205,7 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]) {
         /* Find the player slot owning this session_token. */
         const uint8_t *tok = w->pubkey_registry[r].session_token;
         for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!w->players[p].session_ready) continue;
+            if (!server_player_has_live_session(&w->players[p])) continue;
             if (memcmp(w->players[p].session_token, tok, 8) == 0) return p;
         }
         /* Registry entry exists but no live player slot — return -1
@@ -11349,6 +11446,28 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
 /* ================================================================== */
 /* Public: player_init_ship                                           */
 /* ================================================================== */
+
+bool server_player_has_live_session(const server_player_t *sp) {
+    return sp && sp->connected && sp->session_ready;
+}
+
+bool server_player_is_gameplay_ready(const server_player_t *sp) {
+    if (!sp || !sp->connected || sp->grace_period) return false;
+    /* Test/local harness players do not carry a WebSocket connection. Real
+     * socket clients must complete SESSION before entering the live sim. */
+    return sp->session_ready || sp->conn == NULL;
+}
+
+void server_player_clear_live_session_identity(server_player_t *sp) {
+    if (!sp) return;
+    memset(sp->session_token, 0, sizeof(sp->session_token));
+    sp->session_ready = false;
+    memset(sp->pubkey, 0, sizeof(sp->pubkey));
+    sp->pubkey_set = false;
+    sp->pubkey_proof_ok = false;
+    sp->pubkey_identity_finalized = false;
+    sp->last_signed_nonce = 0;
+}
 
 void server_player_clear_transient_input(server_player_t *sp) {
     if (!sp) return;

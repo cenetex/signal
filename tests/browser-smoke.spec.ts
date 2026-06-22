@@ -59,6 +59,14 @@ type PlayerCameraSnapshot = {
   narrowFocus: number;
 };
 
+type PlayerStateSnapshot = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  docked: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -287,6 +295,26 @@ async function playerCameraSnapshot(page: Page): Promise<PlayerCameraSnapshot | 
     if (![offsetX, offsetY, narrowFocus].every(Number.isFinite)) return null;
     return { offsetX, offsetY, narrowFocus };
   });
+}
+
+async function playerStateSnapshot(page: Page): Promise<PlayerStateSnapshot | null> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    const x = mod.ccall('get_player_pos_x', 'number', [], []);
+    const y = mod.ccall('get_player_pos_y', 'number', [], []);
+    const vx = mod.ccall('get_player_vel_x', 'number', [], []);
+    const vy = mod.ccall('get_player_vel_y', 'number', [], []);
+    const docked = mod.ccall('get_player_docked', 'number', [], []);
+    if (![x, y, vx, vy, docked].every(Number.isFinite)) return null;
+    return { x, y, vx, vy, docked };
+  });
+}
+
+function playerDistance(a: PlayerStateSnapshot, b: PlayerStateSnapshot): number {
+  return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
 async function heldControlMask(page: Page): Promise<number> {
@@ -765,6 +793,15 @@ test.describe('Browser smoke tests', () => {
         message: 'live launch should leave the local client in flight mode',
       })
       .toBeTruthy();
+    const positionBeforeThrust = await playerStateSnapshot(page);
+    expect(positionBeforeThrust).toBeTruthy();
+    expect(positionBeforeThrust!.docked).toBe(0);
+    const cameraAfterLaunch = await playerCameraSnapshot(page);
+    expect(cameraAfterLaunch).toBeTruthy();
+    expect(Math.max(
+      Math.abs(cameraAfterLaunch!.offsetX),
+      Math.abs(cameraAfterLaunch!.offsetY),
+    )).toBeLessThan(140);
 
     const acksBefore = (await netMotionSnapshot(page)).inputAcks;
     await page.keyboard.down('W');
@@ -779,6 +816,9 @@ test.describe('Browser smoke tests', () => {
     } finally {
       await page.keyboard.up('W');
     }
+    const positionAfterThrust = await playerStateSnapshot(page);
+    expect(positionAfterThrust).toBeTruthy();
+    expect(playerDistance(positionBeforeThrust!, positionAfterThrust!)).toBeGreaterThan(18);
 
     await expect
       .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
@@ -791,6 +831,65 @@ test.describe('Browser smoke tests', () => {
     expect(motion.samples).toBeGreaterThan(0);
     expect(motion.unackedInputs).toBeLessThan(16);
     expect(motion.actionQueueDepth).toBe(0);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('live relay touch controls drive flight input', async ({ page }) => {
+    test.skip(!usesLiveSmokeUrl(), 'requires SMOKE_URL pointed at a live relay URL');
+    test.skip(
+      !process.env.SMOKE_LIVE_RELAY_ASSERT,
+      'set SMOKE_LIVE_RELAY_ASSERT=1 to require live relay input acks',
+    );
+    test.setTimeout(45_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.goto(addQueryParam(smokeUrl(), 'touch', '1'));
+    await waitForRenderedGame(page, page.locator('canvas'), true);
+
+    await page.locator('[data-control="use"]').click();
+    await expect
+      .poll(async () => {
+        const flags = await mobileControlFlags(page);
+        return (flags & mobileFlag.docked) === 0 &&
+          (flags & mobileFlag.canFlight) !== 0;
+      }, {
+        timeout: 10_000,
+        message: 'live touch launch should enter flight mode',
+      })
+      .toBeTruthy();
+
+    const positionBeforeThrust = await playerStateSnapshot(page);
+    expect(positionBeforeThrust).toBeTruthy();
+    expect(positionBeforeThrust!.docked).toBe(0);
+    const cameraAfterLaunch = await playerCameraSnapshot(page);
+    expect(cameraAfterLaunch).toBeTruthy();
+    expect(Math.max(
+      Math.abs(cameraAfterLaunch!.offsetX),
+      Math.abs(cameraAfterLaunch!.offsetY),
+    )).toBeLessThan(140);
+
+    const thrust = page.locator('[data-control="thrust"]');
+    await expect(thrust).toBeVisible();
+    const box = await thrust.boundingBox();
+    expect(box).toBeTruthy();
+    await page.mouse.move(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await page.mouse.down();
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 3_000,
+          message: 'touch Accel should register as held thrust',
+        })
+        .toBe(1);
+      await page.waitForTimeout(1_200);
+    } finally {
+      await page.mouse.up();
+    }
+
+    const positionAfterThrust = await playerStateSnapshot(page);
+    expect(positionAfterThrust).toBeTruthy();
+    expect(playerDistance(positionBeforeThrust!, positionAfterThrust!)).toBeGreaterThan(18);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
@@ -1017,6 +1116,8 @@ test.describe('Browser smoke tests', () => {
     await page.setViewportSize({ width: 390, height: 760 });
     await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
     await waitForRenderedGame(page, page.locator('canvas'), false);
+    const touchScriptSrc = await page.locator('script[src*="signal-touch-controls.js"]').getAttribute('src');
+    expect(touchScriptSrc).toMatch(/[?&]v=/);
 
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.docked, { timeout: 5_000 })

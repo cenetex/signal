@@ -90,6 +90,7 @@ set(SIGNAL_SIM_SOURCES
     server/gossip.c
     server/sim_autopilot.c
     server/signal_brain.c
+    server/signal_intelligence.c
     server/signal_contract_brain.c
     server/signal_npc_worker_brain.c
     server/sim_flight.c
@@ -148,6 +149,10 @@ set(SIGNAL_CLIENT_SOURCES
     client/input.c
     client/net_sync.c
     client/neural_singleplayer.c
+    client/integration/work/signal/signal_client_brain.c
+    client/integration/work/signal/signal_client_flight.c
+    client/integration/work/signal/signal_client_tactical.c
+    client/integration/work/signal/signal_client_strategic.c
     client/local_server.c
     client/onboarding.c
     client/contract_objective.c
@@ -495,18 +500,17 @@ if(EMSCRIPTEN)
         "'_main'"
         "'__saudio_emsc_pull'"
         "'_get_signal_strength'"
-        "'_signal_hail_llm_apply_response'"
-        "'_signal_hail_llm_request_id'"
-        "'_signal_hail_llm_prompt_len'"
-        "'_signal_hail_llm_prompt'"
-        "'_signal_hail_llm_debug_seed_nearby'"
-        "'_signal_hail_llm_debug_trigger_hail'"
         "'_get_signal_visual_saturation'"
         "'_get_signal_visual_base_saturation'"
         "'_get_signal_visual_cue_saturation'"
         "'_get_signal_visual_player_saturation'"
         "'_get_player_camera_offset_x'"
         "'_get_player_camera_offset_y'"
+        "'_get_player_pos_x'"
+        "'_get_player_pos_y'"
+        "'_get_player_vel_x'"
+        "'_get_player_vel_y'"
+        "'_get_player_docked'"
         "'_get_camera_narrow_focus'"
         "'_reset_net_motion_telemetry'"
         "'_get_net_motion_max_correction'"
@@ -536,6 +540,7 @@ if(EMSCRIPTEN)
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
         "'_neural_singleplayer_init'"
+        "'_neural_singleplayer_ready'"
         "'_signal_mobile_control_flags'"
         "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
@@ -582,43 +587,6 @@ if(EMSCRIPTEN)
         VERBATIM
     )
     add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-llm.js
-                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-llm.js
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-gguf-worker.js
-                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-gguf-worker.js
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-wllama-runtime.js
-                ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/signal-hail-wllama-runtime.js
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                ${CMAKE_CURRENT_BINARY_DIR}/wllama
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm
-                ${CMAKE_CURRENT_BINARY_DIR}/wllama/esm
-        COMMAND ${CMAKE_COMMAND} -E touch
-                ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm/index.js
-                ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@wllama/wllama/esm/wasm/wllama.wasm
-        VERBATIM
-    )
-    add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
         COMMAND ${CMAKE_COMMAND} -E rm -f
                 ${CMAKE_CURRENT_BINARY_DIR}/signal.html
@@ -631,10 +599,6 @@ if(EMSCRIPTEN)
         DEPENDS
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
-            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-llm.js
-            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-gguf-worker.js
-            ${CMAKE_CURRENT_BINARY_DIR}/signal-hail-wllama-runtime.js
-            ${CMAKE_CURRENT_BINARY_DIR}/wllama_esm.stamp
             ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
     )
     add_dependencies(signal signal_web_assets)

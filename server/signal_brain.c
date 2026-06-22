@@ -13,8 +13,8 @@
 #include <string.h>
 
 enum {
-    SB_ACTION_COUNT = 9,
-    SB_FEATURE_COUNT = 48,
+    SB_ACTION_COUNT = SIGNAL_BRAIN_FLIGHT_ACTION_COUNT,
+    SB_FEATURE_COUNT = SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT,
     SB_LAYER_COUNT = 4,
     SB_HIDDEN0 = 32,
     SB_HIDDEN1 = 16,
@@ -37,11 +37,7 @@ typedef struct {
     uint64_t inference_count;
 } signal_brain_model_t;
 
-typedef struct {
-    const char *name;
-    int turn;
-    int thrust;
-} signal_brain_action_t;
+typedef signal_brain_flight_action_t signal_brain_action_t;
 
 typedef struct {
     vec2 pos;
@@ -102,6 +98,31 @@ static const signal_brain_action_t SB_ACTIONS[SB_ACTION_COUNT] = {
     {"SA", -1, -1},
     {"SD", 1, -1},
 };
+
+int signal_brain_flight_action_count(void) {
+    return SB_ACTION_COUNT;
+}
+
+const signal_brain_flight_action_t *signal_brain_flight_action(int index) {
+    if (index < 0 || index >= SB_ACTION_COUNT) return NULL;
+    return &SB_ACTIONS[index];
+}
+
+int signal_brain_flight_action_index_from_intent(const input_intent_t *intent) {
+    if (!intent) return -1;
+    int turn = 0;
+    int thrust = 0;
+    if (intent->turn < -0.01f) turn = -1;
+    else if (intent->turn > 0.01f) turn = 1;
+    if (intent->thrust < -0.01f) thrust = -1;
+    else if (intent->thrust > 0.01f) thrust = 1;
+
+    for (int i = 0; i < SB_ACTION_COUNT; i++) {
+        if (SB_ACTIONS[i].turn == turn && SB_ACTIONS[i].thrust == thrust)
+            return i;
+    }
+    return -1;
+}
 
 static void set_err(char *err, size_t err_size, const char *msg) {
     if (!err || err_size == 0) return;
@@ -615,6 +636,35 @@ static int action_allowed(const signal_brain_state_t *s,
     if (fabs(s->heading_error) > 0.35 && a->thrust > 0 && a->turn == 0)
         return 0;
     return 1;
+}
+
+bool signal_brain_build_flight_candidate_features(
+    const world_t *w,
+    const server_player_t *sp,
+    float features_out[SB_ACTION_COUNT * SB_FEATURE_COUNT],
+    uint8_t allowed_out[SB_ACTION_COUNT],
+    int *forward_blocked_out) {
+    if (forward_blocked_out) *forward_blocked_out = 0;
+    if (!w || !sp || !features_out || sp->docked || sp->autopilot_mode == 0)
+        return false;
+    if (autopilot_station_phase(sp->autopilot_state)) return false;
+
+    signal_brain_target_t target = {0};
+    if (!brain_target_for(w, sp, &target)) return false;
+
+    signal_brain_state_t state = brain_state_for(w, sp, target.pos);
+    if (forward_blocked_out)
+        *forward_blocked_out = state.fwd_path_blocked > 0.5 ? 1 : 0;
+
+    double row[SB_FEATURE_COUNT];
+    for (int i = 0; i < SB_ACTION_COUNT; i++) {
+        fill_features(&state, &SB_ACTIONS[i], (size_t)i, row);
+        for (int j = 0; j < SB_FEATURE_COUNT; j++)
+            features_out[i * SB_FEATURE_COUNT + j] = (float)row[j];
+        if (allowed_out)
+            allowed_out[i] = (uint8_t)action_allowed(&state, &SB_ACTIONS[i], (size_t)i);
+    }
+    return true;
 }
 
 void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {

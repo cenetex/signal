@@ -152,6 +152,51 @@ TEST(test_registry_reconnect_with_new_token) {
     ASSERT(found_balance);
 }
 
+TEST(test_registry_lookup_skips_disconnected_stale_session) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32];  fill_pubkey(pk, 4);
+    uint8_t tok[8];  fill_token(tok, 41);
+
+    setup_registered_player(w, 0, pk, tok);
+    w->players[0].connected = false;
+    w->players[0].session_ready = true;
+
+    server_player_t *new_slot = &w->players[5];
+    new_slot->connected = true;
+    new_slot->id = 5;
+    memcpy(new_slot->session_token, tok, 8);
+    new_slot->session_ready = true;
+
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 5);
+}
+
+TEST(test_player_clear_live_session_identity) {
+    server_player_t sp;
+    memset(&sp, 0, sizeof(sp));
+    memset(sp.session_token, 0xAB, sizeof(sp.session_token));
+    memset(sp.pubkey, 0xCD, sizeof(sp.pubkey));
+    sp.session_ready = true;
+    sp.pubkey_set = true;
+    sp.pubkey_proof_ok = true;
+    sp.pubkey_identity_finalized = true;
+    sp.last_signed_nonce = 99;
+
+    server_player_clear_live_session_identity(&sp);
+
+    uint8_t zero_token[8] = {0};
+    uint8_t zero_pubkey[32] = {0};
+    ASSERT_EQ_INT(memcmp(sp.session_token, zero_token, sizeof(zero_token)), 0);
+    ASSERT_EQ_INT(memcmp(sp.pubkey, zero_pubkey, sizeof(zero_pubkey)), 0);
+    ASSERT(!sp.session_ready);
+    ASSERT(!sp.pubkey_set);
+    ASSERT(!sp.pubkey_proof_ok);
+    ASSERT(!sp.pubkey_identity_finalized);
+    ASSERT_EQ_INT((int)sp.last_signed_nonce, 0);
+}
+
 TEST(test_registry_two_pubkeys_one_machine) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -316,6 +361,8 @@ void register_registry_tests(void) {
     RUN(test_registry_fresh_registration);
     RUN(test_registry_idempotent_reregistration);
     RUN(test_registry_reconnect_with_new_token);
+    RUN(test_registry_lookup_skips_disconnected_stale_session);
+    RUN(test_player_clear_live_session_identity);
     RUN(test_registry_two_pubkeys_one_machine);
     RUN(test_registry_save_load_roundtrip);
     RUN(test_identity_dispatch_session_register_and_proof);
