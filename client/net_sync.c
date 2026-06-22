@@ -194,6 +194,16 @@ static bool net_replay_has_frames_after(uint32_t server_tick) {
     return net_replay_first_after(server_tick) >= 0;
 }
 
+static bool net_replay_has_turn_after(uint32_t server_tick) {
+    int first_after = net_replay_first_after(server_tick);
+    if (first_after < 0) return false;
+    for (int i = first_after; i < (int)g.net_replay_count; i++) {
+        const input_replay_frame_t *frame = net_replay_frame_at(i);
+        if (fabsf(frame->intent.turn) > 0.01f) return true;
+    }
+    return false;
+}
+
 static bool should_defer_stale_unacked_motion(const NetPlayerState *state,
                                               bool has_unacked_input,
                                               float dist_sq) {
@@ -1385,6 +1395,9 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool used_replay = false;
         bool used_snap = false;
         bool used_lerp = false;
+        bool has_unacked_turn = has_unacked_input &&
+            (fabsf(LOCAL_PLAYER.input.turn) > 0.01f ||
+             net_replay_has_turn_after(state->server_tick));
         bool defer_motion_correction = false;
         bool defer_predicted_undock =
             state_docked && !sp->docked && g.action_predict_timer > 0.0f;
@@ -1448,7 +1461,11 @@ void apply_remote_player_state(const NetPlayerState* state) {
             sp->nearby_station = -1;
         }
         frame_camera_on_authoritative_undock(sp, state_docked);
-        if (!used_replay && !defer_motion_correction)
+        /* A/D changes often have tiny position error, so stale snapshots can
+         * look "safe" to accept while still carrying the pre-turn angle. Keep
+         * the predicted heading until the server acks that input or replay
+         * reconciles it, otherwise steering appears to twitch then reset. */
+        if (!used_replay && !defer_motion_correction && !has_unacked_turn)
             sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
         /* Beam state is server-authoritative for the local player too —
          * the autopilot fires server-side and the client never predicts
