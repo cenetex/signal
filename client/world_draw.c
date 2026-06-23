@@ -2648,7 +2648,7 @@ static bool draw_published_cargo_pod_module_tractors(void) {
             ? (commodity_t)it->commodity
             : pod->commodity;
         draw_cargo_pod_module_tractor_beam(
-            it->source_pos, it->target_pos, pod, commodity,
+            it->source_pos, pod->pos, pod, commodity,
             it->intensity, pod_idx);
         drew = true;
     }
