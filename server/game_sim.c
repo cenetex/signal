@@ -918,7 +918,8 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
                                              int station_idx,
                                              int module_idx,
                                              const cargo_pod_t *pod,
-                                             vec2 base_anchor);
+                                             vec2 base_anchor,
+                                             bool compact_lane);
 
 /* Asteroid lifecycle, dynamics, fracture → sim_asteroid.c
  * sim_can_smelt_ore, sim_step_refinery_production, sim_step_station_production,
@@ -5019,7 +5020,8 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
                                              int station_idx,
                                              int module_idx,
                                              const cargo_pod_t *pod,
-                                             vec2 base_anchor) {
+                                             vec2 base_anchor,
+                                             bool compact_lane) {
     if (!st || module_idx < 0 || module_idx >= st->module_count ||
         module_idx >= MAX_MODULES_PER_STATION) {
         return base_anchor;
@@ -5035,6 +5037,13 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
         outward = v2_from_angle(module_angle_ring(st, module->ring,
                                                   module->slot));
     }
+    if (compact_lane) {
+        vec2 toward_lane = v2_sub(base_anchor, module_pos);
+        float lane_len = v2_len(toward_lane);
+        if (lane_len > 0.001f) {
+            outward = v2_scale(toward_lane, 1.0f / lane_len);
+        }
+    }
     vec2 tangent = v2(-outward.y, outward.x);
 
     int total = 1;
@@ -5048,8 +5057,10 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
     if (lanes_this_row < 1) lanes_this_row = 1;
 
     float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
-    float lane_spacing = pod_radius * 2.90f + 16.0f;
-    float row_spacing = pod_radius * 2.20f + 20.0f;
+    float lane_spacing = compact_lane ? pod_radius * 2.05f + 6.0f
+                                      : pod_radius * 2.90f + 16.0f;
+    float row_spacing = compact_lane ? pod_radius * 1.10f + 4.0f
+                                     : pod_radius * 2.20f + 20.0f;
     float centered_lane = (float)lane - ((float)lanes_this_row - 1.0f) * 0.5f;
     vec2 spread = v2_add(v2_scale(tangent, centered_lane * lane_spacing),
                          v2_scale(outward, (float)row * row_spacing));
@@ -5204,6 +5215,77 @@ static bool station_hopper_input_anchor_for_pod(const station_t *st,
     return true;
 }
 
+static bool station_frame_hopper_shell_anchor_for_pod(const station_t *st,
+                                                      int frame_hopper_idx,
+                                                      const cargo_pod_t *pod,
+                                                      int *out_furnace,
+                                                      vec2 *out_anchor,
+                                                      float *out_lane_dist_sq) {
+    if (!st || !pod || !cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME) ||
+        frame_hopper_idx < 0 || frame_hopper_idx >= st->module_count ||
+        frame_hopper_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+
+    const station_module_t *frame_hopper = &st->modules[frame_hopper_idx];
+    if (frame_hopper->scaffold || frame_hopper->type != MODULE_HOPPER ||
+        (commodity_t)frame_hopper->commodity != COMMODITY_FRAME) {
+        return false;
+    }
+
+    vec2 frame_hopper_pos = module_world_pos_ring(st, frame_hopper->ring,
+                                                  frame_hopper->slot);
+    float best_d = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    int best_furnace = -1;
+    vec2 best_anchor = frame_hopper_pos;
+    for (int f = 0; f < st->module_count && f < MAX_MODULES_PER_STATION; f++) {
+        const station_module_t *furnace = &st->modules[f];
+        if (furnace->scaffold || furnace->type != MODULE_FURNACE) continue;
+        commodity_t ore = module_instance_input_ore(furnace);
+        if (ore >= COMMODITY_RAW_ORE_COUNT) continue;
+
+        vec2 furnace_pos = module_world_pos_ring(st, furnace->ring,
+                                                 furnace->slot);
+        int adj_rings[] = { furnace->ring + 1, furnace->ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int h = 0; h < st->module_count &&
+                            h < MAX_MODULES_PER_STATION; h++) {
+                const station_module_t *ore_hopper = &st->modules[h];
+                if (ore_hopper->scaffold ||
+                    ore_hopper->type != MODULE_HOPPER ||
+                    ore_hopper->ring != adj ||
+                    (commodity_t)ore_hopper->commodity != ore) {
+                    continue;
+                }
+                vec2 ore_hopper_pos = module_world_pos_ring(
+                    st, ore_hopper->ring, ore_hopper->slot);
+                vec2 shell_anchor =
+                    v2_scale(v2_add(furnace_pos, ore_hopper_pos), 0.5f);
+                if (v2_dist_sq(frame_hopper_pos, shell_anchor) >
+                    HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) {
+                    continue;
+                }
+
+                float d = point_segment_dist_sq(pod->pos, furnace_pos,
+                                                ore_hopper_pos);
+                if (d <= best_d) {
+                    best_d = d;
+                    best_furnace = f;
+                    best_anchor = shell_anchor;
+                }
+            }
+        }
+    }
+
+    if (best_furnace < 0) return false;
+    if (out_furnace) *out_furnace = best_furnace;
+    if (out_anchor) *out_anchor = best_anchor;
+    if (out_lane_dist_sq) *out_lane_dist_sq = best_d;
+    return true;
+}
+
 static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b) {
     vec2 ab = v2_sub(b, a);
     float ab_sq = v2_len_sq(ab);
@@ -5252,7 +5334,6 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
 
     const float beam_intake_sq =
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
-    const float shell_reach_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
     float best_score = beam_intake_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
@@ -5261,58 +5342,21 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
 
-        for (int f = 0; f < st->module_count && f < MAX_MODULES_PER_STATION; f++) {
-            const station_module_t *furnace = &st->modules[f];
-            if (furnace->scaffold || furnace->type != MODULE_FURNACE) continue;
-            commodity_t ore = module_instance_input_ore(furnace);
-            if (ore >= COMMODITY_RAW_ORE_COUNT) continue;
-            vec2 furnace_pos = module_world_pos_ring(st, furnace->ring,
-                                                     furnace->slot);
-
-            int adj_rings[] = { furnace->ring + 1, furnace->ring - 1 };
-            for (int ri = 0; ri < 2; ri++) {
-                int adj = adj_rings[ri];
-                if (adj < 1 || adj > STATION_NUM_RINGS) continue;
-                for (int h = 0; h < st->module_count && h < MAX_MODULES_PER_STATION; h++) {
-                    const station_module_t *ore_hopper = &st->modules[h];
-                    if (ore_hopper->scaffold ||
-                        ore_hopper->type != MODULE_HOPPER ||
-                        ore_hopper->ring != adj ||
-                        (commodity_t)ore_hopper->commodity != ore) {
-                        continue;
-                    }
-                    vec2 ore_hopper_pos = module_world_pos_ring(
-                        st, ore_hopper->ring, ore_hopper->slot);
-                    float pod_d = point_segment_dist_sq(pod->pos,
-                                                        furnace_pos,
-                                                        ore_hopper_pos);
-                    if (pod_d > beam_intake_sq) continue;
-                    vec2 smelt_target = v2_scale(
-                        v2_add(furnace_pos, ore_hopper_pos), 0.5f);
-
-                    for (int fh = 0; fh < st->module_count &&
-                                     fh < MAX_MODULES_PER_STATION; fh++) {
-                        const station_module_t *frame_hopper = &st->modules[fh];
-                        if (frame_hopper->scaffold ||
-                            frame_hopper->type != MODULE_HOPPER ||
-                            (commodity_t)frame_hopper->commodity != COMMODITY_FRAME) {
-                            continue;
-                        }
-                        vec2 frame_hopper_pos = module_world_pos_ring(
-                            st, frame_hopper->ring, frame_hopper->slot);
-                        if (v2_dist_sq(frame_hopper_pos, smelt_target) >
-                            shell_reach_sq) {
-                            continue;
-                        }
-                        float score = cargo_pod_module_candidate_score(
-                            w, s, fh, pod_d, beam_intake_sq);
-                        if (score <= best_score) {
-                            best_score = score;
-                            best_station = s;
-                            best_module = fh;
-                        }
-                    }
-                }
+        for (int fh = 0; fh < st->module_count &&
+                         fh < MAX_MODULES_PER_STATION; fh++) {
+            float lane_d = beam_intake_sq;
+            if (!station_frame_hopper_shell_anchor_for_pod(st, fh, pod,
+                                                           NULL, NULL,
+                                                           &lane_d) ||
+                lane_d > beam_intake_sq) {
+                continue;
+            }
+            float score = cargo_pod_module_candidate_score(
+                w, s, fh, lane_d, beam_intake_sq);
+            if (score <= best_score) {
+                best_score = score;
+                best_station = s;
+                best_module = fh;
             }
         }
     }
@@ -5615,9 +5659,11 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     vec2 anchor = station_module_cargo_mouth(st, &st->modules[module_idx],
                                              pod);
     int pulse_module = module_idx;
+    bool compact_lane = false;
     if (station_module_input_hopper_for_pod(st, module_idx, pod,
                                             NULL, &anchor)) {
         pulse_module = module_idx;
+        compact_lane = true;
     } else {
         int consumer_idx = -1;
         vec2 input_anchor = anchor;
@@ -5626,10 +5672,22 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
                                                 &input_anchor)) {
             anchor = input_anchor;
             pulse_module = consumer_idx;
+            compact_lane = true;
+        } else {
+            int furnace_idx = -1;
+            vec2 shell_anchor = anchor;
+            if (station_frame_hopper_shell_anchor_for_pod(st, module_idx, pod,
+                                                          &furnace_idx,
+                                                          &shell_anchor,
+                                                          NULL)) {
+                anchor = shell_anchor;
+                pulse_module = furnace_idx;
+                compact_lane = true;
+            }
         }
     }
     anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
-                                              pod, anchor);
+                                              pod, anchor, compact_lane);
     const station_module_t *held_module = &st->modules[module_idx];
     float valid_range =
         cargo_pod_module_tractor_range_for_pod(held_module->type, pod);

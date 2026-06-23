@@ -3641,14 +3641,17 @@ TEST(test_frame_shell_pod_targets_furnace_frame_hopper_lane) {
     vec2 ore_hopper_pos = module_world_pos_ring(st,
         st->modules[1].ring, st->modules[1].slot);
     vec2 smelt_lane = v2_scale(v2_add(furnace_pos, ore_hopper_pos), 0.5f);
-    int pod_idx = test_spawn_frame_pod(&w, smelt_lane, 1);
+    vec2 pod_start = v2_add(smelt_lane, v2(96.0f, 0.0f));
+    int pod_idx = test_spawn_frame_pod(&w, pod_start, 1);
     ASSERT(pod_idx >= 0);
     w.cargo_pods[pod_idx].towed_by = -1;
 
-    step_station_cargo_pod_tractors(&w, 0.0f);
+    step_station_cargo_pod_tractors(&w, SIM_DT);
 
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
                                             0, frame_hopper_idx));
+    vec2 to_smelt_lane = v2_sub(smelt_lane, w.cargo_pods[pod_idx].pos);
+    ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, to_smelt_lane) > 0.0f);
 }
 
 TEST(test_frame_pod_prefers_shipyard_serving_hopper_over_storage_twin) {
