@@ -1369,7 +1369,6 @@ static void sim_step(float dt) {
         g.camera_station_v_side = 0;
         g.camera_drift_timer = 0.0f;
         g.local_player_render_offset = v2(0.0f, 0.0f);
-        fprintf(stderr, "LAUNCH: triggering ep 0 + music\n");
         episode_trigger(&g.episode, 0);
         if (!g.music.playing && !g.music.loading)
             music_next_track(&g.music);
@@ -2627,7 +2626,8 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
      * input age is measured from WORLD_PLAYERS input_seq_ack instead. */
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
-    fprintf(stderr,
+    FILE *log = status == NET_ACTION_ACK_REJECTED ? stderr : stdout;
+    fprintf(log,
             "[net-action] ack id=%u seq=%u action=%u status=%s q=%u predict=%.2f docked=%d balance=%.0f\n",
             (unsigned)action_id, (unsigned)input_seq, (unsigned)action,
             net_action_ack_status_name(status),
@@ -2642,7 +2642,8 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick) {
-    fprintf(stderr,
+    FILE *log = status == NET_ACTION_RESULT_REJECTED ? stderr : stdout;
+    fprintf(log,
             "[net-action] result id=%u seq=%u action=%u status=%s server_tick=%u predict=%.2f docked=%d station=%d balance=%.0f q=%u\n",
             (unsigned)action_id, (unsigned)input_seq, (unsigned)action,
             net_action_result_status_name(status),

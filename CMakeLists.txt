@@ -514,6 +514,65 @@ if(NOT MSVC)
 endif()
 
 if(EMSCRIPTEN)
+    file(GLOB_RECURSE SIGNAL_WEB_ANIME_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/anime/*")
+    set(SIGNAL_WEB_ASSET_STAMPS)
+    if(SIGNAL_WEB_ANIME_ASSETS)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/assets/anime
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime
+            COMMAND ${CMAKE_COMMAND} -E touch
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp
+            DEPENDS ${SIGNAL_WEB_ANIME_ASSETS}
+            VERBATIM
+        )
+        list(APPEND SIGNAL_WEB_ASSET_STAMPS
+            ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp)
+    endif()
+
+    set(SIGNAL_HAS_WEB_MUSIC_ASSETS 0)
+    set(SIGNAL_WEB_MUSIC_ASSETS)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/music")
+        file(GLOB_RECURSE SIGNAL_WEB_MUSIC_ASSETS CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/music/*")
+    endif()
+    if(SIGNAL_WEB_MUSIC_ASSETS)
+        set(SIGNAL_HAS_WEB_MUSIC_ASSETS 1)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    ${CMAKE_CURRENT_BINARY_DIR}/music
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${CMAKE_CURRENT_BINARY_DIR}/music
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/assets/music
+                    ${CMAKE_CURRENT_BINARY_DIR}/music
+            COMMAND ${CMAKE_COMMAND} -E touch
+                    ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp
+            DEPENDS ${SIGNAL_WEB_MUSIC_ASSETS}
+            VERBATIM
+        )
+    else()
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    ${CMAKE_CURRENT_BINARY_DIR}/music
+            COMMAND ${CMAKE_COMMAND} -E touch
+                    ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp
+            VERBATIM
+        )
+    endif()
+    list(APPEND SIGNAL_WEB_ASSET_STAMPS
+        ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp)
+    target_compile_definitions(signal PRIVATE
+        SIGNAL_HAS_WEB_MUSIC_ASSETS=${SIGNAL_HAS_WEB_MUSIC_ASSETS})
+
     set(SIGNAL_EMSCRIPTEN_EXPORTS
         "'_main'"
         "'__saudio_emsc_pull'"
@@ -624,6 +683,7 @@ if(EMSCRIPTEN)
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/signal-touch-controls.js
             ${CMAKE_CURRENT_BINARY_DIR}/remove_signal_html.stamp
+            ${SIGNAL_WEB_ASSET_STAMPS}
     )
     add_dependencies(signal signal_web_assets)
 elseif(APPLE)

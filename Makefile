@@ -506,6 +506,8 @@ site: build-web
 	@mkdir -p _site
 	cp build-web/signal.js build-web/signal.wasm \
 	   build-web/play.html build-web/signal-touch-controls.js _site/
+	@if [ -d build-web/anime ]; then cp -R build-web/anime _site/; fi
+	@if [ -d build-web/music ]; then cp -R build-web/music _site/; fi
 	cp web/index.html web/ost.html web/ost-manifest.json web/ost-cover.jpg \
 	   web/mine.html _site/
 	@echo "Site built in _site/"

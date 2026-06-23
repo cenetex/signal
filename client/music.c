@@ -19,6 +19,10 @@
 #include <time.h>
 #include "music.h"
 
+#ifndef SIGNAL_HAS_WEB_MUSIC_ASSETS
+#define SIGNAL_HAS_WEB_MUSIC_ASSETS 1
+#endif
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 
@@ -39,7 +43,7 @@ EM_JS(void, signal_music_play_js, (const char *url_ptr, double volume), {
     const play = audio.play();
     if (play && play.catch) {
         play.catch((err) => {
-            console.error("music: html audio play failed", err && err.message ? err.message : err);
+            console.warn("music: html audio play failed", err && err.message ? err.message : err);
         });
     }
 })
@@ -64,11 +68,19 @@ EM_JS(void, signal_music_resume_js, (), {
     const play = audio.play();
     if (play && play.catch) {
         play.catch((err) => {
-            console.error("music: html audio resume failed", err && err.message ? err.message : err);
+            console.warn("music: html audio resume failed", err && err.message ? err.message : err);
         });
     }
 })
 #endif
+
+static bool music_assets_available(void) {
+#ifdef __EMSCRIPTEN__
+    return SIGNAL_HAS_WEB_MUSIC_ASSETS != 0;
+#else
+    return true;
+#endif
+}
 
 /* Gameplay tracks ordered low→high signal.
  * Tracks 0-7: deep space / sparse belt / lonely drift
@@ -237,6 +249,7 @@ static unsigned char *load_file(const char *path, int *out_size) {
 /* --- Internal: play a track by filename from the track tables --- */
 
 static void music_play_file(music_state_t *m, const char *filename) {
+    if (!music_assets_available()) return;
 #ifdef __EMSCRIPTEN__
     char url[256];
     snprintf(url, sizeof(url), "/%s", filename);
@@ -278,6 +291,7 @@ static void music_play_immediate(music_state_t *m, int track);
 
 void music_play(music_state_t *m, int track) {
     if (track < 0 || track >= MUSIC_TRACK_COUNT) return;
+    if (!music_assets_available()) return;
 
 #ifdef __EMSCRIPTEN__
     music_stop(m);
@@ -322,6 +336,7 @@ void music_stop(music_state_t *m) {
 }
 
 void music_pause(music_state_t *m) {
+    if (!music_assets_available()) return;
     m->paused = true;
 #ifdef __EMSCRIPTEN__
     signal_music_pause_js();
@@ -329,6 +344,7 @@ void music_pause(music_state_t *m) {
 }
 
 void music_resume(music_state_t *m) {
+    if (!music_assets_available()) return;
     m->paused = false;
 #ifdef __EMSCRIPTEN__
     signal_music_resume_js();
@@ -439,6 +455,7 @@ static void signal_window(float signal, int *out_lo, int *out_hi) {
 }
 
 void music_update_signal(music_state_t *m, float signal_strength) {
+    if (!music_assets_available()) return;
     if (m->death_mode) return; /* death music overrides */
 
     /* Rebuild playlist when signal drifts by >0.15 */
@@ -459,6 +476,7 @@ void music_update_signal(music_state_t *m, float signal_strength) {
 }
 
 void music_next_track(music_state_t *m) {
+    if (!music_assets_available()) return;
     if (m->death_mode) return;
     if (!m->playlist_ready) rebuild_signal_playlist(m, m->last_signal >= 0.0f ? m->last_signal : 0.5f);
     m->playlist_pos++;
@@ -467,6 +485,7 @@ void music_next_track(music_state_t *m) {
 }
 
 void music_prev_track(music_state_t *m) {
+    if (!music_assets_available()) return;
     if (m->death_mode) return;
     if (!m->playlist_ready) rebuild_signal_playlist(m, m->last_signal >= 0.0f ? m->last_signal : 0.5f);
     m->playlist_pos--;
@@ -477,6 +496,7 @@ void music_prev_track(music_state_t *m) {
 /* --- Death music --- */
 
 void music_enter_death(music_state_t *m) {
+    if (!music_assets_available()) return;
     m->death_mode = true;
     /* Pick a random death track */
     if (shuffle_rng == 0) shuffle_rng = (uint32_t)time(NULL);
