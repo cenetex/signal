@@ -11,9 +11,10 @@ import urllib.request
 
 
 REQUIRED_STREAMS = {
-    "STATION_IDENTITY": {"class": "static", "header_size": 1955},
+    "STATION_IDENTITY": {"class": "static", "header_size": 2003},
     "STATION_DIAG": {"class": "live", "header_size": 3, "record_size": 1},
     "WORLD_PLAYERS": {"class": "live", "record_size": 77},
+    "WORLD_INTERACTIONS": {"class": "live", "header_size": 2, "record_size": 38},
     "LATENCY_PING": {"class": "live", "header_size": 9},
     "LATENCY_PONG": {"class": "live", "header_size": 17},
     "CLIENT_METRICS": {"class": "live", "header_size": 21},
