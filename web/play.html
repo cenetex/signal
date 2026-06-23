@@ -91,7 +91,18 @@
           return (prefix || '') + path;
         },
         print: function(text) { console.log(text); },
-        printErr: function(text) { console.error(text); }
+        printErr: function(text) {
+          var line = String(text || '');
+          if (/^\[net-action\].*status=(ok|duplicate)\b/.test(line) ||
+              /^LAUNCH:/.test(line)) {
+            console.log(line);
+          } else if (/^(music|episode): .*not found locally/.test(line) ||
+                     /^episode: fetch failed/.test(line)) {
+            console.warn(line);
+          } else {
+            console.error(line);
+          }
+        }
       };
 
       window.SignalGameModule = Module;

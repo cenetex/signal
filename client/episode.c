@@ -24,6 +24,18 @@
 #include <emscripten.h>
 #endif
 
+#ifndef SIGNAL_HAS_WEB_EPISODE_ASSETS
+#define SIGNAL_HAS_WEB_EPISODE_ASSETS 1
+#endif
+
+static bool episode_assets_available(void) {
+#ifdef __EMSCRIPTEN__
+    return SIGNAL_HAS_WEB_EPISODE_ASSETS != 0;
+#else
+    return true;
+#endif
+}
+
 static const episode_info_t episodes[EPISODE_COUNT] = {
     { "anime/ep0-first-light.mpg",     "FIRST LIGHT" },
     { "anime/ep1-keplers-law.mpg",      "KEPLER'S LAW" },
@@ -227,6 +239,7 @@ void episode_save(episode_state_t *ep) {
 
 void episode_trigger(episode_state_t *ep, int index) {
     if (index < 0 || index >= EPISODE_COUNT) return;
+    if (!episode_assets_available()) return;
     if (ep->watched[index]) return;
     if (ep->active || ep->loading) return;
 

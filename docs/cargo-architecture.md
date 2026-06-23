@@ -91,9 +91,9 @@ production helper in `shared/economy.c`.
 
 Players no longer carry raw ore in `ship.cargo[]` after the #259 tow
 migration (the service-sell path in `server/game_sim.c` says this directly).
-NPCs never
-deposit raw ore — they tow fragments via `npc_ship_t.towed_fragment`
-(single int16, not an array) and deliver through the fragment-tow path.
+NPCs never deposit raw ore: they tow a single fragment through the embedded
+`npc_ship_t.ship.towed_fragments[0]` slot, with `npc_ship_t.towed_fragment`
+kept as a legacy save/wire/UI mirror, and deliver through the fragment-tow path.
 
 So in practice, the hopper float for raw ore is not populated in normal
 multiplayer play. The old "smelt from hopper float" code path
@@ -174,7 +174,7 @@ not a thing you can put your hand on.
 |---|---|
 | Storage | `world.asteroids[]`. Each `asteroid_t` carries `fragment_pub[32]`, `fracture_seed[32]`, `last_towed_token[8]`, `last_fractured_token[8]`, `grade`, and `rock_pub[32]` (`shared/types.h`). |
 | Player tow list | `ship.towed_fragments[10]` of int16 indices, plus `towed_count` (`shared/types.h`). |
-| NPC tow | NPCs use a *different* shape: `npc_ship_t.towed_fragment` (single int16, not an array) in `shared/types.h`. NPC ships only tow one fragment at a time. |
+| NPC tow | NPCs use `npc_ship_t.ship.towed_fragments[0]` as the ship-shaped tow slot, plus `npc_ship_t.towed_fragment` as a legacy mirror (`shared/types.h`). NPC ships only tow one fragment at a time. |
 | Tow-add site | `server/game_sim.c` tractor collection. Fragment ownership is stamped via `last_towed_by` and `last_towed_token[8]` at the same instant. |
 | Tow-remove sites (player) | `server/sim_production.c` for smelt completion; `server/game_sim.c` for asteroid destruction, band snap, station-beam landing, and manual `R` release. |
 | Fragment generation | Initial spawn/materialization from `shared/belt.c` and `server/sim_asteroid.c`. Fracture children are also created in `server/sim_asteroid.c`. |
@@ -278,9 +278,10 @@ The removed hopper-float-population paths were:
 The legacy player paths are vestigial per the service-path comments:
 players stopped carrying raw ore in `ship.cargo[]` after #259. Refill is
 explicitly a station-stock path. The fourth is NPC-economy production.
-No NPC deposits raw ore at a hopper; NPC miners use
-`npc_ship_t.towed_fragment` and deliver to furnaces via the fragment-tow path,
-same as players.
+No NPC deposits raw ore at a hopper; NPC miners tow through the embedded
+`ship.towed_fragments[0]` slot, keep `npc_ship_t.towed_fragment` synchronized
+as a legacy mirror, and deliver to furnaces via the fragment-tow path, same as
+players.
 
 The decision is picked: pure fragment-tow to ingot pipeline. Tests now
 assert that directly seeded raw ore does not smelt, does not drain through
@@ -383,7 +384,7 @@ instrumenting before optimizing.
 | `shared/manifest.h` | Crate API: push/remove/find, hash_*, migration helpers |
 | `shared/manifest.c` | Crate implementation |
 | `server/sim_production.c` | The smelt boundary lives here. Fragment-tow smelting is the only production smelt path; the hopper-float compatibility function is a no-op. |
-| `server/sim_ai.c` | NPC autopilot. NPCs tow fragments via `npc_ship_t.towed_fragment` (single-slot) and deliver via the fragment-tow path; they never deposit raw ore at hoppers. |
+| `server/sim_ai.c` | NPC autopilot. NPCs tow fragments through the embedded `ship.towed_fragments[0]` slot and mirror that to `npc_ship_t.towed_fragment` for compatibility; they deliver via the fragment-tow path and never deposit raw ore at hoppers. |
 | `server/sim_save.c` | Save format, including the manifest persistence and migration paths |
 | `server/chain_log.h` / `chain_log.c` | Append-only signed event log per station |
 | `server/cargo_receipt_issue.c` | `CHAIN_EVT_TRANSFER` emission |

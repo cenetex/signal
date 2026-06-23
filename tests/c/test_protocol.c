@@ -311,6 +311,24 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(p[37], 2);
 }
 
+TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
+    npc_ship_t npcs[MAX_NPC_SHIPS];
+    memset(npcs, 0, sizeof(npcs));
+
+    npcs[0].active = true;
+    npcs[0].role = NPC_ROLE_MINER;
+    npcs[0].state = NPC_STATE_RETURN_TO_STATION;
+    npcs[0].towed_fragment = -1;
+    npcs[0].ship.towed_fragments[0] = 77;
+    npcs[0].ship.towed_count = 1;
+
+    uint8_t buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
+    int len = serialize_npcs(buf, npcs);
+
+    ASSERT_EQ_INT(len, 2 + NPC_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&buf[2 + 24]), 77);
+}
+
 TEST(test_relevance_filtered_world_snapshots) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
@@ -2386,6 +2404,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_npcs);
+    RUN(test_npc_snapshot_serializes_embedded_ship_tow_slot);
     RUN(test_relevance_filtered_world_snapshots);
     RUN(test_world_snapshot_emitter_sequence_shared);
     RUN(test_private_snapshot_emitter_sequence_shared);

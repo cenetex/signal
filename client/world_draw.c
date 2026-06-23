@@ -2523,9 +2523,9 @@ void draw_npc_ships(void) {
         draw_npc_mining_beam(&g.world.npc_ships[i]);
         /* NPC tow tether */
         const npc_ship_t *tnpc = &g.world.npc_ships[i];
-        if (tnpc->role == NPC_ROLE_MINER &&
-            tnpc->towed_fragment >= 0 && tnpc->towed_fragment < MAX_ASTEROIDS) {
-            const asteroid_t *ta = &g.world.asteroids[tnpc->towed_fragment];
+        int towed_fragment = npc_towed_fragment_index(tnpc);
+        if (tnpc->role == NPC_ROLE_MINER && towed_fragment >= 0) {
+            const asteroid_t *ta = &g.world.asteroids[towed_fragment];
             float tr = ship_tractor_range(&tnpc->ship);
             float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship.pos)) : 0.0f;
             if (ta->active && tr > 0.0f && d <= tr * 1.5f) {
@@ -2739,7 +2739,8 @@ static bool cargo_pod_visual_tractor_anchor(const cargo_pod_t *pod,
     }
     anchor = cargo_pod_visual_hold_anchor(st, station_idx, module_idx,
                                           pod, anchor);
-    float tractor_range = cargo_pod_module_tractor_range(module->type);
+    float tractor_range =
+        cargo_pod_module_tractor_range_for_pod(module->type, pod);
     tractor_beam_t pod_tractor =
         CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
     if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor))
@@ -2768,19 +2769,56 @@ static void draw_cargo_pod_module_tractor_beam(vec2 anchor,
     float t = clampf(intensity, 0.0f, 1.0f);
     if (t <= 0.0f) return;
 
+    vec2 beam_vec = v2_sub(pod_pos, anchor);
+    float beam_len = sqrtf(v2_len_sq(beam_vec));
+    vec2 dir = beam_len > 0.001f
+        ? v2_scale(beam_vec, 1.0f / beam_len)
+        : v2(1.0f, 0.0f);
+    vec2 tug_pos = anchor;
+    if (beam_len > 12.0f) {
+        vec2 perp = v2(-dir.y, dir.x);
+        float tug_standoff = fminf(radius + 36.0f, beam_len * 0.46f);
+        float bob = sinf(g.world.time * 4.6f + (float)seed * 0.73f) * 5.0f;
+        tug_pos = v2_add(pod_pos,
+                         v2_add(v2_scale(dir, -tug_standoff),
+                                v2_scale(perp, bob)));
+    }
+
+    float tug_alpha = 0.54f + 0.28f * t;
+    float tug_angle = atan2f(dir.y, dir.x);
+    sgl_push_matrix();
+    sgl_translate(tug_pos.x, tug_pos.y, 0.0f);
+    sgl_rotate(tug_angle, 0.0f, 0.0f, 1.0f);
+    sgl_c4f(cr * 0.42f + 0.22f, cg * 0.42f + 0.24f,
+            cb * 0.42f + 0.26f, tug_alpha);
+    sgl_begin_triangles();
+    sgl_v2f(12.0f, 0.0f);
+    sgl_v2f(-8.0f, 6.5f);
+    sgl_v2f(-8.0f, -6.5f);
+    sgl_end();
+    sgl_c4f(fminf(1.0f, cr * 1.35f),
+            fminf(1.0f, cg * 1.25f),
+            fminf(1.0f, cb * 1.25f), tug_alpha * 0.82f);
+    sgl_begin_lines();
+    sgl_v2f(12.0f, 0.0f); sgl_v2f(-8.0f, 6.5f);
+    sgl_v2f(-8.0f, 6.5f); sgl_v2f(-8.0f, -6.5f);
+    sgl_v2f(-8.0f, -6.5f); sgl_v2f(12.0f, 0.0f);
+    sgl_end();
+    sgl_pop_matrix();
+
     float pulse = 0.50f + 0.24f *
         sinf(g.world.time * 7.0f + (float)seed * 1.37f);
     float zap = sinf(g.world.time * 41.0f + (float)seed * 5.9f);
-    vec2 mid = v2_scale(v2_add(anchor, pod_pos), 0.5f);
-    vec2 perp = v2(-(pod_pos.y - anchor.y), pod_pos.x - anchor.x);
+    vec2 mid = v2_scale(v2_add(tug_pos, pod_pos), 0.5f);
+    vec2 perp = v2(-(pod_pos.y - tug_pos.y), pod_pos.x - tug_pos.x);
     float plen = sqrtf(v2_len_sq(perp));
     if (plen > 0.1f)
         perp = v2_scale(perp, 3.0f * zap / plen);
     mid = v2_add(mid, perp);
     float alpha = (0.24f + 0.42f * t) * pulse;
-    draw_segment(anchor, mid, cr, cg, cb, alpha);
+    draw_segment(tug_pos, mid, cr, cg, cb, alpha);
     draw_segment(mid, pod_pos, cr, cg, cb, alpha);
-    draw_segment(anchor, pod_pos,
+    draw_segment(tug_pos, pod_pos,
                  fminf(1.0f, cr * 1.4f),
                  fminf(1.0f, cg * 1.3f),
                  fminf(1.0f, cb * 1.3f),

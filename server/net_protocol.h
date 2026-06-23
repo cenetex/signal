@@ -1433,8 +1433,8 @@ static inline void serialize_one_npc(uint8_t *p, int index,
     write_f32_le(&p[18], n->ship.angle);
     uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
         ? (uint16_t)n->target_asteroid : 0xFFFFu;
-    uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
-        ? (uint16_t)n->towed_fragment : 0xFFFFu;
+    int towed_idx = npc_towed_fragment_index(n);
+    uint16_t towed = (towed_idx >= 0) ? (uint16_t)towed_idx : 0xFFFFu;
     write_u16_le(&p[22], target);
     write_u16_le(&p[24], towed);
     p[26] = (uint8_t)(n->tint_r * 255.0f);

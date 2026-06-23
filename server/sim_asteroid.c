@@ -711,7 +711,7 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        int idx = w->npc_ships[n].towed_fragment;
+        int idx = npc_towed_fragment_index(&w->npc_ships[n]);
         if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
     }
 

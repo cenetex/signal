@@ -1878,6 +1878,34 @@ TEST(test_gas_rich_asteroid_emits_gas_pod) {
     ASSERT(found);
 }
 
+TEST(test_npc_embedded_towed_fragment_skips_ambient_asteroid_drag) {
+    WORLD_DECL;
+
+    w.stations[0].pos = v2(0.0f, 0.0f);
+    w.stations[0].signal_range = 1000.0f;
+    w.stations[0].signal_connected = true;
+
+    asteroid_t *frag = &w.asteroids[3];
+    frag->active = true;
+    frag->tier = ASTEROID_TIER_S;
+    frag->radius = 12.0f;
+    frag->pos = v2(100.0f, 0.0f);
+    frag->vel = v2(120.0f, 0.0f);
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    npc->active = true;
+    npc_clear_towed_fragment(npc);
+    npc->towed_fragment = -1;
+    npc->ship.towed_fragments[0] = 3;
+    npc->ship.towed_count = 1;
+
+    sim_step_asteroid_dynamics(&w, 1.0f);
+
+    ASSERT(frag->active);
+    ASSERT_EQ_INT(npc_towed_fragment_index(npc), 3);
+    ASSERT_EQ_FLOAT(frag->vel.x, 120.0f, 0.001f);
+}
+
 static const sim_event_t *find_hail_response_event(const world_t *w) {
     for (int i = 0; i < w->events.count; i++) {
         if (w->events.events[i].type == SIM_EVENT_HAIL_RESPONSE)
@@ -8620,6 +8648,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
+    RUN(test_npc_embedded_towed_fragment_skips_ambient_asteroid_drag);
     RUN(test_hail_responds_while_docked);
     RUN(test_docking_auto_reports_station_balance);
     RUN(test_hail_does_not_spawn_nearest_rock_contract);

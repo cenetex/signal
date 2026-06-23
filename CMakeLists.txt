@@ -514,10 +514,32 @@ if(NOT MSVC)
 endif()
 
 if(EMSCRIPTEN)
+    set(SIGNAL_HAS_WEB_EPISODE_ASSETS 0)
     file(GLOB_RECURSE SIGNAL_WEB_ANIME_ASSETS CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/anime/*")
     set(SIGNAL_WEB_ASSET_STAMPS)
-    if(SIGNAL_WEB_ANIME_ASSETS)
+    set(SIGNAL_WEB_ANIME_ASSETS_COMPLETE OFF)
+    if(SIGNAL_WEB_ANIME_ASSETS AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/manifest.txt")
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/assets/manifest.txt"
+            SIGNAL_WEB_ANIME_MANIFEST REGEX "^anime/.*\\.mpg$")
+        set(SIGNAL_WEB_ANIME_MISSING)
+        foreach(SIGNAL_WEB_ANIME_PATH IN LISTS SIGNAL_WEB_ANIME_MANIFEST)
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/${SIGNAL_WEB_ANIME_PATH}")
+                list(APPEND SIGNAL_WEB_ANIME_MISSING
+                    "${SIGNAL_WEB_ANIME_PATH}")
+            endif()
+        endforeach()
+        list(LENGTH SIGNAL_WEB_ANIME_MANIFEST SIGNAL_WEB_ANIME_MANIFEST_COUNT)
+        if(SIGNAL_WEB_ANIME_MANIFEST_COUNT GREATER 0 AND
+           NOT SIGNAL_WEB_ANIME_MISSING)
+            set(SIGNAL_WEB_ANIME_ASSETS_COMPLETE ON)
+        endif()
+    elseif(SIGNAL_WEB_ANIME_ASSETS)
+        set(SIGNAL_WEB_ANIME_ASSETS_COMPLETE ON)
+    endif()
+    if(SIGNAL_WEB_ANIME_ASSETS_COMPLETE)
+        set(SIGNAL_HAS_WEB_EPISODE_ASSETS 1)
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp
             COMMAND ${CMAKE_COMMAND} -E rm -rf
@@ -532,17 +554,46 @@ if(EMSCRIPTEN)
             DEPENDS ${SIGNAL_WEB_ANIME_ASSETS}
             VERBATIM
         )
-        list(APPEND SIGNAL_WEB_ASSET_STAMPS
-            ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp)
+    else()
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime
+            COMMAND ${CMAKE_COMMAND} -E touch
+                    ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp
+            VERBATIM
+        )
     endif()
+    list(APPEND SIGNAL_WEB_ASSET_STAMPS
+        ${CMAKE_CURRENT_BINARY_DIR}/anime_assets.stamp)
 
     set(SIGNAL_HAS_WEB_MUSIC_ASSETS 0)
     set(SIGNAL_WEB_MUSIC_ASSETS)
+    set(SIGNAL_WEB_MUSIC_ASSETS_COMPLETE OFF)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/music")
         file(GLOB_RECURSE SIGNAL_WEB_MUSIC_ASSETS CONFIGURE_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/music/*")
     endif()
-    if(SIGNAL_WEB_MUSIC_ASSETS)
+    if(SIGNAL_WEB_MUSIC_ASSETS AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/manifest.txt")
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/assets/manifest.txt"
+            SIGNAL_WEB_MUSIC_MANIFEST REGEX "^music/.*\\.mp3$")
+        set(SIGNAL_WEB_MUSIC_MISSING)
+        foreach(SIGNAL_WEB_MUSIC_PATH IN LISTS SIGNAL_WEB_MUSIC_MANIFEST)
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/${SIGNAL_WEB_MUSIC_PATH}")
+                list(APPEND SIGNAL_WEB_MUSIC_MISSING
+                    "${SIGNAL_WEB_MUSIC_PATH}")
+            endif()
+        endforeach()
+        list(LENGTH SIGNAL_WEB_MUSIC_MANIFEST SIGNAL_WEB_MUSIC_MANIFEST_COUNT)
+        if(SIGNAL_WEB_MUSIC_MANIFEST_COUNT GREATER 0 AND
+           NOT SIGNAL_WEB_MUSIC_MISSING)
+            set(SIGNAL_WEB_MUSIC_ASSETS_COMPLETE ON)
+        endif()
+    elseif(SIGNAL_WEB_MUSIC_ASSETS)
+        set(SIGNAL_WEB_MUSIC_ASSETS_COMPLETE ON)
+    endif()
+    if(SIGNAL_WEB_MUSIC_ASSETS_COMPLETE)
         set(SIGNAL_HAS_WEB_MUSIC_ASSETS 1)
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp
@@ -571,6 +622,7 @@ if(EMSCRIPTEN)
     list(APPEND SIGNAL_WEB_ASSET_STAMPS
         ${CMAKE_CURRENT_BINARY_DIR}/music_assets.stamp)
     target_compile_definitions(signal PRIVATE
+        SIGNAL_HAS_WEB_EPISODE_ASSETS=${SIGNAL_HAS_WEB_EPISODE_ASSETS}
         SIGNAL_HAS_WEB_MUSIC_ASSETS=${SIGNAL_HAS_WEB_MUSIC_ASSETS})
 
     set(SIGNAL_EMSCRIPTEN_EXPORTS

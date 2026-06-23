@@ -130,6 +130,32 @@ TEST(test_npc_hull_def) {
     ASSERT_EQ_FLOAT(hull->tractor_range, 150.0f, 0.01f);
 }
 
+TEST(test_npc_towed_fragment_bridge_syncs_embedded_ship_slot) {
+    npc_ship_t npc = {0};
+    npc_clear_towed_fragment(&npc);
+
+    npc.towed_fragment = -1;
+    npc.ship.towed_fragments[0] = 42;
+    npc.ship.towed_count = 1;
+    ASSERT_EQ_INT(npc_towed_fragment_index(&npc), 42);
+
+    npc_sync_towed_fragment(&npc);
+    ASSERT_EQ_INT(npc.towed_fragment, 42);
+    ASSERT_EQ_INT(npc.ship.towed_count, 1);
+    ASSERT_EQ_INT(npc.ship.towed_fragments[0], 42);
+
+    npc_set_towed_fragment_index(&npc, 7);
+    ASSERT_EQ_INT(npc_towed_fragment_index(&npc), 7);
+    ASSERT_EQ_INT(npc.towed_fragment, 7);
+    ASSERT_EQ_INT(npc.ship.towed_fragments[0], 7);
+
+    npc_clear_towed_fragment(&npc);
+    ASSERT_EQ_INT(npc_towed_fragment_index(&npc), -1);
+    ASSERT_EQ_INT(npc.towed_fragment, -1);
+    ASSERT_EQ_INT(npc.ship.towed_count, 0);
+    ASSERT_EQ_INT(npc.ship.towed_fragments[0], -1);
+}
+
 TEST(test_ship_boost_curve_uses_deterministic_exp) {
     float boosted = ship_boost_thrust_mult(true, 0.5f);
     float expected = 1.6f + 0.4f * fixp_expf(-1.5f);
@@ -250,6 +276,7 @@ void register_ship_tests(void) {
     RUN(test_upgrade_required_product);
     RUN(test_upgrade_product_cost_scales_with_level);
     RUN(test_npc_hull_def);
+    RUN(test_npc_towed_fragment_bridge_syncs_embedded_ship_slot);
     RUN(test_ship_boost_curve_uses_deterministic_exp);
     RUN(test_ship_circle_pushback_deterministic_reference);
     RUN(test_ship_asteroid_pushback_deterministic_reference);

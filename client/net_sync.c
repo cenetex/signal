@@ -766,7 +766,7 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->ship.vel.y = npcs[i].vy;
         n->ship.angle = npcs[i].angle;
         n->target_asteroid = npcs[i].target_asteroid;
-        n->towed_fragment = npcs[i].towed_fragment;
+        npc_set_towed_fragment_index(n, npcs[i].towed_fragment);
         n->towed_scaffold = -1;
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;

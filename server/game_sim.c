@@ -1891,22 +1891,6 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
     pod->towed_by = -1;
     cargo_pod_set_module_tractor(pod, station_idx, dock_idx);
 
-    vec2 anchor = station_module_cargo_hold_anchor(
-        w, st, station_idx, dock_idx, pod,
-        station_module_cargo_mouth(st, &st->modules[dock_idx], pod));
-    vec2 away = v2_sub(pod->pos, anchor);
-    float dist = v2_len(away);
-    float max_hold = HOPPER_PULL_RANGE * 0.78f;
-    if (dist > max_hold) {
-        if (dist > 0.001f) {
-            away = v2_scale(away, 1.0f / dist);
-        } else {
-            away = v2_from_angle(module_angle_ring(st, st->modules[dock_idx].ring,
-                                                   st->modules[dock_idx].slot));
-        }
-        pod->pos = v2_add(anchor, v2_scale(away, max_hold));
-        pod->vel = v2_scale(pod->vel, 0.25f);
-    }
     st->module_active_pulse[dock_idx] = 1.0f;
     return true;
 }
@@ -5553,7 +5537,8 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
                                               pod, anchor);
     const station_module_t *held_module = &st->modules[module_idx];
-    float valid_range = cargo_pod_module_tractor_range(held_module->type);
+    float valid_range =
+        cargo_pod_module_tractor_range_for_pod(held_module->type, pod);
     tractor_beam_t pod_tractor =
         CARGO_POD_MODULE_TRACTOR_BEAM_INIT(valid_range);
     if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor)) {
@@ -5731,7 +5716,7 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
             const station_module_t *module =
                 &w->stations[station_idx].modules[module_idx];
             float tractor_range =
-                cargo_pod_module_tractor_range(module->type);
+                cargo_pod_module_tractor_range_for_pod(module->type, pod);
             tractor_beam_t pod_tractor =
                 CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
             (void)tractor_apply(&src, &tgt, &pod_tractor, dt);
@@ -5769,7 +5754,8 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
         const station_t *st = &w->stations[station_idx];
         if (module_idx >= st->module_count) continue;
         const station_module_t *module = &st->modules[module_idx];
-        float tractor_range = cargo_pod_module_tractor_range(module->type);
+        float tractor_range =
+            cargo_pod_module_tractor_range_for_pod(module->type, pod);
         tractor_beam_t pod_tractor =
             CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
         float intensity = tractor_beam_range_fraction(

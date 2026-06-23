@@ -1876,6 +1876,82 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     ASSERT(ledger_balance(prospect, sp->session_token) > 0.0f);
 }
 
+TEST(test_delivery_credit_dock_custody_does_not_teleport_far_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = NULL;
+    test_setup_delivery_player(&w, &sp);
+
+    station_t *prospect = &w.stations[0];
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(prospect,
+                                           COMMODITY_FERRITE_INGOT, 2));
+    ASSERT(test_set_station_finished_units(helios,
+                                           COMMODITY_FERRITE_INGOT, 0));
+    prospect->base_price[COMMODITY_FERRITE_INGOT] = 20.0f;
+    helios->base_price[COMMODITY_FERRITE_INGOT] = 30.0f;
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 50.0f,
+        .claimed_by = -1,
+    };
+
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
+    ASSERT(shipment != NULL);
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
+    int shipment_pod = test_find_delivery_shipment_pod(&w, sp, shipment);
+    ASSERT(shipment_pod >= 0);
+
+    int helios_dock = test_first_dock_module_idx(helios);
+    ASSERT(helios_dock >= 0);
+    const station_module_t *dock = &helios->modules[helios_dock];
+    vec2 dock_pos = module_world_pos_ring(helios, dock->ring, dock->slot);
+    vec2 outward = v2_norm(v2_sub(dock_pos, helios->pos));
+    if (v2_len_sq(outward) < 0.5f)
+        outward = v2_from_angle(module_angle_ring(helios, dock->ring,
+                                                  dock->slot));
+    vec2 far_pos = v2_add(dock_pos, v2_scale(outward,
+        CARGO_POD_DOCK_TRACTOR_RANGE * 2.0f));
+    vec2 far_vel = v2_scale(outward, -17.0f);
+    w.cargo_pods[shipment_pod].pos = far_pos;
+    w.cargo_pods[shipment_pod].vel = far_vel;
+
+    sp->docked = true;
+    sp->current_station = 2;
+    sp->nearby_station = 2;
+    sp->in_dock_range = true;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    world_sim_step(&w, SIM_DT);
+    memset(&sp->input, 0, sizeof(sp->input));
+
+    ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT(w.cargo_pods[shipment_pod].active);
+    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
+                                            2, helios_dock));
+    ASSERT(v2_dist_sq(w.cargo_pods[shipment_pod].pos, far_pos) <
+           80.0f * 80.0f);
+    ASSERT(v2_dist_sq(w.cargo_pods[shipment_pod].pos, dock_pos) >
+           CARGO_POD_DOCK_TRACTOR_RANGE *
+           CARGO_POD_DOCK_TRACTOR_RANGE);
+}
+
 TEST(test_delivery_credit_requires_exact_bound_cargo) {
     WORLD_DECL;
     world_reset(&w);
@@ -3412,6 +3488,7 @@ void register_economy_mixed_cargo_tests(void) {
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_delivery_credit_contract_pickup_deliver_and_clear);
+    RUN(test_delivery_credit_dock_custody_does_not_teleport_far_pod);
     RUN(test_delivery_credit_requires_exact_bound_cargo);
     RUN(test_delivery_credit_row_sell_unloads_bound_pod);
     RUN(test_delivery_credit_hail_ignores_empty_origin);

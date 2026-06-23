@@ -12,6 +12,7 @@ COPY server/ ./server/
 COPY shared/ ./shared/
 COPY vendor/ ./vendor/
 COPY web/ ./web/
+COPY assets/ ./assets/
 
 RUN emcmake cmake -S . -B build-web \
       -DCMAKE_BUILD_TYPE=Release \
@@ -20,6 +21,8 @@ RUN emcmake cmake -S . -B build-web \
     && mkdir -p public \
     && cp build-web/signal.js build-web/signal.wasm \
           build-web/play.html build-web/signal-touch-controls.js public/ \
+    && if [ -d build-web/anime ]; then cp -R build-web/anime public/; fi \
+    && if [ -d build-web/music ]; then cp -R build-web/music public/; fi \
     && cp web/index.html web/mine.html web/ost.html web/ost-manifest.json \
           web/ost-cover.jpg public/
 

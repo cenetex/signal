@@ -2119,7 +2119,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
             "\"cargo\":%.0f,\"x\":%.1f,\"y\":%.1f,\"vx\":%.2f,\"vy\":%.2f}",
             i, npc->role, npc->state, npc->home_station, npc->dest_station,
             npc->target_asteroid, target ? (int)target->commodity : -1,
-            npc->towed_fragment, cargo_total,
+            npc_towed_fragment_index(npc), cargo_total,
             npc->ship.pos.x, npc->ship.pos.y, npc->ship.vel.x, npc->ship.vel.y);
     }
 
@@ -2641,7 +2641,7 @@ static void api_append_npc_chatter_record(char *buf, int *pos, int bufsz,
                npc->ship.pos.x, npc->ship.pos.y,
                npc->ship.vel.x, npc->ship.vel.y,
                npc->hull, cargo_total, npc->target_asteroid,
-               npc->towed_fragment, npc->towed_scaffold);
+               npc_towed_fragment_index(npc), npc->towed_scaffold);
     int cargo_written = 0;
     for (int c = 0; c < COMMODITY_COUNT; c++) {
         if (npc->cargo[c] <= 0.0f) continue;

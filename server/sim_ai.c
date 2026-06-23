@@ -1215,6 +1215,20 @@ static void ship_pool_init_from_npc(ship_t *ship, const npc_ship_t *npc) {
     ship->angle = npc->ship.angle;
     ship->hull_class = npc->ship.hull_class;
     ship->hull = npc->hull;
+    for (int i = 0; i < (int)(sizeof(ship->towed_fragments) /
+                              sizeof(ship->towed_fragments[0])); i++) {
+        ship->towed_fragments[i] = -1;
+    }
+    for (int i = 0; i < (int)(sizeof(ship->towed_pods) /
+                              sizeof(ship->towed_pods[0])); i++) {
+        ship->towed_pods[i] = -1;
+    }
+    int tow = npc_towed_fragment_index(npc);
+    if (tow >= 0) {
+        ship->towed_fragments[0] = (int16_t)tow;
+        ship->towed_count = 1;
+    }
+    ship->towed_scaffold = (int16_t)npc->towed_scaffold;
 }
 
 static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *npc) {
@@ -1234,7 +1248,7 @@ static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *n
         c->home_station = npc->home_station;
         c->dest_station = npc->dest_station;
         c->state_timer = npc->state_timer;
-        c->towed_fragment = npc->towed_fragment;
+        c->towed_fragment = npc_towed_fragment_index(npc);
         c->towed_scaffold = npc->towed_scaffold;
         ship_pool_init_from_npc(&w->ships[ship_slot], npc);
         return i;
@@ -1312,10 +1326,22 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) return;
     npc_ship_t *npc = &w->npc_ships[npc_slot];
+    npc_sync_towed_fragment(npc);
     npc->hull = s->hull;
     s->pos = npc->ship.pos;
     s->vel = npc->ship.vel;
     s->angle = npc->ship.angle;
+    for (int i = 0; i < (int)(sizeof(s->towed_fragments) /
+                              sizeof(s->towed_fragments[0])); i++) {
+        s->towed_fragments[i] = -1;
+    }
+    s->towed_count = 0;
+    int tow = npc_towed_fragment_index(npc);
+    if (tow >= 0) {
+        s->towed_fragments[0] = (int16_t)tow;
+        s->towed_count = 1;
+    }
+    s->towed_scaffold = (int16_t)npc->towed_scaffold;
 }
 
 /* Slice 13: pre-mirror at the top of each NPC step. Pulls any external
@@ -1331,6 +1357,15 @@ static void mirror_ship_pos_to_npc(world_t *w, int npc_slot) {
     npc->ship.pos = s->pos;
     npc->ship.vel = s->vel;
     npc->ship.angle = s->angle;
+    int tow_cap = (int)(sizeof(npc->ship.towed_fragments) /
+                        sizeof(npc->ship.towed_fragments[0]));
+    int tow_count = s->towed_count < tow_cap ? s->towed_count : tow_cap;
+    for (int i = 0; i < tow_cap; i++) {
+        npc->ship.towed_fragments[i] = (i < tow_count)
+            ? s->towed_fragments[i] : -1;
+    }
+    npc->ship.towed_count = (uint8_t)tow_count;
+    npc_sync_towed_fragment(npc);
 }
 
 /* Apply damage to an NPC with optional kill attribution. The reverse
@@ -1406,7 +1441,8 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
     c->home_station = npc->home_station;
     c->dest_station = npc->dest_station;
     c->state_timer = npc->state_timer;
-    c->towed_fragment = npc->towed_fragment;
+    int tow = npc_towed_fragment_index(npc);
+    c->towed_fragment = tow;
     c->towed_scaffold = npc->towed_scaffold;
     if (c->ship_idx >= 0 && c->ship_idx < MAX_SHIPS) {
         ship_t *s = &w->ships[c->ship_idx];
@@ -1414,6 +1450,16 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
         s->vel = npc->ship.vel;
         s->angle = npc->ship.angle;
         s->hull_class = npc->ship.hull_class;
+        for (int i = 0; i < (int)(sizeof(s->towed_fragments) /
+                                  sizeof(s->towed_fragments[0])); i++) {
+            s->towed_fragments[i] = -1;
+        }
+        s->towed_count = 0;
+        if (tow >= 0) {
+            s->towed_fragments[0] = (int16_t)tow;
+            s->towed_count = 1;
+        }
+        s->towed_scaffold = (int16_t)npc->towed_scaffold;
         /* Don't mirror hull npc->ship here: ship.hull is authoritative
          * (Slice 9 + 10). External callers — apply_npc_ship_damage and
          * future rock/PvP impact paths — may have mutated ship.hull
@@ -1693,10 +1739,9 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->ship.angle = PI_F * 0.5f;
     npc->ship.vel = v2(0.0f, 0.0f);
     npc->target_asteroid = -1;
-    npc->towed_fragment = -1;
+    npc_clear_towed_fragment(npc);
     npc->towed_scaffold = -1;
     npc->ship.towed_scaffold = -1;
-    memset(npc->ship.towed_fragments, -1, sizeof(npc->ship.towed_fragments));
     memset(npc->ship.towed_pods, -1, sizeof(npc->ship.towed_pods));
     npc->home_station = station_idx;
     npc->dest_station = station_idx;
@@ -1810,7 +1855,7 @@ static bool miner_target_taken(const world_t *w, int target_idx, int self_char_i
 /* Look for a free-floating S-tier fragment within `range_sq` of the
  * NPC. "Free" means not currently on any player's tractor (their
  * ship.towed_fragments[] list) and not already claimed by another
- * miner NPC (their npc_ship_t.towed_fragment).
+ * miner NPC (their embedded ship tow list / legacy scalar mirror).
  *
  * Used so miner NPCs prefer cleaning up loose fragments over fracturing
  * fresh rock. Returns asteroid index, or -1. */
@@ -1844,7 +1889,8 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
         /* Other-NPC tow check. */
         for (int j = 0; j < MAX_NPC_SHIPS; j++) {
             if (j == self_slot) continue;
-            if (w->npc_ships[j].active && w->npc_ships[j].towed_fragment == fi) {
+            if (w->npc_ships[j].active &&
+                npc_towed_fragment_index(&w->npc_ships[j]) == fi) {
                 taken = true; break;
             }
         }
@@ -1874,7 +1920,7 @@ static bool token_is_npc(const uint8_t token[8]) {
 static bool npc_try_claim_loose_fragment(world_t *w, npc_ship_t *npc, float range_sq) {
     int frag = npc_find_loose_fragment(w, npc, range_sq);
     if (frag < 0) return false;
-    npc->towed_fragment = frag;
+    npc_set_towed_fragment_index(npc, frag);
     asteroid_t *f = &w->asteroids[frag];
     /* Only stamp when the slot is empty or carries another NPC's
      * token — never overwrite a player tow stamp. */
@@ -3803,7 +3849,7 @@ static bool npc_make_gossip_courier_job_offer(const world_t *w,
         return false;
     if (!station_is_active(&w->stations[npc->home_station])) return false;
     if (npc_finished_cargo_total(npc, ship) > 0.01f) return false;
-    if (npc->towed_fragment >= 0 || npc->towed_scaffold >= 0) return false;
+    if (npc_towed_fragment_index(npc) >= 0 || npc->towed_scaffold >= 0) return false;
 
     int dest = npc_next_gossip_station(w, npc->home_station);
     if (dest < 0) return false;
@@ -4374,7 +4420,7 @@ static bool npc_can_reassign(const npc_ship_t *npc, const ship_t *ship) {
         npc->role != NPC_ROLE_HAULER &&
         npc->role != NPC_ROLE_TOW) return false;
     if (npc->state != NPC_STATE_DOCKED && npc->state != NPC_STATE_IDLE) return false;
-    if (npc->towed_fragment >= 0 || npc->towed_scaffold >= 0) return false;
+    if (npc_towed_fragment_index(npc) >= 0 || npc->towed_scaffold >= 0) return false;
     if (npc_finished_cargo_total(npc, ship) > 0.01f) return false;
     return true;
 }
@@ -4823,7 +4869,7 @@ static bool npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
     npc->pickup_commodity = COMMODITY_COUNT;
     npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
     npc->target_asteroid = -1;
-    npc->towed_fragment = -1;
+    npc_clear_towed_fragment(npc);
     npc->towed_scaffold = -1;
     npc->state = NPC_STATE_DOCKED;
     npc->state_timer = 0.0f;
@@ -4835,6 +4881,11 @@ static bool npc_set_assignment(world_t *w, int npc_slot, npc_ship_t *npc,
         ship->pos = npc->ship.pos;
         ship->vel = npc->ship.vel;
         ship->angle = npc->ship.angle;
+        ship->towed_count = 0;
+        for (int i = 0; i < (int)(sizeof(ship->towed_fragments) /
+                                  sizeof(ship->towed_fragments[0])); i++) {
+            ship->towed_fragments[i] = -1;
+        }
     }
     mirror_npc_to_character(w, npc_slot);
     return true;
@@ -5543,7 +5594,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
 }
 
 static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
-    int towed = npc->towed_fragment;
+    int towed = npc_towed_fragment_index(npc);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (i == towed) continue;  /* tow physics owns this fragment */
         asteroid_t *a = &w->asteroids[i];
@@ -6316,6 +6367,7 @@ void step_npc_ships(world_t *w, float dt) {
         /* Slice 13: pull external ship.pos/vel/angle writes into the
          * npc fields before physics integration this tick. */
         mirror_ship_pos_to_npc(w, n);
+        npc_sync_towed_fragment(npc);
         npc_normalize_brain_mode(npc);
         npc_enforce_role_hull(w, n, npc);
         mirror_npc_to_character(w, n);
@@ -6430,7 +6482,7 @@ void step_npc_ships(world_t *w, float dt) {
              * fast for genuine shortcut detours but prevents thrashing
              * mid-approach when the current target is close enough that
              * any FRACTURE rock looks "closer" each tick. */
-            if (npc->towed_fragment < 0 && npc_target_valid(w, npc)) {
+            if (npc_towed_fragment_index(npc) < 0 && npc_target_valid(w, npc)) {
                 vec2 cur_pos = w->asteroids[npc->target_asteroid].pos;
                 float cur_d2 = v2_dist_sq(npc->ship.pos, cur_pos);
                 const float MAX_DISTRESS_PREEMPT_SQ = 2500.0f * 2500.0f;
@@ -6457,7 +6509,7 @@ void step_npc_ships(world_t *w, float dt) {
         case NPC_STATE_MINING: {
             if (!npc_target_valid(w, npc)) {
                 /* Target gone — look for a fragment to tow, or find new target */
-                if (npc->towed_fragment >= 0) {
+                if (npc_towed_fragment_index(npc) >= 0) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                 } else if (npc_try_claim_loose_fragment(w, npc, 0.0f)) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -6555,7 +6607,7 @@ void step_npc_ships(world_t *w, float dt) {
                     }
                 }
                 if (best_frag >= 0) {
-                    npc->towed_fragment = best_frag;
+                    npc_set_towed_fragment_index(npc, best_frag);
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     /* Stamp the NPC's token onto the towed fragment so
                      * the eventual smelt-payout credits the NPC's ledger.
@@ -6582,19 +6634,23 @@ void step_npc_ships(world_t *w, float dt) {
              * Helios when the first furnace is cuprite-tagged. */
             vec2 delivery_target = home->pos;
             bool have_delivery_target = false;
-            if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
-                asteroid_t *tow = &w->asteroids[npc->towed_fragment];
+            int towed_fragment = npc_towed_fragment_index(npc);
+            if (towed_fragment >= 0) {
+                asteroid_t *tow = &w->asteroids[towed_fragment];
                 if (tow->active) {
                     have_delivery_target = station_smelt_pair_for_fragment(home,
                                                                            npc->home_station,
                                                                            tow,
                                                                            &delivery_target);
                     if (!have_delivery_target) {
-                        npc->towed_fragment = -1;
+                        npc_clear_towed_fragment(npc);
                         npc->state = NPC_STATE_IDLE;
                         npc->state_timer = 2.0f;
                         break;
                     }
+                } else {
+                    npc_clear_towed_fragment(npc);
+                    towed_fragment = -1;
                 }
             }
             if (!have_delivery_target) {
@@ -6602,13 +6658,13 @@ void step_npc_ships(world_t *w, float dt) {
             }
 
             /* Slow down when towing so the fragment can keep up */
-            float tow_thrust_scale = (npc->towed_fragment >= 0) ? 0.5f : 1.0f;
+            float tow_thrust_scale = (npc_towed_fragment_index(npc) >= 0) ? 0.5f : 1.0f;
             delivery_target = npc_target_routed_through_station_docks(w, npc, delivery_target);
             npc_steer_with_path(w, n, npc, delivery_target, tow_thrust_scale, dt);
             npc_apply_physics(npc, dt, w);
 
             /* Speed cap when towing */
-            if (npc->towed_fragment >= 0) {
+            if (npc_towed_fragment_index(npc) >= 0) {
                 npc->ship.tractor_active = true;
                 float spd = v2_len(npc->ship.vel);
                 float max_tow_speed = 80.0f;
@@ -6619,30 +6675,29 @@ void step_npc_ships(world_t *w, float dt) {
             /* Tow the fragment with the same elastic band used by player
              * ships. NPC miners must keep the rock inside their actual
              * tractor envelope; if they outrun it, the band snaps. */
-            if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
-                asteroid_t *tow = &w->asteroids[npc->towed_fragment];
+            towed_fragment = npc_towed_fragment_index(npc);
+            if (towed_fragment >= 0) {
+                asteroid_t *tow = &w->asteroids[towed_fragment];
                 if (tow->active) {
                     float tractor_r = ship_tractor_range(&npc->ship);
                     float dist = v2_len(v2_sub(npc->ship.pos, tow->pos));
                     if (tractor_r <= 0.0f || dist > tractor_r * 1.5f) {
-                        npc->towed_fragment = -1;
+                        npc_clear_towed_fragment(npc);
                         break;
                     }
                     ship_apply_fragment_tow(&npc->ship, tow, dt);
                     /* Release when close to the furnace — let the furnace tractor take over */
                     float furnace_d = v2_dist_sq(tow->pos, delivery_target);
                     if (furnace_d < 150.0f * 150.0f) {
-                        npc->towed_fragment = -1;
+                        npc_clear_towed_fragment(npc);
                     }
                 } else {
-                    npc->towed_fragment = -1;
+                    npc_clear_towed_fragment(npc);
                 }
-            } else if (npc->towed_fragment >= MAX_ASTEROIDS) {
-                npc->towed_fragment = -1;
             }
 
             /* Once fragment is delivered (or lost), go find more ore */
-            if (npc->towed_fragment < 0) {
+            if (npc_towed_fragment_index(npc) < 0) {
                 /* Drift away from the furnace, then look for next target */
                 npc->state = NPC_STATE_IDLE;
                 npc->state_timer = 2.0f;

@@ -1112,9 +1112,11 @@ void activate_outpost(world_t *w, int station_idx);
 #define HOPPER_PULL_ACCEL 500.0f    /* base pull strength */
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
-/* Cargo-pod module tractor tuning. Docks hold market pods farther out than
- * hoppers/producers, but the beam model and range predicate are shared. */
+/* Cargo-pod module tractor tuning. Docks can retain sold/delivery custody
+ * from farther out, but loose-pod acquisition still uses the shorter
+ * CARGO_POD_DOCK_TRACTOR_RANGE at call sites. */
 #define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
+#define CARGO_POD_DOCK_CUSTODY_RANGE (HOPPER_PULL_RANGE * 200.0f)
 #define CARGO_POD_MODULE_TRACTOR_BEAM_INIT(range_value) { \
     .rest_length     = 0.0f, \
     .pull_strength   = 0.0f, \
@@ -1128,10 +1130,25 @@ void activate_outpost(world_t *w, int station_idx);
     .falloff         = TRACTOR_FALLOFF_LINEAR, \
 }
 
+static inline bool cargo_pod_uses_dock_custody_range(const cargo_pod_t *pod) {
+    return pod && pod->kind == CARGO_POD_CARGO && pod->towed_by < 0 &&
+           (pod->manifest_count > 0 || pod->has_shell_frame);
+}
+
 static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
     return module_type == MODULE_DOCK
         ? CARGO_POD_DOCK_TRACTOR_RANGE
         : HOPPER_PULL_RANGE;
+}
+
+static inline float cargo_pod_module_tractor_range_for_pod(
+    module_type_t module_type,
+    const cargo_pod_t *pod) {
+    if (module_type == MODULE_DOCK &&
+        cargo_pod_uses_dock_custody_range(pod)) {
+        return CARGO_POD_DOCK_CUSTODY_RANGE;
+    }
+    return cargo_pod_module_tractor_range(module_type);
 }
 
 #endif /* GAME_SIM_H */

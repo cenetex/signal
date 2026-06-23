@@ -1261,6 +1261,45 @@ typedef struct {
     uint32_t hnn_experience_version; /* station version last synced, 0 = none */
 } npc_ship_t;
 
+/* NPC fragment towing is mid-migration from npc_ship_t.towed_fragment to the
+ * embedded ship_t.towed_fragments[] list. Keep the scalar as a save/wire/UI
+ * compatibility mirror while new physics paths can read the ship-shaped state.
+ */
+static inline int npc_towed_fragment_index(const npc_ship_t *npc) {
+    if (!npc) return -1;
+    if (npc->ship.towed_count > 0) {
+        int idx = npc->ship.towed_fragments[0];
+        if (idx >= 0 && idx < MAX_ASTEROIDS) return idx;
+    }
+    if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS)
+        return npc->towed_fragment;
+    return -1;
+}
+
+static inline void npc_clear_towed_fragment(npc_ship_t *npc) {
+    if (!npc) return;
+    npc->towed_fragment = -1;
+    npc->ship.towed_count = 0;
+    for (int i = 0; i < (int)(sizeof(npc->ship.towed_fragments) /
+                              sizeof(npc->ship.towed_fragments[0])); i++) {
+        npc->ship.towed_fragments[i] = -1;
+    }
+}
+
+static inline void npc_set_towed_fragment_index(npc_ship_t *npc, int idx) {
+    if (!npc) return;
+    npc_clear_towed_fragment(npc);
+    if (idx < 0 || idx >= MAX_ASTEROIDS) return;
+    npc->towed_fragment = idx;
+    npc->ship.towed_fragments[0] = (int16_t)idx;
+    npc->ship.towed_count = 1;
+}
+
+static inline void npc_sync_towed_fragment(npc_ship_t *npc) {
+    if (!npc) return;
+    npc_set_towed_fragment_index(npc, npc_towed_fragment_index(npc));
+}
+
 /* ------------------------------------------------------------------ */
 /* character_t — controller layer (#294 Slice 1: types only)            */
 /* ------------------------------------------------------------------ */
