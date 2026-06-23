@@ -5101,11 +5101,11 @@ static bool station_module_can_tractor_shell_frame_pod(const station_t *st,
 
 static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b);
 
-static bool station_producer_input_hopper_for_pod(const station_t *st,
-                                                  int module_idx,
-                                                  const cargo_pod_t *pod,
-                                                  int *out_hopper,
-                                                  vec2 *out_anchor) {
+static bool station_module_input_hopper_for_pod(const station_t *st,
+                                                int module_idx,
+                                                const cargo_pod_t *pod,
+                                                int *out_hopper,
+                                                vec2 *out_anchor) {
     if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
         module_idx < 0 || module_idx >= st->module_count ||
         module_idx >= MAX_MODULES_PER_STATION) {
@@ -5116,7 +5116,10 @@ static bool station_producer_input_hopper_for_pod(const station_t *st,
     const station_module_t *module = &st->modules[module_idx];
     if (module->scaffold || module->type == MODULE_FURNACE) return false;
     const module_schema_t *schema = module_schema(module->type);
-    if (!schema || schema->kind != MODULE_KIND_PRODUCER) return false;
+    if (!schema || (schema->kind != MODULE_KIND_PRODUCER &&
+                    schema->kind != MODULE_KIND_SHIPYARD)) {
+        return false;
+    }
 
     module_inputs_t req = module_instance_required_inputs(module);
     bool wants = false;
@@ -5128,33 +5131,38 @@ static bool station_producer_input_hopper_for_pod(const station_t *st,
     }
     if (!wants) return false;
 
-    int hopper_idx = station_find_hopper_for(st, pod->commodity);
-    if (hopper_idx < 0 || hopper_idx >= st->module_count ||
-        hopper_idx >= MAX_MODULES_PER_STATION) {
-        return false;
-    }
-    const station_module_t *hopper = &st->modules[hopper_idx];
-    if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
-        (commodity_t)hopper->commodity != pod->commodity) {
-        return false;
-    }
-
     vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
-    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
-    if (v2_dist_sq(module_pos, hopper_pos) >
-        HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) {
-        return false;
+    int best_hopper = -1;
+    vec2 best_hopper_pos = module_pos;
+    float best_d = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int h = 0; h < st->module_count && h < MAX_MODULES_PER_STATION; h++) {
+        const station_module_t *hopper = &st->modules[h];
+        if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
+            (commodity_t)hopper->commodity != pod->commodity) {
+            continue;
+        }
+        vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                hopper->slot);
+        float d = v2_dist_sq(module_pos, hopper_pos);
+        if (d > HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) continue;
+        if (best_hopper < 0 || d < best_d) {
+            best_d = d;
+            best_hopper = h;
+            best_hopper_pos = hopper_pos;
+        }
     }
+    if (best_hopper < 0) return false;
 
-    if (out_hopper) *out_hopper = hopper_idx;
-    if (out_anchor) *out_anchor = v2_scale(v2_add(module_pos, hopper_pos), 0.5f);
+    if (out_hopper) *out_hopper = best_hopper;
+    if (out_anchor)
+        *out_anchor = v2_scale(v2_add(module_pos, best_hopper_pos), 0.5f);
     return true;
 }
 
 static bool station_hopper_input_anchor_for_pod(const station_t *st,
                                                 int hopper_idx,
                                                 const cargo_pod_t *pod,
-                                                int *out_producer,
+                                                int *out_consumer,
                                                 vec2 *out_anchor) {
     if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
         hopper_idx < 0 || hopper_idx >= st->module_count ||
@@ -5168,15 +5176,15 @@ static bool station_hopper_input_anchor_for_pod(const station_t *st,
     }
 
     vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
-    int best_producer = -1;
+    int best_consumer = -1;
     float best_d = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     vec2 best_anchor = hopper_pos;
     for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
         int matched_hopper = -1;
         vec2 anchor = hopper_pos;
-        if (!station_producer_input_hopper_for_pod(st, m, pod,
-                                                   &matched_hopper,
-                                                   &anchor) ||
+        if (!station_module_input_hopper_for_pod(st, m, pod,
+                                                 &matched_hopper,
+                                                 &anchor) ||
             matched_hopper != hopper_idx) {
             continue;
         }
@@ -5185,13 +5193,13 @@ static bool station_hopper_input_anchor_for_pod(const station_t *st,
         float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
         if (d <= best_d) {
             best_d = d;
-            best_producer = m;
+            best_consumer = m;
             best_anchor = anchor;
         }
     }
 
-    if (best_producer < 0) return false;
-    if (out_producer) *out_producer = best_producer;
+    if (best_consumer < 0) return false;
+    if (out_consumer) *out_consumer = best_consumer;
     if (out_anchor) *out_anchor = best_anchor;
     return true;
 }
@@ -5206,6 +5214,35 @@ static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b) {
     return v2_dist_sq(p, closest);
 }
 
+static int cargo_pod_module_tractor_load(const world_t *w,
+                                         int station_idx,
+                                         int module_idx) {
+    if (!w || station_idx < 0 || module_idx < 0) return 0;
+    int load = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *other = &w->cargo_pods[i];
+        int ps = -1;
+        int pm = -1;
+        if (!other->active ||
+            !cargo_pod_module_tractor_indices(other, &ps, &pm) ||
+            ps != station_idx || pm != module_idx) {
+            continue;
+        }
+        load++;
+    }
+    return load;
+}
+
+static float cargo_pod_module_candidate_score(const world_t *w,
+                                              int station_idx,
+                                              int module_idx,
+                                              float distance_sq,
+                                              float acquire_sq) {
+    int load = cargo_pod_module_tractor_load(w, station_idx, module_idx);
+    return distance_sq + (float)load * (acquire_sq +
+                                        HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+}
+
 static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
                                                 const cargo_pod_t *pod,
                                                 int *out_station,
@@ -5218,7 +5255,7 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
     const float shell_reach_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = beam_intake_sq;
+    float best_score = beam_intake_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
 
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
@@ -5249,7 +5286,7 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
                     float pod_d = point_segment_dist_sq(pod->pos,
                                                         furnace_pos,
                                                         ore_hopper_pos);
-                    if (pod_d > best_d) continue;
+                    if (pod_d > beam_intake_sq) continue;
                     vec2 smelt_target = v2_scale(
                         v2_add(furnace_pos, ore_hopper_pos), 0.5f);
 
@@ -5267,11 +5304,59 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
                             shell_reach_sq) {
                             continue;
                         }
-                        best_d = pod_d;
-                        best_station = s;
-                        best_module = fh;
+                        float score = cargo_pod_module_candidate_score(
+                            w, s, fh, pod_d, beam_intake_sq);
+                        if (score <= best_score) {
+                            best_score = score;
+                            best_station = s;
+                            best_module = fh;
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+static bool cargo_pod_find_matching_hopper_module(const world_t *w,
+                                                  const cargo_pod_t *pod,
+                                                  bool demand_only,
+                                                  int *out_station,
+                                                  int *out_module) {
+    if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
+        return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_station = -1;
+    int best_module = -1;
+    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_hopper_matches_pod(st, m, pod)) continue;
+
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            if (demand_only &&
+                !station_hopper_input_anchor_for_pod(st, m, pod,
+                                                     NULL, &anchor)) {
+                continue;
+            }
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(w, s, m, d,
+                                                           acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
+                best_station = s;
+                best_module = m;
             }
         }
     }
@@ -5295,7 +5380,7 @@ static bool cargo_pod_find_producer_output_module(const world_t *w,
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = acquire_sq;
+    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -5305,8 +5390,11 @@ static bool cargo_pod_find_producer_output_module(const world_t *w,
             vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
                                                 st->modules[m].slot);
             float d = v2_dist_sq(pod->pos, anchor);
-            if (d <= best_d) {
-                best_d = d;
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(w, s, m, d,
+                                                           acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
                 best_station = s;
                 best_module = m;
             }
@@ -5319,10 +5407,10 @@ static bool cargo_pod_find_producer_output_module(const world_t *w,
     return true;
 }
 
-static bool cargo_pod_find_producer_input_module(const world_t *w,
-                                                 const cargo_pod_t *pod,
-                                                 int *out_station,
-                                                 int *out_module) {
+static bool cargo_pod_find_module_input_module(const world_t *w,
+                                               const cargo_pod_t *pod,
+                                               int *out_station,
+                                               int *out_module) {
     if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
         return false;
 
@@ -5330,14 +5418,14 @@ static bool cargo_pod_find_producer_input_module(const world_t *w,
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = acquire_sq;
+    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
             int hopper_idx = -1;
-            if (!station_producer_input_hopper_for_pod(st, m, pod,
-                                                       &hopper_idx, NULL))
+            if (!station_module_input_hopper_for_pod(st, m, pod,
+                                                     &hopper_idx, NULL))
                 continue;
             const station_module_t *module = &st->modules[m];
             const station_module_t *hopper = &st->modules[hopper_idx];
@@ -5346,8 +5434,11 @@ static bool cargo_pod_find_producer_input_module(const world_t *w,
             vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
                                                     hopper->slot);
             float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
-            if (d <= best_d) {
-                best_d = d;
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(w, s, m, d,
+                                                           acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
                 best_station = s;
                 best_module = m;
             }
@@ -5371,7 +5462,7 @@ static bool cargo_pod_find_shell_frame_module(const world_t *w,
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = acquire_sq;
+    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -5381,8 +5472,11 @@ static bool cargo_pod_find_shell_frame_module(const world_t *w,
             vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
                                                 st->modules[m].slot);
             float d = v2_dist_sq(pod->pos, anchor);
-            if (d <= best_d) {
-                best_d = d;
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(w, s, m, d,
+                                                           acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
                 best_station = s;
                 best_module = m;
             }
@@ -5507,8 +5601,8 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     bool dock_owner = station_dock_can_tractor_trade_pod(st, module_idx, pod);
     bool valid_owner = station_hopper_can_tractor_pod(st, module_idx, pod) ||
                        dock_owner ||
-                       station_producer_input_hopper_for_pod(st, module_idx, pod,
-                                                             NULL, NULL) ||
+                       station_module_input_hopper_for_pod(st, module_idx, pod,
+                                                           NULL, NULL) ||
                        station_producer_can_tractor_output_pod(st, module_idx, pod) ||
                        station_module_can_tractor_shell_frame_pod(st, module_idx, pod);
     bool station_can_hold = station_is_active(st) ||
@@ -5521,17 +5615,17 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     vec2 anchor = station_module_cargo_mouth(st, &st->modules[module_idx],
                                              pod);
     int pulse_module = module_idx;
-    if (station_producer_input_hopper_for_pod(st, module_idx, pod,
-                                              NULL, &anchor)) {
+    if (station_module_input_hopper_for_pod(st, module_idx, pod,
+                                            NULL, &anchor)) {
         pulse_module = module_idx;
     } else {
-        int producer_idx = -1;
+        int consumer_idx = -1;
         vec2 input_anchor = anchor;
         if (station_hopper_input_anchor_for_pod(st, module_idx, pod,
-                                                &producer_idx,
+                                                &consumer_idx,
                                                 &input_anchor)) {
             anchor = input_anchor;
-            pulse_module = producer_idx;
+            pulse_module = consumer_idx;
         }
     }
     anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
@@ -5560,47 +5654,44 @@ static bool cargo_pod_try_acquire_module_tractor(world_t *w,
     }
     if (!cargo_pod_has_exact_manifest(pod, pod->commodity)) return false;
 
-    const float acquire_sq =
-        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = acquire_sq;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (!station_is_active(st)) continue;
-        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
-            if (!station_hopper_can_tractor_pod(st, m, pod)) continue;
-            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
-                                                st->modules[m].slot);
-            float d = v2_dist_sq(pod->pos, anchor);
-            if (d <= best_d) {
-                best_d = d;
-                best_station = s;
-                best_module = m;
-            }
+    bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
+    if (frame_pod) {
+        if (!cargo_pod_find_furnace_shell_hopper(w, pod,
+                                                 &best_station,
+                                                 &best_module)) {
+            (void)cargo_pod_find_matching_hopper_module(w, pod, true,
+                                                        &best_station,
+                                                        &best_module);
         }
     }
     if (best_station < 0 || best_module < 0) {
-        if (!cargo_pod_find_producer_input_module(w, pod,
-                                                  &best_station,
-                                                  &best_module)) {
-                if (!cargo_pod_find_furnace_shell_hopper(w, pod,
-                                                         &best_station,
-                                                         &best_module)) {
-                    if (!cargo_pod_find_producer_output_module(w, pod,
-                                                               &best_station,
-                                                               &best_module)) {
-                        if (!cargo_pod_find_shell_frame_module(w, pod,
-                                                               &best_station,
-                                                               &best_module)) {
-                            if (!cargo_pod_find_station_dock_module(w, pod,
-                                                                    &best_station,
-                                                                    &best_module)) {
-                                return false;
-                            }
+        (void)cargo_pod_find_matching_hopper_module(w, pod, false,
+                                                    &best_station,
+                                                    &best_module);
+    }
+    if (best_station < 0 || best_module < 0) {
+        if (!cargo_pod_find_module_input_module(w, pod,
+                                                &best_station,
+                                                &best_module)) {
+            if (!cargo_pod_find_furnace_shell_hopper(w, pod,
+                                                     &best_station,
+                                                     &best_module)) {
+                if (!cargo_pod_find_producer_output_module(w, pod,
+                                                           &best_station,
+                                                           &best_module)) {
+                    if (!cargo_pod_find_shell_frame_module(w, pod,
+                                                           &best_station,
+                                                           &best_module)) {
+                        if (!cargo_pod_find_station_dock_module(w, pod,
+                                                                &best_station,
+                                                                &best_module)) {
+                            return false;
                         }
                     }
                 }
+            }
         }
     }
     cargo_pod_set_module_tractor(pod, best_station, best_module);
@@ -5616,30 +5707,27 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
         return false;
     }
 
-    const float acquire_sq =
-        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_d = acquire_sq;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (!station_is_active(st)) continue;
-        for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
-            if (!station_hopper_matches_pod(st, m, pod)) continue;
-            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
-                                                st->modules[m].slot);
-            float d = v2_dist_sq(pod->pos, anchor);
-            if (d <= best_d) {
-                best_d = d;
-                best_station = s;
-                best_module = m;
-            }
+    bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
+    if (frame_pod) {
+        if (!cargo_pod_find_furnace_shell_hopper(w, pod,
+                                                 &best_station,
+                                                 &best_module)) {
+            (void)cargo_pod_find_matching_hopper_module(w, pod, true,
+                                                        &best_station,
+                                                        &best_module);
         }
     }
     if (best_station < 0 || best_module < 0) {
-        if (!cargo_pod_find_producer_input_module(w, pod,
-                                                  &best_station,
-                                                  &best_module)) {
+        (void)cargo_pod_find_matching_hopper_module(w, pod, false,
+                                                    &best_station,
+                                                    &best_module);
+    }
+    if (best_station < 0 || best_module < 0) {
+        if (!cargo_pod_find_module_input_module(w, pod,
+                                                &best_station,
+                                                &best_module)) {
             if (!cargo_pod_find_furnace_shell_hopper(w, pod,
                                                      &best_station,
                                                      &best_module)) {

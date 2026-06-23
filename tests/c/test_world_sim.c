@@ -174,6 +174,26 @@ static int test_first_dock_module_idx(const station_t *st) {
     return -1;
 }
 
+static station_t *test_reset_single_active_station(world_t *w,
+                                                   int station_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return NULL;
+    for (int s = 0; s < MAX_STATIONS; s++)
+        w->stations[s].signal_range = 0.0f;
+    station_t *st = &w->stations[station_idx];
+    st->scaffold = false;
+    st->planned = false;
+    st->pos = v2(0.0f, 0.0f);
+    st->radius = 36.0f;
+    st->dock_radius = 0.0f;
+    st->signal_range = 4000.0f;
+    st->module_count = 0;
+    memset(st->modules, 0, sizeof(st->modules));
+    memset(st->module_active_pulse, 0, sizeof(st->module_active_pulse));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    return st;
+}
+
 static int test_spawn_station_market_exact_pod(world_t *w,
                                                int station_idx,
                                                commodity_t commodity,
@@ -3601,6 +3621,66 @@ TEST(test_furnace_accepts_frame_shell_pod_near_smelt_beam) {
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
                                             0, furnace_idx));
+}
+
+TEST(test_frame_shell_pod_targets_furnace_frame_hopper_lane) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = test_reset_single_active_station(&w, 0);
+    ASSERT(st != NULL);
+
+    add_furnace_for(st, 2, 0, COMMODITY_FERRITE_INGOT);
+    int furnace_idx = 0;
+    add_hopper_for(st, 3, 0, COMMODITY_FERRITE_ORE);
+    add_hopper_for(st, 3, 0, COMMODITY_FRAME);
+    int frame_hopper_idx = 2;
+
+    vec2 furnace_pos = module_world_pos_ring(st,
+        st->modules[furnace_idx].ring, st->modules[furnace_idx].slot);
+    vec2 ore_hopper_pos = module_world_pos_ring(st,
+        st->modules[1].ring, st->modules[1].slot);
+    vec2 smelt_lane = v2_scale(v2_add(furnace_pos, ore_hopper_pos), 0.5f);
+    int pod_idx = test_spawn_frame_pod(&w, smelt_lane, 1);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = -1;
+
+    step_station_cargo_pod_tractors(&w, 0.0f);
+
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, frame_hopper_idx));
+}
+
+TEST(test_frame_pod_prefers_shipyard_serving_hopper_over_storage_twin) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = test_reset_single_active_station(&w, 0);
+    ASSERT(st != NULL);
+
+    add_module_at(st, MODULE_SHIPYARD, 2, 0);
+    int shipyard_idx = 0;
+    add_hopper_for(st, 3, 0, COMMODITY_FRAME);
+    int serving_hopper_idx = 1;
+    add_hopper_for(st, 3, 0, COMMODITY_FRAME);
+    int storage_twin_idx = 2;
+
+    vec2 shipyard_pos = module_world_pos_ring(st,
+        st->modules[shipyard_idx].ring, st->modules[shipyard_idx].slot);
+    vec2 hopper_pos = module_world_pos_ring(st,
+        st->modules[serving_hopper_idx].ring,
+        st->modules[serving_hopper_idx].slot);
+    vec2 lane = v2_scale(v2_add(shipyard_pos, hopper_pos), 0.5f);
+    int pod_idx = test_spawn_frame_pod(&w, lane, 1);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = -1;
+
+    step_station_cargo_pod_tractors(&w, 0.0f);
+
+    ASSERT(!cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                             0, storage_twin_idx));
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
+                                            0, serving_hopper_idx));
 }
 
 TEST(test_furnace_tractor_holds_frame_pod_outside_module) {
@@ -8692,6 +8772,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_hopper_accepts_player_towed_ingot_pod);
     RUN(test_furnace_accepts_player_towed_frame_shell_pod);
     RUN(test_furnace_accepts_frame_shell_pod_near_smelt_beam);
+    RUN(test_frame_shell_pod_targets_furnace_frame_hopper_lane);
+    RUN(test_frame_pod_prefers_shipyard_serving_hopper_over_storage_twin);
     RUN(test_furnace_tractor_holds_frame_pod_outside_module);
     RUN(test_station_production_ejects_laser_pod);
     RUN(test_station_production_fills_existing_laser_output_pod);
