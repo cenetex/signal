@@ -81,6 +81,16 @@ endif()
 # new server .c file only needs editing here.
 # ------------------------------------------------------------------
 
+set(SIGNAL_STATIC_FLIGHT_BRAIN_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/client/integration/work/signal")
+set(SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES)
+if(EXISTS "${SIGNAL_STATIC_FLIGHT_BRAIN_DIR}/signal_client_flight.c" AND
+   EXISTS "${SIGNAL_STATIC_FLIGHT_BRAIN_DIR}/signal_client_flight.h")
+    list(APPEND SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES
+        client/integration/work/signal/signal_client_flight.c)
+    add_compile_definitions(SIGNAL_HAS_STATIC_FLIGHT_BRAIN=1)
+endif()
+
 # Headless simulation — used by signal_server, signal_test, and the
 # client (which runs the same sim in-process for singleplayer via
 # local_server.c). New server sim files go here.
@@ -168,6 +178,9 @@ set(SIGNAL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/shared"
     "${CMAKE_CURRENT_SOURCE_DIR}/server"
 )
+if(SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES)
+    list(APPEND SIGNAL_INCLUDE_DIRS "${SIGNAL_STATIC_FLIGHT_BRAIN_DIR}")
+endif()
 
 # ------------------------------------------------------------------
 # signal_server — authoritative game server (also the Docker image).
@@ -179,6 +192,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         server/highscore.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_server PRIVATE
@@ -268,6 +282,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         client/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_test PRIVATE
@@ -350,6 +365,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         tools/flight_trace.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(flight_trace PRIVATE
@@ -368,6 +384,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         tools/signal_replay.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_replay PRIVATE
@@ -388,6 +405,7 @@ if(BUILD_WASM_REPLAY AND EMSCRIPTEN)
         tools/signal_replay.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_replay PRIVATE
@@ -510,6 +528,7 @@ if(EMSCRIPTEN)
         "'_get_player_pos_y'"
         "'_get_player_vel_x'"
         "'_get_player_vel_y'"
+        "'_get_player_angle'"
         "'_get_player_docked'"
         "'_get_camera_narrow_focus'"
         "'_reset_net_motion_telemetry'"
@@ -524,6 +543,9 @@ if(EMSCRIPTEN)
         "'_get_net_motion_player_interval_ms'"
         "'_get_net_motion_max_player_interval_ms'"
         "'_get_net_motion_max_player_jitter_ms'"
+        "'_get_net_motion_raw_player_interval_ms'"
+        "'_get_net_motion_max_raw_player_interval_ms'"
+        "'_get_net_motion_max_raw_player_jitter_ms'"
         "'_get_net_motion_max_ack_rtt_ms'"
         "'_get_net_motion_current_render_offset'"
         "'_get_net_motion_max_render_offset'"
@@ -533,6 +555,8 @@ if(EMSCRIPTEN)
         "'_get_net_motion_total_input_acks'"
         "'_get_net_motion_tick_skew'"
         "'_get_net_motion_max_tick_skew_abs'"
+        "'_get_net_motion_input_apply_error_ticks'"
+        "'_get_net_motion_max_input_apply_error_abs'"
         "'_get_net_motion_replay_depth'"
         "'_get_net_motion_unacked_inputs'"
         "'_get_net_motion_action_queue_depth'"

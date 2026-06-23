@@ -74,53 +74,6 @@ static float action_predict_window_sec(void) {
     return window;
 }
 
-static void frame_camera_on_local_launch(void) {
-    g.camera_pos = LOCAL_PLAYER.ship.pos;
-    g.camera_initialized = true;
-    g.camera_station_index = -1;
-    g.camera_station_side = 0;
-    g.camera_station_v_side = 0;
-    g.camera_drift_timer = 0.0f;
-    g.local_player_render_offset = v2(0.0f, 0.0f);
-}
-
-static void predict_local_launch_from_dock(void) {
-    int station_idx = LOCAL_PLAYER.current_station;
-    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
-        !station_exists(&g.world.stations[station_idx])) {
-        station_idx = (LOCAL_PLAYER.nearby_station >= 0 &&
-                       LOCAL_PLAYER.nearby_station < MAX_STATIONS &&
-                       station_exists(&g.world.stations[LOCAL_PLAYER.nearby_station]))
-            ? LOCAL_PLAYER.nearby_station
-            : 0;
-        LOCAL_PLAYER.current_station = station_idx;
-    }
-    const station_t *st = &g.world.stations[station_idx];
-    if (!station_exists(st)) return;
-
-    vec2 launch_pos = LOCAL_PLAYER.ship.pos;
-
-    LOCAL_PLAYER.docked = false;
-    LOCAL_PLAYER.in_dock_range = false;
-    LOCAL_PLAYER.docking_approach = false;
-    LOCAL_PLAYER.nearby_station = -1;
-    LOCAL_PLAYER.boost_hold_timer = 0.0f;
-    LOCAL_PLAYER.ship.tractor_active = false;
-
-    vec2 away = v2_sub(launch_pos, st->pos);
-    away = player_launch_lane_for_berth(
-        st, LOCAL_PLAYER.dock_berth, g.local_player_slot, away);
-    float len = v2_len(away);
-    if (len <= 0.001f) {
-        away = v2(0.0f, -1.0f);
-        len = 1.0f;
-    }
-
-    LOCAL_PLAYER.ship.angle = fixp_atan2f(away.y, away.x);
-    LOCAL_PLAYER.ship.vel = v2_scale(away, 95.0f / len);
-    frame_camera_on_local_launch();
-}
-
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
@@ -1221,7 +1174,7 @@ void submit_input(const input_intent_t *intent, float dt) {
     /* Client prediction is stable only when the server snapshots and local
      * frames share the input-tick clock. Pre-tick remote servers remain
      * server-authoritative while the client still sends inputs normally. */
-    if (net_local_prediction_enabled()) {
+    if (net_local_prediction_enabled() && !LOCAL_PLAYER.docked) {
         net_replay_record_prediction(intent, dt);
         world_sim_step_player_only(&g.world, g.local_player_slot, dt);
     }
@@ -1297,9 +1250,6 @@ void submit_input(const input_intent_t *intent, float dt) {
     if (has_action && g.net_authority_enabled && net_is_connected()) {
         if (intent->interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
-            if (LOCAL_PLAYER.docked) {
-                predict_local_launch_from_dock();
-            }
         } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;
             /* Per-row sell rides the same 5th-byte slot as buy_grade.

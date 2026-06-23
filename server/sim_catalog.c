@@ -395,9 +395,17 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
 int station_catalog_load_all(station_t *stations, int max_stations, const char *dir) {
     int loaded = 0;
     for (int i = 0; i < max_stations; i++) {
-        if (station_catalog_load_one(&stations[i], i, dir)) {
-            loaded++;
+        station_t staged = {0};
+        if (station_catalog_load_one(&staged, i, dir)) {
+            if (station_copy(&stations[i], &staged))
+                loaded++;
+        } else {
+            /* Keep the caller's already-seeded fallback station intact. A
+             * corrupt per-station catalog should not erase relay geometry. */
+            station_cleanup(&staged);
+            continue;
         }
+        station_cleanup(&staged);
     }
     return loaded;
 }

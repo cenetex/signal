@@ -2,6 +2,7 @@
  * and rejects the obvious tamper cases. */
 #include "test_harness.h"
 
+#include "base64.h"
 #include "signal_crypto.h"
 
 TEST(test_crypto_keypair_distinct) {
@@ -88,6 +89,19 @@ TEST(test_crypto_verify_rejects_pub_tamper) {
     ASSERT(!signal_crypto_verify(sig, msg, sizeof(msg), pub));
 }
 
+TEST(test_base64_decode_rejects_short_output_buffer) {
+    const uint8_t raw[3] = {1, 2, 3};
+    char encoded[8];
+    uint8_t decoded[3] = {0};
+    uint8_t short_decoded[2] = {0};
+
+    ASSERT_EQ_INT(base64_encode(raw, sizeof(raw), encoded, sizeof(encoded)), 4);
+    ASSERT(strcmp(encoded, "AQID") == 0);
+    ASSERT_EQ_INT(base64_decode(encoded, decoded, sizeof(decoded)), 3);
+    ASSERT(memcmp(decoded, raw, sizeof(raw)) == 0);
+    ASSERT_EQ_INT(base64_decode(encoded, short_decoded, sizeof(short_decoded)), -1);
+}
+
 void register_crypto_tests(void);
 void register_crypto_tests(void) {
     TEST_SECTION("\nCrypto (Ed25519) tests:\n");
@@ -97,4 +111,5 @@ void register_crypto_tests(void) {
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);
     RUN(test_crypto_verify_rejects_pub_tamper);
+    RUN(test_base64_decode_rejects_short_output_buffer);
 }

@@ -878,6 +878,148 @@ TEST(test_movement_queue_rejects_late_older_sequence) {
     ASSERT_EQ_INT(sp->last_input_seq, 2);
 }
 
+TEST(test_same_tick_movement_inputs_apply_on_separate_ticks) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(0.0f, -2400.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    input_intent_t thrust = { .thrust = 1.0f };
+    input_intent_t release = { 0 };
+    server_player_queue_movement_input(sp, &thrust, 1, w.tick + 2u);
+    server_player_queue_movement_input(sp, &release, 2, w.tick + 2u);
+
+    ASSERT_EQ_INT(sp->movement_queue_count, 2);
+    ASSERT_EQ_INT((int)sp->movement_queue[0].apply_tick, 2);
+    ASSERT_EQ_INT((int)sp->movement_queue[1].apply_tick, 3);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 1);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 2);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 1);
+    ASSERT(sp->actual_thrusting);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 3);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 2);
+    ASSERT(!sp->actual_thrusting);
+}
+
+TEST(test_ticked_same_tick_movement_inputs_preserve_apply_tick) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(0.0f, -2400.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    input_intent_t thrust = { .thrust = 1.0f };
+    input_intent_t release = { 0 };
+    server_player_queue_ticked_movement_input(sp, &thrust, 1, w.tick + 2u);
+    server_player_queue_ticked_movement_input(sp, &release, 2, w.tick + 2u);
+
+    ASSERT_EQ_INT(sp->movement_queue_count, 2);
+    ASSERT_EQ_INT((int)sp->movement_queue[0].apply_tick, 2);
+    ASSERT_EQ_INT((int)sp->movement_queue[1].apply_tick, 2);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 1);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT((int)w.tick, 2);
+    ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 2);
+    ASSERT_EQ_INT((int)sp->last_input_tick, 2);
+    ASSERT(!sp->actual_thrusting);
+}
+
+TEST(test_ticked_turn_release_preserves_authoritative_heading) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(0.0f, -2400.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    input_intent_t turn = { .turn = 1.0f };
+    server_player_queue_ticked_movement_input(sp, &turn, 1, w.tick + 1u);
+
+    for (int i = 0; i < 20; i++)
+        world_sim_step(&w, SIM_DT);
+
+    float turned_angle = sp->ship.angle;
+    ASSERT(turned_angle > 0.01f);
+    ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
+
+    input_intent_t release = { 0 };
+    server_player_queue_ticked_movement_input(sp, &release, 2, w.tick + 1u);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 2);
+    ASSERT_EQ_INT((int)sp->last_input_tick, (int)w.tick);
+    ASSERT_EQ_FLOAT(sp->ship.angle, turned_angle, 0.001f);
+}
+
+TEST(test_dispatch_ticked_left_input_rotates_authoritative_ship) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship.pos = v2(0.0f, -2400.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.angle = 0.0f;
+
+    uint8_t input[NET_INPUT_MSG_SIZE] = {0};
+    input[0] = NET_MSG_INPUT;
+    input[1] = NET_INPUT_LEFT;
+    input[3] = 0xFFu;
+    input[4] = MINING_GRADE_COUNT;
+    input[5] = 0xFFu;
+    input[6] = 0xFFu;
+    input[7] = 0xFFu;
+    input[8] = 1u;
+    input[10] = 0xFFu;
+    input[11] = 0xFFu;
+    write_u32_le(&input[14], w.tick + 1u);
+
+    server_input_dispatch_result_t result;
+    ASSERT(server_dispatch_input_message(&w, 0, input, NET_INPUT_MSG_SIZE,
+                                         &result));
+    ASSERT_EQ_INT((int)result.input_seq, 1);
+    ASSERT_EQ_INT((int)result.apply_tick, (int)(w.tick + 1u));
+
+    for (int i = 0; i < 20; i++)
+        world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
+    ASSERT(sp->ship.angle > 0.01f);
+    ASSERT_EQ_INT((int)sp->last_input_seq, 1);
+}
+
 TEST(test_reset_input_stream_accepts_reconnected_low_sequence) {
     WORLD_DECL;
     world_reset(&w);
@@ -1904,6 +2046,10 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_launch_applies_queued_thrust_through_physics);
     RUN(test_launch_from_freeport_retains_control_authority);
     RUN(test_movement_queue_rejects_late_older_sequence);
+    RUN(test_same_tick_movement_inputs_apply_on_separate_ticks);
+    RUN(test_ticked_same_tick_movement_inputs_preserve_apply_tick);
+    RUN(test_ticked_turn_release_preserves_authoritative_heading);
+    RUN(test_dispatch_ticked_left_input_rotates_authoritative_ship);
     RUN(test_reset_input_stream_accepts_reconnected_low_sequence);
     RUN(test_bug40_no_player_player_collision);
 }

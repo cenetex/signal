@@ -32,6 +32,11 @@ const char *signal_intelligence_backend_name(void);
 
 void signal_intelligence_holographic_init(void);
 
+bool signal_intelligence_flight_builtin_available(void);
+const char *signal_intelligence_flight_feature_set(void);
+uint32_t signal_intelligence_flight_feature_encoder_version(void);
+const char *signal_intelligence_flight_checkpoint_hash(void);
+
 bool signal_intelligence_load_flight_checkpoint(const char *path,
                                                 char *err,
                                                 size_t err_size);

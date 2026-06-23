@@ -13,11 +13,38 @@
 void on_player_join(uint8_t player_id);
 void on_player_leave(uint8_t player_id);
 
-/* Local input prediction history used to replay after server correction. */
+/* Local prediction/reconciliation contract
+ *
+ * Multiplayer flight prediction is enabled only after the server proves the
+ * tick-addressed input protocol by acknowledging an applied input tick. Until
+ * then, snapshots are plain server authority.
+ *
+ * Once enabled, the client owns only the local player's movement controls
+ * inside the predicted window: thrust, reverse thrust, boost, mining/tractor
+ * holds, steering input, and the heading those inputs integrate. Prediction
+ * frames are keyed by target server tick and replayed from the newest
+ * authoritative baseline. Stale snapshots must not blend angle/steering over
+ * active local turn prediction; they can only prune or rebase replay history.
+ *
+ * The server remains authoritative for docked/undocked state, launch
+ * acceptance, position/velocity outside the replayable window, large tick
+ * skew, damage/cargo/economy state, beams/scans/tractor visuals, and every
+ * one-shot action result. When the server reports a docked state, an
+ * accepted launch, an initial local state, or a correction too far ahead of
+ * replay, the client accepts that baseline and resets or prunes prediction.
+ *
+ * Reconnects and local slot changes start a new input stream: pending actions,
+ * input sequence/ack tracking, replay frames, tick anchors, action queues, and
+ * motion telemetry are cleared. Fresh low sequence numbers after reconnect
+ * must be accepted instead of compared against the previous stream.
+ */
 bool net_local_prediction_enabled(void);
 float net_prediction_latency_blend(void);
 void net_replay_reset(void);
 void net_replay_record_prediction(const input_intent_t *intent, float dt);
+uint32_t net_estimated_server_tick_now(uint32_t server_tick);
+void net_observe_server_tick(uint32_t server_tick);
+void net_anchor_prediction_tick(uint32_t server_tick, bool clear_replay);
 
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);
@@ -56,7 +83,10 @@ void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot);
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count);
 void apply_remote_events(const sim_event_t *events, int count);
 void begin_player_state_batch(void);
-void net_record_input_ack(uint16_t input_seq_ack);
+void net_record_input_ack(uint16_t input_seq_ack,
+                          uint32_t server_tick,
+                          uint32_t input_tick_ack);
+void net_reset_local_input_stream(void);
 bool net_remote_player_scanned(int player_id);
 void net_update_remote_player_scans(const NetPlayerState *players);
 void apply_remote_player_state(const NetPlayerState* state);

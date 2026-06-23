@@ -22,6 +22,13 @@ type CanvasStats = {
   avgLuma: number;
 };
 
+type TouchControlRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type NetMotionSnapshot = {
   samples: number;
   deferredSamples: number;
@@ -39,6 +46,9 @@ type NetMotionSnapshot = {
   playerIntervalMs: number;
   maxPlayerIntervalMs: number;
   maxPlayerJitterMs: number;
+  rawPlayerIntervalMs: number;
+  maxRawPlayerIntervalMs: number;
+  maxRawPlayerJitterMs: number;
   maxAckRttMs: number;
   currentRenderOffset: number;
   maxRenderOffset: number;
@@ -48,6 +58,8 @@ type NetMotionSnapshot = {
   inputAcks: number;
   tickSkew: number;
   maxTickSkewAbs: number;
+  inputApplyErrorTicks: number;
+  maxInputApplyErrorAbs: number;
   replayDepth: number;
   unackedInputs: number;
   actionQueueDepth: number;
@@ -64,6 +76,7 @@ type PlayerStateSnapshot = {
   y: number;
   vx: number;
   vy: number;
+  angle: number;
   docked: number;
 };
 
@@ -228,103 +241,85 @@ async function waitForRuntime(page: Page): Promise<void> {
   );
 }
 
-async function signalStrength(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
+async function wasmNumber(page: Page, name: string): Promise<number | null> {
+  return page.evaluate((fnName) => {
     const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+        [key: string]: unknown;
+      };
     }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const value = mod.ccall('get_signal_strength', 'number', [], []);
-    return Number.isFinite(value) ? value : null;
-  });
+    if (!mod) return null;
+    try {
+      const direct = mod[`_${fnName}`];
+      const value = typeof direct === 'function'
+        ? (direct as () => number)()
+        : typeof mod.ccall === 'function'
+          ? mod.ccall(fnName, 'number', [], [])
+          : null;
+      return Number.isFinite(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }, name);
+}
+
+async function signalStrength(page: Page): Promise<number | null> {
+  return wasmNumber(page, 'get_signal_strength');
 }
 
 async function signalVisualSaturation(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const value = mod.ccall('get_signal_visual_saturation', 'number', [], []);
-    return Number.isFinite(value) ? value : null;
-  });
+  return wasmNumber(page, 'get_signal_visual_saturation');
 }
 
 async function signalVisualBaseSaturation(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const value = mod.ccall('get_signal_visual_base_saturation', 'number', [], []);
-    return Number.isFinite(value) ? value : null;
-  });
+  return wasmNumber(page, 'get_signal_visual_base_saturation');
 }
 
 async function signalVisualCueSaturation(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const value = mod.ccall('get_signal_visual_cue_saturation', 'number', [], []);
-    return Number.isFinite(value) ? value : null;
-  });
+  return wasmNumber(page, 'get_signal_visual_cue_saturation');
 }
 
 async function signalVisualPlayerSaturation(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const value = mod.ccall('get_signal_visual_player_saturation', 'number', [], []);
-    return Number.isFinite(value) ? value : null;
-  });
+  return wasmNumber(page, 'get_signal_visual_player_saturation');
 }
 
 async function playerCameraSnapshot(page: Page): Promise<PlayerCameraSnapshot | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const offsetX = mod.ccall('get_player_camera_offset_x', 'number', [], []);
-    const offsetY = mod.ccall('get_player_camera_offset_y', 'number', [], []);
-    const narrowFocus = mod.ccall('get_camera_narrow_focus', 'number', [], []);
+  const [offsetX, offsetY, narrowFocus] = await Promise.all([
+    wasmNumber(page, 'get_player_camera_offset_x'),
+    wasmNumber(page, 'get_player_camera_offset_y'),
+    wasmNumber(page, 'get_camera_narrow_focus'),
+  ]);
     if (![offsetX, offsetY, narrowFocus].every(Number.isFinite)) return null;
-    return { offsetX, offsetY, narrowFocus };
-  });
+  return { offsetX: offsetX!, offsetY: offsetY!, narrowFocus: narrowFocus! };
 }
 
 async function playerStateSnapshot(page: Page): Promise<PlayerStateSnapshot | null> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return null;
-    const x = mod.ccall('get_player_pos_x', 'number', [], []);
-    const y = mod.ccall('get_player_pos_y', 'number', [], []);
-    const vx = mod.ccall('get_player_vel_x', 'number', [], []);
-    const vy = mod.ccall('get_player_vel_y', 'number', [], []);
-    const docked = mod.ccall('get_player_docked', 'number', [], []);
-    if (![x, y, vx, vy, docked].every(Number.isFinite)) return null;
-    return { x, y, vx, vy, docked };
-  });
+  const [x, y, vx, vy, angle, docked] = await Promise.all([
+    wasmNumber(page, 'get_player_pos_x'),
+    wasmNumber(page, 'get_player_pos_y'),
+    wasmNumber(page, 'get_player_vel_x'),
+    wasmNumber(page, 'get_player_vel_y'),
+    wasmNumber(page, 'get_player_angle'),
+    wasmNumber(page, 'get_player_docked'),
+  ]);
+  if (![x, y, vx, vy, angle, docked].every(Number.isFinite)) return null;
+  return { x: x!, y: y!, vx: vx!, vy: vy!, angle: angle!, docked: docked! };
 }
 
 function playerDistance(a: PlayerStateSnapshot, b: PlayerStateSnapshot): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
+function playerAngleDistance(a: number, b: number): number {
+  let delta = b - a;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return Math.abs(delta);
+}
+
 async function heldControlMask(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const mod = (window as unknown as {
-      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
-    }).Module;
-    if (!mod || typeof mod.ccall !== 'function') return -1;
-    return mod.ccall('signal_debug_held_control_mask', 'number', [], []) | 0;
-  });
+  return ((await wasmNumber(page, 'signal_debug_held_control_mask')) ?? -1) | 0;
 }
 
 async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
@@ -332,7 +327,7 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
     const mod = (window as unknown as {
       Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
     }).Module;
-    if (!mod || typeof mod.ccall !== 'function') {
+    if (!mod) {
       return {
         samples: 0,
         deferredSamples: 0,
@@ -350,6 +345,9 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
         playerIntervalMs: 0,
         maxPlayerIntervalMs: 0,
         maxPlayerJitterMs: 0,
+        rawPlayerIntervalMs: 0,
+        maxRawPlayerIntervalMs: 0,
+        maxRawPlayerJitterMs: 0,
         maxAckRttMs: 0,
         currentRenderOffset: 0,
         maxRenderOffset: 0,
@@ -359,6 +357,8 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
         inputAcks: 0,
         tickSkew: 0,
         maxTickSkewAbs: 0,
+        inputApplyErrorTicks: 0,
+        maxInputApplyErrorAbs: 0,
         replayDepth: 0,
         unackedInputs: 0,
         actionQueueDepth: 0,
@@ -366,8 +366,17 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
     }
 
     const read = (name: string) => {
-      const value = mod.ccall!(name, 'number', [], []);
-      return Number.isFinite(value) ? value : 0;
+      try {
+        const direct = (mod as Record<string, unknown>)[`_${name}`];
+        const value = typeof direct === 'function'
+          ? (direct as () => number)()
+          : typeof mod.ccall === 'function'
+            ? mod.ccall(name, 'number', [], [])
+            : 0;
+        return Number.isFinite(value) ? value : 0;
+      } catch {
+        return 0;
+      }
     };
 
     return {
@@ -387,6 +396,9 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
       playerIntervalMs: read('get_net_motion_player_interval_ms'),
       maxPlayerIntervalMs: read('get_net_motion_max_player_interval_ms'),
       maxPlayerJitterMs: read('get_net_motion_max_player_jitter_ms'),
+      rawPlayerIntervalMs: read('get_net_motion_raw_player_interval_ms'),
+      maxRawPlayerIntervalMs: read('get_net_motion_max_raw_player_interval_ms'),
+      maxRawPlayerJitterMs: read('get_net_motion_max_raw_player_jitter_ms'),
       maxAckRttMs: read('get_net_motion_max_ack_rtt_ms'),
       currentRenderOffset: read('get_net_motion_current_render_offset'),
       maxRenderOffset: read('get_net_motion_max_render_offset'),
@@ -396,10 +408,28 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
       inputAcks: read('get_net_motion_total_input_acks'),
       tickSkew: read('get_net_motion_tick_skew'),
       maxTickSkewAbs: read('get_net_motion_max_tick_skew_abs'),
+      inputApplyErrorTicks: read('get_net_motion_input_apply_error_ticks'),
+      maxInputApplyErrorAbs: read('get_net_motion_max_input_apply_error_abs'),
       replayDepth: read('get_net_motion_replay_depth'),
       unackedInputs: read('get_net_motion_unacked_inputs'),
       actionQueueDepth: read('get_net_motion_action_queue_depth'),
     };
+  });
+}
+
+async function resetNetMotionTelemetry(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+        _reset_net_motion_telemetry?: () => number;
+      };
+    }).Module;
+    if (mod && typeof mod._reset_net_motion_telemetry === 'function') {
+      mod._reset_net_motion_telemetry();
+    } else if (mod && typeof mod.ccall === 'function') {
+      mod.ccall('reset_net_motion_telemetry', 'number', [], []);
+    }
   });
 }
 
@@ -550,6 +580,40 @@ async function expectTouchControlsFit(page: Page): Promise<void> {
     return issues;
   });
   expect(problems).toEqual([]);
+}
+
+async function touchControlRects(page: Page, controlNames: string[]): Promise<Record<string, TouchControlRect>> {
+  return page.evaluate((names) => {
+    const rects: Record<string, TouchControlRect> = {};
+    for (const name of names) {
+      const el = document.querySelector<HTMLElement>(`[data-control="${name}"]`);
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || rect.width <= 0 || rect.height <= 0) continue;
+      rects[name] = {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      };
+    }
+    return rects;
+  }, controlNames);
+}
+
+function expectTouchControlsKeepSlots(
+  before: Record<string, TouchControlRect>,
+  after: Record<string, TouchControlRect>,
+  controlNames: string[],
+): void {
+  for (const name of controlNames) {
+    expect(before[name], `${name} should have an initial slot`).toBeTruthy();
+    expect(after[name], `${name} should keep a later slot`).toBeTruthy();
+    for (const key of ['x', 'y', 'width', 'height'] as const) {
+      expect(Math.abs(before[name][key] - after[name][key]), `${name} ${key} shifted`).toBeLessThanOrEqual(1.5);
+    }
+  }
 }
 
 async function setSmokeLoopState(page: Page, state: number): Promise<void> {
@@ -770,7 +834,7 @@ test.describe('Browser smoke tests', () => {
       !process.env.SMOKE_LIVE_RELAY_ASSERT,
       'set SMOKE_LIVE_RELAY_ASSERT=1 to require live relay input acks',
     );
-    test.setTimeout(45_000);
+    test.setTimeout(60_000);
 
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
@@ -803,6 +867,10 @@ test.describe('Browser smoke tests', () => {
       Math.abs(cameraAfterLaunch!.offsetY),
     )).toBeLessThan(140);
 
+    const launchMotion = await netMotionSnapshot(page);
+    expect(launchMotion.maxAppliedCorrection).toBeLessThan(80);
+
+    await resetNetMotionTelemetry(page);
     const acksBefore = (await netMotionSnapshot(page)).inputAcks;
     await page.keyboard.down('W');
     try {
@@ -831,6 +899,105 @@ test.describe('Browser smoke tests', () => {
     expect(motion.samples).toBeGreaterThan(0);
     expect(motion.unackedInputs).toBeLessThan(16);
     expect(motion.actionQueueDepth).toBe(0);
+    expect(motion.maxAppliedCorrection).toBeLessThan(40);
+
+    await resetNetMotionTelemetry(page);
+    const turnAcksBefore = (await netMotionSnapshot(page)).inputAcks;
+    const angleBeforeTurn = (await playerStateSnapshot(page))?.angle;
+    expect(angleBeforeTurn).toBeDefined();
+    await page.keyboard.down('A');
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 3_000,
+          message: 'A should register as a held flight control',
+        })
+        .toBe(1 << 2);
+      await page.waitForTimeout(1_000);
+    } finally {
+      await page.keyboard.up('A');
+    }
+    const stateAfterTurn = await playerStateSnapshot(page);
+    expect(stateAfterTurn).toBeTruthy();
+    expect(playerAngleDistance(angleBeforeTurn!, stateAfterTurn!.angle)).toBeGreaterThan(0.08);
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 10_000,
+        message: 'held left turn should receive authoritative acks',
+      })
+      .toBeGreaterThan(turnAcksBefore);
+    expect((await netMotionSnapshot(page)).maxAppliedCorrection).toBeLessThan(40);
+
+    await page.reload();
+    const reloadedCanvas = page.locator('canvas');
+    await waitForRenderedGame(page, reloadedCanvas, true);
+    await expect
+      .poll(async () => {
+        const flags = await mobileControlFlags(page);
+        return (flags & mobileFlag.docked) === 0 &&
+          (flags & mobileFlag.canFlight) !== 0;
+      }, {
+        timeout: 10_000,
+        message: 'live reload should preserve flight authority without a correction snap',
+      })
+      .toBeTruthy();
+    const reloadMotion = await netMotionSnapshot(page);
+    expect(reloadMotion.maxAppliedCorrection).toBeLessThan(80);
+
+    const positionAfterReload = await playerStateSnapshot(page);
+    expect(positionAfterReload).toBeTruthy();
+    expect(positionAfterReload!.docked).toBe(0);
+    await resetNetMotionTelemetry(page);
+    const reloadAcksBefore = (await netMotionSnapshot(page)).inputAcks;
+    await page.keyboard.down('W');
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 3_000,
+          message: 'W should register after a live reload',
+        })
+        .toBe(1);
+      await page.waitForTimeout(1_000);
+    } finally {
+      await page.keyboard.up('W');
+    }
+    const positionAfterReloadThrust = await playerStateSnapshot(page);
+    expect(positionAfterReloadThrust).toBeTruthy();
+    expect(playerDistance(positionAfterReload!, positionAfterReloadThrust!)).toBeGreaterThan(12);
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 10_000,
+        message: 'held flight input should keep receiving acks after reload',
+      })
+      .toBeGreaterThan(reloadAcksBefore);
+    expect((await netMotionSnapshot(page)).maxAppliedCorrection).toBeLessThan(40);
+
+    await resetNetMotionTelemetry(page);
+    const reloadTurnAcksBefore = (await netMotionSnapshot(page)).inputAcks;
+    const angleBeforeReloadTurn = (await playerStateSnapshot(page))?.angle;
+    expect(angleBeforeReloadTurn).toBeDefined();
+    await page.keyboard.down('D');
+    try {
+      await expect
+        .poll(async () => heldControlMask(page), {
+          timeout: 3_000,
+          message: 'D should register after a live reload',
+        })
+        .toBe(1 << 3);
+      await page.waitForTimeout(1_000);
+    } finally {
+      await page.keyboard.up('D');
+    }
+    const stateAfterReloadTurn = await playerStateSnapshot(page);
+    expect(stateAfterReloadTurn).toBeTruthy();
+    expect(playerAngleDistance(angleBeforeReloadTurn!, stateAfterReloadTurn!.angle)).toBeGreaterThan(0.08);
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 10_000,
+        message: 'held right turn should keep receiving acks after reload',
+      })
+      .toBeGreaterThan(reloadTurnAcksBefore);
+    expect((await netMotionSnapshot(page)).maxAppliedCorrection).toBeLessThan(40);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
@@ -871,6 +1038,7 @@ test.describe('Browser smoke tests', () => {
 
     const thrust = page.locator('[data-control="thrust"]');
     await expect(thrust).toBeVisible();
+    await expect(thrust).toBeEnabled();
     const box = await thrust.boundingBox();
     expect(box).toBeTruthy();
     await page.mouse.move(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
@@ -915,6 +1083,7 @@ test.describe('Browser smoke tests', () => {
 
     const thrust = page.locator('[data-control="thrust"]');
     await expect(thrust).toBeVisible();
+    await expect(thrust).toBeEnabled();
     const box = await thrust.boundingBox();
     expect(box).toBeTruthy();
 
@@ -1181,28 +1350,38 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
-  rootBundleSmokeTest('touch controls expose only contextual mobile actions', async ({ page }) => {
+  rootBundleSmokeTest('touch controls keep stable slots while enabling contextual mobile actions', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 390, height: 760 });
     await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
     await waitForRenderedGame(page, page.locator('canvas'), false);
     const touchScriptSrc = await page.locator('script[src*="signal-touch-controls.js"]').getAttribute('src');
     expect(touchScriptSrc).toMatch(/[?&]v=/);
+    const primaryControls = ['use', 'fire', 'thrust', 'tractor', 'brake', 'scan', 'auto', 'plan', 'cycle', 'boost', 'left', 'right'];
+    const stationControls = ['tab', 'page', 'sell', 'repair', 'laser', 'cargo', 'tractorUpgrade', 'one', 'two', 'three', 'four', 'five'];
 
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.docked, { timeout: 5_000 })
       .toBe(mobileFlag.docked);
     await expect(page.locator('[data-control="use"]')).toHaveText('Launch');
-    await expect(page.locator('[data-control="left"]')).toBeHidden();
-    await expect(page.locator('[data-control="thrust"]')).toBeHidden();
+    await expect(page.locator('[data-control="left"]')).toBeVisible();
+    await expect(page.locator('[data-control="left"]')).toBeDisabled();
+    await expect(page.locator('[data-control="thrust"]')).toBeVisible();
+    await expect(page.locator('[data-control="thrust"]')).toBeDisabled();
     await expect(page.locator('[data-control="tab"]')).toBeVisible();
     await expect(page.locator('[data-control="tab"]')).toHaveText('Panel');
+    await expect(page.locator('[data-control="page"]')).toBeVisible();
+    await expect(page.locator('[data-control="page"]')).toBeDisabled();
     await expect.poll(async () => stationPanelLabel(page)).toBe('SHIP');
     await expect.poll(async () => stationPanelLegend(page)).toBe('[R] repair  [M/C/T] refit  [TAB] panel');
+    const dockedPrimarySlots = await touchControlRects(page, primaryControls);
+    const shipStationSlots = await touchControlRects(page, stationControls);
+    await expectTouchControlsFit(page);
 
     await tap(page, 'Tab');
     await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
     await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] trade  [F] page  [S] sell all  [TAB] panel');
+    expectTouchControlsKeepSlots(shipStationSlots, await touchControlRects(page, stationControls), stationControls);
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationTrade)
       .toBe(mobileFlag.stationTrade);
@@ -1215,6 +1394,8 @@ test.describe('Browser smoke tests', () => {
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.canDigits)
       .toBe(mobileFlag.canDigits);
+    await expect(page.locator('[data-control="page"]')).toBeEnabled();
+    await expect(page.locator('[data-control="sell"]')).toBeEnabled();
     const tradeSlots = await stationPanelDigitSlots(page);
     expect(tradeSlots).toBeGreaterThanOrEqual(0);
     expect(tradeSlots).toBeLessThanOrEqual(5);
@@ -1246,7 +1427,9 @@ test.describe('Browser smoke tests', () => {
     await expect(page.locator('[data-control="boost"]')).toBeVisible();
     await expect(page.locator('[data-control="thrust"]')).toBeVisible();
     await expect(page.locator('[data-control="brake"]')).toBeVisible();
+    await expect(page.locator('[data-control="thrust"]')).toBeEnabled();
     await expect(page.locator('[data-control="tab"]')).toBeHidden();
+    expectTouchControlsKeepSlots(dockedPrimarySlots, await touchControlRects(page, primaryControls), primaryControls);
     await expectTouchControlsFit(page);
 
     await page.locator('[data-control="plan"]').click();
@@ -1255,7 +1438,9 @@ test.describe('Browser smoke tests', () => {
       .toBe(mobileFlag.planActive);
     await expect(page.locator('[data-control="plan"]')).toHaveText('Exit');
     await expect(page.locator('[data-control="cycle"]')).toBeVisible();
-    await expect(page.locator('[data-control="fire"]')).toBeHidden();
+    await expect(page.locator('[data-control="cycle"]')).toBeEnabled();
+    await expect(page.locator('[data-control="fire"]')).toBeVisible();
+    await expect(page.locator('[data-control="fire"]')).toBeDisabled();
     await expectTouchControlsFit(page);
 
     await page.setViewportSize({ width: 844, height: 390 });

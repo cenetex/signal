@@ -107,6 +107,16 @@ static inline int serialize_action_result(uint8_t *buf, uint16_t action_id,
     return NET_ACTION_RESULT_SIZE;
 }
 
+static inline int serialize_input_applied(uint8_t *buf, uint16_t input_seq,
+                                          uint32_t server_tick,
+                                          uint32_t input_tick_ack) {
+    buf[0] = NET_MSG_INPUT_APPLIED;
+    write_u16_le(&buf[1], input_seq);
+    write_u32_le(&buf[3], server_tick);
+    write_u32_le(&buf[7], input_tick_ack);
+    return NET_INPUT_APPLIED_SIZE;
+}
+
 static inline int serialize_cargo_receipt_bundle(
     uint8_t *buf,
     const cargo_receipt_chain_t *chain) {
@@ -313,7 +323,13 @@ static inline int serialize_protocol_info(uint8_t *buf,
     ADD_PROTOCOL_STREAM(NET_MSG_INPUT, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_CLIENT_TO_SERVER |
                         PROTOCOL_STREAM_FLAG_FIXED_SIZE,
-                        NET_INPUT_MSG_SIZE, 0, 1, sim_tick_ms);
+                        NET_INPUT_MSG_SIZE, 0, 1,
+                        NET_INPUT_ACTIVE_HEARTBEAT_MS);
+    ADD_PROTOCOL_STREAM(NET_MSG_INPUT_APPLIED, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_INPUT_APPLIED_SIZE, 0, 1, sim_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_STATION_IDENTITY, PROTOCOL_STREAM_CLASS_STATIC,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY |

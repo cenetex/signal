@@ -24,6 +24,7 @@
 #include "sim_ai.h"
 #include "sim_asteroid.h"
 #include "sim_physics.h"
+#include "station_util.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_ACTION_COUNT 9
@@ -508,6 +509,52 @@ static void sr_reset_player(world_t *w, server_player_t *sp)
     memset(&sp->input, 0, sizeof(sp->input));
 }
 
+static int sr_first_station_module(const station_t *st, module_type_t type)
+{
+    if (!st) return -1;
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+        const station_module_t *module = &st->modules[i];
+        if (!module->scaffold && module->type == type)
+            return i;
+    }
+    return -1;
+}
+
+static int sr_spawn_station_market_pod(world_t *w,
+                                       int station_idx,
+                                       commodity_t commodity,
+                                       uint16_t count,
+                                       const uint8_t origin[8])
+{
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        commodity >= COMMODITY_COUNT || count == 0 ||
+        count > CARGO_POD_MANIFEST_CAP) {
+        return -1;
+    }
+
+    station_t *st = &w->stations[station_idx];
+    int dock_idx = sr_first_station_module(st, MODULE_DOCK);
+    if (dock_idx < 0) return -1;
+
+    cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
+    memset(units, 0, sizeof(units));
+    for (uint16_t i = 0; i < count; i++) {
+        if (!hash_legacy_migrate_unit(origin, commodity, i, &units[i]))
+            return -1;
+    }
+
+    vec2 pos = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    int pod_idx = spawn_cargo_pod_with_manifest_deterministic(
+        w, pos, v2(0.0f, 0.0f), commodity, units, count,
+        CARGO_POD_CARGO, 0.0f, 0.0f);
+    if (pod_idx < 0) return -1;
+    w->cargo_pods[pod_idx].towed_by = -1;
+    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
+                                 station_idx, dock_idx);
+    return pod_idx;
+}
+
 static bool sr_setup_world(const sr_config_t *config,
                            world_t *w,
                            server_player_t **out_sp,
@@ -568,10 +615,15 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
     case SR_PROVENANCE_SCRIPT_BUY_SELL: {
         const int station_index = 1; /* Kepler: seeded frame producer. */
         station_t *st;
+        const uint8_t origin[8] = { 'R','E','P','L','A','Y','0','1' };
         if (station_index >= w->station_count) return false;
         st = &w->stations[station_index];
         if (!station_manifest_bootstrap(st)) return false;
         if (station_finished_mint(st, COMMODITY_FRAME, 4, NULL) < 4) {
+            return false;
+        }
+        if (sr_spawn_station_market_pod(
+                w, station_index, COMMODITY_FRAME, 1, origin) < 0) {
             return false;
         }
         ledger_earn_by_pubkey(st, sp->pubkey, 10000.0f);
@@ -597,14 +649,17 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         return true;
     }
     case SR_PROVENANCE_SCRIPT_POD_TOW_SELL: {
-        const int station_index = 0;
+        const int station_index = 1; /* Kepler consumes ferrite ingots. */
+        const commodity_t pod_commodity = COMMODITY_FERRITE_INGOT;
         station_t *st;
         int pod_idx;
+        cargo_unit_t units[7];
+        const uint8_t origin[8] = { 'R','E','P','L','A','Y','0','2' };
         if (station_index >= w->station_count) return false;
         st = &w->stations[station_index];
         memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
-        if (st->base_price[COMMODITY_FERRITE_ORE] <= FLOAT_EPSILON) {
-            st->base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+        if (st->base_price[pod_commodity] <= FLOAT_EPSILON) {
+            st->base_price[pod_commodity] = 10.0f;
         }
 
         sp->docked = false;
@@ -613,16 +668,21 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         sp->in_dock_range = false;
         sp->docking_approach = false;
         sp->dock_berth = 0;
-        sp->ship.pos = v2_add(st->pos, v2(220.0f, 0.0f));
+        sp->ship.pos = v2_add(st->pos, v2(800.0f, 0.0f));
         sp->ship.vel = v2(0.0f, 0.0f);
         sp->ship.angle = PI_F;
 
-        pod_idx = spawn_cargo_pod(w,
-                                  v2_add(sp->ship.pos, v2(28.0f, 0.0f)),
-                                  v2(0.0f, 0.0f),
-                                  COMMODITY_FERRITE_ORE,
-                                  7,
-                                  CARGO_POD_CARGO);
+        memset(units, 0, sizeof(units));
+        for (uint16_t i = 0; i < 7; i++) {
+            if (!hash_legacy_migrate_unit(origin, pod_commodity,
+                                          i, &units[i])) {
+                return false;
+            }
+        }
+        pod_idx = spawn_cargo_pod_with_manifest_deterministic(
+            w, v2_add(sp->ship.pos, v2(28.0f, 0.0f)),
+            v2(0.0f, 0.0f), pod_commodity,
+            units, 7, CARGO_POD_CARGO, 0.0f, 0.0f);
         return pod_idx >= 0;
     }
     case SR_PROVENANCE_SCRIPT_MINE_FRACTURE: {
@@ -1517,36 +1577,53 @@ static bool sr_run_provenance_script(const sr_config_t *config,
 
     switch (config->provenance_script) {
     case SR_PROVENANCE_SCRIPT_BUY_SELL: {
-        uint16_t start_station_manifest = w->stations[sp->current_station].manifest.count;
-        uint16_t start_ship_manifest = sp->ship.manifest.count;
+        int buy_before = counts->buy_events;
+        int sell_before = counts->sell_events;
+        int start_towed_pods = sp->ship.towed_pod_count;
+        int pod_idx = -1;
 
         sp->input.buy_product = true;
         sp->input.buy_commodity = COMMODITY_FRAME;
         sp->input.buy_grade = MINING_GRADE_COMMON;
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
-        if (counts->buy_events <= 0 ||
-            sp->ship.manifest.count <= start_ship_manifest ||
-            w->stations[sp->current_station].manifest.count >= start_station_manifest) {
+        if (counts->buy_events <= buy_before ||
+            sp->ship.towed_pod_count <= start_towed_pods) {
+            return false;
+        }
+        pod_idx = sp->ship.towed_pods[start_towed_pods];
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+            !w->cargo_pods[pod_idx].active ||
+            w->cargo_pods[pod_idx].towed_by != (int8_t)sp->id ||
+            w->cargo_pods[pod_idx].commodity != COMMODITY_FRAME ||
+            w->cargo_pods[pod_idx].manifest_count == 0) {
             return false;
         }
 
-        sp->input.service_sell = true;
-        sp->input.service_sell_only = COMMODITY_FRAME;
-        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        int hopper_idx = station_find_hopper_for(
+            &w->stations[sp->current_station], COMMODITY_FRAME);
+        if (hopper_idx < 0) return false;
+        w->cargo_pods[pod_idx].pos = module_world_pos_ring(
+            &w->stations[sp->current_station],
+            w->stations[sp->current_station].modules[hopper_idx].ring,
+            w->stations[sp->current_station].modules[hopper_idx].slot);
+        w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
-        if (counts->sell_events <= 0 ||
-            sp->ship.manifest.count != start_ship_manifest) {
+        if (counts->sell_events <= sell_before ||
+            sp->ship.towed_pod_count != start_towed_pods ||
+            !w->cargo_pods[pod_idx].active ||
+            w->cargo_pods[pod_idx].towed_by != -1) {
             return false;
         }
         return true;
     }
     case SR_PROVENANCE_SCRIPT_POD_TOW_SELL: {
         int pickup_before = counts->pickup_events;
-        int dock_before = counts->dock_events;
         int sell_before = counts->sell_events;
         int station_index = sp->current_station;
+        const commodity_t pod_commodity = COMMODITY_FERRITE_INGOT;
+        int pod_idx = -1;
 
         sp->input.tractor_hold = true;
         world_sim_step(w, SIM_DT);
@@ -1556,33 +1633,29 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             return false;
         }
 
-        sp->input.tractor_hold = true;
-        sp->input.dock = true;
-        world_sim_step(w, SIM_DT);
-        sr_accumulate_events(w, counts, event_hash);
-
-        for (int i = 0; i < 240 && !sp->docked; i++) {
-            sp->input.tractor_hold = true;
-            world_sim_step(w, SIM_DT);
-            sr_accumulate_events(w, counts, event_hash);
-        }
-        if (!sp->docked || sp->current_station != station_index ||
-            counts->dock_events <= dock_before ||
-            sp->ship.towed_pod_count <= 0) {
+        pod_idx = sp->ship.towed_pods[0];
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+            !w->cargo_pods[pod_idx].active ||
+            w->cargo_pods[pod_idx].towed_by != (int8_t)sp->id) {
             return false;
         }
-
-        sp->input.service_sell = true;
-        sp->input.service_sell_only = COMMODITY_COUNT;
-        sp->input.service_sell_grade = MINING_GRADE_COUNT;
-        world_sim_step(w, SIM_DT);
+        int hopper_idx = station_find_hopper_for(
+            &w->stations[station_index], pod_commodity);
+        if (hopper_idx < 0) return false;
+        w->cargo_pods[pod_idx].pos = module_world_pos_ring(
+            &w->stations[station_index],
+            w->stations[station_index].modules[hopper_idx].ring,
+            w->stations[station_index].modules[hopper_idx].slot);
+        w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+        w->events.count = 0;
+        step_station_cargo_pod_tractors(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
         if (counts->sell_events <= sell_before ||
-            sp->ship.towed_pod_count != 0) {
+            sp->ship.towed_pod_count != 0 ||
+            !w->cargo_pods[pod_idx].active ||
+            w->cargo_pods[pod_idx].towed_by != -1 ||
+            !cargo_pod_has_module_tractor(&w->cargo_pods[pod_idx])) {
             return false;
-        }
-        for (int i = 0; i < MAX_CARGO_PODS; i++) {
-            if (w->cargo_pods[i].active) return false;
         }
         return true;
     }

@@ -402,7 +402,6 @@ static uint64_t last_player_state_emit = 0;
 /* Timing intervals in milliseconds */
 #define SIM_TICK_MS   8     /* ~120 Hz poll gate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
-#define PLAYER_ACK_FLUSH_MIN_MS 25 /* active-input ack flush cap (~40 Hz) */
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
@@ -601,6 +600,16 @@ static void send_action_result(struct mg_connection *c, uint16_t action_id,
     uint8_t buf[NET_ACTION_RESULT_SIZE];
     int len = serialize_action_result(buf, action_id, input_seq, status,
                                       action, server_tick);
+    ws_send(c, buf, (size_t)len);
+}
+
+static void send_input_applied(struct mg_connection *c, uint16_t input_seq,
+                               uint32_t server_tick,
+                               uint32_t input_tick_ack) {
+    if (!c || input_seq == 0) return;
+    uint8_t buf[NET_INPUT_APPLIED_SIZE];
+    int len = serialize_input_applied(buf, input_seq, server_tick,
+                                      input_tick_ack);
     ws_send(c, buf, (size_t)len);
 }
 
@@ -2854,6 +2863,7 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_LATENCY_PING: return "LATENCY_PING";
     case NET_MSG_LATENCY_PONG: return "LATENCY_PONG";
     case NET_MSG_CLIENT_METRICS: return "CLIENT_METRICS";
+    case NET_MSG_INPUT_APPLIED: return "INPUT_APPLIED";
     case NET_MSG_STATION_IDENTITY: return "STATION_IDENTITY";
     case NET_MSG_STATION_DIAG: return "STATION_DIAG";
     case NET_MSG_WORLD_PLAYERS: return "WORLD_PLAYERS";
@@ -3179,6 +3189,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"frontier_virtual_supply_deliveries\":%u,"
                        "\"server_bot_brain_mode\":\"%s\","
                        "\"server_intelligence_backend\":\"%s\","
+                       "\"server_intelligence_flight_builtin\":%s,"
+                       "\"server_intelligence_flight_feature_set\":\"%s\","
+                       "\"server_intelligence_flight_encoder_version\":%u,"
+                       "\"server_intelligence_flight_checkpoint_hash\":\"%s\","
                        "\"server_brain_loaded\":%s,"
                        "\"server_brain_inferences\":%llu,"
                        "\"server_contract_brain_loaded\":%s,"
@@ -3205,6 +3219,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        world.frontier_virtual_supply_deliveries,
                        server_bot_brain_mode_name,
                        signal_intelligence_backend_name(),
+                       signal_intelligence_flight_builtin_available() ? "true" : "false",
+                       signal_intelligence_flight_feature_set(),
+                       (unsigned)signal_intelligence_flight_feature_encoder_version(),
+                       signal_intelligence_flight_checkpoint_hash(),
                        signal_intelligence_flight_loaded() ? "true" : "false",
                        (unsigned long long)signal_intelligence_flight_inference_count(),
                        signal_intelligence_contract_loaded() ? "true" : "false",
@@ -3798,13 +3816,28 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         server_bot_npc_worker_brain_checkpoint =
             getenv("SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT");
         if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
-            (!server_bot_brain_checkpoint || server_bot_brain_checkpoint[0] == '\0')) {
+            (!server_bot_brain_checkpoint || server_bot_brain_checkpoint[0] == '\0') &&
+            !signal_intelligence_flight_builtin_available()) {
             fprintf(stderr, "[FATAL] SIGNAL_BOT_BRAIN_MODE=neural requires "
-                            "SIGNAL_BOT_BRAIN_CHECKPOINT\n");
+                            "SIGNAL_BOT_BRAIN_CHECKPOINT or a linked "
+                            "CRLPLRIMES static flight bundle\n");
             return false;
         }
         if (server_bot_player_target > 0) {
             printf("[server] Server bot brain mode: %s\n", server_bot_brain_mode_name);
+            if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
+                if (server_bot_brain_checkpoint &&
+                    server_bot_brain_checkpoint[0] != '\0') {
+                    printf("[server] Server bot flight brain checkpoint: %s\n",
+                           server_bot_brain_checkpoint);
+                } else if (signal_intelligence_flight_builtin_available()) {
+                    printf("[server] Server bot flight brain: built-in CRLPLRIMES "
+                           "%s encoder=%u hash=%.12s\n",
+                           signal_intelligence_flight_feature_set(),
+                           (unsigned)signal_intelligence_flight_feature_encoder_version(),
+                           signal_intelligence_flight_checkpoint_hash());
+                }
+            }
             if (server_bot_contract_brain_checkpoint &&
                 server_bot_contract_brain_checkpoint[0] != '\0') {
                 printf("[server] Server bot contract brain checkpoint: %s\n",
@@ -4204,7 +4237,7 @@ static void mark_station_identity_dirty_for_hull_inventory_changes(void) {
 /* Run as many fixed-step sim ticks as `sim_accum` covers, up to
  * MAX_SIM_STEPS, broadcasting per-event side effects after each tick.
  * Caller passes the running accumulator + the elapsed-since-last-call
- * seconds. Returns true if it emitted an input-ack player-state flush. */
+ * seconds. Returns true if it emitted an immediate player-state flush. */
 static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
     uint16_t input_ack_before[MAX_PLAYERS];
     for (int i = 0; i < MAX_PLAYERS; i++)
@@ -4212,7 +4245,7 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
 
     *sim_accum += elapsed;
     int steps = 0;
-    bool input_ack_changed = false;
+    (void)now;
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
         mark_station_identity_dirty_for_hull_inventory_changes();
@@ -4221,7 +4254,8 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
             if (!server_player_is_gameplay_ready(sp)) continue;
             if (sp->last_input_seq != 0 &&
                 sp->last_input_seq != input_ack_before[p]) {
-                input_ack_changed = true;
+                send_input_applied(sp->conn, sp->last_input_seq,
+                                   world.tick, sp->last_input_tick);
                 input_ack_before[p] = sp->last_input_seq;
             }
         }
@@ -4238,13 +4272,6 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
         steps++;
     }
     if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
-    if (input_ack_changed &&
-        (last_player_state_emit == 0 ||
-         now - last_player_state_emit >= PLAYER_ACK_FLUSH_MIN_MS)) {
-        broadcast_player_states();
-        last_player_state_emit = now;
-        return true;
-    }
     return false;
 }
 
@@ -4411,15 +4438,27 @@ int main(void) {
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
     signal_intelligence_holographic_init();
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
-        char err[256];
-        if (!signal_intelligence_load_flight_checkpoint(
-                server_bot_brain_checkpoint, err, sizeof(err))) {
-            fprintf(stderr, "[FATAL] failed to load SIGNAL_BOT_BRAIN_CHECKPOINT=%s: %s\n",
-                    server_bot_brain_checkpoint, err);
+        if (server_bot_brain_checkpoint &&
+            server_bot_brain_checkpoint[0] != '\0') {
+            char err[256];
+            if (!signal_intelligence_load_flight_checkpoint(
+                    server_bot_brain_checkpoint, err, sizeof(err))) {
+                fprintf(stderr, "[FATAL] failed to load SIGNAL_BOT_BRAIN_CHECKPOINT=%s: %s\n",
+                        server_bot_brain_checkpoint, err);
+                return 1;
+            }
+            printf("[server] loaded neural bot brain checkpoint: %s\n",
+                   server_bot_brain_checkpoint);
+        } else if (signal_intelligence_flight_builtin_available()) {
+            printf("[server] using built-in CRLPLRIMES flight brain: "
+                   "%s encoder=%u hash=%.12s\n",
+                   signal_intelligence_flight_feature_set(),
+                   (unsigned)signal_intelligence_flight_feature_encoder_version(),
+                   signal_intelligence_flight_checkpoint_hash());
+        } else {
+            fprintf(stderr, "[FATAL] no neural flight backend available\n");
             return 1;
         }
-        printf("[server] loaded neural bot brain checkpoint: %s\n",
-               server_bot_brain_checkpoint);
         if (server_bot_contract_brain_checkpoint &&
             server_bot_contract_brain_checkpoint[0] != '\0') {
             char contract_err[256];

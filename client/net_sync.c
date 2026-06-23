@@ -27,6 +27,7 @@
 #define CARGO_POD_RENDER_CORRECTION_SEC 0.18f
 #define CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
 #define REMOTE_PENDING_RECEIPT_CAP 64
+#define NET_INPUT_JITTER_BUFFER_TICKS 1u
 /* Replay is keyed to server-anchored sim ticks. Movement packets carry the
  * client-predicted target tick, and the server only applies them during the
  * matching world_sim_step(), so snapshots and prediction frames share one
@@ -38,6 +39,8 @@ static bool station_ring_have_snapshot[MAX_STATIONS];
 static cargo_receipt_chain_t remote_pending_receipts[REMOTE_PENDING_RECEIPT_CAP];
 static uint8_t remote_pending_receipt_pub[REMOTE_PENDING_RECEIPT_CAP][32];
 static uint8_t remote_pending_receipt_count;
+
+static void net_replay_clear_frames(void);
 
 bool net_local_prediction_enabled(void) {
     if (!g.net_authority_enabled) return true;
@@ -86,6 +89,51 @@ static bool replay_tick_after(uint32_t a, uint32_t b) {
 
 static bool net_input_seq_after(uint16_t a, uint16_t b) {
     return (int16_t)(a - b) > 0;
+}
+
+static uint32_t net_one_way_latency_ticks(void) {
+    float rtt = g.net_last_ping_rtt > 0.0f
+        ? g.net_last_ping_rtt
+        : g.net_last_ack_rtt;
+    if (rtt <= 0.0f) return 0;
+    uint32_t ticks = (uint32_t)lroundf((rtt * 0.5f) / SIM_DT);
+    if (ticks > NET_INPUT_APPLY_FUTURE_MAX_TICKS)
+        ticks = NET_INPUT_APPLY_FUTURE_MAX_TICKS;
+    return ticks;
+}
+
+void net_observe_server_tick(uint32_t server_tick) {
+    if (server_tick == 0) return;
+    g.net_last_server_tick = server_tick;
+    g.net_last_server_tick_time = g.net_time;
+}
+
+uint32_t net_estimated_server_tick_now(uint32_t server_tick) {
+    if (server_tick == 0) return 0;
+
+    uint32_t tick = server_tick + net_one_way_latency_ticks();
+    if (g.net_last_ping_rtt > 0.0f || g.net_last_ack_rtt > 0.0f)
+        tick += NET_INPUT_JITTER_BUFFER_TICKS;
+
+    if (g.net_last_server_tick == server_tick &&
+        g.net_last_server_tick_time > 0.0f &&
+        g.net_time >= g.net_last_server_tick_time) {
+        uint32_t elapsed_ticks =
+            (uint32_t)floorf((g.net_time - g.net_last_server_tick_time) /
+                             SIM_DT);
+        tick += elapsed_ticks;
+    }
+    return tick;
+}
+
+void net_anchor_prediction_tick(uint32_t server_tick, bool clear_replay) {
+    if (server_tick == 0) return;
+    net_observe_server_tick(server_tick);
+    uint32_t anchor_tick = net_estimated_server_tick_now(server_tick);
+    if (anchor_tick == 0) anchor_tick = server_tick;
+    g.net_prediction_tick = anchor_tick;
+    g.net_prediction_tick_valid = true;
+    if (clear_replay) net_replay_clear_frames();
 }
 
 static bool net_latest_input_unacked(const NetPlayerState *state) {
@@ -204,9 +252,35 @@ static bool net_replay_has_turn_after(uint32_t server_tick) {
     return false;
 }
 
+static bool replay_frame_has_motion(const input_replay_frame_t *frame) {
+    if (!frame) return false;
+    const input_intent_t *intent = &frame->intent;
+    return fabsf(intent->turn) > 0.01f ||
+           fabsf(intent->thrust) > 0.01f ||
+           intent->boost ||
+           intent->reverse_thrust;
+}
+
+static bool net_replay_has_motion_after(uint32_t server_tick) {
+    int first_after = net_replay_first_after(server_tick);
+    if (first_after < 0) return false;
+    for (int i = first_after; i < (int)g.net_replay_count; i++) {
+        if (replay_frame_has_motion(net_replay_frame_at(i))) return true;
+    }
+    return false;
+}
+
 static bool net_local_turn_prediction_active(uint32_t server_tick) {
     return fabsf(LOCAL_PLAYER.input.turn) > 0.01f ||
            net_replay_has_turn_after(server_tick);
+}
+
+static bool net_local_motion_prediction_active(uint32_t server_tick) {
+    return fabsf(LOCAL_PLAYER.input.turn) > 0.01f ||
+           fabsf(LOCAL_PLAYER.input.thrust) > 0.01f ||
+           LOCAL_PLAYER.input.boost ||
+           LOCAL_PLAYER.input.reverse_thrust ||
+           net_replay_has_motion_after(server_tick);
 }
 
 static bool should_defer_stale_unacked_motion(const NetPlayerState *state,
@@ -221,6 +295,17 @@ static bool should_defer_stale_unacked_motion(const NetPlayerState *state,
     return !net_replay_has_frames_after(state->server_tick);
 }
 
+static bool should_defer_active_prediction_motion(const NetPlayerState *state,
+                                                  float dist_sq) {
+    if (!state || !net_local_prediction_enabled() || !net_replay_enabled())
+        return false;
+    if ((state->flags & 4) != 0) return false;
+    float defer_dist = LOCAL_PLAYER_STALE_ACK_DEFER_DIST;
+    if (dist_sq > defer_dist * defer_dist) return false;
+    if (!net_replay_has_frames_after(state->server_tick)) return false;
+    return net_local_motion_prediction_active(state->server_tick);
+}
+
 static void apply_authoritative_local_motion(const NetPlayerState *state,
                                              server_player_t *sp) {
     sp->ship.pos.x = state->x;
@@ -232,6 +317,91 @@ static void apply_authoritative_local_motion(const NetPlayerState *state,
         sp->docked = false;
 }
 
+static void apply_local_player_remote_flags(const NetPlayerState *state,
+                                            server_player_t *sp) {
+    sp->beam_active      = (state->flags & 2) != 0;
+    sp->beam_ineffective = (state->flags & 32) != 0;
+    sp->beam_hit         = (state->flags & 64) != 0;
+    sp->scan_active      = (state->flags & 8) != 0;
+    sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
+    sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
+    sp->ship.tractor_active = (state->flags & 16) != 0;
+    g.server_thrusting = (state->flags & 1) != 0;
+}
+
+static void sync_local_dock_state_from_authority(const NetPlayerState *state,
+                                                 server_player_t *sp) {
+    bool state_docked = (state->flags & 4) != 0;
+    sp->docked = state_docked;
+    sp->docking_approach = false;
+    if (state_docked) {
+        int station = nearest_station_index(sp->ship.pos);
+        if (station >= 0 && station < MAX_STATIONS &&
+            station_exists(&g.world.stations[station])) {
+            sp->current_station = station;
+            sp->nearby_station = station;
+        }
+        sp->in_dock_range = true;
+    } else {
+        sp->in_dock_range = false;
+        sp->nearby_station = -1;
+    }
+}
+
+static void frame_camera_on_authoritative_baseline(const server_player_t *sp) {
+    if (!sp) return;
+    g.camera_pos = sp->ship.pos;
+    g.camera_initialized = true;
+    g.camera_station_index = -1;
+    g.camera_station_side = 0;
+    g.camera_station_v_side = 0;
+    g.camera_drift_timer = 0.0f;
+    g.local_player_render_offset = v2(0.0f, 0.0f);
+}
+
+static void accept_initial_local_player_state(const NetPlayerState *state,
+                                              server_player_t *sp) {
+    bool state_docked = (state->flags & 4) != 0;
+    apply_authoritative_local_motion(state, sp);
+    sync_local_dock_state_from_authority(state, sp);
+    apply_local_player_remote_flags(state, sp);
+
+    net_replay_reset();
+    net_anchor_prediction_tick(state->server_tick, false);
+    g.net_local_state_ready = true;
+    g.was_docked = state_docked;
+    g.action_predict_timer = 0.0f;
+    frame_camera_on_authoritative_baseline(sp);
+}
+
+static void accept_docked_local_player_state(const NetPlayerState *state,
+                                             server_player_t *sp) {
+    vec2 before_pos = sp->ship.pos;
+    apply_authoritative_local_motion(state, sp);
+    sync_local_dock_state_from_authority(state, sp);
+    apply_local_player_remote_flags(state, sp);
+    net_replay_reset();
+    net_anchor_prediction_tick(state->server_tick, false);
+    g.was_docked = true;
+    if (!g.camera_initialized ||
+        v2_dist_sq(before_pos, sp->ship.pos) > 20.0f * 20.0f) {
+        frame_camera_on_authoritative_baseline(sp);
+    } else {
+        g.local_player_render_offset = v2(0.0f, 0.0f);
+    }
+}
+
+static void accept_authoritative_local_launch_state(const NetPlayerState *state,
+                                                    server_player_t *sp) {
+    apply_authoritative_local_motion(state, sp);
+    sync_local_dock_state_from_authority(state, sp);
+    apply_local_player_remote_flags(state, sp);
+    net_replay_reset();
+    net_anchor_prediction_tick(state->server_tick, false);
+    g.action_predict_timer = 0.0f;
+    frame_camera_on_authoritative_baseline(sp);
+}
+
 static bool net_replay_reconcile_local_player(const NetPlayerState *state,
                                               server_player_t *sp,
                                               int *out_replayed) {
@@ -241,19 +411,18 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
     if (server_tick == 0 && !g.net_prediction_tick_valid) return false;
 
     if (!g.net_prediction_tick_valid) {
-        g.net_prediction_tick = server_tick;
-        g.net_prediction_tick_valid = true;
-        net_replay_clear_frames();
+        net_anchor_prediction_tick(server_tick, true);
     }
 
     if ((state->flags & 4) != 0) {
         apply_authoritative_local_motion(state, sp);
-        g.net_prediction_tick = server_tick;
-        net_replay_clear_frames();
+        net_anchor_prediction_tick(server_tick, true);
         return true;
     }
 
     int first_after = net_replay_first_after(server_tick);
+    if (first_after < 0 && replay_tick_after(g.net_prediction_tick, server_tick))
+        return false;
     if (net_replay_missing_prefix(server_tick, first_after)) return false;
 
     sim_events_t saved_events = g.world.events;
@@ -399,9 +568,43 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
     return out;
 }
 
-void reset_remote_dynamic_sync(void) {
+void net_reset_local_input_stream(void) {
+    g.pending_net_action = NET_ACTION_NONE;
+    g.pending_net_buy_grade = MINING_GRADE_COUNT;
+    g.pending_net_place_station = -1;
+    g.pending_net_place_ring = -1;
+    g.pending_net_place_slot = -1;
+    g.action_predict_timer = 0.0f;
+
+    g.net_input_timer = 0.0f;
+    g.net_input_have_last = false;
+    g.net_last_sent_flags = 0;
+    g.net_last_sent_mining_target = 0xFFFFu;
+    g.net_input_seq = 0;
+    g.net_last_server_ack = 0;
+    g.net_last_server_tick = 0;
+    g.net_last_server_tick_time = 0.0f;
     g.net_input_tick_protocol = false;
+    g.net_local_state_ready = false;
+    g.net_last_ack_rtt = 0.0f;
+    g.net_max_ack_rtt_5s = 0.0f;
+    g.net_ack_window_elapsed = 0.0f;
+    g.net_input_packets_sent = 0;
+    g.net_action_packets_sent = 0;
+    g.net_action_resend_packets = 0;
+    g.net_action_dropped = 0;
+    g.net_next_action_id = 1;
+    g.net_action_queue_start = 0;
+    g.net_action_queue_count = 0;
+    memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
+    memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
+    memset(&g.net_motion, 0, sizeof(g.net_motion));
+    g.local_player_render_offset = v2(0.0f, 0.0f);
     net_replay_reset();
+}
+
+void reset_remote_dynamic_sync(void) {
+    net_reset_local_input_stream();
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
@@ -1224,8 +1427,17 @@ void begin_player_state_batch(void) {
            sizeof(g.player_interp.prev));
     memset(g.player_interp.curr, 0, sizeof(g.player_interp.curr));
     float prev_interval = g.net_motion.packet_interval;
-    float elapsed = g.player_interp.t * g.player_interp.interval;
-    elapsed = clampf(elapsed, 0.03f, 0.15f);
+    float prev_raw_interval = g.net_motion.raw_packet_interval;
+    float raw_elapsed = g.player_interp.t * g.player_interp.interval;
+    g.net_motion.raw_packet_interval = raw_elapsed;
+    if (raw_elapsed > g.net_motion.max_raw_packet_interval_run)
+        g.net_motion.max_raw_packet_interval_run = raw_elapsed;
+    if (prev_raw_interval > 0.0f) {
+        float raw_jitter = fabsf(raw_elapsed - prev_raw_interval);
+        if (raw_jitter > g.net_motion.max_raw_packet_jitter_run)
+            g.net_motion.max_raw_packet_jitter_run = raw_jitter;
+    }
+    float elapsed = clampf(raw_elapsed, 0.03f, 0.15f);
     g.net_motion.packet_interval = elapsed;
     if (elapsed > g.net_motion.max_packet_interval_run)
         g.net_motion.max_packet_interval_run = elapsed;
@@ -1239,14 +1451,34 @@ void begin_player_state_batch(void) {
     g.player_interp.t = 0.0f;
 }
 
-void net_record_input_ack(uint16_t input_seq_ack) {
+void net_record_input_ack(uint16_t input_seq_ack,
+                          uint32_t server_tick,
+                          uint32_t input_tick_ack) {
     if (input_seq_ack == 0) return;
+    if (input_tick_ack != 0) g.net_input_tick_protocol = true;
+    net_observe_server_tick(server_tick);
+    if (server_tick != 0 && !g.net_prediction_tick_valid) {
+        net_anchor_prediction_tick(server_tick, true);
+    }
+    if (g.net_last_server_ack == 0 ||
+        input_seq_ack == g.net_last_server_ack ||
+        net_input_seq_after(input_seq_ack, g.net_last_server_ack)) {
+        g.net_last_server_ack = input_seq_ack;
+    }
+
     int index = (int)(input_seq_ack % NET_INPUT_TIMING_CAP);
     net_input_timing_t *timing = &g.net_input_timing[index];
     if (timing->seq != input_seq_ack || timing->sent_at <= 0.0f) return;
 
     float rtt = g.net_time - timing->sent_at;
     if (rtt < 0.0f || rtt > 30.0f) return;
+    if (timing->target_tick != 0 && input_tick_ack != 0) {
+        int32_t error = (int32_t)(input_tick_ack - timing->target_tick);
+        int32_t abs_error = error < 0 ? -error : error;
+        g.net_motion.input_apply_error_ticks = error;
+        if (abs_error > g.net_motion.max_input_apply_error_abs)
+            g.net_motion.max_input_apply_error_abs = abs_error;
+    }
     g.net_last_ack_rtt = rtt;
     if (rtt > g.net_max_ack_rtt_5s) g.net_max_ack_rtt_5s = rtt;
     if (rtt > g.net_motion.max_ack_rtt_run)
@@ -1254,6 +1486,7 @@ void net_record_input_ack(uint16_t input_seq_ack) {
     g.net_motion.total_input_acks++;
     timing->seq = 0;
     timing->sent_at = 0.0f;
+    timing->target_tick = 0;
 }
 
 static void record_local_player_motion_telemetry(float correction_dist,
@@ -1287,13 +1520,15 @@ static void record_local_player_motion_telemetry(float correction_dist,
     }
     if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
 
-    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f deferred=%u/%u replayed=%u/%u frames=%u\n",
+    printf("[net-motion] pkt=%.3fs raw=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f input_tick_err=%d deferred=%u/%u replayed=%u/%u frames=%u\n",
            g.net_motion.packet_interval,
+           g.net_motion.raw_packet_interval,
            g.net_motion.correction_dist,
            g.net_motion.max_correction_5s,
            g.net_motion.applied_correction_dist,
            g.net_motion.max_applied_correction_5s,
            g.net_motion.velocity_error,
+           (int)g.net_motion.input_apply_error_ticks,
            (unsigned)g.net_motion.deferred_samples,
            (unsigned)g.net_motion.samples,
            (unsigned)g.net_motion.replayed_samples,
@@ -1382,15 +1617,26 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 g.net_input_seq = state->input_seq_ack;
                 g.net_input_have_last = false;
             }
-            if (g.net_last_server_ack == 0 ||
-                state->input_seq_ack == g.net_last_server_ack ||
-                net_input_seq_after(state->input_seq_ack,
-                                    g.net_last_server_ack)) {
-                g.net_last_server_ack = state->input_seq_ack;
-            }
-            net_record_input_ack(state->input_seq_ack);
+            net_record_input_ack(state->input_seq_ack,
+                                 state->server_tick,
+                                 state->input_tick_ack);
         }
-        if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
+        net_observe_server_tick(state->server_tick);
+
+        if (!g.net_local_state_ready) {
+            accept_initial_local_player_state(state, sp);
+            return;
+        }
+
+        bool state_docked = (state->flags & 4) != 0;
+        if (state_docked && sp->docked) {
+            accept_docked_local_player_state(state, sp);
+            return;
+        }
+        if (!state_docked && sp->docked) {
+            accept_authoritative_local_launch_state(state, sp);
+            return;
+        }
 
         float target_x = state->x;
         float target_y = state->y;
@@ -1403,7 +1649,6 @@ void apply_remote_player_state(const NetPlayerState* state) {
         float dvy = state->vy - sp->ship.vel.y;
         float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
-        bool state_docked = (state->flags & 4) != 0;
         int replayed_frames = 0;
         bool used_replay = false;
         bool used_snap = false;
@@ -1416,8 +1661,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
         if (force_rebase) {
             apply_authoritative_local_motion(state, sp);
             net_replay_clear_frames();
-            g.net_prediction_tick = state->server_tick;
-            g.net_prediction_tick_valid = state->server_tick != 0;
+            net_anchor_prediction_tick(state->server_tick, false);
             used_snap = true;
         } else if (defer_predicted_undock) {
             defer_motion_correction = true;
@@ -1430,7 +1674,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 net_replay_reconcile_local_player(state, sp, &replayed_frames);
         if (!force_rebase && !defer_motion_correction && !used_replay) {
             defer_motion_correction =
-                should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq);
+                should_defer_stale_unacked_motion(state, has_unacked_input, dist_sq) ||
+                should_defer_active_prediction_motion(state, dist_sq);
         }
         if (!force_rebase && !used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
@@ -1453,10 +1698,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
             }
             net_replay_reset();
-            if (state->server_tick != 0) {
-                g.net_prediction_tick = state->server_tick;
-                g.net_prediction_tick_valid = true;
-            }
+            net_anchor_prediction_tick(state->server_tick, false);
         }
         if (used_snap) g.net_motion.total_snap_samples++;
         if (used_lerp) g.net_motion.total_lerp_samples++;
@@ -1481,23 +1723,9 @@ void apply_remote_player_state(const NetPlayerState* state) {
         if (!used_replay && !defer_motion_correction &&
             !has_local_turn_prediction)
             sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
-        /* Beam state is server-authoritative for the local player too —
-         * the autopilot fires server-side and the client never predicts
-         * its laser. Combat / hit prediction will eventually rely on
-         * this same path. */
-        sp->beam_active      = (state->flags & 2) != 0;
-        sp->beam_ineffective = (state->flags & 32) != 0;
-        sp->beam_hit         = (state->flags & 64) != 0;
-        sp->scan_active      = (state->flags & 8) != 0;
-        sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
-        sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
-        /* Tractor active is server-authoritative — autopilot owns it
-         * server-side and the client never predicts toggles under network authority.
-         * Without this, the HUD shows stale "TRACTOR OFF" while the
-         * server is actively pulling fragments. */
-        sp->ship.tractor_active = (state->flags & 16) != 0;
-        /* Thrust flag — drives flame visual when autopilot is active. */
-        g.server_thrusting = (state->flags & 1) != 0;
+        /* Beam/tractor/thrust visual flags are server-authoritative for the
+         * local player too; autopilot and mining effects run server-side. */
+        apply_local_player_remote_flags(state, sp);
     } else {
         /* Remote player: update curr for interpolation.
          * begin_player_state_batch() already shifted prev←curr. */
@@ -1579,7 +1807,7 @@ void sync_local_player_slot_from_network(void) {
         return;
     }
 
-    net_replay_reset();
+    net_reset_local_input_stream();
     have_previous = server_player_copy_local(&previous, &g.world.players[g.local_player_slot]);
     server_player_t* assigned = &g.world.players[net_id];
     server_player_cleanup_local(&g.world.players[g.local_player_slot]);

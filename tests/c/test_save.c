@@ -274,6 +274,35 @@ TEST(test_v3_station_catalog_repairs_helios_smelter_layout) {
     remove(path);
 }
 
+TEST(test_station_catalog_bad_file_preserves_seeded_fallback) {
+    WORLD_HEAP seeded = calloc(1, sizeof(world_t));
+    ASSERT(seeded != NULL);
+    world_reset(seeded);
+
+    const char *dir = TMP("test_bad_station_catalog");
+    ASSERT(station_catalog_save(&seeded->stations[3], 3, dir));
+
+    char bad_path[256];
+    snprintf(bad_path, sizeof(bad_path), "%s/0.cat", dir);
+    FILE *f = fopen(bad_path, "wb");
+    ASSERT(f != NULL);
+    ASSERT(fwrite("bad", 1, 3, f) == 3);
+    fclose(f);
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    float expected_range = loaded->stations[0].signal_range;
+    ASSERT(expected_range > 0.0f);
+
+    ASSERT_EQ_INT(station_catalog_load_all(loaded->stations, MAX_STATIONS, dir), 1);
+    ASSERT(station_exists(&loaded->stations[0]));
+    ASSERT_EQ_FLOAT(loaded->stations[0].signal_range, expected_range, 0.01f);
+    ASSERT(station_exists(&loaded->stations[3]));
+
+    remove(bad_path);
+}
+
 TEST(test_world_save_load_preserves_stations) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -2079,6 +2108,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
     RUN(test_v3_station_catalog_repairs_helios_smelter_layout);
+    RUN(test_station_catalog_bad_file_preserves_seeded_fallback);
     RUN(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers);
     RUN(test_v51_migration_furnace_count_heuristic);
     RUN(test_world_save_load_preserves_smelted_ingot_pod);

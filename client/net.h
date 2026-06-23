@@ -91,6 +91,9 @@ typedef struct {
 typedef void (*net_on_player_join_fn)(uint8_t player_id);
 typedef void (*net_on_player_leave_fn)(uint8_t player_id);
 typedef void (*net_on_player_state_fn)(const NetPlayerState* state);
+typedef void (*net_on_input_applied_fn)(uint16_t input_seq,
+                                        uint32_t server_tick,
+                                        uint32_t input_tick_ack);
 typedef void (*net_on_asteroids_fn)(const NetAsteroidState* asteroids, int count);
 typedef void (*net_on_npcs_fn)(const NetNpcState* npcs, int count);
 /* Packed player ship state (from PLAYER_SHIP 0x15). */
@@ -385,6 +388,7 @@ typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
     net_on_player_state_fn on_state;
+    net_on_input_applied_fn on_input_applied;
     net_on_players_begin_fn on_players_begin;
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;

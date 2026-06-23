@@ -5064,7 +5064,10 @@ static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
     ship_t *ship = npc_ship_for(w, npc_slot);
     if (!npc_can_reassign(npc, ship)) return;
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return;
-    if (npc->state == NPC_STATE_DOCKED && npc->state_timer > 0.0f) return;
+    if ((npc->state == NPC_STATE_DOCKED || npc->state == NPC_STATE_IDLE) &&
+        npc->state_timer > 0.0f) {
+        return;
+    }
 
     npc_job_offer_t early_repair_offer;
     bool has_early_repair = npc_make_repair_job_offer(w, npc, ship,

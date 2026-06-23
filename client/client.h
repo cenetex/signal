@@ -277,6 +277,7 @@ typedef struct {
 typedef struct {
     uint16_t seq;
     float sent_at;
+    uint32_t target_tick;
 } net_input_timing_t;
 
 typedef struct {
@@ -437,7 +438,9 @@ typedef struct {
     uint16_t net_input_seq;
     uint16_t net_last_server_ack;
     uint32_t net_last_server_tick;
+    float net_last_server_tick_time;
     bool net_input_tick_protocol;
+    bool net_local_state_ready;
     float net_last_ack_rtt;
     float net_last_ping_rtt;
     float net_last_ping_server_turnaround_ms;
@@ -656,16 +659,21 @@ typedef struct {
     vec2 local_player_render_offset; /* visual-only correction smoothing for local ship */
     struct {
         float packet_interval;
+        float raw_packet_interval;
         float correction_dist;
         float applied_correction_dist;
         float velocity_error;
         float max_packet_interval_run;
         float max_packet_jitter_run;
+        float max_raw_packet_interval_run;
+        float max_raw_packet_jitter_run;
         float max_correction_5s;
         float max_applied_correction_5s;
         float window_elapsed;
         int32_t tick_skew;
         int32_t max_tick_skew_abs;
+        int32_t input_apply_error_ticks;
+        int32_t max_input_apply_error_abs;
         uint32_t samples;
         uint32_t deferred_samples;
         uint32_t replayed_samples;

@@ -643,6 +643,10 @@ void server_player_queue_movement_input(server_player_t *sp,
                                         const input_intent_t *intent,
                                         uint16_t input_seq,
                                         uint32_t apply_tick);
+void server_player_queue_ticked_movement_input(server_player_t *sp,
+                                               const input_intent_t *intent,
+                                               uint16_t input_seq,
+                                               uint32_t apply_tick);
 
 typedef struct {
     input_intent_t intent;

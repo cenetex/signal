@@ -88,8 +88,8 @@
   };
 
   var controls = {};
-  var groups = [];
   var controlsRoot = null;
+  var stationGroup = null;
 
   function gameModule() {
     return window.SignalGameModule || window.Module;
@@ -198,34 +198,37 @@
   function installStyles() {
     var style = document.createElement("style");
     style.textContent = [
-      ".signal-touch-controls{position:fixed;inset:0;z-index:12;pointer-events:none;font-family:\"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;-webkit-user-select:none;user-select:none}",
+      ".signal-touch-controls{position:fixed;inset:0;z-index:12;pointer-events:none;font-family:\"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;-webkit-user-select:none;user-select:none;--edge:max(12px,env(safe-area-inset-bottom));--side:max(12px,env(safe-area-inset-right));--left-side:max(12px,env(safe-area-inset-left));--top-edge:max(12px,env(safe-area-inset-top))}",
       ".signal-touch-controls *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}",
-      ".signal-touch-button{pointer-events:auto;min-width:48px;min-height:44px;padding:0 7px;border:1px solid rgba(245,239,223,.22);border-radius:7px;background:rgba(8,7,6,.44);color:#f5efdf;font:700 10px/1.05 \"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;letter-spacing:0;text-transform:uppercase;box-shadow:0 6px 16px rgba(0,0,0,.24);backdrop-filter:blur(8px);touch-action:none;white-space:normal;overflow:hidden;word-break:break-word}",
-      ".signal-touch-button[hidden],.signal-touch-stack[hidden]{display:none!important}",
+      ".signal-touch-button{pointer-events:auto;min-width:48px;min-height:44px;padding:0 7px;border:1px solid rgba(245,239,223,.22);border-radius:7px;background:rgba(8,7,6,.50);color:#f5efdf;font:700 10px/1.05 \"IBM Plex Mono\",\"SFMono-Regular\",ui-monospace,monospace;letter-spacing:0;text-transform:uppercase;box-shadow:0 6px 16px rgba(0,0,0,.24);backdrop-filter:blur(8px);touch-action:none;white-space:normal;overflow:hidden;word-break:break-word;transition:opacity .12s,border-color .12s,background .12s,color .12s}",
+      ".signal-touch-stack[hidden]{display:none!important}",
+      ".signal-touch-button:disabled,.signal-touch-button.is-disabled{opacity:.34;background:rgba(8,7,6,.28);border-color:rgba(245,239,223,.12);box-shadow:none;color:rgba(245,239,223,.52)}",
       ".signal-touch-button:active,.signal-touch-button.is-held{background:rgba(128,255,213,.18);border-color:rgba(128,255,213,.72);color:#dffff4}",
+      ".signal-touch-button:disabled:active,.signal-touch-button.is-disabled:active{background:rgba(8,7,6,.28);border-color:rgba(245,239,223,.12);color:rgba(245,239,223,.52)}",
       ".signal-touch-stack{position:absolute;display:grid;gap:7px;pointer-events:none}",
-      ".signal-touch-left{left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));grid-template-columns:repeat(2,58px);grid-template-rows:46px 58px}",
-      ".signal-touch-left .boost{grid-column:1/span 2;color:#91bcff}",
+      ".signal-touch-left{left:var(--left-side);bottom:var(--edge);grid-template-columns:repeat(2,58px);grid-template-rows:46px 58px}",
+      ".signal-touch-left .boost{grid-column:1/span 2;grid-row:1;color:#91bcff}",
+      ".signal-touch-left .left{grid-column:1;grid-row:2}.signal-touch-left .right{grid-column:2;grid-row:2}",
       ".signal-touch-left .left,.signal-touch-left .right{min-height:58px;color:#80ffd5;font-size:18px}",
-      ".signal-touch-right{right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));grid-template-columns:60px 72px;grid-template-rows:52px 58px 58px 40px}",
-      ".signal-touch-right .use{grid-column:1/span 2;min-height:52px;color:#f7d389;border-color:rgba(247,211,137,.44);font-size:11px}",
-      ".signal-touch-right .thrust,.signal-touch-right .brake{grid-column:2;min-height:58px;color:#f5efdf}",
-      ".signal-touch-right .fire,.signal-touch-right .tractor{grid-column:1;min-height:58px}",
+      ".signal-touch-right{right:var(--side);bottom:var(--edge);grid-template-columns:60px 72px;grid-template-rows:52px 58px 58px 40px}",
+      ".signal-touch-right .use{grid-column:1/span 2;grid-row:1;min-height:52px;color:#f7d389;border-color:rgba(247,211,137,.44);font-size:11px}",
+      ".signal-touch-right .fire{grid-column:1;grid-row:2}.signal-touch-right .thrust{grid-column:2;grid-row:2}.signal-touch-right .tractor{grid-column:1;grid-row:3}.signal-touch-right .brake{grid-column:2;grid-row:3}.signal-touch-right .scan{grid-column:1;grid-row:4}.signal-touch-right .auto{grid-column:2;grid-row:4}",
+      ".signal-touch-right .thrust,.signal-touch-right .brake{min-height:58px;color:#f5efdf}",
+      ".signal-touch-right .fire,.signal-touch-right .tractor{min-height:58px}",
       ".signal-touch-right .fire{color:#f1b566}.signal-touch-right .tractor{color:#80ffd5}",
       ".signal-touch-right .scan,.signal-touch-right .auto{min-height:40px;font-size:9px;background:rgba(8,7,6,.36)}",
-      ".signal-touch-secondary{right:max(12px,env(safe-area-inset-right));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 232px);grid-template-columns:repeat(2,62px);grid-auto-rows:38px}",
+      ".signal-touch-secondary{right:var(--side);bottom:calc(var(--edge) + 232px);grid-template-columns:repeat(2,62px);grid-template-rows:38px}",
+      ".signal-touch-secondary .plan{grid-column:1;grid-row:1}.signal-touch-secondary .cycle{grid-column:2;grid-row:1}",
       ".signal-touch-secondary .signal-touch-button{min-height:38px;font-size:9px;background:rgba(8,7,6,.36)}",
-      ".signal-touch-station{left:50%;bottom:max(10px,env(safe-area-inset-bottom));transform:translateX(-50%);width:min(380px,calc(100vw - 20px));grid-template-columns:repeat(8,minmax(0,1fr));grid-auto-rows:38px;justify-content:center}",
+      ".signal-touch-station{left:50%;top:var(--top-edge);transform:translateX(-50%);width:min(380px,calc(100vw - 20px));grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-rows:36px;justify-content:center;gap:5px}",
       ".signal-touch-station .signal-touch-button{min-width:0;min-height:38px;padding:0 5px;font-size:9px;background:rgba(8,7,6,.36)}",
       ".signal-touch-station .wide{grid-column:span 2;min-width:0}",
-      ".signal-touch-controls.is-docked .signal-touch-right{top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));bottom:auto;grid-template-columns:repeat(3,58px);grid-template-rows:38px;gap:6px}",
-      ".signal-touch-controls.is-docked .signal-touch-right .use{grid-column:auto;min-height:38px;font-size:9px}",
-      ".signal-touch-controls.is-docked .signal-touch-right .scan,.signal-touch-controls.is-docked .signal-touch-right .auto{min-height:38px;font-size:9px}",
-      ".signal-touch-controls.is-docked .signal-touch-station{bottom:max(8px,env(safe-area-inset-bottom));width:min(360px,calc(100vw - 20px));grid-template-columns:repeat(6,minmax(0,1fr));grid-auto-rows:36px;gap:5px}",
-      ".signal-touch-controls.is-docked .signal-touch-station .signal-touch-button{min-height:36px;font-size:9px}",
+      ".signal-touch-station .tab{grid-column:1/span 2;grid-row:1}.signal-touch-station .page{grid-column:3/span 2;grid-row:1}.signal-touch-station .sell{grid-column:5/span 3;grid-row:1}",
+      ".signal-touch-station .repair{grid-column:1/span 2;grid-row:2}.signal-touch-station .laser{grid-column:3/span 2;grid-row:2}.signal-touch-station .cargo{grid-column:5/span 3;grid-row:2}",
+      ".signal-touch-station .tractorUpgrade{grid-column:1/span 2;grid-row:3}.signal-touch-station .one{grid-column:3;grid-row:3}.signal-touch-station .two{grid-column:4;grid-row:3}.signal-touch-station .three{grid-column:5;grid-row:3}.signal-touch-station .four{grid-column:6;grid-row:3}.signal-touch-station .five{grid-column:7;grid-row:3}",
       "@media (min-width:860px) and (pointer:fine){.signal-touch-controls{display:none}}",
-      "@media (max-width:560px){.signal-touch-button{min-width:44px;min-height:42px;font-size:9px}.signal-touch-left{left:max(10px,env(safe-area-inset-left));grid-template-columns:repeat(2,54px);grid-template-rows:42px 54px;gap:6px}.signal-touch-left .left,.signal-touch-left .right{min-height:54px;font-size:17px}.signal-touch-right{right:max(10px,env(safe-area-inset-right));grid-template-columns:56px 66px;grid-template-rows:48px 54px 54px 38px;gap:6px}.signal-touch-right .use{min-height:48px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-secondary{right:max(10px,env(safe-area-inset-right));bottom:calc(max(12px,env(safe-area-inset-bottom)) + 218px);grid-template-columns:repeat(2,58px);gap:6px}.signal-touch-station{width:calc(100vw - 20px);grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}}",
-      "@media (max-height:520px){.signal-touch-left,.signal-touch-right,.signal-touch-station{bottom:max(8px,env(safe-area-inset-bottom))}.signal-touch-left{grid-template-columns:repeat(2,52px);grid-template-rows:40px 50px}.signal-touch-right{grid-template-columns:52px 62px;grid-template-rows:44px 50px 50px 36px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:50px}.signal-touch-secondary{right:max(8px,env(safe-area-inset-right));bottom:calc(max(8px,env(safe-area-inset-bottom)) + 224px);grid-template-columns:repeat(2,54px)}.signal-touch-station .signal-touch-button{min-height:34px}.signal-touch-controls.is-docked .signal-touch-right{top:max(8px,env(safe-area-inset-top));grid-template-columns:repeat(3,54px);grid-template-rows:34px}.signal-touch-controls.is-docked .signal-touch-right .use,.signal-touch-controls.is-docked .signal-touch-right .scan,.signal-touch-controls.is-docked .signal-touch-right .auto{min-height:34px}.signal-touch-controls.is-docked .signal-touch-station{bottom:max(6px,env(safe-area-inset-bottom));grid-auto-rows:34px}}"
+      "@media (max-width:560px){.signal-touch-controls{--edge:max(12px,env(safe-area-inset-bottom));--side:max(10px,env(safe-area-inset-right));--left-side:max(10px,env(safe-area-inset-left));--top-edge:max(10px,env(safe-area-inset-top))}.signal-touch-button{min-width:44px;min-height:42px;font-size:9px}.signal-touch-left{grid-template-columns:repeat(2,54px);grid-template-rows:42px 54px;gap:6px}.signal-touch-left .left,.signal-touch-left .right{min-height:54px;font-size:17px}.signal-touch-right{grid-template-columns:56px 66px;grid-template-rows:48px 54px 54px 38px;gap:6px}.signal-touch-right .use{min-height:48px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-secondary{bottom:calc(var(--edge) + 218px);grid-template-columns:repeat(2,58px);gap:6px}.signal-touch-station{width:calc(100vw - 20px);grid-auto-rows:34px}}",
+      "@media (max-height:520px){.signal-touch-controls{--edge:max(8px,env(safe-area-inset-bottom));--side:max(8px,env(safe-area-inset-right));--left-side:max(8px,env(safe-area-inset-left));--top-edge:max(8px,env(safe-area-inset-top))}.signal-touch-left{grid-template-columns:repeat(2,52px);grid-template-rows:40px 50px}.signal-touch-right{grid-template-columns:52px 62px;grid-template-rows:44px 50px 50px 36px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:50px}.signal-touch-secondary{bottom:calc(var(--edge) + 224px);grid-template-columns:repeat(2,54px)}.signal-touch-station{grid-auto-rows:32px}.signal-touch-station .signal-touch-button{min-height:32px}}"
     ].join("");
     document.head.appendChild(style);
   }
@@ -250,7 +253,7 @@
     el.addEventListener("pointerdown", function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      if (el.hidden) return;
+      if (el.hidden || el.disabled) return;
       focusGame();
       pointerId = ev.pointerId;
       if (el.setPointerCapture) el.setPointerCapture(pointerId);
@@ -294,34 +297,42 @@
     });
   }
 
-  function setButton(name, visible, label) {
+  function setButton(name, enabled, label) {
     var el = controls[name];
     if (!el) return;
     if (label && el.textContent !== label) {
       el.textContent = label;
       el.setAttribute("aria-label", label);
     }
-    if (!visible && !el.hidden && el.signalTouchRelease) {
+    if (!enabled && !el.disabled && el.signalTouchRelease) {
       el.signalTouchRelease();
     }
-    el.hidden = !visible;
+    el.disabled = !enabled;
+    el.classList.toggle("is-disabled", !enabled);
+    el.setAttribute("aria-disabled", enabled ? "false" : "true");
   }
 
   function reassertHeldControls() {
     Object.keys(controls).forEach(function (name) {
       var el = controls[name];
-      if (!el || el.hidden || !el.classList.contains("is-held")) return;
+      if (!el || el.hidden || el.disabled || !el.classList.contains("is-held")) return;
       send(Number(el.dataset.action), true);
     });
   }
 
-  function syncGroups() {
-    groups.forEach(function (group) {
-      var visible = Array.prototype.some.call(
-        group.querySelectorAll(".signal-touch-button"),
-        function (el) { return !el.hidden; }
-      );
-      group.hidden = !visible;
+  function setGroupVisible(group, visible) {
+    if (!group) return;
+    if (!visible && !group.hidden) {
+      Array.prototype.forEach.call(group.querySelectorAll(".signal-touch-button"), function (el) {
+        if (el.signalTouchRelease) el.signalTouchRelease();
+      });
+    }
+    group.hidden = !visible;
+  }
+
+  function setDigits(enabled, digitMask) {
+    ["one", "two", "three", "four", "five"].forEach(function (name, index) {
+      setButton(name, enabled && ((digitMask & (1 << index)) !== 0), String(index + 1));
     });
   }
 
@@ -375,22 +386,18 @@
     setButton("cycle", has(flags, FLAG.canCycle), "Type");
 
     setButton("tab", docked, "Panel");
-    setButton("page", has(flags, FLAG.canPage), "More");
-    setButton("sell", has(flags, FLAG.canSell), workView ? "Deliver" : "Sell");
-    setButton("repair", dockView && has(flags, FLAG.canRepair), "Repair");
-    setButton("laser", dockView && has(flags, FLAG.canUpgradeMine), "Laser+");
-    setButton("cargo", dockView && has(flags, FLAG.canUpgradeHold), "Hold+");
-    setButton("tractorUpgrade", dockView && has(flags, FLAG.canUpgradeTractor), "Tow+");
+    setButton("page", docked && has(flags, FLAG.canPage), "More");
+    setButton("sell", docked && has(flags, FLAG.canSell), workView ? "Deliver" : "Sell");
+    setButton("repair", docked && dockView && has(flags, FLAG.canRepair), "Repair");
+    setButton("laser", docked && dockView && has(flags, FLAG.canUpgradeMine), "Laser+");
+    setButton("cargo", docked && dockView && has(flags, FLAG.canUpgradeHold), "Hold+");
+    setButton("tractorUpgrade", docked && dockView && has(flags, FLAG.canUpgradeTractor), "Tow+");
 
     var digitMask = (tradeView || workView || yardView) ? mobileDigitMask(flags) : 0;
-    setButton("one", (digitMask & 1) !== 0, "1");
-    setButton("two", (digitMask & 2) !== 0, "2");
-    setButton("three", (digitMask & 4) !== 0, "3");
-    setButton("four", (digitMask & 8) !== 0, "4");
-    setButton("five", (digitMask & 16) !== 0, "5");
+    setDigits(docked, digitMask);
 
     reassertHeldControls();
-    syncGroups();
+    setGroupVisible(stationGroup, docked);
   }
 
   function installControls() {
@@ -444,7 +451,7 @@
     root.appendChild(station);
     document.body.appendChild(root);
 
-    groups = [left, right, secondary, station];
+    stationGroup = station;
     Array.prototype.forEach.call(root.querySelectorAll(".signal-touch-button"), bindButton);
     refreshControls();
     window.setInterval(refreshControls, 120);

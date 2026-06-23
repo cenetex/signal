@@ -9628,10 +9628,11 @@ static void apply_movement_intent(server_player_t *sp,
     sp->input.reverse_thrust = intent->reverse_thrust;
 }
 
-void server_player_queue_movement_input(server_player_t *sp,
-                                        const input_intent_t *intent,
-                                        uint16_t input_seq,
-                                        uint32_t apply_tick) {
+static void server_player_queue_movement_input_impl(server_player_t *sp,
+                                                    const input_intent_t *intent,
+                                                    uint16_t input_seq,
+                                                    uint32_t apply_tick,
+                                                    bool preserve_apply_tick) {
     if (!sp || !intent || apply_tick == 0) return;
 
     input_intent_t movement = movement_intent_from_input(intent);
@@ -9662,12 +9663,24 @@ void server_player_queue_movement_input(server_player_t *sp,
         sp->movement_queue_count = count;
     }
 
+    if (!preserve_apply_tick && input_seq != 0 && count > 0) {
+        uint32_t last_tick = sp->movement_queue[count - 1].apply_tick;
+        if (!sim_tick_after(apply_tick, last_tick)) {
+            apply_tick = last_tick + 1u;
+            if (apply_tick == 0) apply_tick = last_tick;
+        }
+    }
+
     int insert = (int)count;
-    while (insert > 0 &&
-           sim_tick_after(sp->movement_queue[insert - 1].apply_tick,
-                          apply_tick)) {
-        sp->movement_queue[insert] = sp->movement_queue[insert - 1];
-        insert--;
+    if (count > 0 &&
+        sim_tick_after(sp->movement_queue[count - 1].apply_tick,
+                       apply_tick)) {
+        while (insert > 0 &&
+               sim_tick_after(sp->movement_queue[insert - 1].apply_tick,
+                              apply_tick)) {
+            sp->movement_queue[insert] = sp->movement_queue[insert - 1];
+            insert--;
+        }
     }
     sp->movement_queue[insert] = (movement_input_cmd_t){
         .apply_tick = apply_tick,
@@ -9675,6 +9688,22 @@ void server_player_queue_movement_input(server_player_t *sp,
         .intent = movement,
     };
     sp->movement_queue_count = (uint8_t)(count + 1u);
+}
+
+void server_player_queue_movement_input(server_player_t *sp,
+                                        const input_intent_t *intent,
+                                        uint16_t input_seq,
+                                        uint32_t apply_tick) {
+    server_player_queue_movement_input_impl(sp, intent, input_seq, apply_tick,
+                                            false);
+}
+
+void server_player_queue_ticked_movement_input(server_player_t *sp,
+                                               const input_intent_t *intent,
+                                               uint16_t input_seq,
+                                               uint32_t apply_tick) {
+    server_player_queue_movement_input_impl(sp, intent, input_seq, apply_tick,
+                                            true);
 }
 
 uint32_t server_input_apply_tick_for_world(const world_t *w,
@@ -9809,7 +9838,12 @@ bool server_dispatch_input_message(world_t *w, int player_idx,
     server_input_intent_wire_defaults(&parsed);
     parse_input(input_data, input_len, &parsed);
     uint32_t apply_tick = server_input_apply_tick_for_world(w, client_tick);
-    server_player_queue_movement_input(sp, &parsed, input_seq, apply_tick);
+    if (client_tick != 0) {
+        server_player_queue_ticked_movement_input(sp, &parsed, input_seq,
+                                                  apply_tick);
+    } else {
+        server_player_queue_movement_input(sp, &parsed, input_seq, apply_tick);
+    }
 
     int station_dirty = -1;
     if ((effective_action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
@@ -10449,8 +10483,10 @@ bool server_dispatch_handoff_present(
 static void server_player_apply_queued_movement(server_player_t *sp,
                                                 uint32_t tick) {
     if (!sp) return;
-    while (sp->movement_queue_count > 0) {
-        const movement_input_cmd_t *cmd = &sp->movement_queue[0];
+    uint8_t consumed = 0;
+    uint8_t count = sp->movement_queue_count;
+    while (consumed < count) {
+        const movement_input_cmd_t *cmd = &sp->movement_queue[consumed];
         if (sim_tick_after(cmd->apply_tick, tick)) break;
         if (cmd->input_seq == 0 || sp->last_input_seq == 0 ||
             input_seq_after(cmd->input_seq, sp->last_input_seq)) {
@@ -10458,11 +10494,13 @@ static void server_player_apply_queued_movement(server_player_t *sp,
             sp->last_input_seq = cmd->input_seq;
             sp->last_input_tick = tick;
         }
-        sp->movement_queue_count--;
-        if (sp->movement_queue_count > 0) {
-            memmove(&sp->movement_queue[0], &sp->movement_queue[1],
-                    sp->movement_queue_count * sizeof(sp->movement_queue[0]));
-        }
+        consumed++;
+    }
+    if (consumed == 0) return;
+    sp->movement_queue_count = (uint8_t)(count - consumed);
+    if (sp->movement_queue_count > 0) {
+        memmove(&sp->movement_queue[0], &sp->movement_queue[consumed],
+                sp->movement_queue_count * sizeof(sp->movement_queue[0]));
     }
 }
 

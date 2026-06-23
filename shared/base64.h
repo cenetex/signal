@@ -9,9 +9,9 @@ static const char BASE64_ALPHABET[] =
 static inline int base64_encode(const uint8_t *data, size_t len, char *out, size_t out_cap) {
     size_t i = 0, j = 0;
     while (i < len) {
-        size_t consumed = 0;
+        size_t consumed = 1;
         uint32_t a = 0, b = 0, c = 0;
-        if (i < len) { a = data[i++]; consumed++; }
+        a = data[i++];
         if (i < len) { b = data[i++]; consumed++; }
         if (i < len) { c = data[i++]; consumed++; }
         uint32_t triple = (a << 16) | (b << 8) | c;
@@ -48,8 +48,14 @@ static inline int base64_decode(const char *in, uint8_t *out, size_t out_cap) {
         uint32_t triple = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6) | (uint32_t)d;
         if (j >= out_cap) return -1;
         out[j++] = (uint8_t)(triple >> 16);
-        if (in[i+2] != '=' && j < out_cap) out[j++] = (uint8_t)(triple >> 8);
-        if (in[i+3] != '=' && j < out_cap) out[j++] = (uint8_t)triple;
+        if (in[i+2] != '=') {
+            if (j >= out_cap) return -1;
+            out[j++] = (uint8_t)(triple >> 8);
+        }
+        if (in[i+3] != '=') {
+            if (j >= out_cap) return -1;
+            out[j++] = (uint8_t)triple;
+        }
     }
     return (int)j;
 }

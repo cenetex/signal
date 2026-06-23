@@ -123,8 +123,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* station_dock_anchor, ship_cargo_space: see game_sim.c */
 
-#define NET_INPUT_HEARTBEAT_SEC (1.0f / 6.0f)
-#define NET_ACTIVE_INPUT_HEARTBEAT_SEC (1.0f / 12.0f)
+#define NET_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_IDLE_HEARTBEAT_MS / 1000.0f)
+#define NET_ACTIVE_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_ACTIVE_HEARTBEAT_MS / 1000.0f)
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
 #define NET_CLIENT_METRICS_SEC 15.0f
@@ -162,6 +162,8 @@ static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
 static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick);
+static void on_remote_input_applied(uint16_t input_seq, uint32_t server_tick,
+                                    uint32_t input_tick_ack);
 static void on_remote_handoff_ticket(uint8_t status, uint8_t source_station,
                                      uint8_t dest_station,
                                      const handoff_ticket_t *ticket);
@@ -178,6 +180,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_leave = on_player_leave;
     cbs->on_players_begin = begin_player_state_batch;
     cbs->on_state = apply_remote_player_state;
+    cbs->on_input_applied = on_remote_input_applied;
     cbs->on_asteroids = apply_remote_asteroids;
     cbs->on_npcs = apply_remote_npcs;
     cbs->on_stations = apply_remote_stations;
@@ -251,20 +254,15 @@ static uint32_t net_input_lead_ticks(void) {
 
 static uint32_t net_next_input_apply_tick(void) {
     if (g.net_last_server_tick != 0) {
-        uint32_t target = g.net_last_server_tick + net_input_lead_ticks();
-        if (g.net_prediction_tick_valid) {
-            uint32_t predicted_next = g.net_prediction_tick + 1u;
-            if (net_tick_after_u32(predicted_next, g.net_last_server_tick) &&
-                net_tick_after_u32(target, predicted_next)) {
-                target = predicted_next;
-            }
-        }
-        if (!net_tick_after_u32(target, g.net_last_server_tick))
-            target = g.net_last_server_tick + 1u;
+        uint32_t server_tick =
+            net_estimated_server_tick_now(g.net_last_server_tick);
+        uint32_t target = server_tick + net_input_lead_ticks();
+        if (!net_tick_after_u32(target, server_tick))
+            target = server_tick + 1u;
         return target;
     }
     if (g.net_prediction_tick_valid) return g.net_prediction_tick + 1u;
-    return 1u;
+    return 0u;
 }
 
 static void clear_collection_feedback(void) {
@@ -343,20 +341,8 @@ static void reset_world(void) {
     g.thrusting = false;
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
-    g.pending_net_action = NET_ACTION_NONE;
-    g.pending_net_buy_grade = MINING_GRADE_COUNT; /* sentinel = any */
-    g.pending_net_place_station = -1;
-    g.pending_net_place_ring    = -1;
-    g.pending_net_place_slot    = -1;
-    g.net_input_timer = 0.0f;
     g.net_time = 0.0f;
-    g.net_input_have_last = false;
-    g.net_last_sent_flags = 0;
-    g.net_last_sent_mining_target = 0xFFFFu;
-    g.net_input_seq = 0;
-    g.net_last_server_ack = 0;
-    g.net_last_server_tick = 0;
-    g.net_input_tick_protocol = false;
+    net_reset_local_input_stream();
     g.net_last_ack_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
@@ -367,17 +353,6 @@ static void reset_world(void) {
     g.net_metrics_seq = 0;
     g.net_max_ack_rtt_5s = 0.0f;
     g.net_ack_window_elapsed = 0.0f;
-    g.net_input_packets_sent = 0;
-    g.net_action_packets_sent = 0;
-    g.net_action_resend_packets = 0;
-    g.net_action_dropped = 0;
-    g.net_next_action_id = 1;
-    g.net_action_queue_start = 0;
-    g.net_action_queue_count = 0;
-    memset(&g.net_motion, 0, sizeof(g.net_motion));
-    memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
-    memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
-    net_replay_reset();
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
@@ -2215,6 +2190,14 @@ float get_player_vel_y(void) {
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 #endif
+float get_player_angle(void) {
+    if (g.local_player_slot < 0) return 0.0f;
+    return LOCAL_PLAYER.ship.angle;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
 int get_player_docked(void) {
     if (g.local_player_slot < 0) return 0;
     return LOCAL_PLAYER.docked ? 1 : 0;
@@ -2362,6 +2345,27 @@ float get_net_motion_max_player_jitter_ms(void) {
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 #endif
+float get_net_motion_raw_player_interval_ms(void) {
+    return g.net_motion.raw_packet_interval * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_raw_player_interval_ms(void) {
+    return g.net_motion.max_raw_packet_interval_run * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_max_raw_player_jitter_ms(void) {
+    return g.net_motion.max_raw_packet_jitter_run * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
 float get_net_motion_max_ack_rtt_ms(void) {
     return g.net_motion.max_ack_rtt_run * 1000.0f;
 }
@@ -2420,6 +2424,20 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 int get_net_motion_max_tick_skew_abs(void) {
     return (int)g.net_motion.max_tick_skew_abs;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_input_apply_error_ticks(void) {
+    return (int)g.net_motion.input_apply_error_ticks;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_max_input_apply_error_abs(void) {
+    return (int)g.net_motion.max_input_apply_error_abs;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2635,13 +2653,17 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
             g.station_balance,
             (unsigned)g.net_action_queue_count);
     if (server_tick != 0) {
-        g.net_last_server_tick = server_tick;
+        net_observe_server_tick(server_tick);
         if (!g.net_prediction_tick_valid) {
-            g.net_prediction_tick = server_tick;
-            g.net_prediction_tick_valid = true;
+            net_anchor_prediction_tick(server_tick, false);
         }
     }
     g.action_predict_timer = 0.0f;
+}
+
+static void on_remote_input_applied(uint16_t input_seq, uint32_t server_tick,
+                                    uint32_t input_tick_ack) {
+    net_record_input_ack(input_seq, server_tick, input_tick_ack);
 }
 
 static void on_remote_handoff_ticket(uint8_t status, uint8_t source_station,
@@ -2857,11 +2879,12 @@ static void net_action_queue_mark_sent(uint16_t input_seq) {
     g.net_action_packets_sent++;
 }
 
-static void net_track_input_send(uint16_t seq) {
+static void net_track_input_send(uint16_t seq, uint32_t target_tick) {
     if (seq == 0) return;
     int index = (int)(seq % NET_INPUT_TIMING_CAP);
     g.net_input_timing[index].seq = seq;
     g.net_input_timing[index].sent_at = g.net_time;
+    g.net_input_timing[index].target_tick = target_tick;
 }
 
 static void frame(void) {
@@ -2983,7 +3006,7 @@ static void frame(void) {
                                buy_grade_byte, place_station, place_ring,
                                place_slot, action_id, input_tick);
                 g.net_input_packets_sent++;
-                if (seq_advanced) net_track_input_send(g.net_input_seq);
+                if (seq_advanced) net_track_input_send(g.net_input_seq, input_tick);
                 if (action != NET_ACTION_NONE)
                     net_action_queue_mark_sent(g.net_input_seq);
                 g.net_input_timer = active_controls

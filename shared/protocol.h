@@ -12,6 +12,7 @@
  *   LATENCY_PONG    (0x3D): [type:1][seq:u32][client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32]
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
  *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
+ *   INPUT_APPLIED   (0x48): [type:1][input_seq:u16][server_tick:u32][input_tick_ack:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * NPC_RECORD_SIZE records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
@@ -263,6 +264,16 @@ enum {
                                             *
                                             *   [type:1=0x47][count:1]
                                             *     count × DELIVERY_LEDGER_RECORD_SIZE */
+    NET_MSG_INPUT_APPLIED          = 0x48, /* server -> client. Private applied-input
+                                            * receipt for movement sync.
+                                            *
+                                            *   [type:1=0x48][input_seq:u16]
+                                            *   [server_tick:u32][input_tick_ack:u32]
+                                            *
+                                            * WORLD_PLAYERS still mirrors the latest
+                                            * ack for compatibility; this small packet
+                                            * decouples input timing from full pose
+                                            * broadcast cadence. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -311,6 +322,7 @@ enum {
     SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT= 1u << 5,
     SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS = 1u << 6,
     SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS = 1u << 7,
+    SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK = 1u << 8,
 };
 
 enum {
@@ -348,7 +360,8 @@ enum {
         SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS |
         SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT |
         SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS |
-        SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS,
+        SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS |
+        SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK,
 };
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
@@ -718,10 +731,14 @@ enum {
 };
 
 #define NET_INPUT_MSG_SIZE 18
+#define NET_INPUT_APPLIED_SIZE 11
 #define NET_LATENCY_PING_SIZE 9
 #define NET_LATENCY_PONG_SIZE 17
 #define NET_CLIENT_METRICS_SIZE 21
 #define NET_DEATH_MSG_SIZE 43
+
+#define NET_INPUT_ACTIVE_HEARTBEAT_MS 83u
+#define NET_INPUT_IDLE_HEARTBEAT_MS 167u
 
 /* Input prediction horizon, in fixed SIM_DT ticks. The server only accepts
  * future-dated movement this far ahead; the client should rebase before replay

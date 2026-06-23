@@ -923,10 +923,18 @@ TEST(test_e2e_kit_chain_converges) {
      * without first bootstrapping the entire upstream chain (smelting,
      * pressing, etc — not what this test is about). 5 sim-minutes is
      * 10 fab cycles at REPAIR_KIT_FAB_PERIOD = 30s; should produce
-     * many full batches if the gate works. */
+     * many full batches if the gate works. Keep unrelated NPC and
+     * asteroid churn disabled so this remains a repair-kit fab gate
+     * instead of a broad world-performance soak. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w->npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+    w->npc_respawn_timer = 1e6f;
+    w->field_spawn_timer = 1e6f;
     /* Find the shipyard station. */
     int shipyard = -1;
     for (int s = 0; s < MAX_STATIONS; s++) {

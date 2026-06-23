@@ -2161,6 +2161,18 @@ TEST(test_action_result_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[7]), (int)0xAABBCCDDu);
 }
 
+TEST(test_input_applied_roundtrip) {
+    uint8_t buf[NET_INPUT_APPLIED_SIZE];
+    int len = serialize_input_applied(buf, 0x1234, 0xAABBCCDDu,
+                                      0x01020304u);
+
+    ASSERT_EQ_INT(len, NET_INPUT_APPLIED_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_INPUT_APPLIED);
+    ASSERT_EQ_INT((int)read_u16_le(&buf[1]), 0x1234);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[3]), (int)0xAABBCCDDu);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[7]), (int)0x01020304u);
+}
+
 TEST(test_cargo_receipt_bundle_roundtrip) {
     cargo_receipt_chain_t chain;
     memset(&chain, 0, sizeof(chain));
@@ -2215,6 +2227,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_STATION_DIAG);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK);
     ASSERT_EQ_INT(buf[7], (len - PROTOCOL_INFO_HEADER_SIZE) /
                           PROTOCOL_INFO_STREAM_RECORD_SIZE);
     ASSERT(buf[7] <= PROTOCOL_INFO_STREAM_CAPACITY);
@@ -2252,7 +2265,16 @@ TEST(test_protocol_info_serializes_stream_map) {
     const uint8_t *input = find_protocol_stream(buf, NET_MSG_INPUT);
     ASSERT(input != NULL);
     ASSERT_EQ_INT(read_u16_le(&input[4]), NET_INPUT_MSG_SIZE);
-    ASSERT_EQ_INT(read_u16_le(&input[10]), 8);
+    ASSERT_EQ_INT(read_u16_le(&input[10]), NET_INPUT_ACTIVE_HEARTBEAT_MS);
+
+    const uint8_t *input_applied = find_protocol_stream(buf, NET_MSG_INPUT_APPLIED);
+    ASSERT(input_applied != NULL);
+    ASSERT_EQ_INT(input_applied[1], PROTOCOL_STREAM_CLASS_LIVE);
+    ASSERT(read_u16_le(&input_applied[2]) & PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&input_applied[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&input_applied[2]) & PROTOCOL_STREAM_FLAG_FIXED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&input_applied[4]), NET_INPUT_APPLIED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&input_applied[10]), 8);
 
     const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
     ASSERT(contracts != NULL);
@@ -2405,6 +2427,7 @@ void register_protocol_main_tests(void) {
     RUN(test_latency_pong_can_arrive_before_authoritative_input_ack);
     RUN(test_action_ack_roundtrip);
     RUN(test_action_result_roundtrip);
+    RUN(test_input_applied_roundtrip);
     RUN(test_cargo_receipt_bundle_roundtrip);
     RUN(test_latency_pong_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);

@@ -427,7 +427,7 @@ int chain_log_read_route_history_tail(const station_t *s,
     fclose(f);
     int n = count < cap ? count : cap;
     if (count > cap) {
-        chain_route_history_tail_t ordered[ROUTE_HISTORY_TAIL_MAX];
+        chain_route_history_tail_t ordered[ROUTE_HISTORY_TAIL_MAX] = {0};
         int start = count % cap;
         for (int i = 0; i < cap; i++)
             ordered[i] = out[(start + i) % cap];

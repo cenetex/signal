@@ -650,6 +650,19 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_INPUT_APPLIED:
+        if (len < NET_INPUT_APPLIED_SIZE) break;
+        {
+            uint16_t input_seq = read_u16_le(&data[1]);
+            uint32_t server_tick = read_u32_le(&data[3]);
+            uint32_t input_tick_ack = read_u32_le(&data[7]);
+            if (net_state.callbacks.on_input_applied) {
+                net_state.callbacks.on_input_applied(input_seq, server_tick,
+                                                     input_tick_ack);
+            }
+        }
+        break;
+
     case NET_MSG_HANDOFF_TICKET:
         if ((size_t)len < 4u + HANDOFF_TICKET_SIZE) break;
         {
