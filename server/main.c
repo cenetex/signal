@@ -2868,6 +2868,7 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_STATION_DIAG: return "STATION_DIAG";
     case NET_MSG_WORLD_PLAYERS: return "WORLD_PLAYERS";
     case NET_MSG_WORLD_CARGO_PODS: return "WORLD_CARGO_PODS";
+    case NET_MSG_WORLD_INTERACTIONS: return "WORLD_INTERACTIONS";
     case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
     case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";
     case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";

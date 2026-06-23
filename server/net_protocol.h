@@ -353,6 +353,10 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
                         2, CARGO_POD_RECORD_SIZE, MAX_CARGO_PODS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_INTERACTIONS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        2, INTERACTION_RECORD_SIZE, SIM_MAX_INTERACTIONS,
+                        world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -1835,6 +1839,44 @@ static inline int serialize_cargo_pods_for_player(uint8_t *buf,
     return 2 + count * CARGO_POD_RECORD_SIZE;
 }
 
+static inline void serialize_one_interaction(uint8_t *p,
+                                             const sim_interaction_t *it) {
+    p[0] = it->type;
+    p[1] = it->visual;
+    p[2] = it->commodity;
+    p[3] = it->flags;
+    p[4] = it->source.type;
+    write_u16_le(&p[5], (uint16_t)(int16_t)it->source.index);
+    write_u16_le(&p[7], (uint16_t)(int16_t)it->source.aux);
+    p[9] = it->target.type;
+    write_u16_le(&p[10], (uint16_t)(int16_t)it->target.index);
+    write_u16_le(&p[12], (uint16_t)(int16_t)it->target.aux);
+    write_f32_le(&p[14], it->source_pos.x);
+    write_f32_le(&p[18], it->source_pos.y);
+    write_f32_le(&p[22], it->target_pos.x);
+    write_f32_le(&p[26], it->target_pos.y);
+    write_f32_le(&p[30], it->range);
+    write_f32_le(&p[34], it->intensity);
+}
+
+static inline int serialize_interactions(uint8_t *buf,
+                                         const sim_interactions_t *interactions) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (it->type == SIM_INTERACTION_NONE) continue;
+            serialize_one_interaction(
+                &buf[2 + count * INTERACTION_RECORD_SIZE], it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTIONS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * INTERACTION_RECORD_SIZE;
+}
+
 typedef void (*server_packet_sink_fn)(void *user, const uint8_t *data, int len);
 typedef void (*server_player_packet_sink_fn)(void *user, int player_slot,
                                              const uint8_t *data, int len);
@@ -1845,6 +1887,7 @@ typedef struct {
     uint8_t npcs[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     uint8_t scaffolds[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
     uint8_t cargo_pods[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+    uint8_t interactions[2 + SIM_MAX_INTERACTIONS * INTERACTION_RECORD_SIZE];
     uint8_t world_time[5];
 } server_world_snapshot_scratch_t;
 
@@ -1882,6 +1925,9 @@ static inline void server_emit_world_snapshot_for_player(
     int clen = serialize_cargo_pods_for_player(
         scratch->cargo_pods, w->cargo_pods, sp->ship.pos);
     send(send_user, scratch->cargo_pods, clen);
+
+    int ilen = serialize_interactions(scratch->interactions, &w->interactions);
+    send(send_user, scratch->interactions, ilen);
 
     scratch->world_time[0] = NET_MSG_WORLD_TIME;
     write_f32_le(&scratch->world_time[1], w->time);

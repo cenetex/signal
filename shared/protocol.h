@@ -274,6 +274,9 @@ enum {
                                             * ack for compatibility; this small packet
                                             * decouples input timing from full pose
                                             * broadcast cadence. */
+    NET_MSG_WORLD_INTERACTIONS     = 0x49, /* server -> client: transient authored
+                                            * interaction visuals such as module
+                                            * tractor beams. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -634,6 +637,17 @@ static inline bool inspect_snapshot_unit_is_groupable(const cargo_unit_t *u) {
 #define FRACTURE_CHALLENGE_SIZE      (1 + 4 + 32 + 4 + 2)
 #define FRACTURE_CLAIM_SIZE          (1 + 4 + 4 + 1)
 #define FRACTURE_RESOLVED_SIZE       (1 + 4 + 32 + 32 + 1)
+
+/* Transient interaction visuals (NET_MSG_WORLD_INTERACTIONS):
+ * [type:1][count:1] + count * INTERACTION_RECORD_SIZE
+ * record:
+ * [type:1][visual:1][commodity:1][flags:1]
+ * [source_type:1][source_index:i16][source_aux:i16]
+ * [target_type:1][target_index:i16][target_aux:i16]
+ * [source_x:f32][source_y:f32][target_x:f32][target_y:f32]
+ * [range:f32][intensity:f32]
+ */
+#define INTERACTION_RECORD_SIZE 38
 
 /* Signal channel wire record:
  *   [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200][entry_hash:32] = 246 bytes

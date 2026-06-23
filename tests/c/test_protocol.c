@@ -269,6 +269,53 @@ TEST(test_roundtrip_cargo_pods) {
     ASSERT_EQ_INT(p[37], 6);
 }
 
+TEST(test_roundtrip_interactions) {
+    sim_interactions_t interactions;
+    memset(&interactions, 0, sizeof(interactions));
+    interactions.count = 2;
+
+    interactions.items[0].type = SIM_INTERACTION_NONE;
+    interactions.items[1].type = SIM_INTERACTION_TRACTOR_BEAM;
+    interactions.items[1].visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR;
+    interactions.items[1].commodity = COMMODITY_FERRITE_INGOT;
+    interactions.items[1].flags = 0x5A;
+    interactions.items[1].source.type = SIM_INTERACTION_ENTITY_STATION_MODULE;
+    interactions.items[1].source.index = 3;
+    interactions.items[1].source.aux = 7;
+    interactions.items[1].target.type = SIM_INTERACTION_ENTITY_CARGO_POD;
+    interactions.items[1].target.index = 42;
+    interactions.items[1].target.aux = -1;
+    interactions.items[1].source_pos = v2(10.5f, -20.25f);
+    interactions.items[1].target_pos = v2(30.0f, 40.75f);
+    interactions.items[1].range = 512.0f;
+    interactions.items[1].intensity = 0.65f;
+
+    uint8_t buf[2 + SIM_MAX_INTERACTIONS * INTERACTION_RECORD_SIZE];
+    int len = serialize_interactions(buf, &interactions);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_INTERACTIONS);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, 2 + INTERACTION_RECORD_SIZE);
+
+    uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], SIM_INTERACTION_TRACTOR_BEAM);
+    ASSERT_EQ_INT(p[1], SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR);
+    ASSERT_EQ_INT(p[2], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[3], 0x5A);
+    ASSERT_EQ_INT(p[4], SIM_INTERACTION_ENTITY_STATION_MODULE);
+    ASSERT_EQ_INT((int)(int16_t)read_u16_le(&p[5]), 3);
+    ASSERT_EQ_INT((int)(int16_t)read_u16_le(&p[7]), 7);
+    ASSERT_EQ_INT(p[9], SIM_INTERACTION_ENTITY_CARGO_POD);
+    ASSERT_EQ_INT((int)(int16_t)read_u16_le(&p[10]), 42);
+    ASSERT_EQ_INT((int)(int16_t)read_u16_le(&p[12]), -1);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[14]), 10.5f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[18]), -20.25f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[22]), 30.0f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[26]), 40.75f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[30]), 512.0f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[34]), 0.65f, 0.001f);
+}
+
 TEST(test_roundtrip_npcs) {
     npc_ship_t npcs[MAX_NPC_SHIPS];
     memset(npcs, 0, sizeof(npcs));
@@ -436,19 +483,21 @@ TEST(test_world_snapshot_emitter_sequence_shared) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 6);
+    ASSERT_EQ_INT(cap.count, 7);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_PLAYERS);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_SCAFFOLDS);
     ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_CARGO_PODS);
-    ASSERT_EQ_INT(cap.type[5], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_WORLD_INTERACTIONS);
+    ASSERT_EQ_INT(cap.type[6], NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT(cap.len[0], ASTEROID_MSG_HEADER + ASTEROID_RECORD_SIZE);
     ASSERT_EQ_INT(cap.len[1], 2 + PLAYER_RECORD_SIZE);
     ASSERT_EQ_INT(cap.len[2], 2);
     ASSERT_EQ_INT(cap.len[3], 2);
     ASSERT_EQ_INT(cap.len[4], 2);
-    ASSERT_EQ_INT(cap.len[5], 5);
+    ASSERT_EQ_INT(cap.len[5], 2);
+    ASSERT_EQ_INT(cap.len[6], 5);
 
     ASSERT(w.asteroids[2].net_dirty);
     server_clear_asteroid_net_dirty(&w);
@@ -2280,6 +2329,16 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT(read_u16_le(&npcs[8]), MAX_NPC_SHIPS);
     ASSERT_EQ_INT(read_u16_le(&npcs[10]), 100);
 
+    const uint8_t *interactions = find_protocol_stream(
+        buf, NET_MSG_WORLD_INTERACTIONS);
+    ASSERT(interactions != NULL);
+    ASSERT_EQ_INT(interactions[1], PROTOCOL_STREAM_CLASS_LIVE);
+    ASSERT(read_u16_le(&interactions[2]) & PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT_EQ_INT(read_u16_le(&interactions[4]), 2);
+    ASSERT_EQ_INT(read_u16_le(&interactions[6]), INTERACTION_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&interactions[8]), SIM_MAX_INTERACTIONS);
+    ASSERT_EQ_INT(read_u16_le(&interactions[10]), 100);
+
     const uint8_t *input = find_protocol_stream(buf, NET_MSG_INPUT);
     ASSERT(input != NULL);
     ASSERT_EQ_INT(read_u16_le(&input[4]), NET_INPUT_MSG_SIZE);
@@ -2403,6 +2462,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids);
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
+    RUN(test_roundtrip_interactions);
     RUN(test_roundtrip_npcs);
     RUN(test_npc_snapshot_serializes_embedded_ship_tow_slot);
     RUN(test_relevance_filtered_world_snapshots);

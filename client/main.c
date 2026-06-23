@@ -188,6 +188,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_station_diag = apply_remote_station_diag;
     cbs->on_scaffolds = apply_remote_scaffolds;
     cbs->on_cargo_pods = apply_remote_cargo_pods;
+    cbs->on_interactions = apply_remote_interactions;
     cbs->on_hail_response = apply_remote_hail_response;
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
@@ -2958,28 +2959,9 @@ static void frame(void) {
                 &action, &buy_grade_byte, &place_station, &place_ring,
                 &place_slot, &action_id);
             g.net_input_timer -= frame_dt;
-            uint8_t flags = 0;
-            input_intent_t movement_intent = {0};
-            input_sample_movement(&movement_intent);
-            if (movement_intent.thrust > 0.01f)
-                flags |= NET_INPUT_THRUST;
-            if (movement_intent.thrust < -0.01f)
-                flags |= NET_INPUT_BRAKE;
-            if (movement_intent.reverse_thrust)
-                flags |= NET_INPUT_REVERSE;
-            if (movement_intent.turn > 0.01f)
-                flags |= NET_INPUT_LEFT;
-            if (movement_intent.turn < -0.01f)
-                flags |= NET_INPUT_RIGHT;
-            if (movement_intent.mine)
-                flags |= NET_INPUT_FIRE;
-            if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active &&
-                !LOCAL_PLAYER.docked)
-                flags |= NET_INPUT_TRACTOR;
-            if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
-                 g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT]) &&
-                !LOCAL_PLAYER.docked)
-                flags |= NET_INPUT_BOOST;
+            input_intent_t network_intent = {0};
+            input_sample_network_controls(&network_intent);
+            uint8_t flags = input_intent_net_flags(&network_intent);
             uint16_t mining_target =
                 ((flags & NET_INPUT_FIRE) != 0 &&
                  LOCAL_PLAYER.hover_asteroid >= 0 &&

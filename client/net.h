@@ -245,6 +245,7 @@ typedef struct {
     uint8_t tractor_module;
 } NetCargoPodState;
 typedef void (*net_on_cargo_pods_fn)(const NetCargoPodState* pods, int count);
+typedef void (*net_on_interactions_fn)(const sim_interaction_t *items, int count);
 
 /* Hail response callback: server confirmed payout from a hail attempt. */
 typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
@@ -397,6 +398,7 @@ typedef struct {
     net_on_station_diag_fn on_station_diag;
     net_on_scaffolds_fn on_scaffolds;
     net_on_cargo_pods_fn on_cargo_pods;
+    net_on_interactions_fn on_interactions;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;

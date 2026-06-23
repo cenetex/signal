@@ -1131,6 +1131,38 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_INTERACTIONS:
+        if (len >= 2 && net_state.callbacks.on_interactions) {
+            int count = data[1];
+            int expected = 2 + count * INTERACTION_RECORD_SIZE;
+            if (len < expected) break;
+            sim_interaction_t items[SIM_MAX_INTERACTIONS];
+            int max = count > SIM_MAX_INTERACTIONS ? SIM_MAX_INTERACTIONS : count;
+            memset(items, 0, sizeof(items));
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p = &data[2 + i * INTERACTION_RECORD_SIZE];
+                sim_interaction_t *it = &items[i];
+                it->type = p[0];
+                it->visual = p[1];
+                it->commodity = p[2];
+                it->flags = p[3];
+                it->source.type = p[4];
+                it->source.index = (int16_t)read_u16_le(&p[5]);
+                it->source.aux = (int16_t)read_u16_le(&p[7]);
+                it->target.type = p[9];
+                it->target.index = (int16_t)read_u16_le(&p[10]);
+                it->target.aux = (int16_t)read_u16_le(&p[12]);
+                it->source_pos.x = read_f32_le(&p[14]);
+                it->source_pos.y = read_f32_le(&p[18]);
+                it->target_pos.x = read_f32_le(&p[22]);
+                it->target_pos.y = read_f32_le(&p[26]);
+                it->range = read_f32_le(&p[30]);
+                it->intensity = read_f32_le(&p[34]);
+            }
+            net_state.callbacks.on_interactions(items, max);
+        }
+        break;
+
     case NET_MSG_HAIL_RESPONSE:
         if (len >= 6 && net_state.callbacks.on_hail_response) {
             uint8_t station = data[1];

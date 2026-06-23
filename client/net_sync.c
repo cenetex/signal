@@ -623,6 +623,8 @@ void reset_remote_dynamic_sync(void) {
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
     g.cargo_pod_interp.interval = 0.1f;
 
+    memset(&g.world.interactions, 0, sizeof(g.world.interactions));
+
     LOCAL_PLAYER.hover_asteroid = -1;
 }
 
@@ -1320,6 +1322,17 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
     }
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         if (!seen[i]) g.cargo_pod_interp.curr[i].active = false;
+    }
+}
+
+void apply_remote_interactions(const sim_interaction_t *items, int count) {
+    memset(&g.world.interactions, 0, sizeof(g.world.interactions));
+    if (!items || count <= 0) return;
+    if (count > SIM_MAX_INTERACTIONS) count = SIM_MAX_INTERACTIONS;
+    for (int i = 0; i < count; i++) {
+        if (items[i].type == SIM_INTERACTION_NONE) continue;
+        if (g.world.interactions.count >= SIM_MAX_INTERACTIONS) break;
+        g.world.interactions.items[g.world.interactions.count++] = items[i];
     }
 }
 

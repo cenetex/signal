@@ -130,17 +130,6 @@ static void input_credit_cargo_route_label(const contract_t *ct,
              station_short_name(ct->station_index));
 }
 
-static int input_local_ledger_index(station_t *st) {
-    if (!st) return -1;
-    uint8_t pseudo[32];
-    client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
-    for (int li = 0; li < st->ledger_count; li++) {
-        if (memcmp(st->ledger[li].player_pubkey, pseudo, 32) == 0)
-            return li;
-    }
-    return -1;
-}
-
 static int input_ship_manifest_count_c(const ship_t *ship, commodity_t commodity) {
     if (!ship || !ship->manifest.units) return 0;
     int n = 0;
@@ -293,6 +282,54 @@ void input_sample_movement(input_intent_t *intent) {
 
     if (intent->thrust != 0.0f || intent->turn != 0.0f) onboarding_mark_moved();
     intent->mine = is_key_down(SAPP_KEYCODE_M);
+}
+
+void input_sample_network_controls(input_intent_t *intent) {
+    if (!intent) return;
+    input_sample_movement(intent);
+    if (!LOCAL_PLAYER.docked && !g.plan_mode_active &&
+        is_key_down(SAPP_KEYCODE_SPACE)) {
+        intent->tractor_hold = true;
+    }
+    if (!LOCAL_PLAYER.docked &&
+        (is_key_down(SAPP_KEYCODE_LEFT_SHIFT) ||
+         is_key_down(SAPP_KEYCODE_RIGHT_SHIFT))) {
+        intent->boost = true;
+    }
+}
+
+bool input_intent_has_network_action(const input_intent_t *intent) {
+    if (!intent) return false;
+    return intent->interact || intent->service_sell ||
+        intent->service_repair || intent->upgrade_mining ||
+        intent->upgrade_hold || intent->upgrade_tractor ||
+        intent->place_outpost || intent->buy_scaffold_kit ||
+        intent->commission_ship || intent->buy_product || intent->hail ||
+        intent->release_tow || intent->reset || intent->add_plan ||
+        intent->create_planned_outpost || intent->cancel_planned_outpost ||
+        intent->cancel_plan_slot || intent->toggle_autopilot;
+}
+
+uint8_t input_intent_net_flags(const input_intent_t *intent) {
+    uint8_t flags = 0;
+    if (!intent) return flags;
+    if (intent->thrust > 0.01f)
+        flags |= NET_INPUT_THRUST;
+    if (intent->thrust < -0.01f)
+        flags |= NET_INPUT_BRAKE;
+    if (intent->reverse_thrust)
+        flags |= NET_INPUT_REVERSE;
+    if (intent->turn > 0.01f)
+        flags |= NET_INPUT_LEFT;
+    if (intent->turn < -0.01f)
+        flags |= NET_INPUT_RIGHT;
+    if (intent->mine)
+        flags |= NET_INPUT_FIRE;
+    if (intent->tractor_hold)
+        flags |= NET_INPUT_TRACTOR;
+    if (intent->boost)
+        flags |= NET_INPUT_BOOST;
+    return flags;
 }
 
 /* Tractor: hold Space = grab, tap Space (< 200ms) = release. */
@@ -697,12 +734,6 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
         intent->buy_station_pod = true;
         intent->buy_station_pod_index = row->station_pod_index;
     }
-    if (!g.net_authority_enabled) {
-        station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-        int li = input_local_ledger_index(mst);
-        if (li >= 0 && mst->ledger[li].balance >= total_price)
-            mst->ledger[li].balance -= total_price;
-    }
     if (row->is_station_pod) {
         set_notice("-%d %s  %s crate x%d",
                    (int)lroundf(total_price),
@@ -763,18 +794,6 @@ static void sample_trade_picker(input_intent_t *intent) {
             ? row->total_price
             : row->unit_price);
         float payout = price;
-        if (!g.net_authority_enabled) {
-            station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-            int idx = input_local_ledger_index(mst);
-            if (idx < 0 && mst->ledger_count < STATION_LEDGER_MAX) {
-                idx = mst->ledger_count++;
-                client_session_pseudo_pubkey(LOCAL_PLAYER.session_token,
-                                             mst->ledger[idx].player_pubkey);
-                mst->ledger[idx].balance = 0.0f;
-                mst->ledger[idx].lifetime_supply = 0.0f;
-            }
-            if (idx >= 0) mst->ledger[idx].balance += payout;
-        }
         if (row->is_towed_pod) {
             set_notice("+%d %s  %s crate x%d",
                        (int)lroundf(payout),
@@ -1180,14 +1199,7 @@ void submit_input(const input_intent_t *intent, float dt) {
     }
 
     /* Detect one-shot actions for prediction suppression and network send */
-    bool has_action = intent->interact || intent->service_sell ||
-        intent->service_repair || intent->upgrade_mining ||
-        intent->upgrade_hold || intent->upgrade_tractor ||
-        intent->place_outpost || intent->buy_scaffold_kit ||
-        intent->buy_product || intent->hail ||
-        intent->release_tow || intent->add_plan ||
-        intent->create_planned_outpost || intent->cancel_planned_outpost ||
-        intent->cancel_plan_slot || intent->toggle_autopilot;
+    bool has_action = input_intent_has_network_action(intent);
 
     if (has_action)
         g.action_predict_timer = action_predict_window_sec();
@@ -1249,7 +1261,9 @@ void submit_input(const input_intent_t *intent, float dt) {
     /* Networked authority: encode the action and queue for send. */
     if (has_action && g.net_authority_enabled && net_is_connected()) {
         if (intent->interact) {
-            g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
+            g.pending_net_action = LOCAL_PLAYER.docked
+                ? NET_ACTION_LAUNCH
+                : NET_ACTION_DOCK;
         } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;
             /* Per-row sell rides the same 5th-byte slot as buy_grade.
@@ -1260,17 +1274,17 @@ void submit_input(const input_intent_t *intent, float dt) {
                 g.pending_net_buy_grade = (uint8_t)intent->service_sell_grade;
         }
         else if (intent->service_sell)
-            g.pending_net_action = 3;
+            g.pending_net_action = NET_ACTION_SELL_CARGO;
         else if (intent->service_repair)
-            g.pending_net_action = 4;
+            g.pending_net_action = NET_ACTION_REPAIR;
         else if (intent->upgrade_mining)
-            g.pending_net_action = 5;
+            g.pending_net_action = NET_ACTION_UPGRADE_MINING;
         else if (intent->upgrade_hold)
-            g.pending_net_action = 6;
+            g.pending_net_action = NET_ACTION_UPGRADE_HOLD;
         else if (intent->upgrade_tractor)
-            g.pending_net_action = 7;
+            g.pending_net_action = NET_ACTION_UPGRADE_TRACTOR;
         else if (intent->place_outpost) {
-            g.pending_net_action = 8;
+            g.pending_net_action = NET_ACTION_PLACE_OUTPOST;
             g.pending_net_place_station = intent->place_target_station;
             g.pending_net_place_ring    = intent->place_target_ring;
             g.pending_net_place_slot    = intent->place_target_slot;
