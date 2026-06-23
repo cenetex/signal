@@ -54,6 +54,86 @@ static uint32_t test_crc32_update(uint32_t crc, const void *buf, size_t len) {
     return ~crc;
 }
 
+static bool test_patch_world_save_version(const char *path, uint32_t version) {
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long len = ftell(f);
+    if (len < 16) {
+        fclose(f);
+        return false;
+    }
+    if (fseek(f, 4, SEEK_SET) != 0 ||
+        fwrite(&version, sizeof(version), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+
+    long data_end = len;
+    uint32_t trailer_magic = 0;
+    if (len >= 8 && fseek(f, len - 8, SEEK_SET) == 0 &&
+        fread(&trailer_magic, sizeof(trailer_magic), 1, f) == 1 &&
+        trailer_magic == 0x43524332u) {
+        data_end = len - 8;
+    }
+    if (data_end == len) {
+        fclose(f);
+        return true;
+    }
+
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    uint32_t crc = 0;
+    long remaining = data_end;
+    uint8_t chunk[4096];
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(chunk)
+            ? (size_t)remaining
+            : sizeof(chunk);
+        if (fread(chunk, 1, want, f) != want) {
+            fclose(f);
+            return false;
+        }
+        crc = test_crc32_update(crc, chunk, want);
+        remaining -= (long)want;
+    }
+    if (fseek(f, data_end + 4, SEEK_SET) != 0 ||
+        fwrite(&crc, sizeof(crc), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+static int test_count_exact_frame_pod_units(const world_t *w) {
+    if (!w) return 0;
+    int total = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
+        if (pod->shipment_id != 0 || pod->commodity != COMMODITY_FRAME)
+            continue;
+        if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
+            continue;
+        bool exact = true;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if ((commodity_t)pod->manifest_units[u].commodity !=
+                COMMODITY_FRAME) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact) total += (int)pod->manifest_count;
+    }
+    return total;
+}
+
 static bool test_patch_catalog_version(const char *path, uint32_t version) {
     FILE *f = fopen(path, "rb+");
     if (!f) return false;
@@ -1764,6 +1844,56 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     remove(TMP("test_delivery_shipments.sav"));
 }
 
+TEST(test_world_load_v70_backfills_missing_starter_frame_pods) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+    ASSERT_EQ_INT(test_count_exact_frame_pod_units(w), 0);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_v70_missing_starter_frames_cat")));
+    ASSERT(world_save(w, TMP("test_v70_missing_starter_frames.sav")));
+    ASSERT(test_patch_world_save_version(
+        TMP("test_v70_missing_starter_frames.sav"), 70));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS,
+        TMP("test_v70_missing_starter_frames_cat")) > 0);
+    ASSERT(world_load(loaded, TMP("test_v70_missing_starter_frames.sav")));
+    ASSERT_EQ_INT(test_count_exact_frame_pod_units(loaded), 32);
+
+    remove(TMP("test_v70_missing_starter_frames.sav"));
+}
+
+TEST(test_world_load_v70_does_not_duplicate_starter_frame_pods) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    int starter_frames = test_count_exact_frame_pod_units(w);
+    ASSERT_EQ_INT(starter_frames, 32);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_v70_existing_starter_frames_cat")));
+    ASSERT(world_save(w, TMP("test_v70_existing_starter_frames.sav")));
+    ASSERT(test_patch_world_save_version(
+        TMP("test_v70_existing_starter_frames.sav"), 70));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS,
+        TMP("test_v70_existing_starter_frames_cat")) > 0);
+    ASSERT(world_load(loaded, TMP("test_v70_existing_starter_frames.sav")));
+    ASSERT_EQ_INT(test_count_exact_frame_pod_units(loaded), starter_frames);
+
+    remove(TMP("test_v70_existing_starter_frames.sav"));
+}
+
 TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -1908,7 +2038,8 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * Kepler frame pod now saves its 16 frame units.
              * Prospect also starts with a 16-frame shell pod for the starter
              * furnace loop.
-             * v70: active cargo pods persist their folded shell-frame flag. */
+             * v70: active cargo pods persist their folded shell-frame flag.
+             * v71: one-time starter frame pod backfill, no layout change. */
 			#define EXPECTED_SAVE_SIZE 766994
 
 TEST(test_save_file_size_stable) {
@@ -1946,7 +2077,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 70);
+    ASSERT_EQ_INT((int)version, 71);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -2114,6 +2245,8 @@ void register_save_persistence_tests(void) {
     RUN(test_world_save_load_preserves_smelted_ingot_pod);
     RUN(test_world_save_load_preserves_hauler_manifest_cargo);
     RUN(test_world_save_load_preserves_delivery_shipments);
+    RUN(test_world_load_v70_backfills_missing_starter_frame_pods);
+    RUN(test_world_load_v70_does_not_duplicate_starter_frame_pods);
     RUN(test_player_load_restores_towed_cargo_pods_from_world);
     RUN(test_contract_target_pub_roundtrips);
 }

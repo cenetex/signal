@@ -2129,21 +2129,27 @@ static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
     }
 }
 
-static void world_seed_frame_pod_near(world_t *w,
-                                      int station_idx,
-                                      vec2 pos,
-                                      uint16_t count,
-                                      const uint8_t origin[8],
-                                      float rotation) {
+static const uint8_t STARTER_KEPLER_FRAME_ORIGIN[8] =
+    { 'K','E','P','L','E','R','v','1' };
+static const uint8_t STARTER_PROSPECT_FRAME_ORIGIN[8] =
+    { 'P','R','O','S','H','E','L','L' };
+enum { STARTER_FRAME_POD_UNITS = 16 };
+
+static int world_seed_frame_pod_near(world_t *w,
+                                     int station_idx,
+                                     vec2 pos,
+                                     uint16_t count,
+                                     const uint8_t origin[8],
+                                     float rotation) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
         !station_exists(&w->stations[station_idx]) ||
         !origin || count == 0 || count > CARGO_POD_MANIFEST_CAP) {
-        return;
+        return -1;
     }
     cargo_unit_t frames[16] = {{0}};
     for (uint16_t i = 0; i < count; i++) {
         if (!hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i, &frames[i]))
-            return;
+            return -1;
         frames[i].origin_station = (uint8_t)station_idx;
     }
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -2163,19 +2169,20 @@ static void world_seed_frame_pod_near(world_t *w,
         pod->rotation = rotation;
         pod->spin = 0.0f;
         pod->towed_by = -1;
-        return;
+        return i;
     }
+    return -1;
 }
 
-static void world_seed_kepler_frame_pod(world_t *w) {
-    if (!w || !station_exists(&w->stations[1])) return;
-    const uint8_t origin[8] = { 'K','E','P','L','E','R','v','1' };
+static int world_seed_kepler_frame_pod(world_t *w) {
+    if (!w || !station_exists(&w->stations[1])) return -1;
     vec2 pos = v2_add(w->stations[1].pos, v2(320.0f, -80.0f));
-    world_seed_frame_pod_near(w, 1, pos, 16, origin, 0.35f);
+    return world_seed_frame_pod_near(w, 1, pos, STARTER_FRAME_POD_UNITS,
+                                     STARTER_KEPLER_FRAME_ORIGIN, 0.35f);
 }
 
-static void world_seed_prospect_frame_shell_pod(world_t *w) {
-    if (!w || !station_exists(&w->stations[0])) return;
+static int world_seed_prospect_frame_shell_pod(world_t *w) {
+    if (!w || !station_exists(&w->stations[0])) return -1;
     const station_t *prospect = &w->stations[0];
     int furnace_idx = -1;
     for (int i = 0; i < prospect->module_count; i++) {
@@ -2186,12 +2193,84 @@ static void world_seed_prospect_frame_shell_pod(world_t *w) {
             break;
         }
     }
-    if (furnace_idx < 0) return;
+    if (furnace_idx < 0) return -1;
     const station_module_t *furnace = &prospect->modules[furnace_idx];
     vec2 shell_pos = module_world_pos_ring(prospect, furnace->ring,
                                            furnace->slot);
-    const uint8_t origin[8] = { 'P','R','O','S','H','E','L','L' };
-    world_seed_frame_pod_near(w, 0, shell_pos, 16, origin, 0.70f);
+    return world_seed_frame_pod_near(w, 0, shell_pos,
+                                     STARTER_FRAME_POD_UNITS,
+                                     STARTER_PROSPECT_FRAME_ORIGIN, 0.70f);
+}
+
+static bool starter_frame_unit_matches(const cargo_unit_t *unit,
+                                       const uint8_t origin[8]) {
+    if (!unit || !origin ||
+        (commodity_t)unit->commodity != COMMODITY_FRAME) {
+        return false;
+    }
+    for (uint16_t i = 0; i < STARTER_FRAME_POD_UNITS; i++) {
+        cargo_unit_t expected = {0};
+        if (!hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i,
+                                      &expected)) {
+            continue;
+        }
+        if (memcmp(unit->pub, expected.pub, sizeof(unit->pub)) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool world_has_starter_frame_unit(const world_t *w,
+                                         const uint8_t origin[8]) {
+    if (!w || !origin) return false;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        if (pod->has_shell_frame &&
+            starter_frame_unit_matches(&pod->shell_frame, origin)) {
+            return true;
+        }
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if (starter_frame_unit_matches(&pod->manifest_units[u], origin))
+                return true;
+        }
+    }
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        for (uint16_t u = 0; u < st->manifest.count; u++) {
+            if (starter_frame_unit_matches(&st->manifest.units[u], origin))
+                return true;
+        }
+    }
+    for (int n = 0; n < MAX_SHIPS; n++) {
+        const ship_t *ship = &w->ships[n];
+        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+            if (starter_frame_unit_matches(&ship->manifest.units[u], origin))
+                return true;
+        }
+    }
+    for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
+        const ship_t *ship = &w->ship_assets[a].ship;
+        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+            if (starter_frame_unit_matches(&ship->manifest.units[u], origin))
+                return true;
+        }
+    }
+    return false;
+}
+
+int world_ensure_starter_frame_pods(world_t *w) {
+    if (!w) return 0;
+    int seeded = 0;
+    if (!world_has_starter_frame_unit(w, STARTER_KEPLER_FRAME_ORIGIN) &&
+        world_seed_kepler_frame_pod(w) >= 0) {
+        seeded++;
+    }
+    if (!world_has_starter_frame_unit(w, STARTER_PROSPECT_FRAME_ORIGIN) &&
+        world_seed_prospect_frame_shell_pod(w) >= 0) {
+        seeded++;
+    }
+    return seeded;
 }
 
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
@@ -11292,8 +11371,7 @@ void world_reset(world_t *w) {
         (void)ship_asset_claim_for_npc(w, 2, NPC_ROLE_TOW);
     }
 
-    world_seed_kepler_frame_pod(w);
-    world_seed_prospect_frame_shell_pod(w);
+    (void)world_ensure_starter_frame_pods(w);
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to

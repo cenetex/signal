@@ -109,9 +109,12 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 70  /* v70: cargo pod saves persist the folded frame unit
-                          * unfolded into each pod shell, so emptied pods can
-                          * fold back into their exact frame.
+#define SAVE_VERSION 71  /* v71: backfill starter frame pods for live saves
+                          * that were already rewritten after the v69
+                          * Prospect shell seed but never received it.
+                          * v70: cargo pod saves persist the folded frame
+                          * unit unfolded into each pod shell, so emptied pods
+                          * can fold back into their exact frame.
                           * v69: cargo pod saves persist exact manifest units
                           * when a pod wraps real cargo_unit_t payloads.
                           * v68: active cargo pods persist as durable economy
@@ -2020,6 +2023,14 @@ bool world_load(world_t *w, const char *path) {
             if (i >= w->station_count && !station_exists(&w->stations[i]))
                 continue;
             station_faction_seed_station(&w->stations[i], i);
+        }
+    }
+
+    if (version < 71) {
+        int seeded = world_ensure_starter_frame_pods(w);
+        if (seeded > 0) {
+            printf("[save] migrated v%d -> v71: restored %d starter frame pod%s\n",
+                   (int)version, seeded, seeded == 1 ? "" : "s");
         }
     }
 
