@@ -28,6 +28,13 @@
 
 static const uint8_t COL_TRACKED_JOB[3] = { 255, 222, 51 };
 
+static void station_ui_append_text(char *out, size_t cap, const char *text) {
+    if (!out || cap == 0 || !text) return;
+    size_t len = strlen(out);
+    if (len >= cap) return;
+    snprintf(out + len, cap - len, "%s", text);
+}
+
 /* ------------------------------------------------------------------ */
 /* Station lookup helpers                                              */
 /* ------------------------------------------------------------------ */
@@ -170,11 +177,11 @@ static void ui_join_module_inputs(module_inputs_t req, char *out, size_t cap)
         if (c >= COMMODITY_COUNT) continue;
         size_t len = strlen(out);
         if (out[0] && len + 1 < cap) {
-            strncat(out, " + ", cap - len - 1);
+            station_ui_append_text(out, cap, " + ");
             len = strlen(out);
         }
         if (len + 1 >= cap) break;
-        strncat(out, commodity_name(c), cap - len - 1);
+        station_ui_append_text(out, cap, commodity_name(c));
     }
 }
 
@@ -350,9 +357,9 @@ static bool ui_upgrade_source_label(ship_upgrade_t upgrade,
     for (int i = 0; i < req.count; i++) {
         if (req.commodities[i] >= COMMODITY_COUNT) continue;
         if (inputs[0])
-            strncat(inputs, " + ", sizeof(inputs) - strlen(inputs) - 1);
-        strncat(inputs, commodity_name(req.commodities[i]),
-                sizeof(inputs) - strlen(inputs) - 1);
+            station_ui_append_text(inputs, sizeof(inputs), " + ");
+        station_ui_append_text(inputs, sizeof(inputs),
+                               commodity_name(req.commodities[i]));
     }
     if (!inputs[0]) return false;
 
@@ -370,9 +377,29 @@ static bool ui_upgrade_input_gate_label(ship_upgrade_t upgrade,
     if (!ship || upgrade != SHIP_UPGRADE_MINING || ship->mining_level != 0)
         return false;
 
-    int required = mining_required_level_for_commodity(COMMODITY_CUPRITE_ORE);
+    commodity_t product = ui_upgrade_product_commodity(upgrade);
+    module_type_t producer = ui_product_producer_module(product);
+    if (producer >= MODULE_COUNT) return false;
+
+    module_inputs_t req = module_required_inputs(producer);
+    commodity_t gated_source = COMMODITY_COUNT;
+    int required = ship->mining_level;
+    for (int i = 0; i < req.count; i++) {
+        commodity_t source = commodity_ore_for_ingot(req.commodities[i]);
+        if (source >= COMMODITY_COUNT)
+            source = commodity_ore_form(req.commodities[i]);
+        if (source >= COMMODITY_RAW_ORE_COUNT)
+            continue;
+        int source_required = mining_required_level_for_commodity(source);
+        if (source_required > required) {
+            required = source_required;
+            gated_source = source;
+        }
+    }
+    if (gated_source >= COMMODITY_COUNT) return false;
     if (required <= ship->mining_level) return false;
-    snprintf(out, cap, "Cuprite source requires L%d laser", required + 1);
+    snprintf(out, cap, "%s source requires L%d laser",
+             commodity_short_name(gated_source), required + 1);
     return true;
 }
 
@@ -893,11 +920,27 @@ static void ui_write_parts(char *out, size_t cap,
     ui_append_bounded(out, cap, &used, c);
 }
 
+static bool ui_remote_authority_enabled(void) {
+    return g.net_authority_enabled && !net_is_loopback();
+}
+
+static bool ui_known_station_balance(int station_idx, float *out) {
+    if (out) *out = 0.0f;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    for (int i = 0; i < g.known_station_ledger_count; i++) {
+        if (g.known_station_ledger[i].station != (uint8_t)station_idx)
+            continue;
+        if (out) *out = g.known_station_ledger[i].balance;
+        return true;
+    }
+    return false;
+}
+
 static bool ui_local_player_pubkey(uint8_t out[32]) {
     if (!out) return false;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
         return false;
-    if (g.net_authority_enabled) {
+    if (ui_remote_authority_enabled()) {
         memset(out, 0, 32);
         return false;
     }
@@ -924,6 +967,16 @@ static bool ui_station_balance_for_pubkey(int station_idx,
     return false;
 }
 
+static bool ui_station_balance_for_player(int station_idx, float *out) {
+    if (out) *out = 0.0f;
+    if (ui_remote_authority_enabled())
+        return ui_known_station_balance(station_idx, out);
+    uint8_t pubkey[32];
+    if (!ui_local_player_pubkey(pubkey))
+        return false;
+    return ui_station_balance_for_pubkey(station_idx, pubkey, out);
+}
+
 static int ui_build_ledger_strip(int current_station,
                                  char *out,
                                  size_t cap)
@@ -948,17 +1001,10 @@ static int ui_build_ledger_strip(int current_station,
     size_t used = (size_t)written < cap ? (size_t)written : cap - 1;
     int rows = 1;
 
-    if (g.net_authority_enabled)
-        return rows;
-
-    uint8_t pubkey[32];
-    if (!ui_local_player_pubkey(pubkey))
-        return rows;
-
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (s == current_station) continue;
         float bal = 0.0f;
-        if (!ui_station_balance_for_pubkey(s, pubkey, &bal)) continue;
+        if (!ui_station_balance_for_player(s, &bal)) continue;
         if (fabsf(bal) < 0.5f) continue;
         char name[16], cur_short[8], piece[48];
         ui_station_name_short(s, name, sizeof(name));
@@ -2939,19 +2985,16 @@ static bool station_credit_bridge_line(int current_station,
 {
     if (!out || cap == 0) return false;
     out[0] = '\0';
-    if (g.net_authority_enabled) return false;
     if (current_station < 0 || current_station >= MAX_STATIONS)
         return false;
     if (player_current_balance() > 0.5f) return false;
 
-    uint8_t pubkey[32];
-    if (!ui_local_player_pubkey(pubkey)) return false;
     int best_station = -1;
     float best_balance = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (s == current_station) continue;
         float bal = 0.0f;
-        if (!ui_station_balance_for_pubkey(s, pubkey, &bal)) continue;
+        if (!ui_station_balance_for_player(s, &bal)) continue;
         if (bal > best_balance) {
             best_balance = bal;
             best_station = s;

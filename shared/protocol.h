@@ -26,6 +26,10 @@
  *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed structural trailers
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
  *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
+ *   HAIL_RESPONSE   (0x25): [type:1][station:1][credits:f32][contract:1]
+ *                         optional reason tail:
+ *                         [flags:u32][signal_quality:f32][candidate_count:1]
+ *                         [mode:1][source_id:u64]
  */
 #ifndef SHARED_PROTOCOL_H
 #define SHARED_PROTOCOL_H
@@ -277,6 +281,17 @@ enum {
     NET_MSG_WORLD_INTERACTIONS     = 0x49, /* server -> client: transient authored
                                             * interaction visuals such as module
                                             * tractor beams. */
+    NET_MSG_PLAYER_KNOWN_LEDGER    = 0x4A, /* server -> client. Per-player station
+                                            * ledger balances known to the authority.
+                                            *
+                                            *   [type:1=0x4A][count:1]
+                                            *     count × [station:1][balance:f32]
+                                            *
+                                            * PLAYER_SHIP continues to carry the
+                                            * current/nearby station balance. This
+                                            * packet lets remote multiplayer render
+                                            * cross-station local-credit rows without
+                                            * exposing full station ledger tables. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -311,6 +326,11 @@ enum {
                                             * predates Layer A.3's signed actions. */
 };
 
+enum {
+    NET_HAIL_RESPONSE_BASE_SIZE = 7,
+    NET_HAIL_RESPONSE_REASON_SIZE = 25,
+};
+
 /* Protocol discovery. Increment SIGNAL_PROTOCOL_VERSION only when a
  * compatibility decision is needed by external consumers; adding a new stream
  * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities. */
@@ -326,6 +346,7 @@ enum {
     SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS = 1u << 6,
     SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS = 1u << 7,
     SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK = 1u << 8,
+    SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER = 1u << 9,
 };
 
 enum {
@@ -364,7 +385,8 @@ enum {
         SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT |
         SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS |
         SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS |
-        SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK,
+        SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK |
+        SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER,
 };
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
@@ -776,6 +798,12 @@ enum {
 #define DELIVERY_LEDGER_HEADER 2
 #define DELIVERY_LEDGER_RECORD_SIZE 32
 #define DELIVERY_LEDGER_MAX_RECORDS 24
+
+/* NET_MSG_PLAYER_KNOWN_LEDGER record:
+ * station:u8, balance:f32. */
+#define PLAYER_KNOWN_LEDGER_HEADER 2
+#define PLAYER_KNOWN_LEDGER_RECORD_SIZE 5
+#define PLAYER_KNOWN_LEDGER_MAX_RECORDS MAX_STATIONS
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

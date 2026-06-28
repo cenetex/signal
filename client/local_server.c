@@ -259,7 +259,7 @@ void local_server_attach_loopback(local_server_t *ls) {
 static void local_server_emit_hail_response(local_server_t *ls,
                                             const sim_event_t *ev) {
     if (!ls || !ev) return;
-    uint8_t msg[7];
+    uint8_t msg[NET_HAIL_RESPONSE_REASON_SIZE];
     int len = serialize_hail_response_for_world(msg, &ls->world, ev);
     if (len > 0) local_server_send_to_client(msg, len);
 }
@@ -278,18 +278,44 @@ static void local_server_emit_fracture_updates(local_server_t *ls,
         &ls->world, player_slot, local_server_player_packet_sink, NULL);
 }
 
+typedef struct {
+    local_server_t *ls;
+    int player_slot;
+} local_server_event_context_t;
+
+static void local_server_event_hail_response(void *user,
+                                             const sim_event_t *ev) {
+    local_server_event_context_t *ctx =
+        (local_server_event_context_t *)user;
+    if (!ctx || !ctx->ls) return;
+    local_server_emit_hail_response(ctx->ls, ev);
+}
+
+static void local_server_event_death(void *user, const sim_event_t *ev) {
+    local_server_event_context_t *ctx =
+        (local_server_event_context_t *)user;
+    if (!ctx || !ctx->ls || !ev) return;
+    if (ev->player_id != ctx->player_slot) return;
+    uint8_t msg[NET_DEATH_MSG_SIZE];
+    int len = serialize_death(msg, (uint8_t)ctx->player_slot, ev);
+    local_server_send_to_client(msg, len);
+}
+
+static const server_sim_event_hooks_t local_server_event_hooks = {
+    .hail_response = local_server_event_hail_response,
+    .death = local_server_event_death,
+};
+
 static void local_server_emit_events(local_server_t *ls, int player_slot) {
     if (!ls || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    local_server_event_context_t ctx = {
+        .ls = ls,
+        .player_slot = player_slot,
+    };
     for (int i = 0; i < ls->world.events.count; i++) {
         const sim_event_t *ev = &ls->world.events.events[i];
-        if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
-            local_server_emit_hail_response(ls, ev);
-        } else if (ev->type == SIM_EVENT_DEATH &&
-                   ev->player_id == player_slot) {
-            uint8_t msg[NET_DEATH_MSG_SIZE];
-            int len = serialize_death(msg, (uint8_t)player_slot, ev);
-            local_server_send_to_client(msg, len);
-        }
+        server_process_sim_event_transport(
+            ev, &local_server_event_hooks, &ctx);
     }
     uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
     int elen = serialize_events(ebuf, &ls->world.events);
@@ -384,6 +410,11 @@ void local_server_send_initial_snapshot(local_server_t *ls, int player_slot) {
 void local_server_step_loopback(local_server_t *ls, int player_slot, float dt) {
     if (!ls || !ls->active) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    uint16_t input_ack_before =
+        ls->world.players[player_slot].last_input_seq;
     world_sim_step(&ls->world, dt);
+    (void)server_emit_input_applied_if_changed(
+        &ls->world.players[player_slot], input_ack_before, ls->world.tick,
+        local_server_send_packet, NULL);
     local_server_emit_frame(ls, player_slot);
 }

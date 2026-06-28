@@ -26,7 +26,7 @@ are live:
 - asteroid target HUD and tracked contract objectives now explain mining gates
   such as L2 for Cuprite and L3 for Crystal instead of merely failing to mine
 - docked refit rows and upgrade directives name the next laser unlock
-- blocked laser refits now show the Laser Module recipe and the Cuprite input
+- blocked laser refits now show the Laser Module recipe and the Crystal input
   gate, making the first-upgrade bottleneck visible instead of silent
 - station arrival/trade summaries now show a live production recipe and status
   such as `Ferrite Ore -> Ferrite Ingots; missing input`
@@ -40,9 +40,9 @@ are live:
 
 The remaining product risk is subtler: the game often reveals facts, but not
 the rule the player needs to infer from those facts. This pass also exposed one
-P0 progression risk: the new L2/Cuprite gate and the Laser Module bottleneck
-are legible, but the fresh-world path to produce or import the first Laser
-Modules is not yet proven. Other remaining gaps are NPC contact packaging,
+P0 progression risk: the Crystal-backed Laser Module bottleneck is legible, but
+the fresh-world path to produce or import the first Laser Modules is not yet
+proven. Other remaining gaps are NPC contact packaging,
 deeper rock value synthesis beyond direct demand and tracked work, and
 multiplayer snapshots for station-local ledgers.
 
@@ -76,7 +76,7 @@ than against whether a screen has more text.
 
 | Player question | Current state | Gap | Severity | Next slice |
 |---|---:|---|---:|---|
-| How do I unlock gated rocks? | Open | The UI now says Cuprite needs L2, Crystal needs L3, and the first laser refit needs Laser Modules made from Cuprite Ingots plus Frames; the fresh NPC-only sim still did not produce Cuprite or Laser Modules in 5 minutes. | P0 | Choose and prove a bootstrap path: seeded Laser Modules, an L2 NPC miner/import route, or an alternate first-upgrade ingredient. |
+| How do I unlock gated rocks? | Open | The UI now says Cuprite needs L2, Crystal needs L3, and the first laser refit needs Laser Modules made from Crystal Ingots plus Frames; the current fresh-world path to produce or import the first Laser Modules is not yet proven. | P0 | Choose and prove a bootstrap path: seeded Laser Modules, an L3 NPC miner/import route, or an alternate first-upgrade ingredient. |
 | Why is this rock valuable? | Partial | Throw danger, tracked-contract fit, direct station demand, rare grade, and mining gate reasons are visible; smelt outcome and market-memory usefulness are not unified on the same object yet. | P1 | Extend target/tow usefulness into smelt destination, carried memory, and route value. |
 | Why did my ship stop responding? | Closed | Low-signal control loss now has both compact telemetry and a central CTRL warning before near-zero loss. | Done | Tune thresholds only if playtests show confusion. |
 | Why can I spend credits here but not there? | Partial | Single-player dock/hail explains station-local money; multiplayer still needs a compact cross-station ledger snapshot. | P2 | MP known-ledger snapshot or response extension. |
@@ -96,10 +96,10 @@ These are the concrete code/doc hooks behind the matrix above.
 | Current-station balance | `shared/types.h:643` stores station currency names; `shared/types.h:656` stores station-local ledgers; `client/station_ui.c:599` builds a single-player ledger strip; `client/main.c:856` explains first zero-balance hails after earning elsewhere. |
 | Contract payout currency | `client/station_ui.c:2749` selects destination-station currency first for contract payout rows. |
 | Mining gates | `server/game_sim.c` defines starter L1 as M-only, L2 as L/Cuprite, and L3 as XL/Crystal; `client/hud.c`, `client/contract_objective.c`, and `client/station_ui.c` now surface those blockers in target, guide, and station-board copy. |
-| Upgrade path | `client/station_ui.c` names next refit unlocks and, for a blocked starter laser refit, shows `Laser Modules: Cuprite Ingots + Frames` plus `Cuprite source requires L2 laser`; `client/contract_objective.c` uses the same unlock grammar for ready-upgrade directives. |
+| Upgrade path | `client/station_ui.c` names next refit unlocks and, for a blocked starter laser refit, shows `Laser Modules: Crystal Ingots + Frames` plus `Crystal source requires L3 laser`; `client/contract_objective.c` uses the same unlock grammar for ready-upgrade directives. |
 | Module production consequences | `client/station_ui.c` now summarizes station-level production and status in arrival/trade copy; `client/hud.c` scan copy describes scaffold needs and module input/output chains such as Furnace ore to ingot and Laser Fab ingots plus frames to laser modules. |
 | Station needs | `client/hud.c` names construction supply needs and material sources; `client/station_ui.c` can lead dock arrival with ready/nearest work, gated work, local credit bridging, and local memory. |
-| L2 bootstrap risk | `shared/ship.c` makes the first mining upgrade cost 8 Laser Modules; `server/game_sim.c` applies that requirement from ship cargo or station finished stock; the NPC-only soak `./build/signal_test --soak --filter=test_econ_sim_npc_only_5min` showed Helios with nearby Cuprite rocks but 0 Cuprite ore, 0 Cuprite ingots, 0 frames, and 0 Laser Modules after 5 minutes. |
+| L2 bootstrap risk | `shared/ship.c` makes the first mining upgrade cost 8 Laser Modules; `server/game_sim.c` applies that requirement from ship cargo or station finished stock; no deterministic fresh-world test currently proves the Crystal-backed Laser Module path. |
 | Trade lineage | `client/station_ui.c:1153` only attaches station-stock lineage when the row is fully represented by local manifest data; `client/station_ui.c:1251` applies the same caution for player-held sell rows. |
 | NPC contact/motive | `client/hud.c:1395` renders the NPC contact ticker; `client/hud.c:1451` renders contact identity; `client/hud.c:1461` renders role/state/home/destination; job motive helpers sit around `client/hud.c:928`. |
 | Station gossip/memory | `client/station_ui.c:1633` renders OVERHEARD rows; `client/station_ui.c:1690` renders compact route HISTORY rows; `client/station_ui.c:1836` renders aggregate history; `server/gossip.c:786` promotes repeated route memory into chain-log history. |
@@ -118,9 +118,9 @@ These are the concrete code/doc hooks behind the matrix above.
 - The HUD, tracked objectives, refit rows, and station work rows now name those
   gates before the player wastes time on incompatible targets.
 - The blocked laser refit row now shows both the Laser Module recipe and the
-  Cuprite input gate.
+  Crystal input gate.
 - Laser Fab scan copy exposes the production consequence:
-  `Cuprite Ingots + Frames -> Laser Modules`.
+  `Crystal Ingots + Frames -> Laser Modules`.
 - Upgrade application already requires real finished modules rather than a
   hidden currency-only upgrade.
 
@@ -130,12 +130,11 @@ The first mining upgrade is not yet proven reachable from a fresh world.
 Current rules create a circular-looking path:
 
 - L2 mining requires 8 Laser Modules.
-- Laser Modules are produced from Cuprite Ingots plus Frames.
-- Cuprite Ore now requires L2 mining.
+- Laser Modules are produced from Crystal Ingots plus Frames.
+- Crystal Ore requires L3 mining.
 - Fresh NPC miners appear to start at the same L1 mining level as the player.
-- The 5-minute NPC-only economy soak completed with Helios still at 0 Cuprite
-  ore, 0 Cuprite ingots, 0 frames, and 0 Laser Modules despite nearby Cuprite
-  asteroids.
+- No deterministic fresh-world test currently proves seeded stock, import, or
+  NPC production can bridge that gap.
 
 This may be an intended seeded-stock/import design, but that design is not
 documented or covered by a deterministic fresh-player proof. The new clarity
@@ -146,7 +145,7 @@ prove how the player can overcome it.
 
 This is the highest-priority product gap because it sits on the first visible
 progression wall. If the bootstrap is truly circular, players cannot progress
-from starter mining into Cuprite without external intervention. If the
+from starter mining into the first refit without external intervention. If the
 bootstrap is intended to come from seeded station stock, a stronger NPC import
 route, or pre-upgraded industrial workers, the game and test suite need to make
 that path explicit.
@@ -158,7 +157,7 @@ Pick one bootstrap rule and prove it end to end:
 - seed a small finished Laser Module reserve at the station that offers L2
   refit, then make the refit panel say the station has stock
 - spawn at least one industrial miner/logistics worker that can produce or move
-  the first Laser Modules without player L2 mining
+  the first Laser Modules without player higher-tier mining
 - change the L1->L2 upgrade recipe to consume Ferrite Frames or another
   starter-reachable good, reserving Laser Modules for later laser upgrades
 
@@ -171,7 +170,7 @@ From `world_reset`, a starter player docks at the relevant station, sees the
 source of the first Laser Modules or alternate upgrade ingredient, and can
 complete the first mining upgrade after normal simulated production/import or
 available seeded stock. The test should also prove that Cuprite remains gated
-before L2 and becomes mineable after L2.
+before L2 and becomes mineable after L2, while Crystal remains gated before L3.
 
 ### 1. Rock Value And Throw Legibility
 

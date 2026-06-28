@@ -267,8 +267,8 @@ commodity_t station_primary_buy(const station_t *st) {
     module_type_t dom = station_dominant_module(st);
     switch (dom) {
         case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
-        case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
-        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
+        case MODULE_LASER_FAB:   return COMMODITY_CRYSTAL_INGOT;
+        case MODULE_TRACTOR_FAB: return COMMODITY_CUPRITE_INGOT;
         default: break;
     }
     return (commodity_t)-1;
@@ -564,7 +564,7 @@ station_demand_t station_demand_for(const station_t *st, commodity_t c) {
     if (c >= COMMODITY_COUNT) return out;
     if (!station_consumes(st, c)) return out;
     /* A station that produces what it consumes (e.g. Helios with its
-     * own cuprite furnace feeding its laser fab) is not starving for
+     * own crystal furnace feeding its laser fab) is not starving for
      * that commodity — the producer keeps the local shelf supplied.
      * Mirrors priority 4's "don't import what we make" check. */
     if (station_produces(st, c)) return out;

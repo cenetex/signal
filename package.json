@@ -7,9 +7,14 @@
     "test:rati-anchor-batch": "node scripts/test-rati-anchor-batch.mjs",
     "test:rati-anchor-stamp": "node scripts/test-rati-anchor-stamp.mjs",
     "test:relay-broker": "node scripts/test-relay-region-broker.mjs",
+    "rtc-gateway": "node scripts/webrtc-gateway.mjs",
     "brain:shadow": "node scripts/analyze-signal-client-brain-shadow.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.32.3",
+    "ws": "^8.21.0"
   }
 }

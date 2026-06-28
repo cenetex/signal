@@ -667,28 +667,57 @@ bool signal_brain_build_flight_candidate_features(
     return true;
 }
 
-void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
+static void signal_brain_apply_player_action(server_player_t *sp, int action) {
+    if (!sp || action < 0 || action >= SB_ACTION_COUNT) return;
+    sp->input.turn = (float)SB_ACTIONS[action].turn;
+    sp->input.thrust = (float)SB_ACTIONS[action].thrust;
+    sp->input.reverse_thrust = false;
+}
+
+bool signal_brain_drive_with_decision(world_t *w,
+                                      server_player_t *sp,
+                                      float dt,
+                                      signal_brain_flight_decision_t *decision) {
     (void)dt;
+    if (decision) memset(decision, 0, sizeof(*decision));
     if (!g_brain.loaded || !w || !sp ||
         sp->server_brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
         sp->autopilot_mode == 0 || sp->docked) {
-        return;
+        return false;
     }
 
     if (autopilot_station_phase(sp->autopilot_state)) {
-        return;
+        return false;
     }
 
     signal_brain_target_t target = {0};
-    if (!brain_target_for(w, sp, &target)) return;
+    if (!brain_target_for(w, sp, &target)) return false;
 
     signal_brain_state_t state = brain_state_for(w, sp, target.pos);
+    uint16_t allowed_mask = 0;
+    if (decision) {
+        decision->candidate_count = SB_ACTION_COUNT;
+        decision->selected_index = -1;
+        decision->raw_index = -1;
+        decision->signal_quality = (float)clip(state.signal, 0.0, 1.0);
+        decision->route_risk = (float)clip(1.0 - state.fwd_clear, 0.0, 1.0);
+        decision->hull_ratio = (float)clip(state.hull_ratio, 0.0, 1.0);
+        decision->forward_blocked = state.fwd_path_blocked > 0.5;
+    }
     if (state.fwd_path_blocked > 0.5) {
         sp->input.turn = 0.0f;
         sp->input.thrust = -1.0f;
         sp->input.reverse_thrust = true;
         sp->input.mine = false;
-        return;
+        if (decision) {
+            decision->selected_index = 4;
+            decision->raw_index = 4;
+            decision->selected_score = 0.0f;
+            decision->raw_score = 0.0f;
+            decision->route_risk = 1.0f;
+            decision->hard_override = true;
+        }
+        return true;
     }
 
     double row[SB_FEATURE_COUNT];
@@ -704,7 +733,9 @@ void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
             best_raw_score = score;
             best_raw = i;
         }
-        if (!action_allowed(&state, &SB_ACTIONS[i], (size_t)i)) continue;
+        bool allowed = action_allowed(&state, &SB_ACTIONS[i], (size_t)i) != 0;
+        if (allowed) allowed_mask |= (uint16_t)(1u << i);
+        if (!allowed) continue;
         if (score > best_score) {
             best_score = score;
             best = i;
@@ -712,9 +743,21 @@ void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
     }
 
     if (!isfinite(best_score)) best = best_raw;
-    sp->input.turn = (float)SB_ACTIONS[best].turn;
-    sp->input.thrust = (float)SB_ACTIONS[best].thrust;
-    sp->input.reverse_thrust = false;
+    signal_brain_apply_player_action(sp, best);
+    if (decision) {
+        decision->selected_index = best;
+        decision->raw_index = best_raw;
+        decision->selected_score = (float)(isfinite(best_score)
+            ? best_score
+            : best_raw_score);
+        decision->raw_score = (float)best_raw_score;
+        decision->allowed_mask = allowed_mask;
+    }
+    return true;
+}
+
+void signal_brain_drive(world_t *w, server_player_t *sp, float dt) {
+    (void)signal_brain_drive_with_decision(w, sp, dt, NULL);
 }
 
 

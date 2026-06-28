@@ -54,7 +54,7 @@ Three-way split, enforced by CMake source lists:
 - **`client/`** — sokol-based render/HUD/input/audio plus net transport (`net.c`), reconciliation (`net_sync.c`), and an in-process server for singleplayer (`local_server.c`).
 - **`shared/`** — wire protocol (`protocol.h`), core types (`types.h`, 1,356 lines), economy constants, module schema, manifest/receipt/settlement code, fixed-point math, crypto.
 
-**Singleplayer = multiplayer with the server in-process.** `local_server.c` (~200 lines) calls the same `world_sim_step()` and memcpy-mirrors the world into the client each frame (`local_server.c:47-77`). The interpolation interval switches from `SIM_DT` (singleplayer) to 100 ms (multiplayer packet cadence) at `client/main.c:235-243`. This is the single best architectural decision in the codebase: every sim feature is automatically multiplayer-correct.
+**Singleplayer = multiplayer with the server in-process.** `client/local_server.c` runs the same `world_sim_step()` authority and feeds serialized protocol packets through `net.c` loopback; direct world copies into the client are legacy architecture. Singleplayer emits local snapshots every frame, while remote multiplayer uses coarser WebSocket cadences and cache suppression. The useful invariant is now: one authoritative sim, two transports, shared packet reducers/serializers wherever possible.
 
 ### 3.1 The 120 Hz tick
 

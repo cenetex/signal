@@ -349,6 +349,17 @@ int signal_contract_brain_choose(const world_t *w,
                                  const server_player_t *sp,
                                  const signal_contract_candidate_t *candidates,
                                  int count) {
+    return signal_contract_brain_choose_with_scores(w, sp, candidates, count,
+                                                    NULL, 0);
+}
+
+int signal_contract_brain_choose_with_scores(
+    const world_t *w,
+    const server_player_t *sp,
+    const signal_contract_candidate_t *candidates,
+    int count,
+    double *scores,
+    int score_count) {
     if (!w || !sp || !candidates || count <= 0) return -1;
 
     g_contract_brain.decision_count++;
@@ -359,6 +370,7 @@ int signal_contract_brain_choose(const world_t *w,
         g_contract_brain.teacher_decision_count++;
         for (int i = 0; i < count; i++) {
             double score = candidates[i].teacher_score;
+            if (scores && i < score_count) scores[i] = score;
             if (best < 0 || score > best_score) {
                 best = i;
                 best_score = score;
@@ -371,6 +383,7 @@ int signal_contract_brain_choose(const world_t *w,
         double row[SCB_FEATURE_COUNT];
         fill_features(w, sp, &candidates[i], row);
         double score = forward_model(row);
+        if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {
             best = i;
             best_score = score;

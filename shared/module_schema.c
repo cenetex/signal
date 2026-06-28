@@ -104,29 +104,29 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_LASER_FAB] = {
         .name = "Laser Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CUPRITE_INGOT, /* plus frames */
+        .input = COMMODITY_CRYSTAL_INGOT, /* plus frames */
         .output = COMMODITY_LASER_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
-        .build_material = 80.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
+        .build_material = 80.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,
         .order_fee = 100,
         .services = STATION_SERVICE_UPGRADE_LASER,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cuprite ingots */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs crystal ingots */
         .pair_intake = MODULE_HOPPER,
     },
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CRYSTAL_INGOT,
+        .input = COMMODITY_CUPRITE_INGOT,
         .output = COMMODITY_TRACTOR_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
-        .build_material = 80.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,
+        .build_material = 80.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
         .order_fee = 100,
         .services = STATION_SERVICE_UPGRADE_TRACTOR,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 5 — needs two-pass crystal ingots */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cuprite ingots */
         .pair_intake = MODULE_HOPPER,
     },
     [MODULE_SHIPYARD] = {
@@ -197,12 +197,12 @@ module_inputs_t module_required_inputs(module_type_t type) {
         r.count = 1;
         break;
     case MODULE_LASER_FAB:
-        r.commodities[0] = COMMODITY_CUPRITE_INGOT;
+        r.commodities[0] = COMMODITY_CRYSTAL_INGOT;
         r.commodities[1] = COMMODITY_FRAME;
         r.count = 2;
         break;
     case MODULE_TRACTOR_FAB:
-        r.commodities[0] = COMMODITY_CRYSTAL_INGOT;
+        r.commodities[0] = COMMODITY_CUPRITE_INGOT;
         r.commodities[1] = COMMODITY_FRAME;
         r.count = 2;
         break;

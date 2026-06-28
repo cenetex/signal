@@ -56,7 +56,10 @@ typedef struct {
     float route_success_memory;
     float route_danger_memory;
     float route_proof_memory;
+    float hologram_resonance;
+    float source_memory;
     float provenance_pressure;
+    float trust_bias;
     float black_market_acceptance;
     float escort_bonus;
     float convoy_bonus;

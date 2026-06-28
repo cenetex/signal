@@ -345,25 +345,30 @@ static void test_setup_delivery_player(world_t *w, server_player_t **out_sp) {
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
-    station._inventory_cache[COMMODITY_FERRITE_INGOT] = 5.0f;
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_FERRITE_INGOT, 5));
     step_station_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FERRITE_INGOT], 4.0f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 2.0f, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FERRITE_INGOT), 4);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 2);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_LASER_FAB };
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
-    station._inventory_cache[COMMODITY_CUPRITE_INGOT] = 5.0f;
-    station._inventory_cache[COMMODITY_CRYSTAL_INGOT] = 5.0f;
-    station._inventory_cache[COMMODITY_FRAME] = 1.0f;
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_CUPRITE_INGOT, 5));
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_CRYSTAL_INGOT, 5));
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 1));
     step_station_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CUPRITE_INGOT], 4.5f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_CUPRITE_INGOT), 4);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_CRYSTAL_INGOT), 4);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 0);
 }
 
 TEST(test_station_repair_cost_no_damage) {
@@ -1514,27 +1519,27 @@ TEST(test_fracture_contract_target_pub_matches_asteroid_identity) {
 TEST(test_supply_contract_uses_correct_material) {
     WORLD_DECL;
     world_reset(&w);
-    /* LASER_FAB needs cuprite ingot + frame hoppers. Plant both. */
-    add_hopper_for(&w.stations[1], 3, 1, COMMODITY_CUPRITE_INGOT);
+    /* LASER_FAB needs crystal ingot + frame hoppers. Plant both. */
+    add_hopper_for(&w.stations[1], 3, 1, COMMODITY_CRYSTAL_INGOT);
     add_hopper_for(&w.stations[1], 3, 7, COMMODITY_FRAME);
     begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 2, 4);
-    /* The generated contract should be for cuprite ingots */
+    /* The generated contract should be for crystal ingots */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
             && w.contracts[k].station_index == 1
-            && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
+            && w.contracts[k].commodity == COMMODITY_CRYSTAL_INGOT) {
             found = true; break;
         }
     }
     ASSERT(found);
-    /* After contract expires and regenerates via step_contracts, it should still be cuprite */
+    /* After contract expires and regenerates via step_contracts, it should still be crystal */
     for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].station_index == 1
-            && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
+            && w.contracts[k].commodity == COMMODITY_CRYSTAL_INGOT) {
             found = true; break;
         }
     }

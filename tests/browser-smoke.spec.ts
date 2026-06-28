@@ -1213,8 +1213,8 @@ test.describe('Browser smoke tests', () => {
     await loadGame(page, false, { singleplayer: true });
 
     const refitSummary = await laserRefitSummary(page);
-    expect(refitSummary).toContain('Laser Modules: Cuprite Ingots + Frames');
-    expect(refitSummary).toContain('Cuprite source requires L2 laser');
+    expect(refitSummary).toContain('Laser Modules: Crystal Ingots + Frames');
+    expect(refitSummary).toContain('Crystal source requires L3 laser');
 
     const productionSummary = await stationProductionSummary(page);
     expect(productionSummary).toContain('Ferrite Ore -> Ferrite Ingots');
@@ -1227,7 +1227,7 @@ test.describe('Browser smoke tests', () => {
     expect(await hudActionText(page)).toContain('needs L2 laser for Cuprite');
 
     await setSmokeLoopState(page, smokeLoopState.scanLaserFab);
-    expect(await hudActionText(page)).toContain('Cuprite Ingots + Frames -> Laser Modules');
+    expect(await hudActionText(page)).toContain('Crystal Ingots + Frames -> Laser Modules');
 
     await setSmokeLoopState(page, smokeLoopState.trackedCupriteContract);
     expect(await hudHintText(page)).toContain('requires L2 laser');

@@ -171,4 +171,10 @@ int station_finished_drain(station_t *st, commodity_t c, int n);
 int station_finished_accumulate(station_t *st, commodity_t c, float amount,
                                 const uint8_t origin[8]);
 
+/* Consume `amount` (may be fractional) of finished `c` from the
+ * manifest. For any integer crossings, drains that many manifest units
+ * (FIFO) so floor(inventory[c]) == manifest_count holds. Returns the
+ * integer count drained this call. */
+int station_finished_consume(station_t *st, commodity_t c, float amount);
+
 #endif /* SHARED_MANIFEST_H */

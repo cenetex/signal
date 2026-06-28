@@ -50,16 +50,23 @@ RUN cmake -S . -B build \
 
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates libstdc++ nodejs npm
 
 WORKDIR /app
+COPY package.json ./
+RUN npm install --omit=dev --no-package-lock \
+    && npm cache clean --force
+
 COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public
+COPY scripts/webrtc-gateway.mjs ./scripts/webrtc-gateway.mjs
+COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
 
 ENV PORT=8080
+ENV SIGNAL_SERVER_PORT=9091
 ENV SIGNAL_DATA_DIR=/app/data
 ENV SIGNAL_STATIC_DIR=/app/public
 
 EXPOSE 8080
 
-CMD ["./signal-server"]
+CMD ["sh", "./scripts/fly-webrtc-entrypoint.sh"]

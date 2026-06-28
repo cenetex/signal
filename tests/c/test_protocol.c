@@ -463,6 +463,52 @@ static void player_packet_capture_sink(void *user, int player_slot,
     cap->count++;
 }
 
+typedef struct {
+    uint8_t data[NET_INPUT_APPLIED_SIZE];
+    int len;
+    int count;
+} input_applied_capture_t;
+
+static void input_applied_capture_sink(void *user,
+                                       const uint8_t *data,
+                                       int len) {
+    input_applied_capture_t *cap = (input_applied_capture_t *)user;
+    if (!cap || !data || len <= 0) return;
+    if (len > (int)sizeof(cap->data)) len = (int)sizeof(cap->data);
+    memcpy(cap->data, data, (size_t)len);
+    cap->len = len;
+    cap->count++;
+}
+
+TEST(test_input_applied_emitter_sends_only_on_sequence_change) {
+    server_player_t sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.last_input_seq = 0;
+    sp.last_input_tick = 0;
+
+    input_applied_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    ASSERT(!server_emit_input_applied_if_changed(
+        &sp, 0, 10, input_applied_capture_sink, &cap));
+    ASSERT_EQ_INT(cap.count, 0);
+
+    sp.last_input_seq = 44;
+    sp.last_input_tick = 1234;
+    ASSERT(!server_emit_input_applied_if_changed(
+        &sp, 44, 11, input_applied_capture_sink, &cap));
+    ASSERT_EQ_INT(cap.count, 0);
+
+    ASSERT(server_emit_input_applied_if_changed(
+        &sp, 43, 12, input_applied_capture_sink, &cap));
+    ASSERT_EQ_INT(cap.count, 1);
+    ASSERT_EQ_INT(cap.len, NET_INPUT_APPLIED_SIZE);
+    ASSERT_EQ_INT(cap.data[0], NET_MSG_INPUT_APPLIED);
+    ASSERT_EQ_INT((int)read_u16_le(&cap.data[1]), 44);
+    ASSERT_EQ_INT((int)read_u32_le(&cap.data[3]), 12);
+    ASSERT_EQ_INT((int)read_u32_le(&cap.data[7]), 1234);
+}
+
 TEST(test_world_snapshot_emitter_sequence_shared) {
     world_t w;
     memset(&w, 0, sizeof(w));
@@ -520,19 +566,21 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 6);
+    ASSERT_EQ_INT(cap.count, 7);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_HOLD_INGOTS);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_PLAYER_MANIFEST);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_INSPECT_SNAPSHOT);
     ASSERT_EQ_INT(cap.type[4], NET_MSG_PLAYER_KNOWN_CONTRACTS);
-    ASSERT_EQ_INT(cap.type[5], NET_MSG_DELIVERY_LEDGER);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_PLAYER_KNOWN_LEDGER);
+    ASSERT_EQ_INT(cap.type[6], NET_MSG_DELIVERY_LEDGER);
     ASSERT(cap.len[0] > 16);
     ASSERT(cap.len[1] >= HOLD_INGOTS_HEADER);
     ASSERT(cap.len[2] >= PLAYER_MANIFEST_HEADER);
     ASSERT(cap.len[3] > 0);
     ASSERT_EQ_INT(cap.len[4], 5);
-    ASSERT(cap.len[5] >= DELIVERY_LEDGER_HEADER);
+    ASSERT(cap.len[5] >= PLAYER_KNOWN_LEDGER_HEADER);
+    ASSERT(cap.len[6] >= DELIVERY_LEDGER_HEADER);
 }
 
 TEST(test_station_snapshot_emitter_sequence_shared) {
@@ -626,6 +674,118 @@ TEST(test_fracture_update_emitter_shared) {
     ASSERT_EQ_INT(cap.count, 0);
 }
 
+typedef struct {
+    int outpost_placed;
+    int player_state_change;
+    int death;
+    int contract_complete;
+    int hail_response;
+    int structure_dirty;
+} sim_event_hook_capture_t;
+
+static void sim_event_count_outpost(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->outpost_placed++;
+}
+
+static void sim_event_count_player_state(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->player_state_change++;
+}
+
+static void sim_event_count_death(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->death++;
+}
+
+static void sim_event_count_contract(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->contract_complete++;
+}
+
+static void sim_event_count_hail(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->hail_response++;
+}
+
+static void sim_event_count_structure(void *user, const sim_event_t *ev) {
+    (void)ev;
+    ((sim_event_hook_capture_t *)user)->structure_dirty++;
+}
+
+TEST(test_sim_event_transport_hooks_cover_freshness_buckets) {
+    const server_sim_event_hooks_t hooks = {
+        .outpost_placed = sim_event_count_outpost,
+        .player_state_change = sim_event_count_player_state,
+        .death = sim_event_count_death,
+        .contract_complete = sim_event_count_contract,
+        .hail_response = sim_event_count_hail,
+        .structure_dirty = sim_event_count_structure,
+    };
+    sim_event_hook_capture_t cap;
+    sim_event_t ev;
+
+    memset(&cap, 0, sizeof(cap));
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_OUTPOST_PLACED;
+    server_process_sim_event_transport(&ev, &hooks, &cap);
+    ASSERT_EQ_INT(cap.outpost_placed, 1);
+    ASSERT_EQ_INT(cap.structure_dirty, 1);
+
+    memset(&cap, 0, sizeof(cap));
+    sim_event_type_t player_events[] = {
+        SIM_EVENT_SELL,
+        SIM_EVENT_BUY,
+        SIM_EVENT_REPAIR,
+        SIM_EVENT_UPGRADE,
+        SIM_EVENT_DOCK,
+        SIM_EVENT_LAUNCH,
+    };
+    for (int i = 0; i < (int)(sizeof(player_events) / sizeof(player_events[0])); i++) {
+        memset(&ev, 0, sizeof(ev));
+        ev.type = player_events[i];
+        server_process_sim_event_transport(&ev, &hooks, &cap);
+    }
+    ASSERT_EQ_INT(cap.player_state_change, 6);
+
+    memset(&cap, 0, sizeof(cap));
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_DEATH;
+    server_process_sim_event_transport(&ev, &hooks, &cap);
+    ASSERT_EQ_INT(cap.death, 1);
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_CONTRACT_COMPLETE;
+    server_process_sim_event_transport(&ev, &hooks, &cap);
+    ASSERT_EQ_INT(cap.contract_complete, 1);
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_HAIL_RESPONSE;
+    server_process_sim_event_transport(&ev, &hooks, &cap);
+    ASSERT_EQ_INT(cap.hail_response, 1);
+
+    sim_event_type_t structure_events[] = {
+        SIM_EVENT_OUTPOST_ACTIVATED,
+        SIM_EVENT_MODULE_ACTIVATED,
+        SIM_EVENT_SCAFFOLD_READY,
+    };
+    for (int i = 0; i < (int)(sizeof(structure_events) / sizeof(structure_events[0])); i++) {
+        memset(&ev, 0, sizeof(ev));
+        ev.type = structure_events[i];
+        server_process_sim_event_transport(&ev, &hooks, &cap);
+    }
+    ASSERT_EQ_INT(cap.structure_dirty, 3);
+
+    memset(&cap, 0, sizeof(cap));
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_FRACTURE;
+    ASSERT_EQ_INT((int)server_sim_event_effects(&ev), 0);
+    server_process_sim_event_transport(&ev, &hooks, &cap);
+    ASSERT_EQ_INT(cap.outpost_placed + cap.player_state_change +
+                  cap.death + cap.contract_complete +
+                  cap.hail_response + cap.structure_dirty, 0);
+}
+
 TEST(test_pending_action_result_status_shared) {
     WORLD_DECL;
     world_reset(&w);
@@ -663,6 +823,38 @@ TEST(test_pending_action_result_status_shared) {
     events.events[0].type = SIM_EVENT_ORDER_REJECTED;
     ASSERT_EQ_INT(server_pending_action_result_status(&w, sp, &events),
                   NET_ACTION_RESULT_REJECTED);
+}
+
+TEST(test_hail_response_serializes_reason_tail) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    sim_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_HAIL_RESPONSE;
+    ev.player_id = 0;
+    ev.hail_response.station = 2;
+    ev.hail_response.credits = 123.0f;
+    ev.hail_response.contract_index = -1;
+    ev.hail_response.decision_flags = 0x12345678u;
+    ev.hail_response.decision_signal_quality = 0.75f;
+    ev.hail_response.decision_candidate_count = 3u;
+    ev.hail_response.decision_mode = HAIL_DECISION_MODE_SIGNAL_RANGE;
+    ev.hail_response.decision_source_id = 0x1122334455667788ull;
+
+    uint8_t buf[NET_HAIL_RESPONSE_REASON_SIZE] = {0};
+    int len = serialize_hail_response_for_world(buf, &w, &ev);
+
+    ASSERT_EQ_INT(len, NET_HAIL_RESPONSE_REASON_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_HAIL_RESPONSE);
+    ASSERT_EQ_INT(buf[1], 2);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 123.0f, 0.001f);
+    ASSERT_EQ_INT(buf[6], 0xFF);
+    ASSERT_EQ_INT((int)read_u32_le(&buf[7]), 0x12345678);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[11]), 0.75f, 0.001f);
+    ASSERT_EQ_INT(buf[15], 3);
+    ASSERT_EQ_INT(buf[16], HAIL_DECISION_MODE_SIGNAL_RANGE);
+    ASSERT(read_u64_le(&buf[17]) == 0x1122334455667788ull);
 }
 
 TEST(test_npc_role_default_hull_mapping_covers_tow) {
@@ -1735,6 +1927,43 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
     ASSERT_EQ_INT(contract_compact_index_for_slot(contracts, 7), 1);
 }
 
+TEST(test_player_known_ledger_serializes_station_balances) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memcpy(sp->session_token, "LEDGER01", 8);
+
+    ledger_earn(&w.stations[0], sp->session_token, 123.0f);
+    ledger_earn(&w.stations[2], sp->session_token, 45.0f);
+
+    uint8_t buf[PLAYER_KNOWN_LEDGER_HEADER +
+                PLAYER_KNOWN_LEDGER_MAX_RECORDS *
+                PLAYER_KNOWN_LEDGER_RECORD_SIZE];
+    int len = serialize_player_known_ledger(buf, &w, sp);
+    ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_KNOWN_LEDGER);
+    ASSERT_EQ_INT(buf[1], 2);
+    ASSERT_EQ_INT(len, PLAYER_KNOWN_LEDGER_HEADER +
+                       2 * PLAYER_KNOWN_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 123.0f, 0.001f);
+    ASSERT_EQ_INT(buf[7], 2);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[8]), 45.0f, 0.001f);
+
+    memset(sp->pubkey, 0x21, sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    ledger_earn_by_pubkey(&w.stations[1], sp->pubkey, 77.0f);
+    len = serialize_player_known_ledger(buf, &w, sp);
+    ASSERT_EQ_INT(len, PLAYER_KNOWN_LEDGER_HEADER +
+                       PLAYER_KNOWN_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(buf[2], 1);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 77.0f, 0.001f);
+}
+
 TEST(test_delivery_contract_action_serializes) {
     contract_t contracts[MAX_CONTRACTS];
     memset(contracts, 0, sizeof(contracts));
@@ -2295,6 +2524,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS);
     ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK);
+    ASSERT(read_u32_le(&buf[3]) & SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER);
     ASSERT_EQ_INT(buf[7], (len - PROTOCOL_INFO_HEADER_SIZE) /
                           PROTOCOL_INFO_STREAM_RECORD_SIZE);
     ASSERT(buf[7] <= PROTOCOL_INFO_STREAM_CAPACITY);
@@ -2352,6 +2582,20 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(read_u16_le(&input_applied[2]) & PROTOCOL_STREAM_FLAG_FIXED_SIZE);
     ASSERT_EQ_INT(read_u16_le(&input_applied[4]), NET_INPUT_APPLIED_SIZE);
     ASSERT_EQ_INT(read_u16_le(&input_applied[10]), 8);
+
+    const uint8_t *known_ledger = find_protocol_stream(
+        buf, NET_MSG_PLAYER_KNOWN_LEDGER);
+    ASSERT(known_ledger != NULL);
+    ASSERT_EQ_INT(known_ledger[1], PROTOCOL_STREAM_CLASS_PLAYER);
+    ASSERT(read_u16_le(&known_ledger[2]) & PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&known_ledger[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&known_ledger[2]) & PROTOCOL_STREAM_FLAG_DIRTY_ONLY);
+    ASSERT_EQ_INT(read_u16_le(&known_ledger[4]),
+                  PLAYER_KNOWN_LEDGER_HEADER);
+    ASSERT_EQ_INT(read_u16_le(&known_ledger[6]),
+                  PLAYER_KNOWN_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&known_ledger[8]),
+                  PLAYER_KNOWN_LEDGER_MAX_RECORDS);
 
     const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
     ASSERT(contracts != NULL);
@@ -2470,7 +2714,10 @@ void register_protocol_main_tests(void) {
     RUN(test_private_snapshot_emitter_sequence_shared);
     RUN(test_station_snapshot_emitter_sequence_shared);
     RUN(test_fracture_update_emitter_shared);
+    RUN(test_input_applied_emitter_sends_only_on_sequence_change);
+    RUN(test_sim_event_transport_hooks_cover_freshness_buckets);
     RUN(test_pending_action_result_status_shared);
+    RUN(test_hail_response_serializes_reason_tail);
     RUN(test_npc_role_default_hull_mapping_covers_tow);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_npc_expands_matching_receipt_chain);
@@ -2489,6 +2736,7 @@ void register_protocol_main_tests(void) {
     RUN(test_station_identity_serializes_faction_trailer);
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
+    RUN(test_player_known_ledger_serializes_station_balances);
     RUN(test_delivery_contract_action_serializes);
     RUN(test_delivery_ledger_serializes_player_shipments);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);

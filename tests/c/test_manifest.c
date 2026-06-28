@@ -357,13 +357,13 @@ TEST(test_recipe_ratios_match_economy_ladder) {
 
     ASSERT(laser != NULL);
     ASSERT_EQ_INT(laser->input_count, 2);
-    ASSERT_EQ_INT(laser->input_commodities[0], COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(laser->input_commodities[0], COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT(laser->input_commodities[1], COMMODITY_FRAME);
     ASSERT_EQ_INT(laser->output_count, 1);
 
     ASSERT(tractor != NULL);
     ASSERT_EQ_INT(tractor->input_count, 2);
-    ASSERT_EQ_INT(tractor->input_commodities[0], COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(tractor->input_commodities[0], COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(tractor->input_commodities[1], COMMODITY_FRAME);
     ASSERT_EQ_INT(tractor->output_count, 1);
 

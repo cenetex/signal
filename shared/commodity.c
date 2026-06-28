@@ -7,8 +7,8 @@ commodity_t commodity_ore_form(commodity_t commodity) {
         case COMMODITY_CUPRITE_INGOT:     return COMMODITY_CUPRITE_ORE;
         case COMMODITY_CRYSTAL_INGOT:     return COMMODITY_CRYSTAL_ORE;
         case COMMODITY_FRAME:             return COMMODITY_FERRITE_ORE;
-        case COMMODITY_LASER_MODULE:      return COMMODITY_CUPRITE_ORE;
-        case COMMODITY_TRACTOR_MODULE:    return COMMODITY_CRYSTAL_ORE;
+        case COMMODITY_LASER_MODULE:      return COMMODITY_CRYSTAL_ORE;
+        case COMMODITY_TRACTOR_MODULE:    return COMMODITY_CUPRITE_ORE;
         default:                          return commodity;
     }
 }

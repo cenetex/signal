@@ -2,6 +2,7 @@
 #include "chain_log.h"
 #include "cargo_receipt_issue.h"
 #include "sim_physics.h"
+#include "signal_intelligence.h"
 
 static int construction_count_active_npcs(const world_t *w) {
     int count = 0;
@@ -352,21 +353,21 @@ TEST(test_outpost_min_distance) {
 
 TEST(test_module_build_material_types) {
     /* Verify each module requires the correct ingot type. LASER_FAB
-     * needs cuprite ingots plus frames. Plant both, then queue
+     * needs crystal ingots plus frames. Plant both, then queue
      * the laser fab. */
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
-    add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(st, 3, 1, COMMODITY_CRYSTAL_INGOT);
     add_hopper_for(st, 3, 7, COMMODITY_FRAME);
     begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 4);
-    bool found_cu = false;
+    bool found_crystal = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
-            found_cu = true; break;
+        if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CRYSTAL_INGOT) {
+            found_crystal = true; break;
         }
     }
-    ASSERT(found_cu);
+    ASSERT(found_crystal);
 }
 
 TEST(test_module_construction_and_delivery) {
@@ -374,19 +375,19 @@ TEST(test_module_construction_and_delivery) {
     world_reset(&w);
     station_t *st = &w.stations[1]; /* Kepler */
     int mc_before = st->module_count;
-    /* TRACTOR_FAB needs crystal ingot plus frame hoppers. */
-    add_hopper_for(st, 3, 1, COMMODITY_CRYSTAL_INGOT);
+    /* TRACTOR_FAB needs cuprite ingot plus frame hoppers. */
+    add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(st, 3, 2, COMMODITY_FRAME);
     int producer_idx = mc_before + 2;
     begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 4);
     ASSERT_EQ_INT(st->module_count, mc_before + 3);
     ASSERT(st->modules[producer_idx].scaffold);
     ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
-    /* Deliver the required crystal ingots (goes into station inventory) */
+    /* Deliver the required cuprite ingots (goes into station inventory) */
     ship_t ship = {0};
-    ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
+    ship.cargo[COMMODITY_CUPRITE_INGOT] = 200.0f;
     step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
-    ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed from ship */
+    ASSERT(ship.cargo[COMMODITY_CUPRITE_INGOT] < 200.0f);  /* consumed from ship */
     ASSERT_EQ_INT(ship.manifest.cap, 0);
     ASSERT(ship.receipts_opaque == NULL);
     ASSERT_EQ_FLOAT(st->modules[producer_idx].build_progress, 1.0f, 0.01f); /* fully supplied */
@@ -2420,7 +2421,9 @@ TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
     world_reset(&w);
 
     frontier_virtual_pilots_set(&w, 1000);
-    step_frontier_director(&w, 1.0f);
+    signal_intelligence_decision_reason_t reason;
+    ASSERT(signal_intelligence_step_frontier_director_with_reason(
+        &w, 1.0f, &reason));
 
     ASSERT_EQ_INT(w.frontier_virtual_pilots, 1000);
     ASSERT_EQ_INT((int)w.frontier_plans_created, 1);
@@ -2433,6 +2436,22 @@ TEST(test_frontier_virtual_pilots_plan_and_order_relay) {
     ASSERT_EQ_INT(test_count_pending_scaffold_orders(&w, MODULE_FURNACE), 1);
     ASSERT_EQ_INT((int)w.frontier_module_plans_created, 2);
     ASSERT_EQ_INT((int)w.frontier_module_scaffold_orders, 2);
+    ASSERT_EQ_INT(reason.task, SIGNAL_INTEL_TASK_FRONTIER_PLAN);
+    ASSERT_EQ_INT(reason.selected_index, FRONTIER_DIRECTOR_DECISION_PLAN_OUTPOST);
+    ASSERT_EQ_INT(reason.candidate_count, 5);
+    ASSERT_EQ_FLOAT(reason.frontier_pressure, 1.0f, 0.001f);
+    ASSERT(reason.source_memory_id != 0ull);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_ADVISORY_ONLY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_FRONTIER_PRESSURE);
+    ASSERT(!(reason.flags & SIGNAL_DECISION_REASON_HAS_SOURCE_MEMORY));
+    ASSERT_EQ_INT(w.frontier_decision_valid, 1);
+    ASSERT_EQ_INT(w.frontier_decision_action,
+                  FRONTIER_DIRECTOR_DECISION_PLAN_OUTPOST);
+    ASSERT_EQ_INT(w.frontier_decision_plan_limit, 5);
+    ASSERT(w.frontier_decision_flags &
+           SIGNAL_DECISION_REASON_HAS_FRONTIER_PRESSURE);
 
     int plan_slot = -1;
     for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS; s++) {
@@ -3034,9 +3053,9 @@ TEST(test_module_schema_producer_io) {
     ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE), COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(module_schema_input(MODULE_FRAME_PRESS), COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
-    ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_LASER_FAB), COMMODITY_LASER_MODULE);
-    ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
     /* Services have no input/output */
     ASSERT_EQ_INT(module_schema_input(MODULE_DOCK), COMMODITY_COUNT);
@@ -3103,7 +3122,7 @@ TEST(test_station_module_layout_status_missing_output) {
      * Without the hopper → MISSING_OUTPUT_HOPPER. Adding it restores OK. */
     station_t st = {0};
     st.signal_range = 1.0f;
-    add_hopper_for(&st, 2, 0, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(&st, 2, 0, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&st, 2, 4, COMMODITY_FRAME);
     add_module_at(&st, MODULE_TRACTOR_FAB, 2, 1);
     add_module_at(&st, MODULE_SHIPYARD,    2, 5);   /* downstream consumer */
@@ -3137,14 +3156,14 @@ TEST(test_station_module_layout_status_no_local_consumer_is_ok) {
 
 TEST(test_station_module_layout_status_furnace_uses_tag) {
     /* A furnace tagged for CUPRITE_INGOT needs CUPRITE_ORE in (not any
-     * ore) and CUPRITE_INGOT out (because we add a LASER_FAB to give
+     * ore) and CUPRITE_INGOT out (because we add a TRACTOR_FAB to give
      * the cuprite ingot a local downstream consumer). FERRITE_ORE alone
      * is missing-input. */
     station_t st = {0};
     st.signal_range = 1.0f;
     add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE); /* wrong ore for a CU furnace */
     add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
-    add_module_at(&st, MODULE_LASER_FAB, 2, 5);       /* consumes CUPRITE_INGOT */
+    add_module_at(&st, MODULE_TRACTOR_FAB, 2, 5);       /* consumes CUPRITE_INGOT */
     add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
     const station_module_t *fc = &st.modules[1];     /* the furnace */
     ASSERT_EQ_INT(station_module_layout_status(&st, fc),
@@ -3895,7 +3914,7 @@ TEST(test_pair_satisfied_cross_ring) {
     /* Producer pair-validation under the commodity-tagged hopper
      * model: a producer is satisfied when ALL its required input
      * commodities have a tagged hopper somewhere on the station.
-     * For LASER_FAB that means BOTH cuprite ingot AND frame
+     * For LASER_FAB that means BOTH crystal ingot AND frame
      * hoppers must exist. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -3910,7 +3929,7 @@ TEST(test_pair_satisfied_cross_ring) {
     ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
     /* Add only one of the two — still not satisfied. */
-    add_hopper_for(st, 3, 4, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(st, 3, 4, COMMODITY_CRYSTAL_INGOT);
     ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
     /* Add the second commodity — now satisfied. */

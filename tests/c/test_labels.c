@@ -203,9 +203,9 @@ TEST(test_station_primary_buy_per_dominant_module) {
     seed_single_module_station(&st, MODULE_FRAME_PRESS);
     ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_FERRITE_INGOT);
     seed_single_module_station(&st, MODULE_LASER_FAB);
-    ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CUPRITE_INGOT);
-    seed_single_module_station(&st, MODULE_TRACTOR_FAB);
     ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CRYSTAL_INGOT);
+    seed_single_module_station(&st, MODULE_TRACTOR_FAB);
+    ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CUPRITE_INGOT);
     /* Furnaces don't buy from players (ore arrives via fragment smelting). */
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT((int)station_primary_buy(&st), -1);

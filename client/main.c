@@ -193,6 +193,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
     cbs->on_player_known_contracts = apply_remote_player_known_contracts;
+    cbs->on_player_known_ledger = apply_remote_player_known_ledger;
     cbs->on_delivery_ledger = apply_remote_delivery_ledger;
     cbs->on_death = on_remote_death;
     cbs->on_world_time = on_remote_world_time;
@@ -948,11 +949,49 @@ static const char *module_consequence_label(module_type_t type) {
     }
 }
 
+static bool sim_hail_reason_text(const sim_event_t *ev,
+                                 char *out,
+                                 size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!ev || ev->hail_response.decision_flags == 0u) return false;
+
+    switch ((hail_decision_mode_t)ev->hail_response.decision_mode) {
+    case HAIL_DECISION_MODE_DOCKED:
+        snprintf(out, cap, "station knows you are docked");
+        return true;
+    case HAIL_DECISION_MODE_DOCK_RANGE:
+        snprintf(out, cap, "dock signal has priority");
+        return true;
+    case HAIL_DECISION_MODE_SIGNAL_RANGE:
+        if (ev->hail_response.decision_candidate_count > 1u) {
+            snprintf(out, cap, "closest of %u station signals",
+                     (unsigned)ev->hail_response.decision_candidate_count);
+        } else {
+            snprintf(out, cap, "only station signal in range");
+        }
+        return true;
+    case HAIL_DECISION_MODE_NONE:
+    default:
+        if (ev->hail_response.decision_candidate_count == 0u) {
+            snprintf(out, cap, "no station signal answered");
+            return true;
+        }
+        break;
+    }
+    return false;
+}
+
 static void sim_on_hail_response(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
+    char why[96];
+    bool has_reason = sim_hail_reason_text(ev, why, sizeof(why));
     int hs = ev->hail_response.station;
     if (hs < 0 || hs >= MAX_STATIONS) {
-        set_notice("Local scan sweep.");
+        if (has_reason)
+            set_notice("Local scan sweep. %s.", why);
+        else
+            set_notice("Local scan sweep.");
         return;
     }
 
@@ -972,12 +1011,22 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     const char *unit = g.world.stations[hs].currency_name;
     if (!unit[0]) unit = "credits";
     if (ev->hail_response.credits >= 0.0f) {
-        set_notice("%s: %s  (balance %d %s)",
-                   g.hail_station, g.hail_message,
-                   (int)lroundf(shown_credits), unit);
+        if (has_reason) {
+            set_notice("%s: %s  (%s; balance %d %s)",
+                       g.hail_station, g.hail_message, why,
+                       (int)lroundf(shown_credits), unit);
+        } else {
+            set_notice("%s: %s  (balance %d %s)",
+                       g.hail_station, g.hail_message,
+                       (int)lroundf(shown_credits), unit);
+        }
         maybe_notice_local_credits_rule(hs, shown_credits);
     } else {
-        set_notice("%s: %s", g.hail_station, g.hail_message);
+        if (has_reason)
+            set_notice("%s: %s  (%s)", g.hail_station,
+                       g.hail_message, why);
+        else
+            set_notice("%s: %s", g.hail_station, g.hail_message);
     }
     char step[192];
     if (contract_objective_track_contract(ev->hail_response.contract_index,

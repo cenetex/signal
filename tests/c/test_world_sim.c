@@ -1,6 +1,6 @@
 #include "test_harness.h"
 #include "signal_brain.h"
-#include "signal_contract_brain.h"
+#include "signal_intelligence.h"
 #include "sim_mining.h"
 #include "sim_ship.h"
 #include "sim_asteroid.h"
@@ -1965,6 +1965,26 @@ TEST(test_hail_responds_while_docked) {
     ASSERT(ev != NULL);
     ASSERT_EQ_INT(ev->hail_response.station, 0);
     ASSERT(ev->hail_response.credits >= 0.0f);
+    ASSERT_EQ_INT(ev->hail_response.decision_mode,
+                  HAIL_DECISION_MODE_DOCKED);
+    ASSERT_EQ_INT(ev->hail_response.decision_candidate_count, 1);
+    ASSERT(ev->hail_response.decision_flags &
+           SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(ev->hail_response.decision_flags &
+           SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(ev->hail_response.decision_signal_quality > 0.0f);
+    ASSERT(ev->hail_response.decision_source_id != 0ull);
+    ASSERT_EQ_INT(sp->hail_decision_valid, 1);
+    ASSERT_EQ_INT(sp->hail_decision_station, 0);
+    ASSERT(sp->hail_decision_candidate_count >= 1);
+    ASSERT(sp->hail_decision_flags & SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(sp->hail_decision_flags & SIGNAL_DECISION_REASON_ADVISORY_ONLY);
+    ASSERT(sp->hail_decision_flags & SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(sp->hail_decision_flags & SIGNAL_DECISION_REASON_HAS_SIGNAL_CONTEXT);
+    ASSERT(!(sp->hail_decision_flags &
+             SIGNAL_DECISION_REASON_HAS_SOURCE_MEMORY));
+    ASSERT(sp->hail_decision_signal_quality > 0.0f);
+    ASSERT(sp->hail_decision_source_id != 0ull);
 }
 
 TEST(test_docking_auto_reports_station_balance) {
@@ -2119,6 +2139,25 @@ TEST(test_hail_reports_no_station_in_range) {
     ASSERT(ev != NULL);
     ASSERT_EQ_INT(ev->hail_response.station, -1);
     ASSERT(ev->hail_response.credits < 0.0f);
+    ASSERT_EQ_INT(ev->hail_response.decision_mode,
+                  HAIL_DECISION_MODE_NONE);
+    ASSERT_EQ_INT(ev->hail_response.decision_candidate_count, 0);
+    ASSERT(ev->hail_response.decision_flags &
+           SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(!(ev->hail_response.decision_flags &
+             SIGNAL_DECISION_REASON_HARD_APPROVED));
+    ASSERT_EQ_FLOAT(ev->hail_response.decision_signal_quality, 0.0f, 0.001f);
+    ASSERT(ev->hail_response.decision_source_id == 0ull);
+    ASSERT_EQ_INT(sp->hail_decision_valid, 1);
+    ASSERT_EQ_INT(sp->hail_decision_station, -1);
+    ASSERT_EQ_INT(sp->hail_decision_candidate_count, 0);
+    ASSERT(sp->hail_decision_flags & SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(!(sp->hail_decision_flags &
+             SIGNAL_DECISION_REASON_HARD_APPROVED));
+    ASSERT(!(sp->hail_decision_flags &
+             SIGNAL_DECISION_REASON_HAS_SIGNAL_CONTEXT));
+    ASSERT_EQ_FLOAT(sp->hail_decision_score, 0.0f, 0.001f);
+    ASSERT(sp->hail_decision_source_id == 0ull);
 }
 
 TEST(test_dead_neural_worker_auto_respawns) {
@@ -2274,13 +2313,15 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
         };
     }
 
-    uint64_t contract_decisions_before = signal_contract_brain_decision_count();
-    uint64_t contract_teacher_before = signal_contract_brain_teacher_decision_count();
+    uint64_t contract_decisions_before =
+        signal_intelligence_contract_decision_count();
+    uint64_t contract_teacher_before =
+        signal_intelligence_contract_teacher_decision_count();
 
     step_npc_ships(&w, SIM_DT);
 
-    ASSERT(signal_contract_brain_decision_count() > contract_decisions_before);
-    ASSERT(signal_contract_brain_teacher_decision_count() > contract_teacher_before);
+    ASSERT(signal_intelligence_contract_decision_count() > contract_decisions_before);
+    ASSERT(signal_intelligence_contract_teacher_decision_count() > contract_teacher_before);
     ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
     ASSERT_EQ_INT(hauler->dest_station, 1);
     ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
@@ -3536,6 +3577,108 @@ TEST(test_station_hopper_accepts_player_towed_ingot_pod) {
     ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_FRAME, 2) != NULL);
 }
 
+TEST(test_frame_press_consumes_dock_held_ingot_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t input = {0};
+    cargo_unit_t expected_first = {0};
+    int dock_idx = test_first_dock_module_idx(st);
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+
+    fragment_a[31] = 0x27;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_a, 0, &input));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 0,
+                        &expected_first));
+    ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
+
+    vec2 dock_pos = module_world_pos_ring(
+        st, st->modules[dock_idx].ring, st->modules[dock_idx].slot);
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    vec2 dock_lane = v2_scale(v2_add(dock_pos, press_pos), 0.5f);
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, dock_lane, v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, &input, 1, CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[input_pod], 1, dock_idx);
+
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
+    const cargo_pod_t *pod = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, 2);
+    ASSERT(pod != NULL);
+    ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
+    ASSERT(cargo_pod_is_tractored_by_module(pod, 1, press_idx));
+}
+
+TEST(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t input = {0};
+    int dock_idx = test_first_dock_module_idx(st);
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+
+    fragment_a[31] = 0x28;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_a, 0, &input));
+    ASSERT(manifest_push(&st->manifest, &input));
+    st->module_input[press_idx] = 1.0f;
+
+    vec2 dock_pos = module_world_pos_ring(
+        st, st->modules[dock_idx].ring, st->modules[dock_idx].slot);
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    vec2 dock_lane = v2_scale(v2_add(dock_pos, press_pos), 0.5f);
+    int frame_pod = test_spawn_frame_pod(&w, dock_lane, 1);
+    ASSERT(frame_pod >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[frame_pod], 1, dock_idx);
+
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT(w.cargo_pods[frame_pod].active);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].manifest_count, 3);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].quantity, 3);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[frame_pod],
+                                            1, press_idx));
+    ASSERT_EQ_INT(st->manifest.count, 0);
+}
+
 TEST(test_furnace_accepts_player_towed_frame_shell_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -3737,10 +3880,10 @@ TEST(test_station_production_ejects_laser_pod) {
     cargo_unit_t inputs[2] = {{0}};
     cargo_unit_t expected = {0};
     int laser_idx = -1;
-    uint8_t fragment_cu[32] = {0};
+    uint8_t fragment_cr[32] = {0};
     uint8_t frame_pub[32] = {0};
 
-    fragment_cu[31] = 0x33;
+    fragment_cr[31] = 0x33;
     frame_pub[31] = 0x44;
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type == MODULE_LASER_FAB) {
@@ -3756,7 +3899,8 @@ TEST(test_station_production_ejects_laser_pod) {
     memset(st->module_output, 0, sizeof(st->module_output));
     memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
-    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE, fragment_cu, 0, &inputs[0]));
+    ASSERT(hash_ingot(COMMODITY_CRYSTAL_INGOT, MINING_GRADE_RARE,
+                      fragment_cr, 0, &inputs[0]));
     inputs[1].kind = (uint8_t)CARGO_KIND_FRAME;
     inputs[1].commodity = (uint8_t)COMMODITY_FRAME;
     inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
@@ -3796,10 +3940,10 @@ TEST(test_station_production_fills_existing_laser_output_pod) {
     station_t *st = &w.stations[2];
     cargo_unit_t inputs[2] = {{0}};
     int laser_idx = -1;
-    uint8_t fragment_cu[32] = {0};
+    uint8_t fragment_cr[32] = {0};
     uint8_t frame_pub[32] = {0};
 
-    fragment_cu[31] = 0x35;
+    fragment_cr[31] = 0x35;
     frame_pub[31] = 0x45;
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type == MODULE_LASER_FAB) {
@@ -3815,8 +3959,8 @@ TEST(test_station_production_fills_existing_laser_output_pod) {
     memset(st->module_output, 0, sizeof(st->module_output));
     memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
 
-    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE,
-                      fragment_cu, 0, &inputs[0]));
+    ASSERT(hash_ingot(COMMODITY_CRYSTAL_INGOT, MINING_GRADE_RARE,
+                      fragment_cr, 0, &inputs[0]));
     inputs[1].kind = (uint8_t)CARGO_KIND_FRAME;
     inputs[1].commodity = (uint8_t)COMMODITY_FRAME;
     inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
@@ -7653,12 +7797,14 @@ TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, &w);
 
-    uint64_t contract_decisions_before = signal_contract_brain_decision_count();
-    uint64_t contract_teacher_before = signal_contract_brain_teacher_decision_count();
+    uint64_t contract_decisions_before =
+        signal_intelligence_contract_decision_count();
+    uint64_t contract_teacher_before =
+        signal_intelligence_contract_teacher_decision_count();
 
     world_sim_step(&w, SIM_DT);
-    ASSERT(signal_contract_brain_decision_count() > contract_decisions_before);
-    ASSERT(signal_contract_brain_teacher_decision_count() > contract_teacher_before);
+    ASSERT(signal_intelligence_contract_decision_count() > contract_decisions_before);
+    ASSERT(signal_intelligence_contract_teacher_decision_count() > contract_teacher_before);
     ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_BUY);
     ASSERT_EQ_INT(sp->autopilot_station_target, 1);
     ASSERT_EQ_INT(sp->autopilot_cargo, COMMODITY_FERRITE_INGOT);
@@ -7773,6 +7919,73 @@ TEST(test_neural_bot_logistics_buys_on_station_credit) {
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME), 1);
     ASSERT(ledger_balance(prospect, sp->session_token) < 0.0f);
+}
+
+TEST(test_neural_autopilot_flight_records_decision_reason) {
+    if (!signal_intelligence_flight_loaded()) {
+        TEST_WARN("flight intelligence unavailable; skipping flight reason replay");
+        return;
+    }
+
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w.npc_ships[i].active = false;
+
+    station_t *prospect = &w.stations[0];
+    w.asteroids[0] = (asteroid_t){
+        .active = true,
+        .tier = ASTEROID_TIER_M,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .pos = { prospect->pos.x + 3650.0f, prospect->pos.y + 250.0f },
+        .radius = 40.0f,
+        .hp = 30.0f,
+        .max_hp = 30.0f,
+        .ore = 30.0f,
+        .max_ore = 30.0f,
+    };
+    spatial_grid_build(&w);
+
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    player_init_ship(sp, &w);
+    sp->server_brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    sp->autopilot_mode = 1;
+    sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+    sp->autopilot_target = 0;
+    sp->autopilot_station_target = -1;
+    sp->autopilot_last_pos = sp->ship.pos;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->ship.pos = (vec2){ prospect->pos.x + 3000.0f, prospect->pos.y };
+    sp->ship.vel = (vec2){0};
+    sp->ship.angle = 0.0f;
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = -1;
+    sp->in_dock_range = false;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->autopilot_decision_valid, 1);
+    ASSERT_EQ_INT(sp->autopilot_decision_candidate_count,
+                  SIGNAL_BRAIN_FLIGHT_ACTION_COUNT);
+    ASSERT(sp->autopilot_decision_action < SIGNAL_BRAIN_FLIGHT_ACTION_COUNT);
+    ASSERT(sp->autopilot_decision_flags &
+           SIGNAL_DECISION_REASON_ADVISORY_ONLY);
+    ASSERT(sp->autopilot_decision_flags &
+           SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(sp->autopilot_decision_flags &
+           SIGNAL_DECISION_REASON_HAS_SIGNAL_CONTEXT);
+    ASSERT(sp->autopilot_decision_flags &
+           (SIGNAL_DECISION_REASON_USED_NEURAL |
+            SIGNAL_DECISION_REASON_HARD_OVERRIDE));
+    ASSERT(sp->autopilot_decision_signal_quality > 0.70f);
+    ASSERT(sp->autopilot_decision_route_risk >= 0.0f);
+    ASSERT(sp->autopilot_decision_route_risk <= 1.0f);
 }
 
 TEST(test_autopilot_prioritizes_raw_ore_contract_mining_target) {
@@ -8767,12 +8980,15 @@ void register_world_sim_basic_tests(void) {
     RUN(test_crystal_requires_two_distinct_furnace_passes);
     RUN(test_neural_bot_contract_logistics_buys_and_delivers_ingot);
     RUN(test_neural_bot_logistics_buys_on_station_credit);
+    RUN(test_neural_autopilot_flight_records_decision_reason);
     RUN(test_autopilot_prioritizes_raw_ore_contract_mining_target);
     RUN(test_station_production_ejects_frame_pod);
     RUN(test_station_production_fills_existing_frame_output_pod);
     RUN(test_station_production_consumes_loose_ingot_pod);
     RUN(test_frame_press_accepts_player_towed_ingot_pod_at_press);
     RUN(test_station_hopper_accepts_player_towed_ingot_pod);
+    RUN(test_frame_press_consumes_dock_held_ingot_pod);
+    RUN(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate);
     RUN(test_furnace_accepts_player_towed_frame_shell_pod);
     RUN(test_furnace_accepts_frame_shell_pod_near_smelt_beam);
     RUN(test_frame_shell_pod_targets_furnace_frame_hopper_lane);

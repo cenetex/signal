@@ -28,6 +28,13 @@
 #define HUD_LATENCY_BAD_MS 300.0f
 #define HUD_FRAGMENT_NEARBY_RANGE 220.0f
 
+static void hud_append_text(char *out, size_t cap, const char *text) {
+    if (!out || cap == 0 || !text) return;
+    size_t len = strlen(out);
+    if (len >= cap) return;
+    snprintf(out + len, cap - len, "%s", text);
+}
+
 #ifdef __EMSCRIPTEN__
 EM_JS(int, signal_relay_debug_region_js, (char *out, int cap), {
     if (cap <= 0) return 0;
@@ -354,10 +361,9 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
         if (req.count <= 0 || out >= COMMODITY_COUNT) break;
         char inputs[72] = "";
         for (int i = 0; i < req.count; i++) {
-            if (i > 0) strncat(inputs, " + ",
-                               sizeof(inputs) - strlen(inputs) - 1);
-            strncat(inputs, commodity_name(req.commodities[i]),
-                    sizeof(inputs) - strlen(inputs) - 1);
+            if (i > 0) hud_append_text(inputs, sizeof(inputs), " + ");
+            hud_append_text(inputs, sizeof(inputs),
+                            commodity_name(req.commodities[i]));
         }
         snprintf(label, sizeof(label), "%s -> %s",
                  inputs, commodity_name(out));

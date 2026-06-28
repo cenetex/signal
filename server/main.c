@@ -579,6 +579,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->player_manifest_cache.valid = false;
     sp->inspect_snapshot_cache.valid = false;
     sp->known_contracts_cache.valid = false;
+    sp->known_ledger_cache.valid = false;
     sp->delivery_ledger_cache.valid = false;
 }
 
@@ -600,16 +601,6 @@ static void send_action_result(struct mg_connection *c, uint16_t action_id,
     uint8_t buf[NET_ACTION_RESULT_SIZE];
     int len = serialize_action_result(buf, action_id, input_seq, status,
                                       action, server_tick);
-    ws_send(c, buf, (size_t)len);
-}
-
-static void send_input_applied(struct mg_connection *c, uint16_t input_seq,
-                               uint32_t server_tick,
-                               uint32_t input_tick_ack) {
-    if (!c || input_seq == 0) return;
-    uint8_t buf[NET_INPUT_APPLIED_SIZE];
-    int len = serialize_input_applied(buf, input_seq, server_tick,
-                                      input_tick_ack);
     ws_send(c, buf, (size_t)len);
 }
 
@@ -686,6 +677,9 @@ static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
         break;
     case NET_MSG_PLAYER_KNOWN_CONTRACTS:
         cache = &sink->player->known_contracts_cache;
+        break;
+    case NET_MSG_PLAYER_KNOWN_LEDGER:
+        cache = &sink->player->known_ledger_cache;
         break;
     case NET_MSG_DELIVERY_LEDGER:
         cache = &sink->player->delivery_ledger_cache;
@@ -2870,6 +2864,7 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_WORLD_CARGO_PODS: return "WORLD_CARGO_PODS";
     case NET_MSG_WORLD_INTERACTIONS: return "WORLD_INTERACTIONS";
     case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
+    case NET_MSG_PLAYER_KNOWN_LEDGER: return "PLAYER_KNOWN_LEDGER";
     case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";
     case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";
     case NET_MSG_PLAYER_MANIFEST: return "PLAYER_MANIFEST";
@@ -3678,7 +3673,7 @@ static void srv_on_hail_response(const sim_event_t *ev) {
     server_player_t *sp = &world.players[pid];
     if (!sp->connected || !sp->conn) return;
 
-    uint8_t msg[7];
+    uint8_t msg[NET_HAIL_RESPONSE_REASON_SIZE];
     int msg_len = serialize_hail_response_for_world(msg, &world, ev);
     if (msg_len > 0) ws_send(sp->conn, msg, (size_t)msg_len);
 
@@ -3696,30 +3691,51 @@ static void srv_mark_all_stations_identity_dirty(void) {
     for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
 }
 
-/* Fan a single sim event out to its per-type broadcaster(s). Multiple
- * "if" branches on event type (rather than a switch) so events that
- * fall into more than one bucket — OUTPOST_PLACED touches both
- * srv_on_outpost_placed AND the structure-event identity refresh —
- * all run. */
+static void srv_hook_outpost_placed(void *user, const sim_event_t *ev) {
+    (void)user;
+    srv_on_outpost_placed(ev);
+}
+
+static void srv_hook_player_state_change(void *user, const sim_event_t *ev) {
+    (void)user;
+    srv_on_player_state_change(ev);
+}
+
+static void srv_hook_death(void *user, const sim_event_t *ev) {
+    (void)user;
+    srv_on_death(ev);
+}
+
+static void srv_hook_contract_complete(void *user, const sim_event_t *ev) {
+    (void)user;
+    srv_on_contract_complete(ev);
+}
+
+static void srv_hook_hail_response(void *user, const sim_event_t *ev) {
+    (void)user;
+    srv_on_hail_response(ev);
+}
+
+static void srv_hook_structure_dirty(void *user, const sim_event_t *ev) {
+    (void)user;
+    (void)ev;
+    srv_mark_all_stations_identity_dirty();
+}
+
+static const server_sim_event_hooks_t srv_sim_event_hooks = {
+    .outpost_placed = srv_hook_outpost_placed,
+    .player_state_change = srv_hook_player_state_change,
+    .death = srv_hook_death,
+    .contract_complete = srv_hook_contract_complete,
+    .hail_response = srv_hook_hail_response,
+    .structure_dirty = srv_hook_structure_dirty,
+};
+
+/* Fan a single sim event out to its per-type broadcaster(s). Shared
+ * routing keeps MP and loopback aligned on which events have extra
+ * transport side effects; multiple hook buckets may fire for one event. */
 static void srv_dispatch_sim_event(const sim_event_t *ev) {
-    if (ev->type == SIM_EVENT_OUTPOST_PLACED) srv_on_outpost_placed(ev);
-    if (ev->type == SIM_EVENT_SELL ||
-        ev->type == SIM_EVENT_BUY ||
-        ev->type == SIM_EVENT_REPAIR ||
-        ev->type == SIM_EVENT_UPGRADE ||
-        ev->type == SIM_EVENT_DOCK ||
-        ev->type == SIM_EVENT_LAUNCH) {
-        srv_on_player_state_change(ev);
-    }
-    if (ev->type == SIM_EVENT_DEATH)              srv_on_death(ev);
-    if (ev->type == SIM_EVENT_CONTRACT_COMPLETE)  srv_on_contract_complete(ev);
-    if (ev->type == SIM_EVENT_HAIL_RESPONSE)      srv_on_hail_response(ev);
-    if (ev->type == SIM_EVENT_OUTPOST_PLACED ||
-        ev->type == SIM_EVENT_OUTPOST_ACTIVATED ||
-        ev->type == SIM_EVENT_MODULE_ACTIVATED ||
-        ev->type == SIM_EVENT_SCAFFOLD_READY) {
-        srv_mark_all_stations_identity_dirty();
-    }
+    server_process_sim_event_transport(ev, &srv_sim_event_hooks, NULL);
 }
 
 /* ================================================================== */
@@ -4253,10 +4269,9 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];
             if (!server_player_is_gameplay_ready(sp)) continue;
-            if (sp->last_input_seq != 0 &&
-                sp->last_input_seq != input_ack_before[p]) {
-                send_input_applied(sp->conn, sp->last_input_seq,
-                                   world.tick, sp->last_input_tick);
+            if (server_emit_input_applied_if_changed(
+                    sp, input_ack_before[p], world.tick,
+                    ws_packet_sink, sp->conn)) {
                 input_ack_before[p] = sp->last_input_seq;
             }
         }

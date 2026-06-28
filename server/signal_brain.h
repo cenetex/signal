@@ -20,10 +20,28 @@ typedef struct signal_brain_flight_action {
     int thrust;
 } signal_brain_flight_action_t;
 
+typedef struct signal_brain_flight_decision {
+    int selected_index;
+    int raw_index;
+    int candidate_count;
+    float selected_score;
+    float raw_score;
+    float signal_quality;
+    float route_risk;
+    float hull_ratio;
+    uint16_t allowed_mask;
+    bool forward_blocked;
+    bool hard_override;
+} signal_brain_flight_decision_t;
+
 bool signal_brain_load_checkpoint(const char *path, char *err, size_t err_size);
 bool signal_brain_loaded(void);
 uint64_t signal_brain_inference_count(void);
 void signal_brain_drive(world_t *w, server_player_t *sp, float dt);
+bool signal_brain_drive_with_decision(world_t *w,
+                                      server_player_t *sp,
+                                      float dt,
+                                      signal_brain_flight_decision_t *decision);
 
 int signal_brain_flight_action_count(void);
 const signal_brain_flight_action_t *signal_brain_flight_action(int index);

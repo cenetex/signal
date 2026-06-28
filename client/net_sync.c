@@ -1120,6 +1120,16 @@ void apply_remote_player_known_contracts(uint32_t mask) {
     g.player_known_contract_mask = mask;
 }
 
+void apply_remote_player_known_ledger(const NetKnownLedgerEntry *entries,
+                                      int count) {
+    if (count < 0) count = 0;
+    if (count > PLAYER_KNOWN_LEDGER_MAX_RECORDS)
+        count = PLAYER_KNOWN_LEDGER_MAX_RECORDS;
+    g.known_station_ledger_count = count;
+    for (int i = 0; i < count; i++)
+        g.known_station_ledger[i] = entries[i];
+}
+
 void apply_remote_delivery_ledger(const NetDeliveryLedgerEntry *entries,
                                   int count) {
     if (count < 0) count = 0;
@@ -1397,9 +1407,50 @@ static void net_station_hail_label(uint8_t station, char *out, size_t cap) {
     snprintf(out, cap, "%s [%s]", st->name, id);
 }
 
-void apply_remote_hail_response(uint8_t station, float credits, int contract_index) {
+static bool net_hail_reason_text(const NetHailReason *reason,
+                                 char *out,
+                                 size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!reason || reason->flags == 0u) return false;
+
+    switch ((hail_decision_mode_t)reason->mode) {
+    case HAIL_DECISION_MODE_DOCKED:
+        snprintf(out, cap, "station knows you are docked");
+        return true;
+    case HAIL_DECISION_MODE_DOCK_RANGE:
+        snprintf(out, cap, "dock signal has priority");
+        return true;
+    case HAIL_DECISION_MODE_SIGNAL_RANGE:
+        if (reason->candidate_count > 1u) {
+            snprintf(out, cap, "closest of %u station signals",
+                     (unsigned)reason->candidate_count);
+        } else {
+            snprintf(out, cap, "only station signal in range");
+        }
+        return true;
+    case HAIL_DECISION_MODE_NONE:
+    default:
+        if (reason->candidate_count == 0u) {
+            snprintf(out, cap, "no station signal answered");
+            return true;
+        }
+        break;
+    }
+    return false;
+}
+
+void apply_remote_hail_response(uint8_t station,
+                                float credits,
+                                int contract_index,
+                                const NetHailReason *reason) {
+    char why[96];
+    bool has_reason = net_hail_reason_text(reason, why, sizeof(why));
     if (station >= MAX_STATIONS) {
-        set_notice("Local scan sweep.");
+        if (has_reason)
+            set_notice("Local scan sweep. %s.", why);
+        else
+            set_notice("Local scan sweep.");
         return;
     }
     /* Use the same hail overlay as local play — station name + the
@@ -1420,10 +1471,21 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
         const char *unit = g.world.stations[station].currency_name;
         if (!unit[0]) unit = "credits";
         if (credits >= 0.0f) {
-            set_notice("%s: %s  (balance %d %s)",
-                g.hail_station, g.hail_message, (int)lroundf(shown_credits), unit);
+            if (has_reason) {
+                set_notice("%s: %s  (%s; balance %d %s)",
+                    g.hail_station, g.hail_message, why,
+                    (int)lroundf(shown_credits), unit);
+            } else {
+                set_notice("%s: %s  (balance %d %s)",
+                    g.hail_station, g.hail_message,
+                    (int)lroundf(shown_credits), unit);
+            }
         } else {
-            set_notice("%s: %s", g.hail_station, g.hail_message);
+            if (has_reason)
+                set_notice("%s: %s  (%s)", g.hail_station,
+                           g.hail_message, why);
+            else
+                set_notice("%s: %s", g.hail_station, g.hail_message);
         }
     }
     /* Track station work when the hail response names a real board contract.

@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -499,6 +499,12 @@ latency-proxy-high:
 
 latency-proxy-ack-lag:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
+
+RTC_GATEWAY_LISTEN ?= 127.0.0.1:19093
+RTC_GATEWAY_UPSTREAM ?= ws://127.0.0.1:9091/ws
+
+rtc-gateway:
+	npm run rtc-gateway -- --listen=$(RTC_GATEWAY_LISTEN) --upstream=$(RTC_GATEWAY_UPSTREAM)
 
 # --- Static web bundle / Fly deploy ---
 site: build-web

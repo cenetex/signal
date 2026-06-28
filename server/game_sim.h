@@ -279,6 +279,23 @@ typedef struct {
     int8_t autopilot_teacher_thrust;
     float autopilot_teacher_features[
         SIGNAL_BRAIN_FLIGHT_ACTION_COUNT * SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT];
+    uint8_t autopilot_decision_valid;
+    uint8_t autopilot_decision_action;
+    uint8_t autopilot_decision_candidate_count;
+    uint8_t autopilot_decision_reserved;
+    uint32_t autopilot_decision_flags;
+    float autopilot_decision_score;
+    float autopilot_decision_neural_score;
+    float autopilot_decision_route_risk;
+    float autopilot_decision_signal_quality;
+    uint8_t hail_decision_valid;
+    int8_t hail_decision_station;
+    uint8_t hail_decision_candidate_count;
+    uint8_t hail_decision_reserved;
+    uint32_t hail_decision_flags;
+    float hail_decision_score;
+    float hail_decision_signal_quality;
+    uint64_t hail_decision_source_id;
     uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
@@ -287,6 +304,7 @@ typedef struct {
     net_payload_cache_t player_manifest_cache;
     net_payload_cache_t inspect_snapshot_cache;
     net_payload_cache_t known_contracts_cache;
+    net_payload_cache_t known_ledger_cache;
     net_payload_cache_t delivery_ledger_cache;
     /* Set when an action result is sent. The next player payload broadcast
      * bypasses hash suppression so rejected/no-op actions also reconcile
@@ -578,6 +596,13 @@ typedef struct {
     uint32_t frontier_virtual_scaffolds_manufactured;
     uint32_t frontier_virtual_scaffold_deliveries;
     uint32_t frontier_virtual_supply_deliveries;
+    uint8_t frontier_decision_valid;
+    uint8_t frontier_decision_action;
+    uint16_t frontier_decision_plan_limit;
+    uint32_t frontier_decision_flags;
+    float frontier_decision_score;
+    float frontier_decision_pressure;
+    uint64_t frontier_decision_source_id;
     /* Monotonic counter for npc_ship_t.session_token. Incremented in
      * spawn_npc; the low/high bytes get stamped into the token so each
      * spawn (including respawns of the same role at the same station)

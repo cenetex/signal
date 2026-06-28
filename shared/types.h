@@ -1519,6 +1519,13 @@ typedef enum {
     DEATH_CAUSE_SELF        = 5,  /* X-key reset / self-destruct */
 } death_cause_t;
 
+typedef enum {
+    HAIL_DECISION_MODE_NONE = 0,
+    HAIL_DECISION_MODE_DOCKED = 1,
+    HAIL_DECISION_MODE_DOCK_RANGE = 2,
+    HAIL_DECISION_MODE_SIGNAL_RANGE = 3,
+} hail_decision_mode_t;
+
 typedef struct {
     sim_event_type_t type;
     int player_id;
@@ -1543,7 +1550,16 @@ typedef struct {
         struct { int station; uint8_t commodity; uint8_t grade; int cost;
                  uint16_t quantity; } buy;
         struct { int slot; } outpost_placed;
-        struct { int station; float credits; int contract_index; } hail_response;
+        struct {
+            int station;
+            float credits;
+            int contract_index;
+            uint32_t decision_flags;
+            uint64_t decision_source_id;
+            float decision_signal_quality;
+            uint8_t decision_candidate_count;
+            uint8_t decision_mode;
+        } hail_response;
         struct { int slot; } outpost_activated;
         struct { int station; int module_idx; int module_type; } module_activated;
         struct { int slot; npc_role_t role; int home_station; } npc_spawned;

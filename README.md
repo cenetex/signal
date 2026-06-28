@@ -78,8 +78,8 @@ Station production currently flows through the physical fragment economy:
    furnace beams.
 2. Furnaces smelt ferrite, cuprite, and crystal fragments into matching ingots.
 3. Frame Presses turn 1 ferrite ingot into 2 frames.
-4. Laser Fabs turn 1 cuprite ingot + 1 frame into 1 laser module.
-5. Tractor Fabs turn 1 crystal ingot + 1 frame into 1 tractor module.
+4. Laser Fabs turn 1 crystal ingot + 1 frame into 1 laser module.
+5. Tractor Fabs turn 1 cuprite ingot + 1 frame into 1 tractor module.
 6. Shipyards consume frames, laser modules, and tractor modules to commission
    ships, print scaffolds, and fabricate repair kits.
 
@@ -196,6 +196,26 @@ python3 -m http.server 8080 --directory build-web
 ```
 
 Then open `http://127.0.0.1:8080/play.html?server=ws://127.0.0.1:9091/ws`.
+
+Local WebRTC gateway dev:
+
+```sh
+make build-server
+PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+```
+
+In separate terminals:
+
+```sh
+make rtc-gateway
+make build-web
+python3 -m http.server 8080 --directory build-web
+```
+
+Then open
+`http://127.0.0.1:8080/play.html?server=rtc://127.0.0.1:19093/signal-main`.
+The gateway terminates a WebRTC DataChannel from the browser and proxies the
+existing binary protocol to the native server at `ws://127.0.0.1:9091/ws`.
 
 High-latency multiplayer test:
 

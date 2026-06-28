@@ -134,6 +134,14 @@ typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 typedef void (*net_on_player_known_contracts_fn)(uint32_t mask);
 
 typedef struct {
+    uint8_t station;
+    float balance;
+} NetKnownLedgerEntry;
+
+typedef void (*net_on_player_known_ledger_fn)(
+    const NetKnownLedgerEntry *entries, int count);
+
+typedef struct {
     uint16_t shipment_id;
     uint8_t status;
     uint8_t origin_station;
@@ -247,8 +255,19 @@ typedef struct {
 typedef void (*net_on_cargo_pods_fn)(const NetCargoPodState* pods, int count);
 typedef void (*net_on_interactions_fn)(const sim_interaction_t *items, int count);
 
+typedef struct {
+    uint32_t flags;
+    float signal_quality;
+    uint8_t candidate_count;
+    uint8_t mode;
+    uint64_t source_id;
+} NetHailReason;
+
 /* Hail response callback: server confirmed payout from a hail attempt. */
-typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
+typedef void (*net_on_hail_response_fn)(uint8_t station,
+                                        float credits,
+                                        int contract_index,
+                                        const NetHailReason *reason);
 
 /* Signal-channel wire record (#316). audio_url isn't on the wire in V1;
  * agents reach it via the REST endpoint. entry_hash carries the SHA-256
@@ -403,6 +422,7 @@ typedef struct {
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
     net_on_player_known_contracts_fn on_player_known_contracts;
+    net_on_player_known_ledger_fn on_player_known_ledger;
     net_on_delivery_ledger_fn on_delivery_ledger;
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,
                      float vel_x, float vel_y, float angle,

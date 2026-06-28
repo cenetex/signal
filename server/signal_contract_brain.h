@@ -34,6 +34,13 @@ typedef struct {
     float distance;
     float age;
     float hull_ratio;
+    float hologram_resonance;
+    float source_memory;
+    float route_success_memory;
+    float route_danger_memory;
+    float route_proof_memory;
+    float trust_bias;
+    uint64_t source_memory_id;
     float teacher_score;
 } signal_contract_candidate_t;
 
@@ -49,5 +56,12 @@ int signal_contract_brain_choose(const world_t *w,
                                  const server_player_t *sp,
                                  const signal_contract_candidate_t *candidates,
                                  int count);
+int signal_contract_brain_choose_with_scores(
+    const world_t *w,
+    const server_player_t *sp,
+    const signal_contract_candidate_t *candidates,
+    int count,
+    double *scores,
+    int score_count);
 
 #endif /* SIGNAL_CONTRACT_BRAIN_H */

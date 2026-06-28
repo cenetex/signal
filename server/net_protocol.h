@@ -397,6 +397,13 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
                         DELIVERY_LEDGER_HEADER, DELIVERY_LEDGER_RECORD_SIZE,
                         DELIVERY_LEDGER_MAX_RECORDS, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_KNOWN_LEDGER, PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        PLAYER_KNOWN_LEDGER_HEADER,
+                        PLAYER_KNOWN_LEDGER_RECORD_SIZE,
+                        PLAYER_KNOWN_LEDGER_MAX_RECORDS, ship_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_INSPECT_SNAPSHOT, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -1881,6 +1888,23 @@ typedef void (*server_packet_sink_fn)(void *user, const uint8_t *data, int len);
 typedef void (*server_player_packet_sink_fn)(void *user, int player_slot,
                                              const uint8_t *data, int len);
 
+static inline bool server_emit_input_applied_if_changed(
+    const server_player_t *sp,
+    uint16_t previous_input_seq,
+    uint32_t server_tick,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!sp || !send || sp->last_input_seq == 0 ||
+        sp->last_input_seq == previous_input_seq) {
+        return false;
+    }
+    uint8_t buf[NET_INPUT_APPLIED_SIZE];
+    int len = serialize_input_applied(buf, sp->last_input_seq, server_tick,
+                                      sp->last_input_tick);
+    send(user, buf, len);
+    return true;
+}
+
 typedef struct {
     uint8_t asteroids[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     uint8_t players[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
@@ -2358,7 +2382,12 @@ static inline int serialize_hail_response_for_world(
     int compact_ci = contract_compact_index_for_slot(
         w->contracts, ev->hail_response.contract_index);
     buf[6] = (compact_ci >= 0) ? (uint8_t)compact_ci : 0xFFu;
-    return 7;
+    write_u32_le(&buf[7], ev->hail_response.decision_flags);
+    write_f32_le(&buf[11], ev->hail_response.decision_signal_quality);
+    buf[15] = ev->hail_response.decision_candidate_count;
+    buf[16] = ev->hail_response.decision_mode;
+    write_u64_le(&buf[17], ev->hail_response.decision_source_id);
+    return NET_HAIL_RESPONSE_REASON_SIZE;
 }
 
 /* Per-player gossip-contract visibility mask. Bit i set iff compact
@@ -2398,6 +2427,34 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
     buf[0] = NET_MSG_PLAYER_KNOWN_CONTRACTS;
     write_u32_le(&buf[1], mask);
     return 5;
+}
+
+static inline int serialize_player_known_ledger(uint8_t *buf,
+                                                const world_t *w,
+                                                const server_player_t *sp) {
+    int count = 0;
+    buf[0] = NET_MSG_PLAYER_KNOWN_LEDGER;
+    if (!w || !sp) {
+        buf[1] = 0;
+        return PLAYER_KNOWN_LEDGER_HEADER;
+    }
+    for (int s = 0; s < MAX_STATIONS &&
+                    count < PLAYER_KNOWN_LEDGER_MAX_RECORDS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        float balance = server_player_can_use_pubkey_persistence(sp)
+            ? ledger_balance_by_pubkey(st, sp->pubkey)
+            : ledger_balance(st, sp->session_token);
+        if (fabsf(balance) < 0.001f) continue;
+        uint8_t *p = &buf[PLAYER_KNOWN_LEDGER_HEADER +
+                          count * PLAYER_KNOWN_LEDGER_RECORD_SIZE];
+        p[0] = (uint8_t)s;
+        write_f32_le(&p[1], balance);
+        count++;
+    }
+    buf[1] = (uint8_t)count;
+    return PLAYER_KNOWN_LEDGER_HEADER +
+           count * PLAYER_KNOWN_LEDGER_RECORD_SIZE;
 }
 
 static inline int serialize_delivery_ledger(uint8_t *buf,
@@ -2460,6 +2517,10 @@ typedef struct {
     ];
     uint8_t inspect_snapshot[INSPECT_SNAPSHOT_MAX_SIZE];
     uint8_t known_contracts[5];
+    uint8_t known_ledger[
+        PLAYER_KNOWN_LEDGER_HEADER +
+        PLAYER_KNOWN_LEDGER_MAX_RECORDS * PLAYER_KNOWN_LEDGER_RECORD_SIZE
+    ];
     uint8_t delivery_ledger[
         DELIVERY_LEDGER_HEADER +
         DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE
@@ -2543,6 +2604,10 @@ static inline void server_emit_private_snapshot_for_player(
     int known_len = serialize_player_known_contracts(
         scratch->known_contracts, w->contracts, &sp->ship);
     send(send_user, scratch->known_contracts, known_len);
+
+    int ledger_len = serialize_player_known_ledger(
+        scratch->known_ledger, w, sp);
+    send(send_user, scratch->known_ledger, ledger_len);
 
     int delivery_len = serialize_delivery_ledger(
         scratch->delivery_ledger, w, (uint8_t)player_slot);
@@ -2794,6 +2859,89 @@ static inline void parse_plan(const uint8_t *data, int len, input_intent_t *inte
         break;
     default:
         break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Event transport side-effect routing                                 */
+/* ------------------------------------------------------------------ */
+
+enum {
+    SERVER_SIM_EVENT_EFFECT_OUTPOST_PLACED    = 1u << 0,
+    SERVER_SIM_EVENT_EFFECT_PLAYER_STATE      = 1u << 1,
+    SERVER_SIM_EVENT_EFFECT_DEATH             = 1u << 2,
+    SERVER_SIM_EVENT_EFFECT_CONTRACT_COMPLETE = 1u << 3,
+    SERVER_SIM_EVENT_EFFECT_HAIL_RESPONSE     = 1u << 4,
+    SERVER_SIM_EVENT_EFFECT_STRUCTURE_DIRTY   = 1u << 5,
+};
+
+typedef void (*server_sim_event_hook_fn)(void *user,
+                                         const sim_event_t *ev);
+
+typedef struct {
+    server_sim_event_hook_fn outpost_placed;
+    server_sim_event_hook_fn player_state_change;
+    server_sim_event_hook_fn death;
+    server_sim_event_hook_fn contract_complete;
+    server_sim_event_hook_fn hail_response;
+    server_sim_event_hook_fn structure_dirty;
+} server_sim_event_hooks_t;
+
+static inline uint32_t server_sim_event_effects(const sim_event_t *ev) {
+    if (!ev) return 0;
+    uint32_t effects = 0;
+    if (ev->type == SIM_EVENT_OUTPOST_PLACED)
+        effects |= SERVER_SIM_EVENT_EFFECT_OUTPOST_PLACED;
+    if (ev->type == SIM_EVENT_SELL ||
+        ev->type == SIM_EVENT_BUY ||
+        ev->type == SIM_EVENT_REPAIR ||
+        ev->type == SIM_EVENT_UPGRADE ||
+        ev->type == SIM_EVENT_DOCK ||
+        ev->type == SIM_EVENT_LAUNCH) {
+        effects |= SERVER_SIM_EVENT_EFFECT_PLAYER_STATE;
+    }
+    if (ev->type == SIM_EVENT_DEATH)
+        effects |= SERVER_SIM_EVENT_EFFECT_DEATH;
+    if (ev->type == SIM_EVENT_CONTRACT_COMPLETE)
+        effects |= SERVER_SIM_EVENT_EFFECT_CONTRACT_COMPLETE;
+    if (ev->type == SIM_EVENT_HAIL_RESPONSE)
+        effects |= SERVER_SIM_EVENT_EFFECT_HAIL_RESPONSE;
+    if (ev->type == SIM_EVENT_OUTPOST_PLACED ||
+        ev->type == SIM_EVENT_OUTPOST_ACTIVATED ||
+        ev->type == SIM_EVENT_MODULE_ACTIVATED ||
+        ev->type == SIM_EVENT_SCAFFOLD_READY) {
+        effects |= SERVER_SIM_EVENT_EFFECT_STRUCTURE_DIRTY;
+    }
+    return effects;
+}
+
+static inline void server_process_sim_event_transport(
+    const sim_event_t *ev,
+    const server_sim_event_hooks_t *hooks,
+    void *user) {
+    if (!ev || !hooks) return;
+    uint32_t effects = server_sim_event_effects(ev);
+    if ((effects & SERVER_SIM_EVENT_EFFECT_OUTPOST_PLACED) &&
+        hooks->outpost_placed) {
+        hooks->outpost_placed(user, ev);
+    }
+    if ((effects & SERVER_SIM_EVENT_EFFECT_PLAYER_STATE) &&
+        hooks->player_state_change) {
+        hooks->player_state_change(user, ev);
+    }
+    if ((effects & SERVER_SIM_EVENT_EFFECT_DEATH) && hooks->death)
+        hooks->death(user, ev);
+    if ((effects & SERVER_SIM_EVENT_EFFECT_CONTRACT_COMPLETE) &&
+        hooks->contract_complete) {
+        hooks->contract_complete(user, ev);
+    }
+    if ((effects & SERVER_SIM_EVENT_EFFECT_HAIL_RESPONSE) &&
+        hooks->hail_response) {
+        hooks->hail_response(user, ev);
+    }
+    if ((effects & SERVER_SIM_EVENT_EFFECT_STRUCTURE_DIRTY) &&
+        hooks->structure_dirty) {
+        hooks->structure_dirty(user, ev);
     }
 }
 

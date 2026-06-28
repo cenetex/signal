@@ -349,7 +349,7 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     /* Pass 0: when launched from a station with matching smelters, prefer
      * the ore that station is actually asking for. Raw-ore TRACTOR
      * contracts add urgency, so Helios' cuprite request beats nearer
-     * crystal while the laser line is empty. */
+     * cuprite while the laser line is empty. */
     float best_priority = 0.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];

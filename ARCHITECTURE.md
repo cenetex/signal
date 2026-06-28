@@ -38,9 +38,9 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0/120.0`). Every tick:
 5. **AI step** — neural worker job assignment, autopilot, frontier director planning
 6. **Signal step** — signal grid rebuild, boundary push, band classification
 7. **Event emission** — chain-log events for state mutations (smelt, trade, construction, death)
-8. **Snapshot broadcast** — world snapshots to connected clients (multiplayer only)
+8. **Snapshot broadcast** — serialized world/private snapshots to connected clients or local loopback
 
-In **singleplayer**, steps 1-8 all run on the client. In **multiplayer**, steps 2-8 run on the server and step 1 collects input from both local and remote players.
+In **singleplayer**, an in-process authority in `client/local_server.c` runs the server-side steps and feeds packets back through `net.c` loopback. In **multiplayer**, steps 2-8 run on the remote server and step 1 collects input from both local and remote players.
 
 ## Entity Lifecycle
 
@@ -83,8 +83,8 @@ Per-station sovereign currencies — no global wallet. Credits are `(station_id,
 The production backbone is:
 fragments -> ingots -> frames / laser modules / tractor modules -> ships,
 scaffolds, and repair kits. Smelting is furnace-tagged by output commodity.
-Frames use ferrite ingots, laser modules use cuprite ingots plus frames, and
-tractor modules use crystal ingots plus frames. Shipyards consume those
+Frames use ferrite ingots, laser modules use crystal ingots plus frames, and
+tractor modules use cuprite ingots plus frames. Shipyards consume those
 finished parts for hull commissions, station-module scaffolds, and the repair
 kit sink.
 

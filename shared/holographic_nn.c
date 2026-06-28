@@ -7,16 +7,28 @@
  *   - float precision throughout (fast on GPU-less server, good fidelity)
  *   - Deterministic key vectors from seed via frequency-domain construction
  *   - In-place radix-2 Cooley-Tukey FFT
+ *   - No heap allocation in bind/unbind/keygen hot paths
  */
 #include "holographic_nn.h"
 #include "fixpoint.h"
 
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
+
+#define HNN_COMPLEX_COUNT ((size_t)HNN_DIM * 2u)
+#define HNN_KEY_CACHE_SIZE 64u
+
+typedef struct {
+    uint64_t seed;
+    bool valid;
+    float vec[HNN_DIM];
+} hnn_key_cache_entry_t;
 
 /* A tiny PRNG for deterministic key generation (xorshift32). */
 static uint32_t hnn_rand_state;
+static hnn_key_cache_entry_t g_hnn_key_cache[HNN_KEY_CACHE_SIZE];
+static float g_hnn_feature_keys[HNN_FEATURE_COUNT][HNN_DIM];
+static bool g_hnn_feature_keys_initialized = false;
 
 static void hnn_srand(uint32_t seed) {
     hnn_rand_state = seed ? seed : 1u;
@@ -33,6 +45,14 @@ static uint32_t hnn_rand(void) {
 
 static float hnn_randf(void) {
     return (float)(hnn_rand() & 0xFFFFFFu) / (float)0x1000000;
+}
+
+static size_t hnn_key_cache_slot(uint64_t seed) {
+    uint64_t x = seed;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdull;
+    x ^= x >> 33;
+    return (size_t)(x & (uint64_t)(HNN_KEY_CACHE_SIZE - 1u));
 }
 
 /* --- FFT (radix-2 Cooley-Tukey, in-place, complex interleaved) --- */
@@ -111,7 +131,17 @@ float hnn_normalize(float v[HNN_DIM]) {
 }
 
 void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
+    size_t slot;
+    hnn_key_cache_entry_t *entry;
     int half = HNN_DIM / 2;
+    if (!out) return;
+
+    slot = hnn_key_cache_slot(seed);
+    entry = &g_hnn_key_cache[slot];
+    if (entry->valid && entry->seed == seed) {
+        memcpy(out, entry->vec, HNN_DIM * sizeof(float));
+        return;
+    }
 
     /* Split the 64-bit seed into two 32-bit halves for the PRNG */
     uint32_t lo = (uint32_t)(seed & 0xFFFFFFFFu);
@@ -119,11 +149,7 @@ void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
     hnn_srand(lo ^ (hi * 2654435761u));
 
     /* Build in frequency domain: unit magnitude at every bin, random phase. */
-    float *F = (float *)malloc((size_t)HNN_DIM * 2u * sizeof(float));
-    if (!F) {
-        memset(out, 0, HNN_DIM * sizeof(float));
-        return;
-    }
+    float F[HNN_DIM * 2];
 
     /* DC: +/-1 */
     F[0] = hnn_randf() < 0.5f ? 1.0f : -1.0f;
@@ -151,16 +177,18 @@ void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
     /* Copy real parts to output */
     for (int i = 0; i < HNN_DIM; i++) out[i] = F[2 * i];
 
-    free(F);
-
     /* Normalize onto the hypersphere */
     hnn_normalize(out);
+    entry->seed = seed;
+    entry->valid = true;
+    memcpy(entry->vec, out, HNN_DIM * sizeof(float));
 }
 
 void hnn_bind(const float a[HNN_DIM], const float b[HNN_DIM],
               float c[HNN_DIM]) {
-    float *work = (float *)malloc((size_t)HNN_DIM * 2u * sizeof(float));
-    if (!work) { memset(c, 0, HNN_DIM * sizeof(float)); return; }
+    float work[HNN_DIM * 2];
+    float Fa[HNN_DIM * 2];
+    if (!a || !b || !c) return;
 
     /* Pack a into complex array and FFT */
     for (int i = 0; i < HNN_DIM; i++) {
@@ -170,9 +198,7 @@ void hnn_bind(const float a[HNN_DIM], const float b[HNN_DIM],
     hnn_fft(work, HNN_DIM);
 
     /* Store FFT(a) */
-    float *Fa = (float *)malloc((size_t)HNN_DIM * 2u * sizeof(float));
-    if (!Fa) { free(work); memset(c, 0, HNN_DIM * sizeof(float)); return; }
-    memcpy(Fa, work, (size_t)HNN_DIM * 2u * sizeof(float));
+    memcpy(Fa, work, HNN_COMPLEX_COUNT * sizeof(float));
 
     /* Pack b into work and FFT */
     for (int i = 0; i < HNN_DIM; i++) {
@@ -188,22 +214,20 @@ void hnn_bind(const float a[HNN_DIM], const float b[HNN_DIM],
         work[2 * i]     = a_re * b_re - a_im * b_im;
         work[2 * i + 1] = a_re * b_im + a_im * b_re;
     }
-    free(Fa);
-
     /* IFFT */
     hnn_ifft(work, HNN_DIM);
 
     /* Copy real parts to output */
     for (int i = 0; i < HNN_DIM; i++) c[i] = work[2 * i];
-    free(work);
 
     hnn_normalize(c);
 }
 
 void hnn_unbind(const float a[HNN_DIM], const float b[HNN_DIM],
                 float c[HNN_DIM]) {
-    float *work = (float *)malloc((size_t)HNN_DIM * 2u * sizeof(float));
-    if (!work) { memset(c, 0, HNN_DIM * sizeof(float)); return; }
+    float work[HNN_DIM * 2];
+    float Fa[HNN_DIM * 2];
+    if (!a || !b || !c) return;
 
     /* FFT a */
     for (int i = 0; i < HNN_DIM; i++) {
@@ -213,9 +237,7 @@ void hnn_unbind(const float a[HNN_DIM], const float b[HNN_DIM],
     hnn_fft(work, HNN_DIM);
 
     /* Store FFT(a) */
-    float *Fa = (float *)malloc((size_t)HNN_DIM * 2u * sizeof(float));
-    if (!Fa) { free(work); memset(c, 0, HNN_DIM * sizeof(float)); return; }
-    memcpy(Fa, work, (size_t)HNN_DIM * 2u * sizeof(float));
+    memcpy(Fa, work, HNN_COMPLEX_COUNT * sizeof(float));
 
     /* FFT b into work */
     for (int i = 0; i < HNN_DIM; i++) {
@@ -231,12 +253,9 @@ void hnn_unbind(const float a[HNN_DIM], const float b[HNN_DIM],
         work[2 * i]     = a_re * b_re - a_im * b_im;
         work[2 * i + 1] = a_re * b_im + a_im * b_re;
     }
-    free(Fa);
-
     hnn_ifft(work, HNN_DIM);
 
     for (int i = 0; i < HNN_DIM; i++) c[i] = work[2 * i];
-    free(work);
 
     hnn_normalize(c);
 }
@@ -250,6 +269,13 @@ float hnn_similarity(const float a[HNN_DIM], const float b[HNN_DIM]) {
     float dot = 0.0f;
     for (int i = 0; i < HNN_DIM; i++) dot += a[i] * b[i];
     return dot;
+}
+
+static void hnn_feature_keys_init(void) {
+    if (g_hnn_feature_keys_initialized) return;
+    for (int i = 0; i < HNN_FEATURE_COUNT; i++)
+        hnn_key_vector((uint64_t)(i + 1000), g_hnn_feature_keys[i]);
+    g_hnn_feature_keys_initialized = true;
 }
 
 /* --- Holographic memory --- */
@@ -347,10 +373,10 @@ void hnn_encode_state(const hnn_pilot_features_t *f,
     vals[23] = f->composite_dot;
 
     memset(state_out, 0, HNN_DIM * sizeof(float));
+    hnn_feature_keys_init();
 
     for (int i = 0; i < HNN_FEATURE_COUNT; i++) {
-        float feat_key[HNN_DIM];
-        hnn_key_vector((uint64_t)(i + 1000), feat_key);
+        const float *feat_key = g_hnn_feature_keys[i];
 
         /* Scale the key vector by the feature value */
         float feat_val[HNN_DIM];

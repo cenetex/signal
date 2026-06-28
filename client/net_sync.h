@@ -53,6 +53,8 @@ void apply_remote_npcs(const NetNpcState* npcs, int count);
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool);
 void apply_remote_contracts(const contract_t* contracts, int count);
 void apply_remote_player_known_contracts(uint32_t mask);
+void apply_remote_player_known_ledger(const NetKnownLedgerEntry *entries,
+                                      int count);
 void apply_remote_delivery_ledger(const NetDeliveryLedgerEntry *entries,
                                   int count);
 void apply_remote_station_identity(const NetStationIdentity* si);
@@ -61,7 +63,10 @@ void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
 void apply_remote_scaffolds(const NetScaffoldState* scaffolds, int count);
 void apply_remote_cargo_pods(const NetCargoPodState* pods, int count);
 void apply_remote_interactions(const sim_interaction_t *items, int count);
-void apply_remote_hail_response(uint8_t station, float credits, int contract_index);
+void apply_remote_hail_response(uint8_t station,
+                                float credits,
+                                int contract_index,
+                                const NetHailReason *reason);
 void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count);
 /* Phase 2 — station manifest summary (per-{commodity, grade} counts). */
 void apply_remote_station_manifest(uint8_t station_id,

@@ -1170,7 +1170,16 @@ static void handle_message(const uint8_t* data, int len) {
             /* Contract idx added in the hail-as-quest change; old servers
              * that don't send it decode as "no contract" (0xFF). */
             int contract_index = (len >= 7 && data[6] != 0xFF) ? (int)data[6] : -1;
-            net_state.callbacks.on_hail_response(station, credits, contract_index);
+            NetHailReason reason = {0};
+            if (len >= NET_HAIL_RESPONSE_REASON_SIZE) {
+                reason.flags = read_u32_le(&data[7]);
+                reason.signal_quality = read_f32_le(&data[11]);
+                reason.candidate_count = data[15];
+                reason.mode = data[16];
+                reason.source_id = read_u64_le(&data[17]);
+            }
+            net_state.callbacks.on_hail_response(
+                station, credits, contract_index, &reason);
         }
         break;
 
@@ -1600,6 +1609,27 @@ static void handle_message(const uint8_t* data, int len) {
                     entries[i].held_bound = read_u16_le(&p[29]);
                 }
                 net_state.callbacks.on_delivery_ledger(entries, n);
+            }
+        }
+        break;
+
+    case NET_MSG_PLAYER_KNOWN_LEDGER:
+        if (len >= PLAYER_KNOWN_LEDGER_HEADER &&
+            net_state.callbacks.on_player_known_ledger) {
+            uint8_t count = data[1];
+            if (len >= PLAYER_KNOWN_LEDGER_HEADER +
+                       count * PLAYER_KNOWN_LEDGER_RECORD_SIZE) {
+                NetKnownLedgerEntry entries[PLAYER_KNOWN_LEDGER_MAX_RECORDS];
+                memset(entries, 0, sizeof(entries));
+                int n = count < PLAYER_KNOWN_LEDGER_MAX_RECORDS
+                    ? count : PLAYER_KNOWN_LEDGER_MAX_RECORDS;
+                for (int i = 0; i < n; i++) {
+                    const uint8_t *p = &data[PLAYER_KNOWN_LEDGER_HEADER +
+                                             i * PLAYER_KNOWN_LEDGER_RECORD_SIZE];
+                    entries[i].station = p[0];
+                    entries[i].balance = read_f32_le(&p[1]);
+                }
+                net_state.callbacks.on_player_known_ledger(entries, n);
             }
         }
         break;

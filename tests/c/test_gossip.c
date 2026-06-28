@@ -2,6 +2,7 @@
 #include "chain_log.h"
 #include "gossip.h"
 #include "sim_ai.h"
+#include "signal_intelligence.h"
 
 static bool view_has_contract(const knowledge_view_t *view,
                               uint8_t action,
@@ -291,6 +292,158 @@ TEST(test_hnn_market_memory_resonance_round_trips) {
                                                          GOSSIP_HNN_JOB_REPAIR);
     ASSERT(haul_resonance > 0.05f);
     ASSERT(haul_resonance > repair_resonance);
+}
+
+TEST(test_signal_intelligence_contract_reason_records_memory_pressure) {
+    WORLD_DECL;
+    server_player_t sp = {0};
+    signal_contract_candidate_t candidates[2];
+    memset(candidates, 0, sizeof(candidates));
+    candidates[0].action = SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK;
+    candidates[0].source_station = 0;
+    candidates[0].dest_station = 1;
+    candidates[0].commodity = COMMODITY_FERRITE_INGOT;
+    candidates[0].teacher_score = 0.25f;
+    candidates[1].action = SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER;
+    candidates[1].source_station = 0;
+    candidates[1].dest_station = 2;
+    candidates[1].commodity = COMMODITY_FERRITE_INGOT;
+    candidates[1].teacher_score = 1.50f;
+    candidates[1].hologram_resonance = 0.31f;
+    candidates[1].source_memory = 0.72f;
+    candidates[1].route_success_memory = 0.44f;
+    candidates[1].route_danger_memory = 0.18f;
+    candidates[1].route_proof_memory = 0.56f;
+    candidates[1].trust_bias = 0.22f;
+
+    signal_intelligence_decision_reason_t reason;
+    int choice = signal_intelligence_choose_contract_with_reason(
+        &w, &sp, candidates, 2, &reason);
+
+    ASSERT_EQ_INT(choice, 1);
+    ASSERT_EQ_INT(reason.task, SIGNAL_INTEL_TASK_CONTRACT_CHOICE);
+    ASSERT_EQ_INT(reason.selected_index, 1);
+    ASSERT_EQ_INT(reason.candidate_count, 2);
+    ASSERT_EQ_FLOAT(reason.teacher_score, 1.50f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.hologram_resonance, 0.31f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.source_memory, 0.72f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.proof_memory, 0.56f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.route_success, 0.44f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.route_risk, 0.18f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.trust_bias, 0.22f, 0.0001f);
+    ASSERT(reason.source_memory_id != 0ull);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_ADVISORY_ONLY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_HOLOGRAM);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_SOURCE_MEMORY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_PROOF_MEMORY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_ROUTE_RISK);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_TRUST_BIAS);
+}
+
+TEST(test_signal_intelligence_worker_reason_records_route_risk) {
+    signal_npc_worker_candidate_t candidates[2];
+    double scores[2] = {0.0};
+    memset(candidates, 0, sizeof(candidates));
+    candidates[0].option = SIGNAL_NPC_WORKER_OPTION_WAIT;
+    candidates[0].role = NPC_ROLE_HAULER;
+    candidates[0].home_station = 0;
+    candidates[0].best_contract_dest = -1;
+    candidates[0].best_contract_commodity = COMMODITY_COUNT;
+    candidates[0].legal = true;
+    candidates[0].teacher_score = 0.0f;
+
+    candidates[1].option = SIGNAL_NPC_WORKER_OPTION_ESCORT_CONVOY;
+    candidates[1].role = NPC_ROLE_HAULER;
+    candidates[1].home_station = 0;
+    candidates[1].best_contract_dest = 2;
+    candidates[1].best_contract_commodity = COMMODITY_FERRITE_INGOT;
+    candidates[1].legal = true;
+    candidates[1].travel = true;
+    candidates[1].escort = true;
+    candidates[1].teacher_score = 0.20f;
+    candidates[1].persona_risk = 0.50f;
+    candidates[1].route_success_memory = 0.12f;
+    candidates[1].route_danger_memory = 0.70f;
+    candidates[1].route_proof_memory = 0.24f;
+    candidates[1].hologram_resonance = 0.33f;
+    candidates[1].source_memory = 0.64f;
+    candidates[1].trust_bias = 0.19f;
+    candidates[1].escort_bonus = 0.08f;
+
+    signal_intelligence_decision_reason_t reason;
+    int choice = signal_intelligence_choose_npc_worker_with_scores_and_reason(
+        candidates, 2, scores, 2, &reason);
+
+    ASSERT_EQ_INT(choice, 1);
+    ASSERT(scores[1] > scores[0]);
+    ASSERT_EQ_INT(reason.task, SIGNAL_INTEL_TASK_NPC_WORKER_ASSIGNMENT);
+    ASSERT_EQ_INT(reason.selected_index, 1);
+    ASSERT_EQ_FLOAT(reason.teacher_score, 0.20f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.hologram_resonance, 0.33f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.source_memory, 0.64f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.proof_memory, 0.24f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.route_success, 0.12f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.route_risk, 0.70f, 0.0001f);
+    ASSERT_EQ_FLOAT(reason.trust_bias, 0.19f, 0.0001f);
+    ASSERT(reason.source_memory_id != 0ull);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_USED_TEACHER);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_ADVISORY_ONLY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HARD_APPROVED);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_HOLOGRAM);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_SOURCE_MEMORY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_PROOF_MEMORY);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_ROUTE_RISK);
+    ASSERT(reason.flags & SIGNAL_DECISION_REASON_HAS_TRUST_BIAS);
+}
+
+TEST(test_hnn_core_key_cache_preserves_bind_round_trip) {
+    float key_a[HNN_DIM];
+    float key_b[HNN_DIM];
+    float value[HNN_DIM];
+    float pair[HNN_DIM];
+    float recovered[HNN_DIM];
+
+    hnn_key_vector(0x12345678abcdef00ull, key_a);
+    hnn_key_vector(0x12345678abcdef00ull, key_b);
+    for (int i = 0; i < HNN_DIM; i++)
+        ASSERT_EQ_FLOAT(key_a[i], key_b[i], 0.0f);
+
+    hnn_key_vector(0xf00dfeed00000011ull, value);
+    hnn_bind(key_a, value, pair);
+    hnn_unbind(pair, key_a, recovered);
+    ASSERT(hnn_similarity(recovered, value) > 0.99f);
+}
+
+TEST(test_hnn_state_encoding_is_deterministic_and_nonzero) {
+    hnn_pilot_features_t features = {
+        .target_dist = 0.45f,
+        .heading_error = -0.25f,
+        .heading_cos = 0.96f,
+        .heading_sin = -0.24f,
+        .speed = 0.5f,
+        .forward_speed = 0.4f,
+        .lateral_speed = 0.1f,
+        .brake_distance = 0.2f,
+        .fwd_clear = 0.8f,
+        .left_clear = 0.7f,
+        .right_clear = 0.9f,
+        .signal_quality = 0.6f,
+        .hull_ratio = 1.0f,
+        .goal_close = 0.55f,
+        .action_delta_turn = 1.0f,
+        .action_delta_thrust = 1.0f,
+        .composite_dot = -0.24f,
+    };
+    float a[HNN_DIM];
+    float b[HNN_DIM];
+
+    hnn_encode_state(&features, a);
+    hnn_encode_state(&features, b);
+    ASSERT(hnn_similarity(a, a) > 0.99f);
+    for (int i = 0; i < HNN_DIM; i++)
+        ASSERT_EQ_FLOAT(a[i], b[i], 0.0f);
 }
 
 TEST(test_hnn_market_memory_maps_specialized_jobs) {
@@ -1216,6 +1369,10 @@ void register_gossip_tests(void) {
     RUN(test_stale_contract_summary_dampens_market_demand_memory);
     RUN(test_delivery_receipt_memory_adapter_sets_route_and_value);
     RUN(test_hnn_market_memory_resonance_round_trips);
+    RUN(test_signal_intelligence_contract_reason_records_memory_pressure);
+    RUN(test_signal_intelligence_worker_reason_records_route_risk);
+    RUN(test_hnn_core_key_cache_preserves_bind_round_trip);
+    RUN(test_hnn_state_encoding_is_deterministic_and_nonzero);
     RUN(test_hnn_market_memory_maps_specialized_jobs);
     RUN(test_route_reputation_memory_reinforces_repeated_evidence);
     RUN(test_station_trust_memory_reinforces_repeated_evidence);

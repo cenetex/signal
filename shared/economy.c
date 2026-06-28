@@ -64,6 +64,8 @@ void step_station_production(station_t* stations, int count, float dt) {
             const module_schema_t *schema;
             producer_recipe_t recipe;
             float room, produce, rate;
+            float primary_avail, secondary_avail;
+            float primary_use, secondary_use, output_made;
 
             if (station->modules[m].scaffold) continue;
             if (!producer_recipe_for_module(mt, &recipe)) continue;
@@ -75,24 +77,31 @@ void step_station_production(station_t* stations, int count, float dt) {
 
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
-            produce = fminf(produce,
-                            station->_inventory_cache[recipe.primary_input] /
-                            recipe.primary_units_per_batch);
+
+            /* The manifest helpers keep this cache as whole manifest units
+             * plus fractional residue, so use it here to avoid stranding
+             * half-consumed inputs between partial production batches. */
+            primary_avail = station->_inventory_cache[recipe.primary_input] /
+                            recipe.primary_units_per_batch;
+            produce = fminf(produce, primary_avail);
             if (recipe.secondary_input < COMMODITY_COUNT) {
-                produce = fminf(produce,
-                                station->_inventory_cache[recipe.secondary_input] /
-                                recipe.secondary_units_per_batch);
+                secondary_avail =
+                    station->_inventory_cache[recipe.secondary_input] /
+                    recipe.secondary_units_per_batch;
+                produce = fminf(produce, secondary_avail);
             }
             if (produce <= FLOAT_EPSILON) continue;
 
-            station->_inventory_cache[recipe.primary_input] -=
-                produce * recipe.primary_units_per_batch;
+            primary_use = produce * recipe.primary_units_per_batch;
+            station_finished_consume(station, recipe.primary_input, primary_use);
             if (recipe.secondary_input < COMMODITY_COUNT) {
-                station->_inventory_cache[recipe.secondary_input] -=
-                    produce * recipe.secondary_units_per_batch;
+                secondary_use = produce * recipe.secondary_units_per_batch;
+                station_finished_consume(station, recipe.secondary_input,
+                                        secondary_use);
             }
-            station->_inventory_cache[recipe.output] +=
-                produce * recipe.output_units_per_batch;
+            output_made = produce * recipe.output_units_per_batch;
+            station_finished_accumulate(station, recipe.output, output_made,
+                                        NULL);
         }
     }
 }

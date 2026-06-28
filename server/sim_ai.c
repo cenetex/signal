@@ -568,15 +568,48 @@ static void frontier_queue_scaffolds_for_module_plans(world_t *w) {
     }
 }
 
-void step_frontier_director(world_t *w, float dt) {
-    if (!w || w->frontier_virtual_pilots <= 0 || dt <= 0.0f) return;
+static float frontier_pressure_for_pilots(int virtual_pilots) {
+    if (virtual_pilots <= 0) return 0.0f;
+    return clampf((float)virtual_pilots / 1000.0f, 0.0f, 1.0f);
+}
+
+static frontier_director_decision_action_t frontier_decision_action_for(
+    const frontier_director_decision_t *d) {
+    if (!d) return FRONTIER_DIRECTOR_DECISION_NONE;
+    if (d->planned_after > d->planned_before)
+        return FRONTIER_DIRECTOR_DECISION_PLAN_OUTPOST;
+    if (d->relay_orders_created > 0)
+        return FRONTIER_DIRECTOR_DECISION_QUEUE_RELAY;
+    if (d->module_plans_created > 0)
+        return FRONTIER_DIRECTOR_DECISION_PLAN_STARTER_MODULES;
+    if (d->module_scaffold_orders_created > 0)
+        return FRONTIER_DIRECTOR_DECISION_QUEUE_MODULE_SCAFFOLDS;
+    if (d->logistics_actions > 0)
+        return FRONTIER_DIRECTOR_DECISION_VIRTUAL_LOGISTICS;
+    return FRONTIER_DIRECTOR_DECISION_NONE;
+}
+
+bool frontier_director_step_with_decision(world_t *w,
+                                          float dt,
+                                          frontier_director_decision_t *decision) {
+    if (decision) memset(decision, 0, sizeof(*decision));
+    if (!w || w->frontier_virtual_pilots <= 0 || dt <= 0.0f) return false;
     w->frontier_plan_timer -= dt;
-    if (w->frontier_plan_timer > 0.0f) return;
+    if (w->frontier_plan_timer > 0.0f) return false;
+
+    uint32_t manufactured_before = w->frontier_virtual_scaffolds_manufactured;
+    uint32_t deliveries_before = w->frontier_virtual_scaffold_deliveries;
+    uint32_t supply_before = w->frontier_virtual_supply_deliveries;
+    uint32_t module_plans_before = w->frontier_module_plans_created;
+    uint32_t relay_orders_before = w->frontier_scaffold_orders;
+    uint32_t module_orders_before = w->frontier_module_scaffold_orders;
+    int planned_before = frontier_count_planned_outposts(w);
+    int relay_work_before = frontier_count_scaffold_work(w, MODULE_SIGNAL_RELAY);
+    int plan_limit = frontier_planned_limit(w->frontier_virtual_pilots);
 
     frontier_run_virtual_logistics(w);
 
-    int planned = frontier_count_planned_outposts(w);
-    int plan_limit = frontier_planned_limit(w->frontier_virtual_pilots);
+    int planned = planned_before;
     if (planned < plan_limit && frontier_plan_outpost(w))
         planned++;
 
@@ -588,6 +621,37 @@ void step_frontier_director(world_t *w, float dt) {
     frontier_queue_scaffolds_for_module_plans(w);
 
     w->frontier_plan_timer = frontier_director_interval(w->frontier_virtual_pilots);
+
+    if (decision) {
+        uint32_t manufactured_after = w->frontier_virtual_scaffolds_manufactured;
+        uint32_t deliveries_after = w->frontier_virtual_scaffold_deliveries;
+        uint32_t supply_after = w->frontier_virtual_supply_deliveries;
+        decision->virtual_pilots = w->frontier_virtual_pilots;
+        decision->plan_limit = plan_limit;
+        decision->planned_before = planned_before;
+        decision->planned_after = frontier_count_planned_outposts(w);
+        decision->relay_work_before = relay_work_before;
+        decision->relay_work_after =
+            frontier_count_scaffold_work(w, MODULE_SIGNAL_RELAY);
+        decision->logistics_actions =
+            (int)((manufactured_after - manufactured_before) +
+                  (deliveries_after - deliveries_before) +
+                  (supply_after - supply_before));
+        decision->module_plans_created =
+            (int)(w->frontier_module_plans_created - module_plans_before);
+        decision->relay_orders_created =
+            (int)(w->frontier_scaffold_orders - relay_orders_before);
+        decision->module_scaffold_orders_created =
+            (int)(w->frontier_module_scaffold_orders - module_orders_before);
+        decision->frontier_pressure =
+            frontier_pressure_for_pilots(w->frontier_virtual_pilots);
+        decision->action = frontier_decision_action_for(decision);
+    }
+    return true;
+}
+
+void step_frontier_director(world_t *w, float dt) {
+    (void)frontier_director_step_with_decision(w, dt, NULL);
 }
 
 static int hauler_reserve_units(void) {
@@ -1971,7 +2035,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
      * furnace+hopper endpoint for the ore, and the ore must feed a
      * non-saturated downstream chain. Distance only breaks ties within
      * the same demand band; otherwise Helios keeps mining nearby
-     * crystal while the laser line is actually starved for cuprite. */
+     * crystal while the laser line is actually starved for crystal. */
     const station_t *home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                           ? &w->stations[npc->home_station]
                           : NULL;
@@ -3053,6 +3117,12 @@ static void npc_fill_hauler_offer(const world_t *w,
         hnn_mult *
         risk_mult *
         (contract_price(ct) / fmaxf(1.0f, dist / 1000.0f));
+    cand->hologram_resonance = hnn_resonance;
+    cand->source_memory = memory_weight;
+    cand->route_success_memory = route_success;
+    cand->route_danger_memory = route_danger;
+    cand->route_proof_memory = route_proof;
+    cand->trust_bias = trust_strength;
     offer->confidence *= route_mult * supply_mult * trust_mult *
                          hnn_mult * risk_mult;
     offer->score = npc_assignment_score_for_haul(cand->teacher_score);
@@ -3988,6 +4058,7 @@ static void npc_worker_write_trace(
     signal_npc_worker_option_t heuristic_option,
     npc_worker_brain_mode_t mode,
     double margin,
+    const signal_intelligence_decision_reason_t *reason,
     bool activated) {
     FILE *fp = npc_worker_trace_file();
     if (!fp || !w || !npc || !candidates || !scores || count <= 0) return;
@@ -3999,6 +4070,18 @@ static void npc_worker_write_trace(
             "\"heuristic_option\":\"%s\",\"neural_option\":\"%s\","
             "\"selected_index\":%d,\"candidate_count\":%d,"
             "\"mode\":\"%s\",\"margin\":%.9g,\"activated\":%s,"
+            "\"decision_reason\":{"
+            "\"selected_score\":%.9g,"
+            "\"teacher_score\":%.9g,"
+            "\"neural_score\":%.9g,"
+            "\"hologram_resonance\":%.9g,"
+            "\"source_memory\":%.9g,"
+            "\"proof_memory\":%.9g,"
+            "\"route_success\":%.9g,"
+            "\"route_risk\":%.9g,"
+            "\"trust_bias\":%.9g,"
+            "\"source_memory_id\":%llu,"
+            "\"flags\":%u},"
             "\"candidates\":[",
             w->tick, w->time, npc_slot, npc->home_station,
             npc_worker_role_name(npc->role),
@@ -4013,7 +4096,18 @@ static void npc_worker_write_trace(
             selected, count,
             npc_worker_brain_mode_name(mode),
             margin,
-            activated ? "true" : "false");
+            activated ? "true" : "false",
+            reason ? (double)reason->selected_score : 0.0,
+            reason ? (double)reason->teacher_score : 0.0,
+            reason ? (double)reason->neural_score : 0.0,
+            reason ? (double)reason->hologram_resonance : 0.0,
+            reason ? (double)reason->source_memory : 0.0,
+            reason ? (double)reason->proof_memory : 0.0,
+            reason ? (double)reason->route_success : 0.0,
+            reason ? (double)reason->route_risk : 0.0,
+            reason ? (double)reason->trust_bias : 0.0,
+            (unsigned long long)(reason ? reason->source_memory_id : 0ull),
+            reason ? (unsigned)reason->flags : 0u);
     for (int i = 0; i < count; i++) {
         const signal_npc_worker_candidate_t *c = &candidates[i];
         if (i > 0) fprintf(fp, ",");
@@ -4029,7 +4123,10 @@ static void npc_worker_write_trace(
                 "\"route_success_memory\":%.3f,"
                 "\"route_danger_memory\":%.3f,"
                 "\"route_proof_memory\":%.3f,"
+                "\"hologram_resonance\":%.3f,"
+                "\"source_memory\":%.3f,"
                 "\"provenance_pressure\":%.3f,"
+                "\"trust_bias\":%.3f,"
                 "\"black_market_acceptance\":%.3f,"
                 "\"escort_bonus\":%.3f,\"convoy_bonus\":%.3f,"
                 "\"contract_value\":%.3f,\"credit_delta\":%.3f,"
@@ -4052,7 +4149,10 @@ static void npc_worker_write_trace(
                 c->route_success_memory,
                 c->route_danger_memory,
                 c->route_proof_memory,
+                c->hologram_resonance,
+                c->source_memory,
                 c->provenance_pressure,
+                c->trust_bias,
                 c->black_market_acceptance,
                 c->escort_bonus,
                 c->convoy_bonus,
@@ -4208,6 +4308,10 @@ static signal_npc_worker_candidate_t npc_worker_base_candidate(
         npc_worker_fill_route_memory(&c, npc, haul_offer->source_station,
                                      haul_offer->dest_station,
                                      haul_offer->commodity);
+        c.hologram_resonance = haul_offer->diag_hologram;
+        c.source_memory = haul_offer->confidence;
+        c.trust_bias = fmaxf(0.0f, haul_offer->diag_proof -
+                                   c.route_danger_memory);
         if (w && haul_offer->dest_station >= 0 &&
             haul_offer->dest_station < MAX_STATIONS) {
             const station_t *dest = &w->stations[haul_offer->dest_station];
@@ -4297,6 +4401,11 @@ static bool npc_worker_score_assignment(world_t *w,
                                      courier_offer->source_station,
                                      courier_offer->dest_station,
                                      courier_offer->commodity);
+        candidates[count].hologram_resonance = courier_offer->diag_hologram;
+        candidates[count].source_memory = courier_offer->confidence;
+        candidates[count].trust_bias = fmaxf(
+            0.0f, courier_offer->diag_proof -
+                      candidates[count].route_danger_memory);
         count++;
     }
 
@@ -4385,8 +4494,9 @@ static bool npc_worker_score_assignment(world_t *w,
         count++;
     }
 
-    int selected = signal_intelligence_choose_npc_worker_with_scores(
-        candidates, count, scores, SIGNAL_NPC_WORKER_OPTION_COUNT);
+    signal_intelligence_decision_reason_t reason;
+    int selected = signal_intelligence_choose_npc_worker_with_scores_and_reason(
+        candidates, count, scores, SIGNAL_NPC_WORKER_OPTION_COUNT, &reason);
     double margin = npc_worker_selected_margin(scores, count, selected);
     npc_worker_brain_mode_t mode = npc_worker_brain_mode();
     bool activated = false;
@@ -4409,7 +4519,7 @@ static bool npc_worker_score_assignment(world_t *w,
     }
     npc_worker_write_trace(w, npc_slot, npc, candidates, scores, count,
                            selected, npc_worker_option_for_offer(best),
-                           mode, margin, activated);
+                           mode, margin, &reason, activated);
     return activated;
 }
 

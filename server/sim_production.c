@@ -10,6 +10,7 @@
 #include "manifest.h"
 #include "cargo_legality.h"
 #include "mining.h"            /* grade roll at smelt time */
+#include "fixpoint.h"
 #include "sha256.h"
 #include "chain_log.h"         /* signed event emission (#479 C) */
 #include <stdlib.h>            /* abs */
@@ -1224,7 +1225,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                     dir = v2_from_angle((float)smelt_module * 0.731f);
                 vec2 pod_pos = v2_add(smelt_midpoint, v2_scale(dir, 34.0f));
                 vec2 pod_vel = v2_add(a->vel, v2_scale(dir, 36.0f));
-                float rotation = atan2f(dir.y, dir.x);
+                float rotation = fixp_atan2f(dir.y, dir.x);
                 pod_idx = spawn_cargo_pod_with_manifest_deterministic(
                     w, pod_pos, pod_vel, output, units, (uint16_t)pushed,
                     CARGO_POD_CARGO, rotation, 0.18f);

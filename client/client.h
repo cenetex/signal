@@ -400,6 +400,8 @@ typedef struct {
      * NET_MSG_CONTRACTS and receives the mask in that same compact ordinal
      * space. */
     uint32_t player_known_contract_mask;
+    NetKnownLedgerEntry known_station_ledger[PLAYER_KNOWN_LEDGER_MAX_RECORDS];
+    int known_station_ledger_count;
     NetDeliveryLedgerEntry delivery_ledger[DELIVERY_LEDGER_MAX_RECORDS];
     int delivery_ledger_count;
     /* --- Local identity (Layer A.1 of #479) --- */

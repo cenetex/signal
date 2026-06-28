@@ -8,9 +8,14 @@ primary_region = "lax"
 
 [env]
   PORT = "8080"
+  SIGNAL_SERVER_PORT = "9091"
   SIGNAL_DATA_DIR = "/app/data"
   SIGNAL_STATIC_DIR = "/app/public"
   SIGNAL_ALLOWED_ORIGIN = "https://signal.ratimics.com"
+  RTC_GATEWAY_PREFIX = "/rtc"
+  RTC_GATEWAY_ICE_BIND = "fly-global-services"
+  RTC_GATEWAY_ICE_PORT = "50000"
+  RTC_GATEWAY_ICE_UDP_MUX = "1"
 
 [mounts]
   source = "signal_data"
@@ -35,6 +40,13 @@ primary_region = "lax"
     method = "GET"
     timeout = "3s"
     path = "/health"
+
+[[services]]
+  protocol = "udp"
+  internal_port = 50000
+
+  [[services.ports]]
+    port = 50000
 
 [[vm]]
   cpu_kind = "shared"

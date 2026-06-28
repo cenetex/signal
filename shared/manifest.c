@@ -55,7 +55,7 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .output_commodity = COMMODITY_LASER_MODULE,
         .output_count = 1,
         .input_count = 2,
-        .input_commodities = { COMMODITY_CUPRITE_INGOT, COMMODITY_FRAME },
+        .input_commodities = { COMMODITY_CRYSTAL_INGOT, COMMODITY_FRAME },
     },
     [RECIPE_TRACTOR_COIL] = {
         .id = RECIPE_TRACTOR_COIL,
@@ -64,7 +64,7 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .output_commodity = COMMODITY_TRACTOR_MODULE,
         .output_count = 1,
         .input_count = 2,
-        .input_commodities = { COMMODITY_CRYSTAL_INGOT, COMMODITY_FRAME },
+        .input_commodities = { COMMODITY_CUPRITE_INGOT, COMMODITY_FRAME },
     },
     [RECIPE_REPAIR_KIT_FAB] = {
         .id = RECIPE_REPAIR_KIT_FAB,
@@ -979,4 +979,26 @@ int station_finished_accumulate(station_t *st, commodity_t c, float amount,
      * captures any cap-induced shortfall. */
     assert_finished_invariant(st, c);
     return minted;
+}
+
+int station_finished_consume(station_t *st, commodity_t c, float amount) {
+    if (!st || amount <= 0.0f) return 0;
+    if (!finished_good_commodity(c)) return 0;
+
+    float before = st->_inventory_cache[c];
+    float after  = before - amount;
+    int int_before = (int)floorf(before + 0.0001f);
+    int int_after  = (int)floorf(after + 0.0001f);
+    int delta = int_before - int_after;
+
+    st->_inventory_cache[c] = after;
+
+    if (delta <= 0) {
+        assert_finished_invariant(st, c);
+        return 0;
+    }
+    int drained = station_manifest_consume_by_commodity(st, c, delta);
+    station_finished_sync(st, c);
+    assert_finished_invariant(st, c);
+    return drained;
 }

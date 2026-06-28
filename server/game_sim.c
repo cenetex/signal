@@ -5533,6 +5533,165 @@ static bool cargo_pod_find_shell_frame_module(const world_t *w,
     return true;
 }
 
+static bool cargo_pod_find_station_work_module(const world_t *w,
+                                               int station_idx,
+                                               const cargo_pod_t *pod,
+                                               int *out_module) {
+    if (!w || !pod || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        return false;
+    }
+
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st)) return false;
+
+    const float acquire_sq =
+        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    int best_module = -1;
+    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
+
+    if (frame_pod) {
+        for (int fh = 0; fh < st->module_count &&
+                         fh < MAX_MODULES_PER_STATION; fh++) {
+            float lane_d = acquire_sq;
+            if (!station_frame_hopper_shell_anchor_for_pod(st, fh, pod,
+                                                           NULL, NULL,
+                                                           &lane_d) ||
+                lane_d > acquire_sq) {
+                continue;
+            }
+            float score = cargo_pod_module_candidate_score(
+                w, station_idx, fh, lane_d, acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
+                best_module = fh;
+            }
+        }
+        if (best_module >= 0) {
+            if (out_module) *out_module = best_module;
+            return true;
+        }
+
+        best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+        for (int m = 0; m < st->module_count &&
+                        m < MAX_MODULES_PER_STATION; m++) {
+            vec2 anchor;
+            if (!station_hopper_matches_pod(st, m, pod)) continue;
+            anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                           st->modules[m].slot);
+            if (!station_hopper_input_anchor_for_pod(st, m, pod,
+                                                     NULL, &anchor)) {
+                continue;
+            }
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(
+                w, station_idx, m, d, acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
+                best_module = m;
+            }
+        }
+        if (best_module >= 0) {
+            if (out_module) *out_module = best_module;
+            return true;
+        }
+    }
+
+    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int m = 0; m < st->module_count &&
+                    m < MAX_MODULES_PER_STATION; m++) {
+        if (!station_hopper_matches_pod(st, m, pod)) continue;
+        vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                            st->modules[m].slot);
+        float d = v2_dist_sq(pod->pos, anchor);
+        if (d > acquire_sq) continue;
+        float score = cargo_pod_module_candidate_score(
+            w, station_idx, m, d, acquire_sq);
+        if (score <= best_score) {
+            best_score = score;
+            best_module = m;
+        }
+    }
+    if (best_module >= 0) {
+        if (out_module) *out_module = best_module;
+        return true;
+    }
+
+    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int m = 0; m < st->module_count &&
+                    m < MAX_MODULES_PER_STATION; m++) {
+        int hopper_idx = -1;
+        if (!station_module_input_hopper_for_pod(st, m, pod,
+                                                 &hopper_idx, NULL)) {
+            continue;
+        }
+        const station_module_t *module = &st->modules[m];
+        const station_module_t *hopper = &st->modules[hopper_idx];
+        vec2 module_pos = module_world_pos_ring(st, module->ring,
+                                                module->slot);
+        vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
+                                                hopper->slot);
+        float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
+        if (d > acquire_sq) continue;
+        float score = cargo_pod_module_candidate_score(
+            w, station_idx, m, d, acquire_sq);
+        if (score <= best_score) {
+            best_score = score;
+            best_module = m;
+        }
+    }
+    if (best_module >= 0) {
+        if (out_module) *out_module = best_module;
+        return true;
+    }
+
+    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int m = 0; m < st->module_count &&
+                    m < MAX_MODULES_PER_STATION; m++) {
+        if (!station_producer_can_tractor_output_pod(st, m, pod))
+            continue;
+        vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                            st->modules[m].slot);
+        float d = v2_dist_sq(pod->pos, anchor);
+        if (d > acquire_sq) continue;
+        float score = cargo_pod_module_candidate_score(
+            w, station_idx, m, d, acquire_sq);
+        if (score <= best_score) {
+            best_score = score;
+            best_module = m;
+        }
+    }
+    if (best_module >= 0) {
+        if (out_module) *out_module = best_module;
+        return true;
+    }
+
+    if (frame_pod) {
+        best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+        for (int m = 0; m < st->module_count &&
+                        m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_module_can_tractor_shell_frame_pod(st, m, pod))
+                continue;
+            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
+                                                st->modules[m].slot);
+            float d = v2_dist_sq(pod->pos, anchor);
+            if (d > acquire_sq) continue;
+            float score = cargo_pod_module_candidate_score(
+                w, station_idx, m, d, acquire_sq);
+            if (score <= best_score) {
+                best_score = score;
+                best_module = m;
+            }
+        }
+    }
+
+    if (best_module < 0) return false;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
 static bool cargo_pod_find_station_dock_module(const world_t *w,
                                                const cargo_pod_t *pod,
                                                int *out_station,
@@ -5756,6 +5915,68 @@ static bool cargo_pod_try_acquire_module_tractor(world_t *w,
     return true;
 }
 
+static bool station_player_buy_intent_targets_pod(const world_t *w,
+                                                  int station_idx,
+                                                  int pod_idx,
+                                                  const cargo_pod_t *pod) {
+    if (!w || !pod || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+        pod->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        const server_player_t *sp = &w->players[p];
+        if (!sp->connected || !sp->input.buy_product ||
+            sp->input.buy_commodity != pod->commodity) {
+            continue;
+        }
+        bool buying_here =
+            (sp->docked && sp->current_station == station_idx) ||
+            (!sp->docked && sp->in_dock_range &&
+             sp->nearby_station == station_idx);
+        if (!buying_here) continue;
+        if (!sp->input.buy_station_pod ||
+            sp->input.buy_station_pod_index == (uint16_t)pod_idx) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool cargo_pod_try_handoff_from_station_dock(world_t *w,
+                                                    int pod_idx,
+                                                    cargo_pod_t *pod) {
+    int station_idx = -1;
+    int module_idx = -1;
+    int best_module = -1;
+    if (!w || !pod || !pod->active || pod_idx < 0 ||
+        pod_idx >= MAX_CARGO_PODS || pod->towed_by >= 0 ||
+        !cargo_pod_module_tractor_indices(pod, &station_idx, &module_idx)) {
+        return false;
+    }
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    station_t *st = &w->stations[station_idx];
+    if (!station_dock_can_tractor_trade_pod(st, module_idx, pod))
+        return false;
+    if (station_player_buy_intent_targets_pod(w, station_idx, pod_idx, pod))
+        return false;
+    if (!cargo_pod_find_station_work_module(w, station_idx, pod,
+                                            &best_module)) {
+        return false;
+    }
+    if (best_module < 0 || best_module == module_idx ||
+        best_module >= st->module_count ||
+        best_module >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+
+    cargo_pod_set_module_tractor(pod, station_idx, best_module);
+    st->module_active_pulse[module_idx] = 1.0f;
+    st->module_active_pulse[best_module] = 1.0f;
+    return true;
+}
+
 static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
                                                      int pod_idx,
                                                      cargo_pod_t *pod) {
@@ -5843,6 +6064,8 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
         }
         if (!cargo_pod_has_module_tractor(pod))
             (void)cargo_pod_try_acquire_module_tractor(w, pod);
+        else
+            (void)cargo_pod_try_handoff_from_station_dock(w, i, pod);
 
         int station_idx = -1;
         int module_idx = -1;
@@ -6795,6 +7018,10 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
  * could "ask" for a random ferrite rock near the player, then the client would
  * paint it yellow as if it were intentional work. Hail now only returns real
  * station-authored work that already exists on the board. */
+static void player_snapshot_intelligence_reason(
+    server_player_t *sp,
+    const signal_intelligence_decision_reason_t *reason);
+
 static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
                                            int issuer_station,
                                            bool allow_delivery_pickup) {
@@ -6900,18 +7127,57 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
     return best_contract;
 }
 
-static void emit_hail_miss(world_t *w, server_player_t *sp) {
-    emit_event(w, (sim_event_t){
-        .type = SIM_EVENT_HAIL_RESPONSE,
-        .player_id = sp->id,
-        .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
-    });
+static uint8_t hail_decision_mode_for_response(
+    const server_player_t *sp,
+    int station_idx) {
+    if (!sp || station_idx < 0) return HAIL_DECISION_MODE_NONE;
+    if (sp->docked && sp->current_station == station_idx)
+        return HAIL_DECISION_MODE_DOCKED;
+    if (sp->in_dock_range && sp->nearby_station == station_idx)
+        return HAIL_DECISION_MODE_DOCK_RANGE;
+    return HAIL_DECISION_MODE_SIGNAL_RANGE;
 }
 
-static void emit_station_hail_response(world_t *w, server_player_t *sp, int station_idx) {
+static void fill_hail_reason_event(
+    sim_event_t *ev,
+    const server_player_t *sp,
+    const signal_intelligence_decision_reason_t *reason) {
+    if (!ev || !reason || reason->task != SIGNAL_INTEL_TASK_HAIL_CHOICE)
+        return;
+    ev->hail_response.decision_flags = reason->flags;
+    ev->hail_response.decision_source_id = reason->source_memory_id;
+    ev->hail_response.decision_signal_quality = reason->signal_quality;
+    ev->hail_response.decision_candidate_count =
+        reason->candidate_count > 255 ? 255u : (uint8_t)reason->candidate_count;
+    ev->hail_response.decision_mode =
+        hail_decision_mode_for_response(sp, ev->hail_response.station);
+}
+
+static void emit_hail_miss(
+    world_t *w,
+    server_player_t *sp,
+    const signal_intelligence_decision_reason_t *reason) {
+    sim_event_t ev = {
+        .type = SIM_EVENT_HAIL_RESPONSE,
+        .player_id = sp->id,
+        .hail_response = {
+            .station = -1,
+            .credits = -1.0f,
+            .contract_index = -1,
+        },
+    };
+    fill_hail_reason_event(&ev, sp, reason);
+    emit_event(w, ev);
+}
+
+static void emit_station_hail_response(
+    world_t *w,
+    server_player_t *sp,
+    int station_idx,
+    const signal_intelligence_decision_reason_t *reason) {
     if (station_idx < 0 || station_idx >= MAX_STATIONS ||
         !station_is_active(&w->stations[station_idx])) {
-        emit_hail_miss(w, sp);
+        emit_hail_miss(w, sp, reason);
         return;
     }
 
@@ -6924,58 +7190,28 @@ static void emit_station_hail_response(world_t *w, server_player_t *sp, int stat
         sp->current_station == station_idx;
     int contract_idx = hail_find_station_work_contract(
         w, sp, station_idx, allow_delivery_pickup);
-    emit_event(w, (sim_event_t){
+    sim_event_t ev = {
         .type = SIM_EVENT_HAIL_RESPONSE,
         .player_id = sp->id,
-        .hail_response = { .station = station_idx, .credits = balance, .contract_index = contract_idx },
-    });
-}
-
-static int find_nearest_hail_station(const world_t *w, const server_player_t *sp) {
-    if (sp->in_dock_range && sp->nearby_station >= 0 &&
-        sp->nearby_station < MAX_STATIONS &&
-        station_is_active(&w->stations[sp->nearby_station])) {
-        return sp->nearby_station;
-    }
-
-    float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
-    int best_station = -1;
-    float best_d = 1e18f;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        const station_t *st = &w->stations[s];
-        if (!station_is_active(st)) continue;
-
-        float scan = st->signal_range;
-        float comm_fallback = comm * 2.0f;
-        if (scan < comm_fallback) scan = comm_fallback;
-        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
-        if (d_sq > scan * scan) continue;
-        if (d_sq < best_d) {
-            best_d = d_sq;
-            best_station = s;
-        }
-    }
-    return best_station;
+        .hail_response = {
+            .station = station_idx,
+            .credits = balance,
+            .contract_index = contract_idx,
+        },
+    };
+    fill_hail_reason_event(&ev, sp, reason);
+    emit_event(w, ev);
 }
 
 static void handle_hail(world_t *w, server_player_t *sp) {
-    /* Docked hail: the station the player is sitting in should answer
-     * immediately. This keeps H from feeling dead on the station screen
-     * and uses the same response/contract path as an undocked ping. */
-    if (sp->docked) {
-        emit_station_hail_response(w, sp, sp->current_station);
-        return;
-    }
-
-    /* Hail is now a scan/contact action, not a binary comms-distance
-     * check. Near-dock players should always get the station they are
-     * interacting with; otherwise the closest active station in signal
-     * coverage answers with the same full response. */
-    int station_idx = find_nearest_hail_station(w, sp);
+    signal_intelligence_decision_reason_t reason;
+    int station_idx = signal_intelligence_choose_hail_station_with_reason(
+        w, sp, &reason);
+    player_snapshot_intelligence_reason(sp, &reason);
     if (station_idx >= 0)
-        emit_station_hail_response(w, sp, station_idx);
+        emit_station_hail_response(w, sp, station_idx, &reason);
     else
-        emit_hail_miss(w, sp);
+        emit_hail_miss(w, sp, &reason);
 }
 
 static bool try_dock_from_range(world_t *w, server_player_t *sp) {
@@ -7207,13 +7443,61 @@ static void player_snapshot_autopilot_teacher(world_t *w, server_player_t *sp) {
                                     sp->input.thrust > 0.01f ? 1 : 0);
 }
 
+static void player_snapshot_intelligence_reason(
+    server_player_t *sp,
+    const signal_intelligence_decision_reason_t *reason) {
+    if (!sp || !reason) return;
 
+    if (reason->task == SIGNAL_INTEL_TASK_FLIGHT_CONTROL &&
+        reason->selected_index >= 0) {
+        sp->autopilot_decision_valid = 1u;
+        sp->autopilot_decision_action = (uint8_t)reason->selected_index;
+        sp->autopilot_decision_candidate_count =
+            reason->candidate_count > 255
+                ? 255u
+                : (uint8_t)reason->candidate_count;
+        sp->autopilot_decision_flags = reason->flags;
+        sp->autopilot_decision_score = reason->selected_score;
+        sp->autopilot_decision_neural_score = reason->neural_score;
+        sp->autopilot_decision_route_risk = reason->route_risk;
+        sp->autopilot_decision_signal_quality = reason->signal_quality;
+        return;
+    }
 
+    if (reason->task == SIGNAL_INTEL_TASK_HAIL_CHOICE) {
+        sp->hail_decision_valid = 1u;
+        sp->hail_decision_station =
+            reason->selected_index >= 0 ? (int8_t)reason->selected_index : -1;
+        sp->hail_decision_candidate_count =
+            reason->candidate_count > 255
+                ? 255u
+                : (uint8_t)reason->candidate_count;
+        sp->hail_decision_flags = reason->flags;
+        sp->hail_decision_score = reason->selected_score;
+        sp->hail_decision_signal_quality = reason->signal_quality;
+        sp->hail_decision_source_id = reason->source_memory_id;
+    }
+}
 
 static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->autopilot_teacher_valid = 0u;
     sp->autopilot_teacher_allowed_mask = 0u;
     sp->autopilot_teacher_action = -1;
+    sp->autopilot_decision_valid = 0u;
+    sp->autopilot_decision_action = 0u;
+    sp->autopilot_decision_candidate_count = 0u;
+    sp->autopilot_decision_flags = 0u;
+    sp->autopilot_decision_score = 0.0f;
+    sp->autopilot_decision_neural_score = 0.0f;
+    sp->autopilot_decision_route_risk = 0.0f;
+    sp->autopilot_decision_signal_quality = 0.0f;
+    sp->hail_decision_valid = 0u;
+    sp->hail_decision_station = -1;
+    sp->hail_decision_candidate_count = 0u;
+    sp->hail_decision_flags = 0u;
+    sp->hail_decision_score = 0.0f;
+    sp->hail_decision_signal_quality = 0.0f;
+    sp->hail_decision_source_id = 0ull;
 
     /* One-shot: toggle autopilot from network action. */
     if (sp->input.toggle_autopilot) {
@@ -7278,7 +7562,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_target = -1;
         } else {
             step_autopilot(w, sp, dt);
-            signal_intelligence_drive_player(w, sp, dt);
+            signal_intelligence_decision_reason_t reason;
+            if (signal_intelligence_drive_player_with_reason(
+                    w, sp, dt, &reason)) {
+                player_snapshot_intelligence_reason(sp, &reason);
+            }
             player_snapshot_autopilot_teacher(w, sp);
         }
     }
@@ -8167,8 +8455,8 @@ static void step_contracts(world_t *w, float dt) {
         if (!need.active && !has_production_contract) {
             struct { commodity_t ingot; bool needed; } checks[] = {
                 { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
-                { COMMODITY_CUPRITE_INGOT, station_has_module(st, MODULE_LASER_FAB) },
-                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_TRACTOR_FAB) },
+                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
+                { COMMODITY_CUPRITE_INGOT, station_has_module(st, MODULE_TRACTOR_FAB) },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
@@ -10776,7 +11064,7 @@ void world_sim_step(world_t *w, float dt) {
         }
     }
     step_module_activation(w, dt);
-    step_frontier_director(w, dt);
+    signal_intelligence_step_frontier_director(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);
     step_delivery_shipments(w);
@@ -11398,7 +11686,7 @@ void world_reset(world_t *w) {
     /* Helios imports frames for its shipyard kit fab. */
     w->stations[2].base_price[COMMODITY_FRAME]          = 2.0f;
     /* No ferrite ingots produced or imported here. Helios specializes in
-     * cuprite plus the two-pass crystal process; the ferrite-ingot
+     * crystal plus cuprite; the ferrite-ingot
      * pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
     /* Producers spread across all three rings; commodity-tagged
@@ -11409,17 +11697,17 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CRYSTAL_INGOT);
-    /* Ring 2: fabs + paired ingot / ore hoppers + shipyard. Smelter beams
+    /* Ring 2: fabs + paired ingot hoppers + shipyard. Smelter beams
      * require the ore hopper on an adjacent ring, so cuprite/crystal ore
      * intakes live between the ring-1/ring-3 furnaces they feed. */
     add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0);
-    add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CRYSTAL_INGOT);
     add_module_at(&w->stations[2], MODULE_SHIPYARD,     2, 2); /* needs FRAME, LASER, TRACTOR */
     add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_ORE);
     add_hopper_for(&w->stations[2], 2, 4, COMMODITY_CUPRITE_ORE);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
     /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
-     * crystal-ingot / laser / tractor module hoppers for the ring-2 fabs
+     * cuprite-ingot / laser / tractor module hoppers for the ring-2 fabs
      * and shipyard. The second shipyard gantry gives Helios enough
      * industrial capacity to fabricate station-module scaffolds under
      * the two-yard rule. The two crystal furnaces share the ring-2 crystal
@@ -11428,7 +11716,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output + shipyard input */
     add_hopper_for(&w->stations[2], 3, 3, COMMODITY_FRAME);          /* feeds SHIPYARD */
     add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);
-    add_hopper_for(&w->stations[2], 3, 5, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(&w->stations[2], 3, 5, COMMODITY_CUPRITE_INGOT);
     add_furnace_for(&w->stations[2],   3, 6, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output + shipyard input */
     w->stations[2].arm_count = 3;

@@ -25,11 +25,11 @@ station-level production summaries, and scan copy. The next pass should build
 on those cues rather than re-spec them.
 
 The immediate exception is the first gated progression step. The UI now
-correctly says that Cuprite requires L2 mining, and blocked starter laser
-refits expose that L2 currently requires Laser Modules made from Cuprite Ingots
-plus Frames. Before adding more economy, prove the intended bootstrap: seeded
-Laser Module stock, an L2-capable NPC/import path, or a starter-reachable first
-upgrade recipe.
+correctly says that Cuprite requires L2 mining and Crystal requires L3 mining,
+and blocked starter laser refits expose that the first mining upgrade currently
+requires Laser Modules made from Crystal Ingots plus Frames. Before adding more
+economy, prove the intended bootstrap: seeded Laser Module stock, an
+L3-capable NPC/import path, or a starter-reachable first upgrade recipe.
 
 Self-revealing does not mean tutorial-heavy. It means the player can infer what
 the world knows, wants, remembers, and withholds by looking at the world and
