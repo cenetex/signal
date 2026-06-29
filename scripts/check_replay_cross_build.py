@@ -136,7 +136,8 @@ def main() -> int:
             if "--active-workers" in scenario_args:
                 failure = validate_active_worker_output(
                     left,
-                    require_worker_decision="worker-tow-hnn" in scenario_args,
+                    require_worker_tow="worker-tow-hnn" in scenario_args,
+                    require_worker_repair="worker-repair-hnn" in scenario_args,
                 )
                 if failure is not None:
                     print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)

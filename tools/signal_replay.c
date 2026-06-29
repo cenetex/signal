@@ -47,6 +47,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT,
     SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM,
     SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN,
+    SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -242,7 +243,7 @@ static void sr_usage(FILE *fp)
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -415,12 +416,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN;
         return true;
     }
+    if (strcmp(text, "worker-repair-hnn") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN:
+        return "worker-repair-hnn";
     case SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN:
         return "worker-tow-hnn";
     case SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM:
@@ -709,6 +716,42 @@ static bool sr_setup_world(const sr_config_t *config,
     if (out_spawn) *out_spawn = sp->ship.pos;
     if (out_sp) *out_sp = sp;
     return true;
+}
+
+static void sr_reset_worker_fixture_state(world_t *w)
+{
+    if (!w) return;
+    memset(w->contracts, 0, sizeof(w->contracts));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        memset(w->stations[s].known_contracts, 0,
+               sizeof(w->stations[s].known_contracts));
+        w->stations[s].known_contract_count = 0;
+        memset(&w->stations[s].knowledge, 0,
+               sizeof(w->stations[s].knowledge));
+        hnn_memory_init(&w->stations[s].hnn_market_memory);
+        w->stations[s].hnn_market_version = 0;
+        w->stations[s].hnn_market_decay_tick = 0;
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w->npc_ships[i].active) {
+            ship_cleanup(&w->npc_ships[i].ship);
+        }
+        memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
+    }
+    for (int i = 0; i < MAX_SHIPS; i++) {
+        ship_cleanup(&w->ships[i]);
+        memset(&w->ships[i], 0, sizeof(w->ships[i]));
+    }
+    for (int i = 0; i < MAX_PLAYERS + MAX_NPC_SHIPS; i++)
+        memset(&w->characters[i], 0, sizeof(w->characters[i]));
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_cleanup(&w->ship_assets[i].ship);
+        memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        w->scaffolds[i].active = false;
+    w->npc_respawn_timer = 3600.0f;
+    w->frontier_virtual_pilots = 0;
 }
 
 static bool sr_setup_provenance_script(const sr_config_t *config,
@@ -1089,37 +1132,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         if (home_station >= w->station_count || plan_slot >= MAX_STATIONS)
             return false;
 
-        memset(w->contracts, 0, sizeof(w->contracts));
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            memset(w->stations[s].known_contracts, 0,
-                   sizeof(w->stations[s].known_contracts));
-            w->stations[s].known_contract_count = 0;
-            memset(&w->stations[s].knowledge, 0,
-                   sizeof(w->stations[s].knowledge));
-            hnn_memory_init(&w->stations[s].hnn_market_memory);
-            w->stations[s].hnn_market_version = 0;
-            w->stations[s].hnn_market_decay_tick = 0;
-        }
-        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-            if (w->npc_ships[i].active) {
-                ship_cleanup(&w->npc_ships[i].ship);
-            }
-            memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
-        }
-        for (int i = 0; i < MAX_SHIPS; i++) {
-            ship_cleanup(&w->ships[i]);
-            memset(&w->ships[i], 0, sizeof(w->ships[i]));
-        }
-        for (int i = 0; i < MAX_PLAYERS + MAX_NPC_SHIPS; i++)
-            memset(&w->characters[i], 0, sizeof(w->characters[i]));
-        for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-            ship_cleanup(&w->ship_assets[i].ship);
-            memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
-        }
-        for (int i = 0; i < MAX_SCAFFOLDS; i++)
-            w->scaffolds[i].active = false;
-        w->npc_respawn_timer = 3600.0f;
-        w->frontier_virtual_pilots = 0;
+        sr_reset_worker_fixture_state(w);
 
         planned = &w->stations[plan_slot];
         station_cleanup(planned);
@@ -1167,6 +1180,65 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         ship->hull = npc->ship.hull;
         ship->pos = npc->ship.pos;
         ship->vel = npc->ship.vel;
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN: {
+        const int home_station = 0;
+        station_t *home;
+        int existing_kits;
+        int npc_slot;
+        npc_ship_t *npc;
+        ship_t *ship;
+        market_memory_t supply = {0};
+        knowledge_item_t item;
+
+        if (home_station >= w->station_count) return false;
+        home = &w->stations[home_station];
+        if (!station_manifest_bootstrap(home)) return false;
+        if (!station_has_module(home, MODULE_DOCK)) return false;
+
+        sr_reset_worker_fixture_state(w);
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            w->asteroids[i].active = false;
+
+        existing_kits = station_finished_count(home, COMMODITY_REPAIR_KIT);
+        if (existing_kits > 0)
+            (void)station_finished_drain(home, COMMODITY_REPAIR_KIT,
+                                         existing_kits);
+        if (station_finished_mint(home, COMMODITY_REPAIR_KIT, 20, NULL) < 20)
+            return false;
+
+        npc_slot = spawn_npc(w, home_station, NPC_ROLE_MINER);
+        if (npc_slot < 0) return false;
+        npc = &w->npc_ships[npc_slot];
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = 0.0f;
+        npc->known_contract_count = 0;
+        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        hnn_memory_init(&npc->hnn_market_mem);
+        npc->hnn_market_station = 0xffu;
+        npc->hnn_market_version = 0;
+        npc->hnn_market_decay_tick = 0;
+
+        ship = world_npc_ship_for(w, npc_slot);
+        if (!ship) return false;
+        npc->ship.pos = home->pos;
+        npc->ship.vel = v2(0.0f, 0.0f);
+        ship->pos = npc->ship.pos;
+        ship->vel = npc->ship.vel;
+        ship->hull = npc_max_hull(npc) - 12.0f;
+        npc->hull = ship->hull;
+
+        if (!market_memory_from_station_supply(home, home_station,
+                                               COMMODITY_REPAIR_KIT,
+                                               w->tick, &supply)) {
+            return false;
+        }
+        if (!knowledge_item_from_market_memory(&supply, &item))
+            return false;
+        knowledge_view_insert(&npc->knowledge, &item);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
@@ -2231,6 +2303,54 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             sc->state == SCAFFOLD_TOWING &&
             sc->towed_by == -2 - tow_npc_slot;
         return worker_pickup;
+    }
+    case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN: {
+        bool selected_repair = false;
+        bool hologram_repair = false;
+        int repair_npc_slot = -1;
+        int kits_before = -1;
+        float hull_before = 0.0f;
+
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            const npc_ship_t *npc = &w->npc_ships[n];
+            const ship_t *ship = world_npc_ship_for(w, n);
+            if (!npc->active || !ship) continue;
+            if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS)
+                continue;
+            if (ship->hull < npc_max_hull(npc) - 0.5f) {
+                repair_npc_slot = n;
+                hull_before = ship->hull;
+                kits_before = station_finished_count(
+                    &w->stations[npc->home_station], COMMODITY_REPAIR_KIT);
+                break;
+            }
+        }
+        if (repair_npc_slot < 0 || kits_before <= 0)
+            return false;
+
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        npc_ship_t *npc = &w->npc_ships[repair_npc_slot];
+        ship_t *ship = world_npc_ship_for(w, repair_npc_slot);
+        if (!npc->active || !ship) return false;
+
+        for (int j = 0; j < npc->job_diag_count && j < 4; j++) {
+            if (npc->job_diag_kind[j] == (uint8_t)INSPECT_DIAG_JOB_REPAIR &&
+                npc->job_diag_selected[j] >= 200) {
+                selected_repair = true;
+                if (npc->job_diag_factor_hologram[j] > 0)
+                    hologram_repair = true;
+            }
+        }
+
+        int kits_after = station_finished_count(
+            &w->stations[npc->home_station], COMMODITY_REPAIR_KIT);
+        return selected_repair &&
+               hologram_repair &&
+               ship->hull > hull_before &&
+               kits_after < kits_before;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:

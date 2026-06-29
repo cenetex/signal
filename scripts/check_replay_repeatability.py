@@ -148,6 +148,14 @@ FAST_SCENARIOS = (
         "--active-workers",
         "--provenance-script", "worker-tow-hnn",
     ),
+    (
+        "--seed", "6611",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--active-workers",
+        "--provenance-script", "worker-repair-hnn",
+    ),
 )
 
 LONG_SCENARIOS = (
@@ -211,7 +219,11 @@ def run_once(binary: Path, args: tuple[str, ...], out: Path) -> None:
     )
 
 
-def validate_active_worker_output(path: Path, require_worker_decision: bool = False) -> str | None:
+def validate_active_worker_output(
+    path: Path,
+    require_worker_tow: bool = False,
+    require_worker_repair: bool = False,
+) -> str | None:
     rows = []
     for line in path.read_text().splitlines():
         if line.strip():
@@ -263,13 +275,15 @@ def validate_active_worker_output(path: Path, require_worker_decision: bool = Fa
     if activity <= 0:
         return "active-worker scenario had no worker activity counters"
 
-    if require_worker_decision:
+    if require_worker_tow or require_worker_repair:
         selected = max(int(ai.get("worker_selected_rows", 0)) for ai in ai_rows)
         if selected <= 0:
             return "active-worker scenario had no selected worker rows"
         hologram = max(int(ai.get("worker_hologram_rows", 0)) for ai in ai_rows)
         if hologram <= 0:
             return "active-worker scenario had no hologram-backed worker rows"
+
+    if require_worker_tow:
         tow = max(int(ai.get("worker_tow_assignments", 0)) for ai in ai_rows)
         if tow <= 0:
             return "active-worker scenario had no selected tow assignments"
@@ -286,6 +300,17 @@ def validate_active_worker_output(path: Path, require_worker_decision: bool = Fa
         )
         if towing <= 0:
             return "active-worker scenario had no worker scaffold pickup"
+
+    if require_worker_repair:
+        repair = max(int(ai.get("worker_repair_assignments", 0)) for ai in ai_rows)
+        if repair <= 0:
+            return "active-worker scenario had no selected repair assignments"
+        hnn_repair = max(
+            int(ai.get("worker_hologram_repair_assignments", 0))
+            for ai in ai_rows
+        )
+        if hnn_repair <= 0:
+            return "active-worker scenario had no HNN-backed repair assignments"
 
     return None
 
@@ -341,7 +366,8 @@ def main() -> int:
             if "--active-workers" in scenario_args:
                 failure = validate_active_worker_output(
                     left,
-                    require_worker_decision="worker-tow-hnn" in scenario_args,
+                    require_worker_tow="worker-tow-hnn" in scenario_args,
+                    require_worker_repair="worker-repair-hnn" in scenario_args,
                 )
                 if failure is not None:
                     print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)

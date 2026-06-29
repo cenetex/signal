@@ -95,6 +95,12 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   rather than only the display counters.
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
+The fast repeatability gate includes focused active-worker fixtures for
+`worker-tow-hnn` and `worker-repair-hnn`. The tow fixture requires an
+HNN-backed scaffold pickup. The repair fixture requires an HNN-backed repair
+assignment and fails unless the worker actually consumes repair kits and
+recovers hull.
+
 The hashes include the world tick/time, belt seed, player ship state, cargo
 manifest, station identity, station inventory cache, fracture claim windows,
 player ledger balance by session token and pubkey, and station chain tail.
