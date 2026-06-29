@@ -102,6 +102,26 @@ typedef struct {
 } sr_event_counts_t;
 
 typedef struct {
+    int active_ticks;
+    int worker_selected_rows_peak;
+    int worker_hologram_rows_peak;
+    int worker_assignment_ticks;
+    int worker_hologram_assignment_ticks;
+    int worker_mine_assignment_ticks;
+    int worker_haul_assignment_ticks;
+    int worker_tow_assignment_ticks;
+    int worker_delivery_assignment_ticks;
+    int worker_scout_assignment_ticks;
+    int worker_repair_assignment_ticks;
+    int worker_motion_ticks;
+    int worker_route_support_ticks;
+    int worker_cargo_ticks;
+    int worker_scaffold_motion_ticks;
+    int worker_delivery_shipment_ticks;
+    int worker_useful_outcome_ticks;
+} sr_ai_branch_summary_t;
+
+typedef struct {
     bool enabled;
     int active_npcs;
     int worker_diag_rows;
@@ -151,6 +171,7 @@ typedef struct {
     float max_station_market_load;
     float max_npc_flight_load;
     float max_station_experience_load;
+    sr_ai_branch_summary_t branch;
 } sr_ai_summary_t;
 
 typedef struct {
@@ -2602,6 +2623,83 @@ static void sr_count_selected_job(sr_ai_summary_t *out,
     }
 }
 
+static void sr_ai_branch_observe(sr_ai_summary_t *out,
+                                 const sr_ai_summary_t *sample)
+{
+    if (!out || !sample || !sample->enabled) return;
+    sr_ai_branch_summary_t *b = &out->branch;
+    int assignments =
+        sample->worker_mine_assignments +
+        sample->worker_haul_assignments +
+        sample->worker_tow_assignments +
+        sample->worker_delivery_assignments +
+        sample->worker_scout_assignments +
+        sample->worker_repair_assignments;
+    int hologram_assignments =
+        sample->worker_hologram_mine_assignments +
+        sample->worker_hologram_haul_assignments +
+        sample->worker_hologram_tow_assignments +
+        sample->worker_hologram_delivery_assignments +
+        sample->worker_hologram_scout_assignments +
+        sample->worker_hologram_repair_assignments;
+    int motion =
+        sample->workers_travel_to_pickup +
+        sample->workers_travel_to_dest +
+        sample->workers_unloading +
+        sample->workers_returning +
+        sample->workers_towing_scaffold;
+    int route_support =
+        sample->workers_travel_to_dest +
+        sample->workers_returning;
+    int scaffold_motion =
+        sample->workers_towing_scaffold +
+        sample->scaffolds_towing +
+        sample->scaffolds_towed_by_worker +
+        sample->scaffolds_snapping +
+        sample->scaffolds_placed;
+    int delivery_work =
+        sample->npc_delivery_shipments_active +
+        sample->npc_delivery_shipments_picked_up +
+        sample->npc_delivery_shipments_delivered +
+        sample->npc_delivery_shipments_cleared +
+        sample->npc_delivery_shipments_defaulted +
+        sample->npc_delivery_shipments_black_market_sold;
+    int useful =
+        sample->workers_unloading +
+        sample->workers_with_finished_cargo +
+        scaffold_motion +
+        delivery_work +
+        sample->worker_repair_assignments +
+        sample->worker_delivery_assignments;
+
+    out->enabled = true;
+    if (sample->active_npcs > 0) b->active_ticks++;
+    if (sample->worker_selected_rows > b->worker_selected_rows_peak)
+        b->worker_selected_rows_peak = sample->worker_selected_rows;
+    if (sample->worker_hologram_rows > b->worker_hologram_rows_peak)
+        b->worker_hologram_rows_peak = sample->worker_hologram_rows;
+    if (assignments > 0) b->worker_assignment_ticks++;
+    if (hologram_assignments > 0) b->worker_hologram_assignment_ticks++;
+    if (sample->worker_mine_assignments > 0) b->worker_mine_assignment_ticks++;
+    if (sample->worker_haul_assignments > 0) b->worker_haul_assignment_ticks++;
+    if (sample->worker_tow_assignments > 0) b->worker_tow_assignment_ticks++;
+    if (sample->worker_delivery_assignments > 0)
+        b->worker_delivery_assignment_ticks++;
+    if (sample->worker_scout_assignments > 0)
+        b->worker_scout_assignment_ticks++;
+    if (sample->worker_repair_assignments > 0)
+        b->worker_repair_assignment_ticks++;
+    if (motion > 0) b->worker_motion_ticks++;
+    if (route_support > 0) b->worker_route_support_ticks++;
+    if (sample->workers_with_finished_cargo > 0 ||
+        sample->worker_finished_cargo_units > 0.01f) {
+        b->worker_cargo_ticks++;
+    }
+    if (scaffold_motion > 0) b->worker_scaffold_motion_ticks++;
+    if (delivery_work > 0) b->worker_delivery_shipment_ticks++;
+    if (useful > 0) b->worker_useful_outcome_ticks++;
+}
+
 static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
 {
     int station_count;
@@ -3139,10 +3237,20 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
                                config->hnn_cleanup_steps,
                                &out->hnn);
     }
+    if (config->active_workers) {
+        sr_ai_summary_t sample;
+        sr_collect_ai_summary(w, &sample);
+        sr_ai_branch_observe(&out->ai, &sample);
+    }
     for (int i = 0; i < config->horizon_ticks; i++) {
         sr_apply_action(sp, candidate);
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, &out->events, &event_hash);
+        if (config->active_workers) {
+            sr_ai_summary_t sample;
+            sr_collect_ai_summary(w, &sample);
+            sr_ai_branch_observe(&out->ai, &sample);
+        }
         if (out->events.death_events > 0 || sp->ship.hull <= 0.0f) {
             break;
         }
@@ -3169,7 +3277,9 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
                    ((double)out->events.damage_events * 2.0) -
                    ((double)out->events.death_events * 80.0);
     if (config->active_workers) {
+        sr_ai_branch_summary_t branch = out->ai.branch;
         sr_collect_ai_summary(w, &out->ai);
+        out->ai.branch = branch;
     }
     sr_state_hash(w, sp, out->state_hash);
     out->ok = true;
@@ -3223,7 +3333,7 @@ static void sr_write_hnn_contract(FILE *out,
 static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
 {
     fprintf(out,
-            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v1\","
+            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v2\","
             "\"active_npcs\":%d,"
             "\"worker_diag_rows\":%d,"
             "\"worker_selected_rows\":%d,"
@@ -3320,6 +3430,41 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
     sr_json_float(out, ai->max_npc_flight_load);
     fprintf(out, ",\"max_station_experience_load\":");
     sr_json_float(out, ai->max_station_experience_load);
+    fprintf(out,
+            ",\"branch_active_ticks\":%d,"
+            "\"worker_selected_rows_peak\":%d,"
+            "\"worker_hologram_rows_peak\":%d,"
+            "\"worker_assignment_ticks\":%d,"
+            "\"worker_hologram_assignment_ticks\":%d,"
+            "\"worker_mine_assignment_ticks\":%d,"
+            "\"worker_haul_assignment_ticks\":%d,"
+            "\"worker_tow_assignment_ticks\":%d,"
+            "\"worker_delivery_assignment_ticks\":%d,"
+            "\"worker_scout_assignment_ticks\":%d,"
+            "\"worker_repair_assignment_ticks\":%d,"
+            "\"worker_motion_ticks\":%d,"
+            "\"worker_route_support_ticks\":%d,"
+            "\"worker_cargo_ticks\":%d,"
+            "\"worker_scaffold_motion_ticks\":%d,"
+            "\"worker_delivery_shipment_ticks\":%d,"
+            "\"worker_useful_outcome_ticks\":%d",
+            ai->branch.active_ticks,
+            ai->branch.worker_selected_rows_peak,
+            ai->branch.worker_hologram_rows_peak,
+            ai->branch.worker_assignment_ticks,
+            ai->branch.worker_hologram_assignment_ticks,
+            ai->branch.worker_mine_assignment_ticks,
+            ai->branch.worker_haul_assignment_ticks,
+            ai->branch.worker_tow_assignment_ticks,
+            ai->branch.worker_delivery_assignment_ticks,
+            ai->branch.worker_scout_assignment_ticks,
+            ai->branch.worker_repair_assignment_ticks,
+            ai->branch.worker_motion_ticks,
+            ai->branch.worker_route_support_ticks,
+            ai->branch.worker_cargo_ticks,
+            ai->branch.worker_scaffold_motion_ticks,
+            ai->branch.worker_delivery_shipment_ticks,
+            ai->branch.worker_useful_outcome_ticks);
     fprintf(out, "}");
 }
 

@@ -90,7 +90,12 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   counts, scaffold loose/towing/snapping/placed counts, station/NPC knowledge
   sizes, station/NPC known-contract counts, station/NPC HNN market trace
   stored counts, station flight-experience stored count, version sums, and max
-  trace loads. The state hash also includes station/NPC knowledge, job
+  trace loads. The `signal.replay_ai_memory.v2` rows also include branch-wide
+  bounded counters: active NPC ticks, selected/HNN diagnostic row peaks,
+  selected assignment ticks by job family, HNN-backed assignment ticks, route
+  support ticks, worker motion ticks, worker cargo ticks, scaffold-motion
+  ticks, delivery-shipment ticks, and useful-outcome ticks. The state hash also
+  includes station/NPC knowledge, job
   diagnostics, and HNN trace bodies so cognition drift changes the replay hash
   rather than only the display counters.
 - `authority`: currently `deterministic_seed_prefix_replay`.
@@ -159,7 +164,8 @@ kit-backed hull recovery, or bound-cargo delivery/proof clearing, and validate
 the selected job-family/HNN/outcome counters. The long set also includes an
 active-worker probe that keeps seeded NPC workers alive for 10,000 ticks and
 validates that the output contains active NPCs, exchanged knowledge, HNN market
-memory, and at least one worker activity/outcome counter.
+memory, branch-wide active ticks, and useful worker outcome, route-support, or
+worker-motion ticks.
 That makes neural-worker, gossip, and holographic-memory drift part of the
 deterministic replay surface instead of a live-session anecdote. This is still
 not full ledger replay or a complete economic autonomy proof; it is the first

@@ -281,19 +281,56 @@ def validate_active_worker_output(
         sum(int(ai.get(field, 0)) for field in activity_fields)
         for ai in ai_rows
     )
-    if activity <= 0:
+    branch_activity = max(
+        int(ai.get("worker_motion_ticks", 0)) +
+        int(ai.get("worker_route_support_ticks", 0)) +
+        int(ai.get("worker_useful_outcome_ticks", 0))
+        for ai in ai_rows
+    )
+    if activity <= 0 and branch_activity <= 0:
         return "active-worker scenario had no worker activity counters"
 
+    active_ticks = max(int(ai.get("branch_active_ticks", 0)) for ai in ai_rows)
+    if active_ticks <= 0:
+        return "active-worker scenario had no branch-wide active NPC ticks"
+
+    useful_ticks = max(
+        int(ai.get("worker_useful_outcome_ticks", 0))
+        for ai in ai_rows
+    )
+    motion_ticks = max(
+        int(ai.get("worker_motion_ticks", 0))
+        for ai in ai_rows
+    )
+    route_support_ticks = max(
+        int(ai.get("worker_route_support_ticks", 0))
+        for ai in ai_rows
+    )
+    if useful_ticks <= 0 and route_support_ticks <= 0 and motion_ticks <= 0:
+        return "active-worker scenario had no useful outcome, route-support, or motion ticks"
+
     if require_worker_tow or require_worker_repair or require_worker_delivery_proof:
-        selected = max(int(ai.get("worker_selected_rows", 0)) for ai in ai_rows)
+        selected = max(
+            int(ai.get("worker_selected_rows", 0)) +
+            int(ai.get("worker_selected_rows_peak", 0))
+            for ai in ai_rows
+        )
         if selected <= 0:
             return "active-worker scenario had no selected worker rows"
-        hologram = max(int(ai.get("worker_hologram_rows", 0)) for ai in ai_rows)
+        hologram = max(
+            int(ai.get("worker_hologram_rows", 0)) +
+            int(ai.get("worker_hologram_rows_peak", 0))
+            for ai in ai_rows
+        )
         if hologram <= 0:
             return "active-worker scenario had no hologram-backed worker rows"
 
     if require_worker_tow:
-        tow = max(int(ai.get("worker_tow_assignments", 0)) for ai in ai_rows)
+        tow = max(
+            int(ai.get("worker_tow_assignments", 0)) +
+            int(ai.get("worker_tow_assignment_ticks", 0))
+            for ai in ai_rows
+        )
         if tow <= 0:
             return "active-worker scenario had no selected tow assignments"
         hnn_tow = max(
@@ -311,7 +348,11 @@ def validate_active_worker_output(
             return "active-worker scenario had no worker scaffold pickup"
 
     if require_worker_repair:
-        repair = max(int(ai.get("worker_repair_assignments", 0)) for ai in ai_rows)
+        repair = max(
+            int(ai.get("worker_repair_assignments", 0)) +
+            int(ai.get("worker_repair_assignment_ticks", 0))
+            for ai in ai_rows
+        )
         if repair <= 0:
             return "active-worker scenario had no selected repair assignments"
         hnn_repair = max(
@@ -323,7 +364,8 @@ def validate_active_worker_output(
 
     if require_worker_delivery_proof:
         delivery = max(
-            int(ai.get("worker_delivery_assignments", 0))
+            int(ai.get("worker_delivery_assignments", 0)) +
+            int(ai.get("worker_delivery_assignment_ticks", 0))
             for ai in ai_rows
         )
         if delivery <= 0:
