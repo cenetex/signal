@@ -57,7 +57,7 @@ jobs:
       - name: Install replay toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build emscripten nodejs libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build nodejs libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
 
       - name: Build native replay
         run: |
@@ -67,12 +67,19 @@ jobs:
 
       - name: Build WASM replay
         run: |
-          emcmake cmake -G Ninja -S . -B build-replay-wasm \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TOOLS=OFF \
-            -DBUILD_WASM_REPLAY=ON \
-            -DGIT_HASH=${GITHUB_SHA::7}
-          emmake cmake --build build-replay-wasm --target signal_replay --parallel
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GIT_HASH="${GITHUB_SHA::7}" \
+            emscripten/emsdk:4.0.15 \
+            bash -lc '
+              emcmake cmake -S . -B build-replay-wasm \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TOOLS=OFF \
+                -DBUILD_WASM_REPLAY=ON \
+                -DGIT_HASH="$GIT_HASH"
+              emmake cmake --build build-replay-wasm --target signal_replay --parallel
+            '
           python3 scripts/check_deterministic_build_flags.py build-replay-wasm/compile_commands.json
 
       - name: Compare native and WASM replay

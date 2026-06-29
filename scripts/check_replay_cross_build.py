@@ -25,24 +25,25 @@ def runner_for(binary: Path) -> list[str]:
 
 
 def run_once(binary: Path, args: tuple[str, ...], out: Path) -> bool:
-    try:
-        subprocess.run(
-            [*runner_for(binary), *args, "--out", str(out)],
-            cwd=ROOT,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
+    cmd = [*runner_for(binary), *args, "--out", str(out)]
+    result = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0 or not out.exists():
         print(
-            f"signal_replay command failed: {' '.join(exc.cmd)}",
+            f"signal_replay command failed: {' '.join(cmd)}",
             file=sys.stderr,
         )
-        if exc.stdout:
-            print(exc.stdout, file=sys.stderr)
-        if exc.stderr:
-            print(exc.stderr, file=sys.stderr)
+        if result.returncode == 0 and not out.exists():
+            print(f"signal_replay did not create output file: {out}", file=sys.stderr)
+        if result.stdout:
+            print(result.stdout, file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
         return False
     return True
 
