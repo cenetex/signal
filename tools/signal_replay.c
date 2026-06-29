@@ -152,7 +152,7 @@ typedef struct {
     uint8_t event_hash[32];
 } sr_result_t;
 
-_Static_assert(HNN_ACTION_COUNT == SR_ACTION_COUNT,
+_Static_assert((int)HNN_ACTION_COUNT == (int)SR_ACTION_COUNT,
                "signal_replay HNN actions must match replay actions");
 
 static const sr_action_def_t SR_ACTIONS[SR_ACTION_COUNT] = {

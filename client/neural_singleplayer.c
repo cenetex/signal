@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-_Static_assert(HNN_ACTION_COUNT == SIGNAL_BRAIN_FLIGHT_ACTION_COUNT,
+_Static_assert((int)HNN_ACTION_COUNT == (int)SIGNAL_BRAIN_FLIGHT_ACTION_COUNT,
                "HNN and flight action vocabularies must stay aligned");
 
 #ifdef __EMSCRIPTEN__

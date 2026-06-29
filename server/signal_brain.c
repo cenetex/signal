@@ -101,7 +101,7 @@ static const signal_brain_action_t SB_ACTIONS[SB_ACTION_COUNT] = {
     {"SD", 1, -1},
 };
 
-_Static_assert(HNN_ACTION_COUNT == SB_ACTION_COUNT,
+_Static_assert((int)HNN_ACTION_COUNT == (int)SB_ACTION_COUNT,
                "HNN action vocabulary must match Signal flight actions");
 
 static int signal_brain_npc_slot(const world_t *w, const npc_ship_t *npc) {
