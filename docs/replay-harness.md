@@ -96,10 +96,12 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The fast repeatability gate includes focused active-worker fixtures for
-`worker-tow-hnn` and `worker-repair-hnn`. The tow fixture requires an
-HNN-backed scaffold pickup. The repair fixture requires an HNN-backed repair
-assignment and fails unless the worker actually consumes repair kits and
-recovers hull.
+`worker-tow-hnn`, `worker-repair-hnn`, and `worker-delivery-proof-hnn`. The tow
+fixture requires an HNN-backed scaffold pickup. The repair fixture requires an
+HNN-backed repair assignment and fails unless the worker actually consumes
+repair kits and recovers hull. The delivery-proof fixture requires an
+HNN-backed delivery-proof assignment, real bound-cargo pickup, destination
+delivery, receipt memory emission, and origin proof clearing.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
 manifest, station identity, station inventory cache, fracture claim windows,
@@ -150,12 +152,14 @@ make replay-native-wasm-long
 
 The long set includes two 10,000-tick probes and one 100,000-tick probe. A
 cross-build mismatch prints the first differing JSON row plus both output paths.
-The fast set includes a `worker-tow-hnn` fixture that forces a selected worker
-tow job with a hologram-backed diagnostic row, advances the worker through
-scaffold pickup, and validates the selected tow/HNN/towing counters. The long
-set also includes an active-worker probe that keeps seeded NPC workers alive
-for 10,000 ticks and validates that the output contains active NPCs, exchanged
-knowledge, HNN market memory, and at least one worker activity/outcome counter.
+The fast set includes focused `worker-tow-hnn`, `worker-repair-hnn`, and
+`worker-delivery-proof-hnn` fixtures that force selected worker jobs with
+hologram-backed diagnostic rows, advance the workers through scaffold pickup,
+kit-backed hull recovery, or bound-cargo delivery/proof clearing, and validate
+the selected job-family/HNN/outcome counters. The long set also includes an
+active-worker probe that keeps seeded NPC workers alive for 10,000 ticks and
+validates that the output contains active NPCs, exchanged knowledge, HNN market
+memory, and at least one worker activity/outcome counter.
 That makes neural-worker, gossip, and holographic-memory drift part of the
 deterministic replay surface instead of a live-session anecdote. This is still
 not full ledger replay or a complete economic autonomy proof; it is the first

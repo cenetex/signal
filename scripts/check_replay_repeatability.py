@@ -156,6 +156,14 @@ FAST_SCENARIOS = (
         "--active-workers",
         "--provenance-script", "worker-repair-hnn",
     ),
+    (
+        "--seed", "6612",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--active-workers",
+        "--provenance-script", "worker-delivery-proof-hnn",
+    ),
 )
 
 LONG_SCENARIOS = (
@@ -223,6 +231,7 @@ def validate_active_worker_output(
     path: Path,
     require_worker_tow: bool = False,
     require_worker_repair: bool = False,
+    require_worker_delivery_proof: bool = False,
 ) -> str | None:
     rows = []
     for line in path.read_text().splitlines():
@@ -275,7 +284,7 @@ def validate_active_worker_output(
     if activity <= 0:
         return "active-worker scenario had no worker activity counters"
 
-    if require_worker_tow or require_worker_repair:
+    if require_worker_tow or require_worker_repair or require_worker_delivery_proof:
         selected = max(int(ai.get("worker_selected_rows", 0)) for ai in ai_rows)
         if selected <= 0:
             return "active-worker scenario had no selected worker rows"
@@ -311,6 +320,26 @@ def validate_active_worker_output(
         )
         if hnn_repair <= 0:
             return "active-worker scenario had no HNN-backed repair assignments"
+
+    if require_worker_delivery_proof:
+        delivery = max(
+            int(ai.get("worker_delivery_assignments", 0))
+            for ai in ai_rows
+        )
+        if delivery <= 0:
+            return "active-worker scenario had no selected delivery-proof assignments"
+        hnn_delivery = max(
+            int(ai.get("worker_hologram_delivery_assignments", 0))
+            for ai in ai_rows
+        )
+        if hnn_delivery <= 0:
+            return "active-worker scenario had no HNN-backed delivery-proof assignments"
+        cleared = max(
+            int(ai.get("npc_delivery_shipments_cleared", 0))
+            for ai in ai_rows
+        )
+        if cleared <= 0:
+            return "active-worker scenario had no cleared NPC delivery shipment"
 
     return None
 
@@ -368,6 +397,9 @@ def main() -> int:
                     left,
                     require_worker_tow="worker-tow-hnn" in scenario_args,
                     require_worker_repair="worker-repair-hnn" in scenario_args,
+                    require_worker_delivery_proof=(
+                        "worker-delivery-proof-hnn" in scenario_args
+                    ),
                 )
                 if failure is not None:
                     print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)

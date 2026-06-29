@@ -138,6 +138,9 @@ def main() -> int:
                     left,
                     require_worker_tow="worker-tow-hnn" in scenario_args,
                     require_worker_repair="worker-repair-hnn" in scenario_args,
+                    require_worker_delivery_proof=(
+                        "worker-delivery-proof-hnn" in scenario_args
+                    ),
                 )
                 if failure is not None:
                     print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)

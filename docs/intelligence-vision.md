@@ -348,9 +348,9 @@ Acceptance:
 
 Keep the replay gate as the promotion boundary for active worker intelligence.
 The fast set now includes selected worker/HNN diagnostic fixtures for scaffold
-towing and repair recovery, the long set keeps workers alive long enough to
-exchange gossip and HNN market memory, and CI can compare native and WASM
-replay before merge.
+towing, repair recovery, and delivery-proof completion, the long set keeps
+workers alive long enough to exchange gossip and HNN market memory, and CI can
+compare native and WASM replay before merge.
 
 Why it matters: this is the safety harness for the whole direction. The normal
 flight/economy replay gates are not enough to prove the active intelligence
@@ -359,9 +359,10 @@ economy.
 Acceptance:
 
 - native and WASM replay agree over active-worker scenarios
-- the fast gate includes selected worker tow and repair diagnostics,
-  HNN-backed rows, scaffold pickup counters, kit-backed hull recovery, and
-  shared job-family outcome telemetry
+- the fast gate includes selected worker tow, repair, and delivery-proof
+  diagnostics, HNN-backed rows, scaffold pickup counters, kit-backed hull
+  recovery, cleared NPC delivery shipments, and shared job-family outcome
+  telemetry
 - long/native and named long native-WASM modes include physical gossip
   transport, worker activity counters, and HNN market exchange before active
   model promotion

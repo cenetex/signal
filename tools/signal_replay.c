@@ -48,6 +48,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM,
     SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN,
     SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN,
+    SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -243,7 +244,7 @@ static void sr_usage(FILE *fp)
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -420,12 +421,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN;
         return true;
     }
+    if (strcmp(text, "worker-delivery-proof-hnn") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN:
+        return "worker-delivery-proof-hnn";
     case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN:
         return "worker-repair-hnn";
     case SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN:
@@ -750,6 +757,8 @@ static void sr_reset_worker_fixture_state(world_t *w)
     }
     for (int i = 0; i < MAX_SCAFFOLDS; i++)
         w->scaffolds[i].active = false;
+    memset(w->delivery_shipments, 0, sizeof(w->delivery_shipments));
+    w->next_delivery_shipment_id = 1;
     w->npc_respawn_timer = 3600.0f;
     w->frontier_virtual_pilots = 0;
 }
@@ -1237,6 +1246,91 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
             return false;
         }
         if (!knowledge_item_from_market_memory(&supply, &item))
+            return false;
+        knowledge_view_insert(&npc->knowledge, &item);
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN: {
+        const int origin_station = 0;
+        const int dest_station = 2;
+        station_t *origin;
+        station_t *dest;
+        int existing_origin;
+        int existing_dest;
+        int npc_slot;
+        npc_ship_t *npc;
+        ship_t *ship;
+        contract_summary_t summary;
+        market_memory_t demand = {0};
+        knowledge_item_t item;
+
+        if (origin_station >= w->station_count ||
+            dest_station >= w->station_count) {
+            return false;
+        }
+        origin = &w->stations[origin_station];
+        dest = &w->stations[dest_station];
+        if (!station_manifest_bootstrap(origin) ||
+            !station_manifest_bootstrap(dest)) {
+            return false;
+        }
+        if (!station_has_module(origin, MODULE_DOCK)) return false;
+
+        sr_reset_worker_fixture_state(w);
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            w->asteroids[i].active = false;
+
+        existing_origin = station_finished_count(origin,
+                                                COMMODITY_FERRITE_INGOT);
+        if (existing_origin > 0)
+            (void)station_finished_drain(origin, COMMODITY_FERRITE_INGOT,
+                                         existing_origin);
+        existing_dest = station_finished_count(dest, COMMODITY_FERRITE_INGOT);
+        if (existing_dest > 0)
+            (void)station_finished_drain(dest, COMMODITY_FERRITE_INGOT,
+                                         existing_dest);
+        if (station_finished_mint(origin, COMMODITY_FERRITE_INGOT,
+                                  2, NULL) < 2) {
+            return false;
+        }
+
+        w->contracts[0] = (contract_t){
+            .active = true,
+            .action = CONTRACT_DELIVERY,
+            .station_index = (uint8_t)dest_station,
+            .target_index = origin_station,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 1.0f,
+            .base_price = 500.0f,
+            .claimed_by = -1,
+        };
+        w->contracts[0].proof_flags = CONTRACT_PROOF_REQUIRE_PROOF;
+
+        npc_slot = spawn_npc(w, origin_station, NPC_ROLE_HAULER);
+        if (npc_slot < 0) return false;
+        npc = &w->npc_ships[npc_slot];
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = 0.0f;
+        npc->known_contract_count = 0;
+        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        hnn_memory_init(&npc->hnn_market_mem);
+        npc->hnn_market_station = 0xffu;
+        npc->hnn_market_version = 0;
+        npc->hnn_market_decay_tick = 0;
+
+        ship = world_npc_ship_for(w, npc_slot);
+        if (!ship) return false;
+        npc->ship.pos = origin->pos;
+        npc->ship.vel = v2(0.0f, 0.0f);
+        ship->pos = npc->ship.pos;
+        ship->vel = npc->ship.vel;
+
+        summary = contract_summary_make(&w->contracts[0]);
+        if (!market_memory_from_contract_summary(&summary, &demand))
+            return false;
+        if (!knowledge_item_from_market_memory(&demand, &item))
             return false;
         knowledge_view_insert(&npc->knowledge, &item);
         return true;
@@ -2351,6 +2445,84 @@ static bool sr_run_provenance_script(const sr_config_t *config,
                hologram_repair &&
                ship->hull > hull_before &&
                kits_after < kits_before;
+    }
+    case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN: {
+        bool selected_delivery = false;
+        bool hologram_delivery = false;
+        int delivery_npc_slot = -1;
+        delivery_shipment_t *shipment = NULL;
+
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            const npc_ship_t *npc = &w->npc_ships[n];
+            if (!npc->active) continue;
+            for (int j = 0; j < npc->job_diag_count && j < 4; j++) {
+                if (npc->job_diag_kind[j] ==
+                        (uint8_t)INSPECT_DIAG_JOB_DELIVER_PROOF &&
+                    npc->job_diag_selected[j] >= 200) {
+                    selected_delivery = true;
+                    delivery_npc_slot = n;
+                    if (npc->job_diag_factor_hologram[j] > 0)
+                        hologram_delivery = true;
+                }
+            }
+        }
+        if (!selected_delivery || !hologram_delivery ||
+            delivery_npc_slot < 0) {
+            return false;
+        }
+
+        ship_t *ship = world_npc_ship_for(w, delivery_npc_slot);
+        npc_ship_t *npc = &w->npc_ships[delivery_npc_slot];
+        if (!ship || !npc->active) return false;
+        for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+            delivery_shipment_t *candidate = &w->delivery_shipments[i];
+            if (!candidate->active) continue;
+            if (candidate->contract_index != 0) continue;
+            if (candidate->debtor_player !=
+                (uint8_t)(MAX_PLAYERS + delivery_npc_slot)) {
+                continue;
+            }
+            shipment = candidate;
+            break;
+        }
+        if (!shipment ||
+            shipment->status != DELIVERY_SHIPMENT_PICKED_UP ||
+            shipment->origin_station != 0 ||
+            shipment->destination_station != 2 ||
+            shipment->quantity_bound <= 0 ||
+            ship_finished_count(ship, COMMODITY_FERRITE_INGOT) <= 0) {
+            return false;
+        }
+
+        npc->dest_station = 2;
+        npc->pickup_station = -1;
+        npc->pickup_commodity = COMMODITY_COUNT;
+        npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+        npc->state = NPC_STATE_UNLOADING;
+        npc->state_timer = 0.0f;
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (shipment->status != DELIVERY_SHIPMENT_DELIVERED ||
+            shipment->quantity_delivered != shipment->quantity_total ||
+            w->contracts[0].quantity_needed > 0.01f ||
+            station_finished_count(&w->stations[2],
+                                   COMMODITY_FERRITE_INGOT) <= 0) {
+            return false;
+        }
+
+        npc->dest_station = 0;
+        npc->state = NPC_STATE_UNLOADING;
+        npc->state_timer = 0.0f;
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        return shipment->status == DELIVERY_SHIPMENT_CLEARED &&
+               !w->contracts[0].active;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:

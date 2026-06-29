@@ -259,7 +259,7 @@ authority is the law.
 | Station authority | Strong | Contracts, ledgers, manifests, receipts, and chain logs remain exact. |
 | Physical information flow | Medium-strong | Dock/contact gossip is real; nearby workers exchange structured knowledge and carried market HNN traces; reset/load bootstrap is station-local instead of global; regression coverage now proves a worker can physically transport remote contract memory into another station. Idle workers with known contract pressure can now run no-cargo gossip courier trips; longer no-omniscience soaks remain the next proving ground. |
 | Structured market memory | Strong | Demand, supply, route success/danger, receipts, route reputation/risk, station trust/risk, and stale-work risk are live or in active migration. |
-| Worker specialization | Strong | Haul, mine, scaffold tow, distress/fracture scout, repair, and delivery-proof pressure share job-offer vocabulary and have first execution paths; replay now has focused HNN-backed tow pickup and repair-recovery fixtures. |
+| Worker specialization | Strong | Haul, mine, scaffold tow, distress/fracture scout, repair, and delivery-proof pressure share job-offer vocabulary and have first execution paths; replay now has focused HNN-backed tow pickup, repair-recovery, and delivery-proof completion fixtures. |
 | Remote logistics | Medium-strong | Supply memories can create remote pickup legs, compare competing source memories, score pickup legs from the worker's current ship position, and attach route success/danger/risk evidence to selected hauler job diagnostics; richer recent-failure planning remains open. |
 | Holographic market memory | Medium | Pilot HNN exchange exists; a bounded prototype encodes carried market memories into dedicated neural worker market HNN traces, transports them through station market pools with weighted replacement, idle decay, and an effective-experience cap, exposes advisory resonance for haul, mine, tow, scout/fracture, delivery-proof, and repair, and copies compact source metadata from matching structured memories when available. HNN now has a separate inspect factor from proof/evidence; richer resonance explanations remain open. |
 | Explainability | Medium-strong | Compact inspect factors, source/destination paths, selected-job reason codes, explicit gossip-courier reasons, readable source-chain rows, first-hop source/hops/age provenance, full proof hashes on job rows, prioritized matching source-memory rows, prioritized matching carried receipt rows, station-local receipt-chain retrieval, per-link receipt diagnostics, full subject/anchor/source/witness hashes on market diagnostic rows, proof/hash prefixes, compact heard/relay/witness labels, separate hologram score factors, HNN-backed source metadata, and a compact selected-job detail block with `[TAB]` paging over locally visible signed receipt links are live; receipt links now name known stations, registered player recipients, and worker custodians visible through `WORLD_NPCS`, and fall back to hashes for unknown relays. Remote missing-link retrieval remains thin. |
@@ -713,9 +713,9 @@ outcome checks.
 Why next: this is the determinism counterpart to the product vision. The
 economy layer most likely to accumulate subtle drift now has deterministic
 fixtures for selected worker decisions, gossip, HNN market exchange,
-HNN-backed scaffold pickup, and HNN-backed repair recovery; the remaining gap
-is broadening those outcome checks to delivery-proof completion, failure, and
-longer route-support soaks.
+HNN-backed scaffold pickup, HNN-backed repair recovery, and HNN-backed
+delivery-proof completion; the remaining gap is broadening those outcome
+checks to failure recovery and longer route-support soaks.
 
 Acceptance line:
 
