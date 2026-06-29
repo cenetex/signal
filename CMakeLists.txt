@@ -60,6 +60,11 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 
+set(SIGNAL_EMSCRIPTEN_STACK_SETTING "STACK_SIZE")
+if(EMSCRIPTEN AND CMAKE_C_COMPILER_VERSION VERSION_LESS "3.1.27")
+    set(SIGNAL_EMSCRIPTEN_STACK_SETTING "TOTAL_STACK")
+endif()
+
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
 # nuking the cache, re-run `cmake -S . -B <build_dir> -DGIT_HASH=$(git
@@ -419,7 +424,7 @@ if(BUILD_WASM_REPLAY AND EMSCRIPTEN)
         "SHELL:-sENVIRONMENT=node"
         "SHELL:-sEXIT_RUNTIME=1"
         "SHELL:-sNODERAWFS=1"
-        "SHELL:-sSTACK_SIZE=8388608"
+        "SHELL:-s${SIGNAL_EMSCRIPTEN_STACK_SETTING}=8388608"
         "SHELL:-sALLOW_MEMORY_GROWTH=1")
 endif()
 
@@ -697,7 +702,7 @@ if(EMSCRIPTEN)
         "SHELL:-sMIN_WEBGL_VERSION=2"
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
-        "SHELL:-sSTACK_SIZE=8388608"
+        "SHELL:-s${SIGNAL_EMSCRIPTEN_STACK_SETTING}=8388608"
         "SHELL:-sDECLARE_ASM_MODULE_EXPORTS=0"
         "SHELL:-sEXPORTED_FUNCTIONS=[${SIGNAL_EMSCRIPTEN_EXPORTS_CSV}]"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
