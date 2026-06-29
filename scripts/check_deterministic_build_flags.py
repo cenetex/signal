@@ -16,10 +16,26 @@ SCAN_EXTRA_FILES = ("tools/signal_replay.c",)
 REQUIRED_FLAGS = ("-ffp-contract=off", "-fno-fast-math")
 
 
-def is_deterministic_source(path: Path) -> bool:
+def repo_relative_source(path: Path) -> Path | None:
     try:
-        rel = path.resolve().relative_to(ROOT)
+        return path.resolve().relative_to(ROOT)
     except ValueError:
+        pass
+
+    parts = path.resolve().parts
+    for root in (*SCAN_ROOTS, "tools"):
+        if root not in parts:
+            continue
+        idx = parts.index(root)
+        rel = Path(*parts[idx:])
+        if root in SCAN_ROOTS or str(rel) in SCAN_EXTRA_FILES:
+            return rel
+    return None
+
+
+def is_deterministic_source(path: Path) -> bool:
+    rel = repo_relative_source(path)
+    if rel is None:
         return False
     if str(rel) in SCAN_EXTRA_FILES:
         return True
@@ -76,7 +92,7 @@ def main() -> int:
 
         checked += 1
         flags = set(command_flags(entry))
-        rel = str(source.resolve().relative_to(ROOT))
+        rel = str(repo_relative_source(source) or source)
         for flag in REQUIRED_FLAGS:
             if flag not in flags:
                 findings.append((rel, flag))
