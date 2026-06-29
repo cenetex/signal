@@ -346,17 +346,22 @@ Acceptance:
 
 ### 5. Active-Worker Determinism Gate
 
-Add a long replay scenario that exercises active workers, gossip, HNN exchange,
-and neural rankers.
+Keep the replay gate as the promotion boundary for active worker intelligence.
+The fast set now includes a selected worker/HNN diagnostic fixture, the long set
+keeps workers alive long enough to exchange gossip and HNN market memory, and
+CI can compare native and WASM replay before merge.
 
 Why it matters: this is the safety harness for the whole direction. The normal
-long replay gates do not yet prove the active intelligence economy.
+flight/economy replay gates are not enough to prove the active intelligence
+economy.
 
 Acceptance:
 
-- native and WASM replay agree over a long active-worker scenario
-- scenario includes physical gossip transport and HNN market exchange
-- CI can run it on PRs or as a named gate before active model promotion
+- native and WASM replay agree over active-worker scenarios
+- the fast gate includes selected worker tow diagnostics, HNN-backed rows, and
+  scaffold pickup counters
+- long/native and named long native-WASM modes include physical gossip
+  transport and HNN market exchange before active model promotion
 
 ### 6. Station Memory Summary
 

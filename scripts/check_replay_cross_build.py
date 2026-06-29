@@ -11,7 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from check_replay_repeatability import ROOT, scenarios_for_name
+from check_replay_repeatability import (
+    ROOT,
+    scenarios_for_name,
+    validate_active_worker_output,
+)
 
 
 def runner_for(binary: Path) -> list[str]:
@@ -128,6 +132,17 @@ def main() -> int:
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
                 return 1
+            if "--active-workers" in scenario_args:
+                failure = validate_active_worker_output(
+                    left,
+                    require_worker_decision="worker-tow-hnn" in scenario_args,
+                )
+                if failure is not None:
+                    print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)
+                    print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                    print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
+                    print(f"  left output: {left}", file=sys.stderr)
+                    return 1
 
     print(
         f"signal replay cross-build check passed "

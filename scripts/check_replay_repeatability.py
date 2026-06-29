@@ -6,6 +6,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import json
 from pathlib import Path
 
 
@@ -132,6 +133,21 @@ FAST_SCENARIOS = (
         "--candidates", "NONE",
         "--provenance-script", "fracture-claim",
     ),
+    (
+        "--seed", "6601",
+        "--station", "0",
+        "--horizon-ticks", "2000",
+        "--candidates", "NONE",
+        "--active-workers",
+    ),
+    (
+        "--seed", "6610",
+        "--station", "0",
+        "--horizon-ticks", "1",
+        "--candidates", "NONE",
+        "--active-workers",
+        "--provenance-script", "worker-tow-hnn",
+    ),
 )
 
 LONG_SCENARIOS = (
@@ -164,6 +180,13 @@ LONG_SCENARIOS = (
         "--horizon-ticks", "100000",
         "--candidates", "W",
     ),
+    (
+        "--seed", "6601",
+        "--station", "0",
+        "--horizon-ticks", "10000",
+        "--candidates", "NONE",
+        "--active-workers",
+    ),
 )
 
 SCENARIO_SETS = {
@@ -186,6 +209,63 @@ def run_once(binary: Path, args: tuple[str, ...], out: Path) -> None:
         stderr=subprocess.PIPE,
         text=True,
     )
+
+
+def validate_active_worker_output(path: Path, require_worker_decision: bool = False) -> str | None:
+    rows = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    if not rows:
+        return "active-worker scenario produced no rows"
+
+    ai_rows = [row.get("ai") for row in rows if isinstance(row.get("ai"), dict)]
+    if not ai_rows:
+        return "active-worker scenario produced no ai object"
+    if max(int(ai.get("active_npcs", 0)) for ai in ai_rows) <= 0:
+        return "active-worker scenario had no active NPCs"
+
+    knowledge = max(
+        int(ai.get("npc_knowledge_items", 0)) +
+        int(ai.get("station_knowledge_items", 0))
+        for ai in ai_rows
+    )
+    if knowledge <= 0:
+        return "active-worker scenario had no exchanged knowledge"
+
+    hnn_market = max(
+        int(ai.get("npc_hnn_market_stored", 0)) +
+        int(ai.get("station_hnn_market_stored", 0))
+        for ai in ai_rows
+    )
+    if hnn_market <= 0:
+        return "active-worker scenario had no HNN market memory"
+
+    if require_worker_decision:
+        selected = max(int(ai.get("worker_selected_rows", 0)) for ai in ai_rows)
+        if selected <= 0:
+            return "active-worker scenario had no selected worker rows"
+        hologram = max(int(ai.get("worker_hologram_rows", 0)) for ai in ai_rows)
+        if hologram <= 0:
+            return "active-worker scenario had no hologram-backed worker rows"
+        tow = max(int(ai.get("worker_tow_assignments", 0)) for ai in ai_rows)
+        if tow <= 0:
+            return "active-worker scenario had no selected tow assignments"
+        hnn_tow = max(
+            int(ai.get("worker_hologram_tow_assignments", 0))
+            for ai in ai_rows
+        )
+        if hnn_tow <= 0:
+            return "active-worker scenario had no HNN-backed tow assignments"
+        towing = max(
+            int(ai.get("workers_towing_scaffold", 0)) +
+            int(ai.get("scaffolds_towed_by_worker", 0))
+            for ai in ai_rows
+        )
+        if towing <= 0:
+            return "active-worker scenario had no worker scaffold pickup"
+
+    return None
 
 
 def main() -> int:
@@ -236,6 +316,17 @@ def main() -> int:
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
                 return 1
+            if "--active-workers" in scenario_args:
+                failure = validate_active_worker_output(
+                    left,
+                    require_worker_decision="worker-tow-hnn" in scenario_args,
+                )
+                if failure is not None:
+                    print(f"signal_replay scenario {i} failed AI coverage: {failure}", file=sys.stderr)
+                    print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                    print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
+                    print(f"  output: {left}", file=sys.stderr)
+                    return 1
 
     print(
         f"signal replay repeatability check passed "

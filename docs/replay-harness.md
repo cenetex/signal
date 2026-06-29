@@ -36,6 +36,7 @@ Or call the binary directly:
   --horizon-ticks 60 \
   --candidates W,A,D \
   --hnn-trace \
+  --active-workers \
   --out /tmp/signal-replay.jsonl
 ```
 
@@ -55,6 +56,10 @@ Numeric action ids `0..8` are accepted for compact generated traces.
 - `--candidates LIST`: comma-separated candidate actions to branch.
 - `--hnn-trace`: train a holographic trace from the prefix and score each
   branch-start candidate without changing the rollout.
+- `--active-workers`: keep seeded NPC workers active after `world_reset()` and
+  include worker/gossip/HNN memory metrics in each output row. Without this
+  flag, replay disables seeded NPC ships so fast physics/economy probes stay
+  narrow.
 - `--hnn-cleanup-steps N`: retrieval cleanup steps for `--hnn-trace`, default
   `3`, range `0..8`.
 - `--out PATH`: JSONL output path. Without it, rows go to stdout.
@@ -78,6 +83,15 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   score/rank, candidate legal rank, raw and gated margins, and all action
   scores at the branch start. The trace is trained only from prefix actions,
   so utility-vs-HNN-rank analysis remains counterfactual.
+- Optional `ai` object when `--active-workers` is set: active NPC count,
+  worker diagnostic rows, selected rows, hologram-backed rows, selected tow
+  rows, HNN-backed tow rows, worker travel/towing state counts, scaffold
+  loose/towing/snapping/placed counts, station/NPC knowledge sizes,
+  station/NPC known-contract counts, station/NPC HNN market trace stored
+  counts, station flight-experience stored count, version sums, and max trace
+  loads. The state hash also includes station/NPC knowledge, job diagnostics,
+  and HNN trace bodies so cognition drift changes the replay hash rather than
+  only the display counters.
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
@@ -129,10 +143,13 @@ make replay-native-wasm-long
 
 The long set includes two 10,000-tick probes and one 100,000-tick probe. A
 cross-build mismatch prints the first differing JSON row plus both output paths.
-
-Known coverage gap: the current `signal_replay` world setup disables NPC ships
-after `world_reset()`. That keeps long-horizon probes focused on flight,
-physics, production, settlement state, and replay hashing, but it does not yet
-stress neural workers, contract gossip, or HNN market exchange over a long
-horizon. Add an active-worker scenario before treating the replay gate as full
-coverage for the gossip economy.
+The fast set includes a `worker-tow-hnn` fixture that forces a selected worker
+tow job with a hologram-backed diagnostic row, advances the worker through
+scaffold pickup, and validates the selected tow/HNN/towing counters. The long
+set also includes an active-worker probe that keeps seeded NPC workers alive
+for 10,000 ticks and validates that the output contains active NPCs, exchanged
+knowledge, and HNN market memory. That makes neural-worker, gossip, and
+holographic-memory drift part of the deterministic replay surface instead of a
+live-session anecdote. This is still not full ledger replay or a complete
+economic autonomy proof; it is the first deterministic gate for the active
+worker/gossip/HNN path.

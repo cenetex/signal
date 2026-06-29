@@ -18,6 +18,7 @@
 #include "chain_log.h"
 #include "fixpoint.h"
 #include "game_sim.h"
+#include "gossip.h"
 #include "holographic_nn.h"
 #include "manifest.h"
 #include "protocol.h"
@@ -45,6 +46,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_NPC_RAM,
     SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT,
     SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM,
+    SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -69,6 +71,7 @@ typedef struct {
     int prefix_count;
     bool candidate_enabled[SR_ACTION_COUNT];
     bool hnn_trace;
+    bool active_workers;
     int hnn_cleanup_steps;
     sr_provenance_script_t provenance_script;
     const char *out_path;
@@ -95,6 +98,40 @@ typedef struct {
     int sell_base;
     int sell_bonus;
 } sr_event_counts_t;
+
+typedef struct {
+    bool enabled;
+    int active_npcs;
+    int worker_diag_rows;
+    int worker_selected_rows;
+    int worker_hologram_rows;
+    int worker_tow_assignments;
+    int worker_hologram_tow_assignments;
+    int workers_travel_to_pickup;
+    int workers_travel_to_dest;
+    int workers_unloading;
+    int workers_returning;
+    int workers_towing_scaffold;
+    int scaffolds_loose;
+    int scaffolds_towing;
+    int scaffolds_towed_by_worker;
+    int scaffolds_snapping;
+    int scaffolds_placed;
+    int npc_known_contracts;
+    int npc_knowledge_items;
+    int station_known_contracts;
+    int station_knowledge_items;
+    int npc_hnn_market_stored;
+    int station_hnn_market_stored;
+    int npc_hnn_flight_stored;
+    int station_hnn_experience_stored;
+    int station_hnn_market_versions;
+    int station_hnn_experience_versions;
+    float max_npc_market_load;
+    float max_station_market_load;
+    float max_npc_flight_load;
+    float max_station_experience_load;
+} sr_ai_summary_t;
 
 typedef struct {
     bool enabled;
@@ -146,6 +183,7 @@ typedef struct {
     int end_current_station;
     uint16_t end_manifest_count;
     sr_event_counts_t events;
+    sr_ai_summary_t ai;
     sr_hnn_eval_t hnn;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
@@ -183,9 +221,10 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36; max 120000)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --hnn-trace          train an HNN trace from the prefix and score each branch candidate\n"
+            "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -354,12 +393,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM;
         return true;
     }
+    if (strcmp(text, "worker-tow-hnn") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN:
+        return "worker-tow-hnn";
     case SR_PROVENANCE_SCRIPT_FRACTURE_CLAIM:
         return "fracture-claim";
     case SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT:
@@ -440,6 +485,8 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
             i++;
         } else if (strcmp(arg, "--hnn-trace") == 0) {
             config->hnn_trace = true;
+        } else if (strcmp(arg, "--active-workers") == 0) {
+            config->active_workers = true;
         } else if (strcmp(arg, "--hnn-cleanup-steps") == 0 && value) {
             if (!sr_parse_i32(value, 0, 8, &config->hnn_cleanup_steps)) return false;
             i++;
@@ -609,8 +656,10 @@ static bool sr_setup_world(const sr_config_t *config,
     memset(w, 0, sizeof(*w));
     w->rng = config->seed;
     world_reset(w);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        w->npc_ships[i].active = false;
+    if (!config->active_workers) {
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            w->npc_ships[i].active = false;
+        }
     }
 
     station_index = config->station;
@@ -1010,6 +1059,98 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         state->challenge_last_ms = 0;
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN: {
+        const int home_station = 1;
+        const int plan_slot = SIGNAL_FIRST_OUTPOST_INDEX;
+        station_t *planned;
+        int sc_idx;
+        int npc_slot;
+        npc_ship_t *npc;
+        ship_t *ship;
+
+        if (home_station >= w->station_count || plan_slot >= MAX_STATIONS)
+            return false;
+
+        memset(w->contracts, 0, sizeof(w->contracts));
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            memset(w->stations[s].known_contracts, 0,
+                   sizeof(w->stations[s].known_contracts));
+            w->stations[s].known_contract_count = 0;
+            memset(&w->stations[s].knowledge, 0,
+                   sizeof(w->stations[s].knowledge));
+            hnn_memory_init(&w->stations[s].hnn_market_memory);
+            w->stations[s].hnn_market_version = 0;
+            w->stations[s].hnn_market_decay_tick = 0;
+        }
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            if (w->npc_ships[i].active) {
+                ship_cleanup(&w->npc_ships[i].ship);
+            }
+            memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
+        }
+        for (int i = 0; i < MAX_SHIPS; i++) {
+            ship_cleanup(&w->ships[i]);
+            memset(&w->ships[i], 0, sizeof(w->ships[i]));
+        }
+        for (int i = 0; i < MAX_PLAYERS + MAX_NPC_SHIPS; i++)
+            memset(&w->characters[i], 0, sizeof(w->characters[i]));
+        for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+            ship_cleanup(&w->ship_assets[i].ship);
+            memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
+        }
+        for (int i = 0; i < MAX_SCAFFOLDS; i++)
+            w->scaffolds[i].active = false;
+        w->npc_respawn_timer = 3600.0f;
+        w->frontier_virtual_pilots = 0;
+
+        planned = &w->stations[plan_slot];
+        station_cleanup(planned);
+        memset(planned, 0, sizeof(*planned));
+        (void)station_manifest_bootstrap(planned);
+        planned->id = (uint32_t)plan_slot;
+        snprintf(planned->name, sizeof(planned->name), "Replay Relay Plan");
+        planned->pos = v2_add(w->stations[home_station].pos, v2(4200.0f, 0.0f));
+        planned->planned = true;
+        planned->planned_owner = -1;
+        if (w->station_count <= plan_slot) w->station_count = plan_slot + 1;
+
+        sc_idx = spawn_scaffold(w, MODULE_SIGNAL_RELAY,
+                                v2_add(w->stations[home_station].pos,
+                                       v2(220.0f, 0.0f)),
+                                sp->id);
+        if (sc_idx < 0) return false;
+        w->scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
+        w->scaffolds[sc_idx].towed_by = -1;
+        w->scaffolds[sc_idx].built_at_station = home_station;
+        w->scaffolds[sc_idx].vel = v2(0.0f, 0.0f);
+
+        npc_slot = spawn_npc(w, home_station, NPC_ROLE_HAULER);
+        if (npc_slot < 0) return false;
+        npc = &w->npc_ships[npc_slot];
+        npc->role = NPC_ROLE_HAULER;
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = 0.0f;
+        npc->known_contract_count = 0;
+        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        hnn_memory_init(&npc->hnn_market_mem);
+        npc->hnn_market_station = 0xffu;
+        npc->hnn_market_version = 0;
+        npc->hnn_market_decay_tick = 0;
+        npc->ship.pos = w->stations[home_station].pos;
+        npc->ship.vel = v2(0.0f, 0.0f);
+        npc->ship.hull_class = HULL_CLASS_HAULER;
+        npc->ship.hull = hull_max_for_class(HULL_CLASS_HAULER);
+        npc->hull = npc->ship.hull;
+        ship = world_npc_ship_for(w, npc_slot);
+        if (!ship) return false;
+        ship->hull_class = HULL_CLASS_HAULER;
+        ship->hull = npc->ship.hull;
+        ship->pos = npc->ship.pos;
+        ship->vel = npc->ship.vel;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -1272,6 +1413,89 @@ static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *playe
     sr_hash_ship_cargo_identity(ctx, &player->ship);
 }
 
+static void sr_hash_contract_summary(sha256_ctx_t *ctx,
+                                     const contract_summary_t *summary)
+{
+    sr_hash_u8(ctx, summary && summary->active ? 1u : 0u);
+    if (!summary || !summary->active) return;
+    sr_hash_u8(ctx, summary->action);
+    sr_hash_u8(ctx, summary->station_index);
+    sr_hash_u8(ctx, summary->commodity);
+    sr_hash_u8(ctx, summary->required_grade);
+    sr_hash_u8(ctx, summary->proof_flags);
+    sr_hash_u8(ctx, summary->required_prefix_class);
+    sr_hash_u16(ctx, summary->required_recipe_id);
+    sha256_update(ctx, summary->required_parent,
+                  sizeof(summary->required_parent));
+    sha256_update(ctx, summary->target_pub, sizeof(summary->target_pub));
+    sr_hash_float_bits(ctx, summary->quantity_needed);
+    sr_hash_float_bits(ctx, summary->base_price);
+    sr_hash_float_bits(ctx, summary->age_at_copy);
+    sr_hash_u64(ctx, summary->forbidden_origin_mask);
+}
+
+static void sr_hash_known_contracts(sha256_ctx_t *ctx,
+                                    const contract_summary_t *contracts,
+                                    int count,
+                                    int cap)
+{
+    if (count < 0) count = 0;
+    if (count > cap) count = cap;
+    sr_hash_i32(ctx, count);
+    for (int i = 0; i < count; i++) {
+        sr_hash_contract_summary(ctx, &contracts[i]);
+    }
+}
+
+static void sr_hash_knowledge_view(sha256_ctx_t *ctx,
+                                   const knowledge_view_t *view)
+{
+    int count;
+    int cap;
+    if (!view) {
+        sr_hash_i32(ctx, 0);
+        sr_hash_i32(ctx, 0);
+        return;
+    }
+    count = view->count;
+    cap = view->capacity;
+    if (count < 0) count = 0;
+    if (cap < 0) cap = 0;
+    if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
+    if (cap > KNOWLEDGE_VIEW_MAX_CAP) cap = KNOWLEDGE_VIEW_MAX_CAP;
+    sr_hash_i32(ctx, count);
+    sr_hash_i32(ctx, cap);
+    for (int i = 0; i < count; i++) {
+        const knowledge_item_t *item = &view->items[i];
+        sr_hash_u8(ctx, item->kind);
+        sr_hash_u8(ctx, item->hops);
+        sr_hash_u8(ctx, item->confidence);
+        sr_hash_u8(ctx, item->salience);
+        sr_hash_u8(ctx, item->payload_kind);
+        sha256_update(ctx, item->subject_hash, sizeof(item->subject_hash));
+        sha256_update(ctx, item->chain_anchor, sizeof(item->chain_anchor));
+        sha256_update(ctx, item->source_hash, sizeof(item->source_hash));
+        sha256_update(ctx, item->witness_hash, sizeof(item->witness_hash));
+        sr_hash_u64(ctx, item->observed_tick);
+        sr_hash_u64(ctx, item->learned_tick);
+        sha256_update(ctx, item->payload, sizeof(item->payload));
+    }
+}
+
+static void sr_hash_hnn_memory(sha256_ctx_t *ctx, const hnn_memory_t *mem)
+{
+    if (!mem) {
+        sr_hash_i32(ctx, 0);
+        return;
+    }
+    sr_hash_i32(ctx, mem->experience_count);
+    sr_hash_float_bits(ctx, mem->last_retrieval_similarity);
+    sr_hash_float_bits(ctx, mem->last_margin);
+    for (int i = 0; i < HNN_DIM; i++) {
+        sr_hash_float_bits(ctx, mem->store[i]);
+    }
+}
+
 static const ship_t *sr_npc_paired_ship_const(const world_t *w, int npc_slot)
 {
     if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
@@ -1332,7 +1556,7 @@ static void sr_state_hash(const world_t *w,
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v4-claims", 29);
+    sha256_update(&ctx, "signal-replay-state-v5-ai-memory", 32);
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_bits(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
@@ -1371,6 +1595,18 @@ static void sr_state_hash(const world_t *w,
         sr_hash_float_bits(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
+        sr_hash_known_contracts(&ctx, st->known_contracts,
+                                st->known_contract_count,
+                                STATION_KNOWN_CONTRACT_CAP);
+        sr_hash_knowledge_view(&ctx, &st->knowledge);
+        sr_hash_u32(&ctx, st->hnn_market_version);
+        sr_hash_u32(&ctx, st->hnn_market_decay_tick);
+        sr_hash_hnn_memory(&ctx, &st->hnn_market_memory);
+        sr_hash_u32(&ctx, st->hnn_experience_version);
+        sr_hash_u32(&ctx, st->hnn_experience_upload_count);
+        sr_hash_u32(&ctx, st->hnn_experience_download_count);
+        sr_hash_u8(&ctx, st->hnn_experience_last_source_station);
+        sr_hash_hnn_memory(&ctx, &st->hnn_experience);
     }
     sr_hash_contracts(&ctx, w);
     sr_hash_fracture_claims(&ctx, w);
@@ -1440,6 +1676,51 @@ static void sr_state_hash(const world_t *w,
         sr_hash_i32(&ctx, npc->towed_scaffold);
         sr_hash_float_bits(&ctx, npc->hull);
         sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
+        sr_hash_known_contracts(&ctx, npc->known_contracts,
+                                npc->known_contract_count,
+                                SHIP_KNOWN_CONTRACT_CAP);
+        sr_hash_knowledge_view(&ctx, &npc->knowledge);
+        sr_hash_u8(&ctx, npc->job_diag_count);
+        for (int j = 0; j < 4; j++) {
+            sr_hash_u8(&ctx, npc->job_diag_kind[j]);
+            sr_hash_u8(&ctx, npc->job_diag_score[j]);
+            sr_hash_u8(&ctx, npc->job_diag_selected[j]);
+            sr_hash_u8(&ctx, npc->job_diag_source[j]);
+            sr_hash_u8(&ctx, npc->job_diag_dest[j]);
+            sr_hash_u8(&ctx, npc->job_diag_commodity[j]);
+            sr_hash_u16(&ctx, npc->job_diag_hint[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_value[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_demand[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_supply[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_route[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_freshness[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_capability[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_proof[j]);
+            sr_hash_u8(&ctx, npc->job_diag_factor_hologram[j]);
+            sr_hash_u8(&ctx, npc->job_diag_reason[j]);
+            sr_hash_u8(&ctx, npc->job_diag_memory_kind[j]);
+            sr_hash_u8(&ctx, npc->job_diag_memory_hops[j]);
+            sr_hash_u8(&ctx, npc->job_diag_memory_age[j]);
+            sr_hash_u8(&ctx, npc->job_diag_memory_station[j]);
+            sr_hash_u8(&ctx, npc->job_diag_proof_kind[j]);
+            sha256_update(&ctx, npc->job_diag_proof_prefix[j],
+                          sizeof(npc->job_diag_proof_prefix[j]));
+            sha256_update(&ctx, npc->job_diag_proof_hash[j],
+                          sizeof(npc->job_diag_proof_hash[j]));
+        }
+        sr_hash_u8(&ctx, npc->brain_mode);
+        sr_hash_u32(&ctx, npc->hnn_market_version);
+        sr_hash_u8(&ctx, npc->hnn_market_station);
+        sr_hash_u32(&ctx, npc->hnn_market_decay_tick);
+        sr_hash_hnn_memory(&ctx, &npc->hnn_market_mem);
+        sr_hash_u32(&ctx, npc->hnn_experience_version);
+        sr_hash_u32(&ctx, npc->hnn_experience_local_version);
+        sr_hash_u32(&ctx, npc->hnn_experience_uploaded_local_version);
+        sr_hash_u32(&ctx, npc->hnn_experience_uploaded_source_version);
+        sr_hash_u8(&ctx, npc->hnn_experience_station);
+        sr_hash_u8(&ctx, npc->hnn_experience_uploaded_station);
+        sr_hash_u8(&ctx, npc->hnn_experience_uploaded_source_station);
+        sr_hash_hnn_memory(&ctx, &npc->hnn_mem);
     }
 
     int active_scaffolds = 0;
@@ -1874,9 +2155,199 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         }
         return true;
     }
+    case SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN: {
+        bool selected_worker = false;
+        bool hologram_worker = false;
+        bool tow_worker = false;
+        bool worker_pickup = false;
+        int tow_npc_slot = -1;
+        int tow_scaffold_slot = -1;
+
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            const npc_ship_t *npc = &w->npc_ships[n];
+            if (!npc->active) continue;
+            for (int j = 0; j < npc->job_diag_count && j < 4; j++) {
+                if (npc->job_diag_selected[j] >= 200) {
+                    selected_worker = true;
+                    if (npc->job_diag_kind[j] ==
+                        (uint8_t)INSPECT_DIAG_JOB_TOW) {
+                        tow_worker = true;
+                        tow_npc_slot = n;
+                        tow_scaffold_slot = npc->target_asteroid;
+                    }
+                    if (npc->job_diag_factor_hologram[j] > 0) {
+                        hologram_worker = true;
+                    }
+                }
+            }
+        }
+        if (!selected_worker || !tow_worker || !hologram_worker ||
+            tow_npc_slot < 0 ||
+            tow_scaffold_slot < 0 ||
+            tow_scaffold_slot >= MAX_SCAFFOLDS) {
+            return false;
+        }
+
+        npc_ship_t *npc = &w->npc_ships[tow_npc_slot];
+        scaffold_t *sc = &w->scaffolds[tow_scaffold_slot];
+        ship_t *ship = world_npc_ship_for(w, tow_npc_slot);
+        if (!npc->active || !sc->active || sc->state != SCAFFOLD_LOOSE)
+            return false;
+        npc->ship.pos = sc->pos;
+        npc->ship.vel = v2(0.0f, 0.0f);
+        if (ship) {
+            ship->pos = npc->ship.pos;
+            ship->vel = npc->ship.vel;
+        }
+
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        worker_pickup =
+            npc->towed_scaffold == tow_scaffold_slot &&
+            sc->state == SCAFFOLD_TOWING &&
+            sc->towed_by == -2 - tow_npc_slot;
+        return worker_pickup;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
+    }
+}
+
+static int sr_clamped_u8_count(uint8_t count, int cap)
+{
+    int value = (int)count;
+    if (value < 0) value = 0;
+    if (value > cap) value = cap;
+    return value;
+}
+
+static void sr_track_hnn_load(float *max_load, const hnn_memory_t *mem)
+{
+    float load;
+    if (!max_load || !mem || mem->experience_count <= 0) return;
+    load = hnn_memory_capacity_load(mem);
+    if (isfinite(load) && load > *max_load) *max_load = load;
+}
+
+static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
+{
+    int station_count;
+    if (!w || !out) return;
+    memset(out, 0, sizeof(*out));
+    out->enabled = true;
+
+    station_count = w->station_count;
+    if (station_count < 0) station_count = 0;
+    if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+    for (int s = 0; s < station_count; s++) {
+        const station_t *st = &w->stations[s];
+        out->station_known_contracts += sr_clamped_u8_count(
+            st->known_contract_count, STATION_KNOWN_CONTRACT_CAP);
+        out->station_knowledge_items += sr_clamped_u8_count(
+            st->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
+        if (st->hnn_market_memory.experience_count > 0) {
+            out->station_hnn_market_stored +=
+                st->hnn_market_memory.experience_count;
+        }
+        if (st->hnn_experience.experience_count > 0) {
+            out->station_hnn_experience_stored +=
+                st->hnn_experience.experience_count;
+        }
+        out->station_hnn_market_versions += (int)st->hnn_market_version;
+        out->station_hnn_experience_versions +=
+            (int)st->hnn_experience_version;
+        sr_track_hnn_load(&out->max_station_market_load,
+                          &st->hnn_market_memory);
+        sr_track_hnn_load(&out->max_station_experience_load,
+                          &st->hnn_experience);
+    }
+
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active) continue;
+        switch (sc->state) {
+        case SCAFFOLD_LOOSE:
+            out->scaffolds_loose++;
+            break;
+        case SCAFFOLD_TOWING:
+            out->scaffolds_towing++;
+            if (sc->towed_by <= -2)
+                out->scaffolds_towed_by_worker++;
+            break;
+        case SCAFFOLD_SNAPPING:
+            out->scaffolds_snapping++;
+            break;
+        case SCAFFOLD_PLACED:
+            out->scaffolds_placed++;
+            break;
+        case SCAFFOLD_NASCENT:
+        default:
+            break;
+        }
+    }
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &w->npc_ships[i];
+        int diag_count;
+        if (!npc->active) continue;
+        out->active_npcs++;
+        switch (npc->state) {
+        case NPC_STATE_TRAVEL_TO_ASTEROID:
+            out->workers_travel_to_pickup++;
+            break;
+        case NPC_STATE_TRAVEL_TO_DEST:
+            out->workers_travel_to_dest++;
+            break;
+        case NPC_STATE_UNLOADING:
+            out->workers_unloading++;
+            break;
+        case NPC_STATE_RETURN_TO_STATION:
+            out->workers_returning++;
+            break;
+        case NPC_STATE_IDLE:
+        case NPC_STATE_MINING:
+        case NPC_STATE_DOCKED:
+        default:
+            break;
+        }
+        if (npc->towed_scaffold >= 0)
+            out->workers_towing_scaffold++;
+        out->npc_known_contracts += sr_clamped_u8_count(
+            npc->known_contract_count, SHIP_KNOWN_CONTRACT_CAP);
+        out->npc_knowledge_items += sr_clamped_u8_count(
+            npc->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
+        if (npc->hnn_market_mem.experience_count > 0) {
+            out->npc_hnn_market_stored += npc->hnn_market_mem.experience_count;
+        }
+        if (npc->hnn_mem.experience_count > 0) {
+            out->npc_hnn_flight_stored += npc->hnn_mem.experience_count;
+        }
+        sr_track_hnn_load(&out->max_npc_market_load, &npc->hnn_market_mem);
+        sr_track_hnn_load(&out->max_npc_flight_load, &npc->hnn_mem);
+
+        diag_count = sr_clamped_u8_count(npc->job_diag_count, 4);
+        out->worker_diag_rows += diag_count;
+        for (int j = 0; j < diag_count; j++) {
+            bool selected = npc->job_diag_selected[j] >= 200;
+            bool hologram = npc->job_diag_factor_hologram[j] > 0;
+            bool tow = npc->job_diag_kind[j] == (uint8_t)INSPECT_DIAG_JOB_TOW;
+            if (selected)
+                out->worker_selected_rows++;
+            if (hologram)
+                out->worker_hologram_rows++;
+            if (selected && tow) {
+                out->worker_tow_assignments++;
+                if (hologram)
+                    out->worker_hologram_tow_assignments++;
+            }
+        }
     }
 }
 
@@ -2296,6 +2767,9 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
                    ((double)out->events.damage_amount * 0.25) -
                    ((double)out->events.damage_events * 2.0) -
                    ((double)out->events.death_events * 80.0);
+    if (config->active_workers) {
+        sr_collect_ai_summary(w, &out->ai);
+    }
     sr_state_hash(w, sp, out->state_hash);
     out->ok = true;
     ok = true;
@@ -2342,6 +2816,73 @@ static void sr_write_hnn_contract(FILE *out,
     sr_json_float(out, contract->fidelity_estimate);
     fprintf(out, ",\"last_margin\":");
     sr_json_float(out, contract->last_margin);
+    fprintf(out, "}");
+}
+
+static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
+{
+    fprintf(out,
+            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v1\","
+            "\"active_npcs\":%d,"
+            "\"worker_diag_rows\":%d,"
+            "\"worker_selected_rows\":%d,"
+            "\"worker_hologram_rows\":%d,"
+            "\"worker_tow_assignments\":%d,"
+            "\"worker_hologram_tow_assignments\":%d,"
+            "\"workers_travel_to_pickup\":%d,"
+            "\"workers_travel_to_dest\":%d,"
+            "\"workers_unloading\":%d,"
+            "\"workers_returning\":%d,"
+            "\"workers_towing_scaffold\":%d,"
+            "\"scaffolds_loose\":%d,"
+            "\"scaffolds_towing\":%d,"
+            "\"scaffolds_towed_by_worker\":%d,"
+            "\"scaffolds_snapping\":%d,"
+            "\"scaffolds_placed\":%d,"
+            "\"npc_known_contracts\":%d,"
+            "\"npc_knowledge_items\":%d,"
+            "\"station_known_contracts\":%d,"
+            "\"station_knowledge_items\":%d,"
+            "\"npc_hnn_market_stored\":%d,"
+            "\"station_hnn_market_stored\":%d,"
+            "\"npc_hnn_flight_stored\":%d,"
+            "\"station_hnn_experience_stored\":%d,"
+            "\"station_hnn_market_versions\":%d,"
+            "\"station_hnn_experience_versions\":%d,"
+            "\"max_npc_market_load\":",
+            ai->active_npcs,
+            ai->worker_diag_rows,
+            ai->worker_selected_rows,
+            ai->worker_hologram_rows,
+            ai->worker_tow_assignments,
+            ai->worker_hologram_tow_assignments,
+            ai->workers_travel_to_pickup,
+            ai->workers_travel_to_dest,
+            ai->workers_unloading,
+            ai->workers_returning,
+            ai->workers_towing_scaffold,
+            ai->scaffolds_loose,
+            ai->scaffolds_towing,
+            ai->scaffolds_towed_by_worker,
+            ai->scaffolds_snapping,
+            ai->scaffolds_placed,
+            ai->npc_known_contracts,
+            ai->npc_knowledge_items,
+            ai->station_known_contracts,
+            ai->station_knowledge_items,
+            ai->npc_hnn_market_stored,
+            ai->station_hnn_market_stored,
+            ai->npc_hnn_flight_stored,
+            ai->station_hnn_experience_stored,
+            ai->station_hnn_market_versions,
+            ai->station_hnn_experience_versions);
+    sr_json_float(out, ai->max_npc_market_load);
+    fprintf(out, ",\"max_station_market_load\":");
+    sr_json_float(out, ai->max_station_market_load);
+    fprintf(out, ",\"max_npc_flight_load\":");
+    sr_json_float(out, ai->max_npc_flight_load);
+    fprintf(out, ",\"max_station_experience_load\":");
+    sr_json_float(out, ai->max_station_experience_load);
     fprintf(out, "}");
 }
 
@@ -2508,6 +3049,9 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->events.outpost_placed_events,
             r->events.scaffold_ready_events,
             r->events.damage_amount);
+    if (config->active_workers && r->ai.enabled) {
+        sr_write_ai_summary(out, &r->ai);
+    }
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, &r->hnn);
     }

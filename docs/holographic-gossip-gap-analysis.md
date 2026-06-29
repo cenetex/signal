@@ -88,7 +88,7 @@ highest-risk gap.
 | The docs have one coherent spine. | README, PRD, architecture, cargo, decentralization, and gossip docs now point at the same product: physical labor creates verifiable history. | Keep `docs/holographic-gossip-network.md` canonical; supporting docs should link rather than duplicate roadmap detail. |
 | The biggest product risk is invisible intelligence. | Good fuzzy choices look like bugs when the player cannot inspect the source memory, proof, or route reason. | Build selected-detail views for worker decisions and route history before making HNN scoring more powerful. |
 | Holographic storage is the right metaphor. | Its natural decay/interference matches rumor, route familiarity, and carried economic attention. | Treat holograms as portable familiarity, never authority or proof. |
-| Cold-start traffic is still the proving ground. | Local-only pressure exists, but a no-omniscience world must keep moving without a hidden global contract feed. Current native/WASM long probes disable NPCs, so they do not yet stress neural workers, gossip, or HNN exchange across 10k-100k ticks. | Add a long-horizon active-worker/gossip replay scenario and run the WASM gate on PRs before treating this as covered. |
+| Cold-start traffic is still the proving ground. | Local-only pressure exists, but a no-omniscience world must keep moving without a hidden global contract feed. `signal_replay --active-workers` now keeps seeded NPC workers alive, validates active NPCs/exchanged knowledge/HNN market memory over 10k ticks, and has a fast HNN-backed worker-tow pickup fixture. | Run the WASM gate on PRs and add broader autonomy metrics before treating this as fully covered. |
 | Anonymous session-token ledgers remain a security risk. | Legacy and anonymous paths can still key real station saves/ledgers from a client-chosen bearer token. | Schedule the account/credit-theft fix separately from AI/gossip work; do not let NPC-token namespacing obscure the underlying credential issue. |
 
 ## Gap Summary
@@ -98,7 +98,7 @@ highest-risk gap.
 | Worker reasons are partially legible. | Selected-job details, source-memory rows, proof anchors, explicit anchor-only/local-chain gap labels, local receipt-link paging, a focused receipt-relay view, and station-local receipt-chain retrieval exist. | Cross-station/remote relay retrieval is still thin when the proof anchor is not carried locally and not present in station storage. | Add remote relay follow-through before increasing HNN influence. |
 | Station memory is emerging. | Route-history chain events, compact Contracts-board history rows, and a signed HISTORY tab exist; the HISTORY tab now groups signed rows into aggregate cross-station route memory and can filter all/outbound/inbound/local views. | There is no deep institution browser yet. | Keep history presentation read-only context, not payout logic. |
 | Physical gossip is plausible. | Dock/contact gossip, carried structured memories, station-local bootstrap, and HNN market pools exist. | No long no-omniscience soak proves the economy stays alive without hidden global knowledge. | Define the soak and success metrics before declaring the network autonomous. |
-| Determinism gates under-cover AI economy drift. | Native/WASM replay gates and long probes exist. | The deploy workflow currently gates pushes to `main`, not PRs, and `signal_replay` disables NPCs for long probes. | Add PR-triggered replay gates plus an active-worker/gossip/HNN long scenario. |
+| Determinism gates under-cover AI economy drift. | Native/WASM replay gates, PR-triggered replay CI, long probes, and active-worker/gossip/HNN replay scenarios exist. Active-worker rows hash station/NPC knowledge, job diagnostics, HNN trace bodies, worker assignment outcomes, and scaffold tow state. | Active-worker replay is still a bounded probe rather than a full no-omniscience economy soak. | Add broader active-worker success/failure metrics beyond the tow fixture. |
 | Anonymous bearer-token saves/ledgers are still open. | `ledger_balance`, `ledger_earn`, and spend paths still support pseudo-pubkeys derived from 8-byte session tokens for legacy/anonymous play. | A client-chosen token can address real station ledger state until the legacy path is constrained or bound to signed identity. | Treat as a separate security task, not part of the neural-worker merge. |
 | Holographic cognition is bounded. | Market HNN traces cover current job families and decay/replacement caps are documented. | Resonance explanations are still thin when the matching structured source is absent or remote. | Keep HNN advisory until source-memory fallback is visible for the claim. |
 | Legacy role vocabulary lingers. | Canonical docs say worker roles are assignments. | Some older docs still use "hauler" as player/economic shorthand or dated audit language. | Keep gameplay persona language, but mark NPC `hauler/miner` language as compatibility when it describes implementation. |
@@ -668,7 +668,7 @@ This is the implementation order implied by the docs review:
 | Rank | Gap | Why It Comes Before The Others |
 | --- | --- | --- |
 | 1 | Remote receipt anchor retrieval | Local receipt-link paging, station-local receipt-chain retrieval, and the focused receipt-relay view exist, name known stations, registered players, and visible workers, and distinguish proof-anchor-only, anchor-known/chain-not-local, carried-chain/no-local-link, and station-chain states. The remaining legibility gap is retrieval/browsing for anchored links that are neither locally carried nor present in station storage. |
-| 2 | Deterministic active-worker gate | The current native/WASM long probes do not exercise active neural workers, gossip, or HNN exchange, and the workflow gates pushes to `main` rather than PRs. |
+| 2 | Active-worker success/failure metrics | Active-worker replay now exercises selected worker diagnostics, gossip, and HNN market exchange on PRs, but the gate still measures presence and determinism more than useful economic outcomes. |
 | 3 | Deep route/station history drill-down | Route-history chain events, a compact board strip, filterable aggregate API rows, and a HISTORY tab with filtered aggregate cross-station route memory exist; players still need deeper route/station browsing to inspect how gossip matures into institution memory. |
 | 4 | Remote route planning detail | Multi-leg pickup is live; now the AI needs clearer evidence when it picks one source over another. |
 | 5 | Session-token hardening | Legacy anonymous session-token ledger access is a real account/credit-theft risk and should be scheduled as security work, separate from the neural-worker merge. |
@@ -705,21 +705,23 @@ Acceptance line:
   identity`, with clear named relay actors where known and a way to follow
   anchor-known links that are not available in local storage.
 
-### Slice 2: Active-Worker Replay Gate
+### Slice 2: Active-Worker Outcome Metrics
 
-Add a long-horizon replay scenario with active neural workers, contract gossip,
-and HNN market exchange, then run the native/WASM replay gate for pull requests
-as well as pushes to `main`.
+Extend active-worker replay from presence/determinism checks into useful
+outcome checks.
 
 Why next: this is the determinism counterpart to the product vision. The
-economy layer most likely to accumulate subtle drift is currently exercised by
-short provenance tests, not by the 10k-100k tick gate.
+economy layer most likely to accumulate subtle drift now has deterministic
+fixtures for selected worker decisions, gossip, and HNN market exchange; the
+remaining gap is proving those workers complete, fail, or recover from real
+economic work in measurable ways.
 
 Acceptance line:
 
-- CI runs native/WASM replay on PRs, and at least one long scenario keeps NPC
-  workers active long enough to exchange gossip, blend HNN traces, and complete
-  or fail real work without cross-build hash drift.
+- active-worker replay rows include bounded success/failure counters for worker
+  assignments, HNN-backed scaffold moves, deliveries, repair/proof work, or
+  route support, and the PR native/WASM gate validates those counters without
+  cross-build hash drift.
 
 ### Slice 3: Aggregate Station History Browser
 
@@ -803,8 +805,10 @@ Acceptance line:
 - **Over-authoritative gossip.** Memories should influence discovery and
   scoring, never payment or ledger mutation.
 - **Cold-start deadlock.** Removing bootstrap too early can stall the economy.
-- **Under-tested active economy drift.** Long replay probes currently disable
-  NPC workers, leaving gossip/HNN accumulation outside the main WASM gate.
+- **Bounded active economy drift coverage.** PR replay now exercises a selected
+  worker/HNN diagnostic fixture across native and WASM, and the long set keeps
+  active workers exchanging gossip/HNN market memory. It is still a bounded
+  gate, not a full no-omniscience autonomy soak.
 - **Anonymous bearer credentials.** Client-chosen session tokens still touch
   legacy ledger/save paths and need a dedicated security pass.
 - **UI noise.** Contract menus should stay actionable; provenance belongs in

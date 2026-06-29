@@ -78,6 +78,7 @@ SIGNAL_REPLAY_HORIZON_TICKS ?= 36
 SIGNAL_REPLAY_CANDIDATES ?= NONE,W,A,D,S,WA,WD,SA,SD
 SIGNAL_REPLAY_OUT ?= /tmp/signal-replay.jsonl
 SIGNAL_REPLAY_HNN_TRACE ?=
+SIGNAL_REPLAY_ACTIVE_WORKERS ?=
 SIGNAL_REPLAY_HNN_CLEANUP_STEPS ?= 3
 SIGNAL_REPLAY_DEBUG_BUILD ?= build-replay-debug
 SIGNAL_REPLAY_RELEASE_BUILD ?= build-replay-release
@@ -95,6 +96,7 @@ signal-replay: build-signal-replay
 		--horizon-ticks $(SIGNAL_REPLAY_HORIZON_TICKS) \
 		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
 		$(if $(SIGNAL_REPLAY_HNN_TRACE),--hnn-trace --hnn-cleanup-steps $(SIGNAL_REPLAY_HNN_CLEANUP_STEPS),) \
+		$(if $(SIGNAL_REPLAY_ACTIVE_WORKERS),--active-workers,) \
 		--out $(SIGNAL_REPLAY_OUT)
 
 replay-repeatability: build-signal-replay
