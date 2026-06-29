@@ -105,18 +105,35 @@ typedef struct {
     int worker_diag_rows;
     int worker_selected_rows;
     int worker_hologram_rows;
+    int worker_mine_assignments;
+    int worker_hologram_mine_assignments;
+    int worker_haul_assignments;
+    int worker_hologram_haul_assignments;
     int worker_tow_assignments;
     int worker_hologram_tow_assignments;
+    int worker_delivery_assignments;
+    int worker_hologram_delivery_assignments;
+    int worker_scout_assignments;
+    int worker_hologram_scout_assignments;
+    int worker_repair_assignments;
+    int worker_hologram_repair_assignments;
     int workers_travel_to_pickup;
     int workers_travel_to_dest;
     int workers_unloading;
     int workers_returning;
     int workers_towing_scaffold;
+    int workers_with_finished_cargo;
     int scaffolds_loose;
     int scaffolds_towing;
     int scaffolds_towed_by_worker;
     int scaffolds_snapping;
     int scaffolds_placed;
+    int npc_delivery_shipments_active;
+    int npc_delivery_shipments_picked_up;
+    int npc_delivery_shipments_delivered;
+    int npc_delivery_shipments_cleared;
+    int npc_delivery_shipments_defaulted;
+    int npc_delivery_shipments_black_market_sold;
     int npc_known_contracts;
     int npc_knowledge_items;
     int station_known_contracts;
@@ -127,6 +144,7 @@ typedef struct {
     int station_hnn_experience_stored;
     int station_hnn_market_versions;
     int station_hnn_experience_versions;
+    float worker_finished_cargo_units;
     float max_npc_market_load;
     float max_station_market_load;
     float max_npc_flight_load;
@@ -2236,6 +2254,62 @@ static void sr_track_hnn_load(float *max_load, const hnn_memory_t *mem)
     if (isfinite(load) && load > *max_load) *max_load = load;
 }
 
+static float sr_npc_finished_cargo_total(const npc_ship_t *npc,
+                                         const ship_t *ship)
+{
+    float total = 0.0f;
+    if (ship && ship->manifest.count > 0) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            total += (float)ship_finished_count(ship, (commodity_t)c);
+        return total;
+    }
+    if (!npc) return 0.0f;
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+        total += npc->cargo[c];
+    return total;
+}
+
+static bool sr_delivery_debtor_is_npc(uint8_t debtor)
+{
+    int value = (int)debtor;
+    return value >= MAX_PLAYERS && value < MAX_PLAYERS + MAX_NPC_SHIPS;
+}
+
+static void sr_count_selected_job(sr_ai_summary_t *out,
+                                  uint8_t job_kind,
+                                  bool hologram)
+{
+    if (!out) return;
+    switch ((inspect_diag_kind_t)job_kind) {
+    case INSPECT_DIAG_JOB_MINE:
+        out->worker_mine_assignments++;
+        if (hologram) out->worker_hologram_mine_assignments++;
+        break;
+    case INSPECT_DIAG_JOB_HAUL:
+        out->worker_haul_assignments++;
+        if (hologram) out->worker_hologram_haul_assignments++;
+        break;
+    case INSPECT_DIAG_JOB_TOW:
+        out->worker_tow_assignments++;
+        if (hologram) out->worker_hologram_tow_assignments++;
+        break;
+    case INSPECT_DIAG_JOB_DELIVER_PROOF:
+        out->worker_delivery_assignments++;
+        if (hologram) out->worker_hologram_delivery_assignments++;
+        break;
+    case INSPECT_DIAG_JOB_SCOUT:
+        out->worker_scout_assignments++;
+        if (hologram) out->worker_hologram_scout_assignments++;
+        break;
+    case INSPECT_DIAG_JOB_REPAIR:
+        out->worker_repair_assignments++;
+        if (hologram) out->worker_hologram_repair_assignments++;
+        break;
+    default:
+        break;
+    }
+}
+
 static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
 {
     int station_count;
@@ -2293,9 +2367,42 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
         }
     }
 
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+        const delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        if (!shipment->active ||
+            !sr_delivery_debtor_is_npc(shipment->debtor_player)) {
+            continue;
+        }
+        switch ((delivery_shipment_status_t)shipment->status) {
+        case DELIVERY_SHIPMENT_OFFERED:
+            out->npc_delivery_shipments_active++;
+            break;
+        case DELIVERY_SHIPMENT_PICKED_UP:
+            out->npc_delivery_shipments_active++;
+            out->npc_delivery_shipments_picked_up++;
+            break;
+        case DELIVERY_SHIPMENT_DELIVERED:
+            out->npc_delivery_shipments_active++;
+            out->npc_delivery_shipments_delivered++;
+            break;
+        case DELIVERY_SHIPMENT_CLEARED:
+            out->npc_delivery_shipments_cleared++;
+            break;
+        case DELIVERY_SHIPMENT_DEFAULTED:
+            out->npc_delivery_shipments_defaulted++;
+            break;
+        case DELIVERY_SHIPMENT_BLACK_MARKET_SOLD:
+            out->npc_delivery_shipments_black_market_sold++;
+            break;
+        default:
+            break;
+        }
+    }
+
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &w->npc_ships[i];
         int diag_count;
+        float finished_cargo;
         if (!npc->active) continue;
         out->active_npcs++;
         switch (npc->state) {
@@ -2319,6 +2426,12 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
         }
         if (npc->towed_scaffold >= 0)
             out->workers_towing_scaffold++;
+        finished_cargo = sr_npc_finished_cargo_total(
+            npc, sr_npc_paired_ship_const(w, i));
+        if (finished_cargo > 0.01f) {
+            out->workers_with_finished_cargo++;
+            out->worker_finished_cargo_units += finished_cargo;
+        }
         out->npc_known_contracts += sr_clamped_u8_count(
             npc->known_contract_count, SHIP_KNOWN_CONTRACT_CAP);
         out->npc_knowledge_items += sr_clamped_u8_count(
@@ -2337,16 +2450,12 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
         for (int j = 0; j < diag_count; j++) {
             bool selected = npc->job_diag_selected[j] >= 200;
             bool hologram = npc->job_diag_factor_hologram[j] > 0;
-            bool tow = npc->job_diag_kind[j] == (uint8_t)INSPECT_DIAG_JOB_TOW;
             if (selected)
                 out->worker_selected_rows++;
             if (hologram)
                 out->worker_hologram_rows++;
-            if (selected && tow) {
-                out->worker_tow_assignments++;
-                if (hologram)
-                    out->worker_hologram_tow_assignments++;
-            }
+            if (selected)
+                sr_count_selected_job(out, npc->job_diag_kind[j], hologram);
         }
     }
 }
@@ -2827,18 +2936,35 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             "\"worker_diag_rows\":%d,"
             "\"worker_selected_rows\":%d,"
             "\"worker_hologram_rows\":%d,"
+            "\"worker_mine_assignments\":%d,"
+            "\"worker_hologram_mine_assignments\":%d,"
+            "\"worker_haul_assignments\":%d,"
+            "\"worker_hologram_haul_assignments\":%d,"
             "\"worker_tow_assignments\":%d,"
             "\"worker_hologram_tow_assignments\":%d,"
+            "\"worker_delivery_assignments\":%d,"
+            "\"worker_hologram_delivery_assignments\":%d,"
+            "\"worker_scout_assignments\":%d,"
+            "\"worker_hologram_scout_assignments\":%d,"
+            "\"worker_repair_assignments\":%d,"
+            "\"worker_hologram_repair_assignments\":%d,"
             "\"workers_travel_to_pickup\":%d,"
             "\"workers_travel_to_dest\":%d,"
             "\"workers_unloading\":%d,"
             "\"workers_returning\":%d,"
             "\"workers_towing_scaffold\":%d,"
+            "\"workers_with_finished_cargo\":%d,"
             "\"scaffolds_loose\":%d,"
             "\"scaffolds_towing\":%d,"
             "\"scaffolds_towed_by_worker\":%d,"
             "\"scaffolds_snapping\":%d,"
             "\"scaffolds_placed\":%d,"
+            "\"npc_delivery_shipments_active\":%d,"
+            "\"npc_delivery_shipments_picked_up\":%d,"
+            "\"npc_delivery_shipments_delivered\":%d,"
+            "\"npc_delivery_shipments_cleared\":%d,"
+            "\"npc_delivery_shipments_defaulted\":%d,"
+            "\"npc_delivery_shipments_black_market_sold\":%d,"
             "\"npc_known_contracts\":%d,"
             "\"npc_knowledge_items\":%d,"
             "\"station_known_contracts\":%d,"
@@ -2849,23 +2975,40 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             "\"station_hnn_experience_stored\":%d,"
             "\"station_hnn_market_versions\":%d,"
             "\"station_hnn_experience_versions\":%d,"
-            "\"max_npc_market_load\":",
+            "\"worker_finished_cargo_units\":",
             ai->active_npcs,
             ai->worker_diag_rows,
             ai->worker_selected_rows,
             ai->worker_hologram_rows,
+            ai->worker_mine_assignments,
+            ai->worker_hologram_mine_assignments,
+            ai->worker_haul_assignments,
+            ai->worker_hologram_haul_assignments,
             ai->worker_tow_assignments,
             ai->worker_hologram_tow_assignments,
+            ai->worker_delivery_assignments,
+            ai->worker_hologram_delivery_assignments,
+            ai->worker_scout_assignments,
+            ai->worker_hologram_scout_assignments,
+            ai->worker_repair_assignments,
+            ai->worker_hologram_repair_assignments,
             ai->workers_travel_to_pickup,
             ai->workers_travel_to_dest,
             ai->workers_unloading,
             ai->workers_returning,
             ai->workers_towing_scaffold,
+            ai->workers_with_finished_cargo,
             ai->scaffolds_loose,
             ai->scaffolds_towing,
             ai->scaffolds_towed_by_worker,
             ai->scaffolds_snapping,
             ai->scaffolds_placed,
+            ai->npc_delivery_shipments_active,
+            ai->npc_delivery_shipments_picked_up,
+            ai->npc_delivery_shipments_delivered,
+            ai->npc_delivery_shipments_cleared,
+            ai->npc_delivery_shipments_defaulted,
+            ai->npc_delivery_shipments_black_market_sold,
             ai->npc_known_contracts,
             ai->npc_knowledge_items,
             ai->station_known_contracts,
@@ -2876,6 +3019,8 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             ai->station_hnn_experience_stored,
             ai->station_hnn_market_versions,
             ai->station_hnn_experience_versions);
+    sr_json_float(out, ai->worker_finished_cargo_units);
+    fprintf(out, ",\"max_npc_market_load\":");
     sr_json_float(out, ai->max_npc_market_load);
     fprintf(out, ",\"max_station_market_load\":");
     sr_json_float(out, ai->max_station_market_load);

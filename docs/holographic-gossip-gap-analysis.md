@@ -718,10 +718,11 @@ economic work in measurable ways.
 
 Acceptance line:
 
-- active-worker replay rows include bounded success/failure counters for worker
-  assignments, HNN-backed scaffold moves, deliveries, repair/proof work, or
-  route support, and the PR native/WASM gate validates those counters without
-  cross-build hash drift.
+- active-worker replay rows include bounded counters for selected worker
+  assignment families, HNN-backed choices, worker cargo, NPC-owned delivery
+  shipment states, scaffold moves, repair/proof work, or route support, and
+  the PR native/WASM gate validates those counters without cross-build hash
+  drift.
 
 ### Slice 3: Aggregate Station History Browser
 
@@ -805,10 +806,11 @@ Acceptance line:
 - **Over-authoritative gossip.** Memories should influence discovery and
   scoring, never payment or ledger mutation.
 - **Cold-start deadlock.** Removing bootstrap too early can stall the economy.
-- **Bounded active economy drift coverage.** PR replay now exercises a selected
-  worker/HNN diagnostic fixture across native and WASM, and the long set keeps
-  active workers exchanging gossip/HNN market memory. It is still a bounded
-  gate, not a full no-omniscience autonomy soak.
+- **Bounded active economy drift coverage.** PR replay now exercises selected
+  worker/HNN diagnostics, job-family outcome counters, and scaffold pickup
+  across native and WASM, and the long set keeps active workers exchanging
+  gossip/HNN market memory while requiring worker activity telemetry. It is
+  still a bounded gate, not a full no-omniscience autonomy soak.
 - **Anonymous bearer credentials.** Client-chosen session tokens still touch
   legacy ledger/save paths and need a dedicated security pass.
 - **UI noise.** Contract menus should stay actionable; provenance belongs in

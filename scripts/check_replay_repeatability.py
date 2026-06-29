@@ -241,6 +241,28 @@ def validate_active_worker_output(path: Path, require_worker_decision: bool = Fa
     if hnn_market <= 0:
         return "active-worker scenario had no HNN market memory"
 
+    activity_fields = (
+        "worker_selected_rows",
+        "workers_travel_to_pickup",
+        "workers_travel_to_dest",
+        "workers_unloading",
+        "workers_returning",
+        "workers_towing_scaffold",
+        "workers_with_finished_cargo",
+        "npc_delivery_shipments_active",
+        "npc_delivery_shipments_picked_up",
+        "npc_delivery_shipments_delivered",
+        "npc_delivery_shipments_cleared",
+        "npc_delivery_shipments_defaulted",
+        "npc_delivery_shipments_black_market_sold",
+    )
+    activity = max(
+        sum(int(ai.get(field, 0)) for field in activity_fields)
+        for ai in ai_rows
+    )
+    if activity <= 0:
+        return "active-worker scenario had no worker activity counters"
+
     if require_worker_decision:
         selected = max(int(ai.get("worker_selected_rows", 0)) for ai in ai_rows)
         if selected <= 0:

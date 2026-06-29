@@ -84,14 +84,15 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   scores at the branch start. The trace is trained only from prefix actions,
   so utility-vs-HNN-rank analysis remains counterfactual.
 - Optional `ai` object when `--active-workers` is set: active NPC count,
-  worker diagnostic rows, selected rows, hologram-backed rows, selected tow
-  rows, HNN-backed tow rows, worker travel/towing state counts, scaffold
-  loose/towing/snapping/placed counts, station/NPC knowledge sizes,
-  station/NPC known-contract counts, station/NPC HNN market trace stored
-  counts, station flight-experience stored count, version sums, and max trace
-  loads. The state hash also includes station/NPC knowledge, job diagnostics,
-  and HNN trace bodies so cognition drift changes the replay hash rather than
-  only the display counters.
+  worker diagnostic rows, selected rows, hologram-backed rows, selected
+  mine/haul/tow/proof/scout/repair rows, HNN-backed rows per job family,
+  worker travel/towing/cargo state counts, NPC-owned delivery-shipment status
+  counts, scaffold loose/towing/snapping/placed counts, station/NPC knowledge
+  sizes, station/NPC known-contract counts, station/NPC HNN market trace
+  stored counts, station flight-experience stored count, version sums, and max
+  trace loads. The state hash also includes station/NPC knowledge, job
+  diagnostics, and HNN trace bodies so cognition drift changes the replay hash
+  rather than only the display counters.
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
@@ -148,8 +149,8 @@ tow job with a hologram-backed diagnostic row, advances the worker through
 scaffold pickup, and validates the selected tow/HNN/towing counters. The long
 set also includes an active-worker probe that keeps seeded NPC workers alive
 for 10,000 ticks and validates that the output contains active NPCs, exchanged
-knowledge, and HNN market memory. That makes neural-worker, gossip, and
-holographic-memory drift part of the deterministic replay surface instead of a
-live-session anecdote. This is still not full ledger replay or a complete
-economic autonomy proof; it is the first deterministic gate for the active
-worker/gossip/HNN path.
+knowledge, HNN market memory, and at least one worker activity/outcome counter.
+That makes neural-worker, gossip, and holographic-memory drift part of the
+deterministic replay surface instead of a live-session anecdote. This is still
+not full ledger replay or a complete economic autonomy proof; it is the first
+deterministic gate for the active worker/gossip/HNN path.

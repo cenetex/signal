@@ -358,10 +358,11 @@ economy.
 Acceptance:
 
 - native and WASM replay agree over active-worker scenarios
-- the fast gate includes selected worker tow diagnostics, HNN-backed rows, and
-  scaffold pickup counters
+- the fast gate includes selected worker tow diagnostics, HNN-backed rows,
+  scaffold pickup counters, and shared job-family outcome telemetry
 - long/native and named long native-WASM modes include physical gossip
-  transport and HNN market exchange before active model promotion
+  transport, worker activity counters, and HNN market exchange before active
+  model promotion
 
 ### 6. Station Memory Summary
 
