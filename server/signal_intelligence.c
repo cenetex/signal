@@ -3,6 +3,7 @@
  */
 #include "signal_intelligence.h"
 
+#include "fixpoint.h"
 #include "sim_ai.h"
 #include "station_util.h"
 
@@ -467,7 +468,7 @@ int signal_intelligence_choose_hail_station_with_reason(
         if (d_sq < best_d) {
             best_d = d_sq;
             best_station = s;
-            float d = sqrtf(d_sq);
+            float d = fixp_sqrtf(d_sq);
             best_quality = clampf(1.0f - d / scan, 0.0f, 1.0f);
         }
     }

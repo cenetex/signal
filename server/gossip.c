@@ -5,6 +5,7 @@
 #include "../shared/holographic_nn.h"
 #include "../shared/station_util.h"
 #include "../shared/manifest.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,9 @@ enum {
     GOSSIP_SHIP_CONTACT_RANGE = 420,
     GOSSIP_ROUTE_HISTORY_PROMOTE_EVIDENCE = 4,
 };
+
+static const float GOSSIP_HNN_TRACE_CARGO_MIN_FIDELITY = 0.20f;
+static const float GOSSIP_HNN_TRACE_CARGO_MAX_LOAD = 1.0f;
 
 static float gossip_clampf(float value, float lo, float hi) {
     if (value < lo) return lo;
@@ -1231,6 +1235,8 @@ static void gossip_hnn_bundle_memory(hnn_memory_t *dst,
     for (int i = 0; i < HNN_DIM; i++)
         dst->store[i] += src->store[i];
     dst->experience_count += src->experience_count;
+    if (dst->experience_count > (int)HNN_TRACE_CAPACITY)
+        dst->experience_count = (int)HNN_TRACE_CAPACITY;
     hnn_normalize(dst->store);
 }
 
@@ -1380,6 +1386,117 @@ int gossip_ship_contact_exchange(world_t *w) {
     return contacts;
 }
 
+static bool gossip_hnn_pilot_carries_other_station_cell(
+    const npc_ship_t *npc,
+    int station_idx) {
+    if (!npc || npc->hnn_experience_version == 0) return false;
+    if (npc->hnn_experience_station == 0xffu) return false;
+    return npc->hnn_experience_station != (uint8_t)station_idx;
+}
+
+static bool gossip_hnn_trace_contract_matches_runtime(
+    const hnn_memory_contract_t *contract) {
+    if (!contract) return false;
+    if (contract->dim != HNN_DIM) return false;
+    if (contract->seed != HNN_CONTRACT_SEED) return false;
+    if (contract->keygen_version != HNN_KEYGEN_VERSION) return false;
+    if (contract->encoder_version != HNN_PILOT_ENCODER_VERSION) return false;
+    if (contract->trace_format_version != HNN_TRACE_FORMAT_VERSION)
+        return false;
+    if (contract->action_vocabulary_hash != hnn_action_vocabulary_hash())
+        return false;
+    if (contract->stored_count <= 0) return false;
+    if (!isfinite(contract->capacity_load) ||
+        !isfinite(contract->fidelity_estimate) ||
+        !isfinite(contract->last_margin)) {
+        return false;
+    }
+    if (contract->capacity_load < 0.0f) return false;
+    return true;
+}
+
+static bool gossip_hnn_trace_contract_is_mergeable_cargo(
+    const hnn_memory_contract_t *contract) {
+    if (!gossip_hnn_trace_contract_matches_runtime(contract)) return false;
+    if (contract->stored_count > (int)HNN_TRACE_CAPACITY) return false;
+    if (contract->capacity_load > GOSSIP_HNN_TRACE_CARGO_MAX_LOAD)
+        return false;
+    if (contract->fidelity_estimate < GOSSIP_HNN_TRACE_CARGO_MIN_FIDELITY)
+        return false;
+    return true;
+}
+
+static bool gossip_hnn_carried_station_cell_has_provenance(
+    const world_t *w,
+    int station_idx,
+    const npc_ship_t *npc) {
+    if (!w || !npc) return false;
+    if (!gossip_hnn_pilot_carries_other_station_cell(npc, station_idx))
+        return false;
+
+    uint8_t source_idx = npc->hnn_experience_station;
+    if (source_idx >= MAX_STATIONS) return false;
+    const station_t *source = &w->stations[source_idx];
+    if (!station_exists(source)) return false;
+    if (source->hnn_experience.experience_count <= 0) return false;
+    if (source->hnn_experience_version == 0) return false;
+    if (npc->hnn_experience_version > source->hnn_experience_version)
+        return false;
+    return true;
+}
+
+static bool gossip_hnn_pilot_should_upload_experience(
+    const world_t *w,
+    const station_t *st,
+    int station_idx,
+    const npc_ship_t *npc) {
+    if (!st || !npc || npc->hnn_mem.experience_count <= 0) return false;
+
+    hnn_memory_contract_t contract = hnn_memory_contract(&npc->hnn_mem);
+    if (!gossip_hnn_trace_contract_matches_runtime(&contract)) return false;
+
+    bool carries_other_station_cell =
+        gossip_hnn_pilot_carries_other_station_cell(npc, station_idx);
+    if (carries_other_station_cell) {
+        if (!gossip_hnn_trace_contract_is_mergeable_cargo(&contract))
+            return false;
+        if (!gossip_hnn_carried_station_cell_has_provenance(w,
+                                                            station_idx,
+                                                            npc)) {
+            return false;
+        }
+        return npc->hnn_experience_uploaded_station !=
+                   (uint8_t)station_idx ||
+               npc->hnn_experience_uploaded_source_station !=
+                   npc->hnn_experience_station ||
+               npc->hnn_experience_uploaded_source_version <
+                   npc->hnn_experience_version;
+    }
+
+    if (st->hnn_experience.experience_count <= 0) return true;
+
+    if (npc->hnn_experience_local_version > 0 &&
+        (npc->hnn_experience_uploaded_station != (uint8_t)station_idx ||
+         npc->hnn_experience_uploaded_local_version <
+            npc->hnn_experience_local_version)) {
+        return true;
+    }
+
+    return false;
+}
+
+static void gossip_hnn_mark_pilot_uploaded(int station_idx,
+                                           npc_ship_t *npc) {
+    if (!npc || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    npc->hnn_experience_uploaded_station = (uint8_t)station_idx;
+    npc->hnn_experience_uploaded_local_version =
+        npc->hnn_experience_local_version;
+    npc->hnn_experience_uploaded_source_station =
+        npc->hnn_experience_station;
+    npc->hnn_experience_uploaded_source_version =
+        npc->hnn_experience_version;
+}
+
 void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
     if (!w || !npc || station_idx < 0 || station_idx >= MAX_STATIONS) return;
     station_t *st = &w->stations[station_idx];
@@ -1424,14 +1541,26 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
                          station_idx,
                          npc->hnn_mem.experience_count);
 
+    bool station_cell_was_empty = st->hnn_experience.experience_count <= 0;
+    bool uploaded = false;
+
     /*
-     * Upload: bundle the pilot's experience into the station's pool.
-     * Skip if the pilot has no experience yet (experience_count == 0).
+     * Upload: bundle the pilot's experience into this station's local cell
+     * only when the worker has new local experience or is carrying a memory
+     * cell learned somewhere else. Re-docking at the same station without new
+     * stores must not amplify the same hologram.
      */
-    if (npc->hnn_mem.experience_count > 0) {
-        /* Bundle pilot's store into station's pool */
+    if (gossip_hnn_pilot_should_upload_experience(w, st, station_idx, npc)) {
         gossip_hnn_bundle_memory(&st->hnn_experience, &npc->hnn_mem);
         st->hnn_experience_version++;
+        st->hnn_experience_upload_count++;
+        st->hnn_experience_last_source_station =
+            (npc->hnn_experience_version > 0 &&
+             npc->hnn_experience_station != 0xffu)
+                ? npc->hnn_experience_station
+                : (uint8_t)station_idx;
+        gossip_hnn_mark_pilot_uploaded(station_idx, npc);
+        uploaded = true;
 
         GOSSIP_HNN_DEBUG_LOG("[hnn] pilot %d uploaded experience to station %d "
                              "(pilot_count=%d, station_total=%d, version=%u)\n",
@@ -1443,15 +1572,25 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
     }
 
     /*
-     * Download: if the station has experience the pilot hasn't seen
-     * yet (version mismatch), bundle it into the pilot's memory.
+     * Download: if the station has experience the pilot hasn't seen yet
+     * (version mismatch), bundle it into the pilot's memory. When the station
+     * cell was empty and this pilot just seeded it, only stamp the provenance:
+     * bundling the same vector back into the pilot would just self-amplify it.
      */
     if (st->hnn_experience.experience_count > 0 &&
-        npc->hnn_experience_version < st->hnn_experience_version) {
+        (npc->hnn_experience_station != (uint8_t)station_idx ||
+         npc->hnn_experience_version < st->hnn_experience_version)) {
 
-        /* Bundle station pool into pilot's memory */
-        gossip_hnn_bundle_memory(&npc->hnn_mem, &st->hnn_experience);
+        if (!(uploaded && station_cell_was_empty))
+            gossip_hnn_bundle_memory(&npc->hnn_mem, &st->hnn_experience);
+        npc->hnn_experience_station = (uint8_t)station_idx;
         npc->hnn_experience_version = st->hnn_experience_version;
+        st->hnn_experience_download_count++;
+        if (npc->hnn_experience_uploaded_station == (uint8_t)station_idx) {
+            npc->hnn_experience_uploaded_source_station = (uint8_t)station_idx;
+            npc->hnn_experience_uploaded_source_version =
+                st->hnn_experience_version;
+        }
 
         GOSSIP_HNN_DEBUG_LOG("[hnn] pilot %d downloaded experience from station %d "
                              "(station_version=%u, pilot_total=%d)\n",

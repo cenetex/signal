@@ -520,7 +520,10 @@ enum {
  * Diagnostic rows (flags bit2) reuse the row payload for NPC scan context:
  * commodity = inspect_diag_kind_t. For market rows, grade = confidence,
  * chain_len = salience, event_id bytes [station_a, station_b, action,
- * commodity], quantity = value/quantity hint. For job rows, grade = compact
+ * commodity], quantity = value/quantity hint. For HNN trace rows, grade =
+ * compact capacity load, chain_len = compact fidelity, event_id = action
+ * vocabulary hash, quantity = stored count, and cargo_pub bytes use the
+ * INSPECT_HNN_TRACE_* offsets below. For job rows, grade = compact
  * score, chain_len = selected/candidate marker, event_id bytes
  * [source_station, dest_station, job_kind, commodity], quantity = job hint,
  * cargo_pub bytes [0..6] = compact factor scores for
@@ -579,6 +582,7 @@ typedef enum {
     INSPECT_DIAG_JOB_DELIVER_PROOF,
     INSPECT_DIAG_JOB_SCOUT,
     INSPECT_DIAG_JOB_REPAIR,
+    INSPECT_DIAG_HNN_TRACE,
 } inspect_diag_kind_t;
 
 enum {
@@ -604,6 +608,27 @@ enum {
     INSPECT_JOB_META_PROOF1,
     INSPECT_JOB_META_PROOF2,
     INSPECT_JOB_META_PROOF3,
+};
+
+enum {
+    INSPECT_HNN_TRACE_LOAD = 0,
+    INSPECT_HNN_TRACE_FIDELITY,
+    INSPECT_HNN_TRACE_MARGIN,
+    INSPECT_HNN_TRACE_SNR,
+    INSPECT_HNN_TRACE_FLAGS,
+    INSPECT_HNN_TRACE_KEYGEN_VERSION,
+    INSPECT_HNN_TRACE_ENCODER_VERSION,
+    INSPECT_HNN_TRACE_FORMAT_VERSION,
+    INSPECT_HNN_TRACE_CAPACITY_LO,
+    INSPECT_HNN_TRACE_CAPACITY_HI,
+    INSPECT_HNN_TRACE_DIM_LO,
+    INSPECT_HNN_TRACE_DIM_HI,
+};
+
+enum {
+    INSPECT_HNN_TRACE_WARN_NOISY = 1 << 0,
+    INSPECT_HNN_TRACE_WARN_LOW_MARGIN = 1 << 1,
+    INSPECT_HNN_TRACE_WARN_UNTRAINED = 1 << 2,
 };
 
 typedef enum {

@@ -11518,8 +11518,10 @@ void world_reset(world_t *w) {
      * back-to-back in the same process. */
     nav_caches_reset();
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
-    for (int i = 0; i < MAX_STATIONS; i++)
+    for (int i = 0; i < MAX_STATIONS; i++) {
         (void)station_manifest_bootstrap(&w->stations[i]);
+        w->stations[i].hnn_experience_last_source_station = 0xffu;
+    }
 
     /* --- Seeded-station identity (Layer B of #479) ---
      * Derive deterministic Ed25519 keypairs for seeded stations from

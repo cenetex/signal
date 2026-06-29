@@ -4101,6 +4101,45 @@ TEST(test_embedded_neural_checkpoint_drives_npc_worker) {
     ASSERT(v2_dist_sq(npc->ship.pos, before_pos) > 0.0001f);
 }
 
+TEST(test_holographic_npc_bootstrap_gate_blocks_forward_thrust) {
+    WORLD_DECL;
+    world_reset(&w);
+    signal_brain_holographic_init();
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    ship_cleanup(&npc->ship);
+    memset(npc, 0, sizeof(*npc));
+    ASSERT(ship_manifest_bootstrap(&npc->ship));
+
+    station_t *st = &w.stations[0];
+    ASSERT(station_exists(st));
+    npc->active = true;
+    npc->role = NPC_ROLE_MINER;
+    npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    npc->home_station = 0;
+    npc->dest_station = 0;
+    npc->target_asteroid = 0;
+    npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    npc->ship.hull = ship_max_hull(&npc->ship);
+    npc->hull = npc->ship.hull;
+    npc->ship.pos = v2(st->pos.x - st->radius - 80.0f, st->pos.y);
+    npc->ship.vel = v2(80.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    hnn_memory_init(&npc->hnn_mem);
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].pos = v2(npc->ship.pos.x + 1200.0f, npc->ship.pos.y);
+    w.asteroids[0].radius = 80.0f;
+
+    signal_brain_drive_npc(&w, npc, SIM_DT);
+
+    ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
+    ASSERT_EQ_INT(signal_brain_holographic_npc_holonet_active_count(&w, npc), 1);
+    ASSERT(npc->input.thrust <= 0.0f);
+    ASSERT(!npc->thrusting);
+}
+
 TEST(test_world_network_writes_persist) {
     /* Simulate: world_sim_step runs, then network callback overwrites asteroid,
      * next world_sim_step should see the overwritten state */
@@ -9000,6 +9039,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
     RUN(test_embedded_neural_checkpoint_drives_npc_worker);
+    RUN(test_holographic_npc_bootstrap_gate_blocks_forward_thrust);
     RUN(test_npc_mining_drops_state_when_far_from_target);
     RUN(test_mining_beam_step_rejects_target_beyond_surface_range);
     RUN(test_mining_beam_step_rejects_off_axis_target);

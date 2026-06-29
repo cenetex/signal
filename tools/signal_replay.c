@@ -18,11 +18,13 @@
 #include "chain_log.h"
 #include "fixpoint.h"
 #include "game_sim.h"
+#include "holographic_nn.h"
 #include "manifest.h"
 #include "protocol.h"
 #include "sha256.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
+#include "sim_nav.h"
 #include "sim_physics.h"
 #include "station_util.h"
 
@@ -66,6 +68,8 @@ typedef struct {
     int prefix[SR_MAX_PREFIX];
     int prefix_count;
     bool candidate_enabled[SR_ACTION_COUNT];
+    bool hnn_trace;
+    int hnn_cleanup_steps;
     sr_provenance_script_t provenance_script;
     const char *out_path;
 } sr_config_t;
@@ -93,6 +97,30 @@ typedef struct {
 } sr_event_counts_t;
 
 typedef struct {
+    bool enabled;
+    int top_action;
+    int top_allowed_action;
+    int candidate_rank;
+    int candidate_allowed_rank;
+    bool candidate_allowed;
+    uint16_t allowed_mask;
+    float candidate_score;
+    float top_score;
+    float top_allowed_score;
+    float margin;
+    float allowed_margin;
+    float trace_fidelity;
+    hnn_memory_contract_t contract;
+    bool holonet_enabled;
+    int holonet_active_count;
+    int holonet_last_route;
+    int holonet_scored_count;
+    float holonet_route_similarity;
+    hnn_memory_contract_t holonet_contract;
+    float scores[HNN_ACTION_COUNT];
+} sr_hnn_eval_t;
+
+typedef struct {
     bool ok;
     int candidate;
     int prefix_ticks;
@@ -118,10 +146,14 @@ typedef struct {
     int end_current_station;
     uint16_t end_manifest_count;
     sr_event_counts_t events;
+    sr_hnn_eval_t hnn;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
     uint8_t event_hash[32];
 } sr_result_t;
+
+_Static_assert(HNN_ACTION_COUNT == SR_ACTION_COUNT,
+               "signal_replay HNN actions must match replay actions");
 
 static const sr_action_def_t SR_ACTIONS[SR_ACTION_COUNT] = {
     { 0,  0, "NONE"},
@@ -150,6 +182,8 @@ static void sr_usage(FILE *fp)
             "  --history LIST       comma-separated prefix actions, e.g. W,W,WA,D\n"
             "  --horizon-ticks N    branch horizon per candidate (default 36; max 120000)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
+            "  --hnn-trace          train an HNN trace from the prefix and score each branch candidate\n"
+            "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
             "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
@@ -359,6 +393,7 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
     config->seed = 2037u;
     config->station = 0;
     config->horizon_ticks = 36;
+    config->hnn_cleanup_steps = 3;
     for (int i = 0; i < SR_ACTION_COUNT; i++) config->candidate_enabled[i] = true;
 
     for (int i = 1; i < argc; i++) {
@@ -402,6 +437,11 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
             i++;
         } else if (strcmp(arg, "--candidates") == 0 && value) {
             if (!sr_parse_candidate_list(value, config->candidate_enabled)) return false;
+            i++;
+        } else if (strcmp(arg, "--hnn-trace") == 0) {
+            config->hnn_trace = true;
+        } else if (strcmp(arg, "--hnn-cleanup-steps") == 0 && value) {
+            if (!sr_parse_i32(value, 0, 8, &config->hnn_cleanup_steps)) return false;
             i++;
         } else if (strcmp(arg, "--provenance-script") == 0 && value) {
             if (!sr_parse_provenance_script(value, &config->provenance_script)) {
@@ -1840,11 +1880,307 @@ static bool sr_run_provenance_script(const sr_config_t *config,
     }
 }
 
+static float sr_feature_clamp(float value, float lo, float hi)
+{
+    if (!isfinite(value)) return 0.0f;
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+static void sr_hnn_fill_features(const world_t *w,
+                                 const server_player_t *sp,
+                                 vec2 goal,
+                                 int action,
+                                 hnn_pilot_features_t *out)
+{
+    const ship_t *ship;
+    const sr_action_def_t *def;
+    vec2 to_goal;
+    vec2 forward;
+    vec2 right;
+    nav_path_t *path;
+    const hull_def_t *hull;
+    float dist;
+    float desired;
+    float heading_error;
+    float speed;
+    float fwd_speed;
+    float lat_speed;
+    float brake_dist;
+    float ship_radius;
+    float max_hull;
+    float fwd_clear;
+    float left_clear;
+    float right_clear;
+    float target_dist;
+
+    if (!w || !sp || !out) return;
+    ship = &sp->ship;
+    def = (action >= 0 && action < SR_ACTION_COUNT)
+        ? &SR_ACTIONS[action]
+        : &SR_ACTIONS[0];
+    memset(out, 0, sizeof(*out));
+
+    to_goal = v2_sub(goal, ship->pos);
+    dist = v2_len(to_goal);
+    desired = dist > 0.001f
+        ? fixp_atan2f(to_goal.y, to_goal.x)
+        : ship->angle;
+    heading_error = wrap_angle(desired - ship->angle);
+    forward = v2_from_angle(ship->angle);
+    right = v2(-forward.y, forward.x);
+    speed = v2_len(ship->vel);
+    fwd_speed = v2_dot(ship->vel, forward);
+    lat_speed = v2_dot(ship->vel, right);
+    brake_dist = (speed * speed) / (2.0f * SHIP_BRAKE);
+    hull = ship_hull_def(ship);
+    ship_radius = hull ? hull->ship_radius : 16.0f;
+    max_hull = ship_max_hull(ship);
+
+    fwd_clear = nav_forward_clearance(w, ship->pos, ship->vel,
+                                      ship_radius, ship->angle);
+    left_clear = nav_forward_clearance(w, ship->pos, ship->vel,
+                                       ship_radius, ship->angle + 0.7f);
+    right_clear = nav_forward_clearance(w, ship->pos, ship->vel,
+                                        ship_radius, ship->angle - 0.7f);
+    target_dist = sr_feature_clamp(dist / 6000.0f, 0.0f, 1.0f);
+    path = nav_player_path(sp->id);
+
+    out->target_dist = target_dist;
+    out->heading_error = sr_feature_clamp(heading_error / PI_F, -1.0f, 1.0f);
+    out->heading_cos = fixp_cosf(heading_error);
+    out->heading_sin = fixp_sinf(heading_error);
+    out->speed = sr_feature_clamp(speed / 350.0f, 0.0f, 1.0f);
+    out->forward_speed = sr_feature_clamp(fwd_speed / 350.0f, -1.0f, 1.0f);
+    out->lateral_speed = sr_feature_clamp(lat_speed / 350.0f, -1.0f, 1.0f);
+    out->brake_distance = sr_feature_clamp(brake_dist / 700.0f, 0.0f, 1.0f);
+    out->fwd_clear = sr_feature_clamp(fwd_clear, 0.0f, 1.0f);
+    out->left_clear = sr_feature_clamp(left_clear, 0.0f, 1.0f);
+    out->right_clear = sr_feature_clamp(right_clear, 0.0f, 1.0f);
+    out->signal_quality = sr_feature_clamp(signal_strength_at(w, ship->pos),
+                                           0.0f, 1.0f);
+    out->hull_ratio = max_hull > 0.0f
+        ? sr_feature_clamp(ship->hull / max_hull, 0.0f, 1.0f)
+        : 1.0f;
+    out->path_count = path ? sr_feature_clamp((float)path->count / 16.0f,
+                                              0.0f, 1.0f) : 0.0f;
+    out->path_current = path ? sr_feature_clamp((float)path->current / 16.0f,
+                                                0.0f, 1.0f) : 0.0f;
+    out->fwd_blocked = out->fwd_clear < 0.15f ? 1.0f : 0.0f;
+    out->left_blocked = out->left_clear < 0.15f ? 1.0f : 0.0f;
+    out->right_blocked = out->right_clear < 0.15f ? 1.0f : 0.0f;
+    out->goal_close = 1.0f - target_dist;
+    out->action_delta_turn = (float)def->turn;
+    out->action_delta_thrust = (float)def->thrust;
+    out->action_is_none = action == 0 ? 1.0f : 0.0f;
+    out->action_is_reverse = def->thrust < 0 ? 1.0f : 0.0f;
+    out->composite_dot = (float)def->turn * out->heading_sin;
+}
+
+static void sr_hnn_store_observation(const world_t *w,
+                                     const server_player_t *sp,
+                                     vec2 goal,
+                                     int action,
+                                     hnn_memory_t *mem,
+                                     hnn_holonet_t *net,
+                                     const hnn_action_table_t *actions)
+{
+    hnn_pilot_features_t route_features;
+    hnn_pilot_features_t features;
+    float route_vec[HNN_DIM];
+    float state_vec[HNN_DIM];
+    if (!mem || !actions || action < 0 || action >= HNN_ACTION_COUNT) return;
+    sr_hnn_fill_features(w, sp, goal, 0, &route_features);
+    sr_hnn_fill_features(w, sp, goal, action, &features);
+    hnn_encode_state(&route_features, route_vec);
+    hnn_encode_state(&features, state_vec);
+    hnn_memory_store(mem, state_vec, actions->vecs[action]);
+    if (net)
+        hnn_holonet_store(net, route_vec, state_vec, actions->vecs[action]);
+}
+
+static bool sr_hnn_action_allowed(const hnn_pilot_features_t *state,
+                                  const sr_action_def_t *action,
+                                  int action_index)
+{
+    if (!state || !action || action_index < 0 ||
+        action_index >= HNN_ACTION_COUNT) {
+        return false;
+    }
+
+    const float slow_speed = 20.0f / 350.0f;
+    bool forward_blocked =
+        state->fwd_blocked > 0.5f || state->fwd_clear < 0.15f;
+    bool positive_turn_blocked =
+        state->left_blocked > 0.5f || state->left_clear < 0.12f;
+    bool negative_turn_blocked =
+        state->right_blocked > 0.5f || state->right_clear < 0.12f;
+
+    if (forward_blocked) {
+        if (action->thrust > 0) return false;
+        if (state->speed > slow_speed && action->thrust >= 0) return false;
+    }
+
+    if (action->thrust >= 0) {
+        if (action->turn > 0 && positive_turn_blocked) return false;
+        if (action->turn < 0 && negative_turn_blocked) return false;
+    }
+
+    if (state->target_dist > (450.0f / 6000.0f) &&
+        state->speed < slow_speed) {
+        if (action_index == 0 || action->thrust < 0) return false;
+        if (fabsf(state->heading_error) > 0.35f &&
+            action->thrust > 0 &&
+            action->turn == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static uint16_t sr_hnn_allowed_mask(const hnn_pilot_features_t *state,
+                                    uint8_t allowed[HNN_ACTION_COUNT])
+{
+    uint16_t mask = 0;
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        bool ok = sr_hnn_action_allowed(state, &SR_ACTIONS[i], i);
+        if (allowed) allowed[i] = ok ? 1u : 0u;
+        if (ok) mask |= (uint16_t)(1u << i);
+    }
+    return mask;
+}
+
+static int sr_hnn_best_allowed_action(const float scores[HNN_ACTION_COUNT],
+                                      const uint8_t allowed[HNN_ACTION_COUNT],
+                                      float *out_score,
+                                      float *out_margin)
+{
+    int best = -1;
+    float best_score = -INFINITY;
+    float second_score = -INFINITY;
+    if (!scores || !allowed) {
+        if (out_score) *out_score = 0.0f;
+        if (out_margin) *out_margin = 0.0f;
+        return -1;
+    }
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (!allowed[i] || !isfinite(scores[i])) continue;
+        if (scores[i] > best_score) {
+            second_score = best_score;
+            best_score = scores[i];
+            best = i;
+        } else if (scores[i] > second_score) {
+            second_score = scores[i];
+        }
+    }
+    if (out_score)
+        *out_score = isfinite(best_score) ? best_score : 0.0f;
+    if (out_margin) {
+        *out_margin = (isfinite(best_score) && isfinite(second_score))
+            ? best_score - second_score
+            : 0.0f;
+    }
+    return best;
+}
+
+static void sr_hnn_evaluate_branch(const world_t *w,
+                                   const server_player_t *sp,
+                                   vec2 goal,
+                                   int candidate,
+                                   hnn_memory_t *mem,
+                                   hnn_holonet_t *net,
+                                   const hnn_action_table_t *actions,
+                                   int cleanup_steps,
+                                   sr_hnn_eval_t *out)
+{
+    hnn_pilot_features_t state_only;
+    float margin = 0.0f;
+    float fidelity = 0.0f;
+    float allowed_margin = 0.0f;
+    float top_allowed_score = 0.0f;
+    uint8_t allowed[HNN_ACTION_COUNT];
+    int top;
+    int top_allowed;
+    int rank = 1;
+    int allowed_rank = 1;
+
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!mem || !actions || candidate < 0 || candidate >= HNN_ACTION_COUNT) {
+        return;
+    }
+
+    sr_hnn_fill_features(w, sp, goal, 0, &state_only);
+    if (net) {
+        out->holonet_active_count = hnn_holonet_active_count(net);
+        out->holonet_last_route = net->last_route;
+        out->holonet_scored_count = net->last_scored_count;
+        out->holonet_route_similarity = net->last_route_similarity;
+        out->holonet_contract = hnn_holonet_contract(net);
+    }
+    if (net && hnn_holonet_active_count(net) > 0) {
+        top = hnn_holonet_score_actions(net, actions, &state_only, out->scores,
+                                        &margin, &fidelity, cleanup_steps);
+        out->holonet_enabled = top >= 0;
+        out->holonet_active_count = hnn_holonet_active_count(net);
+        out->holonet_last_route = net->last_route;
+        out->holonet_scored_count = net->last_scored_count;
+        out->holonet_route_similarity = net->last_route_similarity;
+        out->holonet_contract = hnn_holonet_contract(net);
+    } else {
+        top = hnn_score_actions(mem, actions, &state_only, out->scores,
+                                &margin, &fidelity, cleanup_steps);
+    }
+    if (top < 0) {
+        top = hnn_score_actions(mem, actions, &state_only, out->scores,
+                                &margin, &fidelity, cleanup_steps);
+    }
+    if (top < 0) top = 0;
+    out->allowed_mask = sr_hnn_allowed_mask(&state_only, allowed);
+    top_allowed = sr_hnn_best_allowed_action(
+        out->scores, allowed, &top_allowed_score, &allowed_margin);
+    if (top_allowed < 0) top_allowed = top;
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (out->scores[i] > out->scores[candidate]) rank++;
+        if (allowed[candidate] && allowed[i] &&
+            out->scores[i] > out->scores[candidate]) {
+            allowed_rank++;
+        }
+    }
+
+    mem->last_retrieval_similarity = out->scores[top_allowed];
+    mem->last_margin = allowed_margin;
+
+    out->enabled = true;
+    out->top_action = top;
+    out->top_allowed_action = top_allowed;
+    out->candidate_rank = rank;
+    out->candidate_allowed = allowed[candidate] != 0;
+    out->candidate_allowed_rank = out->candidate_allowed ? allowed_rank : -1;
+    out->candidate_score = out->scores[candidate];
+    out->top_score = out->scores[top];
+    out->top_allowed_score = top_allowed_score;
+    out->margin = margin;
+    out->allowed_margin = allowed_margin;
+    out->trace_fidelity = fidelity;
+    out->contract = hnn_memory_contract(mem);
+}
+
 static bool sr_replay_prefix(const sr_config_t *config,
                              world_t *w,
-                             server_player_t *sp)
+                             server_player_t *sp,
+                             vec2 goal,
+                             hnn_memory_t *hnn_mem,
+                             hnn_holonet_t *hnn_net,
+                             const hnn_action_table_t *hnn_actions)
 {
     for (int i = 0; i < config->prefix_count; i++) {
+        if (hnn_mem && hnn_actions) {
+            sr_hnn_store_observation(w, sp, goal, config->prefix[i],
+                                     hnn_mem, hnn_net, hnn_actions);
+        }
         sr_apply_action(sp, config->prefix[i]);
         world_sim_step(w, SIM_DT);
         for (int e = 0; e < w->events.count; e++) {
@@ -1864,6 +2200,12 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     server_player_t *sp = NULL;
     vec2 spawn = v2(0.0f, 0.0f);
     vec2 goal = v2(0.0f, 0.0f);
+    hnn_memory_t hnn_mem;
+    hnn_holonet_t hnn_net;
+    hnn_action_table_t hnn_actions;
+    hnn_memory_t *hnn_mem_ptr = NULL;
+    hnn_holonet_t *hnn_net_ptr = NULL;
+    hnn_action_table_t *hnn_actions_ptr = NULL;
     sha256_ctx_t event_hash;
     bool ok = false;
 
@@ -1888,7 +2230,17 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     }
     (void)spawn;
 
-    if (!sr_replay_prefix(config, w, sp)) {
+    if (config->hnn_trace) {
+        hnn_memory_init(&hnn_mem);
+        hnn_holonet_init(&hnn_net);
+        hnn_action_table_init(&hnn_actions);
+        hnn_mem_ptr = &hnn_mem;
+        hnn_net_ptr = &hnn_net;
+        hnn_actions_ptr = &hnn_actions;
+    }
+
+    if (!sr_replay_prefix(config, w, sp, goal, hnn_mem_ptr, hnn_net_ptr,
+                          hnn_actions_ptr)) {
         world_cleanup(w);
         free(w);
         return false;
@@ -1908,6 +2260,12 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         world_cleanup(w);
         free(w);
         return false;
+    }
+    if (config->hnn_trace) {
+        sr_hnn_evaluate_branch(w, sp, goal, candidate,
+                               hnn_mem_ptr, hnn_net_ptr, hnn_actions_ptr,
+                               config->hnn_cleanup_steps,
+                               &out->hnn);
     }
     for (int i = 0; i < config->horizon_ticks; i++) {
         sr_apply_action(sp, candidate);
@@ -1952,6 +2310,99 @@ static void sr_json_hash(FILE *out, const char *key, const uint8_t hash[32])
     char hex[65];
     sr_hex(hash, hex);
     fprintf(out, "\"%s\":\"%s\"", key, hex);
+}
+
+static void sr_json_float(FILE *out, float value)
+{
+    if (isfinite(value)) fprintf(out, "%.9f", value);
+    else fprintf(out, "null");
+}
+
+static void sr_write_hnn_contract(FILE *out,
+                                  const hnn_memory_contract_t *contract)
+{
+    fprintf(out,
+            "{\"dim\":%d,"
+            "\"seed\":\"%016" PRIx64 "\","
+            "\"keygen_version\":%u,"
+            "\"encoder_version\":%u,"
+            "\"action_vocabulary_hash\":\"%016" PRIx64 "\","
+            "\"trace_format_version\":%u,"
+            "\"stored_count\":%d,"
+            "\"capacity_load\":",
+            contract->dim,
+            contract->seed,
+            contract->keygen_version,
+            contract->encoder_version,
+            contract->action_vocabulary_hash,
+            contract->trace_format_version,
+            contract->stored_count);
+    sr_json_float(out, contract->capacity_load);
+    fprintf(out, ",\"fidelity_estimate\":");
+    sr_json_float(out, contract->fidelity_estimate);
+    fprintf(out, ",\"last_margin\":");
+    sr_json_float(out, contract->last_margin);
+    fprintf(out, "}");
+}
+
+static void sr_write_hnn_eval(FILE *out, const sr_hnn_eval_t *hnn)
+{
+    fprintf(out,
+            ",\"hnn\":{\"schema\":\"signal.replay_hnn_eval.v1\","
+            "\"top_action\":%d,"
+            "\"top_action_name\":\"%s\","
+            "\"top_allowed_action\":%d,"
+            "\"top_allowed_action_name\":\"%s\","
+            "\"allowed_mask\":\"0x%03x\","
+            "\"candidate_rank\":%d,"
+            "\"candidate_allowed\":%s,"
+            "\"candidate_allowed_rank\":%d,"
+            "\"candidate_score\":",
+            hnn->top_action,
+            SR_ACTIONS[hnn->top_action].name,
+            hnn->top_allowed_action,
+            SR_ACTIONS[hnn->top_allowed_action].name,
+            (unsigned)hnn->allowed_mask,
+            hnn->candidate_rank,
+            hnn->candidate_allowed ? "true" : "false",
+            hnn->candidate_allowed_rank);
+    sr_json_float(out, hnn->candidate_score);
+    fprintf(out, ",\"top_score\":");
+    sr_json_float(out, hnn->top_score);
+    fprintf(out, ",\"top_allowed_score\":");
+    sr_json_float(out, hnn->top_allowed_score);
+    fprintf(out, ",\"margin\":");
+    sr_json_float(out, hnn->margin);
+    fprintf(out, ",\"allowed_margin\":");
+    sr_json_float(out, hnn->allowed_margin);
+    fprintf(out, ",\"trace_fidelity\":");
+    sr_json_float(out, hnn->trace_fidelity);
+    fprintf(out, ",\"contract\":");
+    sr_write_hnn_contract(out, &hnn->contract);
+    fprintf(out,
+            ",\"holonet\":{\"enabled\":%s,"
+            "\"active_count\":%d,"
+            "\"last_route\":%d,"
+            "\"scored_count\":%d,"
+            "\"route_similarity\":",
+            hnn->holonet_enabled ? "true" : "false",
+            hnn->holonet_active_count,
+            hnn->holonet_last_route,
+            hnn->holonet_scored_count);
+    sr_json_float(out, hnn->holonet_route_similarity);
+    fprintf(out, ",\"contract\":");
+    sr_write_hnn_contract(out, &hnn->holonet_contract);
+    fprintf(out, "}");
+    fprintf(out, ",\"scores\":[");
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (i > 0) fprintf(out, ",");
+        fprintf(out, "{\"index\":%d,\"name\":\"%s\",\"allowed\":%s,\"score\":",
+                i, SR_ACTIONS[i].name,
+                (hnn->allowed_mask & (uint16_t)(1u << i)) ? "true" : "false");
+        sr_json_float(out, hnn->scores[i]);
+        fprintf(out, "}");
+    }
+    fprintf(out, "]}");
 }
 
 static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t *r)
@@ -2017,8 +2468,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             ",\"fracture_events\":%d"
             ",\"outpost_placed_events\":%d"
             ",\"scaffold_ready_events\":%d"
-            ",\"damage_amount\":%.3f"
-            ",\"authority\":\"deterministic_seed_prefix_replay\"}\n",
+            ",\"damage_amount\":%.3f",
             r->start_dist,
             r->end_dist,
             r->progress,
@@ -2058,6 +2508,10 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->events.outpost_placed_events,
             r->events.scaffold_ready_events,
             r->events.damage_amount);
+    if (config->hnn_trace && r->hnn.enabled) {
+        sr_write_hnn_eval(out, &r->hnn);
+    }
+    fprintf(out, ",\"authority\":\"deterministic_seed_prefix_replay\"}\n");
 }
 
 int main(int argc, char **argv)

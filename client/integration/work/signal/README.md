@@ -85,6 +85,31 @@ best-allowed margins, best-minus-teacher score deltas, action confusion, and
 model feature-contract versions. Treat these thresholds as the promotion gate
 from shadow mode to any active client control.
 
+## HNN Shadow Gate
+
+The same shadow loop also keeps a private holographic flight trace and a small
+routed HoloNet grid. It scores the current candidate matrix against memory,
+logs the HNN top legal action against the authoritative autopilot teacher, then
+stores the teacher action for future rows. This does not drive controls.
+
+```json
+{"schema":"crlp.signal_hnn_shadow.v1","sample":1,"tick":120,"task":"flight","feature_hash":"...","allowed_mask":"0x1eb","contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":1,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":0,"capacity_load":0,"fidelity_estimate":0,"last_margin":0},"holonet":{"enabled":true,"active_count":2,"last_route":1,"scored_count":2,"route_similarity":0.81,"contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":1,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":42,"capacity_load":0.109,"fidelity_estimate":0.54,"last_margin":0.03}},"hnn_top_allowed":{"index":6,"name":"WD","score":0.12},"teacher":{"index":6,"name":"WD","matches_best_allowed":true},"margin":0.03,"trace_fidelity":0.41}
+```
+
+Run the HNN gate after collecting those rows:
+
+```sh
+make signal-hnn-shadow \
+  SIGNAL_HNN_SHADOW_LOG=/tmp/signal-hnn-shadow.jsonl \
+  SIGNAL_HNN_SHADOW_MIN_ROWS=100 \
+  SIGNAL_HNN_SHADOW_MIN_TEACHER_ROWS=100 \
+  SIGNAL_HNN_SHADOW_MIN_MATCH=0.60
+```
+
+The analyzer reports HNN-vs-teacher agreement, legal margins, trace fidelity,
+capacity load, stored counts, action confusion, route metadata, and the exact
+flat/HoloNet memory contracts.
+
 ## Integration Stance
 
 Use this directory as the Signal-side output of the CRLPLRIMES training pipeline.

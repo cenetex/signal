@@ -446,6 +446,202 @@ TEST(test_hnn_state_encoding_is_deterministic_and_nonzero) {
         ASSERT_EQ_FLOAT(a[i], b[i], 0.0f);
 }
 
+TEST(test_hnn_memory_contract_reports_trace_diagnostics) {
+    hnn_memory_t hnn;
+    hnn_memory_init(&hnn);
+
+    hnn_memory_contract_t empty = hnn_memory_contract(&hnn);
+    ASSERT_EQ_INT(empty.dim, HNN_DIM);
+    ASSERT_EQ_INT((int)empty.keygen_version, (int)HNN_KEYGEN_VERSION);
+    ASSERT_EQ_INT((int)empty.encoder_version, (int)HNN_PILOT_ENCODER_VERSION);
+    ASSERT_EQ_INT((int)empty.trace_format_version, (int)HNN_TRACE_FORMAT_VERSION);
+    ASSERT_EQ_INT(empty.stored_count, 0);
+    ASSERT_EQ_FLOAT(empty.capacity_load, 0.0f, 0.0f);
+    ASSERT_EQ_FLOAT(empty.fidelity_estimate, 0.0f, 0.0f);
+    ASSERT(empty.seed == HNN_CONTRACT_SEED);
+    ASSERT(empty.action_vocabulary_hash == hnn_action_vocabulary_hash());
+
+    hnn_action_table_t actions;
+    hnn_action_table_init(&actions);
+    hnn_pilot_features_t features = {
+        .target_dist = 0.25f,
+        .heading_error = 0.1f,
+        .heading_cos = 0.995f,
+        .heading_sin = 0.1f,
+        .speed = 0.35f,
+        .forward_speed = 0.2f,
+        .lateral_speed = 0.05f,
+        .brake_distance = 0.1f,
+        .fwd_clear = 0.9f,
+        .left_clear = 0.8f,
+        .right_clear = 0.85f,
+        .signal_quality = 0.95f,
+        .hull_ratio = 1.0f,
+        .goal_close = 0.75f,
+        .action_delta_turn = 0.0f,
+        .action_delta_thrust = 1.0f,
+    };
+    float state_vec[HNN_DIM];
+    hnn_encode_state(&features, state_vec);
+    hnn_memory_store(&hnn, state_vec, actions.vecs[1]);
+
+    float scores[HNN_ACTION_COUNT];
+    float margin = 0.0f;
+    float fidelity = 0.0f;
+    int best = hnn_score_actions(&hnn,
+                                 &actions,
+                                 &features,
+                                 scores,
+                                 &margin,
+                                 &fidelity,
+                                 0);
+    ASSERT(best >= 0);
+    ASSERT(isfinite(scores[best]));
+    ASSERT(fidelity > 0.0f);
+    hnn.last_retrieval_similarity = scores[best];
+    hnn.last_margin = margin;
+
+    hnn_memory_contract_t filled = hnn_memory_contract(&hnn);
+    ASSERT_EQ_INT(filled.stored_count, 1);
+    ASSERT(filled.capacity_load > 0.0f);
+    ASSERT(filled.fidelity_estimate > 0.0f);
+    ASSERT_EQ_FLOAT(filled.last_margin, margin, 0.0001f);
+}
+
+TEST(test_hnn_holonet_single_cell_matches_flat_trace) {
+    hnn_action_table_t actions;
+    hnn_action_table_init(&actions);
+    hnn_memory_t flat;
+    hnn_holonet_t net;
+    hnn_memory_init(&flat);
+    hnn_holonet_init(&net);
+
+    hnn_pilot_features_t state = {
+        .target_dist = 0.25f,
+        .heading_error = 0.1f,
+        .heading_cos = 0.995f,
+        .heading_sin = 0.1f,
+        .speed = 0.35f,
+        .forward_speed = 0.2f,
+        .lateral_speed = 0.05f,
+        .brake_distance = 0.1f,
+        .fwd_clear = 0.9f,
+        .left_clear = 0.8f,
+        .right_clear = 0.85f,
+        .signal_quality = 0.95f,
+        .hull_ratio = 1.0f,
+        .goal_close = 0.75f,
+    };
+    hnn_pilot_features_t full = state;
+    full.action_delta_thrust = 1.0f;
+
+    float route_vec[HNN_DIM];
+    float assoc_vec[HNN_DIM];
+    hnn_encode_state(&state, route_vec);
+    hnn_encode_state(&full, assoc_vec);
+    hnn_memory_store(&flat, assoc_vec, actions.vecs[1]);
+    hnn_holonet_store(&net, route_vec, assoc_vec, actions.vecs[1]);
+
+    float flat_scores[HNN_ACTION_COUNT];
+    float net_scores[HNN_ACTION_COUNT];
+    float flat_margin = 0.0f;
+    float net_margin = 0.0f;
+    float net_fidelity = 0.0f;
+    int flat_best = hnn_score_actions(&flat, &actions, &state,
+                                      flat_scores, &flat_margin, NULL, 0);
+    int net_best = hnn_holonet_score_actions(&net, &actions, &state,
+                                             net_scores, &net_margin,
+                                             &net_fidelity, 0);
+
+    ASSERT_EQ_INT(flat_best, net_best);
+    for (int i = 0; i < HNN_ACTION_COUNT; i++)
+        ASSERT_EQ_FLOAT(flat_scores[i], net_scores[i], 0.00001f);
+    ASSERT_EQ_FLOAT(flat_margin, net_margin, 0.00001f);
+    ASSERT(net_fidelity > 0.0f);
+    ASSERT_EQ_INT(hnn_holonet_active_count(&net), 1);
+    ASSERT_EQ_INT(net.last_route, 0);
+    ASSERT_EQ_INT(net.last_scored_count, 1);
+
+    hnn_memory_contract_t contract = hnn_holonet_contract(&net);
+    ASSERT_EQ_INT(contract.stored_count, 1);
+    ASSERT(contract.capacity_load > 0.0f);
+    ASSERT(contract.fidelity_estimate > 0.0f);
+}
+
+TEST(test_hnn_holonet_routes_novel_states_to_distinct_cells) {
+    hnn_action_table_t actions;
+    hnn_action_table_init(&actions);
+    hnn_holonet_t net;
+    hnn_holonet_init(&net);
+
+    float route_a[HNN_DIM];
+    float route_b[HNN_DIM];
+    float assoc_a[HNN_DIM];
+    float assoc_b[HNN_DIM];
+    hnn_key_vector(0xabcdu, route_a);
+    for (int i = 0; i < HNN_DIM; i++) route_b[i] = -route_a[i];
+    memcpy(assoc_a, route_a, sizeof(assoc_a));
+    memcpy(assoc_b, route_b, sizeof(assoc_b));
+
+    hnn_holonet_store(&net, route_a, assoc_a, actions.vecs[1]);
+    ASSERT_EQ_INT(hnn_holonet_active_count(&net), 1);
+    ASSERT_EQ_INT(net.last_route, 0);
+
+    hnn_holonet_store(&net, route_b, assoc_b, actions.vecs[4]);
+    ASSERT_EQ_INT(hnn_holonet_active_count(&net), 2);
+    ASSERT_EQ_INT(net.stored_count, 2);
+    ASSERT(net.last_route >= 0 && net.last_route < (int)HNN_HOLONET_TRACE_COUNT);
+
+    hnn_memory_contract_t contract = hnn_holonet_contract(&net);
+    ASSERT_EQ_INT(contract.stored_count, 2);
+    ASSERT(contract.capacity_load > 0.0f);
+}
+
+TEST(test_hnn_state_encoding_sanitizes_nonfinite_features) {
+    hnn_pilot_features_t features = {
+        .target_dist = NAN,
+        .heading_error = INFINITY,
+        .heading_cos = 1.0f,
+        .heading_sin = -INFINITY,
+        .speed = 0.3f,
+        .forward_speed = 0.2f,
+        .lateral_speed = NAN,
+        .brake_distance = 0.1f,
+        .fwd_clear = 0.9f,
+        .left_clear = 0.8f,
+        .right_clear = 0.7f,
+        .signal_quality = 1.0f,
+        .hull_ratio = 1.0f,
+        .goal_close = 0.5f,
+        .action_delta_turn = 1.0f,
+        .action_delta_thrust = 1.0f,
+        .composite_dot = NAN,
+    };
+    hnn_action_table_t actions;
+    hnn_memory_t hnn;
+    float state_vec[HNN_DIM];
+    float scores[HNN_ACTION_COUNT];
+    float margin = 0.0f;
+    float fidelity = 0.0f;
+
+    hnn_encode_state(&features, state_vec);
+    for (int i = 0; i < HNN_DIM; i++) ASSERT(isfinite(state_vec[i]));
+
+    hnn_action_table_init(&actions);
+    hnn_memory_init(&hnn);
+    hnn_memory_store(&hnn, state_vec, actions.vecs[1]);
+    ASSERT(hnn_score_actions(&hnn,
+                             &actions,
+                             &features,
+                             scores,
+                             &margin,
+                             &fidelity,
+                             3) >= 0);
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) ASSERT(isfinite(scores[i]));
+    ASSERT(isfinite(margin));
+    ASSERT(isfinite(fidelity));
+}
+
 TEST(test_hnn_market_memory_maps_specialized_jobs) {
     market_memory_t delivery = {0};
     ASSERT(market_memory_from_contract_summary(
@@ -1291,32 +1487,143 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
                                        GOSSIP_HNN_JOB_HAUL) > 0.05f);
 }
 
+static void test_reset_holographic_pilot(npc_ship_t *npc) {
+    memset(npc, 0, sizeof(*npc));
+    npc->active = true;
+    npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    npc->home_station = 0;
+    npc->hnn_experience_station = 0xffu;
+    npc->hnn_experience_uploaded_station = 0xffu;
+    npc->hnn_experience_uploaded_source_station = 0xffu;
+    hnn_memory_init(&npc->hnn_mem);
+}
+
+static void test_reset_station_hnn_experience(station_t *st) {
+    hnn_memory_init(&st->hnn_experience);
+    st->hnn_experience_version = 0;
+    st->hnn_experience_upload_count = 0;
+    st->hnn_experience_download_count = 0;
+    st->hnn_experience_last_source_station = 0xffu;
+}
+
+static void test_store_hnn_trace(hnn_memory_t *mem,
+                                 uint64_t key_seed,
+                                 uint64_t value_seed) {
+    float key[HNN_DIM];
+    float value[HNN_DIM];
+    hnn_key_vector(key_seed, key);
+    hnn_key_vector(value_seed, value);
+    hnn_memory_store(mem, key, value);
+}
+
 TEST(test_holographic_pilot_uploads_experience_once) {
     WORLD_DECL;
     world_reset(&w);
 
     npc_ship_t *npc = &w.npc_ships[0];
-    memset(npc, 0, sizeof(*npc));
-    npc->active = true;
-    npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
-    npc->home_station = 0;
-
-    hnn_memory_init(&npc->hnn_mem);
-    float key[HNN_DIM];
-    float value[HNN_DIM];
-    hnn_key_vector(0x1234u, key);
-    hnn_key_vector(0x5678u, value);
-    hnn_memory_store(&npc->hnn_mem, key, value);
+    test_reset_holographic_pilot(npc);
+    test_store_hnn_trace(&npc->hnn_mem, 0x1234u, 0x5678u);
+    npc->hnn_experience_local_version++;
     ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
 
-    hnn_memory_init(&w.stations[0].hnn_experience);
-    w.stations[0].hnn_experience_version = 0;
+    test_reset_station_hnn_experience(&w.stations[0]);
     npc->hnn_experience_version = 0;
 
     gossip_hnn_exchange(&w, 0, npc);
 
     ASSERT_EQ_INT(w.stations[0].hnn_experience.experience_count, 1);
     ASSERT_EQ_INT((int)w.stations[0].hnn_experience_version, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_upload_count, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_download_count, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_last_source_station, 0);
+    ASSERT_EQ_INT((int)npc->hnn_experience_version, 1);
+    ASSERT_EQ_INT((int)npc->hnn_experience_station, 0);
+    ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
+
+    gossip_hnn_exchange(&w, 0, npc);
+
+    ASSERT_EQ_INT(w.stations[0].hnn_experience.experience_count, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_version, 1);
+    ASSERT_EQ_INT((int)w.stations[0].hnn_experience_upload_count, 1);
+}
+
+TEST(test_holographic_pilot_transports_station_cell) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    test_reset_holographic_pilot(npc);
+    test_store_hnn_trace(&npc->hnn_mem, 0x2234u, 0x6678u);
+    npc->hnn_experience_local_version++;
+
+    for (int s = 0; s < 2; s++) {
+        test_reset_station_hnn_experience(&w.stations[s]);
+    }
+
+    gossip_hnn_exchange(&w, 0, npc);
+    ASSERT_EQ_INT(w.stations[0].hnn_experience.experience_count, 1);
+    ASSERT_EQ_INT((int)npc->hnn_experience_station, 0);
+    ASSERT_EQ_INT((int)npc->hnn_experience_version, 1);
+
+    gossip_hnn_exchange(&w, 1, npc);
+
+    ASSERT(w.stations[1].hnn_experience.experience_count > 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_version, 1);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_upload_count, 1);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_last_source_station, 0);
+    ASSERT_EQ_INT((int)npc->hnn_experience_station, 1);
+    ASSERT_EQ_INT((int)npc->hnn_experience_version, 1);
+}
+
+TEST(test_holographic_pilot_rejects_unproven_trace_cargo) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    test_reset_holographic_pilot(npc);
+    test_store_hnn_trace(&npc->hnn_mem, 0x3234u, 0x7678u);
+    npc->hnn_experience_station = 0;
+    npc->hnn_experience_version = 2;
+
+    for (int s = 0; s < 2; s++)
+        test_reset_station_hnn_experience(&w.stations[s]);
+    test_store_hnn_trace(&w.stations[0].hnn_experience, 0x3234u, 0x7678u);
+    w.stations[0].hnn_experience_version = 1;
+
+    gossip_hnn_exchange(&w, 1, npc);
+
+    ASSERT_EQ_INT(w.stations[1].hnn_experience.experience_count, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_version, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_upload_count, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_last_source_station, 0xff);
+    ASSERT_EQ_INT((int)npc->hnn_experience_station, 0);
+    ASSERT_EQ_INT((int)npc->hnn_experience_version, 2);
+}
+
+TEST(test_holographic_pilot_rejects_low_fidelity_trace_cargo) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    npc_ship_t *npc = &w.npc_ships[0];
+    test_reset_holographic_pilot(npc);
+    test_store_hnn_trace(&npc->hnn_mem, 0x4234u, 0x8678u);
+    npc->hnn_mem.last_retrieval_similarity = -1.0f;
+    npc->hnn_mem.last_margin = 0.0f;
+    npc->hnn_experience_station = 0;
+    npc->hnn_experience_version = 1;
+
+    for (int s = 0; s < 2; s++)
+        test_reset_station_hnn_experience(&w.stations[s]);
+    test_store_hnn_trace(&w.stations[0].hnn_experience, 0x4234u, 0x8678u);
+    w.stations[0].hnn_experience_version = 1;
+
+    gossip_hnn_exchange(&w, 1, npc);
+
+    ASSERT_EQ_INT(w.stations[1].hnn_experience.experience_count, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_version, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_upload_count, 0);
+    ASSERT_EQ_INT((int)w.stations[1].hnn_experience_last_source_station, 0xff);
+    ASSERT_EQ_INT((int)npc->hnn_experience_station, 0);
     ASSERT_EQ_INT((int)npc->hnn_experience_version, 1);
 }
 
@@ -1373,6 +1680,10 @@ void register_gossip_tests(void) {
     RUN(test_signal_intelligence_worker_reason_records_route_risk);
     RUN(test_hnn_core_key_cache_preserves_bind_round_trip);
     RUN(test_hnn_state_encoding_is_deterministic_and_nonzero);
+    RUN(test_hnn_memory_contract_reports_trace_diagnostics);
+    RUN(test_hnn_holonet_single_cell_matches_flat_trace);
+    RUN(test_hnn_holonet_routes_novel_states_to_distinct_cells);
+    RUN(test_hnn_state_encoding_sanitizes_nonfinite_features);
     RUN(test_hnn_market_memory_maps_specialized_jobs);
     RUN(test_route_reputation_memory_reinforces_repeated_evidence);
     RUN(test_station_trust_memory_reinforces_repeated_evidence);
@@ -1390,5 +1701,8 @@ void register_gossip_tests(void) {
     RUN(test_dock_gossip_dual_writes_station_supply_memory);
     RUN(test_ship_contact_gossip_exchanges_memory_and_holograms);
     RUN(test_holographic_pilot_uploads_experience_once);
+    RUN(test_holographic_pilot_transports_station_cell);
+    RUN(test_holographic_pilot_rejects_unproven_trace_cargo);
+    RUN(test_holographic_pilot_rejects_low_fidelity_trace_cargo);
     RUN(test_bootstrap_seeds_station_local_contracts_only);
 }

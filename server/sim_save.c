@@ -1139,6 +1139,9 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     n->pickup_action = (uint8_t)CONTRACT_TRACTOR;
     n->hnn_market_station = 0xffu;
     n->hnn_market_decay_tick = 0;
+    n->hnn_experience_station = 0xffu;
+    n->hnn_experience_uploaded_station = 0xffu;
+    n->hnn_experience_uploaded_source_station = 0xffu;
     /* Validate after the full record is read so the file pointer is
      * always past this NPC's bytes. An active slot with garbage role
      * used to crashloop the server on first sim step (despawn check

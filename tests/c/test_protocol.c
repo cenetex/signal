@@ -1453,6 +1453,68 @@ TEST(test_inspect_snapshot_npc_includes_job_offer_diagnostics) {
     ship_cleanup(&ship);
 }
 
+TEST(test_inspect_snapshot_npc_includes_hnn_trace_diagnostics) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_MINER;
+    npc.state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    npc.home_station = 0;
+    npc.dest_station = 0;
+    npc.brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    npc.hnn_mem.experience_count = (int)HNN_TRACE_CAPACITY;
+    npc.hnn_mem.last_retrieval_similarity = 0.0f;
+    npc.hnn_mem.last_margin = 0.02f;
+
+    hnn_memory_contract_t contract = hnn_memory_contract(&npc.hnn_mem);
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[8], 1);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 0);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *row = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(row[0], INSPECT_DIAG_HNN_TRACE);
+    ASSERT(row[3] & INSPECT_ROW_DIAGNOSTIC);
+    ASSERT_EQ_INT(read_u16_le(&row[12]), HNN_TRACE_CAPACITY);
+    ASSERT(read_u64_le(&row[4]) == contract.action_vocabulary_hash);
+    ASSERT_EQ_INT(row[1], 255);
+    ASSERT_EQ_INT(row[1], row[14 + INSPECT_HNN_TRACE_LOAD]);
+    ASSERT_EQ_INT(row[2], row[14 + INSPECT_HNN_TRACE_FIDELITY]);
+    ASSERT_EQ_INT(row[14 + INSPECT_HNN_TRACE_MARGIN],
+                  inspect_snapshot_compact_signed_unit(contract.last_margin));
+    ASSERT(row[14 + INSPECT_HNN_TRACE_SNR] > 0);
+    ASSERT(row[14 + INSPECT_HNN_TRACE_FLAGS] &
+           INSPECT_HNN_TRACE_WARN_NOISY);
+    ASSERT(row[14 + INSPECT_HNN_TRACE_FLAGS] &
+           INSPECT_HNN_TRACE_WARN_LOW_MARGIN);
+    ASSERT_EQ_INT(row[14 + INSPECT_HNN_TRACE_KEYGEN_VERSION],
+                  HNN_KEYGEN_VERSION);
+    ASSERT_EQ_INT(row[14 + INSPECT_HNN_TRACE_ENCODER_VERSION],
+                  HNN_PILOT_ENCODER_VERSION);
+    ASSERT_EQ_INT(row[14 + INSPECT_HNN_TRACE_FORMAT_VERSION],
+                  HNN_TRACE_FORMAT_VERSION);
+    ASSERT_EQ_INT((uint16_t)row[14 + INSPECT_HNN_TRACE_CAPACITY_LO] |
+                  ((uint16_t)row[14 + INSPECT_HNN_TRACE_CAPACITY_HI] << 8),
+                  HNN_TRACE_CAPACITY);
+    ASSERT_EQ_INT((uint16_t)row[14 + INSPECT_HNN_TRACE_DIM_LO] |
+                  ((uint16_t)row[14 + INSPECT_HNN_TRACE_DIM_HI] << 8),
+                  HNN_DIM);
+    ASSERT(read_u64_le(&row[46]) == contract.seed);
+    ASSERT(read_u64_le(&row[54]) == contract.action_vocabulary_hash);
+    ASSERT_EQ_INT((int)read_u32_le(&row[62]), HNN_DIM);
+
+    ship_cleanup(&ship);
+}
+
 TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
     npc_ship_t npc;
     memset(&npc, 0, sizeof(npc));
@@ -2726,6 +2788,7 @@ void register_protocol_main_tests(void) {
     RUN(test_inspect_snapshot_npc_includes_market_memory_diagnostics);
     RUN(test_inspect_snapshot_npc_expands_matching_job_source_memory);
     RUN(test_inspect_snapshot_npc_includes_job_offer_diagnostics);
+    RUN(test_inspect_snapshot_npc_includes_hnn_trace_diagnostics);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
     RUN(test_inspect_snapshot_groups_finished_goods_by_grade);
     RUN(test_inspect_snapshot_keeps_named_ingots_individual);

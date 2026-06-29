@@ -1141,6 +1141,7 @@ static const char *hud_inspect_diag_label(uint8_t kind) {
     case INSPECT_DIAG_JOB_DELIVER_PROOF:  return "job proof";
     case INSPECT_DIAG_JOB_SCOUT:          return "job scout";
     case INSPECT_DIAG_JOB_REPAIR:         return "job repair";
+    case INSPECT_DIAG_HNN_TRACE:          return "memory trace";
     case INSPECT_DIAG_NONE:
     default:                              return "memory";
     }
@@ -1294,6 +1295,95 @@ static ui_clarity_t hud_job_clarity(const NetInspectSnapshotRow *row) {
     uint8_t salience = best ? best : 160;
     uint8_t hops = row->cargo_pub[INSPECT_JOB_META_HOPS];
     return ui_clarity_from_evidence(confidence, salience, hops, HI, LO);
+}
+
+static const NetInspectSnapshotRow *hud_inspect_find_hnn_trace(
+    const NetInspectSnapshot *snap) {
+    if (!snap) return NULL;
+    for (int i = 0; i < snap->row_count && i < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        const NetInspectSnapshotRow *row = &snap->rows[i];
+        if ((row->flags & INSPECT_ROW_DIAGNOSTIC) &&
+            row->commodity == (uint8_t)INSPECT_DIAG_HNN_TRACE) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+static float hud_hnn_trace_unit(uint8_t value) {
+    return (float)value / 255.0f;
+}
+
+static float hud_hnn_trace_margin(const NetInspectSnapshotRow *row) {
+    if (!row) return 0.0f;
+    return hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_MARGIN]) *
+           2.0f - 1.0f;
+}
+
+static float hud_hnn_trace_snr(const NetInspectSnapshotRow *row) {
+    if (!row) return 0.0f;
+    return hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_SNR]) * 8.0f;
+}
+
+static ui_clarity_t hud_hnn_trace_clarity(const NetInspectSnapshotRow *row) {
+    const uint8_t HI[3] = { PAL_CONTRACT_READY };
+    const uint8_t LO[3] = { PAL_TEXT_FADED };
+    if (!row) return ui_clarity_from_evidence(170, 140, 0, HI, LO);
+    uint8_t flags = row->cargo_pub[INSPECT_HNN_TRACE_FLAGS];
+    const uint8_t WARN[3] = { PAL_ORE_AMBER };
+    const uint8_t BAD[3] = { PAL_WARNING };
+    if (flags & INSPECT_HNN_TRACE_WARN_NOISY)
+        return ui_clarity_from_evidence(row->chain_len, row->grade, 3, WARN, LO);
+    if (flags & INSPECT_HNN_TRACE_WARN_LOW_MARGIN)
+        return ui_clarity_from_evidence(row->chain_len, 120, 2, WARN, LO);
+    if (flags & INSPECT_HNN_TRACE_WARN_UNTRAINED)
+        return ui_clarity_from_evidence(120, 110, 2, BAD, LO);
+    return ui_clarity_from_evidence(row->chain_len, row->grade, 0, HI, LO);
+}
+
+static void hud_hnn_trace_primary_label(const NetInspectSnapshotRow *row,
+                                        char *out,
+                                        size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!row) return;
+    uint8_t flags = row->cargo_pub[INSPECT_HNN_TRACE_FLAGS];
+    float load = hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_LOAD]);
+    float fidelity =
+        hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_FIDELITY]);
+    if (flags & INSPECT_HNN_TRACE_WARN_UNTRAINED) {
+        snprintf(out, cap, "trace idle  no stored flight memory");
+    } else if (flags & INSPECT_HNN_TRACE_WARN_NOISY) {
+        snprintf(out, cap, "trace noisy  load %u%% fid %u%%",
+                 (unsigned)lroundf(load * 100.0f),
+                 (unsigned)lroundf(fidelity * 100.0f));
+    } else if (flags & INSPECT_HNN_TRACE_WARN_LOW_MARGIN) {
+        snprintf(out, cap, "trace uncertain  margin %+0.2f",
+                 hud_hnn_trace_margin(row));
+    } else {
+        snprintf(out, cap, "trace stable  load %u%% fid %u%%",
+                 (unsigned)lroundf(load * 100.0f),
+                 (unsigned)lroundf(fidelity * 100.0f));
+    }
+}
+
+static void hud_hnn_trace_detail_label(const NetInspectSnapshotRow *row,
+                                       char *out,
+                                       size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!row) return;
+    float load = hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_LOAD]);
+    float snr = hud_hnn_trace_snr(row);
+    float margin = hud_hnn_trace_margin(row);
+    uint16_t capacity =
+        (uint16_t)row->cargo_pub[INSPECT_HNN_TRACE_CAPACITY_LO] |
+        ((uint16_t)row->cargo_pub[INSPECT_HNN_TRACE_CAPACITY_HI] << 8);
+    snprintf(out, cap, "load %u%%  stored %u/%u  snr %.1f  margin %+0.2f",
+             (unsigned)lroundf(load * 100.0f),
+             (unsigned)row->quantity,
+             (unsigned)(capacity ? capacity : HNN_TRACE_CAPACITY),
+             snr, margin);
 }
 
 static void hud_job_top_signal_label(const NetInspectSnapshotRow *row,
@@ -1636,6 +1726,11 @@ static bool hud_inspect_ticker_row_label(const NetInspectSnapshot *snap,
             if (clarity_out) *clarity_out = clarity;
             return true;
         }
+        if (row->commodity == (uint8_t)INSPECT_DIAG_HNN_TRACE) {
+            hud_hnn_trace_primary_label(row, out, cap);
+            if (clarity_out) *clarity_out = hud_hnn_trace_clarity(row);
+            return true;
+        }
 
         uint8_t station_a = (uint8_t)(row->event_id & 0xFFu);
         uint8_t station_b = (uint8_t)((row->event_id >> 8) & 0xFFu);
@@ -1726,6 +1821,7 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     InspectJobCause cause;
     bool has_job = inspect_label_find_job_cause(snap, &cause);
     const NetInspectSnapshotRow *job = has_job ? cause.job : NULL;
+    const NetInspectSnapshotRow *hnn_trace = hud_inspect_find_hnn_trace(snap);
 
     int row_idx = has_job ? -1 : hud_inspect_ticker_pick_row(snap, cycle);
     char memory[96];
@@ -1735,6 +1831,9 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
         char why[48];
         hud_job_reason_label(job, why, sizeof(why));
         snprintf(memory, sizeof(memory), "%s", why);
+    } else if (hnn_trace) {
+        hud_hnn_trace_primary_label(hnn_trace, memory, sizeof(memory));
+        clarity = hud_hnn_trace_clarity(hnn_trace);
     } else if (row_idx >= 0) {
         hud_inspect_ticker_row_label(snap, &snap->rows[row_idx],
                                      memory, sizeof(memory), &clarity);
@@ -1825,9 +1924,17 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
                                     (uint32_t)(job->event_id & 0xffffffffu),
                                     source_seen, sizeof(source_seen));
             sdtx_printf("%s", source_seen);
+        } else if (hnn_trace) {
+            char trace[96];
+            hud_hnn_trace_detail_label(hnn_trace, trace, sizeof(trace));
+            sdtx_printf("%s", trace);
         } else {
             sdtx_printf("%s %s", clarity.meter, clarity.word);
         }
+    } else if (hnn_trace) {
+        char trace[96];
+        hud_hnn_trace_detail_label(hnn_trace, trace, sizeof(trace));
+        sdtx_printf("%s", trace);
     } else {
         sdtx_printf("%s %s", clarity.meter, clarity.word);
     }
@@ -2108,6 +2215,27 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 sdtx_printf("auth %.8s > rec %.8s",
                             author[0] ? author : "--------",
                             recipient[0] ? recipient : "--------");
+                next_y = y + 42.0f;
+                continue;
+            }
+            if (row->commodity == (uint8_t)INSPECT_DIAG_HNN_TRACE) {
+                ui_clarity_t trace_clarity = hud_hnn_trace_clarity(row);
+                char primary[96];
+                char detail[96];
+                hud_hnn_trace_primary_label(row, primary, sizeof(primary));
+                hud_hnn_trace_detail_label(row, detail, sizeof(detail));
+                float y = next_y;
+                sdtx_pos(px / cell, y / cell);
+                sdtx_color3b(trace_clarity.fg[0], trace_clarity.fg[1],
+                             trace_clarity.fg[2]);
+                sdtx_puts("memory trace");
+                sdtx_pos(px / cell, (y + 12.0f) / cell);
+                sdtx_color3b(PAL_TEXT_GREY);
+                sdtx_puts(primary);
+                sdtx_pos(px / cell, (y + 24.0f) / cell);
+                sdtx_color3b(trace_clarity.dim[0], trace_clarity.dim[1],
+                             trace_clarity.dim[2]);
+                sdtx_puts(detail);
                 next_y = y + 42.0f;
                 continue;
             }

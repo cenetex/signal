@@ -833,6 +833,10 @@ typedef struct {
      * Version increments on each write so ships know when to download. */
     hnn_memory_t hnn_experience;
     uint32_t hnn_experience_version;
+    uint32_t hnn_experience_upload_count;
+    uint32_t hnn_experience_download_count;
+    uint8_t hnn_experience_last_source_station;
+    uint8_t hnn_experience_pad[3];
 
     uint8_t  station_secret[64];   /* MUST stay last — never serialized */
 } station_t;
@@ -1258,7 +1262,14 @@ typedef struct {
      * Stores bundled (state -> action) associations in a 1024-dim
      * hypersphere vector. Runtime-only — not serialized. */
     hnn_memory_t hnn_mem;
-    uint32_t hnn_experience_version; /* station version last synced, 0 = none */
+    uint32_t hnn_experience_version; /* source station version carried, 0 = none */
+    uint32_t hnn_experience_local_version; /* increments on local flight stores */
+    uint32_t hnn_experience_uploaded_local_version;
+    uint32_t hnn_experience_uploaded_source_version;
+    uint8_t hnn_experience_station; /* source station of carried pool, 0xff = none */
+    uint8_t hnn_experience_uploaded_station;
+    uint8_t hnn_experience_uploaded_source_station;
+    uint8_t hnn_experience_pad[1];
 } npc_ship_t;
 
 /* NPC fragment towing is mid-migration from npc_ship_t.towed_fragment to the

@@ -882,6 +882,95 @@ static inline void write_inspect_snapshot_market_diag_row(uint8_t *p,
     }
 }
 
+static inline uint8_t inspect_snapshot_compact_unit(float value) {
+    if (!isfinite(value) || value <= 0.0f) return 0;
+    if (value >= 1.0f) return 255;
+    return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+static inline uint8_t inspect_snapshot_compact_signed_unit(float value) {
+    if (!isfinite(value)) value = 0.0f;
+    if (value < -1.0f) value = -1.0f;
+    if (value > 1.0f) value = 1.0f;
+    return inspect_snapshot_compact_unit(value * 0.5f + 0.5f);
+}
+
+static inline uint8_t inspect_snapshot_compact_snr(float fidelity) {
+    if (!isfinite(fidelity) || fidelity <= 0.0f) return 0;
+    if (fidelity >= 0.995f) return 255;
+    float snr = fidelity / (1.0f - fidelity);
+    if (!isfinite(snr) || snr <= 0.0f) return 0;
+    if (snr >= 8.0f) return 255;
+    return (uint8_t)(snr * (255.0f / 8.0f) + 0.5f);
+}
+
+static inline uint8_t inspect_snapshot_hnn_trace_flags(
+    const hnn_memory_contract_t *contract) {
+    if (!contract || contract->stored_count <= 0)
+        return (uint8_t)INSPECT_HNN_TRACE_WARN_UNTRAINED;
+    uint8_t flags = 0;
+    if (contract->capacity_load >= 0.85f ||
+        contract->fidelity_estimate < 0.35f) {
+        flags |= (uint8_t)INSPECT_HNN_TRACE_WARN_NOISY;
+    }
+    if (contract->last_margin < 0.05f)
+        flags |= (uint8_t)INSPECT_HNN_TRACE_WARN_LOW_MARGIN;
+    return flags;
+}
+
+static inline int write_inspect_snapshot_hnn_trace_row(uint8_t *buf,
+                                                       int row_count,
+                                                       int max_rows,
+                                                       const npc_ship_t *npc) {
+    if (!buf || !npc || row_count >= max_rows) return row_count;
+    if (npc->brain_mode != SERVER_BRAIN_MODE_HOLOGRAPHIC &&
+        npc->hnn_mem.experience_count <= 0) {
+        return row_count;
+    }
+
+    hnn_memory_contract_t contract = hnn_memory_contract(&npc->hnn_mem);
+    uint8_t *p =
+        &buf[INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW];
+    memset(p, 0, INSPECT_SNAPSHOT_ROW);
+    p[0] = (uint8_t)INSPECT_DIAG_HNN_TRACE;
+    p[1] = inspect_snapshot_compact_unit(contract.capacity_load);
+    p[2] = inspect_snapshot_compact_unit(contract.fidelity_estimate);
+    p[3] = INSPECT_ROW_DIAGNOSTIC;
+    write_u64_le(&p[4], contract.action_vocabulary_hash);
+    uint16_t stored = contract.stored_count > 0xFFFF
+        ? 0xFFFFu : (uint16_t)contract.stored_count;
+    write_u16_le(&p[12], stored);
+    p[14 + INSPECT_HNN_TRACE_LOAD] = p[1];
+    p[14 + INSPECT_HNN_TRACE_FIDELITY] = p[2];
+    p[14 + INSPECT_HNN_TRACE_MARGIN] =
+        inspect_snapshot_compact_signed_unit(contract.last_margin);
+    p[14 + INSPECT_HNN_TRACE_SNR] =
+        inspect_snapshot_compact_snr(contract.fidelity_estimate);
+    p[14 + INSPECT_HNN_TRACE_FLAGS] =
+        inspect_snapshot_hnn_trace_flags(&contract);
+    p[14 + INSPECT_HNN_TRACE_KEYGEN_VERSION] =
+        (uint8_t)(contract.keygen_version > 255u
+            ? 255u : contract.keygen_version);
+    p[14 + INSPECT_HNN_TRACE_ENCODER_VERSION] =
+        (uint8_t)(contract.encoder_version > 255u
+            ? 255u : contract.encoder_version);
+    p[14 + INSPECT_HNN_TRACE_FORMAT_VERSION] =
+        (uint8_t)(contract.trace_format_version > 255u
+            ? 255u : contract.trace_format_version);
+    p[14 + INSPECT_HNN_TRACE_CAPACITY_LO] =
+        (uint8_t)(HNN_TRACE_CAPACITY & 0xFFu);
+    p[14 + INSPECT_HNN_TRACE_CAPACITY_HI] =
+        (uint8_t)((HNN_TRACE_CAPACITY >> 8) & 0xFFu);
+    p[14 + INSPECT_HNN_TRACE_DIM_LO] =
+        (uint8_t)((uint32_t)contract.dim & 0xFFu);
+    p[14 + INSPECT_HNN_TRACE_DIM_HI] =
+        (uint8_t)(((uint32_t)contract.dim >> 8) & 0xFFu);
+    write_u64_le(&p[46], contract.seed);
+    write_u64_le(&p[54], contract.action_vocabulary_hash);
+    write_u32_le(&p[62], (uint32_t)contract.dim);
+    return row_count + 1;
+}
+
 static inline bool inspect_hash32_nonzero(const uint8_t hash[32]) {
     if (!hash) return false;
     for (int i = 0; i < 32; i++) {
@@ -1264,6 +1353,8 @@ static inline int serialize_inspect_snapshot_ship_manifest(uint8_t *buf,
 
     int row_count = write_inspect_snapshot_job_diag_rows(
         buf, 0, INSPECT_SNAPSHOT_MAX_ROWS, npc_diag);
+    row_count = write_inspect_snapshot_hnn_trace_row(
+        buf, row_count, INSPECT_SNAPSHOT_MAX_ROWS, npc_diag);
     uint8_t emitted_market_rows[KNOWLEDGE_VIEW_MAX_CAP] = {0};
     row_count = write_inspect_snapshot_job_source_rows(
         buf, row_count, INSPECT_SNAPSHOT_MAX_ROWS, knowledge, npc_diag,

@@ -141,9 +141,13 @@ void gossip_bootstrap_world_stations(world_t *w);
 /* Holographic experience exchange: when a neural worker docks, structured
  * market memories are encoded into the worker's HNN trace as advisory job
  * resonance. When a holographic pilot docks, their accumulated flight memory
- * is also bundled into the station's pool, and the station's pool is bundled
- * into the pilot's memory. This lets experience propagate through the station
- * network as ships travel.
+ * is bundled into the station's bounded local cell only when the pilot has
+ * new local experience or is carrying another station's cell. The station's
+ * current cell is then stamped onto the pilot for physical transport. Same-
+ * station repeat docks without new stores are no-ops, so traces do not amplify
+ * just because a worker stays parked. Carried cross-station cells must match
+ * the runtime HNN contract and source-station provenance, and must retain
+ * enough estimated fidelity before they can seed another station.
  *
  * Called alongside gossip_dock_handshake during dock events.
  * HNN market memories never pay, verify, or mutate station authority. */

@@ -8,7 +8,8 @@
     "test:rati-anchor-stamp": "node scripts/test-rati-anchor-stamp.mjs",
     "test:relay-broker": "node scripts/test-relay-region-broker.mjs",
     "rtc-gateway": "node scripts/webrtc-gateway.mjs",
-    "brain:shadow": "node scripts/analyze-signal-client-brain-shadow.mjs"
+    "brain:shadow": "node scripts/analyze-signal-client-brain-shadow.mjs",
+    "hnn:shadow": "node scripts/analyze-signal-hnn-shadow.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"

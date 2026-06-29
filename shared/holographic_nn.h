@@ -25,12 +25,35 @@
 
 /* Must be a power of 2 for efficient radix-2 FFT. */
 #define HNN_DIM 1024
+#define HNN_KEYGEN_VERSION 1u
+#define HNN_PILOT_ENCODER_VERSION 1u
+#define HNN_TRACE_FORMAT_VERSION 1u
+#define HNN_FEATURE_KEY_SEED_BASE 1000ull
+#define HNN_ACTION_KEY_SEED_BASE 2000ull
+#define HNN_TRACE_CAPACITY 128u
+#define HNN_HOLONET_TRACE_COUNT 3u
+#define HNN_CONTRACT_SEED \
+    ((((uint64_t)HNN_FEATURE_KEY_SEED_BASE) << 32) | \
+     (uint64_t)HNN_ACTION_KEY_SEED_BASE)
 
 /* Discrete flight actions the holographic brain can select. */
 enum {
     HNN_ACTION_COUNT = 9,
     HNN_FEATURE_COUNT = 24,
 };
+
+typedef struct hnn_memory_contract {
+    int dim;
+    uint64_t seed;
+    unsigned keygen_version;
+    unsigned encoder_version;
+    uint64_t action_vocabulary_hash;
+    unsigned trace_format_version;
+    int stored_count;
+    float capacity_load;
+    float fidelity_estimate;
+    float last_margin;
+} hnn_memory_contract_t;
 
 /* Pre-generated action vectors (deterministic from seed). */
 typedef struct {
@@ -48,7 +71,27 @@ typedef struct {
     float  store[HNN_DIM];  /* bundled associative memory trace */
     int    experience_count; /* number of stored experiences */
     float  last_retrieval_similarity; /* diagnostic: how well the last query matched */
+    float  last_margin; /* diagnostic: top-1 minus top-2 action score */
 } hnn_memory_t;
+
+typedef struct {
+    hnn_memory_t memory;
+    float centroid[HNN_DIM];
+    int centroid_count;
+    float last_route_similarity;
+    float last_weight;
+} hnn_holonet_cell_t;
+
+typedef struct {
+    hnn_holonet_cell_t cells[HNN_HOLONET_TRACE_COUNT];
+    int active_count;
+    int stored_count;
+    int last_route;
+    int last_scored_count;
+    float last_route_similarity;
+    float last_margin;
+    float last_fidelity;
+} hnn_holonet_t;
 
 /* --- Core VSA operations --- */
 
@@ -123,6 +166,32 @@ void hnn_memory_cleanup(const hnn_memory_t *mem,
                         float value_out[HNN_DIM],
                         int steps);
 
+/*
+ * Introspection contract for a trace. The seed is the deterministic feature
+ * and action seed namespace used by the built-in pilot encoder.
+ */
+uint64_t hnn_action_vocabulary_hash(void);
+float hnn_memory_capacity_load(const hnn_memory_t *mem);
+float hnn_memory_fidelity_estimate(const hnn_memory_t *mem);
+hnn_memory_contract_t hnn_memory_contract(const hnn_memory_t *mem);
+
+/* --- Routed HoloNet memory --- */
+
+/*
+ * Fixed-size routed memory grid. Each active cell owns a learned centroid
+ * in pilot-state space and stores a local state->action trace. Stores route
+ * to the nearest centroid, opening a new cell for novel regions while
+ * capacity remains. Scoring averages active-cell action scores by centroid
+ * similarity and reports the nearest route for diagnostics.
+ */
+void hnn_holonet_init(hnn_holonet_t *net);
+int hnn_holonet_active_count(const hnn_holonet_t *net);
+void hnn_holonet_store(hnn_holonet_t *net,
+                       const float route_key[HNN_DIM],
+                       const float assoc_key[HNN_DIM],
+                       const float value[HNN_DIM]);
+hnn_memory_contract_t hnn_holonet_contract(const hnn_holonet_t *net);
+
 /* --- Pilot feature encoding --- */
 
 /*
@@ -184,5 +253,25 @@ int hnn_select_action(const hnn_memory_t *mem,
                       const hnn_pilot_features_t *state,
                       float *out_confidence);
 
-#endif /* HOLOGRAPHIC_NN_H */
+/*
+ * Score every action against memory for a state. Returns the top action index
+ * and writes top-1/top-2 margin plus a load-adjusted fidelity estimate when
+ * requested. cleanup_steps <= 0 uses direct retrieval.
+ */
+int hnn_score_actions(const hnn_memory_t *mem,
+                      const hnn_action_table_t *actions,
+                      const hnn_pilot_features_t *state,
+                      float scores_out[HNN_ACTION_COUNT],
+                      float *out_margin,
+                      float *out_fidelity,
+                      int cleanup_steps);
 
+int hnn_holonet_score_actions(hnn_holonet_t *net,
+                              const hnn_action_table_t *actions,
+                              const hnn_pilot_features_t *state,
+                              float scores_out[HNN_ACTION_COUNT],
+                              float *out_margin,
+                              float *out_fidelity,
+                              int cleanup_steps);
+
+#endif /* HOLOGRAPHIC_NN_H */

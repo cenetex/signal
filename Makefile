@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -77,6 +77,8 @@ SIGNAL_REPLAY_HISTORY ?= W,W,WA,D
 SIGNAL_REPLAY_HORIZON_TICKS ?= 36
 SIGNAL_REPLAY_CANDIDATES ?= NONE,W,A,D,S,WA,WD,SA,SD
 SIGNAL_REPLAY_OUT ?= /tmp/signal-replay.jsonl
+SIGNAL_REPLAY_HNN_TRACE ?=
+SIGNAL_REPLAY_HNN_CLEANUP_STEPS ?= 3
 SIGNAL_REPLAY_DEBUG_BUILD ?= build-replay-debug
 SIGNAL_REPLAY_RELEASE_BUILD ?= build-replay-release
 SIGNAL_REPLAY_WASM_BUILD ?= build-replay-wasm
@@ -92,6 +94,7 @@ signal-replay: build-signal-replay
 		--history "$(SIGNAL_REPLAY_HISTORY)" \
 		--horizon-ticks $(SIGNAL_REPLAY_HORIZON_TICKS) \
 		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
+		$(if $(SIGNAL_REPLAY_HNN_TRACE),--hnn-trace --hnn-cleanup-steps $(SIGNAL_REPLAY_HNN_CLEANUP_STEPS),) \
 		--out $(SIGNAL_REPLAY_OUT)
 
 replay-repeatability: build-signal-replay
@@ -258,6 +261,24 @@ signal-client-brain-shadow:
 		--min-teacher-rows $(SIGNAL_CLIENT_BRAIN_SHADOW_MIN_TEACHER_ROWS) \
 		$(if $(SIGNAL_CLIENT_BRAIN_SHADOW_MIN_MATCH),--min-teacher-match-rate $(SIGNAL_CLIENT_BRAIN_SHADOW_MIN_MATCH),) \
 		$(if $(SIGNAL_CLIENT_BRAIN_SHADOW_MIN_P50_MARGIN),--min-p50-margin $(SIGNAL_CLIENT_BRAIN_SHADOW_MIN_P50_MARGIN),)
+
+SIGNAL_HNN_SHADOW_LOG ?= /tmp/signal-hnn-shadow.jsonl
+SIGNAL_HNN_SHADOW_MIN_ROWS ?= 1
+SIGNAL_HNN_SHADOW_MIN_TEACHER_ROWS ?= 1
+SIGNAL_HNN_SHADOW_MIN_MATCH ?=
+SIGNAL_HNN_SHADOW_MIN_P50_MARGIN ?=
+SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY ?=
+SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD ?=
+
+signal-hnn-shadow:
+	node scripts/analyze-signal-hnn-shadow.mjs \
+		--input "$(SIGNAL_HNN_SHADOW_LOG)" \
+		--min-rows $(SIGNAL_HNN_SHADOW_MIN_ROWS) \
+		--min-teacher-rows $(SIGNAL_HNN_SHADOW_MIN_TEACHER_ROWS) \
+		$(if $(SIGNAL_HNN_SHADOW_MIN_MATCH),--min-teacher-match-rate $(SIGNAL_HNN_SHADOW_MIN_MATCH),) \
+		$(if $(SIGNAL_HNN_SHADOW_MIN_P50_MARGIN),--min-p50-margin $(SIGNAL_HNN_SHADOW_MIN_P50_MARGIN),) \
+		$(if $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),--min-p50-fidelity $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),) \
+		$(if $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),--max-p90-capacity-load $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),)
 
 assets:
 	./scripts/sync-assets.sh

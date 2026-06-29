@@ -1814,6 +1814,9 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
     npc->hnn_market_station = 0xffu;
     npc->hnn_market_decay_tick = 0;
+    npc->hnn_experience_station = 0xffu;
+    npc->hnn_experience_uploaded_station = 0xffu;
+    npc->hnn_experience_uploaded_source_station = 0xffu;
     npc->state_timer = (role == NPC_ROLE_MINER || role == NPC_ROLE_TOW)
         ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
     npc->hull = npc->ship.hull > 0.0f ? npc->ship.hull : npc_max_hull(npc);

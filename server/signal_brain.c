@@ -71,6 +71,8 @@ typedef struct {
 
 static signal_brain_model_t g_brain;
 bool g_neural_singleplayer = false;
+static hnn_holonet_t g_npc_holonets[MAX_NPC_SHIPS];
+static bool g_npc_holonet_ready[MAX_NPC_SHIPS];
 
 static bool signal_hnn_debug_enabled(void) {
     static int cached = -1;
@@ -98,6 +100,42 @@ static const signal_brain_action_t SB_ACTIONS[SB_ACTION_COUNT] = {
     {"SA", -1, -1},
     {"SD", 1, -1},
 };
+
+_Static_assert(HNN_ACTION_COUNT == SB_ACTION_COUNT,
+               "HNN action vocabulary must match Signal flight actions");
+
+static int signal_brain_npc_slot(const world_t *w, const npc_ship_t *npc) {
+    if (!w || !npc) return -1;
+    ptrdiff_t slot = npc - w->npc_ships;
+    if (slot < 0 || slot >= MAX_NPC_SHIPS) return -1;
+    return (int)slot;
+}
+
+static void signal_brain_reset_npc_holonet_slot(int slot) {
+    if (slot < 0 || slot >= MAX_NPC_SHIPS) return;
+    hnn_holonet_init(&g_npc_holonets[slot]);
+    g_npc_holonet_ready[slot] = true;
+}
+
+static hnn_holonet_t *signal_brain_npc_holonet_for(world_t *w,
+                                                   npc_ship_t *npc) {
+    int slot = signal_brain_npc_slot(w, npc);
+    if (slot < 0) return NULL;
+    if (!g_npc_holonet_ready[slot])
+        signal_brain_reset_npc_holonet_slot(slot);
+    if (npc->hnn_mem.experience_count <= 0 &&
+        hnn_holonet_active_count(&g_npc_holonets[slot]) > 0) {
+        signal_brain_reset_npc_holonet_slot(slot);
+    }
+    return &g_npc_holonets[slot];
+}
+
+int signal_brain_holographic_npc_holonet_active_count(const world_t *w,
+                                                      const npc_ship_t *npc) {
+    int slot = signal_brain_npc_slot(w, npc);
+    if (slot < 0 || !g_npc_holonet_ready[slot]) return 0;
+    return hnn_holonet_active_count(&g_npc_holonets[slot]);
+}
 
 int signal_brain_flight_action_count(void) {
     return SB_ACTION_COUNT;
@@ -888,48 +926,39 @@ static void hnn_fill_npc_features(const world_t *w,
     vec2 right = v2(-forward.y, forward.x);
     float lat_speed = v2_dot(s->vel, right);
     float brake_dist = (speed * speed) / (2.0f * SHIP_BRAKE);
+    const hull_def_t *hull = npc_hull_def(npc);
+    float ship_radius = hull ? hull->ship_radius : 16.0f;
+    double fwd_clear = nav_forward_clearance(w, s->pos, s->vel,
+                                             ship_radius, s->angle);
+    double fwd_station_clear = station_forward_clearance(
+        w, s->pos, s->vel, ship_radius, s->angle);
+    if (fwd_station_clear < fwd_clear) fwd_clear = fwd_station_clear;
+    double left_clear = nav_forward_clearance(w, s->pos, s->vel,
+                                              ship_radius, s->angle + 0.7f);
+    double left_station_clear = station_forward_clearance(
+        w, s->pos, s->vel, ship_radius, s->angle + 0.7f);
+    if (left_station_clear < left_clear) left_clear = left_station_clear;
+    double right_clear = nav_forward_clearance(w, s->pos, s->vel,
+                                               ship_radius, s->angle - 0.7f);
+    double right_station_clear = station_forward_clearance(
+        w, s->pos, s->vel, ship_radius, s->angle - 0.7f);
+    if (right_station_clear < right_clear) right_clear = right_station_clear;
 
-    /* Simple clearance: distance to nearest station/asteroid in forward direction */
-    float fwd_clear = 1.0f;
-    {
-        float lookahead = 400.0f;
-        vec2 probe = v2_add(s->pos, v2_scale(forward, lookahead));
-        /* Check stations using closest-point-on-segment */
-        for (int i = 0; i < MAX_STATIONS; i++) {
-            if (!station_exists(&w->stations[i])) continue;
-            float r = w->stations[i].radius + 200.0f;
-            vec2 closest = v2_closest_on_segment(w->stations[i].pos, s->pos, probe);
-            float d_sq = v2_dist_sq(closest, w->stations[i].pos);
-            if (d_sq < r * r) {
-                float seg_dist = v2_len(v2_sub(closest, s->pos));
-                float t = seg_dist / lookahead;
-                if (t < fwd_clear) fwd_clear = t;
-            }
-        }
-        /* Check asteroids */
-        for (int i = 0; i < MAX_ASTEROIDS; i++) {
-            if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
-            float r = w->asteroids[i].radius + 60.0f;
-            vec2 closest = v2_closest_on_segment(w->asteroids[i].pos, s->pos, probe);
-            float d_sq = v2_dist_sq(closest, w->asteroids[i].pos);
-            if (d_sq < r * r) {
-                float seg_dist = v2_len(v2_sub(closest, s->pos));
-                float t = seg_dist / lookahead;
-                if (t < fwd_clear) fwd_clear = t;
-            }
-        }
-        if (fwd_clear > 1.0f) fwd_clear = 1.0f;
-        if (fwd_clear < 0.0f) fwd_clear = 0.0f;
-    }
-
-    float left_clear = fwd_clear;
-    float right_clear = fwd_clear;
-    float fwd_blocked = (fwd_clear < 0.15f) ? 1.0f : 0.0f;
-    float left_blocked = fwd_blocked;
-    float right_blocked = fwd_blocked;
+    float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
+    vec2 fwd_probe = v2_add(s->pos, v2_scale(v2_from_angle(s->angle), lookahead));
+    vec2 left_probe = v2_add(s->pos, v2_scale(v2_from_angle(s->angle + 0.7f),
+                                              lookahead));
+    vec2 right_probe = v2_add(s->pos, v2_scale(v2_from_angle(s->angle - 0.7f),
+                                               lookahead));
+    float path_clearance = ship_radius + 30.0f;
+    float fwd_blocked = nav_segment_clear(w, s->pos, fwd_probe, path_clearance)
+        ? 0.0f : 1.0f;
+    float left_blocked = nav_segment_clear(w, s->pos, left_probe, path_clearance)
+        ? 0.0f : 1.0f;
+    float right_blocked = nav_segment_clear(w, s->pos, right_probe, path_clearance)
+        ? 0.0f : 1.0f;
 
     float signal_q = signal_strength_at(w, s->pos);
-    const hull_def_t *hull = npc_hull_def(npc);
     float max_hull = hull ? hull->max_hull : 100.0f;
     float hull_r = max_hull > 0.0f ? s->hull / max_hull : 1.0f;
 
@@ -941,9 +970,9 @@ static void hnn_fill_npc_features(const world_t *w,
     f->forward_speed   = fwd_speed / 350.0f;
     f->lateral_speed   = lat_speed / 350.0f;
     f->brake_distance  = (brake_dist > 700.0f) ? 1.0f : brake_dist / 700.0f;
-    f->fwd_clear       = fwd_clear;
-    f->left_clear      = left_clear;
-    f->right_clear     = right_clear;
+    f->fwd_clear       = (float)clip(fwd_clear, 0.0, 1.0);
+    f->left_clear      = (float)clip(left_clear, 0.0, 1.0);
+    f->right_clear     = (float)clip(right_clear, 0.0, 1.0);
     f->signal_quality  = signal_q;
     f->hull_ratio      = hull_r;
     f->path_count      = 0.0f;
@@ -957,6 +986,112 @@ static void hnn_fill_npc_features(const world_t *w,
     f->action_is_none      = (action_idx == 0) ? 1.0f : 0.0f;
     f->action_is_reverse   = (action_thrust < 0) ? 1.0f : 0.0f;
     f->composite_dot       = (float)action_turn * f->heading_sin;
+}
+
+static bool hnn_npc_action_allowed(const hnn_pilot_features_t *state,
+                                   const signal_brain_action_t *action,
+                                   int action_index) {
+    if (!state || !action || action_index < 0 ||
+        action_index >= HNN_ACTION_COUNT) {
+        return false;
+    }
+
+    const float slow_speed = 20.0f / 350.0f;
+    bool forward_blocked =
+        state->fwd_blocked > 0.5f || state->fwd_clear < 0.15f;
+    bool positive_turn_blocked =
+        state->left_blocked > 0.5f || state->left_clear < 0.12f;
+    bool negative_turn_blocked =
+        state->right_blocked > 0.5f || state->right_clear < 0.12f;
+
+    if (forward_blocked) {
+        if (action->thrust > 0) return false;
+        if (state->speed > slow_speed && action->thrust >= 0) return false;
+    }
+
+    if (action->thrust >= 0) {
+        if (action->turn > 0 && positive_turn_blocked) return false;
+        if (action->turn < 0 && negative_turn_blocked) return false;
+    }
+
+    if (state->target_dist > (450.0f / 6000.0f) &&
+        state->speed < slow_speed) {
+        if (action_index == 0 || action->thrust < 0) return false;
+        if (fabsf(state->heading_error) > 0.35f &&
+            action->thrust > 0 &&
+            action->turn == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static uint16_t hnn_npc_allowed_mask(const hnn_pilot_features_t *state,
+                                     uint8_t allowed[HNN_ACTION_COUNT]) {
+    uint16_t mask = 0;
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        const signal_brain_action_t *action = &SB_ACTIONS[i];
+        bool ok = hnn_npc_action_allowed(state, action, i);
+        if (allowed) allowed[i] = ok ? 1u : 0u;
+        if (ok) mask |= (uint16_t)(1u << i);
+    }
+    return mask;
+}
+
+static int hnn_npc_best_allowed_action(
+    const float scores[HNN_ACTION_COUNT],
+    const uint8_t allowed[HNN_ACTION_COUNT],
+    float *out_score,
+    float *out_margin) {
+    int best = -1;
+    float best_score = -INFINITY;
+    float second_score = -INFINITY;
+    if (!scores || !allowed) {
+        if (out_score) *out_score = 0.0f;
+        if (out_margin) *out_margin = 0.0f;
+        return -1;
+    }
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (!allowed[i] || !isfinite(scores[i])) continue;
+        if (scores[i] > best_score) {
+            second_score = best_score;
+            best_score = scores[i];
+            best = i;
+        } else if (scores[i] > second_score) {
+            second_score = scores[i];
+        }
+    }
+    if (out_score)
+        *out_score = isfinite(best_score) ? best_score : 0.0f;
+    if (out_margin) {
+        *out_margin = (isfinite(best_score) && isfinite(second_score))
+            ? best_score - second_score
+            : 0.0f;
+    }
+    return best;
+}
+
+static void hnn_npc_store_experience(npc_ship_t *npc,
+                                     hnn_holonet_t *holonet,
+                                     const hnn_pilot_features_t *route_state,
+                                     const hnn_pilot_features_t *assoc_state,
+                                     int action_index) {
+    if (!npc || !route_state || !assoc_state ||
+        action_index < 0 || action_index >= HNN_ACTION_COUNT) {
+        return;
+    }
+
+    float route_vec[HNN_DIM];
+    float assoc_vec[HNN_DIM];
+    hnn_encode_state(route_state, route_vec);
+    hnn_encode_state(assoc_state, assoc_vec);
+    hnn_memory_store(&npc->hnn_mem, assoc_vec,
+                     g_hnn_actions.vecs[action_index]);
+    if (holonet)
+        hnn_holonet_store(holonet, route_vec, assoc_vec,
+                          g_hnn_actions.vecs[action_index]);
+    npc->hnn_experience_local_version++;
 }
 
 
@@ -973,6 +1108,7 @@ static void hnn_fill_npc_features(const world_t *w,
  */
 static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
     if (!w || !npc) return;
+    hnn_holonet_t *holonet = signal_brain_npc_holonet_for(w, npc);
     if (signal_hnn_debug_enabled()) {
         static int debug_call_count = 0;
         debug_call_count++;
@@ -1071,20 +1207,14 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         target = home_pos;
     }
 
-    /* Action definitions: 0=NONE, 1=W, 2=A, 3=D, 4=S, 5=WA, 6=WD, 7=SA, 8=SD */
-    static const int action_turns[HNN_ACTION_COUNT] = {0, 0, -1, 1, 0, -1, 1, -1, 1};
-    static const int action_thrusts[HNN_ACTION_COUNT] = {0, 1, 0, 0, -1, 1, 1, -1, -1};
-
     /* Score each action by encoding (state, action) and comparing
      * against the holographic memory. The action that best matches
      * stored experiences wins. */
-    int best_action = 0;
-    float best_sim = -2.0f;
-
     /* If memory is empty (first few ticks), use heading correction
      * to bootstrap. Store these early experiences so the memory
      * can start learning immediately. */
-    if (npc->hnn_mem.experience_count == 0) {
+    if (npc->hnn_mem.experience_count == 0 &&
+        (!holonet || hnn_holonet_active_count(holonet) == 0)) {
         float dx = target.x - npc->ship.pos.x;
         float dy = target.y - npc->ship.pos.y;
         float target_heading = fixp_atan2f(dy, dx);
@@ -1100,10 +1230,6 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
             boot_turn = 0;
             boot_thrust = 1;
         }
-        npc->input.turn = (float)boot_turn;
-        npc->input.thrust = (float)boot_thrust;
-        npc->thrusting = (boot_thrust > 0);
-
         /* Map (turn,thrust) to action index for storage */
         int boot_action = 0;
         if (boot_turn == 0 && boot_thrust == 0) boot_action = 0;
@@ -1116,16 +1242,41 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         else if (boot_turn == -1 && boot_thrust == -1) boot_action = 7;
         else if (boot_turn == 1 && boot_thrust == -1) boot_action = 8;
 
+        hnn_pilot_features_t gate_state;
+        hnn_fill_npc_features(w, npc, target, 0, 0, 0, &gate_state);
+        uint8_t allowed[HNN_ACTION_COUNT];
+        uint16_t allowed_mask = hnn_npc_allowed_mask(&gate_state, allowed);
+        if (!allowed[boot_action]) {
+            int preferred_turn = heading_error > 0.0f ? 3 : 2;
+            if (fabsf(heading_error) > 0.3f && allowed[preferred_turn]) {
+                boot_action = preferred_turn;
+            } else if (allowed[4]) {
+                boot_action = 4;
+            } else {
+                for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+                    if (allowed[i]) {
+                        boot_action = i;
+                        break;
+                    }
+                }
+            }
+            if (allowed_mask == 0) boot_action = 0;
+            boot_turn = SB_ACTIONS[boot_action].turn;
+            boot_thrust = SB_ACTIONS[boot_action].thrust;
+        }
+
+        npc->input.turn = (float)boot_turn;
+        npc->input.thrust = (float)boot_thrust;
+        npc->thrusting = (boot_thrust > 0);
+
         /* Store bootstrap experience */
         hnn_pilot_features_t fs;
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: filling features...\n");
         hnn_fill_npc_features(w, npc, target, boot_turn, boot_thrust,
                               boot_action, &fs);
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: encoding state...\n");
-        float sv[HNN_DIM];
-        hnn_encode_state(&fs, sv);
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: storing in memory...\n");
-        hnn_memory_store(&npc->hnn_mem, sv, g_hnn_actions.vecs[boot_action]);
+        hnn_npc_store_experience(npc, holonet, &gate_state, &fs, boot_action);
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: done! exp=%d\n",
                              npc->hnn_mem.experience_count);
         return;
@@ -1135,43 +1286,59 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
     hnn_pilot_features_t state_only;
     hnn_fill_npc_features(w, npc, target, 0, 0, 0, &state_only);
 
-    /* Retrieve from holographic memory */
-    float retrieved[HNN_DIM];
-    {
-        float state_vec[HNN_DIM];
-        hnn_encode_state(&state_only, state_vec);
-        hnn_memory_cleanup(&npc->hnn_mem, state_vec, retrieved, 3);
+    float scores[HNN_ACTION_COUNT] = {0.0f};
+    float margin = 0.0f;
+    float fidelity = 0.0f;
+    int best_action = -1;
+    if (holonet && hnn_holonet_active_count(holonet) > 0) {
+        best_action = hnn_holonet_score_actions(holonet,
+                                                &g_hnn_actions,
+                                                &state_only,
+                                                scores,
+                                                &margin,
+                                                &fidelity,
+                                                3);
+    }
+    if (best_action < 0) {
+        best_action = hnn_score_actions(&npc->hnn_mem,
+                                        &g_hnn_actions,
+                                        &state_only,
+                                        scores,
+                                        &margin,
+                                        &fidelity,
+                                        3);
+    }
+    (void)fidelity;
+    if (best_action < 0) best_action = 0;
+    int raw_action = best_action;
+    float selected_score = scores[raw_action];
+    float selected_margin = margin;
+    uint8_t allowed[HNN_ACTION_COUNT];
+    uint16_t allowed_mask = hnn_npc_allowed_mask(&state_only, allowed);
+    best_action = hnn_npc_best_allowed_action(
+        scores, allowed, &selected_score, &selected_margin);
+    if (best_action < 0) {
+        best_action = (allowed_mask & (uint16_t)(1u << 4)) ? 4 : raw_action;
+        selected_score = scores[best_action];
+        selected_margin = margin;
     }
 
-    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
-        float sim = hnn_similarity(retrieved, g_hnn_actions.vecs[i]);
-        if (sim > best_sim) {
-            best_sim = sim;
-            best_action = i;
-        }
-    }
-
-    /* Hard safety: if forward is blocked and we selected thrust, override to brake */
-    if (state_only.fwd_blocked > 0.5f && action_thrusts[best_action] > 0) {
-        best_action = 4; /* S = brake */
-    }
-
-    npc->hnn_mem.last_retrieval_similarity = best_sim;
-    npc->input.turn = (float)action_turns[best_action];
-    npc->input.thrust = (float)action_thrusts[best_action];
-    npc->thrusting = (action_thrusts[best_action] > 0);
+    npc->hnn_mem.last_retrieval_similarity = selected_score;
+    npc->hnn_mem.last_margin = selected_margin;
+    npc->input.turn = (float)SB_ACTIONS[best_action].turn;
+    npc->input.thrust = (float)SB_ACTIONS[best_action].thrust;
+    npc->thrusting = (SB_ACTIONS[best_action].thrust > 0);
 
     /* Store this experience into holographic memory for future recall.
      * Encode the full (state, action) pair and bundle it in. */
     {
         hnn_pilot_features_t full_state;
         hnn_fill_npc_features(w, npc, target,
-                              action_turns[best_action],
-                              action_thrusts[best_action],
+                              SB_ACTIONS[best_action].turn,
+                              SB_ACTIONS[best_action].thrust,
                               best_action,
                               &full_state);
-        float state_vec[HNN_DIM];
-        hnn_encode_state(&full_state, state_vec);
-        hnn_memory_store(&npc->hnn_mem, state_vec, g_hnn_actions.vecs[best_action]);
+        hnn_npc_store_experience(npc, holonet, &state_only, &full_state,
+                                 best_action);
     }
 }

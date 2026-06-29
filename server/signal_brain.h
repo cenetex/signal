@@ -66,6 +66,8 @@ void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt);
 /* Initialize the global holographic action table (called once at
  * server start). */
 void signal_brain_holographic_init(void);
+int signal_brain_holographic_npc_holonet_active_count(const world_t *w,
+                                                      const npc_ship_t *npc);
 
 extern bool g_neural_singleplayer;
 

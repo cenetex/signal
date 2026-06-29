@@ -35,6 +35,7 @@ Or call the binary directly:
   --history W,W,WA,D \
   --horizon-ticks 60 \
   --candidates W,A,D \
+  --hnn-trace \
   --out /tmp/signal-replay.jsonl
 ```
 
@@ -52,6 +53,10 @@ Numeric action ids `0..8` are accepted for compact generated traces.
 - `--history LIST`: comma-separated prefix actions to replay before branching.
 - `--horizon-ticks N`: number of ticks to simulate per candidate.
 - `--candidates LIST`: comma-separated candidate actions to branch.
+- `--hnn-trace`: train a holographic trace from the prefix and score each
+  branch-start candidate without changing the rollout.
+- `--hnn-cleanup-steps N`: retrieval cleanup steps for `--hnn-trace`, default
+  `3`, range `0..8`.
 - `--out PATH`: JSONL output path. Without it, rows go to stdout.
 
 ## Output Contract
@@ -67,6 +72,12 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   sell credits.
 - Motion metrics: end position, velocity, speed, angle, goal distance, progress,
   and scalar utility.
+- Optional `hnn` object when `--hnn-trace` is set: flat trace contract,
+  routed HoloNet contract, route diagnostics, stored count/load/fidelity, raw
+  HNN top action, gated top legal action, legal action mask, candidate
+  score/rank, candidate legal rank, raw and gated margins, and all action
+  scores at the branch start. The trace is trained only from prefix actions,
+  so utility-vs-HNN-rank analysis remains counterfactual.
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
@@ -88,6 +99,19 @@ diff -u /tmp/replay-a.jsonl /tmp/replay-b.jsonl
 ```
 
 An empty diff is the expected result.
+
+HNN replay evaluation is deterministic too:
+
+```sh
+./build/signal_replay --seed 6060 --history W,WA,W,WD,A,D \
+  --horizon-ticks 24 --candidates W,WA,WD,S --hnn-trace \
+  --out /tmp/replay-hnn.jsonl
+```
+
+Compare candidate `utility` against `hnn.candidate_allowed_rank`,
+`hnn.top_allowed_action`, `hnn.candidate_score`, and
+`hnn.holonet.last_route` to test whether routed prefix memory helps or hurts
+legal candidate ordering after the safety gate.
 
 For the native-vs-WASM determinism gate, build the Emscripten replay CLI and
 compare it against the native replay binary:

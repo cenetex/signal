@@ -55,6 +55,14 @@ FAST_SCENARIOS = (
         "--candidates", "S,SA,SD,W",
     ),
     (
+        "--seed", "6060",
+        "--station", "0",
+        "--history", "W,WA,W,WD,A,D",
+        "--horizon-ticks", "24",
+        "--candidates", "W,WA,WD,S",
+        "--hnn-trace",
+    ),
+    (
         "--seed", "7777",
         "--station", "1",
         "--horizon-ticks", "1",
