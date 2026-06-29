@@ -899,32 +899,37 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
                 sdtx_color3b(PAL_TEXT_GREY);
             if (compact) {
                 if (ping_ms > 0.0f && ack_ms > 0.0f)
-                    sdtx_printf("ping %.0f ack %.0f", ping_ms, ack_ms);
+                    sdtx_printf("ping %.0fms ack %.0fms", ping_ms, ack_ms);
                 else if (ping_ms > 0.0f)
                     sdtx_printf("ping %.0fms", ping_ms);
                 else
                     sdtx_printf("ack %.0fms", ack_ms);
                 if (ping_ms > 0.0f && ack_ms > 0.0f) {
                     sdtx_pos(net_x, info_y + 2.4f);
-                    sdtx_printf("gap %.0f q%u r%u",
-                                gap_ms,
-                                (unsigned)g.net_action_queue_count,
-                                (unsigned)g.net_replay_count);
+                    if (g.net_replay_count > 0) {
+                        sdtx_printf("lag %.0fms replay %u",
+                                    gap_ms,
+                                    (unsigned)g.net_replay_count);
+                    } else {
+                        sdtx_printf("lag %.0fms queue %u",
+                                    gap_ms,
+                                    (unsigned)g.net_action_queue_count);
+                    }
                 }
             } else if (ping_ms > 0.0f && ack_ms > 0.0f) {
-                sdtx_printf("ping %.0fms ack %.0fms gap %.0fms q%u r%u",
+                sdtx_printf("ping %.0fms ack %.0fms lag %.0fms queue %u replay %u",
                             ping_ms,
                             ack_ms,
                             gap_ms,
                             (unsigned)g.net_action_queue_count,
                             (unsigned)g.net_replay_count);
             } else if (ping_ms > 0.0f) {
-                sdtx_printf("ping %.0fms q%u r%u",
+                sdtx_printf("ping %.0fms queue %u replay %u",
                             ping_ms,
                             (unsigned)g.net_action_queue_count,
                             (unsigned)g.net_replay_count);
             } else {
-                sdtx_printf("ack %.0fms q%u r%u",
+                sdtx_printf("ack %.0fms queue %u replay %u",
                             ack_ms,
                             (unsigned)g.net_action_queue_count,
                             (unsigned)g.net_replay_count);
@@ -954,7 +959,7 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
     hud_format_latency_label(latency, sizeof(latency));
     if (g.net_authority_enabled) {
         snprintf(segment, sizeof(segment),
-                 "ALPHA // v%s // %s // %s // resets possible // ",
+                 "ALPHA // v%s // %s // %s // preview build // ",
                  client_hash, region, latency);
     } else {
         snprintf(segment, sizeof(segment),
