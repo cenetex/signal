@@ -3,6 +3,8 @@
 import { readFile } from 'node:fs/promises';
 
 const DEFAULT_SCHEMA = 'crlp.signal_hnn_shadow.v1';
+const HNN_ACTION_COUNT = 9;
+const HNN_ACTION_MASK = (1 << HNN_ACTION_COUNT) - 1;
 
 function usage() {
   console.log(`usage: node scripts/analyze-signal-hnn-shadow.mjs [options] [FILE...]
@@ -157,6 +159,305 @@ function increment(map, key, amount = 1) {
   map.set(key, (map.get(key) || 0) + amount);
 }
 
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function rowLocation(row) {
+  return `${row._source || '<unknown>'}:${row._line || '?'}`;
+}
+
+function recordValidationIssue(validation, row, message) {
+  const location = rowLocation(row);
+  validation.invalidRows.add(location);
+  if (validation.issues.length < 20) {
+    validation.issues.push(`${location}: ${message}`);
+  }
+}
+
+function parseAllowedMask(value) {
+  if (Number.isInteger(value) && value >= 0) return value;
+  if (typeof value !== 'string') return null;
+  if (/^0x[0-9a-f]+$/i.test(value)) {
+    const parsed = Number.parseInt(value.slice(2), 16);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  if (/^[0-9]+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
+}
+
+function maskAllows(mask, index) {
+  return Number.isInteger(mask) &&
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index < HNN_ACTION_COUNT &&
+    (mask & (1 << index)) !== 0;
+}
+
+function validateFinite(validation, row, value, label, options = {}) {
+  if (!Number.isFinite(value)) {
+    recordValidationIssue(validation, row, `${label} must be finite`);
+    return false;
+  }
+  if (options.min != null && value < options.min) {
+    recordValidationIssue(validation, row, `${label} ${value} < ${options.min}`);
+    return false;
+  }
+  if (options.max != null && value > options.max) {
+    recordValidationIssue(validation, row, `${label} ${value} > ${options.max}`);
+    return false;
+  }
+  return true;
+}
+
+function validateInteger(validation, row, value, label, options = {}) {
+  if (!Number.isInteger(value)) {
+    recordValidationIssue(validation, row, `${label} must be an integer`);
+    return false;
+  }
+  if (options.min != null && value < options.min) {
+    recordValidationIssue(validation, row, `${label} ${value} < ${options.min}`);
+    return false;
+  }
+  if (options.max != null && value > options.max) {
+    recordValidationIssue(validation, row, `${label} ${value} > ${options.max}`);
+    return false;
+  }
+  return true;
+}
+
+function validateHexString(validation, row, value, label) {
+  if (typeof value !== 'string' || !/^[0-9a-f]+$/i.test(value)) {
+    recordValidationIssue(validation, row, `${label} must be a non-empty hex string`);
+    return false;
+  }
+  return true;
+}
+
+function validateContract(validation, row, contract, label) {
+  let valid = true;
+  const fail = (message) => {
+    valid = false;
+    recordValidationIssue(validation, row, `${label}.${message}`);
+  };
+
+  if (!isObject(contract)) {
+    fail('contract must be an object');
+    return false;
+  }
+  if (!Number.isInteger(contract.dim) || contract.dim <= 0) {
+    fail('dim must be a positive integer');
+    valid = false;
+  }
+  if (typeof contract.seed !== 'string' || !/^[0-9a-f]+$/i.test(contract.seed)) {
+    fail('seed must be a non-empty hex string');
+    valid = false;
+  }
+  if (!Number.isInteger(contract.keygen_version) || contract.keygen_version <= 0) {
+    fail('keygen_version must be a positive integer');
+    valid = false;
+  }
+  if (!Number.isInteger(contract.encoder_version) || contract.encoder_version <= 0) {
+    fail('encoder_version must be a positive integer');
+    valid = false;
+  }
+  if (typeof contract.action_vocabulary_hash !== 'string' ||
+      !/^[0-9a-f]+$/i.test(contract.action_vocabulary_hash)) {
+    fail('action_vocabulary_hash must be a non-empty hex string');
+    valid = false;
+  }
+  if (!Number.isInteger(contract.trace_format_version) ||
+      contract.trace_format_version <= 0) {
+    fail('trace_format_version must be a positive integer');
+    valid = false;
+  }
+  if (!Number.isInteger(contract.stored_count) || contract.stored_count < 0) {
+    fail('stored_count must be a non-negative integer');
+    valid = false;
+  }
+  if (!Number.isFinite(contract.capacity_load) || contract.capacity_load < 0) {
+    fail('capacity_load must be finite and non-negative');
+    valid = false;
+  }
+  if (!Number.isFinite(contract.fidelity_estimate) ||
+      contract.fidelity_estimate < 0 ||
+      contract.fidelity_estimate > 1) {
+    fail('fidelity_estimate must be finite in [0, 1]');
+    valid = false;
+  }
+  if (!Number.isFinite(contract.last_margin)) {
+    fail('last_margin must be finite');
+    valid = false;
+  }
+  return valid;
+}
+
+function validateActionReference(validation, row, action, label) {
+  if (!isObject(action)) {
+    recordValidationIssue(validation, row, `${label} must be an object`);
+    return null;
+  }
+  if (!Number.isInteger(action.index) ||
+      action.index < 0 ||
+      action.index >= HNN_ACTION_COUNT) {
+    recordValidationIssue(validation, row, `${label}.index must be in [0, ${HNN_ACTION_COUNT - 1}]`);
+    return null;
+  }
+  if (typeof action.name !== 'string' || action.name.length === 0) {
+    recordValidationIssue(validation, row, `${label}.name must be a non-empty string`);
+  }
+  if (hasOwn(action, 'score') && action.score !== null &&
+      !Number.isFinite(action.score)) {
+    recordValidationIssue(validation, row, `${label}.score must be finite or null`);
+  }
+  return action.index;
+}
+
+function validateHnnShadowRow(row, validation) {
+  const stats = {
+    contractValid: false,
+    allowedMaskValid: false,
+    bestAllowedLegal: false,
+    teacherAllowed: false,
+  };
+
+  validateHexString(validation, row, row.feature_hash, 'feature_hash');
+  const mask = parseAllowedMask(row.allowed_mask);
+  let maskValid = true;
+  if (mask == null) {
+    recordValidationIssue(validation, row, 'allowed_mask must be a hex string or non-negative integer');
+    maskValid = false;
+  } else {
+    if (mask === 0) {
+      recordValidationIssue(validation, row, 'allowed_mask must allow at least one action');
+      maskValid = false;
+    }
+    if ((mask & ~HNN_ACTION_MASK) !== 0) {
+      recordValidationIssue(validation, row, `allowed_mask has bits outside ${HNN_ACTION_COUNT} actions`);
+      maskValid = false;
+    }
+  }
+
+  const actionByIndex = new Map();
+  let actionsValid = true;
+  if (!Array.isArray(row.actions)) {
+    recordValidationIssue(validation, row, 'actions must be an array');
+    actionsValid = false;
+  } else {
+    if (row.actions.length !== HNN_ACTION_COUNT) {
+      recordValidationIssue(validation, row, `actions length ${row.actions.length} != ${HNN_ACTION_COUNT}`);
+      actionsValid = false;
+    }
+    for (let i = 0; i < row.actions.length; i++) {
+      const action = row.actions[i];
+      if (!isObject(action)) {
+        recordValidationIssue(validation, row, `actions[${i}] must be an object`);
+        actionsValid = false;
+        continue;
+      }
+      const index = action.index;
+      if (!Number.isInteger(index) ||
+          index < 0 ||
+          index >= HNN_ACTION_COUNT) {
+        recordValidationIssue(validation, row, `actions[${i}].index must be in [0, ${HNN_ACTION_COUNT - 1}]`);
+        actionsValid = false;
+      } else if (actionByIndex.has(index)) {
+        recordValidationIssue(validation, row, `duplicate action index ${index}`);
+        actionsValid = false;
+      } else {
+        actionByIndex.set(index, action);
+      }
+      if (typeof action.name !== 'string' || action.name.length === 0) {
+        recordValidationIssue(validation, row, `actions[${i}].name must be a non-empty string`);
+        actionsValid = false;
+      }
+      if (typeof action.allowed !== 'boolean') {
+        recordValidationIssue(validation, row, `actions[${i}].allowed must be boolean`);
+        actionsValid = false;
+      }
+      if (hasOwn(action, 'score') && action.score !== null &&
+          !Number.isFinite(action.score)) {
+        recordValidationIssue(validation, row, `actions[${i}].score must be finite or null`);
+        actionsValid = false;
+      }
+      if (mask != null && Number.isInteger(index) &&
+          index >= 0 && index < HNN_ACTION_COUNT &&
+          typeof action.allowed === 'boolean' &&
+          action.allowed !== maskAllows(mask, index)) {
+        recordValidationIssue(validation, row, `actions[${i}].allowed does not match allowed_mask`);
+        actionsValid = false;
+      }
+    }
+  }
+  stats.allowedMaskValid = maskValid && actionsValid;
+
+  const hnnTopIndex = validateActionReference(validation, row, row.hnn_top, 'hnn_top');
+  if (hnnTopIndex != null && actionsValid && !actionByIndex.has(hnnTopIndex)) {
+    recordValidationIssue(validation, row, 'hnn_top.index is not present in actions');
+  }
+
+  const bestAllowed = rowBestAllowed(row);
+  const bestAllowedIndex = validateActionReference(
+    validation, row, bestAllowed, 'hnn_top_allowed');
+  if (bestAllowedIndex != null && mask != null) {
+    if (!maskAllows(mask, bestAllowedIndex)) {
+      recordValidationIssue(validation, row, 'hnn_top_allowed.index is not allowed by allowed_mask');
+    } else {
+      const action = actionByIndex.get(bestAllowedIndex);
+      if (!action || action.allowed === true) stats.bestAllowedLegal = true;
+      else recordValidationIssue(validation, row, 'hnn_top_allowed.index is not allowed in actions');
+    }
+  }
+
+  if (row.teacher != null) {
+    const teacherIndex = validateActionReference(validation, row, row.teacher, 'teacher');
+    if (teacherIndex != null && mask != null) {
+      if (!maskAllows(mask, teacherIndex)) {
+        recordValidationIssue(validation, row, 'teacher.index is not allowed by allowed_mask');
+      } else {
+        const action = actionByIndex.get(teacherIndex);
+        if (!action || action.allowed === true) stats.teacherAllowed = true;
+        else recordValidationIssue(validation, row, 'teacher.index is not allowed in actions');
+      }
+    }
+  }
+
+  if (!validateFinite(validation, row, rowMargin(row), 'margin')) {
+    recordValidationIssue(validation, row, 'margin diagnostic is required');
+  }
+  validateFinite(validation, row, row.trace_fidelity, 'trace_fidelity', { min: 0, max: 1 });
+  validateInteger(validation, row, row.stored_count, 'stored_count', { min: 0 });
+  validateFinite(validation, row, row.capacity_load, 'capacity_load', { min: 0 });
+  if (hasOwn(row, 'last_margin')) {
+    validateFinite(validation, row, row.last_margin, 'last_margin');
+  }
+
+  stats.contractValid = validateContract(validation, row, row.contract, 'contract');
+  if (row.holonet != null) {
+    if (!isObject(row.holonet)) {
+      recordValidationIssue(validation, row, 'holonet must be an object');
+    } else {
+      if (typeof row.holonet.enabled !== 'boolean') {
+        recordValidationIssue(validation, row, 'holonet.enabled must be boolean');
+      }
+      validateInteger(validation, row, row.holonet.active_count, 'holonet.active_count', { min: 0 });
+      validateInteger(validation, row, row.holonet.last_route, 'holonet.last_route', { min: -1 });
+      validateInteger(validation, row, row.holonet.scored_count, 'holonet.scored_count', { min: 0 });
+      validateFinite(validation, row, row.holonet.route_similarity, 'holonet.route_similarity');
+      validateContract(validation, row, row.holonet.contract, 'holonet.contract');
+    }
+  }
+
+  return stats;
+}
+
 function round(value, digits = 6) {
   if (!Number.isFinite(value)) return null;
   const scale = 10 ** digits;
@@ -234,6 +535,7 @@ function teacherRank(row) {
 }
 
 function analyzeRows(rows) {
+  const validation = { invalidRows: new Set(), issues: [] };
   const hnnTopCounts = new Map();
   const hnnAllowedCounts = new Map();
   const teacherCounts = new Map();
@@ -253,8 +555,18 @@ function analyzeRows(rows) {
   let teacherMatchesAllowed = 0;
   let teacherMatchesRaw = 0;
   let nullTeacherRows = 0;
+  let contractRows = 0;
+  let legalMaskRows = 0;
+  let bestAllowedLegalRows = 0;
+  let teacherAllowedRows = 0;
 
   for (const row of rows) {
+    const rowStats = validateHnnShadowRow(row, validation);
+    if (rowStats.contractValid) contractRows++;
+    if (rowStats.allowedMaskValid) legalMaskRows++;
+    if (rowStats.bestAllowedLegal) bestAllowedLegalRows++;
+    if (rowStats.teacherAllowed) teacherAllowedRows++;
+
     const bestAllowed = rowBestAllowed(row);
     increment(hnnTopCounts, actionKey(row.hnn_top));
     increment(hnnAllowedCounts, actionKey(bestAllowed));
@@ -318,6 +630,12 @@ function analyzeRows(rows) {
     rows: rows.length,
     teacherRows,
     nullTeacherRows,
+    invalidRows: validation.invalidRows.size,
+    validationIssues: validation.issues,
+    contractRows,
+    legalMaskRows,
+    bestAllowedLegalRows,
+    teacherAllowedRows,
     teacherMatchesAllowed,
     teacherAllowedMatchRate: round(teacherAllowedMatchRate),
     teacherMatchesRaw,
@@ -371,6 +689,9 @@ function collectRows(inputs, schema) {
 
 function checkThresholds(summary, args) {
   const failures = [];
+  if (summary.invalidRows > 0) {
+    failures.push(`invalid_rows ${summary.invalidRows} > 0`);
+  }
   if (summary.rows < args.minRows) {
     failures.push(`rows ${summary.rows} < ${args.minRows}`);
   }
@@ -408,7 +729,8 @@ function checkThresholds(summary, args) {
 
 function printHuman(summary, parseStats, failures) {
   console.log(`schema=${summary.schema}`);
-  console.log(`rows=${summary.rows} teacher_rows=${summary.teacherRows} null_teacher_rows=${summary.nullTeacherRows}`);
+  console.log(`rows=${summary.rows} teacher_rows=${summary.teacherRows} null_teacher_rows=${summary.nullTeacherRows} invalid_rows=${summary.invalidRows}`);
+  console.log(`contract_rows=${summary.contractRows} legal_mask_rows=${summary.legalMaskRows} best_allowed_legal_rows=${summary.bestAllowedLegalRows} teacher_allowed_rows=${summary.teacherAllowedRows}`);
   console.log(`teacher_allowed_match_rate=${summary.teacherAllowedMatchRate ?? 'n/a'} teacher_raw_match_rate=${summary.teacherRawMatchRate ?? 'n/a'}`);
   console.log(`margin=${JSON.stringify(summary.margin)}`);
   console.log(`trace_fidelity=${JSON.stringify(summary.traceFidelity)}`);
@@ -425,6 +747,9 @@ function printHuman(summary, parseStats, failures) {
   console.log(`holonet_route_counts=${JSON.stringify(summary.holonetRouteCounts)}`);
   console.log(`holonet_contracts=${JSON.stringify(summary.holonetContracts)}`);
   console.log(`parsed_lines=${parseStats.lines} json_lines=${parseStats.jsonLines} matching_rows=${parseStats.matchingRows}`);
+  if (summary.validationIssues.length > 0) {
+    console.error(`validation_issues=${JSON.stringify(summary.validationIssues)}`);
+  }
   if (failures.length > 0) {
     console.error(`signal-hnn-shadow: threshold failure: ${failures.join('; ')}`);
   }

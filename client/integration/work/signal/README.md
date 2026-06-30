@@ -108,7 +108,11 @@ make signal-hnn-shadow \
 
 The analyzer reports HNN-vs-teacher agreement, legal margins, trace fidelity,
 capacity load, stored counts, action confusion, route metadata, and the exact
-flat/HoloNet memory contracts.
+flat/HoloNet memory contracts. It also validates every matching row: feature
+hash, non-empty legal mask, action-mask consistency, legal HNN best action,
+legal teacher action when present, required capacity/fidelity diagnostics, and
+the full flat/HoloNet contract fields must all be well formed before the gate
+can pass.
 
 ## Integration Stance
 
