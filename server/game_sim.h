@@ -18,6 +18,7 @@
 #include "asteroid.h"
 #include "economy.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL for outpost placement gate */
+#include "signal_field.h"
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
 #include "tractor.h"
@@ -618,6 +619,11 @@ typedef struct {
     belt_field_t belt;
     spatial_grid_t asteroid_grid;
     signal_grid_t signal_cache;
+    /* Runtime-only local fuzzy memory over world space. Rebuilt from
+     * station-local gossip bootstrap after reset/load and reinforced only by
+     * physical dock/contact memory exchange; never serialized or authoritative. */
+    signal_field_t signal_field;
+    uint32_t signal_field_decay_tick;
     signal_channel_t signal_channel;  /* station broadcast log (#316) */
     /* Layer A.2 of #479 — pubkey registry. Maps a client's persisted
      * Ed25519 pubkey to its current session_token so a reconnecting

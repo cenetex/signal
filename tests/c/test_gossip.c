@@ -1340,6 +1340,7 @@ TEST(test_dock_gossip_emits_stale_contract_risk_memory) {
 TEST(test_dock_gossip_decays_carried_market_memory) {
     WORLD_DECL;
     world_reset(&w);
+    signal_field_init(&w.signal_field);
     memset(w.contracts, 0, sizeof(w.contracts));
     memset(w.stations[0].known_contracts, 0,
            sizeof(w.stations[0].known_contracts));
@@ -1382,6 +1383,39 @@ TEST(test_dock_gossip_decays_carried_market_memory) {
                                   0, 1,
                                   (uint8_t)COMMODITY_COUNT,
                                   NULL));
+    ASSERT(signal_field_query(&w.signal_field, w.stations[0].pos,
+                              SIGNAL_FIELD_KIND_RISK, 0) > 0.0f);
+}
+
+TEST(test_dock_gossip_marks_signal_field_at_physical_station) {
+    WORLD_DECL;
+    world_reset(&w);
+    signal_field_init(&w.signal_field);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
+
+    SHIP_DECL(ship);
+    knowledge_view_configure(&ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+    market_memory_t receipt = {0};
+    knowledge_item_t item;
+    ASSERT(market_memory_from_delivery_receipt(1, 2,
+                                               COMMODITY_FERRITE_INGOT,
+                                               3, 90.0f, 77, 9001,
+                                               &receipt));
+    ASSERT(knowledge_item_from_market_memory(&receipt, &item));
+    knowledge_view_insert(&ship.knowledge, &item);
+
+    gossip_dock_handshake(&w, 0,
+                          ship.known_contracts,
+                          &ship.known_contract_count,
+                          SHIP_KNOWN_CONTRACT_CAP,
+                          &ship.knowledge);
+
+    ASSERT(signal_field_query(&w.signal_field, w.stations[0].pos,
+                              SIGNAL_FIELD_KIND_PROOF, 0) > 0.0f);
+    ASSERT_EQ_FLOAT(signal_field_query(&w.signal_field, w.stations[2].pos,
+                                       SIGNAL_FIELD_KIND_PROOF, 0),
+                    0.0f, 0.001f);
 }
 
 TEST(test_dock_gossip_dual_writes_station_supply_memory) {
@@ -1420,6 +1454,7 @@ TEST(test_dock_gossip_dual_writes_station_supply_memory) {
 TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
     WORLD_DECL;
     world_reset(&w);
+    signal_field_init(&w.signal_field);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
 
     int a_slot = spawn_npc(&w, 0, NPC_ROLE_MINER);
@@ -1485,6 +1520,11 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
     ASSERT(gossip_hnn_market_resonance(&b->hnn_market_mem,
                                        &memory,
                                        GOSSIP_HNN_JOB_HAUL) > 0.05f);
+    vec2 contact_pos = v2(160.0f, 100.0f);
+    ASSERT(signal_field_query(&w.signal_field, contact_pos,
+                              SIGNAL_FIELD_KIND_DEMAND, 0) > 0.0f);
+    ASSERT(signal_field_query(&w.signal_field, contact_pos,
+                              SIGNAL_FIELD_KIND_HOLOGRAM, 0) > 0.0f);
 }
 
 static void test_reset_holographic_pilot(npc_ship_t *npc) {
@@ -1630,6 +1670,7 @@ TEST(test_holographic_pilot_rejects_low_fidelity_trace_cargo) {
 TEST(test_bootstrap_seeds_station_local_contracts_only) {
     WORLD_DECL;
     world_reset(&w);
+    signal_field_init(&w.signal_field);
 
     memset(w.contracts, 0, sizeof(w.contracts));
     for (int i = 0; i < MAX_STATIONS; i++) {
@@ -1657,6 +1698,8 @@ TEST(test_bootstrap_seeds_station_local_contracts_only) {
                              2,
                              (uint8_t)COMMODITY_FERRITE_INGOT,
                              NULL));
+    ASSERT(signal_field_query(&w.signal_field, w.stations[2].pos,
+                              SIGNAL_FIELD_KIND_DEMAND, 0) > 0.0f);
 
     ASSERT_EQ_INT(w.stations[0].known_contract_count, 0);
     ASSERT(!view_has_contract(&w.stations[0].knowledge,
@@ -1698,6 +1741,7 @@ void register_gossip_tests(void) {
     RUN(test_dock_gossip_dual_writes_contract_knowledge);
     RUN(test_dock_gossip_emits_stale_contract_risk_memory);
     RUN(test_dock_gossip_decays_carried_market_memory);
+    RUN(test_dock_gossip_marks_signal_field_at_physical_station);
     RUN(test_dock_gossip_dual_writes_station_supply_memory);
     RUN(test_ship_contact_gossip_exchanges_memory_and_holograms);
     RUN(test_holographic_pilot_uploads_experience_once);

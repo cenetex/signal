@@ -44,6 +44,7 @@ SCENARIOS = (
             "station_knowledge_items": 1,
             "hnn_market_stored_total": 1,
             "station_hnn_market_versions": 1,
+            "signal_field_occupied_slots": 1,
             "worker_motion_ticks": 1000,
             "worker_route_support_ticks": 100,
         },
@@ -157,6 +158,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, int]:
         "npc_hnn_market_stored",
         "station_hnn_market_stored",
         "station_hnn_market_versions",
+        "signal_field_occupied_slots",
+        "signal_field_noisy_station_cells",
         "worker_selected_rows",
         "worker_hologram_rows",
         "worker_tow_assignments",
@@ -249,6 +252,7 @@ def main() -> int:
                 f"active={summary['active_npcs']} "
                 f"knowledge={summary['knowledge_items_total']} "
                 f"hnn_market={summary['hnn_market_stored_total']} "
+                f"field={summary['signal_field_occupied_slots']} "
                 f"motion={summary['worker_motion_ticks']} "
                 f"route={summary['worker_route_support_ticks']} "
                 f"useful={summary['worker_useful_outcome_ticks']}"

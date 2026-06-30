@@ -166,11 +166,18 @@ typedef struct {
     int station_hnn_experience_stored;
     int station_hnn_market_versions;
     int station_hnn_experience_versions;
+    int signal_field_occupied_slots;
+    int signal_field_capacity_slots;
+    int signal_field_noisy_station_cells;
     float worker_finished_cargo_units;
     float max_npc_market_load;
     float max_station_market_load;
     float max_npc_flight_load;
     float max_station_experience_load;
+    float signal_field_load;
+    float signal_field_max_strength;
+    float signal_field_min_margin;
+    float signal_field_min_snr;
     sr_ai_branch_summary_t branch;
 } sr_ai_summary_t;
 
@@ -750,6 +757,8 @@ static void sr_reset_worker_fixture_state(world_t *w)
 {
     if (!w) return;
     memset(w->contracts, 0, sizeof(w->contracts));
+    signal_field_init(&w->signal_field);
+    w->signal_field_decay_tick = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
         memset(w->stations[s].known_contracts, 0,
                sizeof(w->stations[s].known_contracts));
@@ -1701,6 +1710,25 @@ static void sr_hash_hnn_memory(sha256_ctx_t *ctx, const hnn_memory_t *mem)
     }
 }
 
+static void sr_hash_signal_field(sha256_ctx_t *ctx,
+                                 const signal_field_t *field)
+{
+    if (!field) {
+        sr_hash_i32(ctx, 0);
+        return;
+    }
+    sr_hash_i32(ctx, SIGNAL_FIELD_CELL_COUNT);
+    sr_hash_i32(ctx, SIGNAL_FIELD_KIND_COUNT);
+    for (int i = 0; i < SIGNAL_FIELD_CELL_COUNT; i++) {
+        const signal_field_cell_t *cell = &field->cells[i];
+        for (int kind = 0; kind < SIGNAL_FIELD_KIND_COUNT; kind++) {
+            sr_hash_float_bits(ctx, cell->strength[kind]);
+            sr_hash_u32(ctx, cell->last_tick[kind]);
+            sr_hash_u16(ctx, cell->observations[kind]);
+        }
+    }
+}
+
 static const ship_t *sr_npc_paired_ship_const(const world_t *w, int npc_slot)
 {
     if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
@@ -1815,6 +1843,8 @@ static void sr_state_hash(const world_t *w,
     }
     sr_hash_contracts(&ctx, w);
     sr_hash_fracture_claims(&ctx, w);
+    sr_hash_u32(&ctx, w->signal_field_decay_tick);
+    sr_hash_signal_field(&ctx, &w->signal_field);
 
     int active_asteroids = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++)
@@ -2710,8 +2740,31 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
     station_count = w->station_count;
     if (station_count < 0) station_count = 0;
     if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+    {
+        signal_field_diagnostics_t field =
+            signal_field_diagnostics(&w->signal_field, v2(0.0f, 0.0f), 1);
+        out->signal_field_occupied_slots = field.occupied_slots;
+        out->signal_field_capacity_slots = field.capacity_slots;
+        out->signal_field_load = field.load;
+    }
     for (int s = 0; s < station_count; s++) {
         const station_t *st = &w->stations[s];
+        signal_field_diagnostics_t field =
+            signal_field_diagnostics(&w->signal_field, st->pos, 1);
+        if (field.noisy)
+            out->signal_field_noisy_station_cells++;
+        if (field.top_strength > out->signal_field_max_strength)
+            out->signal_field_max_strength = field.top_strength;
+        if (field.top_strength > 0.0001f) {
+            if (out->signal_field_min_margin <= 0.0f ||
+                field.top_margin < out->signal_field_min_margin) {
+                out->signal_field_min_margin = field.top_margin;
+            }
+            if (out->signal_field_min_snr <= 0.0f ||
+                field.recall_snr_estimate < out->signal_field_min_snr) {
+                out->signal_field_min_snr = field.recall_snr_estimate;
+            }
+        }
         out->station_known_contracts += sr_clamped_u8_count(
             st->known_contract_count, STATION_KNOWN_CONTRACT_CAP);
         out->station_knowledge_items += sr_clamped_u8_count(
@@ -3333,7 +3386,7 @@ static void sr_write_hnn_contract(FILE *out,
 static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
 {
     fprintf(out,
-            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v2\","
+            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v3\","
             "\"active_npcs\":%d,"
             "\"worker_diag_rows\":%d,"
             "\"worker_selected_rows\":%d,"
@@ -3377,6 +3430,9 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             "\"station_hnn_experience_stored\":%d,"
             "\"station_hnn_market_versions\":%d,"
             "\"station_hnn_experience_versions\":%d,"
+            "\"signal_field_occupied_slots\":%d,"
+            "\"signal_field_capacity_slots\":%d,"
+            "\"signal_field_noisy_station_cells\":%d,"
             "\"worker_finished_cargo_units\":",
             ai->active_npcs,
             ai->worker_diag_rows,
@@ -3420,8 +3476,19 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             ai->npc_hnn_flight_stored,
             ai->station_hnn_experience_stored,
             ai->station_hnn_market_versions,
-            ai->station_hnn_experience_versions);
+            ai->station_hnn_experience_versions,
+            ai->signal_field_occupied_slots,
+            ai->signal_field_capacity_slots,
+            ai->signal_field_noisy_station_cells);
     sr_json_float(out, ai->worker_finished_cargo_units);
+    fprintf(out, ",\"signal_field_load\":");
+    sr_json_float(out, ai->signal_field_load);
+    fprintf(out, ",\"signal_field_max_strength\":");
+    sr_json_float(out, ai->signal_field_max_strength);
+    fprintf(out, ",\"signal_field_min_margin\":");
+    sr_json_float(out, ai->signal_field_min_margin);
+    fprintf(out, ",\"signal_field_min_snr\":");
+    sr_json_float(out, ai->signal_field_min_snr);
     fprintf(out, ",\"max_npc_market_load\":");
     sr_json_float(out, ai->max_npc_market_load);
     fprintf(out, ",\"max_station_market_load\":");

@@ -259,6 +259,15 @@ demand, supply, route, proof, hologram, and risk pressure. Queries are local:
 a memory observed in one cell can influence adjacent cells through an explicit
 radius, but it does not become global truth.
 
+The runtime world now carries a `signal_field_t` next to the existing signal
+coverage cache. It is rebuilt from station-local gossip bootstrap after
+reset/load, reinforced at the physical dock where station/ship memory exchange
+happens, reinforced at nearby ship-contact positions when workers exchange
+carried knowledge, and marked with hologram pressure when station/worker HNN
+market traces are stored or blended. Remote work heard through a ship becomes
+memory at the place it was heard; it is not projected back onto the remote
+station by hidden radio.
+
 The field exposes capacity diagnostics alongside the memory itself:
 
 - occupied slots
@@ -270,9 +279,9 @@ The field exposes capacity diagnostics alongside the memory itself:
 
 This is intentionally runtime memory substrate, not station authority. It is
 safe to render, inspect, score, and decay. It must not pay, verify, or mutate
-ledgers. Future slices can feed station-local or worker-local observations into
-this grid, then use the same diagnostics to surface "memory is getting noisy"
-in-game before the holographic layer starts trusting it.
+ledgers. Future slices can feed richer station-local or worker-local
+observations into this grid, then use the same diagnostics to surface "memory
+is getting noisy" in-game before the holographic layer starts trusting it.
 
 ## Worker Decision Loop
 
@@ -391,8 +400,11 @@ Detailed gossip provenance belongs in inspect/debug surfaces:
    outcomes.
 9. Add a 2D signal-memory field for runtime spatial impressions. Status:
    `shared/signal_field.h` provides a bounded grid with local typed memory,
-   decay, capacity load, SNR, and top-1/top-2 margin diagnostics. It is not yet
-   fed by live station/worker observations or rendered in-game.
+   decay, capacity load, SNR, and top-1/top-2 margin diagnostics. `world_t`
+   now carries a runtime field fed by station-local bootstrap, dock gossip,
+   nearby ship contact, and HNN market exchange. `signal_replay` emits
+   deterministic field occupancy/load/SNR/margin/noisy-cell telemetry. In-game
+   rendering remains future work.
 
 ## Acceptance Shape
 

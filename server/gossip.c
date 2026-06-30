@@ -86,6 +86,73 @@ static float gossip_clampf(float value, float lo, float hi) {
     return value;
 }
 
+static bool gossip_signal_field_kind_for_market(
+    const market_memory_t *memory,
+    signal_field_kind_t *out) {
+    if (!memory || !memory->active || !out) return false;
+    switch ((market_memory_kind_t)memory->memory_kind) {
+    case MARKET_MEMORY_DEMAND:
+    case MARKET_MEMORY_ORE_PRESSURE:
+    case MARKET_MEMORY_SCAFFOLD_PRESSURE:
+        *out = SIGNAL_FIELD_KIND_DEMAND;
+        return true;
+    case MARKET_MEMORY_SUPPLY:
+        *out = SIGNAL_FIELD_KIND_SUPPLY;
+        return true;
+    case MARKET_MEMORY_ROUTE_SUCCESS:
+    case MARKET_MEMORY_ROUTE_REPUTATION:
+        *out = SIGNAL_FIELD_KIND_ROUTE;
+        return true;
+    case MARKET_MEMORY_DELIVERY_RECEIPT:
+    case MARKET_MEMORY_STATION_TRUST:
+        *out = SIGNAL_FIELD_KIND_PROOF;
+        return true;
+    case MARKET_MEMORY_ROUTE_DANGER:
+    case MARKET_MEMORY_ROUTE_RISK:
+    case MARKET_MEMORY_STATION_RISK:
+        *out = SIGNAL_FIELD_KIND_RISK;
+        return true;
+    case MARKET_MEMORY_NONE:
+    default:
+        return false;
+    }
+}
+
+static float gossip_signal_field_strength(const market_memory_t *memory) {
+    if (!memory || !memory->active) return 0.0f;
+    float confidence = (float)memory->confidence / 255.0f;
+    float salience = (float)memory->salience / 255.0f;
+    float strength = confidence * 0.35f + salience * 0.65f;
+    return gossip_clampf(strength, 0.02f, 1.0f);
+}
+
+static void gossip_signal_field_observe_market(world_t *w,
+                                               vec2 pos,
+                                               const market_memory_t *memory) {
+    if (!w || !memory || !memory->active) return;
+    signal_field_kind_t kind;
+    if (!gossip_signal_field_kind_for_market(memory, &kind)) return;
+    (void)signal_field_observe(&w->signal_field, pos, kind,
+                               gossip_signal_field_strength(memory), w->tick);
+}
+
+static int gossip_signal_field_observe_view(world_t *w,
+                                            const knowledge_view_t *view,
+                                            vec2 pos) {
+    if (!w || !view) return 0;
+    uint8_t count = view->count;
+    if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
+    int observed = 0;
+    for (int i = 0; i < count; i++) {
+        market_memory_t memory;
+        if (!market_memory_from_knowledge_item(&view->items[i], &memory))
+            continue;
+        gossip_signal_field_observe_market(w, pos, &memory);
+        observed++;
+    }
+    return observed;
+}
+
 bool market_memory_from_contract_summary(const contract_summary_t *s,
                                          market_memory_t *out) {
     if (!s || !out || !s->active) return false;
@@ -1150,6 +1217,8 @@ static void gossip_seed_station_local_pressure(world_t *w, int station_index,
         }
         knowledge_seed_stale_contract_risk(&st->knowledge, &s);
     }
+
+    (void)gossip_signal_field_observe_view(w, &st->knowledge, st->pos);
 }
 
 void gossip_dock_handshake(world_t *w, int station_index,
@@ -1199,10 +1268,15 @@ void gossip_dock_handshake(world_t *w, int station_index,
     if (ship_knowledge)
         knowledge_view_exchange_internal(&st->knowledge, ship_knowledge,
                                          w, st, NULL);
+    (void)gossip_signal_field_observe_view(w, &st->knowledge, st->pos);
+    if (ship_knowledge)
+        (void)gossip_signal_field_observe_view(w, ship_knowledge, st->pos);
 }
 
 void gossip_bootstrap_world_stations(world_t *w) {
     if (!w) return;
+    signal_field_init(&w->signal_field);
+    w->signal_field_decay_tick = w->tick;
     for (int s_idx = 0; s_idx < MAX_STATIONS; s_idx++) {
         if (!station_is_active(&w->stations[s_idx])) continue;
         gossip_seed_station_local_pressure(w, s_idx, false);
@@ -1380,6 +1454,18 @@ int gossip_ship_contact_exchange(world_t *w) {
                                           &b->known_contract_count);
             knowledge_view_exchange(&a->knowledge, &b->knowledge);
             gossip_hnn_ship_contact_exchange(a, b);
+            vec2 contact_pos = v2_scale(v2_add(a->ship.pos, b->ship.pos),
+                                        0.5f);
+            (void)gossip_signal_field_observe_view(w, &a->knowledge,
+                                                   contact_pos);
+            (void)gossip_signal_field_observe_view(w, &b->knowledge,
+                                                   contact_pos);
+            if (a->hnn_market_mem.experience_count > 0 ||
+                b->hnn_market_mem.experience_count > 0) {
+                (void)signal_field_observe(&w->signal_field, contact_pos,
+                                           SIGNAL_FIELD_KIND_HOLOGRAM,
+                                           0.35f, w->tick);
+            }
             contacts++;
         }
     }
@@ -1507,8 +1593,15 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
 
     int station_market_stored =
         gossip_hnn_store_market_view(&st->hnn_market_memory, &st->knowledge);
-    if (station_market_stored > 0)
+    if (station_market_stored > 0) {
         st->hnn_market_version++;
+        (void)signal_field_observe(&w->signal_field, st->pos,
+                                   SIGNAL_FIELD_KIND_HOLOGRAM,
+                                   gossip_clampf((float)station_market_stored *
+                                                 0.18f,
+                                                 0.18f, 0.72f),
+                                   w->tick);
+    }
 
     if (npc->brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
         gossip_hnn_decay_market_memory(&npc->hnn_market_mem,
@@ -1522,6 +1615,9 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
             gossip_hnn_bundle_market_memory(&st->hnn_market_memory,
                                             &npc->hnn_market_mem);
             st->hnn_market_version++;
+            (void)signal_field_observe(&w->signal_field, st->pos,
+                                       SIGNAL_FIELD_KIND_HOLOGRAM,
+                                       0.45f, w->tick);
         }
         if (st->hnn_market_memory.experience_count > 0 &&
             (npc->hnn_market_station != (uint8_t)station_idx ||

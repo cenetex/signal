@@ -11099,11 +11099,30 @@ static void server_player_apply_queued_movement(server_player_t *sp,
     }
 }
 
+enum {
+    SIGNAL_FIELD_DECAY_STEP_TICKS = 120u,
+    SIGNAL_FIELD_DECAY_HALF_LIFE_TICKS = 120u * 60u,
+};
+
+static void step_signal_field_decay(world_t *w) {
+    if (!w) return;
+    if (w->signal_field_decay_tick == 0u) {
+        w->signal_field_decay_tick = w->tick;
+        return;
+    }
+    if (w->tick - w->signal_field_decay_tick < SIGNAL_FIELD_DECAY_STEP_TICKS)
+        return;
+    signal_field_decay(&w->signal_field, w->tick,
+                       SIGNAL_FIELD_DECAY_HALF_LIFE_TICKS);
+    w->signal_field_decay_tick = w->tick;
+}
+
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     sim_interactions_clear(w);
     w->tick++;
     w->time += dt;
+    step_signal_field_decay(w);
     step_station_ring_dynamics(w, dt);
     step_station_jostle(w, dt);
     sim_step_asteroid_dynamics(w, dt);
