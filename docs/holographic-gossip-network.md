@@ -361,6 +361,11 @@ Detailed gossip provenance belongs in inspect/debug surfaces:
    route memory while preserving station-local recent event context.
 8. Deepen starter traffic and no-omniscience soak coverage now that reset/load
    bootstrap seeds station-local pressure without peer-station broadcasts.
+   `scripts/check_no_omniscience_soak.py` is the first named proof gate: it
+   runs a broad fresh-world active-worker soak plus focused HNN worker
+   specialization fixtures twice each, requires byte-identical replay output,
+   and asserts local knowledge/HNN-memory transport plus route or useful worker
+   outcomes.
 
 ## Acceptance Shape
 
@@ -382,6 +387,13 @@ world with these properties:
    read-only station HISTORY tab can expose aggregate and recent route-history
    summaries as read-only context with human-readable route/action/evidence
    labels, never as payout or inventory authority.
+
+Run the current no-omniscience proof gate with:
+
+```sh
+cmake --build build --target signal_replay --parallel
+python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
+```
 
 ## Non-Goals
 
