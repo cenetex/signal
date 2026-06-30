@@ -142,6 +142,7 @@ set(SIGNAL_SIM_HELPERS
     shared/trade_paging.c
     shared/settlement_engine.c
     shared/holographic_nn.c
+    shared/signal_field.c
     shared/npc_radio.c
 )
 
@@ -277,6 +278,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_inspect_anim.c
         tests/c/test_inspect_labels.c
         tests/c/test_route_history_labels.c
+        tests/c/test_signal_field.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         client/identity.c

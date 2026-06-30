@@ -251,6 +251,29 @@ Build contract:
 - resonance explanations should point back to the closest structured memory
   when one is locally available
 
+## Spatial Signal-Memory Field
+
+The first 2D memory substrate is `shared/signal_field.h`. It maps world
+positions into a bounded cell grid and stores typed, decaying impressions for
+demand, supply, route, proof, hologram, and risk pressure. Queries are local:
+a memory observed in one cell can influence adjacent cells through an explicit
+radius, but it does not become global truth.
+
+The field exposes capacity diagnostics alongside the memory itself:
+
+- occupied slots
+- capacity load
+- top signal strength
+- top-1/top-2 margin
+- estimated recall SNR
+- noisy/overloaded warning
+
+This is intentionally runtime memory substrate, not station authority. It is
+safe to render, inspect, score, and decay. It must not pay, verify, or mutate
+ledgers. Future slices can feed station-local or worker-local observations into
+this grid, then use the same diagnostics to surface "memory is getting noisy"
+in-game before the holographic layer starts trusting it.
+
 ## Worker Decision Loop
 
 Every neural worker should eventually follow this shape:
@@ -366,6 +389,10 @@ Detailed gossip provenance belongs in inspect/debug surfaces:
    specialization fixtures twice each, requires byte-identical replay output,
    and asserts local knowledge/HNN-memory transport plus route or useful worker
    outcomes.
+9. Add a 2D signal-memory field for runtime spatial impressions. Status:
+   `shared/signal_field.h` provides a bounded grid with local typed memory,
+   decay, capacity load, SNR, and top-1/top-2 margin diagnostics. It is not yet
+   fed by live station/worker observations or rendered in-game.
 
 ## Acceptance Shape
 

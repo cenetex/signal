@@ -76,6 +76,7 @@ void register_inspect_anim_tests(void);
 void register_inspect_label_tests(void);
 void register_route_history_label_tests(void);
 void register_settlement_engine_tests(void);
+void register_signal_field_tests(void);
 void register_gossip_tests(void);
 void register_npc_radio_tests(void);
 
@@ -199,6 +200,7 @@ int main(int argc, char **argv) {
     register_inspect_label_tests();
     register_route_history_label_tests();
     register_settlement_engine_tests();
+    register_signal_field_tests();
     register_gossip_tests();
     register_npc_radio_tests();
 
