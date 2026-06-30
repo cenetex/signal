@@ -1330,6 +1330,17 @@ static float hud_hnn_trace_snr(const NetInspectSnapshotRow *row) {
     return hud_hnn_trace_unit(row->cargo_pub[INSPECT_HNN_TRACE_SNR]) * 8.0f;
 }
 
+static uint16_t hud_read_u16_le(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint64_t hud_read_u64_le(const uint8_t *p) {
+    uint64_t value = 0;
+    for (int i = 7; i >= 0; i--)
+        value = (value << 8) | (uint64_t)p[i];
+    return value;
+}
+
 static ui_clarity_t hud_hnn_trace_clarity(const NetInspectSnapshotRow *row) {
     const uint8_t HI[3] = { PAL_CONTRACT_READY };
     const uint8_t LO[3] = { PAL_TEXT_FADED };
@@ -1389,6 +1400,31 @@ static void hud_hnn_trace_detail_label(const NetInspectSnapshotRow *row,
              (unsigned)row->quantity,
              (unsigned)(capacity ? capacity : HNN_TRACE_CAPACITY),
              snr, margin);
+}
+
+static void hud_hnn_trace_contract_label(const NetInspectSnapshotRow *row,
+                                         char *out,
+                                         size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!row) return;
+    uint16_t dim = hud_read_u16_le(
+        &row->cargo_pub[INSPECT_HNN_TRACE_DIM_LO]);
+    if (dim == 0)
+        dim = (uint16_t)hud_read_u16_le(&row->receipt_head[16]);
+    uint8_t keygen = row->cargo_pub[INSPECT_HNN_TRACE_KEYGEN_VERSION];
+    uint8_t encoder = row->cargo_pub[INSPECT_HNN_TRACE_ENCODER_VERSION];
+    uint8_t format = row->cargo_pub[INSPECT_HNN_TRACE_FORMAT_VERSION];
+    uint64_t seed = hud_read_u64_le(&row->receipt_head[0]);
+    uint64_t vocab = row->event_id ? row->event_id
+                                   : hud_read_u64_le(&row->receipt_head[8]);
+    snprintf(out, cap, "d%u k%u/e%u/t%u seed %04llx vocab %04llx",
+             (unsigned)(dim ? dim : HNN_DIM),
+             (unsigned)keygen,
+             (unsigned)encoder,
+             (unsigned)format,
+             (unsigned long long)(seed & 0xffffull),
+             (unsigned long long)(vocab & 0xffffull));
 }
 
 static void hud_job_top_signal_label(const NetInspectSnapshotRow *row,
@@ -1827,6 +1863,7 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     bool has_job = inspect_label_find_job_cause(snap, &cause);
     const NetInspectSnapshotRow *job = has_job ? cause.job : NULL;
     const NetInspectSnapshotRow *hnn_trace = hud_inspect_find_hnn_trace(snap);
+    if (hnn_trace) bg_h = 90.0f;
 
     int row_idx = has_job ? -1 : hud_inspect_ticker_pick_row(snap, cycle);
     char memory[96];
@@ -1942,6 +1979,13 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
         sdtx_printf("%s", trace);
     } else {
         sdtx_printf("%s %s", clarity.meter, clarity.word);
+    }
+    if (hnn_trace) {
+        char contract[96];
+        hud_hnn_trace_contract_label(hnn_trace, contract, sizeof(contract));
+        sdtx_pos(px / cell, (py + 74.0f) / cell);
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_puts(contract);
     }
 }
 
@@ -2227,8 +2271,10 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 ui_clarity_t trace_clarity = hud_hnn_trace_clarity(row);
                 char primary[96];
                 char detail[96];
+                char contract[112];
                 hud_hnn_trace_primary_label(row, primary, sizeof(primary));
                 hud_hnn_trace_detail_label(row, detail, sizeof(detail));
+                hud_hnn_trace_contract_label(row, contract, sizeof(contract));
                 float y = next_y;
                 sdtx_pos(px / cell, y / cell);
                 sdtx_color3b(trace_clarity.fg[0], trace_clarity.fg[1],
@@ -2241,7 +2287,10 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 sdtx_color3b(trace_clarity.dim[0], trace_clarity.dim[1],
                              trace_clarity.dim[2]);
                 sdtx_puts(detail);
-                next_y = y + 42.0f;
+                sdtx_pos(px / cell, (y + 36.0f) / cell);
+                sdtx_color3b(PAL_TEXT_FADED);
+                sdtx_puts(contract);
+                next_y = y + 54.0f;
                 continue;
             }
             uint8_t station_a = (uint8_t)(row->event_id & 0xFFu);
