@@ -1867,12 +1867,27 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
 
     int row_idx = has_job ? -1 : hud_inspect_ticker_pick_row(snap, cycle);
     char memory[96];
+    char job_card_action[96] = {0};
+    char job_card_source[96] = {0};
     ui_clarity_t clarity = hud_job_clarity(NULL);
     if (job) {
         clarity = hud_job_clarity(job);
-        char why[48];
-        hud_job_reason_label(job, why, sizeof(why));
-        snprintf(memory, sizeof(memory), "%s", why);
+        uint8_t source_idx = (uint8_t)(job->event_id & 0xFFu);
+        uint8_t dest_idx = (uint8_t)((job->event_id >> 8) & 0xFFu);
+        uint8_t commodity = (uint8_t)((job->event_id >> 24) & 0xFFu);
+        const char *job_source = (source_idx < MAX_STATIONS)
+            ? g.world.stations[source_idx].name : "?";
+        const char *job_dest = (dest_idx < MAX_STATIONS)
+            ? g.world.stations[dest_idx].name : "?";
+        const char *comm = (commodity < COMMODITY_COUNT)
+            ? commodity_short_name((commodity_t)commodity) : "work";
+        if (!inspect_label_job_contact_card(
+                job, comm, job_source, job_dest,
+                job_card_action, sizeof(job_card_action),
+                memory, sizeof(memory),
+                job_card_source, sizeof(job_card_source))) {
+            hud_job_reason_label(job, memory, sizeof(memory));
+        }
     } else if (hnn_trace) {
         hud_hnn_trace_primary_label(hnn_trace, memory, sizeof(memory));
         clarity = hud_hnn_trace_clarity(hnn_trace);
@@ -1922,13 +1937,7 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     const char *dest = (snap->dest_station < MAX_STATIONS)
         ? g.world.stations[snap->dest_station].name : "?";
     if (job) {
-        uint8_t commodity = (uint8_t)((job->event_id >> 24) & 0xFFu);
-        const char *comm = (commodity < COMMODITY_COUNT)
-            ? commodity_short_name((commodity_t)commodity) : "work";
-        sdtx_printf("%s %s  %s",
-                    hud_npc_role_label(snap->role),
-                    hud_npc_state_label(snap->state),
-                    comm);
+        sdtx_puts(job_card_action[0] ? job_card_action : "selected work");
     } else {
         sdtx_printf("%s %s  %.10s > %.10s",
                     hud_npc_role_label(snap->role),
@@ -1941,13 +1950,10 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
                  job ? clarity.fg[1] : clarity.dim[1],
                  job ? clarity.fg[2] : clarity.dim[2]);
     if (job) {
-        uint8_t source_idx = (uint8_t)(job->event_id & 0xFFu);
-        uint8_t dest_idx = (uint8_t)((job->event_id >> 8) & 0xFFu);
-        const char *job_source = (source_idx < MAX_STATIONS)
-            ? g.world.stations[source_idx].name : home;
-        const char *job_dest = (dest_idx < MAX_STATIONS)
-            ? g.world.stations[dest_idx].name : dest;
-        sdtx_printf("route %.10s > %.10s", job_source, job_dest);
+        sdtx_printf("%s %s  home %.10s",
+                    hud_npc_role_label(snap->role),
+                    hud_npc_state_label(snap->state),
+                    home);
     } else {
         sdtx_printf("%c MEMORY", stream);
     }
@@ -1960,7 +1966,13 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
     if (job) {
         char source_chain[72];
-        if (hud_job_source_chain_label(job, source_chain, sizeof(source_chain))) {
+        if (job_card_source[0]) {
+            char source_seen[96];
+            ui_clarity_degrade_text(job_card_source, clarity.clarity,
+                                    (uint32_t)(job->event_id & 0xffffffffu),
+                                    source_seen, sizeof(source_seen));
+            sdtx_printf("%s", source_seen);
+        } else if (hud_job_source_chain_label(job, source_chain, sizeof(source_chain))) {
             char source_seen[72];
             ui_clarity_degrade_text(source_chain, clarity.clarity,
                                     (uint32_t)(job->event_id & 0xffffffffu),

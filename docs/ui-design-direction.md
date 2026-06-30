@@ -91,6 +91,11 @@ The hidden rule: a slack release does ~0 damage; the player must deep-stretch th
 
 ### P1 — NPC contact readout ("read their story")
 
+Current selected-job scans use this shape: callsign/clarity, action +
+destination, role/state + home, "because ..." motive, then route-memory/proof
+source when available. Keep the contact card stable and legible before adding
+more worker autonomy.
+
 Replace the hash/diagnostic dump shown on scan/hail with a small contact card in the clarity grammar. Fresh, close contact:
 
 ```

@@ -262,6 +262,45 @@ static inline bool inspect_label_job_source_chain(
     return true;
 }
 
+static inline bool inspect_label_job_contact_card(
+    const NetInspectSnapshotRow *job,
+    const char *commodity_name,
+    const char *source_station,
+    const char *dest_station,
+    char *line1,
+    size_t line1_cap,
+    char *line2,
+    size_t line2_cap,
+    char *line3,
+    size_t line3_cap) {
+    if (!job) return false;
+    if (line1 && line1_cap > 0) line1[0] = '\0';
+    if (line2 && line2_cap > 0) line2[0] = '\0';
+    if (line3 && line3_cap > 0) line3[0] = '\0';
+
+    const char *kind = inspect_label_job_kind(job->commodity);
+    const char *commodity =
+        (commodity_name && commodity_name[0]) ? commodity_name : "work";
+    const char *source =
+        (source_station && source_station[0]) ? source_station : "?";
+    const char *dest = (dest_station && dest_station[0]) ? dest_station : "?";
+
+    if (line1 && line1_cap > 0) {
+        snprintf(line1, line1_cap, "%s %s -> %.12s",
+                 kind, commodity, dest);
+    }
+    if (line2 && line2_cap > 0) {
+        snprintf(line2, line2_cap, "because %s",
+                 inspect_label_job_reason(
+                     job->cargo_pub[INSPECT_JOB_META_REASON]));
+    }
+    if (line3 && line3_cap > 0) {
+        if (!inspect_label_job_source_chain(job, source, line3, line3_cap))
+            snprintf(line3, line3_cap, "source: local scan");
+    }
+    return true;
+}
+
 static inline bool inspect_label_market_source_chain(
     const NetInspectSnapshotRow *row,
     char *out,

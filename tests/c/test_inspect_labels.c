@@ -204,6 +204,36 @@ TEST(test_inspect_job_detail_lines_are_compact_and_explanatory) {
     ASSERT(strcmp(links[1], "link: 2/2 ev7102 80818283>b0b1b2b3") == 0);
 }
 
+TEST(test_inspect_job_contact_card_leads_with_action_motive_and_source) {
+    NetInspectSnapshotRow job;
+    memset(&job, 0, sizeof(job));
+    job.commodity = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    job.flags = INSPECT_ROW_DIAGNOSTIC;
+    job.cargo_pub[INSPECT_JOB_META_REASON] =
+        (uint8_t)INSPECT_JOB_REASON_ROUTE_MEMORY;
+    job.cargo_pub[INSPECT_JOB_META_MEMORY_KIND] =
+        (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
+    job.cargo_pub[INSPECT_JOB_META_HOPS] = 2;
+    job.cargo_pub[INSPECT_JOB_META_AGE] = 17;
+    job.cargo_pub[INSPECT_JOB_META_PROOF_KIND] =
+        (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    for (int i = 0; i < 32; i++)
+        job.receipt_head[i] = (uint8_t)(0xC0 + i);
+
+    char action[64];
+    char motive[64];
+    char source[96];
+    ASSERT(inspect_label_job_contact_card(
+        &job, "Ferrite Ingots", "Prospect Refinery", "Kepler Yard",
+        action, sizeof(action),
+        motive, sizeof(motive),
+        source, sizeof(source)));
+    ASSERT(strcmp(action, "haul Ferrite Ingots -> Kepler Yard") == 0);
+    ASSERT(strcmp(motive, "because route memory") == 0);
+    ASSERT(strcmp(source,
+                  "heard route @Prospe h2 age17 anchor c0c1c2c3") == 0);
+}
+
 TEST(test_inspect_receipt_link_lines_can_page_local_rows) {
     NetInspectSnapshot snap;
     memset(&snap, 0, sizeof(snap));
@@ -498,6 +528,7 @@ void register_inspect_label_tests(void) {
     RUN(test_inspect_market_source_label_falls_back_to_subject);
     RUN(test_inspect_job_cause_stitches_source_and_receipt_rows);
     RUN(test_inspect_job_detail_lines_are_compact_and_explanatory);
+    RUN(test_inspect_job_contact_card_leads_with_action_motive_and_source);
     RUN(test_inspect_receipt_link_lines_can_page_local_rows);
     RUN(test_inspect_job_detail_marks_anchor_known_when_receipt_not_local);
     RUN(test_inspect_job_detail_labels_station_retrieved_receipt_chain);

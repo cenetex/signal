@@ -314,12 +314,12 @@ previous station. Repeat in multiplayer once known-ledger snapshots exist.
 
 ### 4. NPC Route Motive
 
-**Status:** Partial.
+**Status:** Improved, still partial.
 
 **Evidence of current strength:**
 
-- NPC inspect cards already render a contact surface with role, state, home,
-  destination, memory stream, clarity meter, and degraded text.
+- NPC inspect cards now lead selected worker jobs with action, commodity,
+  destination, motive, source chain, clarity meter, and degraded text.
 - Job rows compute "why" labels from job reason, proof prefix, and factor
   scores.
 - Clarity is derived from confidence, salience, and hops rather than printed as
@@ -327,36 +327,35 @@ previous station. Repeat in multiplayer once known-ledger snapshots exist.
 
 **Remaining gap:**
 
-The surface is still memory-stream first. It does not consistently answer the
-contact-card sentence:
+The selected-job surface now answers the contact-card sentence:
 
 ```text
 <who> is hauling <what> to <where> because <strongest state-grounded reason>
 ```
 
-The data exists across snapshot role/state, cargo rows, job cause rows, route
-history, and memory rows, but the first read is still distributed. A player can
-inspect long enough to infer motive; the card should make the motive the lead.
+The remaining gap is depth rather than first-read packaging. Cross-station proof
+follow-through and deeper route/source browsing are still thinner than the lead
+card, so a player can see why a worker is acting before they can always audit
+the whole remote relay chain.
 
 **Impact:**
 
-NPCs may still feel arbitrary even when the simulation has enough evidence to
-explain their work. This is especially harmful for solo play, where NPCs are
-the cast.
+NPCs are less likely to feel arbitrary on first scan, but weak source browsing
+can still make remote or stale decisions feel under-explained. This is
+especially harmful for solo play, where NPCs are the cast.
 
-**Recommended implementation:**
+**Implemented contact-card shape:**
 
-Reframe `hud_draw_npc_memory_ticker()` as a contact card:
+`hud_draw_npc_memory_ticker()` now frames selected jobs as a contact card:
 
 - line 1: callsign plus clarity word/meter
-- line 2: role/state plus cargo if known
-- line 3: route or destination
-- line 4: strongest "why" from job reason/source chain
+- line 2: action, commodity, and destination
+- line 3: role/state plus home station
+- line 4: strongest "why" from job reason
 - line 5: route memory or proof source when available
 
-Keep degraded text and dim colors, but make the strongest known motive stable
-for the card lifetime rather than rotating the most interesting diagnostic row
-every 0.85 seconds.
+Keep extending the lower-detail panes toward full source browsing rather than
+adding stronger hidden worker autonomy.
 
 **Acceptance test:**
 
