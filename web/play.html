@@ -76,6 +76,7 @@
     <script>
       var canvas = document.getElementById('canvas');
       var signalBundleVersion = String(Date.now());
+      var signalWasmReady = false;
 
       function signalVersionedAsset(path) {
         var join = path.indexOf('?') === -1 ? '?' : '&';
@@ -102,22 +103,34 @@
           } else {
             console.error(line);
           }
+        },
+        onRuntimeInitialized: function() {
+          signalWasmReady = true;
+          window.SignalGameWasmReady = true;
+          document.getElementById('loading').classList.add('done');
+          signalFocusCanvas();
         }
       };
 
       window.SignalGameModule = Module;
+      window.SignalGameWasmReady = false;
 
       function signalWasmCall(name, returnType, argTypes, args) {
         try {
           var m = window.SignalGameModule || window.Module;
-          if (m && typeof m.ccall === 'function') {
-            return m.ccall(name, returnType || null, argTypes || [], args || []);
-          }
           if (m && typeof m['_' + name] === 'function') {
             return m['_' + name].apply(m, args || []);
           }
+          if (!signalWasmReady && !window.SignalGameWasmReady) {
+            return null;
+          }
+          if (m && typeof m.ccall === 'function') {
+            return m.ccall(name, returnType || null, argTypes || [], args || []);
+          }
         } catch (err) {
-          console.warn('[input] wasm call failed: ' + name, err);
+          if (!/func is not a function|unknown function|missing function/i.test(String(err && err.message || err))) {
+            console.warn('[input] wasm call failed: ' + name, err);
+          }
         }
         return null;
       }
@@ -264,10 +277,7 @@
       }
 
       function loadGame(src) {
-        loadScript(src, function() {
-          document.getElementById('loading').classList.add('done');
-          signalFocusCanvas();
-        });
+        loadScript(src);
       }
 
       function failBundle(message) {

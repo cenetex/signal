@@ -95,6 +95,22 @@
     return window.SignalGameModule || window.Module;
   }
 
+  function wasmCall(name, returnType, argTypes, args) {
+    var m = gameModule();
+    try {
+      if (m && typeof m["_" + name] === "function") {
+        return m["_" + name].apply(m, args || []);
+      }
+      if (!window.SignalGameWasmReady) return null;
+      if (m && typeof m.ccall === "function") {
+        return m.ccall(name, returnType || null, argTypes || [], args || []);
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
   function canvas() {
     var m = gameModule();
     return (m && m.canvas) || document.getElementById("canvas");
@@ -117,10 +133,8 @@
   }
 
   function send(action, down) {
-    var m = gameModule();
-    if (m && typeof m.ccall === "function") {
-      m.ccall("signal_mobile_key", null, ["number", "number"], [action, down ? 1 : 0]);
-    } else {
+    if (wasmCall("signal_mobile_key", null, ["number", "number"],
+                 [action, down ? 1 : 0]) === null) {
       fallbackKey(action, down);
     }
   }
@@ -130,10 +144,7 @@
       var el = controls[name];
       if (el && el.signalTouchRelease) el.signalTouchRelease();
     });
-    var m = gameModule();
-    if (m && typeof m.ccall === "function") {
-      m.ccall("signal_mobile_clear", null, [], []);
-    }
+    wasmCall("signal_mobile_clear", null, [], []);
   }
 
   function tap(action) {
@@ -156,24 +167,14 @@
   }
 
   function mobileFlags() {
-    var m = gameModule();
-    if (!m || typeof m.ccall !== "function") return fallbackFlags();
-    try {
-      return m.ccall("signal_mobile_control_flags", "number", [], []) | 0;
-    } catch (_) {
-      return fallbackFlags();
-    }
+    var flags = wasmCall("signal_mobile_control_flags", "number", [], []);
+    return flags === null ? fallbackFlags() : (flags | 0);
   }
 
   function mobileDigitMask(flags) {
-    var m = gameModule();
     if (!has(flags, FLAG.canDigits)) return 0;
-    if (!m || typeof m.ccall !== "function") return 31;
-    try {
-      return m.ccall("signal_mobile_digit_mask", "number", [], []) | 0;
-    } catch (_) {
-      return 31;
-    }
+    var mask = wasmCall("signal_mobile_digit_mask", "number", [], []);
+    return mask === null ? 31 : (mask | 0);
   }
 
   function button(label, action, mode, className, controlName) {
