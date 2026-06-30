@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -104,6 +104,9 @@ replay-repeatability: build-signal-replay
 
 replay-repeatability-long: build-signal-replay
 	python3 scripts/check_replay_repeatability.py ./build/signal_replay --scenario-set long
+
+signal-no-omniscience-soak: build-signal-replay
+	python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
 
 build-signal-replay-wasm:
 	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH)

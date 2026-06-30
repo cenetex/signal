@@ -88,25 +88,30 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   mine/haul/tow/proof/scout/repair rows, HNN-backed rows per job family,
   worker travel/towing/cargo state counts, NPC-owned delivery-shipment status
   counts, scaffold loose/towing/snapping/placed counts, station/NPC knowledge
-  sizes, station/NPC known-contract counts, station/NPC HNN market trace
-  stored counts, station flight-experience stored count, version sums, and max
-  trace loads. The `signal.replay_ai_memory.v2` rows also include branch-wide
-  bounded counters: active NPC ticks, selected/HNN diagnostic row peaks,
-  selected assignment ticks by job family, HNN-backed assignment ticks, route
-  support ticks, worker motion ticks, worker cargo ticks, scaffold-motion
-  ticks, delivery-shipment ticks, and useful-outcome ticks. The state hash also
-  includes station/NPC knowledge, job
+  sizes, station/NPC known-contract counts, station-held remote contract and
+  remote market-memory counts, station/NPC HNN market trace stored counts,
+  station flight-experience stored count, version sums, spatial signal-field
+  load/noise/margin/SNR diagnostics, and max trace loads. The
+  `signal.replay_ai_memory.v4` rows also include branch-wide bounded counters:
+  active NPC ticks, selected/HNN diagnostic row peaks, selected assignment
+  ticks by job family, HNN-backed assignment ticks, route support ticks, worker
+  motion ticks, worker cargo ticks, scaffold-motion ticks, delivery-shipment
+  ticks, and useful-outcome ticks. The state hash also includes station/NPC knowledge, job
   diagnostics, and HNN trace bodies so cognition drift changes the replay hash
   rather than only the display counters.
 - `authority`: currently `deterministic_seed_prefix_replay`.
 
 The fast repeatability gate includes focused active-worker fixtures for
-`worker-tow-hnn`, `worker-repair-hnn`, and `worker-delivery-proof-hnn`. The tow
-fixture requires an HNN-backed scaffold pickup. The repair fixture requires an
-HNN-backed repair assignment and fails unless the worker actually consumes
-repair kits and recovers hull. The delivery-proof fixture requires an
-HNN-backed delivery-proof assignment, real bound-cargo pickup, destination
-delivery, receipt memory emission, and origin proof clearing.
+`worker-tow-hnn`, `worker-repair-hnn`, `worker-delivery-proof-hnn`, and
+`worker-gossip-courier`. The tow fixture requires an HNN-backed scaffold
+pickup. The repair fixture requires an HNN-backed repair assignment and fails
+unless the worker actually consumes repair kits and recovers hull. The
+delivery-proof fixture requires an HNN-backed delivery-proof assignment, real
+bound-cargo pickup, destination delivery, receipt memory emission, and origin
+proof clearing. The gossip-courier fixture starts with a contract known only at
+one station and fails unless a worker physically carries that contract and its
+market-memory impression into a different station, where the spatial
+signal-field records the received demand locally.
 
 The hashes include the world tick/time, belt seed, player ship state, cargo
 manifest, station identity, station inventory cache, fracture claim windows,

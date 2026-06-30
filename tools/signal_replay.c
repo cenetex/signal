@@ -49,6 +49,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN,
     SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN,
     SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN,
+    SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -160,6 +161,8 @@ typedef struct {
     int npc_knowledge_items;
     int station_known_contracts;
     int station_knowledge_items;
+    int station_remote_known_contracts;
+    int station_remote_market_memory_items;
     int npc_hnn_market_stored;
     int station_hnn_market_stored;
     int npc_hnn_flight_stored;
@@ -272,7 +275,7 @@ static void sr_usage(FILE *fp)
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -453,12 +456,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN;
         return true;
     }
+    if (strcmp(text, "worker-gossip-courier") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER:
+        return "worker-gossip-courier";
     case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN:
         return "worker-delivery-proof-hnn";
     case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN:
@@ -792,6 +801,11 @@ static void sr_reset_worker_fixture_state(world_t *w)
     w->npc_respawn_timer = 3600.0f;
     w->frontier_virtual_pilots = 0;
 }
+
+static int sr_station_remote_market_memory_items(
+    const knowledge_view_t *view, int local_station);
+static int sr_station_remote_known_contracts(
+    const contract_summary_t *contracts, int count, int cap, int local_station);
 
 static bool sr_setup_provenance_script(const sr_config_t *config,
                                        world_t *w,
@@ -1363,6 +1377,86 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         if (!knowledge_item_from_market_memory(&demand, &item))
             return false;
         knowledge_view_insert(&npc->knowledge, &item);
+        return true;
+    }
+    case SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER: {
+        const int source_station = 2;
+        const int receiving_station = 0;
+        int npc_slot;
+        npc_ship_t *npc;
+        ship_t *ship;
+
+        if (source_station >= w->station_count ||
+            receiving_station >= w->station_count) {
+            return false;
+        }
+
+        sr_reset_worker_fixture_state(w);
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            w->asteroids[i].active = false;
+
+        w->contracts[0] = (contract_t){
+            .active = true,
+            .action = CONTRACT_TRACTOR,
+            .station_index = (uint8_t)source_station,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity_needed = 3.0f,
+            .base_price = 120.0f,
+            .target_index = -1,
+            .claimed_by = -1,
+        };
+
+        gossip_bootstrap_world_stations(w);
+        if (w->stations[source_station].known_contract_count <= 0 ||
+            w->stations[receiving_station].known_contract_count != 0 ||
+            sr_station_remote_market_memory_items(
+                &w->stations[receiving_station].knowledge,
+                receiving_station) != 0) {
+            return false;
+        }
+
+        npc_slot = spawn_npc(w, source_station, NPC_ROLE_HAULER);
+        if (npc_slot < 0) return false;
+        npc = &w->npc_ships[npc_slot];
+        ship = world_npc_ship_for(w, npc_slot);
+        if (!ship) return false;
+
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = 0.0f;
+        npc->known_contract_count = 0;
+        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
+        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
+        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        hnn_memory_init(&npc->hnn_market_mem);
+        npc->hnn_market_station = 0xffu;
+        npc->hnn_market_version = 0;
+        npc->hnn_market_decay_tick = 0;
+
+        gossip_dock_handshake(w, source_station,
+                              npc->known_contracts,
+                              &npc->known_contract_count,
+                              SHIP_KNOWN_CONTRACT_CAP,
+                              &npc->knowledge);
+        if (npc->known_contract_count <= 0 ||
+            sr_station_remote_market_memory_items(&npc->knowledge,
+                                                  receiving_station) <= 0) {
+            return false;
+        }
+
+        npc->dest_station = receiving_station;
+        npc->pickup_station = -1;
+        npc->pickup_commodity = COMMODITY_COUNT;
+        npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
+        npc->state = NPC_STATE_UNLOADING;
+        npc->state_timer = 0.0f;
+        npc->ship.pos = station_approach_target(
+            &w->stations[receiving_station], npc->ship.pos);
+        npc->ship.vel = v2(0.0f, 0.0f);
+        npc->ship.hull = npc_max_hull(npc);
+        npc->hull = npc->ship.hull;
+        ship->pos = npc->ship.pos;
+        ship->vel = npc->ship.vel;
+        ship->hull = npc->ship.hull;
         return true;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
@@ -2575,6 +2669,36 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         return shipment->status == DELIVERY_SHIPMENT_CLEARED &&
                !w->contracts[0].active;
     }
+    case SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER: {
+        const int receiving_station = 0;
+        npc_ship_t *npc = NULL;
+        int courier_slot = -1;
+
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            if (!w->npc_ships[n].active) continue;
+            if (w->npc_ships[n].dest_station != receiving_station) continue;
+            courier_slot = n;
+            npc = &w->npc_ships[n];
+            break;
+        }
+        if (courier_slot < 0 || !npc) return false;
+
+        w->events.count = 0;
+        step_npc_ships(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+
+        return sr_station_remote_known_contracts(
+                   w->stations[receiving_station].known_contracts,
+                   w->stations[receiving_station].known_contract_count,
+                   STATION_KNOWN_CONTRACT_CAP,
+                   receiving_station) > 0 &&
+               sr_station_remote_market_memory_items(
+                   &w->stations[receiving_station].knowledge,
+                   receiving_station) > 0 &&
+               signal_field_query(&w->signal_field,
+                                  w->stations[receiving_station].pos,
+                                  SIGNAL_FIELD_KIND_DEMAND, 0) > 0.0f;
+    }
     case SR_PROVENANCE_SCRIPT_NONE:
     default:
         return true;
@@ -2730,6 +2854,49 @@ static void sr_ai_branch_observe(sr_ai_summary_t *out,
     if (useful > 0) b->worker_useful_outcome_ticks++;
 }
 
+static int sr_station_remote_known_contracts(
+    const contract_summary_t *contracts, int count, int cap, int local_station)
+{
+    int total = 0;
+    count = sr_clamped_u8_count(count, cap);
+    if (!contracts || local_station < 0 || local_station >= MAX_STATIONS)
+        return 0;
+    for (int i = 0; i < count; i++) {
+        const contract_summary_t *summary = &contracts[i];
+        if (!summary->active) continue;
+        if (summary->station_index >= MAX_STATIONS) continue;
+        if ((int)summary->station_index != local_station)
+            total++;
+    }
+    return total;
+}
+
+static bool sr_station_ref_is_remote(uint8_t station, int local_station)
+{
+    return station < MAX_STATIONS && (int)station != local_station;
+}
+
+static int sr_station_remote_market_memory_items(
+    const knowledge_view_t *view, int local_station)
+{
+    int total = 0;
+    int count;
+    if (!view || local_station < 0 || local_station >= MAX_STATIONS)
+        return 0;
+    count = sr_clamped_u8_count(view->count, KNOWLEDGE_VIEW_MAX_CAP);
+    for (int i = 0; i < count; i++) {
+        market_memory_t memory;
+        if (!market_memory_from_knowledge_item(&view->items[i], &memory))
+            continue;
+        if (!memory.active) continue;
+        if (sr_station_ref_is_remote(memory.station_a, local_station) ||
+            sr_station_ref_is_remote(memory.station_b, local_station)) {
+            total++;
+        }
+    }
+    return total;
+}
+
 static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
 {
     int station_count;
@@ -2769,6 +2936,13 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
             st->known_contract_count, STATION_KNOWN_CONTRACT_CAP);
         out->station_knowledge_items += sr_clamped_u8_count(
             st->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
+        out->station_remote_known_contracts +=
+            sr_station_remote_known_contracts(st->known_contracts,
+                                              st->known_contract_count,
+                                              STATION_KNOWN_CONTRACT_CAP,
+                                              s);
+        out->station_remote_market_memory_items +=
+            sr_station_remote_market_memory_items(&st->knowledge, s);
         if (st->hnn_market_memory.experience_count > 0) {
             out->station_hnn_market_stored +=
                 st->hnn_market_memory.experience_count;
@@ -3386,7 +3560,7 @@ static void sr_write_hnn_contract(FILE *out,
 static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
 {
     fprintf(out,
-            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v3\","
+            ",\"ai\":{\"schema\":\"signal.replay_ai_memory.v4\","
             "\"active_npcs\":%d,"
             "\"worker_diag_rows\":%d,"
             "\"worker_selected_rows\":%d,"
@@ -3424,6 +3598,8 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             "\"npc_knowledge_items\":%d,"
             "\"station_known_contracts\":%d,"
             "\"station_knowledge_items\":%d,"
+            "\"station_remote_known_contracts\":%d,"
+            "\"station_remote_market_memory_items\":%d,"
             "\"npc_hnn_market_stored\":%d,"
             "\"station_hnn_market_stored\":%d,"
             "\"npc_hnn_flight_stored\":%d,"
@@ -3471,6 +3647,8 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
             ai->npc_knowledge_items,
             ai->station_known_contracts,
             ai->station_knowledge_items,
+            ai->station_remote_known_contracts,
+            ai->station_remote_market_memory_items,
             ai->npc_hnn_market_stored,
             ai->station_hnn_market_stored,
             ai->npc_hnn_flight_stored,

@@ -4,7 +4,8 @@
 The generic replay-repeatability gate proves deterministic output. This gate
 adds product-shaped assertions: fresh active workers must move local memory and
 HNN market traces through replay-visible state, while focused fixtures must show
-HNN-backed worker specialization without relying on a global task oracle.
+HNN-backed worker specialization and physical cross-station gossip transport
+without relying on a global task oracle.
 """
 
 from __future__ import annotations
@@ -115,6 +116,25 @@ SCENARIOS = (
             "worker_useful_outcome_ticks": 1,
         },
     ),
+    Scenario(
+        name="worker-gossip-courier",
+        args=(
+            "--seed", "6613",
+            "--station", "0",
+            "--horizon-ticks", "1",
+            "--candidates", "NONE",
+            "--active-workers",
+            "--provenance-script", "worker-gossip-courier",
+        ),
+        thresholds={
+            "active_npcs": 1,
+            "station_known_contracts": 1,
+            "station_knowledge_items": 1,
+            "station_remote_known_contracts": 1,
+            "station_remote_market_memory_items": 1,
+            "signal_field_occupied_slots": 1,
+        },
+    ),
 )
 
 
@@ -155,6 +175,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, int]:
         "npc_knowledge_items",
         "station_known_contracts",
         "station_knowledge_items",
+        "station_remote_known_contracts",
+        "station_remote_market_memory_items",
         "npc_hnn_market_stored",
         "station_hnn_market_stored",
         "station_hnn_market_versions",
@@ -251,6 +273,8 @@ def main() -> int:
                 f"  {item['name']}: "
                 f"active={summary['active_npcs']} "
                 f"knowledge={summary['knowledge_items_total']} "
+                f"remote_contracts={summary['station_remote_known_contracts']} "
+                f"remote_memory={summary['station_remote_market_memory_items']} "
                 f"hnn_market={summary['hnn_market_stored_total']} "
                 f"field={summary['signal_field_occupied_slots']} "
                 f"motion={summary['worker_motion_ticks']} "
