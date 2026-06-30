@@ -109,7 +109,9 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 71  /* v71: backfill starter frame pods for live saves
+#define SAVE_VERSION 72  /* v72: backfill Kepler starter Laser Module reserve
+                          * for the first mining refit.
+                          * v71: backfill starter frame pods for live saves
                           * that were already rewritten after the v69
                           * Prospect shell seed but never received it.
                           * v70: cargo pod saves persist the folded frame
@@ -2033,6 +2035,14 @@ bool world_load(world_t *w, const char *path) {
         int seeded = world_ensure_starter_frame_pods(w);
         if (seeded > 0) {
             printf("[save] migrated v%d -> v71: restored %d starter frame pod%s\n",
+                   (int)version, seeded, seeded == 1 ? "" : "s");
+        }
+    }
+
+    if (version < 72) {
+        int seeded = world_ensure_starter_laser_module_reserve(w);
+        if (seeded > 0) {
+            printf("[save] migrated v%d -> v72: restored %d starter laser module%s\n",
                    (int)version, seeded, seeded == 1 ? "" : "s");
         }
     }

@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stddef.h>
+#include <string.h>
 #include "economy.h"
 #include "manifest.h"
 
@@ -136,7 +137,35 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     int at_station = station_finished_count(station, comm);
     if (in_cargo + at_station < units_needed) return false;
     int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
-    float credit_cost = (float)from_station * station_sell_price(station, comm);
+    float credit_cost = upgrade_station_credit_cost(station, ship, upgrade,
+                                                    from_station);
     if (balance + FLOAT_EPSILON < credit_cost) return false;
     return true;
+}
+
+bool upgrade_uses_starter_refit_subsidy(const station_t* station,
+                                        const ship_t* ship,
+                                        ship_upgrade_t upgrade,
+                                        int station_units) {
+    if (!station || !ship || station_units <= 0) return false;
+    if (upgrade != SHIP_UPGRADE_MINING || ship->mining_level != 0)
+        return false;
+    if (strcmp(station->station_slug, "kepler") != 0)
+        return false;
+    return station_finished_count(station, COMMODITY_LASER_MODULE) >=
+           station_units;
+}
+
+float upgrade_station_credit_cost(const station_t* station,
+                                  const ship_t* ship,
+                                  ship_upgrade_t upgrade,
+                                  int station_units) {
+    if (!station || !ship || station_units <= 0) return 0.0f;
+    commodity_t comm =
+        (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
+    if (upgrade_uses_starter_refit_subsidy(station, ship, upgrade,
+                                           station_units)) {
+        return 0.0f;
+    }
+    return (float)station_units * station_sell_price(station, comm);
 }

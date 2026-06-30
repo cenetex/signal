@@ -8254,6 +8254,57 @@ TEST(test_scenario_upgrade_requires_products) {
     ASSERT_EQ_INT(w.players[0].ship.mining_level, level_before + 1);
 }
 
+TEST(test_fresh_world_kepler_starter_laser_refit_bootstrap) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x02, 8);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+
+    server_player_t *sp = &w.players[0];
+    station_t *kepler = &w.stations[1];
+    int need = (int)ceilf(upgrade_product_cost(&sp->ship,
+                                               SHIP_UPGRADE_MINING));
+    ASSERT_EQ_INT(need, 8);
+    ASSERT_EQ_INT(station_finished_count(kepler,
+                                         COMMODITY_LASER_MODULE), need);
+    ASSERT(upgrade_uses_starter_refit_subsidy(
+        kepler, &sp->ship, SHIP_UPGRADE_MINING, need));
+    ASSERT_EQ_FLOAT(upgrade_station_credit_cost(
+        kepler, &sp->ship, SHIP_UPGRADE_MINING, need), 0.0f, 0.001f);
+    ASSERT(can_afford_upgrade(kepler, &sp->ship,
+                              SHIP_UPGRADE_MINING, 0.0f));
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
+    ASSERT(!mining_level_can_fracture_asteroid(sp->ship.mining_level,
+                                               &w.asteroids[0]));
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
+    ASSERT(!mining_level_can_fracture_asteroid(sp->ship.mining_level,
+                                               &w.asteroids[0]));
+
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+    sp->ship.pos = kepler->pos;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->input.upgrade_mining = true;
+    world_sim_step(&w, SIM_DT);
+    sp->input.upgrade_mining = false;
+
+    ASSERT_EQ_INT(sp->ship.mining_level, 1);
+    ASSERT_EQ_INT(station_finished_count(kepler,
+                                         COMMODITY_LASER_MODULE), 0);
+
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
+    ASSERT(mining_level_can_fracture_asteroid(sp->ship.mining_level,
+                                              &w.asteroids[0]));
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
+    ASSERT(!mining_level_can_fracture_asteroid(sp->ship.mining_level,
+                                               &w.asteroids[0]));
+}
+
 TEST(test_scenario_emergency_recovery) {
     WORLD_DECL;
     world_reset(&w);
@@ -9008,6 +9059,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_sim_step_mining_damages_asteroid);
     RUN(test_mining_laser_size_gate_starts_at_m);
     RUN(test_mining_laser_material_gate_requires_upgrades);
+    RUN(test_fresh_world_kepler_starter_laser_refit_bootstrap);
     RUN(test_world_sim_step_laser_scans_cargo_pod);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_hopper_path_retired);

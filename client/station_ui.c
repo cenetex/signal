@@ -163,10 +163,6 @@ static int station_manifest_count_cg(const station_t *st,
 static int ship_manifest_count_c(const ship_t *ship, commodity_t commodity);
 static float ship_manifest_backed_cargo_volume(const ship_t *ship);
 static void ui_station_name_short(int station_index, char *out, size_t cap);
-static bool can_afford_upgrade_manifest_ui(const station_t *station,
-                                           const ship_t *ship,
-                                           ship_upgrade_t upgrade,
-                                           float balance);
 
 static void ui_join_module_inputs(module_inputs_t req, char *out, size_t cap)
 {
@@ -495,6 +491,21 @@ bool station_laser_refit_summary(char *out, size_t out_size)
     int short_by = ui.mining_units_needed -
         (ui.mining_units_in_cargo + ui.mining_units_at_station);
     if (short_by < 0) short_by = 0;
+    int from_station = ui.mining_units_needed -
+        (ui.mining_units_needed < ui.mining_units_in_cargo
+             ? ui.mining_units_needed
+             : ui.mining_units_in_cargo);
+    if (from_station < 0) from_station = 0;
+
+    if (upgrade_uses_starter_refit_subsidy(ui.station, ship,
+                                           SHIP_UPGRADE_MINING,
+                                           from_station)) {
+        snprintf(out, out_size,
+                 "Kepler starter reserve ready: %d Laser Modules; %s",
+                 ui.mining_units_at_station,
+                 ui_upgrade_effect_label(SHIP_UPGRADE_MINING, ship));
+        return true;
+    }
 
     if (has_source && has_gate) {
         snprintf(out, out_size,
@@ -786,7 +797,9 @@ void build_station_ui_state(station_ui_state_t* ui) {
         int from_station = need - (need < in_cargo ? need : in_cargo);
         if (from_station < 0) from_station = 0;
         float credit = ui->station
-            ? (float)from_station * station_sell_price(ui->station, c) : 0.0f;
+            ? upgrade_station_credit_cost(ui->station, &LOCAL_PLAYER.ship,
+                                          slots[i].up, from_station)
+            : 0.0f;
         *slots[i].needed    = need;
         *slots[i].cargo     = in_cargo;
         *slots[i].atstation = at_station;
@@ -808,14 +821,14 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->kits_short_by = (hp_needed > kits_avail) ? (hp_needed - kits_avail) : 0;
     float bal = player_current_balance();
     ui->can_upgrade_mining =
-        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
-                                       SHIP_UPGRADE_MINING, bal);
+        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+                           SHIP_UPGRADE_MINING, bal);
     ui->can_upgrade_hold =
-        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
-                                       SHIP_UPGRADE_HOLD, bal);
+        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+                           SHIP_UPGRADE_HOLD, bal);
     ui->can_upgrade_tractor =
-        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
-                                       SHIP_UPGRADE_TRACTOR, bal);
+        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+                           SHIP_UPGRADE_TRACTOR, bal);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2037,23 +2050,6 @@ static void local_towed_cargo_volume_by_commodity(const ship_t *ship,
         out[pod->commodity] += (float)pod->quantity *
                                commodity_volume((commodity_t)pod->commodity);
     }
-}
-
-static bool can_afford_upgrade_manifest_ui(const station_t *station,
-                                           const ship_t *ship,
-                                           ship_upgrade_t upgrade,
-                                           float balance)
-{
-    if (!station || !ship) return false;
-    if (ship_upgrade_maxed(ship, upgrade)) return false;
-    commodity_t comm = (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
-    int units_needed = (int)ceilf(upgrade_product_cost(ship, upgrade));
-    int in_cargo = ship_manifest_count_c(ship, comm);
-    int at_station = station_manifest_count_c(station, comm);
-    if (in_cargo + at_station < units_needed) return false;
-    int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
-    float credit_cost = (float)from_station * station_sell_price(station, comm);
-    return balance + FLOAT_EPSILON >= credit_cost;
 }
 
 /* Representative SELL unit for a (commodity, grade) row. The server's
@@ -4111,6 +4107,12 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         int avail  = refit[i].in_cargo + refit[i].at_station;
         int needed = refit[i].needed;
         const char *plural = refit[i].unit_plural;
+        int from_station = needed -
+            (needed < refit[i].in_cargo ? needed : refit[i].in_cargo);
+        if (from_station < 0) from_station = 0;
+        bool starter_reserve =
+            upgrade_uses_starter_refit_subsidy(st, ship, refit[i].upgrade,
+                                               from_station);
         if (refit[i].can) {
             /* Actionable: show the hotkey + verb with cost. */
             if (refit[i].credit > 0)
@@ -4126,6 +4128,11 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                             COL_FADED,
                             ui_upgrade_effect_label(refit[i].upgrade, ship));
                 my += row_h;
+                if (starter_reserve) {
+                    draw_row_lr(cx, my, inner_right, COL_DIM, "source",
+                                COL_FADED, "Kepler starter reserve");
+                    my += row_h;
+                }
             }
             continue;
         }

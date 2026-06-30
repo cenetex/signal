@@ -2118,7 +2118,14 @@ static const uint8_t STARTER_KEPLER_FRAME_ORIGIN[8] =
     { 'K','E','P','L','E','R','v','1' };
 static const uint8_t STARTER_PROSPECT_FRAME_ORIGIN[8] =
     { 'P','R','O','S','H','E','L','L' };
+static const uint8_t STARTER_KEPLER_LASER_ORIGIN[8] =
+    { 'K','E','P','L','A','S','R','1' };
 enum { STARTER_FRAME_POD_UNITS = 16 };
+
+static int starter_laser_module_reserve_units(void) {
+    ship_t starter = {0};
+    return (int)ceilf(upgrade_product_cost(&starter, SHIP_UPGRADE_MINING));
+}
 
 static int world_seed_frame_pod_near(world_t *w,
                                      int station_idx,
@@ -2255,6 +2262,94 @@ int world_ensure_starter_frame_pods(world_t *w) {
         world_seed_prospect_frame_shell_pod(w) >= 0) {
         seeded++;
     }
+    return seeded;
+}
+
+static bool starter_laser_module_unit_for_index(uint16_t index,
+                                                cargo_unit_t *out) {
+    int reserve_units = starter_laser_module_reserve_units();
+    if (!out || index >= (uint16_t)reserve_units) return false;
+    if (!hash_legacy_migrate_unit(STARTER_KEPLER_LASER_ORIGIN,
+                                  COMMODITY_LASER_MODULE,
+                                  index, out)) {
+        return false;
+    }
+    out->origin_station = 1;
+    return true;
+}
+
+static bool starter_laser_module_unit_matches(const cargo_unit_t *unit,
+                                              uint16_t index) {
+    if (!unit || (commodity_t)unit->commodity != COMMODITY_LASER_MODULE)
+        return false;
+    cargo_unit_t expected = {0};
+    if (!starter_laser_module_unit_for_index(index, &expected)) return false;
+    return memcmp(unit->pub, expected.pub, sizeof(unit->pub)) == 0;
+}
+
+static bool world_has_starter_laser_module_index(const world_t *w,
+                                                 uint16_t index) {
+    if (!w) return false;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            if (starter_laser_module_unit_matches(&pod->manifest_units[u],
+                                                  index)) {
+                return true;
+            }
+        }
+    }
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        for (uint16_t u = 0; u < st->manifest.count; u++) {
+            if (starter_laser_module_unit_matches(&st->manifest.units[u],
+                                                  index)) {
+                return true;
+            }
+        }
+    }
+    for (int n = 0; n < MAX_SHIPS; n++) {
+        const ship_t *ship = &w->ships[n];
+        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+            if (starter_laser_module_unit_matches(&ship->manifest.units[u],
+                                                  index)) {
+                return true;
+            }
+        }
+    }
+    for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
+        const ship_t *ship = &w->ship_assets[a].ship;
+        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+            if (starter_laser_module_unit_matches(&ship->manifest.units[u],
+                                                  index)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int world_ensure_starter_laser_module_reserve(world_t *w) {
+    if (!w || !station_exists(&w->stations[1])) return 0;
+    station_t *kepler = &w->stations[1];
+    int reserve_units = starter_laser_module_reserve_units();
+    int existing = station_finished_count(kepler, COMMODITY_LASER_MODULE);
+    if (existing >= reserve_units) return 0;
+    if (!station_manifest_bootstrap(kepler)) return 0;
+
+    int seeded = 0;
+    for (uint16_t i = 0;
+         i < (uint16_t)reserve_units && existing + seeded < reserve_units;
+         i++) {
+        if (world_has_starter_laser_module_index(w, i)) continue;
+        cargo_unit_t unit = {0};
+        if (!starter_laser_module_unit_for_index(i, &unit)) continue;
+        if (!station_manifest_push_with_chain(kepler, &unit, NULL)) break;
+        seeded++;
+    }
+    if (seeded > 0)
+        station_finished_sync(kepler, COMMODITY_LASER_MODULE);
     return seeded;
 }
 
@@ -4074,7 +4169,8 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     int from_cargo   = (units_needed < in_cargo) ? units_needed : in_cargo;
     int from_station = units_needed - from_cargo;
 
-    float credit_cost = (float)from_station * station_sell_price(st, comm);
+    float credit_cost = upgrade_station_credit_cost(st, &sp->ship, upgrade,
+                                                    from_station);
     if (credit_cost > 0.0f) {
         bool can_afford = server_player_can_use_pubkey_persistence(sp) ?
             ledger_spend_by_pubkey(st, sp->pubkey, credit_cost, &sp->ship) :
@@ -11291,10 +11387,25 @@ void world_seed_station_manifests(world_t *w) {
         if (!station_exists(&w->stations[i])) continue;
         uint8_t origin[8] = { 'S','E','E','D','0','0','0','0' };
         origin[7] = (uint8_t)('0' + (i % 10));
-        manifest_migrate_legacy_inventory(&w->stations[i].manifest,
-                                          w->stations[i]._inventory_cache,
-                                          COMMODITY_COUNT, origin);
-        w->stations[i].manifest_dirty = true;
+        float missing[COMMODITY_COUNT] = {0};
+        bool has_missing = false;
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+            int inventory_units =
+                (int)floorf(w->stations[i]._inventory_cache[c] + 0.0001f);
+            int manifest_units =
+                manifest_count_by_commodity(&w->stations[i].manifest,
+                                            (commodity_t)c);
+            if (inventory_units > manifest_units) {
+                missing[c] = (float)(inventory_units - manifest_units);
+                has_missing = true;
+            }
+        }
+        if (has_missing) {
+            manifest_migrate_legacy_inventory(&w->stations[i].manifest,
+                                              missing, COMMODITY_COUNT,
+                                              origin);
+            w->stations[i].manifest_dirty = true;
+        }
     }
 }
 
@@ -11794,6 +11905,7 @@ void world_reset(world_t *w) {
     }
 
     (void)world_ensure_starter_frame_pods(w);
+    (void)world_ensure_starter_laser_module_reserve(w);
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to

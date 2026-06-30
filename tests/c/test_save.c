@@ -1894,6 +1894,60 @@ TEST(test_world_load_v70_does_not_duplicate_starter_frame_pods) {
     remove(TMP("test_v70_existing_starter_frames.sav"));
 }
 
+TEST(test_world_load_v71_backfills_missing_starter_laser_modules) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    ASSERT_EQ_INT(station_finished_drain(&w->stations[1],
+                                         COMMODITY_LASER_MODULE, 8), 8);
+    ASSERT_EQ_INT(station_finished_count(&w->stations[1],
+                                         COMMODITY_LASER_MODULE), 0);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_v71_missing_starter_lasers_cat")));
+    ASSERT(world_save(w, TMP("test_v71_missing_starter_lasers.sav")));
+    ASSERT(test_patch_world_save_version(
+        TMP("test_v71_missing_starter_lasers.sav"), 71));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS,
+        TMP("test_v71_missing_starter_lasers_cat")) > 0);
+    ASSERT(world_load(loaded, TMP("test_v71_missing_starter_lasers.sav")));
+    ASSERT_EQ_INT(station_finished_count(&loaded->stations[1],
+                                         COMMODITY_LASER_MODULE), 8);
+
+    remove(TMP("test_v71_missing_starter_lasers.sav"));
+}
+
+TEST(test_world_load_v71_does_not_duplicate_starter_laser_modules) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    ASSERT_EQ_INT(station_finished_count(&w->stations[1],
+                                         COMMODITY_LASER_MODULE), 8);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_v71_existing_starter_lasers_cat")));
+    ASSERT(world_save(w, TMP("test_v71_existing_starter_lasers.sav")));
+    ASSERT(test_patch_world_save_version(
+        TMP("test_v71_existing_starter_lasers.sav"), 71));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS,
+        TMP("test_v71_existing_starter_lasers_cat")) > 0);
+    ASSERT(world_load(loaded, TMP("test_v71_existing_starter_lasers.sav")));
+    ASSERT_EQ_INT(station_finished_count(&loaded->stations[1],
+                                         COMMODITY_LASER_MODULE), 8);
+
+    remove(TMP("test_v71_existing_starter_lasers.sav"));
+}
+
 TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -2039,8 +2093,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * Prospect also starts with a 16-frame shell pod for the starter
              * furnace loop.
              * v70: active cargo pods persist their folded shell-frame flag.
-             * v71: one-time starter frame pod backfill, no layout change. */
-			#define EXPECTED_SAVE_SIZE 766994
+             * v71: one-time starter frame pod backfill, no layout change.
+             * v72: Kepler starter Laser Module reserve adds eight
+             * manifest-backed cargo_unit_t rows. */
+			#define EXPECTED_SAVE_SIZE 767642
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2077,7 +2133,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 71);
+    ASSERT_EQ_INT((int)version, 72);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -2247,6 +2303,8 @@ void register_save_persistence_tests(void) {
     RUN(test_world_save_load_preserves_delivery_shipments);
     RUN(test_world_load_v70_backfills_missing_starter_frame_pods);
     RUN(test_world_load_v70_does_not_duplicate_starter_frame_pods);
+    RUN(test_world_load_v71_backfills_missing_starter_laser_modules);
+    RUN(test_world_load_v71_does_not_duplicate_starter_laser_modules);
     RUN(test_player_load_restores_towed_cargo_pods_from_world);
     RUN(test_contract_target_pub_roundtrips);
 }

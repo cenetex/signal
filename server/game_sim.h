@@ -996,6 +996,7 @@ int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
                                                 float rotation,
                                                 float spin);
 int world_ensure_starter_frame_pods(world_t *w);
+int world_ensure_starter_laser_module_reserve(world_t *w);
 bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
                                   commodity_t commodity);
 void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame);

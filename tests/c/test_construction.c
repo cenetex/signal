@@ -712,6 +712,9 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
@@ -756,6 +759,9 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
@@ -847,6 +853,9 @@ TEST(test_shipyard_commission_debits_player_ledger) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
@@ -1185,6 +1194,9 @@ TEST(test_shipyard_station_request_rejects_inventory_without_yard_hoppers) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
@@ -1208,6 +1220,9 @@ TEST(test_shipyard_player_commission_rejects_inventory_without_yard_hoppers) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
@@ -1311,7 +1326,8 @@ TEST(test_world_seed_station_manifests_matches_float) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < 3; i++) {
-        ASSERT_EQ_INT(w.stations[i].manifest.count, 0);
+        int expected = i == 1 ? 8 : 0;
+        ASSERT_EQ_INT(w.stations[i].manifest.count, expected);
     }
     world_seed_station_manifests(&w);
     for (int s = 0; s < 3; s++) {
@@ -1330,7 +1346,11 @@ TEST(test_kepler_starts_with_frame_pod_not_frame_inventory) {
 
     station_t *kepler = &w.stations[1];
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(kepler,
+                                         COMMODITY_LASER_MODULE), 8);
     ASSERT_EQ_FLOAT(kepler->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(kepler->_inventory_cache[COMMODITY_LASER_MODULE],
+                    8.0f, 0.001f);
 
     int frame_pod = -1;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
