@@ -3679,6 +3679,58 @@ TEST(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate) {
     ASSERT_EQ_INT(st->manifest.count, 0);
 }
 
+TEST(test_kepler_frame_press_accepts_player_repositioned_local_frame_crate) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    server_player_t *sp = &w.players[0];
+    int press_idx = -1;
+
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    vec2 press_pos = module_world_pos_ring(
+        st, st->modules[press_idx].ring, st->modules[press_idx].slot);
+    int frame_pod = test_spawn_frame_pod(
+        &w, v2_add(press_pos, v2(24.0f, 0.0f)), 1);
+    ASSERT(frame_pod >= 0);
+    w.cargo_pods[frame_pod].manifest_units[0].origin_station = 1;
+
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[frame_pod],
+                                            1, press_idx));
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->ship.pos = w.cargo_pods[frame_pod].pos;
+    sp->ship.tractor_active = true;
+    sp->input.tractor_hold = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], frame_pod);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].towed_by, 0);
+    ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[frame_pod]));
+
+    w.cargo_pods[frame_pod].pos = press_pos;
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].towed_by, -1);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[frame_pod],
+                                            1, press_idx));
+}
+
 TEST(test_furnace_accepts_player_towed_frame_shell_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -9080,6 +9132,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_hopper_accepts_player_towed_ingot_pod);
     RUN(test_frame_press_consumes_dock_held_ingot_pod);
     RUN(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate);
+    RUN(test_kepler_frame_press_accepts_player_repositioned_local_frame_crate);
     RUN(test_furnace_accepts_player_towed_frame_shell_pod);
     RUN(test_furnace_accepts_frame_shell_pod_near_smelt_beam);
     RUN(test_frame_shell_pod_targets_furnace_frame_hopper_lane);

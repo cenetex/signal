@@ -4939,6 +4939,9 @@ static void step_towed_pod_forces(world_t *w, server_player_t *sp, float dt) {
     }
 }
 
+static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
+                                                        const cargo_pod_t *pod);
+
 static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt) {
     step_towed_pod_forces(w, sp, dt);
 
@@ -4952,7 +4955,7 @@ static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt)
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
         if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
-        if (cargo_pod_has_module_tractor(pod)) continue;
+        if (!cargo_pod_module_tractor_player_collectible(w, pod)) continue;
         if (tow_filter != COMMODITY_COUNT && pod->commodity != tow_filter) continue;
         if (ship_is_towing_pod(&sp->ship, i)) continue;
         if (v2_dist_sq(sp->ship.pos, pod->pos) > tr_sq) continue;
@@ -5045,6 +5048,40 @@ static bool station_hopper_matches_pod(const station_t *st,
     const station_module_t *hopper = &st->modules[module_idx];
     if (hopper->scaffold || hopper->type != MODULE_HOPPER) return false;
     return (commodity_t)hopper->commodity == pod->commodity;
+}
+
+static bool cargo_pod_manifest_origin_station(const cargo_pod_t *pod,
+                                              int station_idx) {
+    if (!pod || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod->manifest_count == 0 ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t u = 0; u < pod->manifest_count; u++) {
+        if (pod->manifest_units[u].origin_station != (uint8_t)station_idx)
+            return false;
+    }
+    return true;
+}
+
+static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
+                                                        const cargo_pod_t *pod) {
+    int station_idx = -1;
+    int module_idx = -1;
+    if (!cargo_pod_has_module_tractor(pod)) return true;
+    if (!w || !cargo_pod_module_tractor_indices(pod, &station_idx,
+                                                &module_idx)) {
+        return false;
+    }
+    if (!cargo_pod_manifest_origin_station(pod, station_idx))
+        return false;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st) || module_idx >= st->module_count)
+        return false;
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold || module->type == MODULE_DOCK)
+        return false;
+    return module_instance_output(module) == pod->commodity;
 }
 
 static bool station_hopper_can_tractor_pod(const station_t *st,
@@ -5969,8 +6006,19 @@ static bool cargo_pod_try_acquire_module_tractor(world_t *w,
 
     int best_station = -1;
     int best_module = -1;
+    bool local_output_handoff = false;
+    int output_station = -1;
+    int output_module = -1;
+    if (cargo_pod_find_producer_output_module(w, pod,
+                                              &output_station,
+                                              &output_module) &&
+        cargo_pod_manifest_origin_station(pod, output_station)) {
+        best_station = output_station;
+        best_module = output_module;
+        local_output_handoff = true;
+    }
     bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
-    if (frame_pod) {
+    if (!local_output_handoff && frame_pod) {
         if (!cargo_pod_find_furnace_shell_hopper(w, pod,
                                                  &best_station,
                                                  &best_module)) {
@@ -6084,8 +6132,19 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
 
     int best_station = -1;
     int best_module = -1;
+    bool local_output_handoff = false;
+    int output_station = -1;
+    int output_module = -1;
+    if (cargo_pod_find_producer_output_module(w, pod,
+                                              &output_station,
+                                              &output_module) &&
+        cargo_pod_manifest_origin_station(pod, output_station)) {
+        best_station = output_station;
+        best_module = output_module;
+        local_output_handoff = true;
+    }
     bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
-    if (frame_pod) {
+    if (!local_output_handoff && frame_pod) {
         if (!cargo_pod_find_furnace_shell_hopper(w, pod,
                                                  &best_station,
                                                  &best_module)) {
@@ -6124,6 +6183,23 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
 
     server_player_t *sp = &w->players[pod->towed_by];
     station_t *st = &w->stations[best_station];
+    if (local_output_handoff) {
+        bool removed = false;
+        for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+            if (sp->ship.towed_pods[t] == pod_idx) {
+                remove_towed_pod_slot(&sp->ship, t);
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) return false;
+
+        pod->towed_by = -1;
+        cargo_pod_set_module_tractor(pod, best_station, best_module);
+        if (best_module >= 0 && best_module < MAX_MODULES_PER_STATION)
+            st->module_active_pulse[best_module] = 1.0f;
+        return true;
+    }
     if (!station_intake_pay_for_pod(w, sp, st, best_station, pod))
         return false;
 

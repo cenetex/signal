@@ -2018,13 +2018,26 @@ void draw_ship_tractor_field(void) {
     if (g.death_cinematic.active) return;
     float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
 
+    float now = g.world.time;
+    float field_dt = 0.0f;
+    if (g.tractor_field_last_time > 0.0f && now >= g.tractor_field_last_time)
+        field_dt = now - g.tractor_field_last_time;
+    if (field_dt > 0.05f) field_dt = 0.05f;
+    g.tractor_field_last_time = now;
+    if (LOCAL_PLAYER.ship.tractor_active) {
+        g.tractor_field_expand = clampf(g.tractor_field_expand +
+                                        field_dt / 0.30f, 0.0f, 1.0f);
+    } else {
+        g.tractor_field_expand = clampf(g.tractor_field_expand -
+                                        field_dt / 0.12f, 0.0f, 1.0f);
+    }
+
     float cue_prev = world_signal_visual_enter_cue();
     if (LOCAL_PLAYER.ship.tractor_active) {
-        /* Pulse ring: expands from ship to tractor range over ~0.3s */
-        float hold_time = g.world.time - g.input.tractor_press_time;
-        float expand = clampf(hold_time / 0.3f, 0.0f, 1.0f);
-        float radius = 20.0f + (tr - 20.0f) * expand;
-        float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
+        float expand = g.tractor_field_expand;
+        float ease = expand * expand * (3.0f - 2.0f * expand);
+        float radius = 20.0f + (tr - 20.0f) * ease;
+        float alpha = (0.6f - 0.25f * ease) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
         float shimmer = 0.5f + 0.5f * sinf(g.world.time * 13.0f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius * (0.94f + 0.04f * shimmer), 40,

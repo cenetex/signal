@@ -293,6 +293,8 @@ typedef struct {
     float collection_feedback_ore;
     int collection_feedback_fragments;
     float collection_feedback_timer;
+    float tractor_field_expand;     /* client-only visual expansion 0..1 */
+    float tractor_field_last_time;  /* world time sampled by renderer */
     /* Floating "+$N" popups spawned on SIM_EVENT_SELL. World-space text
      * that rises and fades over ~1.5s. Yellow for contract-priced sales,
      * grade-tinted otherwise. */
