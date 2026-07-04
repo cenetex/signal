@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal Splat Stress Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #eef4eb;
+      --muted: #97a39a;
+      --panel: rgba(8, 10, 10, 0.62);
+      --edge: rgba(221, 238, 217, 0.18);
+      --cyan: #67c9d1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 46%, rgba(28, 42, 40, 0.42), transparent 42%),
+        radial-gradient(circle at 74% 38%, rgba(82, 55, 30, 0.18), transparent 32%),
+        #050606;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      outline: none;
+    }
+
+    .topbar,
+    .readout {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      pointer-events: none;
+    }
+
+    .topbar {
+      top: 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .brand,
+    .controls,
+    .readout {
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 6px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand,
+    .controls {
+      pointer-events: auto;
+    }
+
+    .brand {
+      min-width: 260px;
+      padding: 10px 12px;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.3;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(58px, 1fr));
+      gap: 4px;
+      width: min(360px, 48vw);
+    }
+
+    button {
+      min-height: 30px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.055);
+      color: var(--ink);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: rgba(238, 244, 235, 0.28);
+      background: rgba(255, 255, 255, 0.10);
+    }
+
+    button[aria-pressed="true"] {
+      border-color: rgba(103, 201, 209, 0.64);
+      background: rgba(103, 201, 209, 0.16);
+      color: #e3fcff;
+    }
+
+    .signal {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 154px;
+      padding-left: 8px;
+      border-left: 1px solid var(--edge);
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 82px;
+      accent-color: var(--cyan);
+    }
+
+    .readout {
+      right: auto;
+      bottom: 16px;
+      display: none;
+      grid-template-columns: repeat(4, minmax(110px, 1fr));
+      max-width: min(740px, calc(100vw - 32px));
+      overflow: hidden;
+    }
+
+    .cell {
+      min-height: 64px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.035);
+      border-right: 1px solid rgba(221, 238, 217, 0.08);
+    }
+
+    .cell:last-child {
+      border-right: 0;
+    }
+
+    .cell b {
+      display: block;
+      margin-bottom: 6px;
+      color: #f6f0d0;
+      font-size: 11px;
+    }
+
+    .cell span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .fallback {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 28px;
+      background: #050606;
+      color: var(--ink);
+      text-align: center;
+    }
+
+    .fallback.visible {
+      display: grid;
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        flex-direction: column;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .segmented {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .signal {
+        border-left: 0;
+        border-top: 1px solid var(--edge);
+        padding: 8px 0 0;
+      }
+
+      .readout {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Signal hybrid splat prototype"></canvas>
+
+  <div class="topbar">
+    <div class="brand">
+      <strong>SIGNAL SPLAT STRESS TEST</strong>
+      <span>why splats need hard silhouettes</span>
+    </div>
+
+    <div class="controls" aria-label="Scene focus">
+      <div class="segmented" role="group">
+        <button type="button" data-focus="all" aria-pressed="true" title="Show all splat forms">ALL</button>
+        <button type="button" data-focus="ship" aria-pressed="false" title="Frame the ship">SHIP</button>
+        <button type="button" data-focus="rock" aria-pressed="false" title="Frame the asteroid">ROCK</button>
+        <button type="button" data-focus="station" aria-pressed="false" title="Frame the station">STATION</button>
+      </div>
+      <label class="signal">
+        SIGNAL
+        <input id="signal" type="range" min="0" max="100" value="84">
+      </label>
+    </div>
+  </div>
+
+  <div class="readout" aria-label="Hybrid render characteristics">
+    <div class="cell">
+      <b>SHIP</b>
+      <span>splat hull shell</span>
+      <span>hard heading read</span>
+    </div>
+    <div class="cell">
+      <b>ROCK</b>
+      <span>ferrite volume</span>
+      <span>hard fracture line</span>
+    </div>
+    <div class="cell">
+      <b>STATION</b>
+      <span>ring as splat rails</span>
+      <span>crisp dock lane</span>
+    </div>
+    <div class="cell">
+      <b>RULE</b>
+      <span>splats are visual</span>
+      <span>physics stays planar</span>
+    </div>
+  </div>
+
+  <div id="fallback" class="fallback">
+    <p>WebGL2 is unavailable in this browser.</p>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("scene");
+      const fallback = document.getElementById("fallback");
+      const gl = canvas.getContext("webgl2", {
+        antialias: true,
+        depth: false,
+        alpha: false,
+        preserveDrawingBuffer: true
+      });
+
+      if (!gl) {
+        fallback.classList.add("visible");
+        return;
+      }
+
+      const focusButtons = Array.from(document.querySelectorAll("[data-focus]"));
+      const signalSlider = document.getElementById("signal");
+      const focusTargets = {
+        all: { target: [0.14, 0.64, -0.02], distance: 6.8, yaw: 0.24, pitch: 0.43 },
+        ship: { target: [-2.46, 0.48, -0.30], distance: 2.8, yaw: -0.22, pitch: 0.36 },
+        rock: { target: [0.0, 0.66, 0.0], distance: 3.0, yaw: 0.42, pitch: 0.47 },
+        station: { target: [2.62, 0.50, 0.0], distance: 3.6, yaw: 0.08, pitch: 0.48 }
+      };
+
+      let focus = "all";
+      let camera = {
+        target: focusTargets.all.target.slice(),
+        distance: focusTargets.all.distance,
+        yaw: focusTargets.all.yaw,
+        pitch: focusTargets.all.pitch
+      };
+
+      focusButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          focus = button.dataset.focus;
+          focusButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+        });
+      });
+
+      const vertexShaderSource = `#version 300 es
+        in vec3 aPosition;
+        in vec3 aColor;
+        in float aSize;
+        in float aAlpha;
+
+        uniform mat4 uViewProj;
+        uniform vec3 uCamera;
+        uniform float uDpr;
+        uniform float uSignal;
+
+        out vec3 vColor;
+        out float vAlpha;
+        out float vDepthFade;
+
+        vec3 desaturate(vec3 color, float amount) {
+          float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          return mix(color, vec3(gray), amount);
+        }
+
+        void main() {
+          vec4 clip = uViewProj * vec4(aPosition, 1.0);
+          gl_Position = clip;
+          float perspective = 1.0 / max(clip.w, 0.22);
+          gl_PointSize = clamp(aSize * perspective * uDpr * 910.0, 1.4, 160.0);
+          float dist = length(uCamera - aPosition);
+          vDepthFade = smoothstep(16.0, 6.0, dist);
+          vColor = desaturate(aColor, (1.0 - uSignal) * 0.80);
+          vAlpha = aAlpha;
+        }
+      `;
+
+      const fragmentShaderSource = `#version 300 es
+        precision highp float;
+
+        in vec3 vColor;
+        in float vAlpha;
+        in float vDepthFade;
+
+        uniform float uSignal;
+
+        out vec4 outColor;
+
+        void main() {
+          vec2 p = gl_PointCoord * 2.0 - 1.0;
+          float r2 = dot(p, p);
+          if (r2 > 1.0) discard;
+          float gaussian = exp(-r2 * 3.45);
+          float core = exp(-r2 * 8.0);
+          vec3 lowSignalFog = vec3(0.030, 0.033, 0.032);
+          vec3 color = vColor * (0.68 + gaussian * 0.76) + vec3(0.44, 0.86, 0.88) * core * 0.085;
+          color = mix(lowSignalFog, color, vDepthFade * (0.80 + uSignal * 0.20));
+          float alpha = min(0.98, vAlpha * gaussian * (1.12 + core * 0.90));
+          outColor = vec4(color, alpha);
+        }
+      `;
+
+      const lineVertexShaderSource = `#version 300 es
+        in vec3 aPosition;
+        in vec4 aColor;
+
+        uniform mat4 uViewProj;
+        uniform float uSignal;
+
+        out vec4 vColor;
+
+        vec3 desaturate(vec3 color, float amount) {
+          float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          return mix(color, vec3(gray), amount);
+        }
+
+        void main() {
+          gl_Position = uViewProj * vec4(aPosition, 1.0);
+          vColor = vec4(desaturate(aColor.rgb, (1.0 - uSignal) * 0.50), aColor.a);
+        }
+      `;
+
+      const lineFragmentShaderSource = `#version 300 es
+        precision highp float;
+
+        in vec4 vColor;
+        out vec4 outColor;
+
+        void main() {
+          outColor = vColor;
+        }
+      `;
+
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader));
+        }
+        return shader;
+      }
+
+      function createProgram(vsSource, fsSource) {
+        const program = gl.createProgram();
+        gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+        return program;
+      }
+
+      const program = createProgram(vertexShaderSource, fragmentShaderSource);
+      const lineProgram = createProgram(lineVertexShaderSource, lineFragmentShaderSource);
+      const loc = {
+        position: gl.getAttribLocation(program, "aPosition"),
+        color: gl.getAttribLocation(program, "aColor"),
+        size: gl.getAttribLocation(program, "aSize"),
+        alpha: gl.getAttribLocation(program, "aAlpha"),
+        viewProj: gl.getUniformLocation(program, "uViewProj"),
+        camera: gl.getUniformLocation(program, "uCamera"),
+        dpr: gl.getUniformLocation(program, "uDpr"),
+        signal: gl.getUniformLocation(program, "uSignal")
+      };
+      const lineLoc = {
+        position: gl.getAttribLocation(lineProgram, "aPosition"),
+        color: gl.getAttribLocation(lineProgram, "aColor"),
+        viewProj: gl.getUniformLocation(lineProgram, "uViewProj"),
+        signal: gl.getUniformLocation(lineProgram, "uSignal")
+      };
+
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+
+      function createAttribute(location, size) {
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+        return buffer;
+      }
+
+      const buffers = {
+        position: createAttribute(loc.position, 3),
+        color: createAttribute(loc.color, 3),
+        size: createAttribute(loc.size, 1),
+        alpha: createAttribute(loc.alpha, 1)
+      };
+      gl.bindVertexArray(null);
+
+      const lineVao = gl.createVertexArray();
+      gl.bindVertexArray(lineVao);
+      const linePositionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, linePositionBuffer);
+      gl.enableVertexAttribArray(lineLoc.position);
+      gl.vertexAttribPointer(lineLoc.position, 3, gl.FLOAT, false, 0, 0);
+      const lineColorBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineColorBuffer);
+      gl.enableVertexAttribArray(lineLoc.color);
+      gl.vertexAttribPointer(lineLoc.color, 4, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+
+      const V3 = {
+        add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+        sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+        scale: (v, s) => [v[0] * s, v[1] * s, v[2] * s],
+        dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+        cross: (a, b) => [
+          a[1] * b[2] - a[2] * b[1],
+          a[2] * b[0] - a[0] * b[2],
+          a[0] * b[1] - a[1] * b[0]
+        ],
+        norm: (v) => {
+          const len = Math.hypot(v[0], v[1], v[2]) || 1;
+          return [v[0] / len, v[1] / len, v[2] / len];
+        },
+        mix: (a, b, t) => [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t
+        ]
+      };
+
+      const M4 = {
+        multiply: (a, b) => {
+          const out = new Float32Array(16);
+          for (let c = 0; c < 4; c++) {
+            for (let r = 0; r < 4; r++) {
+              out[c * 4 + r] =
+                a[0 * 4 + r] * b[c * 4 + 0] +
+                a[1 * 4 + r] * b[c * 4 + 1] +
+                a[2 * 4 + r] * b[c * 4 + 2] +
+                a[3 * 4 + r] * b[c * 4 + 3];
+            }
+          }
+          return out;
+        },
+        perspective: (fov, aspect, near, far) => {
+          const f = 1 / Math.tan(fov / 2);
+          const nf = 1 / (near - far);
+          return new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far + near) * nf, -1,
+            0, 0, 2 * far * near * nf, 0
+          ]);
+        },
+        lookAt: (eye, center, up) => {
+          const z = V3.norm(V3.sub(eye, center));
+          const x = V3.norm(V3.cross(up, z));
+          const y = V3.cross(z, x);
+          return new Float32Array([
+            x[0], y[0], z[0], 0,
+            x[1], y[1], z[1], 0,
+            x[2], y[2], z[2], 0,
+            -V3.dot(x, eye), -V3.dot(y, eye), -V3.dot(z, eye), 1
+          ]);
+        }
+      };
+
+      function lcg(seed) {
+        let state = seed >>> 0;
+        return () => {
+          state = (state * 1664525 + 1013904223) >>> 0;
+          return state / 4294967296;
+        };
+      }
+
+      const rand = lcg(0x517a7);
+      const splats = [];
+      const lineVertices = [];
+      const lineColors = [];
+
+      function addSplat(position, color, size, alpha) {
+        splats.push({ position, color, size, alpha, depth: 0 });
+      }
+
+      function addRuleLine(a, b, color, alpha = 1.0) {
+        lineVertices.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+        lineColors.push(color[0], color[1], color[2], alpha, color[0], color[1], color[2], alpha);
+      }
+
+      function addRuleCircle(center, radius, zScale, color, alpha, segments = 72, start = 0, end = Math.PI * 2) {
+        for (let i = 0; i < segments; i++) {
+          const a0 = start + (end - start) * (i / segments);
+          const a1 = start + (end - start) * ((i + 1) / segments);
+          addRuleLine(
+            [center[0] + Math.cos(a0) * radius, center[1], center[2] + Math.sin(a0) * radius * zScale],
+            [center[0] + Math.cos(a1) * radius, center[1], center[2] + Math.sin(a1) * radius * zScale],
+            color,
+            alpha
+          );
+        }
+      }
+
+      function addRuleArcExceptGap(center, radius, zScale, gapCenter, gapWidth, color, alpha, segments = 96) {
+        const half = gapWidth * 0.5;
+        addRuleCircle(center, radius, zScale, color, alpha, segments / 2, gapCenter + half, gapCenter + Math.PI * 2 - half);
+      }
+
+      function addRuleOverlays() {
+        addRuleCircle([-2.38, 0.015, -0.32], 0.58, 0.54, [0.28, 0.86, 0.90], 0.13, 52);
+        addRuleLine([-2.92, 0.18, -0.43], [-1.58, 0.18, -0.08], [0.86, 0.96, 0.88], 0.20);
+
+        addRuleCircle([0.0, 0.020, 0.0], 1.12, 0.70, [0.86, 0.52, 0.20], 0.20, 72);
+        addRuleCircle([0.0, 0.64, 0.0], 0.94, 0.52, [1.0, 0.64, 0.20], 0.44, 80, -0.25, Math.PI * 1.55);
+        addRuleLine([-0.62, 0.64, -0.30], [0.58, 0.64, 0.26], [1.0, 0.36, 0.12], 0.24);
+
+        const c = [2.55, 0.045, 0.0];
+        addRuleArcExceptGap(c, 1.52, 0.82, Math.PI, 0.78, [0.92, 0.72, 0.30], 0.30, 108);
+        addRuleArcExceptGap([2.55, 0.50, 0.0], 1.22, 1.0, Math.PI, 0.74, [0.94, 0.80, 0.45], 0.18, 108);
+        addRuleLine([1.03, 0.06, -0.22], [1.76, 0.06, -0.08], [0.92, 0.72, 0.30], 0.36);
+        addRuleLine([1.03, 0.06, 0.22], [1.76, 0.06, 0.08], [0.92, 0.72, 0.30], 0.36);
+      }
+
+      function rotateY(point, angle) {
+        const c = Math.cos(angle);
+        const s = Math.sin(angle);
+        return [point[0] * c + point[2] * s, point[1], -point[0] * s + point[2] * c];
+      }
+
+      function transform(point, translate, yaw = 0, scale = 1) {
+        const p = rotateY([point[0] * scale, point[1] * scale, point[2] * scale], yaw);
+        return [p[0] + translate[0], p[1] + translate[1], p[2] + translate[2]];
+      }
+
+      function addBoxSplats(center, size, yaw, color, count, splatSize, alpha) {
+        for (let i = 0; i < count; i++) {
+          const face = Math.floor(rand() * 6);
+          const p = [(rand() - 0.5) * size[0], (rand() - 0.5) * size[1], (rand() - 0.5) * size[2]];
+          const axis = face >> 1;
+          p[axis] = (face % 2 ? 0.5 : -0.5) * size[axis];
+          const tint = 0.75 + rand() * 0.35;
+          addSplat(transform(p, center, yaw), color.map((v) => v * tint), splatSize * (0.75 + rand() * 0.45), alpha);
+        }
+      }
+
+      function addGrid() {
+        const color = [0.08, 0.18, 0.17];
+        for (let line = -14; line <= 14; line++) {
+          for (let i = -90; i <= 90; i++) {
+            const t = i / 90 * 11.6;
+            const a = line === 0 ? 0.20 : 0.08;
+            addSplat([t, -0.04, line * 0.8], color, 0.022, a);
+            addSplat([line * 0.8, -0.04, t], color, 0.022, a);
+          }
+        }
+      }
+
+      function addShip() {
+        const origin = [-2.38, 0.42, -0.32];
+        const yaw = 0.22;
+        for (let i = 0; i < 1900; i++) {
+          const t = rand();
+          const side = rand() < 0.5 ? -1 : 1;
+          const x = -1.12 + 2.18 * t;
+          const half = 0.54 * (1 - t) + 0.035;
+          const z = side * half * Math.pow(rand(), 0.55);
+          const y = 0.18 * (1 - t) + (rand() - 0.5) * 0.12 - Math.abs(z) * 0.10;
+          const edgeGlow = Math.abs(z) / half;
+          const metal = V3.mix([0.30, 0.35, 0.35], [0.74, 0.78, 0.70], t * 0.7 + rand() * 0.2);
+          const color = V3.mix(metal, [0.38, 0.84, 0.88], Math.max(0, edgeGlow - 0.78) * 0.35);
+          addSplat(transform([x, y, z], origin, yaw, 0.92), color, 0.076, 0.54);
+        }
+        for (let i = 0; i < 320; i++) {
+          const p = [0.02 + (rand() - 0.5) * 0.36, 0.23 + rand() * 0.08, (rand() - 0.5) * 0.23];
+          addSplat(transform(p, origin, yaw, 0.92), [0.12, 0.82, 0.90], 0.092, 0.68);
+        }
+        for (let i = 0; i < 360; i++) {
+          const side = rand() < 0.5 ? -1 : 1;
+          const p = [-1.08 - rand() * 0.22, (rand() - 0.5) * 0.12, side * (0.36 + rand() * 0.09)];
+          addSplat(transform(p, origin, yaw, 0.92), V3.mix([0.95, 0.24, 0.08], [1.0, 0.72, 0.25], rand()), 0.110, 0.62);
+        }
+        for (let i = 0; i < 180; i++) {
+          const a = rand() * Math.PI * 2;
+          const r = 0.50 + rand() * 0.30;
+          addSplat([-2.38 + Math.cos(a) * r, -0.02, -0.32 + Math.sin(a) * r * 0.55], [0.05, 0.18, 0.18], 0.060, 0.09);
+        }
+      }
+
+      function addAsteroid() {
+        const origin = [0.0, 0.64, 0.0];
+        for (let i = 0; i < 7200; i++) {
+          const u = rand();
+          const v = rand();
+          const theta = Math.acos(2 * u - 1);
+          const phi = Math.PI * 2 * v;
+          const dir = [Math.sin(theta) * Math.cos(phi), Math.cos(theta), Math.sin(theta) * Math.sin(phi)];
+          const ridge = Math.sin(phi * 4.0 + 1.7) * Math.sin(theta * 3.0);
+          const radius = 0.82 + rand() * 0.25 + ridge * 0.08;
+          const shell = 0.82 + Math.pow(rand(), 2.5) * 0.25;
+          const p = [
+            dir[0] * radius * 1.16 * shell,
+            dir[1] * radius * 0.84 * shell,
+            dir[2] * radius * shell
+          ];
+          const vein = Math.abs(Math.sin(phi * 5.0 + 0.8)) < 0.20 && dir[1] < 0.55;
+          const rock = V3.mix([0.30, 0.29, 0.25], [0.58, 0.54, 0.44], rand());
+          const ore = V3.mix([0.66, 0.30, 0.16], [1.0, 0.58, 0.22], rand());
+          const color = vein ? ore : rock;
+          addSplat(V3.add(origin, p), color, 0.086 + rand() * 0.060, 0.34 + rand() * 0.15);
+        }
+        for (let i = 0; i < 720; i++) {
+          const a = i / 720 * Math.PI * 2;
+          const wobble = Math.sin(a * 3.0) * 0.10;
+          const p = [Math.cos(a) * (1.02 + wobble), Math.sin(a + 0.45) * 0.55, Math.sin(a) * (0.72 - wobble * 0.4)];
+          addSplat(V3.add(origin, rotateY(p, 0.50)), V3.mix([0.95, 0.26, 0.08], [1.0, 0.82, 0.32], rand()), 0.082, 0.50);
+        }
+        for (let shard = 0; shard < 3; shard++) {
+          const base = shard === 0 ? [0.40, 0.72, 0.28] : shard === 1 ? [-0.48, 0.54, -0.40] : [0.10, 0.76, -0.48];
+          for (let i = 0; i < 360; i++) {
+            const h = rand();
+            const r = (1 - h) * 0.16 * Math.sqrt(rand());
+            const a = rand() * Math.PI * 2;
+            const p = [base[0] + Math.cos(a) * r, base[1] + h * 0.54, base[2] + Math.sin(a) * r];
+            addSplat(V3.add(origin, p), V3.mix([0.15, 0.58, 0.62], [0.74, 1.0, 0.95], h), 0.066, 0.50);
+          }
+        }
+        for (let i = 0; i < 260; i++) {
+          const a = rand() * Math.PI * 2;
+          const r = 0.72 + rand() * 0.42;
+          addSplat([Math.cos(a) * r, -0.025, Math.sin(a) * r * 0.72], [0.12, 0.08, 0.06], 0.070, 0.08);
+        }
+      }
+
+      function addRing(center, radius, tube, gapCenter, gapWidth, colorA, colorB, count) {
+        for (let i = 0; i < count; i++) {
+          let a = rand() * Math.PI * 2;
+          let d = a - gapCenter;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          if (Math.abs(d) < gapWidth * 0.5) {
+            a += gapWidth * (d < 0 ? -0.5 : 0.5);
+          }
+          const cross = rand() * Math.PI * 2;
+          const rr = radius + Math.cos(cross) * tube;
+          const p = [
+            center[0] + Math.cos(a) * rr,
+            center[1] + Math.sin(cross) * tube,
+            center[2] + Math.sin(a) * rr
+          ];
+          addSplat(p, V3.mix(colorA, colorB, rand()), 0.068 + rand() * 0.030, 0.32 + rand() * 0.18);
+        }
+      }
+
+      function addStation() {
+        const center = [2.55, 0.50, 0.0];
+        addRing(center, 1.26, 0.090, Math.PI, 0.72, [0.52, 0.48, 0.35], [0.86, 0.70, 0.40], 2600);
+        addRing(center, 0.78, 0.068, Math.PI, 0.72, [0.22, 0.52, 0.54], [0.52, 0.82, 0.76], 1900);
+        addRing(center, 0.23, 0.080, Math.PI, 0.0, [0.50, 0.42, 0.32], [0.90, 0.58, 0.30], 740);
+        const moduleAngles = [-1.10, -0.42, 0.42, 1.12, 2.38];
+        moduleAngles.forEach((a, idx) => {
+          const r = idx === 4 ? 0.78 : 1.26;
+          const p = [center[0] + Math.cos(a) * r, center[1], center[2] + Math.sin(a) * r];
+          const color = idx === 1 ? [0.92, 0.34, 0.12] : [0.58, 0.54, 0.43];
+          addBoxSplats(p, idx === 1 ? [0.34, 0.24, 0.54] : [0.28, 0.19, 0.42], -a, color, idx === 1 ? 520 : 380, 0.075, 0.42);
+        });
+        for (let i = 0; i < 520; i++) {
+          const h = rand();
+          const r = (1 - h) * 0.16 * Math.sqrt(rand());
+          const a = rand() * Math.PI * 2;
+          addSplat([center[0] + Math.cos(a) * r, center[1] + 0.22 + h * 0.58, center[2] + Math.sin(a) * r], V3.mix([0.20, 0.70, 0.72], [0.75, 1.0, 0.88], h), 0.070, 0.50);
+        }
+        for (let i = 0; i < 380; i++) {
+          const a = rand() * Math.PI * 2;
+          const r = 1.04 + rand() * 0.58;
+          addSplat([center[0] + Math.cos(a) * r, -0.025, center[2] + Math.sin(a) * r * 0.82], [0.10, 0.13, 0.10], 0.065, 0.07);
+        }
+      }
+
+      addGrid();
+      addShip();
+      addAsteroid();
+      addStation();
+      addRuleOverlays();
+
+      const linePacked = {
+        positions: new Float32Array(lineVertices),
+        colors: new Float32Array(lineColors),
+        count: lineVertices.length / 3
+      };
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, linePositionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, linePacked.positions, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineColorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, linePacked.colors, gl.STATIC_DRAW);
+
+      const packed = {
+        positions: new Float32Array(splats.length * 3),
+        colors: new Float32Array(splats.length * 3),
+        sizes: new Float32Array(splats.length),
+        alphas: new Float32Array(splats.length)
+      };
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+        const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        gl.viewport(0, 0, width, height);
+        return dpr;
+      }
+
+      function smoothCamera(dt) {
+        const target = focusTargets[focus];
+        const t = 1 - Math.pow(0.001, dt / 1000);
+        camera.target = V3.mix(camera.target, target.target, t);
+        camera.distance += (target.distance - camera.distance) * t;
+        camera.yaw += (target.yaw - camera.yaw) * t;
+        camera.pitch += (target.pitch - camera.pitch) * t;
+      }
+
+      function uploadSorted(cameraPos, viewDir) {
+        for (const splat of splats) {
+          splat.depth = V3.dot(V3.sub(splat.position, cameraPos), viewDir);
+        }
+        splats.sort((a, b) => b.depth - a.depth);
+        for (let i = 0; i < splats.length; i++) {
+          const splat = splats[i];
+          packed.positions.set(splat.position, i * 3);
+          packed.colors.set(splat.color, i * 3);
+          packed.sizes[i] = splat.size;
+          packed.alphas[i] = splat.alpha;
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+        gl.bufferData(gl.ARRAY_BUFFER, packed.positions, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+        gl.bufferData(gl.ARRAY_BUFFER, packed.colors, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.size);
+        gl.bufferData(gl.ARRAY_BUFFER, packed.sizes, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.alpha);
+        gl.bufferData(gl.ARRAY_BUFFER, packed.alphas, gl.DYNAMIC_DRAW);
+      }
+
+      let last = performance.now();
+
+      function frame(now) {
+        const dt = Math.min(40, now - last);
+        last = now;
+        const dpr = resize();
+        smoothCamera(dt);
+
+        const aspect = canvas.width / canvas.height;
+        const target = camera.target;
+        let yaw = camera.yaw + now * 0.00005;
+        let distance = camera.distance;
+        if (aspect < 0.72 && focus === "all") {
+          yaw += 1.04;
+          distance *= 1.18;
+        }
+        const pitch = camera.pitch;
+        const cameraPos = [
+          target[0] + Math.sin(yaw) * Math.cos(pitch) * distance,
+          target[1] + Math.sin(pitch) * distance,
+          target[2] + Math.cos(yaw) * Math.cos(pitch) * distance
+        ];
+        const viewDir = V3.norm(V3.sub(target, cameraPos));
+        const projection = M4.perspective(Math.PI / 4.2, aspect, 0.05, 60);
+        const view = M4.lookAt(cameraPos, target, [0, 1, 0]);
+        const viewProj = M4.multiply(projection, view);
+        const signal = Number(signalSlider.value) / 100;
+
+        uploadSorted(cameraPos, viewDir);
+
+        gl.clearColor(0.018, 0.020, 0.019, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.useProgram(program);
+        gl.bindVertexArray(vao);
+        gl.uniformMatrix4fv(loc.viewProj, false, viewProj);
+        gl.uniform3fv(loc.camera, cameraPos);
+        gl.uniform1f(loc.dpr, dpr);
+        gl.uniform1f(loc.signal, signal);
+        gl.drawArrays(gl.POINTS, 0, splats.length);
+
+        gl.useProgram(lineProgram);
+        gl.bindVertexArray(lineVao);
+        gl.uniformMatrix4fv(lineLoc.viewProj, false, viewProj);
+        gl.uniform1f(lineLoc.signal, signal);
+        gl.drawArrays(gl.LINES, 0, linePacked.count);
+        gl.bindVertexArray(null);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>

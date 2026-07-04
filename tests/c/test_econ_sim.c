@@ -86,6 +86,26 @@ static float test_station_market_pod_sell_quote(const station_t *st,
     return quote;
 }
 
+static void test_move_pod_past_station_charge_boundary(world_t *w,
+                                                       int station_idx,
+                                                       int pod_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return;
+    }
+    station_t *st = &w->stations[station_idx];
+    vec2 base = st->pos;
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx >= 0) {
+        base = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    }
+    w->cargo_pods[pod_idx].pos =
+        v2_add(base, v2(CARGO_POD_DOCK_TRACTOR_RANGE +
+                        HOPPER_INTAKE_STAGING_RANGE + 80.0f, 0.0f));
+    w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+}
+
 static void apply_scripted_input(server_player_t *sp, uint8_t flags,
                                  uint8_t action, uint8_t grade) {
     memset(&sp->input, 0, sizeof(sp->input));
@@ -373,6 +393,14 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
                   station_before);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
                   frames_before);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_pod]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(prospect, sp->pubkey),
+                    pubkey_before, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    session_before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(&w, 0, bought_pod);
+    world_sim_step(&w, SIM_DT);
     ASSERT_EQ_FLOAT(pubkey_before -
                     ledger_balance_by_pubkey(prospect, sp->pubkey),
                     expected_cost, 0.01f);

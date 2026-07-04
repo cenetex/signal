@@ -34,6 +34,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <float.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <time.h>       /* time() for fresh-boot belt_seed rotation */
 
@@ -71,6 +72,7 @@ static const char *server_bot_npc_worker_brain_checkpoint = NULL;
 static int frontier_virtual_pilot_target = 0;
 static uint32_t fresh_world_seed_override = 0;
 static uint32_t fresh_world_seq_override = 0;
+static bool trust_proxy_headers = false;
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -115,6 +117,122 @@ static int live_player_connection_count(void) {
     return count;
 }
 
+typedef struct {
+    uint32_t magic;
+    uint32_t flags;
+    uint64_t client_addr_key;
+} server_conn_meta_t;
+
+#define SERVER_CONN_META_MAGIC 0x53494743u /* SIGC */
+#define SERVER_CONN_META_HAS_CLIENT_ADDR 0x01u
+
+_Static_assert(sizeof(server_conn_meta_t) <= MG_DATA_SIZE,
+               "server connection metadata must fit in mg_connection.data");
+
+static bool env_truthy(const char *value) {
+    return value && value[0] != '\0' &&
+           strcmp(value, "0") != 0 &&
+           strcmp(value, "false") != 0 &&
+           strcmp(value, "FALSE") != 0 &&
+           strcmp(value, "no") != 0 &&
+           strcmp(value, "NO") != 0;
+}
+
+static uint64_t server_client_addr_key_bytes(const void *data, size_t len) {
+    uint64_t h = net_payload_hash((const uint8_t *)data, len);
+    return h ? h : 1u;
+}
+
+static uint64_t server_peer_addr_key(const struct mg_connection *c) {
+    if (!c) return 1u;
+    return server_client_addr_key_bytes(&c->rem.addr, sizeof(c->rem.addr));
+}
+
+static bool copy_proxy_addr_token(struct mg_str value,
+                                  char *out,
+                                  size_t out_size) {
+    if (!out || out_size == 0) return false;
+    size_t i = 0;
+    while (i < value.len && isspace((unsigned char)value.buf[i])) i++;
+    if (i < value.len && value.buf[i] == '"') i++;
+
+    size_t n = 0;
+    for (; i < value.len && n + 1 < out_size; i++) {
+        unsigned char c = (unsigned char)value.buf[i];
+        if (c == ',' || c == ';' || c == '"' || isspace(c)) break;
+        if (!(isalnum(c) || c == '.' || c == ':' || c == '-' ||
+              c == '_' || c == '[' || c == ']')) {
+            return false;
+        }
+        out[n++] = (char)c;
+    }
+    out[n] = '\0';
+    return n > 0;
+}
+
+static bool mg_str_at_case_eq(struct mg_str s, size_t off, const char *lit) {
+    for (size_t i = 0; lit[i]; i++) {
+        if (off + i >= s.len) return false;
+        unsigned char a = (unsigned char)s.buf[off + i];
+        unsigned char b = (unsigned char)lit[i];
+        if (tolower(a) != tolower(b)) return false;
+    }
+    return true;
+}
+
+static bool copy_forwarded_for_token(struct mg_str value,
+                                     char *out,
+                                     size_t out_size) {
+    for (size_t i = 0; i + 4 <= value.len; i++) {
+        if (!mg_str_at_case_eq(value, i, "for=")) continue;
+        return copy_proxy_addr_token(mg_str_n(value.buf + i + 4,
+                                              value.len - i - 4),
+                                     out, out_size);
+    }
+    return false;
+}
+
+static bool server_proxy_client_addr_token(struct mg_http_message *hm,
+                                           char *out,
+                                           size_t out_size) {
+    struct mg_str *h = mg_http_get_header(hm, "Fly-Client-IP");
+    if (h && copy_proxy_addr_token(*h, out, out_size)) return true;
+
+    h = mg_http_get_header(hm, "X-Forwarded-For");
+    if (h && copy_proxy_addr_token(*h, out, out_size)) return true;
+
+    h = mg_http_get_header(hm, "Forwarded");
+    if (h && copy_forwarded_for_token(*h, out, out_size)) return true;
+
+    return false;
+}
+
+static void server_note_ws_client_addr(struct mg_connection *c,
+                                       struct mg_http_message *hm) {
+    if (!c) return;
+    server_conn_meta_t *meta = (server_conn_meta_t *)c->data;
+    memset(meta, 0, sizeof(*meta));
+    meta->magic = SERVER_CONN_META_MAGIC;
+    if (!trust_proxy_headers || !hm) return;
+
+    char token[96];
+    if (!server_proxy_client_addr_token(hm, token, sizeof(token))) return;
+    meta->client_addr_key = server_client_addr_key_bytes(
+        token, strlen(token));
+    meta->flags |= SERVER_CONN_META_HAS_CLIENT_ADDR;
+}
+
+static uint64_t server_connection_limit_key(const struct mg_connection *c) {
+    if (!c) return 1u;
+    const server_conn_meta_t *meta = (const server_conn_meta_t *)c->data;
+    if (meta->magic == SERVER_CONN_META_MAGIC &&
+        (meta->flags & SERVER_CONN_META_HAS_CLIENT_ADDR) &&
+        meta->client_addr_key != 0u) {
+        return meta->client_addr_key;
+    }
+    return server_peer_addr_key(c);
+}
+
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
 static uint8_t station_hull_inventory_last[MAX_STATIONS][HULL_CLASS_COUNT];
@@ -131,6 +249,31 @@ static bool highscores_dirty = true;      /* broadcast + persist pending */
 static server_world_snapshot_scratch_t world_snapshot_scratch;
 static server_private_snapshot_scratch_t private_snapshot_scratch;
 static server_station_snapshot_scratch_t station_snapshot_scratch;
+static uint64_t net_tx_packets_total = 0;
+static uint64_t net_tx_bytes_total = 0;
+static uint64_t net_tx_packets_by_msg[256];
+static uint64_t net_tx_bytes_by_msg[256];
+static uint64_t net_tx_suppressed_packets_total = 0;
+static uint64_t net_tx_suppressed_bytes_total = 0;
+static uint64_t net_tx_suppressed_packets_by_msg[256];
+static uint64_t net_tx_suppressed_bytes_by_msg[256];
+static uint64_t net_tx_backpressure_packets_total = 0;
+static uint64_t net_tx_backpressure_bytes_total = 0;
+static uint64_t net_tx_backpressure_packets_by_msg[256];
+static uint64_t net_tx_backpressure_bytes_by_msg[256];
+static uint64_t net_tx_last_packets_total = 0;
+static uint64_t net_tx_last_bytes_total = 0;
+static uint64_t net_tx_last_packets_by_msg[256];
+static uint64_t net_tx_last_bytes_by_msg[256];
+static uint64_t net_tx_last_suppressed_packets_total = 0;
+static uint64_t net_tx_last_suppressed_bytes_total = 0;
+static uint64_t net_tx_last_suppressed_packets_by_msg[256];
+static uint64_t net_tx_last_suppressed_bytes_by_msg[256];
+static uint64_t net_tx_last_backpressure_packets_total = 0;
+static uint64_t net_tx_last_backpressure_bytes_total = 0;
+static uint64_t net_tx_last_backpressure_packets_by_msg[256];
+static uint64_t net_tx_last_backpressure_bytes_by_msg[256];
+static uint64_t net_tx_last_emf_ms = 0;
 
 /* Defined further down; forward-declared so the highscore helpers can
  * use the same send wrapper as every other broadcast in this file
@@ -283,6 +426,7 @@ static void analytics_handle_client_metrics(int pid, server_player_t *sp,
     sp->analytics_unacked_inputs = read_u16_le(&data[15]);
     sp->analytics_replay_depth = read_u16_le(&data[17]);
     sp->analytics_action_queue_depth = data[19];
+    sp->analytics_recovery_flags = data[20];
     sp->analytics_metrics_last_ms = now_ms;
     sp->analytics_metrics_samples++;
     analytics_record_activity(sp, now_ms);
@@ -295,7 +439,8 @@ static void analytics_handle_client_metrics(int pid, server_player_t *sp,
            "\"seq\":%u,\"ping_ms\":%u,\"ack_ms\":%u,\"ack_gap_ms\":%u,"
            "\"server_turnaround_ms\":%u,\"player_interval_ms\":%u,"
            "\"unacked_inputs\":%u,\"replay_depth\":%u,"
-           "\"action_queue_depth\":%u,\"sample_count\":%u}\n",
+           "\"action_queue_depth\":%u,\"recovery_flags\":%u,"
+           "\"sample_count\":%u}\n",
            analytics_build_hash(),
            (unsigned long long)analytics_epoch_ms(),
            (unsigned long long)now_ms,
@@ -311,6 +456,7 @@ static void analytics_handle_client_metrics(int pid, server_player_t *sp,
            (unsigned)sp->analytics_unacked_inputs,
            (unsigned)sp->analytics_replay_depth,
            (unsigned)sp->analytics_action_queue_depth,
+           (unsigned)sp->analytics_recovery_flags,
            (unsigned)sp->analytics_metrics_samples);
 }
 
@@ -351,6 +497,159 @@ static void analytics_emit_emf(uint64_t now_ms) {
     double avg_ack = metric_players ? (double)ack_sum / (double)metric_players : 0.0;
     double avg_gap = metric_players ? (double)gap_sum / (double)metric_players : 0.0;
 
+    uint64_t tx_packets = net_tx_packets_total - net_tx_last_packets_total;
+    uint64_t tx_bytes = net_tx_bytes_total - net_tx_last_bytes_total;
+    uint64_t tx_suppressed_packets =
+        net_tx_suppressed_packets_total -
+        net_tx_last_suppressed_packets_total;
+    uint64_t tx_suppressed_bytes =
+        net_tx_suppressed_bytes_total -
+        net_tx_last_suppressed_bytes_total;
+    uint64_t tx_backpressure_packets =
+        net_tx_backpressure_packets_total -
+        net_tx_last_backpressure_packets_total;
+    uint64_t tx_backpressure_bytes =
+        net_tx_backpressure_bytes_total -
+        net_tx_last_backpressure_bytes_total;
+    uint64_t interval_ms = (net_tx_last_emf_ms != 0 && now_ms > net_tx_last_emf_ms)
+        ? now_ms - net_tx_last_emf_ms
+        : ANALYTICS_EMF_INTERVAL_MS;
+    double tx_bytes_per_sec = interval_ms > 0
+        ? ((double)tx_bytes * 1000.0) / (double)interval_ms
+        : 0.0;
+    uint64_t tx_world_players_packets =
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYERS] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYERS]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTION] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTION]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q]) +
+        (net_tx_packets_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q] -
+         net_tx_last_packets_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q]);
+    uint64_t tx_world_players_bytes =
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYERS] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYERS]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q]);
+    uint64_t tx_world_players_suppressed_bytes =
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYERS] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYERS]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTION_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIOND_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_POSED_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_MOTIONM_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_PLAYER_DOCK_Q]);
+    uint64_t tx_state_packets =
+        net_tx_packets_by_msg[NET_MSG_STATE] -
+        net_tx_last_packets_by_msg[NET_MSG_STATE];
+    uint64_t tx_state_bytes =
+        net_tx_bytes_by_msg[NET_MSG_STATE] -
+        net_tx_last_bytes_by_msg[NET_MSG_STATE];
+    uint64_t tx_input_applied_packets =
+        net_tx_packets_by_msg[NET_MSG_INPUT_APPLIED] -
+        net_tx_last_packets_by_msg[NET_MSG_INPUT_APPLIED];
+    uint64_t tx_input_applied_bytes =
+        net_tx_bytes_by_msg[NET_MSG_INPUT_APPLIED] -
+        net_tx_last_bytes_by_msg[NET_MSG_INPUT_APPLIED];
+    uint64_t tx_world_asteroids_bytes =
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS8_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROIDS8_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_REMOVE] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_REMOVE]);
+    uint64_t tx_world_asteroid_motion_bytes =
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_MOTION] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_MOTION]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_MOTION_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_MOTION_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POS_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POS_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POS8_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POS8_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POSD_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POSD_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POSD8_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_POSD8_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_ASTEROID_STATE_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_ASTEROID_STATE_Q]);
+    uint64_t tx_world_npcs_bytes =
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPCS] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPCS]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION8_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION8_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_POS_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_POS_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_POSE_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_POSE_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_LINEAR_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_LINEAR_Q]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS]) +
+        (net_tx_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS8_Q] -
+         net_tx_last_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS8_Q]);
+    uint64_t tx_world_npcs_suppressed_bytes =
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPCS] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPCS]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION8_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_MOTION8_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_POS_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_POS_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_POSE_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_POSE_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_LINEAR_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_LINEAR_Q]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS8_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_NPC_STATUS8_Q]);
+    uint64_t tx_world_scaffolds_suppressed_bytes =
+        net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_SCAFFOLDS] -
+        net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_SCAFFOLDS];
+    uint64_t tx_world_cargo_pods_suppressed_bytes =
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_CARGO_PODS] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_CARGO_PODS]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_CARGO_PODS_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_CARGO_PODS_Q]);
+    uint64_t tx_world_interactions_suppressed_bytes =
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_INTERACTIONS] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_INTERACTIONS]) +
+        (net_tx_suppressed_bytes_by_msg[NET_MSG_WORLD_INTERACTIONS_Q] -
+         net_tx_last_suppressed_bytes_by_msg[NET_MSG_WORLD_INTERACTIONS_Q]);
+
     printf("{\"_aws\":{\"Timestamp\":%llu,\"CloudWatchMetrics\":[{\"Namespace\":\"Signal\","
            "\"Dimensions\":[[\"Service\",\"Build\"]],\"Metrics\":["
            "{\"Name\":\"ConnectedPlayers\",\"Unit\":\"Count\"},"
@@ -360,12 +659,47 @@ static void analytics_emit_emf(uint64_t now_ms) {
            "{\"Name\":\"AvgPingMs\",\"Unit\":\"Milliseconds\"},"
            "{\"Name\":\"AvgAckMs\",\"Unit\":\"Milliseconds\"},"
            "{\"Name\":\"AvgAckGapMs\",\"Unit\":\"Milliseconds\"},"
-           "{\"Name\":\"MaxAckGapMs\",\"Unit\":\"Milliseconds\"}]}]},"
+           "{\"Name\":\"MaxAckGapMs\",\"Unit\":\"Milliseconds\"},"
+           "{\"Name\":\"TxPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxBytesPerSec\",\"Unit\":\"Bytes/Second\"},"
+           "{\"Name\":\"TxSuppressedPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxSuppressedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxBackpressurePackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxBackpressureBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldPlayersPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxWorldPlayersBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldPlayersSuppressedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxStatePackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxStateBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxInputAppliedPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"TxInputAppliedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldAsteroidsBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldAsteroidMotionBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldNpcsBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldNpcsSuppressedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldScaffoldsSuppressedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldCargoPodsSuppressedBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"TxWorldInteractionsSuppressedBytes\",\"Unit\":\"Bytes\"}]}]},"
            "\"Service\":\"signal-relay\",\"Build\":\"%s\","
            "\"ConnectedPlayers\":%d,\"ReadyPlayers\":%d,"
            "\"ActiveUsers1m\":%d,\"MetricPlayers\":%d,"
            "\"AvgPingMs\":%.2f,\"AvgAckMs\":%.2f,"
-           "\"AvgAckGapMs\":%.2f,\"MaxAckGapMs\":%u}\n",
+           "\"AvgAckGapMs\":%.2f,\"MaxAckGapMs\":%u,"
+           "\"TxPackets\":%llu,\"TxBytes\":%llu,\"TxBytesPerSec\":%.2f,"
+           "\"TxSuppressedPackets\":%llu,\"TxSuppressedBytes\":%llu,"
+           "\"TxBackpressurePackets\":%llu,\"TxBackpressureBytes\":%llu,"
+           "\"TxWorldPlayersPackets\":%llu,\"TxWorldPlayersBytes\":%llu,"
+           "\"TxWorldPlayersSuppressedBytes\":%llu,"
+           "\"TxStatePackets\":%llu,\"TxStateBytes\":%llu,"
+           "\"TxInputAppliedPackets\":%llu,\"TxInputAppliedBytes\":%llu,"
+           "\"TxWorldAsteroidsBytes\":%llu,"
+           "\"TxWorldAsteroidMotionBytes\":%llu,"
+           "\"TxWorldNpcsBytes\":%llu,"
+           "\"TxWorldNpcsSuppressedBytes\":%llu,"
+           "\"TxWorldScaffoldsSuppressedBytes\":%llu,"
+           "\"TxWorldCargoPodsSuppressedBytes\":%llu,"
+           "\"TxWorldInteractionsSuppressedBytes\":%llu}\n",
            (unsigned long long)analytics_epoch_ms(),
            analytics_build_hash(),
            connected,
@@ -375,7 +709,52 @@ static void analytics_emit_emf(uint64_t now_ms) {
            avg_ping,
            avg_ack,
            avg_gap,
-           (unsigned)max_gap);
+           (unsigned)max_gap,
+           (unsigned long long)tx_packets,
+           (unsigned long long)tx_bytes,
+           tx_bytes_per_sec,
+           (unsigned long long)tx_suppressed_packets,
+           (unsigned long long)tx_suppressed_bytes,
+           (unsigned long long)tx_backpressure_packets,
+           (unsigned long long)tx_backpressure_bytes,
+           (unsigned long long)tx_world_players_packets,
+           (unsigned long long)tx_world_players_bytes,
+           (unsigned long long)tx_world_players_suppressed_bytes,
+           (unsigned long long)tx_state_packets,
+           (unsigned long long)tx_state_bytes,
+           (unsigned long long)tx_input_applied_packets,
+           (unsigned long long)tx_input_applied_bytes,
+           (unsigned long long)tx_world_asteroids_bytes,
+           (unsigned long long)tx_world_asteroid_motion_bytes,
+           (unsigned long long)tx_world_npcs_bytes,
+           (unsigned long long)tx_world_npcs_suppressed_bytes,
+           (unsigned long long)tx_world_scaffolds_suppressed_bytes,
+           (unsigned long long)tx_world_cargo_pods_suppressed_bytes,
+           (unsigned long long)tx_world_interactions_suppressed_bytes);
+
+    net_tx_last_packets_total = net_tx_packets_total;
+    net_tx_last_bytes_total = net_tx_bytes_total;
+    net_tx_last_suppressed_packets_total = net_tx_suppressed_packets_total;
+    net_tx_last_suppressed_bytes_total = net_tx_suppressed_bytes_total;
+    net_tx_last_backpressure_packets_total = net_tx_backpressure_packets_total;
+    net_tx_last_backpressure_bytes_total = net_tx_backpressure_bytes_total;
+    memcpy(net_tx_last_packets_by_msg, net_tx_packets_by_msg,
+           sizeof(net_tx_last_packets_by_msg));
+    memcpy(net_tx_last_bytes_by_msg, net_tx_bytes_by_msg,
+           sizeof(net_tx_last_bytes_by_msg));
+    memcpy(net_tx_last_suppressed_packets_by_msg,
+           net_tx_suppressed_packets_by_msg,
+           sizeof(net_tx_last_suppressed_packets_by_msg));
+    memcpy(net_tx_last_suppressed_bytes_by_msg,
+           net_tx_suppressed_bytes_by_msg,
+           sizeof(net_tx_last_suppressed_bytes_by_msg));
+    memcpy(net_tx_last_backpressure_packets_by_msg,
+           net_tx_backpressure_packets_by_msg,
+           sizeof(net_tx_last_backpressure_packets_by_msg));
+    memcpy(net_tx_last_backpressure_bytes_by_msg,
+           net_tx_backpressure_bytes_by_msg,
+           sizeof(net_tx_last_backpressure_bytes_by_msg));
+    net_tx_last_emf_ms = now_ms;
 }
 
 static void broadcast_highscores(void) {
@@ -394,7 +773,7 @@ static void send_highscores_to(struct mg_connection *c) {
     ws_send(c, buf, (size_t)len);
 }
 
-#define STATION_IDENTITY_FALLBACK_MS 2000
+#define STATION_IDENTITY_FALLBACK_MS 10000 /* reconciliation, not heartbeat */
 #define STATION_DIAG_MIN_MS 300
 static uint64_t last_station_identity = 0;
 static uint64_t last_player_state_emit = 0;
@@ -402,7 +781,12 @@ static uint64_t last_player_state_emit = 0;
 /* Timing intervals in milliseconds */
 #define SIM_TICK_MS   8     /* ~120 Hz poll gate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
+#define PLAYER_MOTION_SEND_INTERVAL_MS (STATE_TICK_MS * 4u)
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
+#define WORLD_NPC_MOTION_REPEAT_TICKS NPC_MOTION_NET_REPEAT_TICKS
+#define WORLD_NPC_STATUS_REPEAT_TICKS NPC_STATUS_NET_REPEAT_TICKS
+#define WORLD_CARGO_POD_MOTION_REPEAT_TICKS CARGO_POD_MOTION_NET_REPEAT_TICKS
+#define WS_DEFERABLE_SEND_BUFFER_RESERVE 8192u /* keep room for PONG + authoritative acks */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
 #define SAVE_PATH "world.sav"
@@ -537,16 +921,50 @@ static void spawn_server_bots(void) {
 /* ------------------------------------------------------------------ */
 
 static void ws_send(struct mg_connection *c, const void *data, size_t len) {
+    if (c && data && len > 0) {
+        uint8_t msg = ((const uint8_t *)data)[0];
+        net_tx_packets_total++;
+        net_tx_bytes_total += (uint64_t)len;
+        net_tx_packets_by_msg[msg]++;
+        net_tx_bytes_by_msg[msg] += (uint64_t)len;
+    }
     mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY);
 }
 
-static uint64_t wire_payload_hash(const uint8_t *data, size_t len) {
-    uint64_t h = 1469598103934665603ull;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (uint64_t)data[i];
-        h *= 1099511628211ull;
-    }
-    return h;
+static void net_tx_record_suppressed(const uint8_t *data, size_t len) {
+    if (!data || len == 0) return;
+    uint8_t msg = data[0];
+    net_tx_suppressed_packets_total++;
+    net_tx_suppressed_bytes_total += (uint64_t)len;
+    net_tx_suppressed_packets_by_msg[msg]++;
+    net_tx_suppressed_bytes_by_msg[msg] += (uint64_t)len;
+}
+
+static void net_tx_record_backpressure_suppressed(const uint8_t *data,
+                                                  size_t len) {
+    if (!data || len == 0) return;
+    uint8_t msg = data[0];
+    net_tx_backpressure_packets_total++;
+    net_tx_backpressure_bytes_total += (uint64_t)len;
+    net_tx_backpressure_packets_by_msg[msg]++;
+    net_tx_backpressure_bytes_by_msg[msg] += (uint64_t)len;
+    net_tx_record_suppressed(data, len);
+}
+
+static bool ws_deferable_snapshot_backpressured(struct mg_connection *c,
+                                                const uint8_t *data,
+                                                size_t len) {
+    if (!c || !data || len == 0) return false;
+    return net_deferable_snapshot_would_backpressure(
+        data[0], c->send.len, len, WS_DEFERABLE_SEND_BUFFER_RESERVE);
+}
+
+static bool ws_defer_snapshot_if_backpressured(struct mg_connection *c,
+                                               const uint8_t *data,
+                                               size_t len) {
+    if (!ws_deferable_snapshot_backpressured(c, data, len)) return false;
+    net_tx_record_backpressure_suppressed(data, len);
+    return true;
 }
 
 static void ws_send_if_changed(struct mg_connection *c,
@@ -558,29 +976,246 @@ static void ws_send_if_changed(struct mg_connection *c,
         ws_send(c, data, len);
         return;
     }
-    uint64_t hash = wire_payload_hash(data, len);
+    if (!net_payload_cache_should_send(cache, c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    ws_send(c, data, len);
+}
+
+static bool ws_send_player_states_if_changed(struct mg_connection *c,
+                                             server_player_t *sp,
+                                             const uint8_t *data,
+                                             size_t len,
+                                             uint64_t now) {
+    if (!c || !sp || !data) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    net_payload_cache_t *cache = &sp->world_players_cache;
+    uint64_t hash = net_world_players_semantic_hash(data, (int)len);
+    bool heartbeat_due = world_players_semantic_heartbeat_due(
+        sp->world_players_last_sent_ms, now);
     if (cache->valid &&
         cache->conn == c &&
         cache->len == (uint16_t)len &&
-        cache->hash == hash) {
-        return;
+        cache->hash == hash &&
+        !heartbeat_due) {
+        net_tx_record_suppressed(data, len);
+        return false;
     }
     ws_send(c, data, len);
     cache->valid = true;
     cache->conn = c;
     cache->len = (uint16_t)len;
     cache->hash = hash;
+    sp->world_players_last_sent_ms = now;
+    return true;
+}
+
+static bool ws_send_player_motion_if_changed(struct mg_connection *c,
+                                             server_player_t *sp,
+                                             const uint8_t *data,
+                                             size_t len) {
+    if (!c || !sp || !data || len <= PLAYER_MOTION_MSG_HEADER) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    net_payload_cache_t *cache = &sp->world_player_motion_cache;
+    if (!net_payload_cache_should_send(cache, c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    ws_send(c, data, len);
+    return true;
+}
+
+static bool ws_send_player_motion_mixed(struct mg_connection *c,
+                                        server_player_t *sp,
+                                        const uint8_t *data,
+                                        size_t len) {
+    if (!c || !sp || !data || len <= PLAYER_MOTIONM_Q_MSG_HEADER)
+        return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    ws_send(c, data, len);
+    return true;
+}
+
+static bool ws_send_player_dock_if_changed(struct mg_connection *c,
+                                           server_player_t *sp,
+                                           const uint8_t *data,
+                                           size_t len) {
+    if (!c || !sp || !data || len <= PLAYER_DOCK_MSG_HEADER) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    net_payload_cache_t *cache = &sp->world_player_dock_cache;
+    if (!net_payload_cache_should_send(cache, c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    ws_send(c, data, len);
+    return true;
+}
+
+static void ws_send_station_identity_if_changed(struct mg_connection *c,
+                                                server_player_t *sp,
+                                                const uint8_t *data,
+                                                size_t len) {
+    if (!c || !sp || !data) return;
+    if (len > UINT16_MAX || len < 2 || data[0] != NET_MSG_STATION_IDENTITY) {
+        ws_send(c, data, len);
+        return;
+    }
+    int station_idx = data[1];
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) {
+        ws_send(c, data, len);
+        return;
+    }
+    uint8_t compact[STATION_IDENTITY_Q_MAX_SIZE];
+    int compact_len = serialize_station_identity_q_from_full(
+        compact, data, (int)len);
+    const uint8_t *wire_data = data;
+    size_t wire_len = len;
+    if (compact_len > 0) {
+        wire_data = compact;
+        wire_len = (size_t)compact_len;
+    }
+    net_payload_cache_t *cache = &sp->station_identity_cache[station_idx];
+    uint64_t hash = net_station_identity_semantic_hash(data, (int)len);
+    if (cache->valid &&
+        cache->conn == c &&
+        cache->len == (uint16_t)wire_len &&
+        cache->hash == hash) {
+        net_tx_record_suppressed(wire_data, wire_len);
+        return;
+    }
+    ws_send(c, wire_data, wire_len);
+    cache->valid = true;
+    cache->conn = c;
+    cache->len = (uint16_t)wire_len;
+    cache->hash = hash;
+}
+
+static void ws_send_world_stations_if_changed(struct mg_connection *c,
+                                              server_player_t *sp,
+                                              const uint8_t *data,
+                                              size_t len) {
+    if (!c || !sp || !data) return;
+    if (len > UINT16_MAX || len < 2 || data[0] != NET_MSG_WORLD_STATIONS) {
+        ws_send(c, data, len);
+        return;
+    }
+    uint8_t compact[STATION_Q_MAX_SIZE];
+    int compact_len = serialize_stations_q_from_full(compact, data, (int)len);
+    const uint8_t *wire_data = data;
+    size_t wire_len = len;
+    if (compact_len > 0 && (size_t)compact_len < len) {
+        wire_data = compact;
+        wire_len = (size_t)compact_len;
+    }
+    ws_send_if_changed(c, &sp->world_stations_cache, wire_data, wire_len);
 }
 
 static void invalidate_player_authoritative_caches(server_player_t *sp) {
     if (!sp) return;
+    server_player_reset_authoritative_ack_state(sp);
     sp->player_ship_cache.valid = false;
     sp->hold_ingots_cache.valid = false;
     sp->player_manifest_cache.valid = false;
     sp->inspect_snapshot_cache.valid = false;
+    sp->contracts_cache.valid = false;
+    sp->contracts_semantic_hash = 0;
+    sp->contracts_semantic_valid = false;
+    sp->contracts_last_sent_ms = 0;
     sp->known_contracts_cache.valid = false;
     sp->known_ledger_cache.valid = false;
     sp->delivery_ledger_cache.valid = false;
+    sp->world_stations_cache.valid = false;
+    sp->world_players_cache.valid = false;
+    server_player_motion_delta_clear_all(sp);
+    sp->world_player_dock_cache.valid = false;
+    sp->world_players_last_sent_ms = 0;
+    sp->world_player_motion_last_sent_ms = 0;
+    sp->world_time_sent = false;
+    sp->world_time_last_sent_tick = 0;
+    sp->world_npcs_cache.valid = false;
+    sp->world_npc_motion_cache.valid = false;
+    sp->world_npcs_semantic_hash = 0;
+    sp->world_npcs_semantic_valid = false;
+    sp->world_npcs_last_sent_tick = 0;
+    sp->world_npc_motion_last_sent_tick = 0;
+    memset(sp->npc_motion_sent_tick, 0,
+           sizeof(sp->npc_motion_sent_tick));
+    memset(sp->npc_motion_sent_flags, 0,
+           sizeof(sp->npc_motion_sent_flags));
+    memset(sp->npc_motion_sent_pos, 0,
+           sizeof(sp->npc_motion_sent_pos));
+    memset(sp->npc_motion_sent_vel, 0,
+           sizeof(sp->npc_motion_sent_vel));
+    memset(sp->npc_motion_sent_angle, 0,
+           sizeof(sp->npc_motion_sent_angle));
+    sp->world_npc_status_cache.valid = false;
+    sp->world_npc_status_last_sent_tick = 0;
+    sp->world_scaffolds_cache.valid = false;
+    memset(sp->scaffold_sent, 0, sizeof(sp->scaffold_sent));
+    memset(sp->scaffold_sent_sig, 0, sizeof(sp->scaffold_sent_sig));
+    memset(sp->scaffold_motion_sent_sig, 0,
+           sizeof(sp->scaffold_motion_sent_sig));
+    sp->world_cargo_pods_cache.valid = false;
+    sp->world_cargo_pod_motion_cache.valid = false;
+    sp->world_cargo_pods_semantic_hash = 0;
+    sp->world_cargo_pods_semantic_valid = false;
+    sp->world_cargo_pods_last_sent_tick = 0;
+    sp->world_cargo_pod_motion_last_sent_tick = 0;
+    memset(sp->cargo_pod_sent, 0, sizeof(sp->cargo_pod_sent));
+    memset(sp->cargo_pod_sent_sig, 0, sizeof(sp->cargo_pod_sent_sig));
+    sp->world_interactions_cache.valid = false;
+    sp->world_interaction_drift_cache.valid = false;
+    sp->world_interactions_semantic_hash = 0;
+    sp->world_interactions_semantic_valid = false;
+    sp->world_interactions_last_sent_tick = 0;
+    sp->world_interaction_drift_last_sent_tick = 0;
+    sp->world_interaction_drift_block_tick = 0;
+    memset(sp->asteroid_motion_sent_tick, 0,
+           sizeof(sp->asteroid_motion_sent_tick));
+    memset(sp->asteroid_motion_sent_pos, 0,
+           sizeof(sp->asteroid_motion_sent_pos));
+    memset(sp->asteroid_motion_sent_vel, 0,
+           sizeof(sp->asteroid_motion_sent_vel));
+    memset(sp->asteroid_state_sent_tick, 0,
+           sizeof(sp->asteroid_state_sent_tick));
+    memset(sp->asteroid_state_sent_sig, 0,
+           sizeof(sp->asteroid_state_sent_sig));
+    memset(sp->asteroid_state_sent_semantic_sig, 0,
+           sizeof(sp->asteroid_state_sent_semantic_sig));
+    memset(sp->cargo_pod_motion_sent_tick, 0,
+           sizeof(sp->cargo_pod_motion_sent_tick));
+    memset(sp->cargo_pod_motion_sent_pos, 0,
+           sizeof(sp->cargo_pod_motion_sent_pos));
+    memset(sp->cargo_pod_motion_sent_vel, 0,
+           sizeof(sp->cargo_pod_motion_sent_vel));
+    memset(sp->cargo_pod_motion_sent_rotation, 0,
+           sizeof(sp->cargo_pod_motion_sent_rotation));
+    memset(sp->fracture_challenge_sent_id, 0,
+           sizeof(sp->fracture_challenge_sent_id));
+    memset(sp->fracture_resolved_sent_ids, 0,
+           sizeof(sp->fracture_resolved_sent_ids));
+    sp->fracture_resolved_sent_cursor = 0;
 }
 
 static void force_player_authoritative_resync(server_player_t *sp) {
@@ -610,7 +1245,8 @@ static void send_latency_pong(struct mg_connection *c, uint32_t seq,
     uint8_t buf[NET_LATENCY_PONG_SIZE];
     uint32_t server_send_ms = (uint32_t)mg_millis();
     int len = serialize_latency_pong(buf, seq, client_sent_ms,
-                                     server_recv_ms, server_send_ms);
+                                     server_recv_ms, server_send_ms,
+                                     world.tick);
     ws_send(c, buf, (size_t)len);
 }
 
@@ -642,20 +1278,109 @@ static void send_pending_action_results(const sim_events_t *events) {
 
 static void broadcast(const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (server_player_is_gameplay_ready(&world.players[i]) &&
-            world.players[i].conn)
+        if (!server_player_is_gameplay_ready(&world.players[i]) ||
+            !world.players[i].conn)
+            continue;
+        if (data && len >= 2 &&
+            ((const uint8_t *)data)[0] == NET_MSG_STATION_IDENTITY) {
+            ws_send_station_identity_if_changed(
+                world.players[i].conn,
+                &world.players[i],
+                (const uint8_t *)data,
+                len);
+        } else if (data && len >= 2 &&
+                   ((const uint8_t *)data)[0] == NET_MSG_WORLD_STATIONS) {
+            ws_send_world_stations_if_changed(
+                world.players[i].conn,
+                &world.players[i],
+                (const uint8_t *)data,
+                len);
+        } else {
             ws_send(world.players[i].conn, data, len);
+        }
+    }
+}
+
+static void ws_send_contracts_if_changed(struct mg_connection *c,
+                                         server_player_t *sp,
+                                         const uint8_t *data,
+                                         size_t len,
+                                         uint64_t now_ms) {
+    if (!c || !sp || !data) return;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        return;
+    }
+    uint64_t hash = net_contracts_semantic_hash(data, (int)len);
+    bool semantic_changed = !sp->contracts_semantic_valid ||
+        sp->contracts_semantic_hash != hash;
+    bool refresh_due = contracts_age_refresh_due(
+        sp->contracts_last_sent_ms, now_ms);
+    uint8_t compact[CONTRACT_Q_MAX_SIZE];
+    int compact_len = serialize_contracts_q_from_full(compact, data, (int)len);
+    const uint8_t *wire_data = data;
+    size_t wire_len = len;
+    if (compact_len > 0 && (size_t)compact_len < len) {
+        wire_data = compact;
+        wire_len = (size_t)compact_len;
+    }
+    if (!semantic_changed && !refresh_due) {
+        net_tx_record_suppressed(wire_data, wire_len);
+        return;
+    }
+    sp->contracts_semantic_hash = hash;
+    sp->contracts_semantic_valid = true;
+    sp->contracts_last_sent_ms = now_ms;
+    net_payload_cache_t *cache = &sp->contracts_cache;
+    uint64_t wire_hash = net_payload_hash(wire_data, wire_len);
+    if (cache->valid &&
+        cache->conn == c &&
+        cache->len == (uint16_t)wire_len &&
+        cache->hash == wire_hash) {
+        net_tx_record_suppressed(wire_data, wire_len);
+        return;
+    }
+    ws_send(c, wire_data, wire_len);
+    cache->valid = true;
+    cache->conn = c;
+    cache->len = (uint16_t)wire_len;
+    cache->hash = wire_hash;
+}
+
+static void broadcast_contracts_if_changed(const uint8_t *data, size_t len,
+                                           uint64_t now_ms) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &world.players[i];
+        if (server_player_is_gameplay_ready(sp) && sp->conn)
+            ws_send_contracts_if_changed(sp->conn, sp, data, len, now_ms);
     }
 }
 
 static void ws_packet_sink(void *user, const uint8_t *data, int len) {
     struct mg_connection *c = (struct mg_connection *)user;
-    if (c && data && len > 0) ws_send(c, data, (size_t)len);
+    if (!c || !data || len <= 0) return;
+    if (data[0] == NET_MSG_INPUT_APPLIED && len >= NET_INPUT_APPLIED_SIZE) {
+        uint8_t stamped[NET_INPUT_APPLIED_SIZE];
+        memcpy(stamped, data, sizeof(stamped));
+        write_u32_le(&stamped[19], (uint32_t)mg_millis());
+        ws_send(c, stamped, sizeof(stamped));
+        return;
+    }
+    if (data[0] == NET_MSG_STATE && len >= NET_STATE_AUTH_SIZE) {
+        uint8_t stamped[NET_STATE_AUTH_SIZE];
+        memcpy(stamped, data, sizeof(stamped));
+        write_u32_le(&stamped[NET_STATE_AUTH_SERVER_SEND_MS_OFFSET],
+                     (uint32_t)mg_millis());
+        ws_send(c, stamped, sizeof(stamped));
+        return;
+    }
+    ws_send(c, data, (size_t)len);
 }
 
 typedef struct {
     struct mg_connection *conn;
     server_player_t *player;
+    uint32_t world_tick;
 } ws_private_packet_sink_t;
 
 static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
@@ -690,6 +1415,1071 @@ static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
     ws_send_if_changed(sink->conn, cache, data, (size_t)len);
 }
 
+static void ws_station_snapshot_packet_sink(void *user,
+                                            const uint8_t *data,
+                                            int len) {
+    ws_private_packet_sink_t *sink = (ws_private_packet_sink_t *)user;
+    if (!sink || !sink->conn || !sink->player || !data || len <= 0) return;
+    if (data[0] == NET_MSG_STATION_IDENTITY && len >= 2) {
+        ws_send_station_identity_if_changed(
+            sink->conn,
+            sink->player,
+            data,
+            (size_t)len);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_STATIONS && len >= 2) {
+        ws_send_world_stations_if_changed(
+            sink->conn,
+            sink->player,
+            data,
+            (size_t)len);
+        return;
+    }
+    ws_send_if_changed(sink->conn, NULL, data, (size_t)len);
+}
+
+static void send_initial_world_bundle_to_player(struct mg_connection *c,
+                                                int pid) {
+    if (!c || pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    if (!server_player_is_gameplay_ready(sp) || sp->conn != c) return;
+
+    {
+        ws_private_packet_sink_t station_sink = {
+            .conn = c,
+            .player = sp,
+        };
+        server_emit_station_snapshot(
+            &world, true, ws_station_snapshot_packet_sink, &station_sink,
+            &station_snapshot_scratch);
+    }
+
+    if (!sp->docked) {
+        int asteroids_q_len = 0;
+        int asteroids8_q_len = 0;
+        int sync_len = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+            world_snapshot_scratch.asteroids,
+            world_snapshot_scratch.asteroids_q, &asteroids_q_len,
+            world_snapshot_scratch.asteroids8_q, &asteroids8_q_len,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            world.asteroids, sp->ship.pos,
+            sp->asteroid_sent, sp->asteroid_motion_sent_tick,
+            sp->asteroid_motion_sent_pos,
+            sp->asteroid_motion_sent_vel, NULL, NULL, NULL,
+            world.tick,
+            asteroid_net_background_identity_budget_at_tick(world.tick));
+        if (sync_len > ASTEROID_MSG_HEADER)
+            ws_send(c, world_snapshot_scratch.asteroids, (size_t)sync_len);
+        if (asteroids8_q_len > ASTEROID8_Q_MSG_HEADER)
+            ws_send(c, world_snapshot_scratch.asteroids8_q,
+                    (size_t)asteroids8_q_len);
+        if (asteroids_q_len > ASTEROID_Q_MSG_HEADER)
+            ws_send(c, world_snapshot_scratch.asteroids_q,
+                    (size_t)asteroids_q_len);
+    }
+
+    send_highscores_to(c);
+
+    if (world.signal_channel.count > 0) {
+        size_t cap = (size_t)(3 +
+            world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
+        uint8_t *msg = (uint8_t *)malloc(cap);
+        if (msg) {
+            int len = serialize_signal_channel(msg, &world.signal_channel);
+            ws_send(c, msg, (size_t)len);
+            free(msg);
+        }
+    }
+}
+
+static void server_note_npc_identity_packet_sent(server_player_t *sp,
+                                                 const uint8_t *data,
+                                                 size_t len,
+                                                 uint32_t world_tick);
+
+static bool ws_send_world_npcs_if_changed(struct mg_connection *c,
+                                          server_player_t *sp,
+                                          const uint8_t *data,
+                                          size_t len,
+                                          uint32_t world_tick) {
+    if (!c || !sp || !data) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        server_note_npc_identity_packet_sent(sp, data, len, world_tick);
+        sp->world_npcs_last_sent_tick = world_tick;
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    uint64_t hash = net_world_npcs_semantic_hash(data, (int)len);
+    bool semantic_changed = !sp->world_npcs_semantic_valid ||
+        sp->world_npcs_semantic_hash != hash;
+    bool refresh_due = npc_net_metadata_refresh_due(
+        sp->world_npcs_last_sent_tick, world_tick);
+    if (!semantic_changed && !refresh_due) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (!net_payload_cache_should_send(&sp->world_npcs_cache, c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    sp->world_npcs_semantic_hash = hash;
+    sp->world_npcs_semantic_valid = true;
+    sp->world_npcs_last_sent_tick = world_tick;
+    ws_send(c, data, len);
+    server_note_npc_identity_packet_sent(sp, data, len, world_tick);
+    return true;
+}
+
+typedef struct {
+    uint8_t index;
+    uint8_t flags;
+    vec2 pos;
+    vec2 vel;
+    float angle;
+} server_npc_motion_sample_t;
+
+static bool server_decode_npc_motion_sample(const uint8_t *p,
+                                            uint8_t type,
+                                            server_npc_motion_sample_t *out) {
+    if (!p || !out) return false;
+    out->index = p[0];
+    out->flags = p[1];
+    if (type == NET_MSG_WORLD_NPC_MOTION_Q) {
+        out->pos = v2((float)(int16_t)read_u16_le(&p[2]) *
+                          NPC_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[4]) *
+                          NPC_MOTION_Q_POS_SCALE);
+        out->vel = v2((float)(int16_t)read_u16_le(&p[6]) *
+                          NPC_MOTION_Q_VEL_SCALE,
+                      (float)(int16_t)read_u16_le(&p[8]) *
+                          NPC_MOTION_Q_VEL_SCALE);
+        out->angle = (float)read_u16_le(&p[10]) *
+            NPC_MOTION_Q_ANGLE_SCALE;
+        return true;
+    }
+    if (type == NET_MSG_WORLD_NPC_MOTION8_Q) {
+        out->pos = v2((float)(int16_t)read_u16_le(&p[2]) *
+                          NPC_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[4]) *
+                          NPC_MOTION_Q_POS_SCALE);
+        out->vel = v2((float)(int8_t)p[6] * NPC_MOTION8_Q_VEL_SCALE,
+                      (float)(int8_t)p[7] * NPC_MOTION8_Q_VEL_SCALE);
+        out->angle = (float)p[8] * NPC_MOTION8_Q_ANGLE_SCALE;
+        return true;
+    }
+    if (type == NET_MSG_WORLD_NPC_MOTION) {
+        out->pos = v2(read_f32_le(&p[2]), read_f32_le(&p[6]));
+        out->vel = v2(read_f32_le(&p[10]), read_f32_le(&p[14]));
+        out->angle = read_f32_le(&p[18]);
+        return true;
+    }
+    return false;
+}
+
+static size_t server_filter_npc_motion_packet(server_player_t *sp,
+                                              const uint8_t *data,
+                                              size_t len,
+                                              uint8_t *out,
+                                              uint8_t *pos_out,
+                                              size_t *pos_len_out,
+                                              uint8_t *pose_out,
+                                              size_t *pose_len_out,
+                                              uint8_t *linear_out,
+                                              size_t *linear_len_out,
+                                              uint32_t world_tick) {
+    if (!sp || !data || !out || len < 2) return 0;
+    if (pos_len_out) *pos_len_out = 0;
+    if (pose_len_out) *pose_len_out = 0;
+    if (linear_len_out) *linear_len_out = 0;
+    uint8_t type = data[0];
+    size_t header = 0;
+    size_t record_size = 0;
+    if (type == NET_MSG_WORLD_NPC_MOTION_Q) {
+        header = NPC_MOTION_Q_MSG_HEADER;
+        record_size = NPC_MOTION_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_NPC_MOTION8_Q) {
+        header = NPC_MOTION8_Q_MSG_HEADER;
+        record_size = NPC_MOTION8_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_NPC_MOTION) {
+        header = NPC_MOTION_MSG_HEADER;
+        record_size = NPC_MOTION_RECORD_SIZE;
+    } else {
+        return 0;
+    }
+    if (len < header) return 0;
+    uint8_t count = data[1];
+    size_t expected = header + (size_t)count * record_size;
+    if (len < expected) return 0;
+
+    out[0] = type;
+    out[1] = 0;
+    uint8_t pos_count = 0;
+    if (pos_out) {
+        pos_out[0] = NET_MSG_WORLD_NPC_POS_Q;
+        pos_out[1] = 0;
+    }
+    uint8_t pose_count = 0;
+    if (pose_out) {
+        pose_out[0] = NET_MSG_WORLD_NPC_POSE_Q;
+        pose_out[1] = 0;
+    }
+    uint8_t linear_count = 0;
+    if (linear_out) {
+        linear_out[0] = NET_MSG_WORLD_NPC_LINEAR_Q;
+        linear_out[1] = 0;
+    }
+    uint8_t out_count = 0;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *record = &data[header + (size_t)i * record_size];
+        server_npc_motion_sample_t sample;
+        if (!server_decode_npc_motion_sample(record, type, &sample))
+            continue;
+        if (!npc_motion_should_send(sp,
+                                    sample.index,
+                                    sample.flags,
+                                    sample.pos,
+                                    sample.vel,
+                                    sample.angle,
+                                    world_tick))
+            continue;
+        if (pos_out &&
+            npc_motion_pos_q_eligible(sp,
+                                      sample.index,
+                                      sample.flags,
+                                      sample.vel,
+                                      sample.angle,
+                                      world_tick)) {
+            serialize_one_npc_pos_q(
+                &pos_out[NPC_POS_Q_MSG_HEADER +
+                         (size_t)pos_count * NPC_POS_Q_RECORD_SIZE],
+                sample.index,
+                sample.pos);
+            pos_count++;
+            continue;
+        }
+        if (pose_out &&
+            npc_motion_pose_q_eligible(sp,
+                                       sample.index,
+                                       sample.flags,
+                                       sample.vel,
+                                       world_tick)) {
+            serialize_one_npc_pose_q(
+                &pose_out[NPC_POSE_Q_MSG_HEADER +
+                          (size_t)pose_count * NPC_POSE_Q_RECORD_SIZE],
+                sample.index,
+                sample.pos,
+                sample.angle);
+            pose_count++;
+            continue;
+        }
+        if (linear_out &&
+            npc_motion_linear_q_eligible(sp,
+                                         sample.index,
+                                         sample.flags,
+                                         sample.angle,
+                                         world_tick)) {
+            serialize_one_npc_linear_q(
+                &linear_out[NPC_LINEAR_Q_MSG_HEADER +
+                            (size_t)linear_count * NPC_LINEAR_Q_RECORD_SIZE],
+                sample.index,
+                sample.pos,
+                sample.vel);
+            linear_count++;
+            continue;
+        }
+        memcpy(&out[header + (size_t)out_count * record_size],
+               record,
+               record_size);
+        out_count++;
+    }
+    out[1] = out_count;
+    if (pos_out) {
+        pos_out[1] = pos_count;
+        if (pos_len_out) {
+            *pos_len_out = NPC_POS_Q_MSG_HEADER +
+                (size_t)pos_count * NPC_POS_Q_RECORD_SIZE;
+        }
+    }
+    if (pose_out) {
+        pose_out[1] = pose_count;
+        if (pose_len_out) {
+            *pose_len_out = NPC_POSE_Q_MSG_HEADER +
+                (size_t)pose_count * NPC_POSE_Q_RECORD_SIZE;
+        }
+    }
+    if (linear_out) {
+        linear_out[1] = linear_count;
+        if (linear_len_out) {
+            *linear_len_out = NPC_LINEAR_Q_MSG_HEADER +
+                (size_t)linear_count * NPC_LINEAR_Q_RECORD_SIZE;
+        }
+    }
+    return header + (size_t)out_count * record_size;
+}
+
+static void server_note_npc_motion_packet_sent(server_player_t *sp,
+                                               const uint8_t *data,
+                                               size_t len,
+                                               uint32_t world_tick) {
+    if (!sp || !data || len < 2) return;
+    uint8_t type = data[0];
+    size_t header = 0;
+    size_t record_size = 0;
+    if (type == NET_MSG_WORLD_NPC_MOTION_Q) {
+        header = NPC_MOTION_Q_MSG_HEADER;
+        record_size = NPC_MOTION_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_NPC_MOTION8_Q) {
+        header = NPC_MOTION8_Q_MSG_HEADER;
+        record_size = NPC_MOTION8_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_NPC_MOTION) {
+        header = NPC_MOTION_MSG_HEADER;
+        record_size = NPC_MOTION_RECORD_SIZE;
+    } else {
+        return;
+    }
+    uint8_t count = data[1];
+    if (len < header + (size_t)count * record_size) return;
+    for (uint8_t i = 0; i < count; i++) {
+        server_npc_motion_sample_t sample;
+        const uint8_t *record = &data[header + (size_t)i * record_size];
+        if (!server_decode_npc_motion_sample(record, type, &sample))
+            continue;
+        npc_motion_note_sent(sp,
+                             sample.index,
+                             sample.flags,
+                             sample.pos,
+                             sample.vel,
+                             sample.angle,
+                             world_tick);
+    }
+}
+
+static void server_note_npc_pos_packet_sent(server_player_t *sp,
+                                            const uint8_t *data,
+                                            size_t len,
+                                            uint32_t world_tick) {
+    if (!sp || !data || len < NPC_POS_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_NPC_POS_Q)
+        return;
+    uint8_t count = data[1];
+    if (len < NPC_POS_Q_MSG_HEADER + (size_t)count * NPC_POS_Q_RECORD_SIZE)
+        return;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p =
+            &data[NPC_POS_Q_MSG_HEADER + (size_t)i * NPC_POS_Q_RECORD_SIZE];
+        uint8_t idx = p[0];
+        if (idx >= MAX_NPC_SHIPS || sp->npc_motion_sent_tick[idx] == 0u)
+            continue;
+        vec2 pos = v2((float)(int16_t)read_u16_le(&p[1]) *
+                          NPC_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[3]) *
+                          NPC_MOTION_Q_POS_SCALE);
+        npc_motion_note_sent(sp,
+                             idx,
+                             sp->npc_motion_sent_flags[idx],
+                             pos,
+                             sp->npc_motion_sent_vel[idx],
+                             sp->npc_motion_sent_angle[idx],
+                             world_tick);
+    }
+}
+
+static void server_note_npc_pose_packet_sent(server_player_t *sp,
+                                             const uint8_t *data,
+                                             size_t len,
+                                             uint32_t world_tick) {
+    if (!sp || !data || len < NPC_POSE_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_NPC_POSE_Q)
+        return;
+    uint8_t count = data[1];
+    if (len < NPC_POSE_Q_MSG_HEADER + (size_t)count * NPC_POSE_Q_RECORD_SIZE)
+        return;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p =
+            &data[NPC_POSE_Q_MSG_HEADER + (size_t)i * NPC_POSE_Q_RECORD_SIZE];
+        uint8_t idx = p[0];
+        if (idx >= MAX_NPC_SHIPS || sp->npc_motion_sent_tick[idx] == 0u)
+            continue;
+        vec2 pos = v2((float)(int16_t)read_u16_le(&p[1]) *
+                          NPC_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[3]) *
+                          NPC_MOTION_Q_POS_SCALE);
+        float angle = (float)read_u16_le(&p[5]) *
+            NPC_MOTION_Q_ANGLE_SCALE;
+        npc_motion_note_sent(sp,
+                             idx,
+                             sp->npc_motion_sent_flags[idx],
+                             pos,
+                             sp->npc_motion_sent_vel[idx],
+                             angle,
+                             world_tick);
+    }
+}
+
+static void server_note_npc_linear_packet_sent(server_player_t *sp,
+                                               const uint8_t *data,
+                                               size_t len,
+                                               uint32_t world_tick) {
+    if (!sp || !data || len < NPC_LINEAR_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_NPC_LINEAR_Q)
+        return;
+    uint8_t count = data[1];
+    if (len < NPC_LINEAR_Q_MSG_HEADER +
+              (size_t)count * NPC_LINEAR_Q_RECORD_SIZE)
+        return;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p =
+            &data[NPC_LINEAR_Q_MSG_HEADER +
+                  (size_t)i * NPC_LINEAR_Q_RECORD_SIZE];
+        uint8_t idx = p[0];
+        if (idx >= MAX_NPC_SHIPS || sp->npc_motion_sent_tick[idx] == 0u)
+            continue;
+        vec2 pos = v2((float)(int16_t)read_u16_le(&p[1]) *
+                          NPC_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[3]) *
+                          NPC_MOTION_Q_POS_SCALE);
+        vec2 vel = v2((float)(int16_t)read_u16_le(&p[5]) *
+                          NPC_MOTION_Q_VEL_SCALE,
+                      (float)(int16_t)read_u16_le(&p[7]) *
+                          NPC_MOTION_Q_VEL_SCALE);
+        npc_motion_note_sent(sp,
+                             idx,
+                             sp->npc_motion_sent_flags[idx],
+                             pos,
+                             vel,
+                             sp->npc_motion_sent_angle[idx],
+                             world_tick);
+    }
+}
+
+static void server_note_npc_identity_packet_sent(server_player_t *sp,
+                                                 const uint8_t *data,
+                                                 size_t len,
+                                                 uint32_t world_tick) {
+    if (!sp || !data || len < 2 || data[0] != NET_MSG_WORLD_NPCS)
+        return;
+    uint8_t count = data[1];
+    size_t expected = 2 + (size_t)count * NPC_RECORD_SIZE;
+    if (len < expected) return;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p = &data[2 + (size_t)i * NPC_RECORD_SIZE];
+        npc_motion_note_sent(sp,
+                             p[0],
+                             p[1],
+                             v2(read_f32_le(&p[2]),
+                                read_f32_le(&p[6])),
+                             v2(read_f32_le(&p[10]),
+                                read_f32_le(&p[14])),
+                             read_f32_le(&p[18]),
+                             world_tick);
+    }
+}
+
+static bool ws_send_npc_motion_payload(struct mg_connection *c,
+                                       server_player_t *sp,
+                                       const uint8_t *data,
+                                       size_t len,
+                                       uint32_t world_tick) {
+    if (!c || !sp || !data || len <= NPC_MOTION_MSG_HEADER) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+    } else {
+        if (ws_defer_snapshot_if_backpressured(c, data, len))
+            return false;
+        if (!net_payload_cache_should_send(&sp->world_npc_motion_cache,
+                                           c, data, len)) {
+            net_tx_record_suppressed(data, len);
+            return false;
+        }
+        ws_send(c, data, len);
+    }
+    if (data[0] == NET_MSG_WORLD_NPC_POS_Q)
+        server_note_npc_pos_packet_sent(sp, data, len, world_tick);
+    else if (data[0] == NET_MSG_WORLD_NPC_POSE_Q)
+        server_note_npc_pose_packet_sent(sp, data, len, world_tick);
+    else if (data[0] == NET_MSG_WORLD_NPC_LINEAR_Q)
+        server_note_npc_linear_packet_sent(sp, data, len, world_tick);
+    else
+        server_note_npc_motion_packet_sent(sp, data, len, world_tick);
+    sp->world_npc_motion_last_sent_tick = world_tick;
+    return true;
+}
+
+static void ws_send_world_npc_motion_if_changed(struct mg_connection *c,
+                                                server_player_t *sp,
+                                                const uint8_t *data,
+                                                size_t len,
+                                                uint32_t world_tick) {
+    if (!c || !sp || !data || len <= NPC_MOTION_MSG_HEADER) return;
+    if (sp->world_npcs_last_sent_tick == world_tick) return;
+    if (sp->world_npc_motion_last_sent_tick != 0 &&
+        (uint32_t)(world_tick - sp->world_npc_motion_last_sent_tick) <
+            WORLD_NPC_MOTION_REPEAT_TICKS) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    uint8_t filtered[NPC_MOTION_MSG_HEADER +
+                     MAX_NPC_SHIPS * NPC_MOTION_RECORD_SIZE];
+    uint8_t pos_filtered[NPC_POS_Q_MSG_HEADER +
+                         MAX_NPC_SHIPS * NPC_POS_Q_RECORD_SIZE];
+    uint8_t pose_filtered[NPC_POSE_Q_MSG_HEADER +
+                          MAX_NPC_SHIPS * NPC_POSE_Q_RECORD_SIZE];
+    uint8_t linear_filtered[NPC_LINEAR_Q_MSG_HEADER +
+                            MAX_NPC_SHIPS * NPC_LINEAR_Q_RECORD_SIZE];
+    const uint8_t *send_data = data;
+    size_t send_len = len;
+    size_t pos_len = 0;
+    size_t pose_len = 0;
+    size_t linear_len = 0;
+    if (data[0] == NET_MSG_WORLD_NPC_MOTION ||
+        data[0] == NET_MSG_WORLD_NPC_MOTION_Q ||
+        data[0] == NET_MSG_WORLD_NPC_MOTION8_Q) {
+        send_len = server_filter_npc_motion_packet(
+            sp, data, len, filtered, pos_filtered, &pos_len,
+            pose_filtered, &pose_len, linear_filtered, &linear_len,
+            world_tick);
+        send_data = filtered;
+        if (send_len <= NPC_MOTION_MSG_HEADER &&
+            pos_len <= NPC_POS_Q_MSG_HEADER &&
+            pose_len <= NPC_POSE_Q_MSG_HEADER &&
+            linear_len <= NPC_LINEAR_Q_MSG_HEADER) {
+            net_tx_record_suppressed(data, len);
+            return;
+        }
+    }
+    bool sent_any = false;
+    if (pos_len > NPC_POS_Q_MSG_HEADER) {
+        sent_any |= ws_send_npc_motion_payload(
+            c, sp, pos_filtered, pos_len, world_tick);
+    }
+    if (pose_len > NPC_POSE_Q_MSG_HEADER) {
+        sent_any |= ws_send_npc_motion_payload(
+            c, sp, pose_filtered, pose_len, world_tick);
+    }
+    if (linear_len > NPC_LINEAR_Q_MSG_HEADER) {
+        sent_any |= ws_send_npc_motion_payload(
+            c, sp, linear_filtered, linear_len, world_tick);
+    }
+    if (send_len > NPC_MOTION_MSG_HEADER) {
+        sent_any |= ws_send_npc_motion_payload(
+            c, sp, send_data, send_len, world_tick);
+    }
+    if (!sent_any)
+        net_tx_record_suppressed(data, len);
+}
+
+static void ws_send_world_npc_status_if_changed(struct mg_connection *c,
+                                                server_player_t *sp,
+                                                const uint8_t *data,
+                                                size_t len,
+                                                uint32_t world_tick) {
+    if (!c || !sp || !data || len <= NPC_STATUS_MSG_HEADER) return;
+    if (sp->world_npcs_last_sent_tick == world_tick) return;
+    if (sp->world_npc_status_last_sent_tick != 0 &&
+        (uint32_t)(world_tick - sp->world_npc_status_last_sent_tick) <
+            WORLD_NPC_STATUS_REPEAT_TICKS) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        sp->world_npc_status_last_sent_tick = world_tick;
+        return;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return;
+    uint64_t hash = net_world_npc_status_semantic_hash(data, (int)len);
+    net_payload_cache_t *cache = &sp->world_npc_status_cache;
+    if (cache->valid &&
+        cache->conn == c &&
+        cache->len == (uint16_t)len &&
+        cache->hash == hash) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    ws_send(c, data, len);
+    cache->valid = true;
+    cache->conn = c;
+    cache->len = (uint16_t)len;
+    cache->hash = hash;
+    sp->world_npc_status_last_sent_tick = world_tick;
+}
+
+static bool ws_send_world_interactions_if_changed(struct mg_connection *c,
+                                                  server_player_t *sp,
+                                                  const uint8_t *data,
+                                                  size_t len,
+                                                  uint32_t world_tick) {
+    if (!c || !sp || !data) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        sp->world_interactions_last_sent_tick = world_tick;
+        return true;
+    }
+    uint64_t hash = net_world_interactions_semantic_hash(data, (int)len);
+    bool semantic_changed = !sp->world_interactions_semantic_valid ||
+        sp->world_interactions_semantic_hash != hash;
+    bool refresh_due = interaction_net_metadata_refresh_due(
+        sp->world_interactions_last_sent_tick, world_tick);
+    if (!semantic_changed && !refresh_due) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len)) {
+        if (semantic_changed)
+            sp->world_interaction_drift_block_tick = world_tick;
+        return false;
+    }
+    if (!net_payload_cache_should_send(&sp->world_interactions_cache,
+                                       c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    sp->world_interactions_semantic_hash = hash;
+    sp->world_interactions_semantic_valid = true;
+    sp->world_interactions_last_sent_tick = world_tick;
+    ws_send(c, data, len);
+    return true;
+}
+
+static void ws_send_world_interaction_drift_if_changed(struct mg_connection *c,
+                                                       server_player_t *sp,
+                                                       const uint8_t *data,
+                                                       size_t len,
+                                                       uint32_t world_tick) {
+    if (!c || !sp || !data || len <= INTERACTION_DRIFT_MSG_HEADER) return;
+    if (!sp->world_interactions_semantic_valid ||
+        sp->world_interactions_last_sent_tick == 0) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    if (sp->world_interactions_last_sent_tick == world_tick ||
+        sp->world_interaction_drift_block_tick == world_tick) {
+        return;
+    }
+    if (!interaction_drift_repeat_due(
+            sp->world_interaction_drift_last_sent_tick, world_tick)) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        sp->world_interaction_drift_last_sent_tick = world_tick;
+        return;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return;
+    if (!net_payload_cache_should_send(&sp->world_interaction_drift_cache,
+                                       c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    ws_send(c, data, len);
+    sp->world_interaction_drift_last_sent_tick = world_tick;
+}
+
+typedef struct {
+    uint8_t index;
+    vec2 pos;
+    vec2 vel;
+    float rotation;
+} server_cargo_pod_motion_sample_t;
+
+static bool server_decode_cargo_pod_motion_sample(
+    const uint8_t *p,
+    uint8_t type,
+    server_cargo_pod_motion_sample_t *out) {
+    if (!p || !out) return false;
+    out->index = p[0];
+    if (type == NET_MSG_WORLD_CARGO_POD_MOTION_Q) {
+        const float two_pi = 6.28318530717958647692f;
+        out->pos = v2((float)(int16_t)read_u16_le(&p[1]) *
+                          CARGO_POD_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[3]) *
+                          CARGO_POD_MOTION_Q_POS_SCALE);
+        out->vel = v2((float)(int16_t)read_u16_le(&p[5]) *
+                          CARGO_POD_MOTION_Q_VEL_SCALE,
+                      (float)(int16_t)read_u16_le(&p[7]) *
+                          CARGO_POD_MOTION_Q_VEL_SCALE);
+        out->rotation = ((float)read_u16_le(&p[9]) / 65536.0f) * two_pi;
+        return true;
+    }
+    if (type == NET_MSG_WORLD_CARGO_POD_MOTION) {
+        out->pos = v2(read_f32_le(&p[1]), read_f32_le(&p[5]));
+        out->vel = v2(read_f32_le(&p[9]), read_f32_le(&p[13]));
+        out->rotation = read_f32_le(&p[17]);
+        return true;
+    }
+    return false;
+}
+
+static size_t server_filter_cargo_pod_motion_packet(
+    server_player_t *sp,
+    const uint8_t *data,
+    size_t len,
+    uint8_t *out,
+    uint8_t *linear_out,
+    size_t *linear_len_out,
+    uint32_t world_tick) {
+    if (!sp || !data || !out || len < 2) return 0;
+    if (linear_len_out) *linear_len_out = 0;
+    uint8_t type = data[0];
+    size_t header = 0;
+    size_t record_size = 0;
+    if (type == NET_MSG_WORLD_CARGO_POD_MOTION_Q) {
+        header = CARGO_POD_MOTION_Q_MSG_HEADER;
+        record_size = CARGO_POD_MOTION_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_CARGO_POD_MOTION) {
+        header = CARGO_POD_MOTION_MSG_HEADER;
+        record_size = CARGO_POD_MOTION_RECORD_SIZE;
+    } else {
+        return 0;
+    }
+    if (len < header) return 0;
+    uint8_t count = data[1];
+    size_t expected = header + (size_t)count * record_size;
+    if (len < expected) return 0;
+
+    out[0] = type;
+    out[1] = 0;
+    uint8_t linear_count = 0;
+    if (linear_out) {
+        linear_out[0] = NET_MSG_WORLD_CARGO_POD_LINEAR_Q;
+        linear_out[1] = 0;
+    }
+    uint8_t out_count = 0;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *record = &data[header + (size_t)i * record_size];
+        server_cargo_pod_motion_sample_t sample;
+        if (!server_decode_cargo_pod_motion_sample(record, type, &sample))
+            continue;
+        if (!cargo_pod_motion_should_send(sp,
+                                          sample.index,
+                                          sample.pos,
+                                          sample.vel,
+                                          sample.rotation,
+                                          world_tick))
+            continue;
+        if (linear_out &&
+            cargo_pod_motion_linear_q_eligible(sp,
+                                               sample.index,
+                                               sample.rotation,
+                                               world_tick)) {
+            serialize_one_cargo_pod_linear_q(
+                &linear_out[CARGO_POD_LINEAR_Q_MSG_HEADER +
+                            (size_t)linear_count *
+                                CARGO_POD_LINEAR_Q_RECORD_SIZE],
+                sample.index,
+                sample.pos,
+                sample.vel);
+            linear_count++;
+            continue;
+        }
+        memcpy(&out[header + (size_t)out_count * record_size],
+               record,
+               record_size);
+        out_count++;
+    }
+    out[1] = out_count;
+    if (linear_out) {
+        linear_out[1] = linear_count;
+        if (linear_len_out) {
+            *linear_len_out = CARGO_POD_LINEAR_Q_MSG_HEADER +
+                (size_t)linear_count * CARGO_POD_LINEAR_Q_RECORD_SIZE;
+        }
+    }
+    return header + (size_t)out_count * record_size;
+}
+
+static void server_note_cargo_pod_motion_packet_sent(server_player_t *sp,
+                                                     const uint8_t *data,
+                                                     size_t len,
+                                                     uint32_t world_tick) {
+    if (!sp || !data || len < 2) return;
+    uint8_t type = data[0];
+    size_t header = 0;
+    size_t record_size = 0;
+    if (type == NET_MSG_WORLD_CARGO_POD_MOTION_Q) {
+        header = CARGO_POD_MOTION_Q_MSG_HEADER;
+        record_size = CARGO_POD_MOTION_Q_RECORD_SIZE;
+    } else if (type == NET_MSG_WORLD_CARGO_POD_MOTION) {
+        header = CARGO_POD_MOTION_MSG_HEADER;
+        record_size = CARGO_POD_MOTION_RECORD_SIZE;
+    } else {
+        return;
+    }
+    uint8_t count = data[1];
+    if (len < header + (size_t)count * record_size) return;
+    for (uint8_t i = 0; i < count; i++) {
+        server_cargo_pod_motion_sample_t sample;
+        const uint8_t *record = &data[header + (size_t)i * record_size];
+        if (!server_decode_cargo_pod_motion_sample(record, type, &sample))
+            continue;
+        cargo_pod_motion_note_sent(sp,
+                                   sample.index,
+                                   sample.pos,
+                                   sample.vel,
+                                   sample.rotation,
+                                   world_tick);
+    }
+}
+
+static void server_note_cargo_pod_linear_packet_sent(server_player_t *sp,
+                                                     const uint8_t *data,
+                                                     size_t len,
+                                                     uint32_t world_tick) {
+    if (!sp || !data || len < CARGO_POD_LINEAR_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_CARGO_POD_LINEAR_Q)
+        return;
+    uint8_t count = data[1];
+    if (len < CARGO_POD_LINEAR_Q_MSG_HEADER +
+              (size_t)count * CARGO_POD_LINEAR_Q_RECORD_SIZE)
+        return;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p =
+            &data[CARGO_POD_LINEAR_Q_MSG_HEADER +
+                  (size_t)i * CARGO_POD_LINEAR_Q_RECORD_SIZE];
+        uint8_t idx = p[0];
+        if (idx >= MAX_CARGO_PODS ||
+            sp->cargo_pod_motion_sent_tick[idx] == 0u)
+            continue;
+        vec2 pos = v2((float)(int16_t)read_u16_le(&p[1]) *
+                          CARGO_POD_MOTION_Q_POS_SCALE,
+                      (float)(int16_t)read_u16_le(&p[3]) *
+                          CARGO_POD_MOTION_Q_POS_SCALE);
+        vec2 vel = v2((float)(int16_t)read_u16_le(&p[5]) *
+                          CARGO_POD_MOTION_Q_VEL_SCALE,
+                      (float)(int16_t)read_u16_le(&p[7]) *
+                          CARGO_POD_MOTION_Q_VEL_SCALE);
+        cargo_pod_motion_note_sent(sp,
+                                   idx,
+                                   pos,
+                                   vel,
+                                   sp->cargo_pod_motion_sent_rotation[idx],
+                                   world_tick);
+    }
+}
+
+static void server_note_cargo_pod_identity_packet_sent(server_player_t *sp,
+                                                       const uint8_t *data,
+                                                       size_t len,
+                                                       uint32_t world_tick) {
+    if (!sp || !data || len < 2 ||
+        (data[0] != NET_MSG_WORLD_CARGO_PODS &&
+         data[0] != NET_MSG_WORLD_CARGO_PODS_Q)) {
+        return;
+    }
+    uint8_t count = data[1];
+    bool compact = data[0] == NET_MSG_WORLD_CARGO_PODS_Q;
+    size_t record_size = compact ? CARGO_POD_Q_RECORD_SIZE :
+        CARGO_POD_RECORD_SIZE;
+    size_t expected = 2 + (size_t)count * record_size;
+    if (len < expected) return;
+    const float two_pi = 6.28318530717958647692f;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *p = &data[2 + (size_t)i * record_size];
+        vec2 pos;
+        vec2 vel;
+        float rotation;
+        if (compact) {
+            pos = v2((float)(int16_t)read_u16_le(&p[4]) *
+                         CARGO_POD_MOTION_Q_POS_SCALE,
+                     (float)(int16_t)read_u16_le(&p[6]) *
+                         CARGO_POD_MOTION_Q_POS_SCALE);
+            vel = v2((float)(int16_t)read_u16_le(&p[8]) *
+                         CARGO_POD_MOTION_Q_VEL_SCALE,
+                     (float)(int16_t)read_u16_le(&p[10]) *
+                         CARGO_POD_MOTION_Q_VEL_SCALE);
+            rotation = ((float)read_u16_le(&p[16]) / 65536.0f) * two_pi;
+        } else {
+            pos = v2(read_f32_le(&p[4]), read_f32_le(&p[8]));
+            vel = v2(read_f32_le(&p[12]), read_f32_le(&p[16]));
+            rotation = read_f32_le(&p[24]);
+        }
+        cargo_pod_motion_note_sent(sp, p[0], pos, vel, rotation, world_tick);
+    }
+}
+
+static bool ws_send_world_cargo_pods_if_changed(struct mg_connection *c,
+                                                server_player_t *sp,
+                                                const uint8_t *data,
+                                                size_t len,
+                                                uint32_t world_tick) {
+    if (!c || !sp || !data) return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+        server_note_cargo_pod_identity_packet_sent(sp, data, len, world_tick);
+        sp->world_cargo_pods_last_sent_tick = world_tick;
+        return true;
+    }
+    if (ws_defer_snapshot_if_backpressured(c, data, len))
+        return false;
+    uint64_t hash = net_world_cargo_pods_semantic_hash(data, (int)len);
+    bool semantic_changed = !sp->world_cargo_pods_semantic_valid ||
+        sp->world_cargo_pods_semantic_hash != hash;
+    bool refresh_due = cargo_pod_net_metadata_refresh_due(
+        sp->world_cargo_pods_last_sent_tick, world_tick);
+    if (!semantic_changed && !refresh_due) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (!net_payload_cache_should_send(&sp->world_cargo_pods_cache,
+                                       c, data, len)) {
+        net_tx_record_suppressed(data, len);
+        return false;
+    }
+    sp->world_cargo_pods_semantic_hash = hash;
+    sp->world_cargo_pods_semantic_valid = true;
+    sp->world_cargo_pods_last_sent_tick = world_tick;
+    ws_send(c, data, len);
+    server_note_cargo_pod_identity_packet_sent(sp, data, len, world_tick);
+    return true;
+}
+
+static bool ws_send_cargo_pod_motion_payload(struct mg_connection *c,
+                                             server_player_t *sp,
+                                             const uint8_t *data,
+                                             size_t len,
+                                             uint32_t world_tick) {
+    if (!c || !sp || !data || len <= CARGO_POD_MOTION_MSG_HEADER)
+        return false;
+    if (len > UINT16_MAX) {
+        ws_send(c, data, len);
+    } else {
+        if (ws_defer_snapshot_if_backpressured(c, data, len))
+            return false;
+        if (!net_payload_cache_should_send(&sp->world_cargo_pod_motion_cache,
+                                           c, data, len)) {
+            net_tx_record_suppressed(data, len);
+            return false;
+        }
+        ws_send(c, data, len);
+    }
+    if (data[0] == NET_MSG_WORLD_CARGO_POD_LINEAR_Q)
+        server_note_cargo_pod_linear_packet_sent(sp, data, len, world_tick);
+    else
+        server_note_cargo_pod_motion_packet_sent(sp, data, len, world_tick);
+    sp->world_cargo_pod_motion_last_sent_tick = world_tick;
+    return true;
+}
+
+static void ws_send_world_cargo_pod_motion_if_changed(struct mg_connection *c,
+                                                      server_player_t *sp,
+                                                      const uint8_t *data,
+                                                      size_t len,
+                                                      uint32_t world_tick) {
+    if (!c || !sp || !data || len <= CARGO_POD_MOTION_MSG_HEADER) return;
+    if (sp->world_cargo_pods_last_sent_tick == world_tick) return;
+    if (sp->world_cargo_pod_motion_last_sent_tick != 0 &&
+        (uint32_t)(world_tick - sp->world_cargo_pod_motion_last_sent_tick) <
+            WORLD_CARGO_POD_MOTION_REPEAT_TICKS) {
+        net_tx_record_suppressed(data, len);
+        return;
+    }
+    uint8_t filtered[CARGO_POD_MOTION_MSG_HEADER +
+                     MAX_CARGO_PODS * CARGO_POD_MOTION_RECORD_SIZE];
+    uint8_t linear_filtered[CARGO_POD_LINEAR_Q_MSG_HEADER +
+                            MAX_CARGO_PODS * CARGO_POD_LINEAR_Q_RECORD_SIZE];
+    const uint8_t *send_data = data;
+    size_t send_len = len;
+    size_t linear_len = 0;
+    if (data[0] == NET_MSG_WORLD_CARGO_POD_MOTION ||
+        data[0] == NET_MSG_WORLD_CARGO_POD_MOTION_Q) {
+        send_len = server_filter_cargo_pod_motion_packet(
+            sp, data, len, filtered, linear_filtered, &linear_len, world_tick);
+        send_data = filtered;
+        if (send_len <= CARGO_POD_MOTION_MSG_HEADER &&
+            linear_len <= CARGO_POD_LINEAR_Q_MSG_HEADER) {
+            net_tx_record_suppressed(data, len);
+            return;
+        }
+    }
+    bool sent_any = false;
+    if (linear_len > CARGO_POD_LINEAR_Q_MSG_HEADER) {
+        sent_any |= ws_send_cargo_pod_motion_payload(
+            c, sp, linear_filtered, linear_len, world_tick);
+    }
+    if (send_len > CARGO_POD_MOTION_MSG_HEADER) {
+        sent_any |= ws_send_cargo_pod_motion_payload(
+            c, sp, send_data, send_len, world_tick);
+    }
+    if (!sent_any)
+        net_tx_record_suppressed(data, len);
+}
+
+static void ws_world_packet_sink(void *user, const uint8_t *data, int len) {
+    ws_private_packet_sink_t *sink = (ws_private_packet_sink_t *)user;
+    if (!sink || !sink->conn || !sink->player || !data || len <= 0) return;
+    if (data[0] == NET_MSG_WORLD_CARGO_PODS ||
+        data[0] == NET_MSG_WORLD_CARGO_PODS_Q) {
+        (void)ws_send_world_cargo_pods_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_CARGO_POD_MOTION ||
+        data[0] == NET_MSG_WORLD_CARGO_POD_MOTION_Q ||
+        data[0] == NET_MSG_WORLD_CARGO_POD_LINEAR_Q) {
+        ws_send_world_cargo_pod_motion_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_INTERACTIONS ||
+        data[0] == NET_MSG_WORLD_INTERACTIONS_Q) {
+        (void)ws_send_world_interactions_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_INTERACTION_DRIFT) {
+        ws_send_world_interaction_drift_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_NPCS) {
+        ws_send_world_npcs_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_NPC_MOTION ||
+        data[0] == NET_MSG_WORLD_NPC_MOTION_Q ||
+        data[0] == NET_MSG_WORLD_NPC_MOTION8_Q ||
+        data[0] == NET_MSG_WORLD_NPC_POS_Q ||
+        data[0] == NET_MSG_WORLD_NPC_POSE_Q ||
+        data[0] == NET_MSG_WORLD_NPC_LINEAR_Q) {
+        ws_send_world_npc_motion_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    if (data[0] == NET_MSG_WORLD_NPC_STATUS ||
+        data[0] == NET_MSG_WORLD_NPC_STATUS8_Q) {
+        ws_send_world_npc_status_if_changed(
+            sink->conn, sink->player, data, (size_t)len, sink->world_tick);
+        return;
+    }
+    net_payload_cache_t *cache = NULL;
+    switch (data[0]) {
+    case NET_MSG_WORLD_SCAFFOLDS:
+        cache = &sink->player->world_scaffolds_cache;
+        break;
+    case NET_MSG_WORLD_CARGO_PODS:
+    case NET_MSG_WORLD_CARGO_PODS_Q:
+        cache = &sink->player->world_cargo_pods_cache;
+        break;
+    case NET_MSG_WORLD_INTERACTIONS:
+    case NET_MSG_WORLD_INTERACTIONS_Q:
+        cache = &sink->player->world_interactions_cache;
+        break;
+    default:
+        break;
+    }
+    if (ws_defer_snapshot_if_backpressured(sink->conn, data, (size_t)len))
+        return;
+    ws_send_if_changed(sink->conn, cache, data, (size_t)len);
+}
+
 static void ws_player_packet_sink(void *user, int player_slot,
                                   const uint8_t *data, int len) {
     (void)user;
@@ -718,9 +2508,26 @@ static void broadcast_fracture_updates(void) {
 /* ------------------------------------------------------------------ */
 
 /* Per-player WebSocket message rate limiting */
-static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
+typedef struct {
+    uint64_t window_start;
+    int msg_count;
+} ws_rate_bucket_t;
+
+static ws_rate_bucket_t ws_rate[MAX_PLAYERS];
+static ws_rate_bucket_t ws_ping_rate[MAX_PLAYERS];
 #define WS_RATE_WINDOW_MS 1000
 #define WS_RATE_LIMIT 140 /* 60Hz input + signed/plan bursts without drops */
+#define WS_PING_RATE_LIMIT 6 /* Allows 4Hz recovery probes with frame jitter. */
+
+static bool ws_rate_bucket_allow(ws_rate_bucket_t *bucket, uint64_t now,
+                                 int limit) {
+    if (!bucket || limit <= 0) return false;
+    if (now - bucket->window_start > WS_RATE_WINDOW_MS) {
+        bucket->window_start = now;
+        bucket->msg_count = 0;
+    }
+    return ++bucket->msg_count <= limit;
+}
 
 static bool ws_message_allowed_before_session(uint8_t type) {
     switch (type) {
@@ -835,24 +2642,30 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     }
     if (pid < 0) return;
 
-    /* Rate limit: silently drop excess messages */
-    uint64_t now = mg_millis();
-    if (now - ws_rate[pid].window_start > WS_RATE_WINDOW_MS) {
-        ws_rate[pid].window_start = now;
-        ws_rate[pid].msg_count = 0;
-    }
-    if (++ws_rate[pid].msg_count > WS_RATE_LIMIT) return;
-
     const uint8_t *data = (const uint8_t *)wm->data.buf;
     int len = (int)wm->data.len;
     if (len < 1 || pid < 0 || pid >= MAX_PLAYERS) return;
-    analytics_record_activity(&world.players[pid], now);
-    if (!server_player_has_live_session(&world.players[pid]) &&
-        !ws_message_allowed_before_session(data[0])) {
+    uint8_t type = data[0];
+
+    /* Rate limit: silently drop excess messages. Latency probes have a
+     * separate tiny bucket so input/action bursts cannot starve ping samples. */
+    uint64_t now = mg_millis();
+    if (type == NET_MSG_LATENCY_PING) {
+        if (!ws_rate_bucket_allow(&ws_ping_rate[pid], now,
+                                  WS_PING_RATE_LIMIT)) {
+            return;
+        }
+    } else if (!ws_rate_bucket_allow(&ws_rate[pid], now, WS_RATE_LIMIT)) {
         return;
     }
 
-    switch (data[0]) {
+    analytics_record_activity(&world.players[pid], now);
+    if (!server_player_has_live_session(&world.players[pid]) &&
+        !ws_message_allowed_before_session(type)) {
+        return;
+    }
+
+    switch (type) {
     case NET_MSG_LATENCY_PING:
         if (len >= NET_LATENCY_PING_SIZE && c) {
             uint32_t seq = read_u32_le(&data[1]);
@@ -868,6 +2681,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         server_player_t *sp = &world.players[pid];
         server_input_dispatch_result_t input_result;
         if (!server_dispatch_input_message(&world, pid, data, len,
+                                           (uint32_t)now,
                                            &input_result)) {
             break;
         }
@@ -882,8 +2696,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                                input_result.action);
         }
         server_merge_one_shot_input(&sp->input, &input_result.intent);
-        /* Movement-only input acks ride the authoritative WORLD_PLAYERS
-         * stream. ACTION_ACK is only for one-shot actions or rejections. */
+        /* Movement-only input acks ride private INPUT_APPLIED/STATE receipts.
+         * ACTION_ACK is only for one-shot actions or rejections. */
         if (c) {
             if (input_result.ack_status != 0) {
                 send_action_ack(c, input_result.action_id,
@@ -1186,11 +3000,16 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 /* Seed starting credits now that session_token is set */
                 player_seed_credits(&world.players[pid], &world);
             }
-            server_player_reset_input_stream(&world.players[pid]);
-            force_player_authoritative_resync(&world.players[pid]);
-            world.players[pid].pending_action_result_valid = false;
             finalize_verified_pubkey_identity(c, pid, now,
                                               reattached_live_state);
+            server_player_t *ready_sp = &world.players[pid];
+            server_player_reset_input_stream(ready_sp);
+            invalidate_player_authoritative_caches(ready_sp);
+            (void)server_emit_authoritative_player_state_snapshot(
+                ready_sp, (uint8_t)pid, world.tick, ws_packet_sink, c);
+            ready_sp->force_authoritative_resync = false;
+            ready_sp->pending_action_result_valid = false;
+            send_initial_world_bundle_to_player(c, pid);
             uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
             broadcast_except(pid, join_msg, 2);
             analytics_record_activity(&world.players[pid], now);
@@ -2859,18 +4678,61 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_CLIENT_METRICS: return "CLIENT_METRICS";
     case NET_MSG_INPUT_APPLIED: return "INPUT_APPLIED";
     case NET_MSG_STATION_IDENTITY: return "STATION_IDENTITY";
+    case NET_MSG_STATION_IDENTITY_Q: return "STATION_IDENTITY_Q";
     case NET_MSG_STATION_DIAG: return "STATION_DIAG";
     case NET_MSG_WORLD_PLAYERS: return "WORLD_PLAYERS";
+    case NET_MSG_WORLD_PLAYER_MOTION: return "WORLD_PLAYER_MOTION";
+    case NET_MSG_WORLD_PLAYER_MOTION_Q: return "WORLD_PLAYER_MOTION_Q";
+    case NET_MSG_WORLD_PLAYER_MOTIOND_Q: return "WORLD_PLAYER_MOTIOND_Q";
+    case NET_MSG_WORLD_PLAYER_POSED_Q: return "WORLD_PLAYER_POSED_Q";
+    case NET_MSG_WORLD_PLAYER_MOTIONM_Q: return "WORLD_PLAYER_MOTIONM_Q";
+    case NET_MSG_WORLD_PLAYER_DOCK_Q: return "WORLD_PLAYER_DOCK_Q";
+    case NET_MSG_WORLD_ASTEROIDS: return "WORLD_ASTEROIDS";
+    case NET_MSG_WORLD_ASTEROIDS_Q: return "WORLD_ASTEROIDS_Q";
+    case NET_MSG_WORLD_ASTEROIDS8_Q: return "WORLD_ASTEROIDS8_Q";
+    case NET_MSG_WORLD_ASTEROID_MOTION: return "WORLD_ASTEROID_MOTION";
+    case NET_MSG_WORLD_ASTEROID_MOTION_Q: return "WORLD_ASTEROID_MOTION_Q";
+    case NET_MSG_WORLD_ASTEROID_POS_Q: return "WORLD_ASTEROID_POS_Q";
+    case NET_MSG_WORLD_ASTEROID_POS8_Q: return "WORLD_ASTEROID_POS8_Q";
+    case NET_MSG_WORLD_ASTEROID_POSD_Q: return "WORLD_ASTEROID_POSD_Q";
+    case NET_MSG_WORLD_ASTEROID_POSD8_Q: return "WORLD_ASTEROID_POSD8_Q";
+    case NET_MSG_WORLD_ASTEROID_STATE_Q: return "WORLD_ASTEROID_STATE_Q";
+    case NET_MSG_WORLD_ASTEROID_REMOVE: return "WORLD_ASTEROID_REMOVE";
+    case NET_MSG_WORLD_SCAFFOLDS: return "WORLD_SCAFFOLDS";
+    case NET_MSG_WORLD_SCAFFOLD_REMOVE: return "WORLD_SCAFFOLD_REMOVE";
+    case NET_MSG_WORLD_SCAFFOLD_MOTION_Q: return "WORLD_SCAFFOLD_MOTION_Q";
+    case NET_MSG_WORLD_NPC_MOTION: return "WORLD_NPC_MOTION";
+    case NET_MSG_WORLD_NPC_MOTION_Q: return "WORLD_NPC_MOTION_Q";
+    case NET_MSG_WORLD_NPC_MOTION8_Q: return "WORLD_NPC_MOTION8_Q";
+    case NET_MSG_WORLD_NPC_POS_Q: return "WORLD_NPC_POS_Q";
+    case NET_MSG_WORLD_NPC_POSE_Q: return "WORLD_NPC_POSE_Q";
+    case NET_MSG_WORLD_NPC_LINEAR_Q: return "WORLD_NPC_LINEAR_Q";
+    case NET_MSG_WORLD_NPC_STATUS: return "WORLD_NPC_STATUS";
+    case NET_MSG_WORLD_NPC_STATUS8_Q: return "WORLD_NPC_STATUS8_Q";
+    case NET_MSG_WORLD_CARGO_POD_MOTION: return "WORLD_CARGO_POD_MOTION";
+    case NET_MSG_WORLD_CARGO_POD_MOTION_Q: return "WORLD_CARGO_POD_MOTION_Q";
+    case NET_MSG_WORLD_CARGO_POD_LINEAR_Q: return "WORLD_CARGO_POD_LINEAR_Q";
+    case NET_MSG_WORLD_CARGO_POD_REMOVE: return "WORLD_CARGO_POD_REMOVE";
     case NET_MSG_WORLD_CARGO_PODS: return "WORLD_CARGO_PODS";
+    case NET_MSG_WORLD_CARGO_PODS_Q: return "WORLD_CARGO_PODS_Q";
     case NET_MSG_WORLD_INTERACTIONS: return "WORLD_INTERACTIONS";
+    case NET_MSG_WORLD_INTERACTIONS_Q: return "WORLD_INTERACTIONS_Q";
+    case NET_MSG_WORLD_INTERACTION_DRIFT: return "WORLD_INTERACTION_DRIFT";
     case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
+    case NET_MSG_PLAYER_KNOWN_CONTRACTS: return "PLAYER_KNOWN_CONTRACTS";
+    case NET_MSG_DELIVERY_LEDGER: return "DELIVERY_LEDGER";
     case NET_MSG_PLAYER_KNOWN_LEDGER: return "PLAYER_KNOWN_LEDGER";
     case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";
+    case NET_MSG_WORLD_STATIONS_Q: return "WORLD_STATIONS_Q";
     case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";
     case NET_MSG_PLAYER_MANIFEST: return "PLAYER_MANIFEST";
     case NET_MSG_STATION_INGOTS: return "STATION_INGOTS";
     case NET_MSG_HOLD_INGOTS: return "HOLD_INGOTS";
+    case NET_MSG_FRACTURE_CHALLENGE: return "FRACTURE_CHALLENGE";
+    case NET_MSG_FRACTURE_CLAIM: return "FRACTURE_CLAIM";
+    case NET_MSG_FRACTURE_RESOLVED: return "FRACTURE_RESOLVED";
     case NET_MSG_CONTRACTS: return "CONTRACTS";
+    case NET_MSG_CONTRACTS_Q: return "CONTRACTS_Q";
     case NET_MSG_INSPECT_SNAPSHOT: return "INSPECT_SNAPSHOT";
     case NET_MSG_CARGO_RECEIPT_BUNDLE: return "CARGO_RECEIPT_BUNDLE";
     case NET_MSG_PRESENT_RECEIPT_CHAIN: return "PRESENT_RECEIPT_CHAIN";
@@ -2905,7 +4767,7 @@ static void handle_protocol_info_http(struct mg_connection *c) {
         return;
     }
 
-    enum { PROTOCOL_JSON_BUFSZ = 8192 };
+    enum { PROTOCOL_JSON_BUFSZ = 16384 };
     char out[PROTOCOL_JSON_BUFSZ];
     int pos = 0;
     uint16_t version = read_u16_le(&wire[1]);
@@ -2941,6 +4803,11 @@ static void handle_protocol_info_http(struct mg_connection *c) {
                    (unsigned)cadence_ms);
     }
     BUF_APPEND(pos, out, PROTOCOL_JSON_BUFSZ, "]}");
+    if (pos >= PROTOCOL_JSON_BUFSZ) {
+        mg_http_reply(c, 500, api_headers,
+                      "{\"error\":\"protocol_info_json_overflow\"}");
+        return;
+    }
     mg_http_reply(c, 200, api_headers, "%s", out);
 }
 
@@ -2995,6 +4862,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
+            server_note_ws_client_addr(c, hm);
             mg_ws_upgrade(c, hm, NULL);
         } else if (mg_match(hm->uri, mg_str("/api/protocol"), NULL)) {
             if (!api_rate_check()) {
@@ -3330,11 +5198,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         #define MAX_CONNS_PER_IP 4
         {
             int ip_count = 0;
+            uint64_t client_addr_key = server_connection_limit_key(c);
             for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (world.players[i].connected && world.players[i].conn) {
-                    struct mg_connection *pc = (struct mg_connection *)world.players[i].conn;
-                    if (memcmp(&pc->rem.addr, &c->rem.addr, sizeof(c->rem.addr)) == 0)
-                        ip_count++;
+                if (world.players[i].connected &&
+                    world.players[i].conn &&
+                    world.players[i].client_addr_key_valid &&
+                    world.players[i].client_addr_key == client_addr_key) {
+                    ip_count++;
                 }
             }
             if (ip_count >= MAX_CONNS_PER_IP) {
@@ -3353,6 +5223,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->connected = true;
         sp->id = (uint8_t)pid;
         sp->conn = c;
+        sp->client_addr_key = server_connection_limit_key(c);
+        sp->client_addr_key_valid = true;
         sp->session_ready = false;
         sp->grace_timer = 5.0f;  /* Must send SESSION within 5 seconds */
         sp->analytics_connected_ms = mg_millis();
@@ -3386,39 +5258,6 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 continue;
             uint8_t exist_msg[] = { NET_MSG_JOIN, (uint8_t)i };
             ws_send(c, exist_msg, 2);
-        }
-
-        /* Send the same station snapshot bundle local loopback uses. */
-        server_emit_station_snapshot(
-            &world, true, ws_packet_sink, c, &station_snapshot_scratch);
-
-        /* Send the same relevance-filtered asteroid view used by the
-         * periodic world tick. A full-belt join burst can be tens of KB;
-         * behind the production ALB that was enough to delay inbound
-         * REGISTER_PUBKEY / SESSION processing until the auth timer fired. */
-        {
-            uint8_t sync_buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
-            server_player_t *new_sp = &world.players[pid];
-            int sync_len = serialize_asteroids_for_player(
-                sync_buf, world.asteroids, new_sp->ship.pos, new_sp->asteroid_sent);
-            if (sync_len > ASTEROID_MSG_HEADER)
-                ws_send(c, sync_buf, (size_t)sync_len);
-        }
-
-        /* Global highscores: newcomer gets the current leaderboard so the
-         * death cinematic can render it before they've played a run. */
-        send_highscores_to(c);
-
-        /* Signal channel snapshot (#316): newcomer gets the full ring
-         * buffer so the Network tab has content immediately. */
-        if (world.signal_channel.count > 0) {
-            size_t cap = (size_t)(3 + world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
-            uint8_t *msg = (uint8_t *)malloc(cap);
-            if (msg) {
-                int len = serialize_signal_channel(msg, &world.signal_channel);
-                ws_send(c, msg, (size_t)len);
-                free(msg);
-            }
         }
 
         /* Send server version hash. */
@@ -3478,13 +5317,71 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 /* Broadcast helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-static void broadcast_player_states(void) {
-    /* Batch all connected player states into one message, send once per client.
-     * This is O(N) sends instead of O(N^2). */
+static void broadcast_player_states(uint64_t now) {
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    uint8_t dock_buf[PLAYER_DOCK_MSG_HEADER +
+                     MAX_PLAYERS * PLAYER_DOCK_RECORD_SIZE];
+    uint8_t motion_buf[PLAYER_MOTION_Q_MSG_HEADER +
+                       MAX_PLAYERS * PLAYER_MOTION_Q_RECORD_SIZE];
+    uint8_t motion_mixed_buf[PLAYER_MOTIONM_Q_MSG_HEADER +
+                             MAX_PLAYERS *
+                             PLAYER_MOTIONM_Q_MAX_RECORD_SIZE];
     uint32_t server_tick = world.tick;
-    int len = serialize_all_player_states(buf, world.players, server_tick);
-    broadcast(buf, (size_t)len);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &world.players[i];
+        if (!server_player_is_gameplay_ready(sp) || !sp->conn) continue;
+        int len = serialize_player_states_except_recipient(
+            buf, world.players, i, server_tick);
+        bool sent_full = ws_send_player_states_if_changed(
+            sp->conn, sp, buf, (size_t)len, now);
+        if (sent_full) {
+            server_player_motion_delta_clear_all(sp);
+        }
+        int dock_len = serialize_player_dock_status_for_recipient(
+            dock_buf, world.players, i);
+        ws_send_player_dock_if_changed(
+            sp->conn, sp, dock_buf, (size_t)dock_len);
+        if (sent_full) {
+            sp->world_player_motion_last_sent_ms = now;
+        } else if (sp->world_player_motion_last_sent_ms == 0 ||
+                   now - sp->world_player_motion_last_sent_ms >=
+                       PLAYER_MOTION_SEND_INTERVAL_MS) {
+            int motion_len = 0;
+            int motion_mixed_len = 0;
+            bool motion_heartbeat_due = false;
+            serialize_player_motion_mixed_q_for_recipient(
+                motion_buf, &motion_len,
+                motion_mixed_buf, &motion_mixed_len,
+                &motion_heartbeat_due,
+                sp, world.players, i, server_tick);
+            bool empty_motion =
+                motion_len <= PLAYER_MOTION_Q_MSG_HEADER &&
+                motion_mixed_len <= PLAYER_MOTIONM_Q_MSG_HEADER;
+            bool sent_motion = false;
+            if (ws_send_player_motion_if_changed(
+                    sp->conn, sp, motion_buf, (size_t)motion_len)) {
+                server_player_motion_delta_note_abs_msg(
+                    sp, motion_buf, (size_t)motion_len, server_tick);
+                sp->world_player_motion_delta_cache.valid = false;
+                sp->world_player_motion_posed_cache.valid = false;
+                sp->player_motion_delta_heartbeat_tick = server_tick;
+                sent_motion = true;
+            }
+            if (ws_send_player_motion_mixed(
+                    sp->conn, sp, motion_mixed_buf,
+                    (size_t)motion_mixed_len)) {
+                server_player_motion_delta_note_mixed_msg(
+                    sp, motion_mixed_buf, (size_t)motion_mixed_len,
+                    server_tick);
+                if (motion_heartbeat_due)
+                    sp->player_motion_delta_heartbeat_tick = server_tick;
+                sent_motion = true;
+            }
+            if (sent_motion || empty_motion) {
+                sp->world_player_motion_last_sent_ms = now;
+            }
+        }
+    }
 }
 
 /* mark_visible_asteroids_dirty removed — per-player relevance filtering
@@ -3494,8 +5391,13 @@ static void broadcast_world(void) {
     for (int p = 0; p < MAX_PLAYERS; p++) {
         server_player_t *sp = &world.players[p];
         if (!sp->connected || !sp->session_ready || !sp->conn) continue;
+        ws_private_packet_sink_t sink = {
+            .conn = sp->conn,
+            .player = sp,
+            .world_tick = world.tick,
+        };
         server_emit_world_snapshot_for_player(
-            &world, p, false, ws_packet_sink, sp->conn,
+            &world, p, false, ws_world_packet_sink, &sink,
             &world_snapshot_scratch);
     }
     server_clear_asteroid_net_dirty(&world);
@@ -3531,7 +5433,7 @@ static void broadcast_ship_states(void) {
     if (contracts_dirty) {
         uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
         int clen = serialize_contracts(cbuf, world.contracts);
-        broadcast(cbuf, (size_t)clen);
+        broadcast_contracts_if_changed(cbuf, (size_t)clen, mg_millis());
         contracts_dirty = false;
     }
 }
@@ -3753,7 +5655,10 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
     persistence_data_dir = getenv("SIGNAL_DATA_DIR");
     if (!persistence_data_dir || persistence_data_dir[0] == '\0') 
         persistence_data_dir = ".";
+    trust_proxy_headers = env_truthy(getenv("SIGNAL_TRUST_PROXY_HEADERS"));
     printf("[server] Persistence: local (data_dir=%s)\n", persistence_data_dir);
+    if (trust_proxy_headers)
+        printf("[server] Trusted proxy client-IP headers enabled\n");
     if (static_root_dir && static_root_dir[0] != '\0')
         printf("[server] Static web root: %s\n", static_root_dir);
     if (!read_u32_env("SIGNAL_WORLD_SEED", &fresh_world_seed_override) ||
@@ -4251,42 +6156,93 @@ static void mark_station_identity_dirty_for_hull_inventory_changes(void) {
     }
 }
 
+static bool flush_pending_input_ack_for_player(
+    server_pending_input_ack_t pending_acks[MAX_PLAYERS],
+    int player_slot) {
+    if (!pending_acks || player_slot < 0 || player_slot >= MAX_PLAYERS)
+        return false;
+    server_pending_input_ack_t *pending = &pending_acks[player_slot];
+    if (!pending->pending) return false;
+    server_player_t *sp = &world.players[player_slot];
+    if (!server_player_is_gameplay_ready(sp) || !sp->conn) {
+        server_pending_input_ack_reset(pending);
+        return false;
+    }
+    if (!server_emit_pending_input_ack_adaptive(
+            pending, sp, (uint8_t)player_slot,
+            sp->force_authoritative_resync,
+            ws_packet_sink, sp->conn)) {
+        return false;
+    }
+    return true;
+}
+
+static void flush_pending_input_acks(
+    server_pending_input_ack_t pending_acks[MAX_PLAYERS]) {
+    if (!pending_acks) return;
+    for (int p = 0; p < MAX_PLAYERS; p++)
+        (void)flush_pending_input_ack_for_player(pending_acks, p);
+}
+
+static bool run_sim_tick_has_control_barrier(void) {
+    if (world.events.count > 0) return true;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (world.players[p].pending_action_result_valid)
+            return true;
+    }
+    return false;
+}
+
+static void send_sim_events_to_recipients(const sim_events_t *events) {
+    if (!events || events->count <= 0) return;
+    uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        server_player_t *sp = &world.players[p];
+        if (!server_player_is_gameplay_ready(sp) || !sp->conn) continue;
+        int elen = serialize_events_for_recipient(ebuf, events, p);
+        if (elen > 2)
+            ws_send(sp->conn, ebuf, (size_t)elen);
+    }
+}
+
 /* Run as many fixed-step sim ticks as `sim_accum` covers, up to
  * MAX_SIM_STEPS, broadcasting per-event side effects after each tick.
  * Caller passes the running accumulator + the elapsed-since-last-call
- * seconds. Returns true if it emitted an immediate player-state flush. */
+ * seconds. Returns true if it emitted a full player-state flush. */
 static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
+    (void)now;
     uint16_t input_ack_before[MAX_PLAYERS];
-    for (int i = 0; i < MAX_PLAYERS; i++)
+    server_pending_input_ack_t pending_input_acks[MAX_PLAYERS];
+    for (int i = 0; i < MAX_PLAYERS; i++) {
         input_ack_before[i] = world.players[i].last_input_seq;
+        server_pending_input_ack_reset(&pending_input_acks[i]);
+    }
 
     *sim_accum += elapsed;
     int steps = 0;
-    (void)now;
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
         mark_station_identity_dirty_for_hull_inventory_changes();
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];
             if (!server_player_is_gameplay_ready(sp)) continue;
-            if (server_emit_input_applied_if_changed(
-                    sp, input_ack_before[p], world.tick,
-                    ws_packet_sink, sp->conn)) {
+            if (server_pending_input_ack_note(
+                    &pending_input_acks[p], sp, input_ack_before[p],
+                    world.tick)) {
                 input_ack_before[p] = sp->last_input_seq;
             }
         }
+        if (run_sim_tick_has_control_barrier())
+            flush_pending_input_acks(pending_input_acks);
         for (int e = 0; e < world.events.count; e++)
             srv_dispatch_sim_event(&world.events.events[e]);
-        if (world.events.count > 0) {
-            uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
-            int elen = serialize_events(ebuf, &world.events);
-            if (elen > 2) broadcast(ebuf, (size_t)elen);
-        }
+        send_sim_events_to_recipients(&world.events);
         send_pending_action_results(&world.events);
         broadcast_fracture_updates();
         *sim_accum -= SIM_DT;
         steps++;
     }
+    flush_pending_input_acks(pending_input_acks);
     if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
     return false;
 }
@@ -4393,8 +6349,13 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         for (int p = 0; p < MAX_PLAYERS; p++) {
             if (!server_player_is_gameplay_ready(&world.players[p]) ||
                 !world.players[p].conn) continue;
-            if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq)
-                ws_send(world.players[p].conn, id_buf, (size_t)id_len);
+            if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq) {
+                ws_send_station_identity_if_changed(
+                    world.players[p].conn,
+                    &world.players[p],
+                    id_buf,
+                    (size_t)id_len);
+            }
         }
         station_identity_dirty[s] = false;
     }
@@ -4422,6 +6383,31 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         }
         world.stations[s].manifest_dirty = false;
     }
+}
+
+static uint64_t min_due_ms(uint64_t current, uint64_t last, uint64_t interval) {
+    uint64_t due = last + interval;
+    return due < current ? due : current;
+}
+
+static int server_poll_timeout_ms(uint64_t now,
+                                  uint64_t last_sim,
+                                  uint64_t last_state,
+                                  uint64_t last_world,
+                                  uint64_t last_ship,
+                                  uint64_t last_analytics,
+                                  uint64_t last_save) {
+    if (highscores_dirty) return 0;
+    uint64_t next = last_sim + SIM_TICK_MS;
+    next = min_due_ms(next, last_state, STATE_TICK_MS);
+    next = min_due_ms(next, last_world, WORLD_TICK_MS);
+    next = min_due_ms(next, last_ship, SHIP_TICK_MS);
+    next = min_due_ms(next, last_analytics, ANALYTICS_EMF_INTERVAL_MS);
+    next = min_due_ms(next, last_save, AUTOSAVE_MS);
+    if (next <= now) return 0;
+    uint64_t wait = next - now;
+    if (wait > SIM_TICK_MS) wait = SIM_TICK_MS;
+    return (int)wait;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4571,7 +6557,10 @@ int main(void) {
     float sim_accum = 0.0f;
 
     while (running) {
-        mg_mgr_poll(&mgr, 1);
+        uint64_t poll_now = mg_millis();
+        mg_mgr_poll(&mgr, server_poll_timeout_ms(
+            poll_now, last_sim, last_state, last_world, last_ship,
+            last_analytics, last_save));
         uint64_t now = mg_millis();
 
         if (now - last_sim >= SIM_TICK_MS) {
@@ -4588,7 +6577,7 @@ int main(void) {
             }
         }
         if (now - last_state >= STATE_TICK_MS) {
-            broadcast_player_states();
+            broadcast_player_states(now);
             last_state = now;
             last_player_state_emit = now;
         }

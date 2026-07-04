@@ -226,19 +226,92 @@
 
       /* ?singleplayer=1 forces the in-process server.
        * ?server=ws://... or ?server=rtcs://... connects to an explicit relay.
-       * Otherwise defaults to the same-origin WebRTC gateway. */
+       * ?online=1 connects to the same-origin WebRTC gateway.
+       * Default is local-first singleplayer; ?lobby=wss://... lets a lobby
+       * promote the page into a network session when a second player arrives. */
       var signalParams = new URLSearchParams(window.location.search);
+      if (!window.SIGNAL_LOBBY_URL && window.location.hostname === 'signal.ratimics.com') {
+        window.SIGNAL_LOBBY_URL = 'wss://jldrsi17o0.execute-api.us-west-2.amazonaws.com/prod';
+      }
 
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
-      else {
+      else if (signalParams.has('online') || signalParams.has('multiplayer') || signalParams.has('network')) {
         var signalRtcProto = window.location.protocol === 'https:' ? 'rtcs:' : 'rtc:';
         window.SIGNAL_SERVER = signalRtcProto + '//' + window.location.host + '/rtc/signal-main';
+      }
+      else {
+        window.SIGNAL_SERVER = '';
       }
 
       function setLoading(message) {
         document.getElementById('loading').textContent = message;
       }
+
+      function signalLobbyEndpoint(raw) {
+        if (!raw || raw === '0' || raw === 'false') return '';
+        if (raw === '1' || raw === 'true') raw = '/lobby';
+        if (raw[0] === '/') {
+          return (window.location.protocol === 'https:' ? 'wss://' : 'ws://') +
+            window.location.host + raw;
+        }
+        if (raw.indexOf('https://') === 0) return 'wss://' + raw.slice('https://'.length);
+        if (raw.indexOf('http://') === 0) return 'ws://' + raw.slice('http://'.length);
+        return raw;
+      }
+
+      function signalStablePeerId() {
+        try {
+          var key = 'signal_node_id';
+          var id = localStorage.getItem(key);
+          if (!id) {
+            id = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() :
+              Math.random().toString(16).slice(2) + Date.now().toString(16);
+            localStorage.setItem(key, id);
+          }
+          return id;
+        } catch (_) {
+          return Math.random().toString(16).slice(2);
+        }
+      }
+
+      function signalStartLobby() {
+        if (signalParams.has('server') || signalParams.has('singleplayer')) return;
+        var lobby = signalLobbyEndpoint(signalParams.get('lobby') || window.SIGNAL_LOBBY_URL || '');
+        if (!lobby) return;
+        var room = signalParams.get('room') || 'signal-main';
+        var ws;
+        try {
+          ws = new WebSocket(lobby);
+        } catch (_) {
+          return;
+        }
+        ws.addEventListener('open', function() {
+          ws.send(JSON.stringify({
+            action: 'join',
+            room: room,
+            peer: signalStablePeerId(),
+            build: (window.SIGNAL_BUILD || ''),
+            href: window.location.href
+          }));
+        });
+        ws.addEventListener('message', function(ev) {
+          var msg;
+          try { msg = JSON.parse(ev.data); } catch (_) { return; }
+          if (msg.type !== 'serverReady' && msg.type !== 'server-ready') return;
+          var server = msg.server || msg.rtcUrl || msg.url;
+          if (!server) return;
+          var u = new URL(window.location.href);
+          u.searchParams.set('server', server);
+          u.searchParams.set('network', '1');
+          u.searchParams.delete('singleplayer');
+          u.searchParams.delete('lobby');
+          setLoading('Network session ready...');
+          window.location.replace(u.pathname + '?' + u.searchParams.toString() + u.hash);
+        });
+      }
+
+      signalStartLobby();
 
       canvas.addEventListener('pointerdown', function() {
         signalFocusCanvas();

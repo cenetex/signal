@@ -20,6 +20,7 @@
 #include "game_sim.h"
 #include "local_server.h"
 #include "net.h"
+#include "net_latency.h"
 #include "episode.h"
 #include "music.h"
 #include "identity.h"
@@ -251,7 +252,7 @@ typedef struct {
 
 #define NET_REPLAY_FRAME_CAP 512
 #define NET_ACTION_QUEUE_CAP 8
-#define NET_INPUT_TIMING_CAP 64
+#define NET_INPUT_TIMING_CAP 128
 
 typedef struct {
     uint32_t tick;
@@ -277,6 +278,7 @@ typedef struct {
 typedef struct {
     uint16_t seq;
     float sent_at;
+    uint32_t sent_ms;
     uint32_t target_tick;
 } net_input_timing_t;
 
@@ -433,6 +435,7 @@ typedef struct {
     int8_t  pending_net_place_slot;
     float action_predict_timer;
     float net_input_timer;
+    float net_input_ack_timer;
     float net_time;
     bool net_input_have_last;
     uint8_t net_last_sent_flags;
@@ -444,13 +447,23 @@ typedef struct {
     bool net_input_tick_protocol;
     bool net_local_state_ready;
     float net_last_ack_rtt;
+    float net_last_ping_raw_rtt;
     float net_last_ping_rtt;
     float net_last_ping_server_turnaround_ms;
+    float net_last_ack_transport_sample_time;
+    net_latency_stats_t net_ack_latency;
+    net_latency_stats_t net_ping_latency;
     float net_max_ping_rtt_5s;
     uint32_t net_ping_samples;
     float net_ping_timer;
     float net_metrics_timer;
     uint32_t net_metrics_seq;
+    uint32_t net_missed_pongs;
+    uint32_t net_missed_input_acks;
+    uint32_t net_ack_recovery_packets;
+    uint32_t net_ping_miss_windows_reported;
+    uint32_t net_ack_miss_windows_reported;
+    uint8_t net_ack_recovery_tier;
     float net_max_ack_rtt_5s;
     float net_ack_window_elapsed;
     uint32_t net_input_packets_sent;
@@ -676,6 +689,8 @@ typedef struct {
         int32_t max_tick_skew_abs;
         int32_t input_apply_error_ticks;
         int32_t max_input_apply_error_abs;
+        int32_t input_lead_margin_ticks;
+        uint32_t input_lead_exact_acks;
         uint32_t samples;
         uint32_t deferred_samples;
         uint32_t replayed_samples;

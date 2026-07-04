@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import nodeDataChannel from 'node-datachannel';
 import WebSocket from 'ws';
 
@@ -32,6 +35,14 @@ Options:
   --ice-port-range=A:B     ICE UDP port range
   --ice-udp-mux            enable ICE UDP mux
   --ice-tcp                enable ICE TCP candidates
+  --static=DIR             serve static files for non-RTC HTTP paths
+  --wake-path=PATH         HTTP path that wakes a managed authority (default: /wake)
+  --wake-token=TOKEN       bearer/x-signal-wake-token required by wake path
+  --server-command=CMD     command to launch the native Signal server lazily
+  --server-ready-url=URL   health URL to poll after launch
+  --server-ready-timeout-ms=N
+  --server-idle-ms=N       stop managed server after idle, 0 disables (default: 300000)
+  --server-stop-timeout-ms=N
 `);
 }
 
@@ -60,6 +71,14 @@ function parseArgs(argv) {
     icePortMax: 0,
     iceUdpMux: false,
     iceTcp: false,
+    staticDir: '',
+    wakePath: '/wake',
+    wakeToken: '',
+    serverCommand: '',
+    serverReadyUrl: '',
+    serverReadyTimeoutMs: 10000,
+    serverIdleMs: 300000,
+    serverStopTimeoutMs: 5000,
   };
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') {
@@ -99,6 +118,24 @@ function parseArgs(argv) {
       opts.iceUdpMux = true;
     } else if (arg === '--ice-tcp') {
       opts.iceTcp = true;
+    } else if (arg.startsWith('--static=')) {
+      opts.staticDir = arg.slice('--static='.length);
+    } else if (arg.startsWith('--wake-path=')) {
+      opts.wakePath = arg.slice('--wake-path='.length);
+    } else if (arg.startsWith('--wake-token=')) {
+      opts.wakeToken = arg.slice('--wake-token='.length);
+    } else if (arg.startsWith('--server-command=')) {
+      opts.serverCommand = arg.slice('--server-command='.length);
+    } else if (arg.startsWith('--server-ready-url=')) {
+      opts.serverReadyUrl = arg.slice('--server-ready-url='.length);
+    } else if (arg.startsWith('--server-ready-timeout-ms=')) {
+      opts.serverReadyTimeoutMs = parseNonNegativeInt(
+        arg.slice('--server-ready-timeout-ms='.length), arg);
+    } else if (arg.startsWith('--server-idle-ms=')) {
+      opts.serverIdleMs = parseNonNegativeInt(arg.slice('--server-idle-ms='.length), arg);
+    } else if (arg.startsWith('--server-stop-timeout-ms=')) {
+      opts.serverStopTimeoutMs = parseNonNegativeInt(
+        arg.slice('--server-stop-timeout-ms='.length), arg);
     } else {
       console.error(`unknown option: ${arg}`);
       usage();
@@ -108,6 +145,8 @@ function parseArgs(argv) {
   return {
     ...opts,
     rtcPrefix: normalizePathPrefix(opts.rtcPrefix),
+    wakePath: normalizePathPrefix(opts.wakePath || '/wake'),
+    staticDir: opts.staticDir ? path.resolve(opts.staticDir) : '',
     ...parseHostPort(opts.listen),
   };
 }
@@ -124,6 +163,13 @@ function parsePort(value) {
   if (!Number.isInteger(port) || port <= 0 || port > 65535)
     throw new Error(`invalid port: ${value}`);
   return port;
+}
+
+function parseNonNegativeInt(value, label) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0)
+    throw new Error(`invalid non-negative integer for ${label}: ${value}`);
+  return n;
 }
 
 function wsAccept(key) {
@@ -152,6 +198,15 @@ function sendFrame(socket, opcode, payload) {
 
 function sendJson(socket, value) {
   if (!socket.destroyed) sendFrame(socket, 0x1, JSON.stringify(value));
+}
+
+function setTcpNoDelay(socket) {
+  if (!socket || typeof socket.setNoDelay !== 'function') return;
+  try {
+    socket.setNoDelay(true);
+  } catch {
+    // Best-effort latency hint; socket teardown can race with proxy setup.
+  }
 }
 
 function closeSocket(socket, code = 1000) {
@@ -318,6 +373,8 @@ function proxyHttp(req, res, base) {
   headers.host = target.host;
   headers['x-forwarded-host'] = req.headers.host || '';
   headers['x-forwarded-proto'] = req.socket.encrypted ? 'https' : 'http';
+  setTcpNoDelay(req.socket);
+  setTcpNoDelay(res.socket);
 
   const proxyReq = proxyTransport(target).request({
     protocol: target.protocol,
@@ -337,12 +394,14 @@ function proxyHttp(req, res, base) {
     }
     res.end('bad gateway\n');
   });
+  proxyReq.on('socket', setTcpNoDelay);
   req.pipe(proxyReq);
 }
 
 function proxyUpgrade(req, socket, head, base) {
   const target = proxyTarget(base, req.url);
   const headers = { ...req.headers, host: target.host };
+  setTcpNoDelay(socket);
   const proxyReq = proxyTransport(target).request({
     protocol: target.protocol,
     hostname: target.hostname,
@@ -351,7 +410,10 @@ function proxyUpgrade(req, socket, head, base) {
     path: `${target.pathname}${target.search}`,
     headers,
   });
+  proxyReq.on('socket', setTcpNoDelay);
   proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    setTcpNoDelay(socket);
+    setTcpNoDelay(proxySocket);
     socket.write(
       `HTTP/1.1 ${proxyRes.statusCode || 101} ${proxyRes.statusMessage || 'Switching Protocols'}\r\n`
     );
@@ -396,6 +458,112 @@ function proxyUpgrade(req, socket, head, base) {
   proxyReq.end();
 }
 
+const CONTENT_TYPES = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.wasm', 'application/wasm'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.gif', 'image/gif'],
+  ['.svg', 'image/svg+xml'],
+  ['.ico', 'image/x-icon'],
+  ['.mp3', 'audio/mpeg'],
+  ['.ogg', 'audio/ogg'],
+  ['.wav', 'audio/wav'],
+]);
+
+function staticContentType(file) {
+  return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ||
+    'application/octet-stream';
+}
+
+function safeStaticPath(root, pathname) {
+  if (!root) return '';
+  let decoded = '/';
+  try {
+    decoded = decodeURIComponent(pathname || '/');
+  } catch {
+    return '';
+  }
+  if (decoded === '/play') decoded = '/play.html';
+  if (decoded === '/') decoded = '/index.html';
+  const resolvedRoot = path.resolve(root);
+  const candidate = path.resolve(resolvedRoot, `.${decoded}`);
+  if (candidate !== resolvedRoot && !candidate.startsWith(`${resolvedRoot}${path.sep}`))
+    return '';
+  return candidate;
+}
+
+function serveStatic(req, res, root, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  const file = safeStaticPath(root, pathname);
+  if (!file) return false;
+  let stat;
+  try {
+    stat = fs.statSync(file);
+    if (stat.isDirectory()) {
+      return serveStatic(req, res, root, path.posix.join(pathname, 'index.html'));
+    }
+  } catch {
+    if (!path.extname(file)) {
+      return serveStatic(req, res, root, `${pathname}.html`);
+    }
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  res.writeHead(200, {
+    'content-type': staticContentType(file),
+    'content-length': stat.size,
+    'cache-control': path.extname(file) === '.html' ? 'no-cache' : 'public, max-age=300',
+    'x-content-type-options': 'nosniff',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  fs.createReadStream(file).pipe(res);
+  return true;
+}
+
+function requestHasWakeToken(req, token) {
+  if (!token) return true;
+  const auth = String(req.headers.authorization || '');
+  if (auth === `Bearer ${token}`) return true;
+  return String(req.headers['x-signal-wake-token'] || '') === token;
+}
+
+function fetchOk(url, timeoutMs) {
+  return new Promise((resolve) => {
+    const target = new URL(url);
+    const transport = target.protocol === 'https:' ? https : http;
+    const req = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      timeout: Math.min(timeoutMs, 2000),
+    }, (res) => {
+      res.resume();
+      resolve((res.statusCode || 0) >= 200 && (res.statusCode || 0) < 400);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class PeerSession {
   constructor(socket, peer, room, opts) {
     this.socket = socket;
@@ -406,6 +574,7 @@ class PeerSession {
     this.dc = null;
     this.upstream = null;
     this.upstreamOpen = false;
+    this.upstreamStarting = null;
     this.pendingToUpstream = [];
     this.pendingToChannel = [];
     this.pendingRemoteCandidates = [];
@@ -522,11 +691,26 @@ class PeerSession {
   }
 
   ensureUpstream() {
+    if (this.upstream || this.closed || this.upstreamStarting) return;
+    this.upstreamStarting = this.opts.ensureAuthorityServer('rtc-upstream')
+      .then(() => this.openUpstream())
+      .catch((err) => {
+        console.error(`[rtc-gateway] peer=${this.peer} authority start failed: ${err.stack || err}`);
+        this.close();
+      })
+      .finally(() => {
+        this.upstreamStarting = null;
+      });
+  }
+
+  openUpstream() {
     if (this.upstream || this.closed) return;
     const ws = new WebSocket(this.opts.upstream);
     ws.binaryType = 'arraybuffer';
     this.upstream = ws;
+    ws.on('upgrade', (res) => setTcpNoDelay(res.socket));
     ws.addEventListener('open', () => {
+      setTcpNoDelay(ws._socket);
       this.upstreamOpen = true;
       this.flushUpstream();
       console.error(`[rtc-gateway] peer=${this.peer} upstream=open`);
@@ -595,6 +779,98 @@ class PeerSession {
 const opts = parseArgs(process.argv.slice(2));
 const sessions = new Map();
 let shuttingDown = false;
+let authorityProcess = null;
+let authorityStarting = null;
+let authorityIdleTimer = null;
+
+function authorityRunning() {
+  return !!authorityProcess && authorityProcess.exitCode === null && !authorityProcess.killed;
+}
+
+function authorityStatus() {
+  return {
+    managed: !!opts.serverCommand,
+    running: authorityRunning(),
+    starting: !!authorityStarting,
+    pid: authorityRunning() ? authorityProcess.pid : null,
+  };
+}
+
+async function waitForAuthorityReady() {
+  if (!opts.serverReadyUrl) {
+    await delay(250);
+    return;
+  }
+  const deadline = Date.now() + opts.serverReadyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (await fetchOk(opts.serverReadyUrl, Math.min(1000, opts.serverReadyTimeoutMs)))
+      return;
+    await delay(200);
+  }
+  throw new Error(`authority did not become ready: ${opts.serverReadyUrl}`);
+}
+
+async function ensureAuthorityServer(reason = 'unknown') {
+  if (!opts.serverCommand) return authorityStatus();
+  if (authorityStarting) return authorityStarting;
+  if (authorityRunning()) return authorityStatus();
+
+  authorityStarting = (async () => {
+    console.error(`[rtc-gateway] starting authority reason=${reason}`);
+    const child = spawn(opts.serverCommand, {
+      shell: true,
+      stdio: 'inherit',
+      env: process.env,
+    });
+    authorityProcess = child;
+    child.on('exit', (code, signal) => {
+      console.error(`[rtc-gateway] authority exit code=${code} signal=${signal || ''}`);
+      if (authorityProcess === child) authorityProcess = null;
+    });
+    child.on('error', (err) => {
+      console.error(`[rtc-gateway] authority spawn error: ${err.message || err}`);
+    });
+    await waitForAuthorityReady();
+    console.error(`[rtc-gateway] authority ready reason=${reason}`);
+    return { ...authorityStatus(), starting: false };
+  })();
+
+  try {
+    return await authorityStarting;
+  } finally {
+    authorityStarting = null;
+  }
+}
+
+function stopAuthorityServer(reason = 'idle') {
+  if (!authorityRunning()) return;
+  const child = authorityProcess;
+  console.error(`[rtc-gateway] stopping authority reason=${reason}`);
+  child.kill('SIGTERM');
+  if (opts.serverStopTimeoutMs > 0) {
+    setTimeout(() => {
+      if (authorityProcess === child && authorityRunning()) child.kill('SIGKILL');
+    }, opts.serverStopTimeoutMs).unref();
+  }
+}
+
+function scheduleAuthorityIdleStop() {
+  if (!opts.serverCommand || opts.serverIdleMs <= 0 || shuttingDown) return;
+  if (authorityIdleTimer) clearTimeout(authorityIdleTimer);
+  authorityIdleTimer = setTimeout(() => {
+    authorityIdleTimer = null;
+    if (sessions.size === 0) stopAuthorityServer('idle');
+  }, opts.serverIdleMs);
+  authorityIdleTimer.unref();
+}
+
+function cancelAuthorityIdleStop() {
+  if (!authorityIdleTimer) return;
+  clearTimeout(authorityIdleTimer);
+  authorityIdleTimer = null;
+}
+
+opts.ensureAuthorityServer = ensureAuthorityServer;
 
 function leave(socket) {
   const session = sessions.get(socket);
@@ -602,6 +878,7 @@ function leave(socket) {
   sessions.delete(socket);
   session.close();
   console.error(`[rtc-gateway] leave room=${session.room} peer=${session.peer}`);
+  if (sessions.size === 0) scheduleAuthorityIdleStop();
 }
 
 async function handleMessage(socket, text) {
@@ -617,8 +894,13 @@ async function handleMessage(socket, text) {
     const room = String(msg.room || 'signal-main').slice(0, 128);
     const peer = String(msg.peer || crypto.randomUUID()).slice(0, 128);
     leave(socket);
+    cancelAuthorityIdleStop();
     const session = new PeerSession(socket, peer, room, opts);
     sessions.set(socket, session);
+    ensureAuthorityServer('rtc-join').catch((err) => {
+      console.error(`[rtc-gateway] authority wake failed peer=${peer}: ${err.stack || err}`);
+      sendJson(socket, { type: 'error', error: 'authority-unavailable' });
+    });
     sendJson(socket, { type: 'peers', room, peer, peers: [SERVER_PEER_ID] });
     console.error(`[rtc-gateway] join room=${room} peer=${peer}`);
     return;
@@ -647,6 +929,7 @@ async function handleMessage(socket, text) {
 }
 
 const server = http.createServer((req, res) => {
+  setTcpNoDelay(req.socket);
   const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
   if (url.pathname === '/rtc-health' || (!opts.proxy && url.pathname === '/health')) {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -656,7 +939,29 @@ const server = http.createServer((req, res) => {
       upstream: opts.upstream,
       proxy: opts.proxy || null,
       rtcPrefix: opts.rtcPrefix,
+      authority: authorityStatus(),
     }));
+    return;
+  }
+  if (url.pathname === opts.wakePath) {
+    if (!requestHasWakeToken(req, opts.wakeToken)) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+      return;
+    }
+    ensureAuthorityServer('http-wake')
+      .then((authority) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, authority }));
+      })
+      .catch((err) => {
+        console.error(`[rtc-gateway] wake failed: ${err.stack || err}`);
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'authority-unavailable' }));
+      });
+    return;
+  }
+  if (opts.staticDir && serveStatic(req, res, opts.staticDir, url.pathname)) {
     return;
   }
   if (opts.proxy) {
@@ -667,7 +972,10 @@ const server = http.createServer((req, res) => {
   res.end('WebSocket upgrade required\n');
 });
 
+server.on('connection', setTcpNoDelay);
+
 server.on('upgrade', (req, socket, head) => {
+  setTcpNoDelay(socket);
   const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
   if (opts.proxy && !rtcPath(url.pathname, opts.rtcPrefix)) {
     proxyUpgrade(req, socket, head, opts.proxy);
@@ -706,10 +1014,12 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.error(`[rtc-gateway] ${signal} shutdown`);
+  if (authorityIdleTimer) clearTimeout(authorityIdleTimer);
   for (const socket of [...sessions.keys()]) {
     leave(socket);
     closeSocket(socket);
   }
+  stopAuthorityServer('gateway-shutdown');
   server.close(() => {
     nodeDataChannel.cleanup();
     process.exit(0);

@@ -61,6 +61,7 @@ COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public
 COPY scripts/webrtc-gateway.mjs ./scripts/webrtc-gateway.mjs
 COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
+COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoint.sh
 
 ENV PORT=8080
 ENV SIGNAL_SERVER_PORT=9091
@@ -68,5 +69,6 @@ ENV SIGNAL_DATA_DIR=/app/data
 ENV SIGNAL_STATIC_DIR=/app/public
 
 EXPOSE 8080
+EXPOSE 50000/udp
 
 CMD ["sh", "./scripts/fly-webrtc-entrypoint.sh"]

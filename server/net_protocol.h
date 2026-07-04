@@ -79,6 +79,139 @@ static inline float read_f32_le(const uint8_t *buf) {
     return conv.f;
 }
 
+static inline uint64_t net_fnv1a64_update(uint64_t h, uint8_t byte) {
+    h ^= (uint64_t)byte;
+    return h * 1099511628211ull;
+}
+
+static inline uint64_t net_payload_hash(const uint8_t *data, size_t len) {
+    uint64_t h = 1469598103934665603ull;
+    if (!data) return h;
+    for (size_t i = 0; i < len; i++)
+        h = net_fnv1a64_update(h, data[i]);
+    return h;
+}
+
+static inline bool net_payload_cache_should_send(net_payload_cache_t *cache,
+                                                 void *conn,
+                                                 const uint8_t *data,
+                                                 size_t len) {
+    if (!cache || !data || len > UINT16_MAX)
+        return true;
+    uint64_t hash = net_payload_hash(data, len);
+    if (cache->valid &&
+        cache->conn == conn &&
+        cache->len == (uint16_t)len &&
+        cache->hash == hash) {
+        return false;
+    }
+    cache->valid = true;
+    cache->conn = conn;
+    cache->len = (uint16_t)len;
+    cache->hash = hash;
+    return true;
+}
+
+static inline int net_station_identity_arm_rotation_offset(void) {
+    return 59 + COMMODITY_COUNT * 4 + 4
+        + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE
+        + 1 + MAX_ARMS * 4 + MAX_ARMS * 4;
+}
+
+static inline int net_station_identity_arm_drift_end_offset(void) {
+    return net_station_identity_arm_rotation_offset()
+        + MAX_ARMS * 4 + MAX_ARMS * 4;
+}
+
+static inline uint8_t server_player_state_flags_for_wire(
+    const server_player_t *sp) {
+    if (!sp) return 0;
+    uint8_t flags = 0;
+    if (sp->actual_thrusting) flags |= 1;
+    if (sp->beam_active) flags |= 2;
+    if (sp->docked) flags |= 4;
+    if (sp->scan_active) flags |= 8;
+    if (sp->ship.tractor_active) flags |= 16;
+    if (sp->beam_ineffective) flags |= 32;
+    if (sp->beam_hit) flags |= 64;
+    return flags;
+}
+
+static inline uint64_t net_station_identity_semantic_hash(const uint8_t *data,
+                                                          int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < net_station_identity_arm_drift_end_offset() ||
+        data[0] != NET_MSG_STATION_IDENTITY) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int drift_start = net_station_identity_arm_rotation_offset();
+    int drift_end = net_station_identity_arm_drift_end_offset();
+    for (int i = 0; i < len; i++) {
+        if (i >= drift_start && i < drift_end)
+            continue;
+        h = net_fnv1a64_update(h, data[i]);
+    }
+    return h;
+}
+
+static inline bool net_msg_is_deferable_snapshot(uint8_t msg) {
+    switch (msg) {
+    case NET_MSG_WORLD_PLAYERS:
+    case NET_MSG_WORLD_PLAYER_MOTION:
+    case NET_MSG_WORLD_PLAYER_MOTION_Q:
+    case NET_MSG_WORLD_PLAYER_MOTIOND_Q:
+    case NET_MSG_WORLD_PLAYER_POSED_Q:
+    case NET_MSG_WORLD_PLAYER_MOTIONM_Q:
+    case NET_MSG_WORLD_PLAYER_DOCK_Q:
+    case NET_MSG_WORLD_NPCS:
+    case NET_MSG_WORLD_NPC_MOTION:
+    case NET_MSG_WORLD_NPC_MOTION_Q:
+    case NET_MSG_WORLD_NPC_MOTION8_Q:
+    case NET_MSG_WORLD_NPC_POS_Q:
+    case NET_MSG_WORLD_NPC_POSE_Q:
+    case NET_MSG_WORLD_NPC_LINEAR_Q:
+    case NET_MSG_WORLD_NPC_STATUS:
+    case NET_MSG_WORLD_NPC_STATUS8_Q:
+    case NET_MSG_WORLD_ASTEROIDS:
+    case NET_MSG_WORLD_ASTEROIDS_Q:
+    case NET_MSG_WORLD_ASTEROIDS8_Q:
+    case NET_MSG_WORLD_ASTEROID_MOTION:
+    case NET_MSG_WORLD_ASTEROID_MOTION_Q:
+    case NET_MSG_WORLD_ASTEROID_POS_Q:
+    case NET_MSG_WORLD_ASTEROID_POS8_Q:
+    case NET_MSG_WORLD_ASTEROID_POSD_Q:
+    case NET_MSG_WORLD_ASTEROID_POSD8_Q:
+    case NET_MSG_WORLD_ASTEROID_STATE_Q:
+    case NET_MSG_WORLD_TIME:
+    case NET_MSG_WORLD_SCAFFOLDS:
+    case NET_MSG_WORLD_SCAFFOLD_MOTION_Q:
+    case NET_MSG_WORLD_CARGO_PODS:
+    case NET_MSG_WORLD_CARGO_PODS_Q:
+    case NET_MSG_WORLD_CARGO_POD_MOTION:
+    case NET_MSG_WORLD_CARGO_POD_MOTION_Q:
+    case NET_MSG_WORLD_CARGO_POD_LINEAR_Q:
+    case NET_MSG_WORLD_INTERACTIONS:
+    case NET_MSG_WORLD_INTERACTIONS_Q:
+    case NET_MSG_WORLD_INTERACTION_DRIFT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline bool net_deferable_snapshot_would_backpressure(
+    uint8_t msg,
+    size_t queued_len,
+    size_t frame_len,
+    size_t reserve_len) {
+    if (frame_len == 0 || !net_msg_is_deferable_snapshot(msg))
+        return false;
+    return queued_len + frame_len > reserve_len;
+}
+
 /* ------------------------------------------------------------------ */
 /* Serialisation (server -> client)                                   */
 /* ------------------------------------------------------------------ */
@@ -109,11 +242,17 @@ static inline int serialize_action_result(uint8_t *buf, uint16_t action_id,
 
 static inline int serialize_input_applied(uint8_t *buf, uint16_t input_seq,
                                           uint32_t server_tick,
-                                          uint32_t input_tick_ack) {
+                                          uint32_t input_tick_ack,
+                                          uint32_t client_sent_ms,
+                                          uint32_t server_recv_ms,
+                                          uint32_t server_send_ms) {
     buf[0] = NET_MSG_INPUT_APPLIED;
     write_u16_le(&buf[1], input_seq);
     write_u32_le(&buf[3], server_tick);
     write_u32_le(&buf[7], input_tick_ack);
+    write_u32_le(&buf[11], client_sent_ms);
+    write_u32_le(&buf[15], server_recv_ms);
+    write_u32_le(&buf[19], server_send_ms);
     return NET_INPUT_APPLIED_SIZE;
 }
 
@@ -136,12 +275,14 @@ static inline int serialize_cargo_receipt_bundle(
 static inline int serialize_latency_pong(uint8_t *buf, uint32_t seq,
                                          uint32_t client_sent_ms,
                                          uint32_t server_recv_ms,
-                                         uint32_t server_send_ms) {
+                                         uint32_t server_send_ms,
+                                         uint32_t server_tick) {
     buf[0] = NET_MSG_LATENCY_PONG;
     write_u32_le(&buf[1], seq);
     write_u32_le(&buf[5], client_sent_ms);
     write_u32_le(&buf[9], server_recv_ms);
     write_u32_le(&buf[13], server_send_ms);
+    write_u32_le(&buf[17], server_tick);
     return NET_LATENCY_PONG_SIZE;
 }
 
@@ -337,6 +478,12 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_FIXED_SIZE,
                         STATION_IDENTITY_SIZE, 0, 1,
                         station_identity_fallback_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_STATION_IDENTITY_Q, PROTOCOL_STREAM_CLASS_STATIC,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        STATION_IDENTITY_Q_HEADER_SIZE, 0, 1,
+                        station_identity_fallback_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_STATION_DIAG, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
@@ -345,17 +492,216 @@ static inline int serialize_protocol_info(uint8_t *buf,
     ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYERS, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
                         2, PLAYER_RECORD_SIZE, MAX_PLAYERS, state_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_MOTION, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_MOTION_MSG_HEADER, PLAYER_MOTION_RECORD_SIZE,
+                        MAX_PLAYERS, state_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_MOTION_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_MOTION_Q_MSG_HEADER,
+                        PLAYER_MOTION_Q_RECORD_SIZE,
+                        MAX_PLAYERS, state_tick_ms * 4u);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_MOTIOND_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_MOTIOND_Q_MSG_HEADER,
+                        PLAYER_MOTIOND_Q_RECORD_SIZE,
+                        MAX_PLAYERS, state_tick_ms * 4u);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_POSED_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_POSED_Q_MSG_HEADER,
+                        PLAYER_POSED_Q_RECORD_SIZE,
+                        MAX_PLAYERS, state_tick_ms * 4u);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_MOTIONM_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_MOTIONM_Q_MSG_HEADER, 0,
+                        MAX_PLAYERS, state_tick_ms * 4u);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_PLAYER_DOCK_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        PLAYER_DOCK_MSG_HEADER, PLAYER_DOCK_RECORD_SIZE,
+                        MAX_PLAYERS, state_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROIDS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        ASTEROID_MSG_HEADER, ASTEROID_RECORD_SIZE,
+                        MAX_ASTEROIDS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROIDS_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        ASTEROID_Q_MSG_HEADER, ASTEROID_Q_RECORD_SIZE,
+                        MAX_ASTEROIDS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROIDS8_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        ASTEROID8_Q_MSG_HEADER, ASTEROID8_Q_RECORD_SIZE,
+                        256, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_MOTION, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_MOTION_MSG_HEADER,
+                        ASTEROID_MOTION_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_MOTION_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_MOTION_Q_MSG_HEADER,
+                        ASTEROID_MOTION_Q_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_POS_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_POS_Q_MSG_HEADER,
+                        ASTEROID_POS_Q_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_POS8_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_POS8_Q_MSG_HEADER,
+                        ASTEROID_POS8_Q_RECORD_SIZE, 256,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_POSD_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_POSD_Q_MSG_HEADER,
+                        ASTEROID_POSD_Q_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_POSD8_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        ASTEROID_POSD8_Q_MSG_HEADER,
+                        ASTEROID_POSD8_Q_RECORD_SIZE, 256,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_REMOVE, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        ASTEROID_REMOVE_MSG_HEADER,
+                        ASTEROID_REMOVE_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_ASTEROID_STATE_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        ASTEROID_STATE_Q_MSG_HEADER,
+                        ASTEROID_STATE_Q_RECORD_SIZE, MAX_ASTEROIDS,
+                        world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPCS, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
                         2, NPC_RECORD_SIZE, MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_MOTION, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_MOTION_MSG_HEADER, NPC_MOTION_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_MOTION_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_MOTION_Q_MSG_HEADER, NPC_MOTION_Q_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_MOTION8_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_MOTION8_Q_MSG_HEADER, NPC_MOTION8_Q_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_POS_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_POS_Q_MSG_HEADER, NPC_POS_Q_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_POSE_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_POSE_Q_MSG_HEADER, NPC_POSE_Q_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_LINEAR_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_LINEAR_Q_MSG_HEADER, NPC_LINEAR_Q_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_STATUS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_STATUS_MSG_HEADER, NPC_STATUS_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_NPC_STATUS8_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NPC_STATUS8_MSG_HEADER, NPC_STATUS8_RECORD_SIZE,
+                        MAX_NPC_SHIPS, world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_PODS, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
                         2, CARGO_POD_RECORD_SIZE, MAX_CARGO_PODS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_PODS_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        2, CARGO_POD_Q_RECORD_SIZE, MAX_CARGO_PODS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_SCAFFOLDS, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        2, SCAFFOLD_RECORD_SIZE, MAX_SCAFFOLDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_SCAFFOLD_MOTION_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        SCAFFOLD_MOTION_Q_MSG_HEADER,
+                        SCAFFOLD_MOTION_Q_RECORD_SIZE, MAX_SCAFFOLDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_SCAFFOLD_REMOVE, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        SCAFFOLD_REMOVE_MSG_HEADER,
+                        SCAFFOLD_REMOVE_RECORD_SIZE, MAX_SCAFFOLDS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_POD_MOTION, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        CARGO_POD_MOTION_MSG_HEADER,
+                        CARGO_POD_MOTION_RECORD_SIZE, MAX_CARGO_PODS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_POD_MOTION_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        CARGO_POD_MOTION_Q_MSG_HEADER,
+                        CARGO_POD_MOTION_Q_RECORD_SIZE, MAX_CARGO_PODS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_POD_LINEAR_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        CARGO_POD_LINEAR_Q_MSG_HEADER,
+                        CARGO_POD_LINEAR_Q_RECORD_SIZE, MAX_CARGO_PODS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_CARGO_POD_REMOVE, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        CARGO_POD_REMOVE_MSG_HEADER,
+                        CARGO_POD_REMOVE_RECORD_SIZE, MAX_CARGO_PODS,
+                        world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_WORLD_INTERACTIONS, PROTOCOL_STREAM_CLASS_LIVE,
-                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
                         2, INTERACTION_RECORD_SIZE, SIM_MAX_INTERACTIONS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_INTERACTIONS_Q, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        2, INTERACTION_Q_RECORD_SIZE, SIM_MAX_INTERACTIONS,
+                        world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_INTERACTION_DRIFT, PROTOCOL_STREAM_CLASS_LIVE,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        INTERACTION_DRIFT_MSG_HEADER,
+                        INTERACTION_DRIFT_RECORD_SIZE, SIM_MAX_INTERACTIONS,
                         world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
@@ -365,6 +711,11 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
                         2, STATION_RECORD_SIZE, MAX_STATIONS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_STATIONS_Q, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        STATION_Q_HEADER_SIZE, 0, MAX_STATIONS,
+                        world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_STATION_MANIFEST, PROTOCOL_STREAM_CLASS_ECON,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
@@ -391,6 +742,11 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
                         2, CONTRACT_RECORD_SIZE, MAX_CONTRACTS, world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_CONTRACTS_Q, PROTOCOL_STREAM_CLASS_ECON,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
+                        CONTRACT_Q_HEADER_SIZE, 0, MAX_CONTRACTS,
+                        world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_DELIVERY_LEDGER, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
@@ -441,7 +797,8 @@ static inline int serialize_protocol_info(uint8_t *buf,
 }
 
 /*
- * STATE message (45 bytes):
+ * STATE message (45 bytes, 55-byte legacy authoritative ack tail,
+ * 67-byte current authoritative ack+transport tail):
  * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]
  * towed_frags = 10 × uint16_t (little-endian), 0xFFFF = unused. Widened
  * from uint8_t so slots 255-2047 aren't silently dropped (#285 Phase 3).
@@ -454,15 +811,7 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     write_f32_le(&buf[10], sp->ship.vel.x);
     write_f32_le(&buf[14], sp->ship.vel.y);
     write_f32_le(&buf[18], sp->ship.angle);
-    uint8_t flags = 0;
-    if (sp->actual_thrusting) flags |= 1;
-    if (sp->beam_active) flags |= 2;
-    if (sp->docked) flags |= 4;
-    if (sp->scan_active) flags |= 8;
-    if (sp->ship.tractor_active) flags |= 16;
-    if (sp->beam_ineffective) flags |= 32;
-    if (sp->beam_hit) flags |= 64;
-    buf[22] = flags;
+    buf[22] = server_player_state_flags_for_wire(sp);
     buf[23] = (uint8_t)sp->ship.tractor_level;
     buf[24] = sp->ship.towed_count;
     for (int t = 0; t < 10; t++) {
@@ -471,69 +820,782 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
         buf[25 + t * 2]     = (uint8_t)(wire & 0xFFu);
         buf[25 + t * 2 + 1] = (uint8_t)(wire >> 8);
     }
-    return 45;
+    return NET_STATE_MSG_SIZE;
+}
+
+static inline int serialize_authoritative_player_state(uint8_t *buf,
+                                                       uint8_t id,
+                                                       const server_player_t *sp,
+                                                       uint32_t server_tick) {
+    (void)serialize_player_state(buf, id, sp);
+    write_u16_le(&buf[NET_STATE_AUTH_INPUT_ACK_OFFSET],
+                 sp->last_input_seq);
+    write_u32_le(&buf[NET_STATE_AUTH_SERVER_TICK_OFFSET], server_tick);
+    write_u32_le(&buf[NET_STATE_AUTH_INPUT_TICK_OFFSET],
+                 sp->last_input_tick);
+    write_u32_le(&buf[NET_STATE_AUTH_CLIENT_SENT_MS_OFFSET],
+                 sp->last_input_client_sent_ms);
+    write_u32_le(&buf[NET_STATE_AUTH_SERVER_RECV_MS_OFFSET],
+                 sp->last_input_server_recv_ms);
+    write_u32_le(&buf[NET_STATE_AUTH_SERVER_SEND_MS_OFFSET], 0);
+    return NET_STATE_AUTH_SIZE;
 }
 
 /*
  * WORLD_PLAYERS message (batched):
  * [type:1][count:1] + count * PLAYER_RECORD_SIZE records
+ * Per-recipient sends omit the recipient's own record during steady play;
+ * private STATE carries the local authoritative baseline/corrections.
  * Each record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]
  *              [tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
  *              [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
  *              [last_input_seq:u16][server_tick:u32][last_input_tick:u32]
  */
 /* PLAYER_RECORD_SIZE defined in shared/net_protocol.h */
-static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players,
-                                              uint32_t server_tick) {
+static inline void serialize_player_state_record(uint8_t *p,
+                                                 const server_player_t *sp,
+                                                 uint8_t id,
+                                                 uint32_t server_tick) {
+    p[0] = id;
+    write_f32_le(&p[1],  sp->ship.pos.x);
+    write_f32_le(&p[5],  sp->ship.pos.y);
+    write_f32_le(&p[9],  sp->ship.vel.x);
+    write_f32_le(&p[13], sp->ship.vel.y);
+    write_f32_le(&p[17], sp->ship.angle);
+    uint8_t flags = server_player_state_flags_for_wire(sp);
+    /* bit 1 was "beam_active && beam_hit" -- now just "beam_active" so
+     * the client can render the beam even when it's firing into empty
+     * space (no rock target). beam_hit is implied by the beam_end
+     * coords matching a target. */
+    p[21] = flags;
+    p[22] = (uint8_t)sp->ship.tractor_level;
+    p[23] = sp->ship.towed_count;
+    for (int t = 0; t < 10; t++) {
+        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+        p[24 + t * 2]     = (uint8_t)(wire & 0xFFu);
+        p[24 + t * 2 + 1] = (uint8_t)(wire >> 8);
+    }
+    /* Callsign: 7 bytes (e.g. "KRX-472") */
+    memcpy(&p[44], sp->callsign, 7);
+    /* Beam coordinates -- server-authoritative. The client mirrors these into
+     * LOCAL_PLAYER.beam_start/end so autopilot laser visuals work. */
+    write_f32_le(&p[51], sp->beam_start.x);
+    write_f32_le(&p[55], sp->beam_start.y);
+    write_f32_le(&p[59], sp->beam_end.x);
+    write_f32_le(&p[63], sp->beam_end.y);
+    write_u16_le(&p[67], sp->last_input_seq);
+    write_u32_le(&p[69], server_tick);
+    write_u32_le(&p[73], sp->last_input_tick);
+}
+
+static inline bool server_player_self_world_record_required(
+    const server_player_t *sp) {
+    return sp && sp->beam_active;
+}
+
+static inline int serialize_player_states_except_recipient(
+    uint8_t *buf,
+    const server_player_t *players,
+    int recipient_slot,
+    uint32_t server_tick) {
     int count = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot &&
+            !server_player_self_world_record_required(&players[i])) {
+            continue;
+        }
         if (!server_player_is_gameplay_ready(&players[i])) continue;
         uint8_t *p = &buf[2 + count * PLAYER_RECORD_SIZE];
+        serialize_player_state_record(p, &players[i], (uint8_t)i, server_tick);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_PLAYERS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * PLAYER_RECORD_SIZE;
+}
+
+static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players,
+                                              uint32_t server_tick) {
+    return serialize_player_states_except_recipient(
+        buf, players, -1, server_tick);
+}
+
+static inline int serialize_player_motion_for_recipient(
+    uint8_t *buf,
+    const server_player_t *players,
+    int recipient_slot) {
+    int count = 0;
+    if (!buf || !players) return 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot) continue;
+        if (!server_player_is_gameplay_ready(&players[i])) continue;
+        if (players[i].docked) continue;
+
+        uint8_t *p = &buf[PLAYER_MOTION_MSG_HEADER +
+                          count * PLAYER_MOTION_RECORD_SIZE];
         p[0] = (uint8_t)i;
         write_f32_le(&p[1],  players[i].ship.pos.x);
         write_f32_le(&p[5],  players[i].ship.pos.y);
         write_f32_le(&p[9],  players[i].ship.vel.x);
         write_f32_le(&p[13], players[i].ship.vel.y);
         write_f32_le(&p[17], players[i].ship.angle);
-        uint8_t flags = 0;
-        if (players[i].actual_thrusting) flags |= 1;
-        /* bit 1 was "beam_active && beam_hit" — now just "beam_active" so
-         * the client can render the beam even when it's firing into empty
-         * space (no rock target). beam_hit is implied by the beam_end
-         * coords matching a target. */
-        if (players[i].beam_active) flags |= 2;
-        if (players[i].docked) flags |= 4;
-        if (players[i].scan_active) flags |= 8;
-        if (players[i].ship.tractor_active) flags |= 16;
-        if (players[i].beam_ineffective) flags |= 32;
-        if (players[i].beam_hit) flags |= 64;
-        p[21] = flags;
-        p[22] = (uint8_t)players[i].ship.tractor_level;
-        p[23] = players[i].ship.towed_count;
-        for (int t = 0; t < 10; t++) {
-            int16_t fi = (t < players[i].ship.towed_count) ? players[i].ship.towed_fragments[t] : -1;
-            uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
-            p[24 + t * 2]     = (uint8_t)(wire & 0xFFu);
-            p[24 + t * 2 + 1] = (uint8_t)(wire >> 8);
-        }
-        /* Callsign: 7 bytes (e.g. "KRX-472") */
-        memcpy(&p[44], players[i].callsign, 7);
-        /* Beam coordinates — server-authoritative. The client mirrors
-         * these into LOCAL_PLAYER.beam_start/end so the autopilot's
-         * laser visual works (and so combat hits are deterministic
-         * once we have weapons). */
-        write_f32_le(&p[51], players[i].beam_start.x);
-        write_f32_le(&p[55], players[i].beam_start.y);
-        write_f32_le(&p[59], players[i].beam_end.x);
-        write_f32_le(&p[63], players[i].beam_end.y);
-        write_u16_le(&p[67], players[i].last_input_seq);
-        write_u32_le(&p[69], server_tick);
-        write_u32_le(&p[73], players[i].last_input_tick);
         count++;
     }
-    buf[0] = NET_MSG_WORLD_PLAYERS;
+    buf[0] = NET_MSG_WORLD_PLAYER_MOTION;
     buf[1] = (uint8_t)count;
-    return 2 + count * PLAYER_RECORD_SIZE;
+    return PLAYER_MOTION_MSG_HEADER + count * PLAYER_MOTION_RECORD_SIZE;
+}
+
+static inline int16_t player_motion_q_encode(float value, float scale) {
+    if (!isfinite(value) || scale <= 0.0f) return 0;
+    float q = value / scale;
+    if (q > 32767.0f) return 32767;
+    if (q < -32768.0f) return -32768;
+    return (int16_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+}
+
+static inline uint8_t player_motion_q_angle(float angle) {
+    if (!isfinite(angle)) return 0;
+    float a = fmodf(angle, 2.0f * PI_F);
+    if (a < 0.0f) a += 2.0f * PI_F;
+    int q = (int)((a / (2.0f * PI_F)) * 256.0f + 0.5f);
+    return (uint8_t)(q & 0xFF);
+}
+
+static inline bool player_motiond_q_encode_i8(float value,
+                                               float scale,
+                                               int8_t *out) {
+    if (!out || !isfinite(value) || scale <= 0.0f) return false;
+    float q = value / scale;
+    if (q > 127.0f || q < -128.0f) return false;
+    *out = (int8_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+    return true;
+}
+
+#define PLAYER_MOTION_NET_MIN_REPEAT_TICKS 24u /* 5 Hz while changing */
+#define PLAYER_MOTION_NET_HEARTBEAT_TICKS 240u /* 0.5 Hz predicted safety refresh */
+#define PLAYER_MOTION_NET_PREDICT_ERROR_SQ (12.0f * 12.0f)
+#define PLAYER_MOTION_NET_ANGLE_STEP_THRESHOLD 4u
+#define PLAYER_MOTION_NET_ANGLE_FAST_STEP_THRESHOLD 12u
+
+static inline int serialize_player_motion_q_for_recipient(
+    uint8_t *buf,
+    const server_player_t *players,
+    int recipient_slot) {
+    int count = 0;
+    if (!buf || !players) return 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot) continue;
+        if (!server_player_is_gameplay_ready(&players[i])) continue;
+        if (players[i].docked) continue;
+
+        uint8_t *p = &buf[PLAYER_MOTION_Q_MSG_HEADER +
+                          count * PLAYER_MOTION_Q_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        write_u16_le(&p[1], (uint16_t)player_motion_q_encode(
+                         players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE));
+        write_u16_le(&p[3], (uint16_t)player_motion_q_encode(
+                         players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE));
+        write_u16_le(&p[5], (uint16_t)player_motion_q_encode(
+                         players[i].ship.vel.x, PLAYER_MOTION_Q_VEL_SCALE));
+        write_u16_le(&p[7], (uint16_t)player_motion_q_encode(
+                         players[i].ship.vel.y, PLAYER_MOTION_Q_VEL_SCALE));
+        p[9] = player_motion_q_angle(players[i].ship.angle);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_PLAYER_MOTION_Q;
+    buf[1] = (uint8_t)count;
+    return PLAYER_MOTION_Q_MSG_HEADER + count * PLAYER_MOTION_Q_RECORD_SIZE;
+}
+
+static inline void server_player_motion_delta_clear_all(server_player_t *sp) {
+    if (!sp) return;
+    memset(sp->player_motion_delta_valid, 0,
+           sizeof(sp->player_motion_delta_valid));
+    memset(sp->player_motion_delta_qx, 0,
+           sizeof(sp->player_motion_delta_qx));
+    memset(sp->player_motion_delta_qy, 0,
+           sizeof(sp->player_motion_delta_qy));
+    memset(sp->player_motion_delta_vel, 0,
+           sizeof(sp->player_motion_delta_vel));
+    memset(sp->player_motion_delta_angle, 0,
+           sizeof(sp->player_motion_delta_angle));
+    memset(sp->player_motion_delta_tick, 0,
+           sizeof(sp->player_motion_delta_tick));
+    sp->player_motion_delta_heartbeat_tick = 0u;
+    sp->world_player_motion_cache.valid = false;
+    sp->world_player_motion_delta_cache.valid = false;
+    sp->world_player_motion_posed_cache.valid = false;
+}
+
+static inline void server_player_motion_delta_clear_slot(server_player_t *sp,
+                                                         int slot) {
+    if (!sp || slot < 0 || slot >= MAX_PLAYERS) return;
+    if (!sp->player_motion_delta_valid[slot]) return;
+    sp->player_motion_delta_valid[slot] = false;
+    sp->player_motion_delta_qx[slot] = 0;
+    sp->player_motion_delta_qy[slot] = 0;
+    sp->player_motion_delta_vel[slot] = v2(0.0f, 0.0f);
+    sp->player_motion_delta_angle[slot] = 0;
+    sp->player_motion_delta_tick[slot] = 0u;
+    sp->world_player_motion_cache.valid = false;
+    sp->world_player_motion_delta_cache.valid = false;
+    sp->world_player_motion_posed_cache.valid = false;
+}
+
+static inline void server_player_motion_delta_note_q(server_player_t *sp,
+                                                     int slot,
+                                                     int16_t qx,
+                                                     int16_t qy,
+                                                     vec2 vel,
+                                                     uint8_t angle,
+                                                     uint32_t server_tick) {
+    if (!sp || slot < 0 || slot >= MAX_PLAYERS) return;
+    sp->player_motion_delta_valid[slot] = true;
+    sp->player_motion_delta_qx[slot] = qx;
+    sp->player_motion_delta_qy[slot] = qy;
+    sp->player_motion_delta_vel[slot] = vel;
+    sp->player_motion_delta_angle[slot] = angle;
+    sp->player_motion_delta_tick[slot] = server_tick;
+}
+
+static inline void server_player_motion_delta_note_abs_msg(
+    server_player_t *sp,
+    const uint8_t *data,
+    size_t len,
+    uint32_t server_tick) {
+    if (!sp || !data || len < PLAYER_MOTION_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_PLAYER_MOTION_Q) {
+        return;
+    }
+    int count = (int)data[1];
+    size_t expected = PLAYER_MOTION_Q_MSG_HEADER +
+        (size_t)count * PLAYER_MOTION_Q_RECORD_SIZE;
+    if (len < expected) return;
+    for (int i = 0; i < count; i++) {
+        const uint8_t *p = &data[PLAYER_MOTION_Q_MSG_HEADER +
+                                 i * PLAYER_MOTION_Q_RECORD_SIZE];
+        uint8_t id = p[0];
+        if (id >= MAX_PLAYERS) continue;
+        int16_t qx = (int16_t)read_u16_le(&p[1]);
+        int16_t qy = (int16_t)read_u16_le(&p[3]);
+        int16_t qvx = (int16_t)read_u16_le(&p[5]);
+        int16_t qvy = (int16_t)read_u16_le(&p[7]);
+        server_player_motion_delta_note_q(
+            sp, id, qx, qy,
+            v2((float)qvx * PLAYER_MOTION_Q_VEL_SCALE,
+               (float)qvy * PLAYER_MOTION_Q_VEL_SCALE),
+            p[9], server_tick);
+    }
+}
+
+static inline void server_player_motion_delta_note_delta_msg(
+    server_player_t *sp,
+    const uint8_t *data,
+    size_t len,
+    uint32_t server_tick) {
+    if (!sp || !data || len < PLAYER_MOTIOND_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_PLAYER_MOTIOND_Q) {
+        return;
+    }
+    int count = (int)data[1];
+    size_t expected = PLAYER_MOTIOND_Q_MSG_HEADER +
+        (size_t)count * PLAYER_MOTIOND_Q_RECORD_SIZE;
+    if (len < expected) return;
+    for (int i = 0; i < count; i++) {
+        const uint8_t *p = &data[PLAYER_MOTIOND_Q_MSG_HEADER +
+                                 i * PLAYER_MOTIOND_Q_RECORD_SIZE];
+        uint8_t id = p[0];
+        if (id >= MAX_PLAYERS || !sp->player_motion_delta_valid[id])
+            continue;
+        int qx = (int)sp->player_motion_delta_qx[id] + (int)(int8_t)p[1];
+        int qy = (int)sp->player_motion_delta_qy[id] + (int)(int8_t)p[2];
+        if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
+            server_player_motion_delta_clear_slot(sp, id);
+            continue;
+        }
+        server_player_motion_delta_note_q(
+            sp, id, (int16_t)qx, (int16_t)qy,
+            v2((float)(int8_t)p[3] * PLAYER_MOTIOND_Q_VEL_SCALE,
+               (float)(int8_t)p[4] * PLAYER_MOTIOND_Q_VEL_SCALE),
+            p[5], server_tick);
+    }
+}
+
+static inline void server_player_motion_delta_note_posed_msg(
+    server_player_t *sp,
+    const uint8_t *data,
+    size_t len,
+    uint32_t server_tick) {
+    if (!sp || !data || len < PLAYER_POSED_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_PLAYER_POSED_Q) {
+        return;
+    }
+    int count = (int)data[1];
+    size_t expected = PLAYER_POSED_Q_MSG_HEADER +
+        (size_t)count * PLAYER_POSED_Q_RECORD_SIZE;
+    if (len < expected) return;
+    for (int i = 0; i < count; i++) {
+        const uint8_t *p = &data[PLAYER_POSED_Q_MSG_HEADER +
+                                 i * PLAYER_POSED_Q_RECORD_SIZE];
+        uint8_t id = p[0];
+        if (id >= MAX_PLAYERS || !sp->player_motion_delta_valid[id])
+            continue;
+        int qx = (int)sp->player_motion_delta_qx[id] + (int)(int8_t)p[1];
+        int qy = (int)sp->player_motion_delta_qy[id] + (int)(int8_t)p[2];
+        if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
+            server_player_motion_delta_clear_slot(sp, id);
+            continue;
+        }
+        server_player_motion_delta_note_q(
+            sp, id, (int16_t)qx, (int16_t)qy,
+            sp->player_motion_delta_vel[id],
+            p[3], server_tick);
+    }
+}
+
+static inline void server_player_motion_delta_note_mixed_msg(
+    server_player_t *sp,
+    const uint8_t *data,
+    size_t len,
+    uint32_t server_tick) {
+    if (!sp || !data || len < PLAYER_MOTIONM_Q_MSG_HEADER ||
+        data[0] != NET_MSG_WORLD_PLAYER_MOTIONM_Q) {
+        return;
+    }
+    int count = (int)data[1];
+    size_t off = PLAYER_MOTIONM_Q_MSG_HEADER;
+    for (int i = 0; i < count; i++) {
+        if (off + PLAYER_MOTIONM_Q_POSE_RECORD_SIZE > len)
+            return;
+        uint8_t id_flags = data[off++];
+        uint8_t id = id_flags & PLAYER_MOTIONM_Q_ID_MASK;
+        bool has_velocity =
+            (id_flags & PLAYER_MOTIONM_Q_FLAG_VEL) != 0;
+        bool reserved = (id_flags & PLAYER_MOTIONM_Q_RESERVED_MASK) != 0;
+        int8_t dx = (int8_t)data[off++];
+        int8_t dy = (int8_t)data[off++];
+        vec2 vel = v2(0.0f, 0.0f);
+        if (has_velocity) {
+            if (off + 3u > len)
+                return;
+            int8_t qvx = (int8_t)data[off++];
+            int8_t qvy = (int8_t)data[off++];
+            vel = v2((float)qvx * PLAYER_MOTIOND_Q_VEL_SCALE,
+                     (float)qvy * PLAYER_MOTIOND_Q_VEL_SCALE);
+        } else {
+            if (off + 1u > len)
+                return;
+        }
+        uint8_t angle = data[off++];
+        if (reserved || id >= MAX_PLAYERS ||
+            !sp->player_motion_delta_valid[id]) {
+            continue;
+        }
+        int qx = (int)sp->player_motion_delta_qx[id] + (int)dx;
+        int qy = (int)sp->player_motion_delta_qy[id] + (int)dy;
+        if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
+            server_player_motion_delta_clear_slot(sp, id);
+            continue;
+        }
+        server_player_motion_delta_note_q(
+            sp, id, (int16_t)qx, (int16_t)qy,
+            has_velocity ? vel : sp->player_motion_delta_vel[id],
+            angle, server_tick);
+    }
+}
+
+static inline uint8_t player_motion_q_angle_delta(uint8_t a, uint8_t b) {
+    uint8_t d = (uint8_t)(a - b);
+    if (d > 128u) d = (uint8_t)(256u - d);
+    return d;
+}
+
+static inline bool player_motion_prediction_should_send_impl(
+    const server_player_t *recipient,
+    int slot,
+    int16_t qx,
+    int16_t qy,
+    uint8_t angle,
+    uint32_t server_tick,
+    bool heartbeat_due,
+    bool coalesced_heartbeat) {
+    if (!recipient || slot < 0 || slot >= MAX_PLAYERS)
+        return true;
+    if (!recipient->player_motion_delta_valid[slot])
+        return true;
+    uint32_t last_tick = recipient->player_motion_delta_tick[slot];
+    if (last_tick == 0u)
+        return true;
+
+    uint32_t age_ticks = server_tick - last_tick;
+    float dt = (float)age_ticks * SIM_DT;
+    float predicted_x =
+        (float)recipient->player_motion_delta_qx[slot] *
+        PLAYER_MOTION_Q_POS_SCALE +
+        recipient->player_motion_delta_vel[slot].x * dt;
+    float predicted_y =
+        (float)recipient->player_motion_delta_qy[slot] *
+        PLAYER_MOTION_Q_POS_SCALE +
+        recipient->player_motion_delta_vel[slot].y * dt;
+    float current_x = (float)qx * PLAYER_MOTION_Q_POS_SCALE;
+    float current_y = (float)qy * PLAYER_MOTION_Q_POS_SCALE;
+    float dx = current_x - predicted_x;
+    float dy = current_y - predicted_y;
+    float error_sq = dx * dx + dy * dy;
+    uint8_t angle_delta = player_motion_q_angle_delta(
+        angle, recipient->player_motion_delta_angle[slot]);
+    if (age_ticks < PLAYER_MOTION_NET_MIN_REPEAT_TICKS)
+        return error_sq >= PLAYER_MOTION_NET_PREDICT_ERROR_SQ * 4.0f ||
+            angle_delta >= PLAYER_MOTION_NET_ANGLE_FAST_STEP_THRESHOLD;
+
+    if (error_sq >= PLAYER_MOTION_NET_PREDICT_ERROR_SQ)
+        return true;
+
+    if (angle_delta >= PLAYER_MOTION_NET_ANGLE_STEP_THRESHOLD)
+        return true;
+
+    if (coalesced_heartbeat) {
+        if (heartbeat_due &&
+            age_ticks >= PLAYER_MOTION_NET_HEARTBEAT_TICKS) {
+            return true;
+        }
+        return false;
+    }
+
+    if (age_ticks >= PLAYER_MOTION_NET_HEARTBEAT_TICKS && heartbeat_due)
+        return true;
+
+    return false;
+}
+
+static inline bool player_motion_prediction_should_send(
+    const server_player_t *recipient,
+    int slot,
+    int16_t qx,
+    int16_t qy,
+    uint8_t angle,
+    uint32_t server_tick) {
+    return player_motion_prediction_should_send_impl(
+        recipient, slot, qx, qy, angle, server_tick, true, false);
+}
+
+static inline bool player_motion_prediction_should_send_coalesced(
+    const server_player_t *recipient,
+    int slot,
+    int16_t qx,
+    int16_t qy,
+    uint8_t angle,
+    uint32_t server_tick,
+    bool heartbeat_due) {
+    return player_motion_prediction_should_send_impl(
+        recipient, slot, qx, qy, angle, server_tick,
+        heartbeat_due, true);
+}
+
+static inline void serialize_player_motion_q_record(uint8_t *p,
+                                                    uint8_t id,
+                                                    const server_player_t *sp,
+                                                    int16_t qx,
+                                                    int16_t qy) {
+    p[0] = id;
+    write_u16_le(&p[1], (uint16_t)qx);
+    write_u16_le(&p[3], (uint16_t)qy);
+    write_u16_le(&p[5], (uint16_t)player_motion_q_encode(
+                     sp->ship.vel.x, PLAYER_MOTION_Q_VEL_SCALE));
+    write_u16_le(&p[7], (uint16_t)player_motion_q_encode(
+                     sp->ship.vel.y, PLAYER_MOTION_Q_VEL_SCALE));
+    p[9] = player_motion_q_angle(sp->ship.angle);
+}
+
+static inline int serialize_player_motion_split_q_for_recipient(
+    uint8_t *abs_buf,
+    int *abs_len_out,
+    uint8_t *delta_buf,
+    int *delta_len_out,
+    uint8_t *posed_buf,
+    int *posed_len_out,
+    server_player_t *recipient,
+    const server_player_t *players,
+    int recipient_slot,
+    uint32_t server_tick) {
+    int abs_count = 0;
+    int delta_count = 0;
+    int posed_count = 0;
+    if (!abs_buf || !delta_buf || !players) {
+        if (abs_len_out) *abs_len_out = 0;
+        if (delta_len_out) *delta_len_out = 0;
+        if (posed_len_out) *posed_len_out = 0;
+        return 0;
+    }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot) continue;
+        if (!server_player_is_gameplay_ready(&players[i]) ||
+            players[i].docked) {
+            server_player_motion_delta_clear_slot(recipient, i);
+            continue;
+        }
+
+        int16_t qx = player_motion_q_encode(
+            players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE);
+        int16_t qy = player_motion_q_encode(
+            players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE);
+        uint8_t angle = player_motion_q_angle(players[i].ship.angle);
+        int8_t qvx8 = 0;
+        int8_t qvy8 = 0;
+        bool delta_velocity_ok =
+            player_motiond_q_encode_i8(
+                players[i].ship.vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
+            player_motiond_q_encode_i8(
+                players[i].ship.vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
+        if (!player_motion_prediction_should_send(
+                recipient, i, qx, qy, angle, server_tick)) {
+            continue;
+        }
+        bool delta_ok = recipient &&
+            recipient->player_motion_delta_valid[i] &&
+            delta_velocity_ok;
+        int dx = 0;
+        int dy = 0;
+        if (delta_ok) {
+            dx = (int)qx - (int)recipient->player_motion_delta_qx[i];
+            dy = (int)qy - (int)recipient->player_motion_delta_qy[i];
+            delta_ok = dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127;
+        }
+
+        int8_t prev_qvx8 = 0;
+        int8_t prev_qvy8 = 0;
+        bool posed_ok = posed_buf && delta_ok &&
+            player_motiond_q_encode_i8(
+                recipient->player_motion_delta_vel[i].x,
+                PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvx8) &&
+            player_motiond_q_encode_i8(
+                recipient->player_motion_delta_vel[i].y,
+                PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvy8) &&
+            prev_qvx8 == qvx8 && prev_qvy8 == qvy8;
+
+        if (posed_ok) {
+            uint8_t *p = &posed_buf[PLAYER_POSED_Q_MSG_HEADER +
+                                    posed_count *
+                                    PLAYER_POSED_Q_RECORD_SIZE];
+            p[0] = (uint8_t)i;
+            p[1] = (uint8_t)(int8_t)dx;
+            p[2] = (uint8_t)(int8_t)dy;
+            p[3] = angle;
+            posed_count++;
+        } else if (delta_ok) {
+            uint8_t *p = &delta_buf[PLAYER_MOTIOND_Q_MSG_HEADER +
+                                    delta_count *
+                                    PLAYER_MOTIOND_Q_RECORD_SIZE];
+            p[0] = (uint8_t)i;
+            p[1] = (uint8_t)(int8_t)dx;
+            p[2] = (uint8_t)(int8_t)dy;
+            p[3] = (uint8_t)qvx8;
+            p[4] = (uint8_t)qvy8;
+            p[5] = angle;
+            delta_count++;
+        } else {
+            uint8_t *p = &abs_buf[PLAYER_MOTION_Q_MSG_HEADER +
+                                  abs_count * PLAYER_MOTION_Q_RECORD_SIZE];
+            serialize_player_motion_q_record(
+                p, (uint8_t)i, &players[i], qx, qy);
+            abs_count++;
+        }
+    }
+    abs_buf[0] = NET_MSG_WORLD_PLAYER_MOTION_Q;
+    abs_buf[1] = (uint8_t)abs_count;
+    delta_buf[0] = NET_MSG_WORLD_PLAYER_MOTIOND_Q;
+    delta_buf[1] = (uint8_t)delta_count;
+    if (posed_buf) {
+        posed_buf[0] = NET_MSG_WORLD_PLAYER_POSED_Q;
+        posed_buf[1] = (uint8_t)posed_count;
+    }
+    int abs_len = PLAYER_MOTION_Q_MSG_HEADER +
+        abs_count * PLAYER_MOTION_Q_RECORD_SIZE;
+    int delta_len = PLAYER_MOTIOND_Q_MSG_HEADER +
+        delta_count * PLAYER_MOTIOND_Q_RECORD_SIZE;
+    int posed_len = PLAYER_POSED_Q_MSG_HEADER +
+        posed_count * PLAYER_POSED_Q_RECORD_SIZE;
+    if (abs_len_out) *abs_len_out = abs_len;
+    if (delta_len_out) *delta_len_out = delta_len;
+    if (posed_len_out) *posed_len_out = posed_buf ? posed_len : 0;
+    return abs_count + delta_count + posed_count;
+}
+
+static inline int serialize_player_motion_mixed_q_for_recipient(
+    uint8_t *abs_buf,
+    int *abs_len_out,
+    uint8_t *mixed_buf,
+    int *mixed_len_out,
+    bool *heartbeat_due_out,
+    server_player_t *recipient,
+    const server_player_t *players,
+    int recipient_slot,
+    uint32_t server_tick) {
+    int abs_count = 0;
+    int mixed_count = 0;
+    int mixed_len = PLAYER_MOTIONM_Q_MSG_HEADER;
+    bool heartbeat_due = !recipient ||
+        recipient->player_motion_delta_heartbeat_tick == 0u ||
+        (uint32_t)(server_tick -
+                   recipient->player_motion_delta_heartbeat_tick) >=
+            PLAYER_MOTION_NET_HEARTBEAT_TICKS;
+    if (heartbeat_due_out) *heartbeat_due_out = heartbeat_due;
+    if (!abs_buf || !mixed_buf || !players) {
+        if (abs_len_out) *abs_len_out = 0;
+        if (mixed_len_out) *mixed_len_out = 0;
+        return 0;
+    }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot) continue;
+        if (!server_player_is_gameplay_ready(&players[i]) ||
+            players[i].docked) {
+            server_player_motion_delta_clear_slot(recipient, i);
+            continue;
+        }
+
+        int16_t qx = player_motion_q_encode(
+            players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE);
+        int16_t qy = player_motion_q_encode(
+            players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE);
+        uint8_t angle = player_motion_q_angle(players[i].ship.angle);
+        int8_t qvx8 = 0;
+        int8_t qvy8 = 0;
+        bool delta_velocity_ok =
+            player_motiond_q_encode_i8(
+                players[i].ship.vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
+            player_motiond_q_encode_i8(
+                players[i].ship.vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
+        if (!player_motion_prediction_should_send_coalesced(
+                recipient, i, qx, qy, angle, server_tick,
+                heartbeat_due)) {
+            continue;
+        }
+        bool delta_ok = recipient &&
+            recipient->player_motion_delta_valid[i] &&
+            delta_velocity_ok;
+        int dx = 0;
+        int dy = 0;
+        if (delta_ok) {
+            dx = (int)qx - (int)recipient->player_motion_delta_qx[i];
+            dy = (int)qy - (int)recipient->player_motion_delta_qy[i];
+            delta_ok = dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127;
+        }
+
+        int8_t prev_qvx8 = 0;
+        int8_t prev_qvy8 = 0;
+        bool posed_ok = delta_ok &&
+            player_motiond_q_encode_i8(
+                recipient->player_motion_delta_vel[i].x,
+                PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvx8) &&
+            player_motiond_q_encode_i8(
+                recipient->player_motion_delta_vel[i].y,
+                PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvy8) &&
+            prev_qvx8 == qvx8 && prev_qvy8 == qvy8;
+
+        if (delta_ok) {
+            uint8_t *p = &mixed_buf[mixed_len];
+            if (posed_ok) {
+                p[0] = (uint8_t)i;
+                p[1] = (uint8_t)(int8_t)dx;
+                p[2] = (uint8_t)(int8_t)dy;
+                p[3] = angle;
+                mixed_len += PLAYER_MOTIONM_Q_POSE_RECORD_SIZE;
+            } else {
+                p[0] = (uint8_t)i | PLAYER_MOTIONM_Q_FLAG_VEL;
+                p[1] = (uint8_t)(int8_t)dx;
+                p[2] = (uint8_t)(int8_t)dy;
+                p[3] = (uint8_t)qvx8;
+                p[4] = (uint8_t)qvy8;
+                p[5] = angle;
+                mixed_len += PLAYER_MOTIONM_Q_VEL_RECORD_SIZE;
+            }
+            mixed_count++;
+        } else {
+            uint8_t *p = &abs_buf[PLAYER_MOTION_Q_MSG_HEADER +
+                                  abs_count * PLAYER_MOTION_Q_RECORD_SIZE];
+            serialize_player_motion_q_record(
+                p, (uint8_t)i, &players[i], qx, qy);
+            abs_count++;
+        }
+    }
+    abs_buf[0] = NET_MSG_WORLD_PLAYER_MOTION_Q;
+    abs_buf[1] = (uint8_t)abs_count;
+    mixed_buf[0] = NET_MSG_WORLD_PLAYER_MOTIONM_Q;
+    mixed_buf[1] = (uint8_t)mixed_count;
+    int abs_len = PLAYER_MOTION_Q_MSG_HEADER +
+        abs_count * PLAYER_MOTION_Q_RECORD_SIZE;
+    if (abs_len_out) *abs_len_out = abs_len;
+    if (mixed_len_out) *mixed_len_out = mixed_len;
+    return abs_count + mixed_count;
+}
+
+static inline int serialize_player_dock_status_for_recipient(
+    uint8_t *buf,
+    const server_player_t *players,
+    int recipient_slot) {
+    int count = 0;
+    if (!buf || !players) return 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == recipient_slot) continue;
+        if (!server_player_is_gameplay_ready(&players[i])) continue;
+
+        uint8_t *p = &buf[PLAYER_DOCK_MSG_HEADER +
+                          count * PLAYER_DOCK_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = server_player_state_flags_for_wire(&players[i]) &
+            PLAYER_DOCK_STATUS_FLAGS_MASK;
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_PLAYER_DOCK_Q;
+    buf[1] = (uint8_t)count;
+    return PLAYER_DOCK_MSG_HEADER + count * PLAYER_DOCK_RECORD_SIZE;
+}
+
+static inline uint64_t net_world_players_semantic_hash(const uint8_t *data,
+                                                       int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < 2 || data[0] != NET_MSG_WORLD_PLAYERS) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    int expected = 2 + count * PLAYER_RECORD_SIZE;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        bool ignored_byte = false;
+        if (i >= 2 && i < expected) {
+            int record_off = (i - 2) % PLAYER_RECORD_SIZE;
+            bool input_ack_tail_byte = record_off >= 67 && record_off < 77;
+            bool pose_byte = record_off >= 1 && record_off < 21;
+            ignored_byte = input_ack_tail_byte || pose_byte;
+            if (record_off == 21) {
+                h = net_fnv1a64_update(
+                    h,
+                    (uint8_t)(data[i] &
+                              (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK));
+                continue;
+            }
+        }
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, data[i]);
+    }
+    return h;
+}
+
+#define WORLD_PLAYERS_SEMANTIC_HEARTBEAT_MS 16000ull
+
+static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
+                                                        uint64_t now_ms) {
+    return last_sent_ms == 0 ||
+        now_ms - last_sent_ms >= WORLD_PLAYERS_SEMANTIC_HEARTBEAT_MS;
 }
 
 /*
@@ -542,57 +1604,848 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
  * Record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32]
  * [radius:f32][smelt:u8][grade:u8][crystal_stage:u8][phase:u8]
  */
-#define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
-
-/* Per-player asteroid serialization with relevance filtering. */
+/* Per-player asteroid delta serialization with relevance filtering. Static
+ * already-seen rocks are omitted; clients dead-reckon moving rocks between
+ * authoritative records and receive compact inactive-removal records on view
+ * exit. */
 #define ASTEROID_VIEW_RADIUS_SQ (3000.0f * 3000.0f)
-static inline int serialize_asteroids_for_player(
-    uint8_t *buf, const asteroid_t *asteroids, vec2 player_pos, bool *sent) {
+#define ASTEROID_NET_MOVING_SPEED_SQ (0.05f * 0.05f)
+#define ASTEROID_NET_CRAWL_SPEED_SQ (1.0f * 1.0f)
+#define ASTEROID_NET_SLOW_SPEED_SQ (10.0f * 10.0f)
+#define ASTEROID_NET_MOVING_REPEAT_TICKS 36u /* ~3.3 Hz at the 120 Hz sim tick */
+#define ASTEROID_NET_CRAWL_MOVING_REPEAT_TICKS 240u /* 0.5 Hz for sub-pixel drift */
+#define ASTEROID_NET_FAR_MOVING_REPEAT_TICKS 120u /* 1 Hz for far-field drift */
+#define ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS 240u /* 0.5 Hz ordinary far-field drift */
+#define ASTEROID_NET_VERY_FAR_MOVING_REPEAT_TICKS 360u /* 0.33 Hz for fast edge-of-view drift */
+#define ASTEROID_NET_VERY_FAR_SLOW_MOVING_REPEAT_TICKS 1200u /* 0.1 Hz ordinary edge drift */
+#define ASTEROID_NET_MOTION_HEARTBEAT_TICKS 240u /* 0.5 Hz safety refresh */
+#define ASTEROID_NET_CRAWL_MOTION_HEARTBEAT_TICKS 4800u /* 0.025 Hz crawl safety refresh */
+#define ASTEROID_NET_SLOW_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz slow near safety refresh */
+#define ASTEROID_NET_FAR_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz far-field safety refresh */
+#define ASTEROID_NET_FAR_SLOW_MOTION_HEARTBEAT_TICKS 1200u /* 0.1 Hz ordinary far safety refresh */
+#define ASTEROID_NET_VERY_FAR_MOTION_HEARTBEAT_TICKS 2400u /* 0.05 Hz edge safety refresh */
+#define ASTEROID_NET_INTERACTION_RADIUS_SQ (600.0f * 600.0f)
+#define ASTEROID_NET_NEAR_RADIUS_SQ (1200.0f * 1200.0f)
+#define ASTEROID_NET_FAST_RADIUS_SQ (1800.0f * 1800.0f)
+#define ASTEROID_NET_VERY_FAR_RADIUS_SQ (2000.0f * 2000.0f)
+#define ASTEROID_NET_BACKGROUND_IDENTITY_BUDGET_PER_BURST 8
+#define ASTEROID_NET_BACKGROUND_IDENTITY_BURST_TICKS 4u
+#define ASTEROID_NET_FAST_SPEED_SQ (30.0f * 30.0f)
+#define ASTEROID_NET_NEAR_PREDICT_ERROR_SQ (16.0f * 16.0f)
+#define ASTEROID_NET_NEAR_SLOW_PREDICT_ERROR_SQ (32.0f * 32.0f)
+#define ASTEROID_NET_CRAWL_PREDICT_ERROR_SQ (64.0f * 64.0f)
+#define ASTEROID_NET_FAR_PREDICT_ERROR_SQ (48.0f * 48.0f)
+#define ASTEROID_NET_FAR_SLOW_PREDICT_ERROR_SQ (80.0f * 80.0f)
+#define ASTEROID_NET_VERY_FAR_PREDICT_ERROR_SQ (128.0f * 128.0f)
+#define ASTEROID_NET_POS_ONLY_DRIFT_WINDOW_SEC 0.5f
+#define ASTEROID_NET_POS_ONLY_NEAR_DRIFT_SQ (4.0f * 4.0f)
+#define ASTEROID_NET_POS_ONLY_FAR_DRIFT_SQ (8.0f * 8.0f)
+#define ASTEROID_NET_POS_ONLY_VERY_FAR_DRIFT_SQ (12.0f * 12.0f)
+#define ASTEROID_STATE_Q_NUMERIC_REPEAT_TICKS 240u /* 0.5 Hz hp/ore/smelt drift */
+#define ASTEROID_STATE_Q_HEARTBEAT_TICKS 960u /* 8s exact-state refresh */
+
+static inline bool asteroid_net_high_detail(float dist_sq, float speed_sq) {
+    return dist_sq <= ASTEROID_NET_INTERACTION_RADIUS_SQ ||
+        (speed_sq >= ASTEROID_NET_FAST_SPEED_SQ &&
+         dist_sq <= ASTEROID_NET_FAST_RADIUS_SQ);
+}
+
+static inline uint32_t asteroid_net_moving_repeat_ticks(float dist_sq,
+                                                        float speed_sq) {
+    if (speed_sq < ASTEROID_NET_CRAWL_SPEED_SQ) {
+        return ASTEROID_NET_CRAWL_MOVING_REPEAT_TICKS;
+    }
+    if (asteroid_net_high_detail(dist_sq, speed_sq)) {
+        return ASTEROID_NET_MOVING_REPEAT_TICKS;
+    }
+    if (dist_sq >= ASTEROID_NET_VERY_FAR_RADIUS_SQ) {
+        return speed_sq >= ASTEROID_NET_FAST_SPEED_SQ
+            ? ASTEROID_NET_VERY_FAR_MOVING_REPEAT_TICKS
+            : ASTEROID_NET_VERY_FAR_SLOW_MOVING_REPEAT_TICKS;
+    }
+    if (speed_sq < ASTEROID_NET_FAST_SPEED_SQ)
+        return ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS;
+    return ASTEROID_NET_FAR_MOVING_REPEAT_TICKS;
+}
+
+static inline uint32_t asteroid_net_motion_heartbeat_ticks(float dist_sq,
+                                                           float speed_sq) {
+    if (speed_sq < ASTEROID_NET_CRAWL_SPEED_SQ) {
+        return ASTEROID_NET_CRAWL_MOTION_HEARTBEAT_TICKS;
+    }
+    if (asteroid_net_high_detail(dist_sq, speed_sq)) {
+        return speed_sq < ASTEROID_NET_SLOW_SPEED_SQ
+            ? ASTEROID_NET_SLOW_MOTION_HEARTBEAT_TICKS
+            : ASTEROID_NET_MOTION_HEARTBEAT_TICKS;
+    }
+    if (dist_sq >= ASTEROID_NET_VERY_FAR_RADIUS_SQ &&
+        speed_sq < ASTEROID_NET_FAST_SPEED_SQ) {
+        return ASTEROID_NET_VERY_FAR_MOTION_HEARTBEAT_TICKS;
+    }
+    if (speed_sq < ASTEROID_NET_FAST_SPEED_SQ)
+        return ASTEROID_NET_FAR_SLOW_MOTION_HEARTBEAT_TICKS;
+    return ASTEROID_NET_FAR_MOTION_HEARTBEAT_TICKS;
+}
+
+static inline float asteroid_net_predict_error_sq(float dist_sq,
+                                                  float speed_sq) {
+    if (speed_sq < ASTEROID_NET_CRAWL_SPEED_SQ) {
+        return ASTEROID_NET_CRAWL_PREDICT_ERROR_SQ;
+    }
+    if (asteroid_net_high_detail(dist_sq, speed_sq)) {
+        return speed_sq < ASTEROID_NET_SLOW_SPEED_SQ
+            ? ASTEROID_NET_NEAR_SLOW_PREDICT_ERROR_SQ
+            : ASTEROID_NET_NEAR_PREDICT_ERROR_SQ;
+    }
+    if (dist_sq >= ASTEROID_NET_VERY_FAR_RADIUS_SQ) {
+        return ASTEROID_NET_VERY_FAR_PREDICT_ERROR_SQ;
+    }
+    if (speed_sq < ASTEROID_NET_FAST_SPEED_SQ)
+        return ASTEROID_NET_FAR_SLOW_PREDICT_ERROR_SQ;
+    return ASTEROID_NET_FAR_PREDICT_ERROR_SQ;
+}
+
+static inline int asteroid_net_background_identity_budget_at_tick(
+    uint32_t server_tick) {
+    return (server_tick % ASTEROID_NET_BACKGROUND_IDENTITY_BURST_TICKS) == 0u
+        ? ASTEROID_NET_BACKGROUND_IDENTITY_BUDGET_PER_BURST
+        : 0;
+}
+
+static inline int asteroid_net_background_identity_budget_at_tick_for_players(
+    uint32_t server_tick,
+    int live_asteroid_recipient_count) {
+    int base = asteroid_net_background_identity_budget_at_tick(server_tick);
+    if (base <= 0) return 0;
+    if (live_asteroid_recipient_count <= 4) return base;
+    if (live_asteroid_recipient_count <= 8) return (base + 1) / 2;
+    if (live_asteroid_recipient_count <= 16) return (base + 3) / 4;
+    return 1;
+}
+
+static inline int16_t asteroid_motion_q_encode(float value, float scale) {
+    if (!isfinite(value) || scale <= 0.0f) return 0;
+    float q = value / scale;
+    if (q > 32767.0f) return 32767;
+    if (q < -32768.0f) return -32768;
+    return (int16_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+}
+
+static inline void asteroid_motion_q_write_i16(uint8_t *buf, int16_t value) {
+    write_u16_le(buf, (uint16_t)value);
+}
+
+static inline bool asteroid_motion_q_position_delta_i8(vec2 previous,
+                                                       vec2 current,
+                                                       int8_t *dx_out,
+                                                       int8_t *dy_out) {
+    if (!dx_out || !dy_out) return false;
+    int16_t prev_x = asteroid_motion_q_encode(
+        previous.x, ASTEROID_MOTION_Q_POS_SCALE);
+    int16_t prev_y = asteroid_motion_q_encode(
+        previous.y, ASTEROID_MOTION_Q_POS_SCALE);
+    int16_t cur_x = asteroid_motion_q_encode(
+        current.x, ASTEROID_MOTION_Q_POS_SCALE);
+    int16_t cur_y = asteroid_motion_q_encode(
+        current.y, ASTEROID_MOTION_Q_POS_SCALE);
+    int dx = (int)cur_x - (int)prev_x;
+    int dy = (int)cur_y - (int)prev_y;
+    if (dx < -128 || dx > 127 || dy < -128 || dy > 127)
+        return false;
+    *dx_out = (int8_t)dx;
+    *dy_out = (int8_t)dy;
+    return true;
+}
+
+static inline bool asteroid_motion_q_velocity_matches(vec2 a, vec2 b) {
+    return asteroid_motion_q_encode(a.x, ASTEROID_MOTION_Q_VEL_SCALE) ==
+               asteroid_motion_q_encode(b.x, ASTEROID_MOTION_Q_VEL_SCALE) &&
+           asteroid_motion_q_encode(a.y, ASTEROID_MOTION_Q_VEL_SCALE) ==
+               asteroid_motion_q_encode(b.y, ASTEROID_MOTION_Q_VEL_SCALE);
+}
+
+static inline float asteroid_net_pos_only_drift_budget_sq(float dist_sq,
+                                                          float speed_sq) {
+    if (asteroid_net_high_detail(dist_sq, speed_sq))
+        return ASTEROID_NET_POS_ONLY_NEAR_DRIFT_SQ;
+    if (dist_sq >= ASTEROID_NET_VERY_FAR_RADIUS_SQ)
+        return ASTEROID_NET_POS_ONLY_VERY_FAR_DRIFT_SQ;
+    return ASTEROID_NET_POS_ONLY_FAR_DRIFT_SQ;
+}
+
+static inline bool asteroid_net_pos_only_velocity_eligible(vec2 current_vel,
+                                                           vec2 client_vel,
+                                                           float dist_sq,
+                                                           float speed_sq) {
+    if (asteroid_motion_q_velocity_matches(current_vel, client_vel))
+        return true;
+    vec2 drift = v2_scale(v2_sub(current_vel, client_vel),
+                          ASTEROID_NET_POS_ONLY_DRIFT_WINDOW_SEC);
+    return v2_len_sq(drift) <=
+        asteroid_net_pos_only_drift_budget_sq(dist_sq, speed_sq);
+}
+
+static inline uint8_t asteroid_wire_flags(const asteroid_t *a) {
+    uint8_t flags = 1;
+    if (!a) return 0;
+    if (a->fracture_child) flags |= (1 << 1);
+    flags |= (((uint8_t)a->tier & 0x7) << 2);
+    flags |= (((uint8_t)a->commodity & 0x7) << 5);
+    return flags;
+}
+
+static inline uint8_t asteroid_wire_smelt_byte(const asteroid_t *a) {
+    float sp_f = a ? a->smelt_progress : 0.0f;
+    if (sp_f < 0.0f) sp_f = 0.0f;
+    if (sp_f > 1.0f) sp_f = 1.0f;
+    return (uint8_t)(sp_f * 255.0f);
+}
+
+static inline uint16_t asteroid_identity_q_encode_value(float value) {
+    if (!isfinite(value) || value <= 0.0f ||
+        ASTEROID_IDENTITY_Q_VALUE_SCALE <= 0.0f) {
+        return 0;
+    }
+    float q = value / ASTEROID_IDENTITY_Q_VALUE_SCALE;
+    if (q >= 65535.0f) return 65535u;
+    return (uint16_t)(q + 0.5f);
+}
+
+static inline uint8_t asteroid_identity_q_detail_byte(const asteroid_t *a) {
+    uint8_t grade = a ? a->grade : 0;
+    uint8_t crystal = a ? a->crystal_stage : 0;
+    uint8_t phase = a ? a->phase : 0;
+    return (uint8_t)((grade & 0x7u) |
+                     ((crystal & 0x3u) << 3) |
+                     ((phase & 0x3u) << 5));
+}
+
+static inline void serialize_one_asteroid_q(uint8_t *p,
+                                            uint16_t index,
+                                            const asteroid_t *a,
+                                            bool byte_index) {
+    int off = 0;
+    if (byte_index) {
+        p[off++] = (uint8_t)index;
+    } else {
+        write_u16_le(&p[off], index);
+        off += 2;
+    }
+    p[off++] = asteroid_wire_flags(a);
+    asteroid_motion_q_write_i16(
+        &p[off], asteroid_motion_q_encode(
+                     a ? a->pos.x : 0.0f, ASTEROID_MOTION_Q_POS_SCALE));
+    off += 2;
+    asteroid_motion_q_write_i16(
+        &p[off], asteroid_motion_q_encode(
+                     a ? a->pos.y : 0.0f, ASTEROID_MOTION_Q_POS_SCALE));
+    off += 2;
+    asteroid_motion_q_write_i16(
+        &p[off], asteroid_motion_q_encode(
+                     a ? a->vel.x : 0.0f, ASTEROID_MOTION_Q_VEL_SCALE));
+    off += 2;
+    asteroid_motion_q_write_i16(
+        &p[off], asteroid_motion_q_encode(
+                     a ? a->vel.y : 0.0f, ASTEROID_MOTION_Q_VEL_SCALE));
+    off += 2;
+    write_u16_le(&p[off], asteroid_identity_q_encode_value(
+                     a ? a->hp : 0.0f));
+    off += 2;
+    write_u16_le(&p[off], asteroid_identity_q_encode_value(
+                     a ? a->ore : 0.0f));
+    off += 2;
+    write_u16_le(&p[off], asteroid_identity_q_encode_value(
+                     a ? a->radius : 0.0f));
+    off += 2;
+    p[off++] = asteroid_wire_smelt_byte(a);
+    p[off++] = asteroid_identity_q_detail_byte(a);
+    (void)off;
+}
+
+static inline void serialize_one_asteroid_state_q(uint8_t *p,
+                                                  uint16_t index,
+                                                  const asteroid_t *a) {
+    write_u16_le(&p[0], index);
+    write_f32_le(&p[2], a->hp);
+    write_f32_le(&p[6], a->ore);
+    write_f32_le(&p[10], a->radius);
+    {
+        p[14] = asteroid_wire_smelt_byte(a);
+    }
+    p[15] = a->grade;
+    p[16] = a->crystal_stage;
+    p[17] = a->phase;
+}
+
+static inline uint32_t asteroid_state_q_hash_u32(uint32_t h, uint32_t v) {
+    for (int i = 0; i < 4; i++) {
+        h ^= (uint8_t)(v >> (8 * i));
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static inline uint32_t asteroid_state_q_quantize_float(float value,
+                                                       float step) {
+    if (!isfinite(value) || step <= 0.0f)
+        return 0x80000000u;
+    float q = value / step;
+    if (q > 1073741823.0f) q = 1073741823.0f;
+    if (q < -1073741824.0f) q = -1073741824.0f;
+    int32_t rounded = (int32_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+    return (uint32_t)rounded;
+}
+
+static inline uint8_t asteroid_state_q_smelt_byte(const asteroid_t *a) {
+    float sp_f = a ? a->smelt_progress : 0.0f;
+    if (sp_f < 0.0f) sp_f = 0.0f;
+    if (sp_f > 1.0f) sp_f = 1.0f;
+    return (uint8_t)(sp_f * 255.0f);
+}
+
+static inline uint32_t asteroid_state_q_semantic_signature(
+    const asteroid_t *a) {
+    uint32_t h = 2166136261u;
+    if (!a) return h;
+    h = asteroid_state_q_hash_u32(h, (uint32_t)a->grade);
+    h = asteroid_state_q_hash_u32(h, (uint32_t)a->crystal_stage);
+    h = asteroid_state_q_hash_u32(h, (uint32_t)a->phase);
+    return h;
+}
+
+static inline uint32_t asteroid_state_q_numeric_signature(
+    const asteroid_t *a) {
+    uint32_t h = asteroid_state_q_semantic_signature(a);
+    if (!a) return h;
+    h = asteroid_state_q_hash_u32(
+        h, asteroid_state_q_quantize_float(a->hp, 1.0f));
+    h = asteroid_state_q_hash_u32(
+        h, asteroid_state_q_quantize_float(a->ore, 1.0f));
+    h = asteroid_state_q_hash_u32(
+        h, asteroid_state_q_quantize_float(a->radius, 0.5f));
+    h = asteroid_state_q_hash_u32(h, asteroid_state_q_smelt_byte(a));
+    return h;
+}
+
+static inline bool asteroid_state_q_should_send(
+    const asteroid_t *a,
+    int index,
+    const uint32_t *state_sent_tick,
+    const uint32_t *state_sent_sig,
+    const uint32_t *state_sent_semantic_sig,
+    uint32_t server_tick) {
+    if (!a || index < 0 || index >= MAX_ASTEROIDS) return false;
+    if (!state_sent_tick || !state_sent_sig || !state_sent_semantic_sig)
+        return true;
+
+    uint32_t semantic_sig = asteroid_state_q_semantic_signature(a);
+    uint32_t numeric_sig = asteroid_state_q_numeric_signature(a);
+    bool initialized = state_sent_tick[index] != 0u ||
+        state_sent_sig[index] != 0u ||
+        state_sent_semantic_sig[index] != 0u;
+    if (!initialized)
+        return true;
+    if (semantic_sig != state_sent_semantic_sig[index])
+        return true;
+
+    uint32_t age_ticks = server_tick - state_sent_tick[index];
+    if (numeric_sig != state_sent_sig[index] &&
+        age_ticks >= ASTEROID_STATE_Q_NUMERIC_REPEAT_TICKS)
+        return true;
+    return age_ticks >= ASTEROID_STATE_Q_HEARTBEAT_TICKS;
+}
+
+static inline void asteroid_state_q_note_sent(
+    const asteroid_t *a,
+    int index,
+    uint32_t *state_sent_tick,
+    uint32_t *state_sent_sig,
+    uint32_t *state_sent_semantic_sig,
+    uint32_t server_tick) {
+    if (!a || index < 0 || index >= MAX_ASTEROIDS) return;
+    if (!state_sent_tick || !state_sent_sig || !state_sent_semantic_sig)
+        return;
+    state_sent_tick[index] = server_tick;
+    state_sent_sig[index] = asteroid_state_q_numeric_signature(a);
+    state_sent_semantic_sig[index] =
+        asteroid_state_q_semantic_signature(a);
+}
+
+static inline void asteroid_state_q_clear_sent(
+    int index,
+    uint32_t *state_sent_tick,
+    uint32_t *state_sent_sig,
+    uint32_t *state_sent_semantic_sig) {
+    if (index < 0 || index >= MAX_ASTEROIDS) return;
+    if (state_sent_tick) state_sent_tick[index] = 0u;
+    if (state_sent_sig) state_sent_sig[index] = 0u;
+    if (state_sent_semantic_sig) state_sent_semantic_sig[index] = 0u;
+}
+
+static inline bool asteroid_net_motion_should_send(
+    const asteroid_t *a,
+    float dist_sq,
+    float speed_sq,
+    uint32_t last_tick,
+    vec2 last_pos,
+    vec2 last_vel,
+    uint32_t server_tick) {
+    if (!a || last_tick == 0u) return true;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks < asteroid_net_moving_repeat_ticks(dist_sq, speed_sq))
+        return false;
+    if (age_ticks >= asteroid_net_motion_heartbeat_ticks(dist_sq, speed_sq))
+        return true;
+
+    float dt = (float)age_ticks * SIM_DT;
+    vec2 predicted_pos = v2_add(last_pos, v2_scale(last_vel, dt));
+    return v2_dist_sq(predicted_pos, a->pos) >=
+        asteroid_net_predict_error_sq(dist_sq, speed_sq);
+}
+
+static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+    uint8_t *buf,
+    uint8_t *asteroids_q_buf, int *asteroids_q_len_out,
+    uint8_t *asteroids8_q_buf, int *asteroids8_q_len_out,
+    uint8_t *motion_buf, int *motion_len_out,
+    uint8_t *motion_q_buf, int *motion_q_len_out,
+    uint8_t *posd_q_buf, int *posd_q_len_out,
+    uint8_t *posd8_q_buf, int *posd8_q_len_out,
+    uint8_t *pos_q_buf, int *pos_q_len_out,
+    uint8_t *pos8_q_buf, int *pos8_q_len_out,
+    uint8_t *state_q_buf, int *state_q_len_out,
+    uint8_t *remove_buf, int *remove_len_out,
+    const asteroid_t *asteroids, vec2 player_pos, bool *sent,
+    uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
+    vec2 *motion_sent_vel, uint32_t *state_sent_tick,
+    uint32_t *state_sent_sig, uint32_t *state_sent_semantic_sig,
+    uint32_t server_tick,
+    int background_identity_budget) {
     int count = 0;
+    int asteroids_q_count = 0;
+    int asteroids8_q_count = 0;
+    int motion_count = 0;
+    int motion_q_count = 0;
+    int posd_q_count = 0;
+    int posd8_q_count = 0;
+    int pos_q_count = 0;
+    int pos8_q_count = 0;
+    int state_q_count = 0;
+    int remove_count = 0;
+    int background_identity_remaining = background_identity_budget;
+    bool budget_background_identity = background_identity_budget >= 0;
+    if (asteroids_q_len_out) *asteroids_q_len_out = 0;
+    if (asteroids8_q_len_out) *asteroids8_q_len_out = 0;
+    if (motion_len_out) *motion_len_out = 0;
+    if (motion_q_len_out) *motion_q_len_out = 0;
+    if (posd_q_len_out) *posd_q_len_out = 0;
+    if (posd8_q_len_out) *posd8_q_len_out = 0;
+    if (pos_q_len_out) *pos_q_len_out = 0;
+    if (pos8_q_len_out) *pos8_q_len_out = 0;
+    if (state_q_len_out) *state_q_len_out = 0;
+    if (remove_len_out) *remove_len_out = 0;
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &asteroids[i];
-        bool in_view = a->active &&
-            v2_dist_sq(a->pos, player_pos) < ASTEROID_VIEW_RADIUS_SQ;
+        float dist_sq = v2_dist_sq(a->pos, player_pos);
+        bool in_view = a->active && dist_sq < ASTEROID_VIEW_RADIUS_SQ;
 
         if (in_view) {
-            uint8_t *p = &buf[ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
-            write_u16_le(&p[0], (uint16_t)i);
-            p[2] = 1;
-            if (a->fracture_child) p[2] |= (1 << 1);
-            p[2] |= (((uint8_t)a->tier & 0x7) << 2);
-            p[2] |= (((uint8_t)a->commodity & 0x7) << 5);
-            write_f32_le(&p[3],  a->pos.x);
-            write_f32_le(&p[7],  a->pos.y);
-            write_f32_le(&p[11], a->vel.x);
-            write_f32_le(&p[15], a->vel.y);
-            write_f32_le(&p[19], a->hp);
-            write_f32_le(&p[23], a->ore);
-            write_f32_le(&p[27], a->radius);
-            /* smelt_progress: 0.0-1.0 quantized to uint8 so the client
-             * furnace-glow + laser-beam visuals fire in multiplayer. */
-            {
-                float sp_f = a->smelt_progress;
-                if (sp_f < 0.0f) sp_f = 0.0f;
-                if (sp_f > 1.0f) sp_f = 1.0f;
-                p[31] = (uint8_t)(sp_f * 255.0f);
+            float speed_sq = v2_len_sq(a->vel);
+            bool moving = speed_sq > ASTEROID_NET_MOVING_SPEED_SQ;
+            bool was_sent_moving = motion_sent_tick && motion_sent_tick[i] != 0u;
+            bool motion_only = false;
+            bool settling_motion_only = false;
+            bool state_q_only = false;
+            if (sent[i] && !a->net_dirty) {
+                if (moving) {
+                    if (motion_sent_tick &&
+                        !asteroid_net_motion_should_send(
+                            a, dist_sq, speed_sq, motion_sent_tick[i],
+                            motion_sent_pos ? motion_sent_pos[i] : a->pos,
+                            motion_sent_vel ? motion_sent_vel[i] : a->vel,
+                            server_tick))
+                        continue;
+                    motion_only = motion_buf != NULL && motion_sent_tick != NULL;
+                } else if (was_sent_moving) {
+                    motion_only = motion_buf != NULL && motion_sent_tick != NULL;
+                    settling_motion_only = motion_only;
+                } else if (!was_sent_moving) {
+                    continue;
+                }
+            } else if (sent[i] && a->net_dirty && state_q_buf != NULL) {
+                state_q_only = true;
+                if (asteroid_state_q_should_send(
+                        a, i, state_sent_tick, state_sent_sig,
+                        state_sent_semantic_sig, server_tick)) {
+                    uint8_t *p = &state_q_buf[
+                        ASTEROID_STATE_Q_MSG_HEADER +
+                        state_q_count * ASTEROID_STATE_Q_RECORD_SIZE];
+                    serialize_one_asteroid_state_q(p, (uint16_t)i, a);
+                    state_q_count++;
+                    asteroid_state_q_note_sent(
+                        a, i, state_sent_tick, state_sent_sig,
+                        state_sent_semantic_sig, server_tick);
+                }
+                if (moving) {
+                    if (motion_sent_tick &&
+                        !asteroid_net_motion_should_send(
+                            a, dist_sq, speed_sq, motion_sent_tick[i],
+                            motion_sent_pos ? motion_sent_pos[i] : a->pos,
+                            motion_sent_vel ? motion_sent_vel[i] : a->vel,
+                            server_tick))
+                        continue;
+                    motion_only = motion_buf != NULL && motion_sent_tick != NULL;
+                } else if (was_sent_moving) {
+                    motion_only = motion_buf != NULL && motion_sent_tick != NULL;
+                    settling_motion_only = motion_only;
+                } else {
+                    continue;
+                }
             }
-            p[32] = a->grade;
-            p[33] = a->crystal_stage;
-            p[34] = a->phase;
+
+            if (motion_only) {
+                bool quantized = motion_q_buf != NULL;
+                bool sent_velocity = false;
+                if (quantized) {
+                    bool position_only =
+                        !settling_motion_only && pos_q_buf != NULL &&
+                        motion_sent_vel != NULL &&
+                        asteroid_net_pos_only_velocity_eligible(
+                            a->vel, motion_sent_vel[i], dist_sq, speed_sq);
+                    if (position_only) {
+                        int8_t dx = 0;
+                        int8_t dy = 0;
+                        bool wrote_position = false;
+                        bool delta_fits =
+                            motion_sent_pos != NULL &&
+                            asteroid_motion_q_position_delta_i8(
+                                motion_sent_pos[i], a->pos, &dx, &dy);
+                        if (delta_fits && posd8_q_buf != NULL &&
+                            i <= UINT8_MAX && posd8_q_count < UINT8_MAX) {
+                            uint8_t *p = &posd8_q_buf[
+                                ASTEROID_POSD8_Q_MSG_HEADER +
+                                posd8_q_count * ASTEROID_POSD8_Q_RECORD_SIZE];
+                            p[0] = (uint8_t)i;
+                            p[1] = (uint8_t)dx;
+                            p[2] = (uint8_t)dy;
+                            posd8_q_count++;
+                            wrote_position = true;
+                        } else if (delta_fits && posd_q_buf != NULL) {
+                            uint8_t *p = &posd_q_buf[
+                                ASTEROID_POSD_Q_MSG_HEADER +
+                                posd_q_count * ASTEROID_POSD_Q_RECORD_SIZE];
+                            write_u16_le(&p[0], (uint16_t)i);
+                            p[2] = (uint8_t)dx;
+                            p[3] = (uint8_t)dy;
+                            posd_q_count++;
+                            wrote_position = true;
+                        }
+                        if (!wrote_position && pos8_q_buf != NULL &&
+                            i <= UINT8_MAX && pos8_q_count < UINT8_MAX) {
+                            uint8_t *p = &pos8_q_buf[
+                                ASTEROID_POS8_Q_MSG_HEADER +
+                                pos8_q_count * ASTEROID_POS8_Q_RECORD_SIZE];
+                            p[0] = (uint8_t)i;
+                            asteroid_motion_q_write_i16(
+                                &p[1], asteroid_motion_q_encode(
+                                           a->pos.x, ASTEROID_MOTION_Q_POS_SCALE));
+                            asteroid_motion_q_write_i16(
+                                &p[3], asteroid_motion_q_encode(
+                                           a->pos.y, ASTEROID_MOTION_Q_POS_SCALE));
+                            pos8_q_count++;
+                            wrote_position = true;
+                        }
+                        if (!wrote_position) {
+                            uint8_t *p = &pos_q_buf[
+                                ASTEROID_POS_Q_MSG_HEADER +
+                                pos_q_count * ASTEROID_POS_Q_RECORD_SIZE];
+                            write_u16_le(&p[0], (uint16_t)i);
+                            asteroid_motion_q_write_i16(
+                                &p[2], asteroid_motion_q_encode(
+                                           a->pos.x, ASTEROID_MOTION_Q_POS_SCALE));
+                            asteroid_motion_q_write_i16(
+                                &p[4], asteroid_motion_q_encode(
+                                           a->pos.y, ASTEROID_MOTION_Q_POS_SCALE));
+                            pos_q_count++;
+                        }
+                    } else {
+                        sent_velocity = true;
+                        uint8_t *p = &motion_q_buf[ASTEROID_MOTION_Q_MSG_HEADER +
+                                                   motion_q_count * ASTEROID_MOTION_Q_RECORD_SIZE];
+                        write_u16_le(&p[0], (uint16_t)i);
+                        asteroid_motion_q_write_i16(
+                            &p[2], asteroid_motion_q_encode(
+                                       a->pos.x, ASTEROID_MOTION_Q_POS_SCALE));
+                        asteroid_motion_q_write_i16(
+                            &p[4], asteroid_motion_q_encode(
+                                       a->pos.y, ASTEROID_MOTION_Q_POS_SCALE));
+                        asteroid_motion_q_write_i16(
+                            &p[6], asteroid_motion_q_encode(
+                                       a->vel.x, ASTEROID_MOTION_Q_VEL_SCALE));
+                        asteroid_motion_q_write_i16(
+                            &p[8], asteroid_motion_q_encode(
+                                       a->vel.y, ASTEROID_MOTION_Q_VEL_SCALE));
+                        motion_q_count++;
+                    }
+                } else {
+                    sent_velocity = true;
+                    uint8_t *p = &motion_buf[ASTEROID_MOTION_MSG_HEADER +
+                                             motion_count * ASTEROID_MOTION_RECORD_SIZE];
+                    write_u16_le(&p[0], (uint16_t)i);
+                    write_f32_le(&p[2],  a->pos.x);
+                    write_f32_le(&p[6],  a->pos.y);
+                    write_f32_le(&p[10], a->vel.x);
+                    write_f32_le(&p[14], a->vel.y);
+                    motion_count++;
+                }
+                motion_sent_tick[i] = settling_motion_only ? 0u : server_tick;
+                if (motion_sent_pos) motion_sent_pos[i] = a->pos;
+                if (motion_sent_vel && sent_velocity) motion_sent_vel[i] = a->vel;
+                continue;
+            }
+            if (state_q_only)
+                continue;
+
+            if (!sent[i] && dist_sq >= ASTEROID_NET_NEAR_RADIUS_SQ &&
+                budget_background_identity) {
+                if (background_identity_remaining <= 0)
+                    continue;
+                background_identity_remaining--;
+            }
+
+            bool wrote_identity = false;
+            if (asteroids8_q_buf != NULL && i <= UINT8_MAX &&
+                asteroids8_q_count < UINT8_MAX) {
+                uint8_t *p = &asteroids8_q_buf[
+                    ASTEROID8_Q_MSG_HEADER +
+                    asteroids8_q_count * ASTEROID8_Q_RECORD_SIZE];
+                serialize_one_asteroid_q(p, (uint16_t)i, a, true);
+                asteroids8_q_count++;
+                wrote_identity = true;
+            } else if (asteroids_q_buf != NULL) {
+                uint8_t *p = &asteroids_q_buf[
+                    ASTEROID_Q_MSG_HEADER +
+                    asteroids_q_count * ASTEROID_Q_RECORD_SIZE];
+                serialize_one_asteroid_q(p, (uint16_t)i, a, false);
+                asteroids_q_count++;
+                wrote_identity = true;
+            }
+            if (!wrote_identity) {
+                uint8_t *p = &buf[
+                    ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
+                write_u16_le(&p[0], (uint16_t)i);
+                p[2] = asteroid_wire_flags(a);
+                write_f32_le(&p[3],  a->pos.x);
+                write_f32_le(&p[7],  a->pos.y);
+                write_f32_le(&p[11], a->vel.x);
+                write_f32_le(&p[15], a->vel.y);
+                write_f32_le(&p[19], a->hp);
+                write_f32_le(&p[23], a->ore);
+                write_f32_le(&p[27], a->radius);
+                /* smelt_progress: 0.0-1.0 quantized to uint8 so the client
+                 * furnace-glow + laser-beam visuals fire in multiplayer. */
+                p[31] = asteroid_wire_smelt_byte(a);
+                p[32] = a->grade;
+                p[33] = a->crystal_stage;
+                p[34] = a->phase;
+                count++;
+            }
             sent[i] = true;
-            count++;
+            if (motion_sent_tick) {
+                motion_sent_tick[i] = moving ? server_tick : 0u;
+                if (motion_sent_pos) motion_sent_pos[i] = a->pos;
+                if (motion_sent_vel) motion_sent_vel[i] = a->vel;
+            }
+            asteroid_state_q_note_sent(
+                a, i, state_sent_tick, state_sent_sig,
+                state_sent_semantic_sig, server_tick);
         } else if (sent[i] && !in_view) {
-            uint8_t *p = &buf[ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
-            memset(p, 0, ASTEROID_RECORD_SIZE);
-            write_u16_le(&p[0], (uint16_t)i);
-            p[2] = 0; /* active = false */
+            if (remove_buf) {
+                uint8_t *p = &remove_buf[
+                    ASTEROID_REMOVE_MSG_HEADER +
+                    remove_count * ASTEROID_REMOVE_RECORD_SIZE];
+                write_u16_le(p, (uint16_t)i);
+                remove_count++;
+            } else {
+                uint8_t *p = &buf[
+                    ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
+                memset(p, 0, ASTEROID_RECORD_SIZE);
+                write_u16_le(&p[0], (uint16_t)i);
+                p[2] = 0; /* active = false */
+                count++;
+            }
             sent[i] = false;
-            count++;
+            if (motion_sent_tick) {
+                motion_sent_tick[i] = 0u;
+                if (motion_sent_pos) motion_sent_pos[i] = v2(0.0f, 0.0f);
+                if (motion_sent_vel) motion_sent_vel[i] = v2(0.0f, 0.0f);
+            }
+            asteroid_state_q_clear_sent(
+                i, state_sent_tick, state_sent_sig,
+                state_sent_semantic_sig);
         }
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
     write_u16_le(&buf[1], (uint16_t)count);
+    if (asteroids_q_buf) {
+        asteroids_q_buf[0] = NET_MSG_WORLD_ASTEROIDS_Q;
+        write_u16_le(&asteroids_q_buf[1], (uint16_t)asteroids_q_count);
+        if (asteroids_q_len_out) {
+            *asteroids_q_len_out = ASTEROID_Q_MSG_HEADER +
+                asteroids_q_count * ASTEROID_Q_RECORD_SIZE;
+        }
+    }
+    if (asteroids8_q_buf) {
+        asteroids8_q_buf[0] = NET_MSG_WORLD_ASTEROIDS8_Q;
+        asteroids8_q_buf[1] = (uint8_t)asteroids8_q_count;
+        if (asteroids8_q_len_out) {
+            *asteroids8_q_len_out = ASTEROID8_Q_MSG_HEADER +
+                asteroids8_q_count * ASTEROID8_Q_RECORD_SIZE;
+        }
+    }
+    if (remove_buf) {
+        remove_buf[0] = NET_MSG_WORLD_ASTEROID_REMOVE;
+        write_u16_le(&remove_buf[1], (uint16_t)remove_count);
+        if (remove_len_out) {
+            *remove_len_out = ASTEROID_REMOVE_MSG_HEADER +
+                remove_count * ASTEROID_REMOVE_RECORD_SIZE;
+        }
+    }
+    if (motion_buf) {
+        motion_buf[0] = NET_MSG_WORLD_ASTEROID_MOTION;
+        write_u16_le(&motion_buf[1], (uint16_t)motion_count);
+        if (motion_len_out) {
+            *motion_len_out = ASTEROID_MOTION_MSG_HEADER +
+                motion_count * ASTEROID_MOTION_RECORD_SIZE;
+        }
+    }
+    if (motion_q_buf) {
+        motion_q_buf[0] = NET_MSG_WORLD_ASTEROID_MOTION_Q;
+        write_u16_le(&motion_q_buf[1], (uint16_t)motion_q_count);
+        if (motion_q_len_out) {
+            *motion_q_len_out = ASTEROID_MOTION_Q_MSG_HEADER +
+                motion_q_count * ASTEROID_MOTION_Q_RECORD_SIZE;
+        }
+    }
+    if (posd_q_buf) {
+        posd_q_buf[0] = NET_MSG_WORLD_ASTEROID_POSD_Q;
+        write_u16_le(&posd_q_buf[1], (uint16_t)posd_q_count);
+        if (posd_q_len_out) {
+            *posd_q_len_out = ASTEROID_POSD_Q_MSG_HEADER +
+                posd_q_count * ASTEROID_POSD_Q_RECORD_SIZE;
+        }
+    }
+    if (posd8_q_buf) {
+        posd8_q_buf[0] = NET_MSG_WORLD_ASTEROID_POSD8_Q;
+        posd8_q_buf[1] = (uint8_t)posd8_q_count;
+        if (posd8_q_len_out) {
+            *posd8_q_len_out = ASTEROID_POSD8_Q_MSG_HEADER +
+                posd8_q_count * ASTEROID_POSD8_Q_RECORD_SIZE;
+        }
+    }
+    if (pos_q_buf) {
+        pos_q_buf[0] = NET_MSG_WORLD_ASTEROID_POS_Q;
+        write_u16_le(&pos_q_buf[1], (uint16_t)pos_q_count);
+        if (pos_q_len_out) {
+            *pos_q_len_out = ASTEROID_POS_Q_MSG_HEADER +
+                pos_q_count * ASTEROID_POS_Q_RECORD_SIZE;
+        }
+    }
+    if (pos8_q_buf) {
+        pos8_q_buf[0] = NET_MSG_WORLD_ASTEROID_POS8_Q;
+        pos8_q_buf[1] = (uint8_t)pos8_q_count;
+        if (pos8_q_len_out) {
+            *pos8_q_len_out = ASTEROID_POS8_Q_MSG_HEADER +
+                pos8_q_count * ASTEROID_POS8_Q_RECORD_SIZE;
+        }
+    }
+    if (state_q_buf) {
+        state_q_buf[0] = NET_MSG_WORLD_ASTEROID_STATE_Q;
+        write_u16_le(&state_q_buf[1], (uint16_t)state_q_count);
+        if (state_q_len_out) {
+            *state_q_len_out = ASTEROID_STATE_Q_MSG_HEADER +
+                state_q_count * ASTEROID_STATE_Q_RECORD_SIZE;
+        }
+    }
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
+}
+
+static inline int serialize_asteroids_for_player_split_ext_state_at_tick(
+    uint8_t *buf,
+    uint8_t *asteroids_q_buf, int *asteroids_q_len_out,
+    uint8_t *asteroids8_q_buf, int *asteroids8_q_len_out,
+    uint8_t *motion_buf, int *motion_len_out,
+    uint8_t *motion_q_buf, int *motion_q_len_out,
+    uint8_t *posd_q_buf, int *posd_q_len_out,
+    uint8_t *posd8_q_buf, int *posd8_q_len_out,
+    uint8_t *pos_q_buf, int *pos_q_len_out,
+    uint8_t *pos8_q_buf, int *pos8_q_len_out,
+    uint8_t *state_q_buf, int *state_q_len_out,
+    uint8_t *remove_buf, int *remove_len_out,
+    const asteroid_t *asteroids, vec2 player_pos, bool *sent,
+    uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
+    vec2 *motion_sent_vel, uint32_t *state_sent_tick,
+    uint32_t *state_sent_sig, uint32_t *state_sent_semantic_sig,
+    uint32_t server_tick) {
+    return serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+        buf, asteroids_q_buf, asteroids_q_len_out,
+        asteroids8_q_buf, asteroids8_q_len_out,
+        motion_buf, motion_len_out, motion_q_buf, motion_q_len_out,
+        posd_q_buf, posd_q_len_out, posd8_q_buf, posd8_q_len_out,
+        pos_q_buf, pos_q_len_out, pos8_q_buf, pos8_q_len_out,
+        state_q_buf, state_q_len_out, remove_buf, remove_len_out,
+        asteroids, player_pos, sent, motion_sent_tick, motion_sent_pos,
+        motion_sent_vel, state_sent_tick, state_sent_sig,
+        state_sent_semantic_sig, server_tick, -1);
+}
+
+static inline int serialize_asteroids_for_player_split_ext_at_tick(
+    uint8_t *buf, uint8_t *motion_buf, int *motion_len_out,
+    uint8_t *motion_q_buf, int *motion_q_len_out,
+    uint8_t *pos_q_buf, int *pos_q_len_out,
+    uint8_t *pos8_q_buf, int *pos8_q_len_out,
+    uint8_t *state_q_buf, int *state_q_len_out,
+    const asteroid_t *asteroids, vec2 player_pos, bool *sent,
+    uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
+    vec2 *motion_sent_vel, uint32_t server_tick) {
+    return serialize_asteroids_for_player_split_ext_state_at_tick(
+        buf, NULL, NULL, NULL, NULL,
+        motion_buf, motion_len_out, motion_q_buf, motion_q_len_out,
+        NULL, NULL, NULL, NULL, pos_q_buf, pos_q_len_out,
+        pos8_q_buf, pos8_q_len_out,
+        state_q_buf, state_q_len_out,
+        NULL, NULL, asteroids, player_pos, sent, motion_sent_tick,
+        motion_sent_pos, motion_sent_vel, NULL, NULL, NULL, server_tick);
+}
+
+static inline int serialize_asteroids_for_player_split_at_tick(
+    uint8_t *buf, uint8_t *motion_buf, int *motion_len_out,
+    uint8_t *motion_q_buf, int *motion_q_len_out,
+    uint8_t *state_q_buf, int *state_q_len_out,
+    const asteroid_t *asteroids, vec2 player_pos, bool *sent,
+    uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
+    vec2 *motion_sent_vel, uint32_t server_tick) {
+    return serialize_asteroids_for_player_split_ext_at_tick(
+        buf, motion_buf, motion_len_out, motion_q_buf, motion_q_len_out,
+        NULL, NULL, NULL, NULL, state_q_buf, state_q_len_out,
+        asteroids, player_pos, sent,
+        motion_sent_tick, motion_sent_pos, motion_sent_vel, server_tick);
+}
+
+static inline int serialize_asteroids_for_player_at_tick(
+    uint8_t *buf, const asteroid_t *asteroids, vec2 player_pos, bool *sent,
+    uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
+    vec2 *motion_sent_vel, uint32_t server_tick) {
+    return serialize_asteroids_for_player_split_at_tick(
+        buf, NULL, NULL, NULL, NULL, NULL, NULL, asteroids, player_pos, sent,
+        motion_sent_tick, motion_sent_pos, motion_sent_vel, server_tick);
+}
+
+static inline int serialize_asteroids_for_player(
+    uint8_t *buf, const asteroid_t *asteroids, vec2 player_pos, bool *sent) {
+    return serialize_asteroids_for_player_at_tick(
+        buf, asteroids, player_pos, sent, NULL, NULL, NULL, 0u);
 }
 
 /* Serialize active asteroid slots for a new-player snapshot. Inactive
@@ -1516,6 +3369,15 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
  * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
  * (29 legacy pose/target/tint bytes + 8 session-token bytes + 1 home-station byte)
  */
+#define NPC_NET_METADATA_HEARTBEAT_TICKS 2400u /* 0.05 Hz metadata reconciliation */
+
+static inline bool npc_net_metadata_refresh_due(uint32_t last_sent_tick,
+                                                uint32_t world_tick) {
+    return last_sent_tick == 0 ||
+        (uint32_t)(world_tick - last_sent_tick) >=
+            NPC_NET_METADATA_HEARTBEAT_TICKS;
+}
+
 static inline bool serialize_relevance_in_player_view(vec2 pos,
                                                       vec2 player_pos) {
     return v2_dist_sq(pos, player_pos) <= ASTEROID_VIEW_RADIUS_SQ;
@@ -1574,6 +3436,441 @@ static inline int serialize_npcs_for_player(uint8_t *buf,
     return 2 + count * NPC_RECORD_SIZE;
 }
 
+static inline int serialize_npc_motion_for_player(uint8_t *buf,
+                                                  const npc_ship_t *npcs,
+                                                  vec2 player_pos) {
+    int count = 0;
+    if (!buf || !npcs) return 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+
+        uint8_t *p = &buf[NPC_MOTION_MSG_HEADER +
+                          count * NPC_MOTION_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = 1;
+        if (npcs[i].thrusting) p[1] |= (1 << 6);
+        write_f32_le(&p[2],  npcs[i].ship.pos.x);
+        write_f32_le(&p[6],  npcs[i].ship.pos.y);
+        write_f32_le(&p[10], npcs[i].ship.vel.x);
+        write_f32_le(&p[14], npcs[i].ship.vel.y);
+        write_f32_le(&p[18], npcs[i].ship.angle);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_NPC_MOTION;
+    buf[1] = (uint8_t)count;
+    return NPC_MOTION_MSG_HEADER + count * NPC_MOTION_RECORD_SIZE;
+}
+
+static inline uint16_t npc_motion_q_encode_angle(float angle) {
+    if (!isfinite(angle)) return 0;
+    float wrapped = fmodf(angle, 6.28318530717958647692f);
+    if (wrapped < 0.0f) wrapped += 6.28318530717958647692f;
+    float q = wrapped / NPC_MOTION_Q_ANGLE_SCALE;
+    uint32_t qi = (uint32_t)(q + 0.5f);
+    return (uint16_t)(qi & 0xFFFFu);
+}
+
+static inline uint8_t npc_motion8_q_encode_angle(float angle) {
+    if (!isfinite(angle)) return 0;
+    float wrapped = fmodf(angle, 6.28318530717958647692f);
+    if (wrapped < 0.0f) wrapped += 6.28318530717958647692f;
+    float q = wrapped / NPC_MOTION8_Q_ANGLE_SCALE;
+    uint32_t qi = (uint32_t)(q + 0.5f);
+    return (uint8_t)(qi & 0xFFu);
+}
+
+static inline int8_t npc_motion8_q_encode_vel(float value) {
+    if (!isfinite(value)) return 0;
+    float q = value / NPC_MOTION8_Q_VEL_SCALE;
+    if (q > 127.0f) return 127;
+    if (q < -128.0f) return -128;
+    return (int8_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+}
+
+static inline int serialize_npc_motion_q_for_player(uint8_t *buf,
+                                                    const npc_ship_t *npcs,
+                                                    vec2 player_pos) {
+    int count = 0;
+    if (!buf || !npcs) return 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+
+        uint8_t *p = &buf[NPC_MOTION_Q_MSG_HEADER +
+                          count * NPC_MOTION_Q_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = 1;
+        if (npcs[i].thrusting) p[1] |= (1 << 6);
+        asteroid_motion_q_write_i16(
+            &p[2], asteroid_motion_q_encode(
+                       npcs[i].ship.pos.x, NPC_MOTION_Q_POS_SCALE));
+        asteroid_motion_q_write_i16(
+            &p[4], asteroid_motion_q_encode(
+                       npcs[i].ship.pos.y, NPC_MOTION_Q_POS_SCALE));
+        asteroid_motion_q_write_i16(
+            &p[6], asteroid_motion_q_encode(
+                       npcs[i].ship.vel.x, NPC_MOTION_Q_VEL_SCALE));
+        asteroid_motion_q_write_i16(
+            &p[8], asteroid_motion_q_encode(
+                       npcs[i].ship.vel.y, NPC_MOTION_Q_VEL_SCALE));
+        write_u16_le(&p[10], npc_motion_q_encode_angle(npcs[i].ship.angle));
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_NPC_MOTION_Q;
+    buf[1] = (uint8_t)count;
+    return NPC_MOTION_Q_MSG_HEADER + count * NPC_MOTION_Q_RECORD_SIZE;
+}
+
+static inline int serialize_npc_motion8_q_for_player(uint8_t *buf,
+                                                     const npc_ship_t *npcs,
+                                                     vec2 player_pos) {
+    int count = 0;
+    if (!buf || !npcs) return 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+
+        uint8_t *p = &buf[NPC_MOTION8_Q_MSG_HEADER +
+                          count * NPC_MOTION8_Q_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = 1;
+        if (npcs[i].thrusting) p[1] |= (1 << 6);
+        asteroid_motion_q_write_i16(
+            &p[2], asteroid_motion_q_encode(
+                       npcs[i].ship.pos.x, NPC_MOTION_Q_POS_SCALE));
+        asteroid_motion_q_write_i16(
+            &p[4], asteroid_motion_q_encode(
+                       npcs[i].ship.pos.y, NPC_MOTION_Q_POS_SCALE));
+        p[6] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship.vel.x);
+        p[7] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship.vel.y);
+        p[8] = npc_motion8_q_encode_angle(npcs[i].ship.angle);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_NPC_MOTION8_Q;
+    buf[1] = (uint8_t)count;
+    return NPC_MOTION8_Q_MSG_HEADER + count * NPC_MOTION8_Q_RECORD_SIZE;
+}
+
+static inline void serialize_one_npc_pos_q(uint8_t *p,
+                                           int index,
+                                           vec2 pos) {
+    p[0] = (uint8_t)index;
+    asteroid_motion_q_write_i16(
+        &p[1], asteroid_motion_q_encode(pos.x, NPC_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[3], asteroid_motion_q_encode(pos.y, NPC_MOTION_Q_POS_SCALE));
+}
+
+static inline void serialize_one_npc_pose_q(uint8_t *p,
+                                            int index,
+                                            vec2 pos,
+                                            float angle) {
+    serialize_one_npc_pos_q(p, index, pos);
+    write_u16_le(&p[5], npc_motion_q_encode_angle(angle));
+}
+
+static inline void serialize_one_npc_linear_q(uint8_t *p,
+                                              int index,
+                                              vec2 pos,
+                                              vec2 vel) {
+    serialize_one_npc_pos_q(p, index, pos);
+    asteroid_motion_q_write_i16(
+        &p[5], asteroid_motion_q_encode(vel.x, NPC_MOTION_Q_VEL_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[7], asteroid_motion_q_encode(vel.y, NPC_MOTION_Q_VEL_SCALE));
+}
+
+#define NPC_MOTION_NET_REPEAT_TICKS 240u /* ~0.5 Hz minimum eligibility */
+#define NPC_STATUS_NET_REPEAT_TICKS 240u /* ~0.5 Hz visual status refresh */
+#define NPC_MOTION_PREDICT_ERROR_SQ (32.0f * 32.0f)
+#define NPC_MOTION_VEL_ERROR_SQ (8.0f * 8.0f)
+#define NPC_MOTION_ANGLE_ERROR 1.25f
+#define NPC_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz clean-motion safety refresh */
+#define NPC_MOTION_VISUAL_FLAGS_MASK (1u << 6)
+
+static inline float npc_motion_angle_delta(float a, float b) {
+    const float two_pi = 6.28318530717958647692f;
+    if (!isfinite(a) || !isfinite(b)) return NPC_MOTION_ANGLE_ERROR;
+    float d = fabsf(a - b);
+    while (d > two_pi) d -= two_pi;
+    if (d < 0.0f) d = -d;
+    if (d > 3.14159265358979323846f) d = two_pi - d;
+    return d;
+}
+
+static inline bool npc_motion_should_send(
+    const server_player_t *sp,
+    uint8_t index,
+    uint8_t flags,
+    vec2 pos,
+    vec2 vel,
+    float angle,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_NPC_SHIPS) return false;
+    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    if (last_tick == 0u) return true;
+    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+         NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
+        return true;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
+        return true;
+    float dt = (float)age_ticks * SIM_DT;
+    vec2 predicted = v2_add(
+        sp->npc_motion_sent_pos[index],
+        v2_scale(sp->npc_motion_sent_vel[index], dt));
+    if (v2_dist_sq(predicted, pos) >= NPC_MOTION_PREDICT_ERROR_SQ)
+        return true;
+    if (v2_dist_sq(sp->npc_motion_sent_vel[index], vel) >=
+        NPC_MOTION_VEL_ERROR_SQ)
+        return true;
+    return npc_motion_angle_delta(
+        sp->npc_motion_sent_angle[index], angle) >= NPC_MOTION_ANGLE_ERROR;
+}
+
+static inline bool npc_motion_pos_q_eligible(
+    const server_player_t *sp,
+    uint8_t index,
+    uint8_t flags,
+    vec2 vel,
+    float angle,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_NPC_SHIPS) return false;
+    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    if (last_tick == 0u) return false;
+    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+         NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
+        return false;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
+        return false;
+    if (v2_dist_sq(sp->npc_motion_sent_vel[index], vel) >=
+        NPC_MOTION_VEL_ERROR_SQ)
+        return false;
+    return npc_motion_angle_delta(
+        sp->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
+}
+
+static inline bool npc_motion_pose_q_eligible(
+    const server_player_t *sp,
+    uint8_t index,
+    uint8_t flags,
+    vec2 vel,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_NPC_SHIPS) return false;
+    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    if (last_tick == 0u) return false;
+    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+         NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
+        return false;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
+        return false;
+    return v2_dist_sq(sp->npc_motion_sent_vel[index], vel) <
+        NPC_MOTION_VEL_ERROR_SQ;
+}
+
+static inline bool npc_motion_linear_q_eligible(
+    const server_player_t *sp,
+    uint8_t index,
+    uint8_t flags,
+    float angle,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_NPC_SHIPS) return false;
+    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    if (last_tick == 0u) return false;
+    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+         NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
+        return false;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
+        return false;
+    return npc_motion_angle_delta(
+        sp->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
+}
+
+static inline void npc_motion_note_sent(server_player_t *sp,
+                                        uint8_t index,
+                                        uint8_t flags,
+                                        vec2 pos,
+                                        vec2 vel,
+                                        float angle,
+                                        uint32_t server_tick) {
+    if (!sp || index >= MAX_NPC_SHIPS) return;
+    sp->npc_motion_sent_tick[index] = server_tick;
+    sp->npc_motion_sent_flags[index] = flags;
+    sp->npc_motion_sent_pos[index] = pos;
+    sp->npc_motion_sent_vel[index] = vel;
+    sp->npc_motion_sent_angle[index] = angle;
+}
+
+static inline int serialize_npc_status_for_player(uint8_t *buf,
+                                                  const npc_ship_t *npcs,
+                                                  vec2 player_pos) {
+    int count = 0;
+    if (!buf || !npcs) return 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+
+        uint8_t *p = &buf[NPC_STATUS_MSG_HEADER +
+                          count * NPC_STATUS_RECORD_SIZE];
+        uint16_t target =
+            (npcs[i].target_asteroid >= 0 &&
+             npcs[i].target_asteroid < MAX_ASTEROIDS)
+            ? (uint16_t)npcs[i].target_asteroid : 0xFFFFu;
+        int towed_idx = npc_towed_fragment_index(&npcs[i]);
+        uint16_t towed = (towed_idx >= 0) ? (uint16_t)towed_idx : 0xFFFFu;
+        p[0] = (uint8_t)i;
+        p[1] = 1;
+        p[1] |= (((uint8_t)npcs[i].role & 0x3) << 1);
+        p[1] |= (((uint8_t)npcs[i].state & 0x7) << 3);
+        if (npcs[i].thrusting) p[1] |= (1 << 6);
+        write_u16_le(&p[2], target);
+        write_u16_le(&p[4], towed);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_NPC_STATUS;
+    buf[1] = (uint8_t)count;
+    return NPC_STATUS_MSG_HEADER + count * NPC_STATUS_RECORD_SIZE;
+}
+
+static inline uint8_t npc_status8_encode_ref(int index) {
+    return (index >= 0 && index < 255) ? (uint8_t)index : 0xFFu;
+}
+
+static inline bool npc_status8_ref_representable(int index) {
+    return index < 0 || index < 255;
+}
+
+static inline int serialize_npc_status8_for_player(uint8_t *buf,
+                                                   const npc_ship_t *npcs,
+                                                   vec2 player_pos) {
+    if (!buf || !npcs) return 0;
+    int count = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+        int target =
+            (npcs[i].target_asteroid >= 0 &&
+             npcs[i].target_asteroid < MAX_ASTEROIDS)
+            ? npcs[i].target_asteroid : -1;
+        int towed = npc_towed_fragment_index(&npcs[i]);
+        if (!npc_status8_ref_representable(target) ||
+            !npc_status8_ref_representable(towed))
+            return 0;
+        count++;
+    }
+
+    buf[0] = NET_MSG_WORLD_NPC_STATUS8_Q;
+    buf[1] = (uint8_t)count;
+    count = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!npcs[i].active) continue;
+        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+            continue;
+
+        uint8_t *p = &buf[NPC_STATUS8_MSG_HEADER +
+                          count * NPC_STATUS8_RECORD_SIZE];
+        int target =
+            (npcs[i].target_asteroid >= 0 &&
+             npcs[i].target_asteroid < MAX_ASTEROIDS)
+            ? npcs[i].target_asteroid : -1;
+        int towed = npc_towed_fragment_index(&npcs[i]);
+        p[0] = (uint8_t)i;
+        p[1] = 1;
+        p[1] |= (((uint8_t)npcs[i].role & 0x3) << 1);
+        p[1] |= (((uint8_t)npcs[i].state & 0x7) << 3);
+        if (npcs[i].thrusting) p[1] |= (1 << 6);
+        p[2] = npc_status8_encode_ref(target);
+        p[3] = npc_status8_encode_ref(towed);
+        count++;
+    }
+    return NPC_STATUS8_MSG_HEADER + count * NPC_STATUS8_RECORD_SIZE;
+}
+
+static inline uint64_t net_world_npc_status_semantic_hash(const uint8_t *data,
+                                                          int len) {
+    uint64_t h = 1469598103934665603ull;
+    if (!data || len <= 0) return h;
+    int header = 0;
+    int record_size = 0;
+    if (len >= NPC_STATUS_MSG_HEADER && data[0] == NET_MSG_WORLD_NPC_STATUS) {
+        header = NPC_STATUS_MSG_HEADER;
+        record_size = NPC_STATUS_RECORD_SIZE;
+    } else if (len >= NPC_STATUS8_MSG_HEADER &&
+               data[0] == NET_MSG_WORLD_NPC_STATUS8_Q) {
+        header = NPC_STATUS8_MSG_HEADER;
+        record_size = NPC_STATUS8_RECORD_SIZE;
+    }
+    if (header == 0 || record_size == 0) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    int expected = header + count * record_size;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        uint8_t v = data[i];
+        if (i >= header && i < expected) {
+            int record_off = (i - header) % record_size;
+            if (record_off == 1)
+                v = (uint8_t)(v & ~NPC_MOTION_VISUAL_FLAGS_MASK);
+        }
+        h = net_fnv1a64_update(h, v);
+    }
+    return h;
+}
+
+static inline uint64_t net_world_npcs_semantic_hash(const uint8_t *data,
+                                                    int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < 2 || data[0] != NET_MSG_WORLD_NPCS) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    int expected = 2 + count * NPC_RECORD_SIZE;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        bool ignored_byte = false;
+        if (i >= 2 && i < expected) {
+            int record_off = (i - 2) % NPC_RECORD_SIZE;
+            ignored_byte =
+                (record_off >= 2 && record_off < 18) ||  /* pos + vel */
+                (record_off >= 18 && record_off < 22) ||  /* angle */
+                (record_off >= 22 && record_off < 26) ||  /* status target/tow */
+                (record_off >= 26 && record_off < 29);    /* rarity tint */
+        }
+        if (!ignored_byte) {
+            uint8_t v = data[i];
+            if (i >= 2 && i < expected &&
+                (i - 2) % NPC_RECORD_SIZE == 1) {
+                v = (uint8_t)(v & ~((7u << 3) | (1u << 6)));
+            }
+            h = net_fnv1a64_update(h, v);
+        }
+    }
+    return h;
+}
+
 /*
  * WORLD_STATIONS message:
  * [type:1][count:1] + count * [index:1][inventory: COMMODITY_COUNT×f32]
@@ -1589,20 +3886,160 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
+    1 + 5 * 4 == PLAYER_MOTION_RECORD_SIZE,
+    "PLAYER_MOTION_RECORD_SIZE must match serialized player motion layout"
+);
+_Static_assert(
+    1 + 2 + 2 + 2 + 2 + 1 == PLAYER_MOTION_Q_RECORD_SIZE,
+    "PLAYER_MOTION_Q_RECORD_SIZE must match serialized quantized player motion layout"
+);
+_Static_assert(
+    1 + 1 + 1 + 1 + 1 + 1 == PLAYER_MOTIOND_Q_RECORD_SIZE,
+    "PLAYER_MOTIOND_Q_RECORD_SIZE must match serialized player motion delta layout"
+);
+_Static_assert(
+    1 + 1 + 1 + 1 == PLAYER_POSED_Q_RECORD_SIZE,
+    "PLAYER_POSED_Q_RECORD_SIZE must match serialized player pose delta layout"
+);
+_Static_assert(
+    1 + 1 + 1 + 1 == PLAYER_MOTIONM_Q_POSE_RECORD_SIZE,
+    "PLAYER_MOTIONM_Q_POSE_RECORD_SIZE must match mixed pose delta layout"
+);
+_Static_assert(
+    1 + 1 + 1 + 1 + 1 + 1 == PLAYER_MOTIONM_Q_VEL_RECORD_SIZE,
+    "PLAYER_MOTIONM_Q_VEL_RECORD_SIZE must match mixed velocity delta layout"
+);
+_Static_assert(
+    1 + 1 == PLAYER_DOCK_RECORD_SIZE,
+    "PLAYER_DOCK_RECORD_SIZE must match serialized player dock layout"
+);
+_Static_assert(
     2 + 1 + 7 * 4 + 1 + 1 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 + phase:u8 */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
+);
+_Static_assert(
+    2 + 1 + 4 * 2 + 3 * 2 + 1 + 1 == ASTEROID_Q_RECORD_SIZE,
+    "ASTEROID_Q_RECORD_SIZE must match serialized compact asteroid layout"
+);
+_Static_assert(
+    1 + 1 + 4 * 2 + 3 * 2 + 1 + 1 == ASTEROID8_Q_RECORD_SIZE,
+    "ASTEROID8_Q_RECORD_SIZE must match serialized byte-index compact asteroid layout"
+);
+_Static_assert(
+    2 + 4 * 4 == ASTEROID_MOTION_RECORD_SIZE,
+    "ASTEROID_MOTION_RECORD_SIZE must match serialized asteroid motion layout"
+);
+_Static_assert(
+    2 + 4 * 2 == ASTEROID_MOTION_Q_RECORD_SIZE,
+    "ASTEROID_MOTION_Q_RECORD_SIZE must match serialized quantized asteroid motion layout"
+);
+_Static_assert(
+    2 + 2 * 2 == ASTEROID_POS_Q_RECORD_SIZE,
+    "ASTEROID_POS_Q_RECORD_SIZE must match serialized quantized asteroid position layout"
+);
+_Static_assert(
+    1 + 2 * 2 == ASTEROID_POS8_Q_RECORD_SIZE,
+    "ASTEROID_POS8_Q_RECORD_SIZE must match serialized byte-index asteroid position layout"
+);
+_Static_assert(
+    2 + 2 == ASTEROID_POSD_Q_RECORD_SIZE,
+    "ASTEROID_POSD_Q_RECORD_SIZE must match serialized asteroid position delta layout"
+);
+_Static_assert(
+    1 + 2 == ASTEROID_POSD8_Q_RECORD_SIZE,
+    "ASTEROID_POSD8_Q_RECORD_SIZE must match serialized byte-index asteroid position delta layout"
+);
+_Static_assert(
+    2 == ASTEROID_REMOVE_RECORD_SIZE,
+    "ASTEROID_REMOVE_RECORD_SIZE must match serialized asteroid removal layout"
+);
+_Static_assert(
+    2 + 3 * 4 + 4 == ASTEROID_STATE_Q_RECORD_SIZE,
+    "ASTEROID_STATE_Q_RECORD_SIZE must match serialized compact asteroid state layout"
+);
+_Static_assert(
+    4 + 6 * 4 == SCAFFOLD_RECORD_SIZE,
+    "SCAFFOLD_RECORD_SIZE must match serialized scaffold layout"
+);
+_Static_assert(
+    1 == SCAFFOLD_REMOVE_RECORD_SIZE,
+    "SCAFFOLD_REMOVE_RECORD_SIZE must match serialized scaffold removal layout"
+);
+_Static_assert(
+    1 + 4 * 2 == SCAFFOLD_MOTION_Q_RECORD_SIZE,
+    "SCAFFOLD_MOTION_Q_RECORD_SIZE must match serialized scaffold q motion layout"
 );
 _Static_assert(
     4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 == CARGO_POD_RECORD_SIZE,
     "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
 _Static_assert(
+    1 + 5 * 4 == CARGO_POD_MOTION_RECORD_SIZE,
+    "CARGO_POD_MOTION_RECORD_SIZE must match serialized cargo pod motion layout"
+);
+_Static_assert(
+    1 + 4 * 2 + 2 == CARGO_POD_MOTION_Q_RECORD_SIZE,
+    "CARGO_POD_MOTION_Q_RECORD_SIZE must match serialized cargo pod q motion layout"
+);
+_Static_assert(
+    1 + 4 * 2 == CARGO_POD_LINEAR_Q_RECORD_SIZE,
+    "CARGO_POD_LINEAR_Q_RECORD_SIZE must match serialized cargo pod linear q layout"
+);
+_Static_assert(
+    1 == CARGO_POD_REMOVE_RECORD_SIZE,
+    "CARGO_POD_REMOVE_RECORD_SIZE must match serialized cargo pod removal layout"
+);
+_Static_assert(
+    1 + 4 * 2 + 2 + 1 == INTERACTION_DRIFT_RECORD_SIZE,
+    "INTERACTION_DRIFT_RECORD_SIZE must match serialized interaction drift layout"
+);
+_Static_assert(
+    4 + 5 + 5 + 4 * 2 + 2 + 1 == INTERACTION_Q_RECORD_SIZE,
+    "INTERACTION_Q_RECORD_SIZE must match serialized compact interaction layout"
+);
+_Static_assert(
     2 + 5 * 4 + 2 + 2 + 3 + 8 + 1 == NPC_RECORD_SIZE,
     "NPC_RECORD_SIZE must match serialized NPC layout"
 );
 _Static_assert(
+    1 + 1 + 5 * 4 == NPC_MOTION_RECORD_SIZE,
+    "NPC_MOTION_RECORD_SIZE must match serialized NPC motion layout"
+);
+_Static_assert(
+    1 + 1 + 5 * 2 == NPC_MOTION_Q_RECORD_SIZE,
+    "NPC_MOTION_Q_RECORD_SIZE must match serialized quantized NPC motion layout"
+);
+_Static_assert(
+    1 + 1 + 2 * 2 + 2 + 1 == NPC_MOTION8_Q_RECORD_SIZE,
+    "NPC_MOTION8_Q_RECORD_SIZE must match serialized compact NPC motion layout"
+);
+_Static_assert(
+    1 + 2 * 2 == NPC_POS_Q_RECORD_SIZE,
+    "NPC_POS_Q_RECORD_SIZE must match serialized quantized NPC position layout"
+);
+_Static_assert(
+    1 + 2 * 2 + 2 == NPC_POSE_Q_RECORD_SIZE,
+    "NPC_POSE_Q_RECORD_SIZE must match serialized quantized NPC pose layout"
+);
+_Static_assert(
+    1 + 2 * 2 + 2 * 2 == NPC_LINEAR_Q_RECORD_SIZE,
+    "NPC_LINEAR_Q_RECORD_SIZE must match serialized quantized NPC linear layout"
+);
+_Static_assert(
+    1 + 1 + 2 + 2 == NPC_STATUS_RECORD_SIZE,
+    "NPC_STATUS_RECORD_SIZE must match serialized NPC status layout"
+);
+_Static_assert(
+    1 + 1 + 1 + 1 == NPC_STATUS8_RECORD_SIZE,
+    "NPC_STATUS8_RECORD_SIZE must match serialized compact NPC status layout"
+);
+_Static_assert(
     1 + COMMODITY_COUNT * 4 + 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
+);
+_Static_assert(
+    COMMODITY_COUNT < 15,
+    "STATION_Q uses uint16 bits for commodities plus a credit-pool flag"
 );
 /* PLAYER_SHIP_SIZE is now a maximum (variable length due to path waypoints).
  * The fixed header is 16 + COMMODITY_COUNT*4 + 14 = 66 bytes, plus up to
@@ -1625,6 +4062,61 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     buf[0] = NET_MSG_WORLD_STATIONS;
     buf[1] = (uint8_t)count;
     return 2 + count * STATION_RECORD_SIZE;
+}
+
+static inline bool station_q_value_nonzero(const uint8_t *p) {
+    if (!p) return false;
+    float value = read_f32_le(p);
+    return value != 0.0f || isnan(value);
+}
+
+static inline int serialize_stations_q_from_full(uint8_t *buf,
+                                                 const uint8_t *full,
+                                                 int full_len) {
+    if (!buf || !full || full_len < 2 || full[0] != NET_MSG_WORLD_STATIONS)
+        return 0;
+    uint8_t count = full[1];
+    int expected = 2 + (int)count * STATION_RECORD_SIZE;
+    if (full_len < expected || expected < 2)
+        return 0;
+
+    int off = STATION_Q_HEADER_SIZE;
+    buf[0] = NET_MSG_WORLD_STATIONS_Q;
+    buf[1] = count;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *src = &full[2 + (int)i * STATION_RECORD_SIZE];
+        uint16_t mask = 0;
+        for (int c = 0; c < COMMODITY_COUNT; c++) {
+            if (station_q_value_nonzero(&src[1 + c * 4]))
+                mask |= (uint16_t)(1u << c);
+        }
+        if (station_q_value_nonzero(&src[1 + COMMODITY_COUNT * 4]))
+            mask |= STATION_Q_CREDIT_POOL_MASK;
+
+        int present = 0;
+        for (int c = 0; c < COMMODITY_COUNT; c++) {
+            if (mask & (uint16_t)(1u << c)) present++;
+        }
+        int need = 1 + 2 + present * 4 +
+            ((mask & STATION_Q_CREDIT_POOL_MASK) ? 4 : 0);
+        if (off + need > STATION_Q_MAX_SIZE)
+            return 0;
+
+        buf[off++] = src[0];
+        write_u16_le(&buf[off], mask);
+        off += 2;
+        for (int c = 0; c < COMMODITY_COUNT; c++) {
+            if ((mask & (uint16_t)(1u << c)) == 0)
+                continue;
+            memcpy(&buf[off], &src[1 + c * 4], 4);
+            off += 4;
+        }
+        if (mask & STATION_Q_CREDIT_POOL_MASK) {
+            memcpy(&buf[off], &src[1 + COMMODITY_COUNT * 4], 4);
+            off += 4;
+        }
+    }
+    return off;
 }
 
 /*
@@ -1801,6 +4293,207 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     return STATION_IDENTITY_SIZE;
 }
 
+static inline bool station_identity_q_copy(uint8_t *buf,
+                                           int *off,
+                                           const uint8_t *src,
+                                           int len) {
+    if (!buf || !off || !src || len < 0) return false;
+    if (*off < 0 || *off + len > STATION_IDENTITY_Q_MAX_SIZE)
+        return false;
+    memcpy(&buf[*off], src, (size_t)len);
+    *off += len;
+    return true;
+}
+
+static inline bool station_identity_q_put_string(uint8_t *buf,
+                                                 int *off,
+                                                 const uint8_t *src,
+                                                 int cap_without_nul) {
+    if (!buf || !off || !src || cap_without_nul < 0 ||
+        cap_without_nul > 255) {
+        return false;
+    }
+    int n = 0;
+    while (n < cap_without_nul && src[n] != 0) n++;
+    if (*off < 0 || *off + 1 + n > STATION_IDENTITY_Q_MAX_SIZE)
+        return false;
+    buf[(*off)++] = (uint8_t)n;
+    if (n > 0) {
+        memcpy(&buf[*off], src, (size_t)n);
+        *off += n;
+    }
+    return true;
+}
+
+static inline int serialize_station_identity_q_from_full(uint8_t *buf,
+                                                         const uint8_t *full,
+                                                         int full_len) {
+    if (!buf || !full || full_len < STATION_IDENTITY_SIZE ||
+        full[0] != NET_MSG_STATION_IDENTITY) {
+        return 0;
+    }
+
+    int off = 0;
+    buf[off++] = NET_MSG_STATION_IDENTITY_Q;
+    buf[off++] = full[1];
+    buf[off++] = full[2];
+    if (!station_identity_q_copy(buf, &off, &full[3], 24)) return 0;
+    if (!station_identity_q_put_string(buf, &off, &full[27], 31)) return 0;
+
+    int src = 59;
+    int price_bytes = COMMODITY_COUNT * 4 + 4;
+    if (!station_identity_q_copy(buf, &off, &full[src], price_bytes))
+        return 0;
+    src += price_bytes;
+
+    int module_count = full[src];
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION)
+        module_count = MAX_MODULES_PER_STATION;
+    if (off + 1 + module_count * STATION_MODULE_RECORD_SIZE >
+        STATION_IDENTITY_Q_MAX_SIZE) {
+        return 0;
+    }
+    buf[off++] = (uint8_t)module_count;
+    if (module_count > 0 &&
+        !station_identity_q_copy(buf, &off, &full[src + 1],
+                                 module_count * STATION_MODULE_RECORD_SIZE)) {
+        return 0;
+    }
+    src += 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE;
+
+    int arm_count = full[src];
+    if (arm_count < 0) arm_count = 0;
+    if (arm_count > MAX_ARMS) arm_count = MAX_ARMS;
+    if (off + 1 + arm_count * 16 > STATION_IDENTITY_Q_MAX_SIZE)
+        return 0;
+    buf[off++] = (uint8_t)arm_count;
+    const uint8_t *arm_speed = &full[src + 1];
+    const uint8_t *ring_offset = arm_speed + MAX_ARMS * 4;
+    const uint8_t *arm_rotation = ring_offset + MAX_ARMS * 4;
+    const uint8_t *arm_omega = arm_rotation + MAX_ARMS * 4;
+    for (int a = 0; a < arm_count; a++) {
+        if (!station_identity_q_copy(buf, &off, &arm_speed[a * 4], 4) ||
+            !station_identity_q_copy(buf, &off, &ring_offset[a * 4], 4) ||
+            !station_identity_q_copy(buf, &off, &arm_rotation[a * 4], 4) ||
+            !station_identity_q_copy(buf, &off, &arm_omega[a * 4], 4)) {
+            return 0;
+        }
+    }
+    src += 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4;
+
+    int plan_count = full[src];
+    if (plan_count < 0) plan_count = 0;
+    if (plan_count > STATION_PLAN_RECORD_COUNT)
+        plan_count = STATION_PLAN_RECORD_COUNT;
+    if (off + 1 + plan_count * STATION_PLAN_RECORD_SIZE >
+        STATION_IDENTITY_Q_MAX_SIZE) {
+        return 0;
+    }
+    buf[off++] = (uint8_t)plan_count;
+    if (plan_count > 0 &&
+        !station_identity_q_copy(buf, &off, &full[src + 1],
+                                 plan_count * STATION_PLAN_RECORD_SIZE)) {
+        return 0;
+    }
+    src += 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE;
+
+    int pending_scaffold_count = full[src];
+    if (pending_scaffold_count < 0) pending_scaffold_count = 0;
+    if (pending_scaffold_count > STATION_PENDING_SCAFFOLD_RECORD_COUNT)
+        pending_scaffold_count = STATION_PENDING_SCAFFOLD_RECORD_COUNT;
+    if (off + 1 + pending_scaffold_count * STATION_PENDING_SCAFFOLD_RECORD_SIZE >
+        STATION_IDENTITY_Q_MAX_SIZE) {
+        return 0;
+    }
+    buf[off++] = (uint8_t)pending_scaffold_count;
+    if (pending_scaffold_count > 0 &&
+        !station_identity_q_copy(
+            buf, &off, &full[src + 1],
+            pending_scaffold_count * STATION_PENDING_SCAFFOLD_RECORD_SIZE)) {
+        return 0;
+    }
+    src += 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT *
+        STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+
+    int pending_ship_count = full[src];
+    if (pending_ship_count < 0) pending_ship_count = 0;
+    if (pending_ship_count > STATION_PENDING_SHIP_RECORD_COUNT)
+        pending_ship_count = STATION_PENDING_SHIP_RECORD_COUNT;
+    if (off + 1 + pending_ship_count * STATION_PENDING_SHIP_RECORD_SIZE >
+        STATION_IDENTITY_Q_MAX_SIZE) {
+        return 0;
+    }
+    buf[off++] = (uint8_t)pending_ship_count;
+    if (pending_ship_count > 0 &&
+        !station_identity_q_copy(
+            buf, &off, &full[src + 1],
+            pending_ship_count * STATION_PENDING_SHIP_RECORD_SIZE)) {
+        return 0;
+    }
+    src += 1 + STATION_PENDING_SHIP_RECORD_COUNT *
+        STATION_PENDING_SHIP_RECORD_SIZE;
+
+    if (!station_identity_q_put_string(
+            buf, &off, &full[src], STATION_IDENTITY_HAIL_MESSAGE_LEN - 1)) {
+        return 0;
+    }
+    src += STATION_IDENTITY_HAIL_MESSAGE_LEN;
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (!station_identity_q_put_string(
+                buf, &off, &full[src],
+                STATION_IDENTITY_CHATTER_LINE_LEN - 1)) {
+            return 0;
+        }
+        src += STATION_IDENTITY_CHATTER_LINE_LEN;
+    }
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (!station_identity_q_put_string(
+                buf, &off, &full[src],
+                STATION_IDENTITY_CHATTER_LINE_LEN - 1)) {
+            return 0;
+        }
+        src += STATION_IDENTITY_CHATTER_LINE_LEN;
+    }
+    if (!station_identity_q_put_string(
+            buf, &off, &full[src], STATION_IDENTITY_RATI_HAIL_LEN - 1)) {
+        return 0;
+    }
+    src += STATION_IDENTITY_RATI_HAIL_LEN;
+    if (!station_identity_q_put_string(
+            buf, &off, &full[src], STATION_IDENTITY_CURRENCY_NAME_LEN - 1)) {
+        return 0;
+    }
+    src += STATION_IDENTITY_CURRENCY_NAME_LEN;
+
+    if (!station_identity_q_copy(buf, &off, &full[src],
+                                 STATION_IDENTITY_PUBKEY_LEN)) {
+        return 0;
+    }
+    src += STATION_IDENTITY_PUBKEY_LEN;
+    if (!station_identity_q_copy(buf, &off, &full[src], HULL_CLASS_COUNT))
+        return 0;
+    src += HULL_CLASS_COUNT;
+    if (!station_identity_q_copy(buf, &off, &full[src],
+                                 STATION_IDENTITY_FACTION_SIZE)) {
+        return 0;
+    }
+    src += STATION_IDENTITY_FACTION_SIZE;
+
+    int policy_count = full[src];
+    if (policy_count < 0) policy_count = 0;
+    if (policy_count > STATION_IDENTITY_POLICY_CARD_COUNT)
+        policy_count = STATION_IDENTITY_POLICY_CARD_COUNT;
+    if (off + 1 + policy_count > STATION_IDENTITY_Q_MAX_SIZE)
+        return 0;
+    buf[off++] = (uint8_t)policy_count;
+    if (policy_count > 0 &&
+        !station_identity_q_copy(buf, &off, &full[src + 1], policy_count)) {
+        return 0;
+    }
+    return off;
+}
+
 /*
  * STATION_DIAG message — live per-module flow diagnostics.
  * [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
@@ -1869,10 +4562,163 @@ static inline int serialize_scaffolds_for_player(uint8_t *buf,
     return 2 + count * SCAFFOLD_RECORD_SIZE;
 }
 
+static inline uint64_t scaffold_net_sig(int index, const scaffold_t *sc) {
+    uint8_t rec[SCAFFOLD_RECORD_SIZE];
+    serialize_one_scaffold(rec, index, sc);
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < SCAFFOLD_RECORD_SIZE; i++) {
+        bool ignored_byte = i >= 4 && i < 20; /* pos + vel */
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, rec[i]);
+    }
+    return h;
+}
+
+static inline void serialize_one_scaffold_motion_q(uint8_t *p,
+                                                   int index,
+                                                   const scaffold_t *sc) {
+    p[0] = (uint8_t)index;
+    asteroid_motion_q_write_i16(
+        &p[1], asteroid_motion_q_encode(sc->pos.x,
+                                        SCAFFOLD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[3], asteroid_motion_q_encode(sc->pos.y,
+                                        SCAFFOLD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[5], asteroid_motion_q_encode(sc->vel.x,
+                                        SCAFFOLD_MOTION_Q_VEL_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[7], asteroid_motion_q_encode(sc->vel.y,
+                                        SCAFFOLD_MOTION_Q_VEL_SCALE));
+}
+
+static inline uint64_t scaffold_motion_q_sig(int index,
+                                             const scaffold_t *sc) {
+    uint8_t rec[SCAFFOLD_MOTION_Q_RECORD_SIZE];
+    serialize_one_scaffold_motion_q(rec, index, sc);
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < SCAFFOLD_MOTION_Q_RECORD_SIZE; i++)
+        h = net_fnv1a64_update(h, rec[i]);
+    return h;
+}
+
+static inline int serialize_scaffolds_for_player_delta(
+    uint8_t *buf,
+    uint8_t *remove_buf,
+    int *remove_len_out,
+    const scaffold_t *scaffolds,
+    vec2 player_pos,
+    bool *sent,
+    uint64_t *sent_sig,
+    uint64_t *motion_sent_sig) {
+    int count = 0;
+    int remove_count = 0;
+    if (remove_len_out) *remove_len_out = 0;
+    if (!buf || !scaffolds || !sent || !sent_sig) return 0;
+
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &scaffolds[i];
+        bool in_view = sc->active &&
+            serialize_relevance_in_player_view(sc->pos, player_pos);
+        if (in_view) {
+            uint64_t sig = scaffold_net_sig(i, sc);
+            if (!sent[i] || sent_sig[i] != sig) {
+                serialize_one_scaffold(
+                    &buf[2 + count * SCAFFOLD_RECORD_SIZE], i, sc);
+                count++;
+                sent[i] = true;
+                sent_sig[i] = sig;
+                if (motion_sent_sig)
+                    motion_sent_sig[i] = scaffold_motion_q_sig(i, sc);
+            }
+        } else if (sent[i]) {
+            if (remove_buf) {
+                remove_buf[SCAFFOLD_REMOVE_MSG_HEADER +
+                           remove_count * SCAFFOLD_REMOVE_RECORD_SIZE] =
+                    (uint8_t)i;
+                remove_count++;
+            }
+            sent[i] = false;
+            sent_sig[i] = 0;
+            if (motion_sent_sig) motion_sent_sig[i] = 0;
+        }
+    }
+
+    buf[0] = NET_MSG_WORLD_SCAFFOLDS;
+    buf[1] = (uint8_t)count;
+    if (remove_buf) {
+        remove_buf[0] = NET_MSG_WORLD_SCAFFOLD_REMOVE;
+        remove_buf[1] = (uint8_t)remove_count;
+        if (remove_len_out) {
+            *remove_len_out = SCAFFOLD_REMOVE_MSG_HEADER +
+                remove_count * SCAFFOLD_REMOVE_RECORD_SIZE;
+        }
+    }
+    return 2 + count * SCAFFOLD_RECORD_SIZE;
+}
+
+static inline int serialize_scaffold_motion_q_for_player_delta(
+    uint8_t *buf,
+    const scaffold_t *scaffolds,
+    vec2 player_pos,
+    const bool *sent,
+    uint64_t *motion_sent_sig) {
+    int count = 0;
+    if (!buf || !scaffolds || !sent || !motion_sent_sig) return 0;
+
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &scaffolds[i];
+        if (!sent[i]) continue;
+        if (!sc->active ||
+            !serialize_relevance_in_player_view(sc->pos, player_pos)) {
+            motion_sent_sig[i] = 0;
+            continue;
+        }
+        uint64_t sig = scaffold_motion_q_sig(i, sc);
+        if (motion_sent_sig[i] == sig) continue;
+        serialize_one_scaffold_motion_q(
+            &buf[SCAFFOLD_MOTION_Q_MSG_HEADER +
+                 count * SCAFFOLD_MOTION_Q_RECORD_SIZE],
+            i, sc);
+        motion_sent_sig[i] = sig;
+        count++;
+    }
+
+    buf[0] = NET_MSG_WORLD_SCAFFOLD_MOTION_Q;
+    buf[1] = (uint8_t)count;
+    return SCAFFOLD_MOTION_Q_MSG_HEADER +
+           count * SCAFFOLD_MOTION_Q_RECORD_SIZE;
+}
+
 /*
  * WORLD_CARGO_PODS message: active engine-less towable cargo bodies.
  * [type:1][count:1] + count * CARGO_POD_RECORD_SIZE
  */
+static inline void cargo_pod_summary_fields(const cargo_pod_t *pod,
+                                            uint8_t *flags_out,
+                                            uint8_t *best_grade_out) {
+    uint8_t flags = 0;
+    uint8_t best_grade = (uint8_t)MINING_GRADE_COMMON;
+    if (pod) {
+        if (pod->shipment_id != 0)
+            flags |= CARGO_POD_SUMMARY_SHIPMENT_BOUND;
+        if (pod->manifest_count > 0 &&
+            pod->manifest_count <= CARGO_POD_MANIFEST_CAP) {
+            for (uint16_t i = 0; i < pod->manifest_count; i++) {
+                uint8_t grade = pod->manifest_units[i].grade;
+                if (grade < (uint8_t)MINING_GRADE_COUNT &&
+                    grade > best_grade) {
+                    best_grade = grade;
+                }
+            }
+        }
+        if (cargo_pod_has_exact_manifest(pod, pod->commodity))
+            flags |= CARGO_POD_SUMMARY_EXACT_MATERIAL;
+    }
+    if (flags_out) *flags_out = flags;
+    if (best_grade_out) *best_grade_out = best_grade;
+}
+
 static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_pod_t *pod) {
     p[0] = (uint8_t)index;
     p[1] = (uint8_t)pod->kind;
@@ -1888,24 +4734,47 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
     write_u16_le(&p[30], pod->manifest_count);
     write_u16_le(&p[32], pod->shipment_id);
     uint8_t flags = 0;
-    uint8_t best_grade = (uint8_t)MINING_GRADE_COMMON;
-    if (pod->shipment_id != 0)
-        flags |= CARGO_POD_SUMMARY_SHIPMENT_BOUND;
-    if (pod->manifest_count > 0 &&
-        pod->manifest_count <= CARGO_POD_MANIFEST_CAP) {
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            uint8_t grade = pod->manifest_units[i].grade;
-            if (grade < (uint8_t)MINING_GRADE_COUNT && grade > best_grade)
-                best_grade = grade;
-        }
-    }
-    if (cargo_pod_has_exact_manifest(pod, pod->commodity)) {
-        flags |= CARGO_POD_SUMMARY_EXACT_MATERIAL;
-    }
+    uint8_t best_grade = 0;
+    cargo_pod_summary_fields(pod, &flags, &best_grade);
     p[34] = flags;
     p[35] = best_grade;
     p[36] = pod->tractor_station;
     p[37] = pod->tractor_module;
+}
+
+static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation);
+
+static inline void serialize_one_cargo_pod_q(uint8_t *p,
+                                             int index,
+                                             const cargo_pod_t *pod) {
+    p[0] = (uint8_t)index;
+    p[1] = (uint8_t)pod->kind;
+    p[2] = (uint8_t)pod->commodity;
+    p[3] = (pod->towed_by < 0) ? 0xFFu : (uint8_t)pod->towed_by;
+    asteroid_motion_q_write_i16(
+        &p[4], asteroid_motion_q_encode(pod->pos.x,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[6], asteroid_motion_q_encode(pod->pos.y,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[8], asteroid_motion_q_encode(pod->vel.x,
+                                        CARGO_POD_MOTION_Q_VEL_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[10], asteroid_motion_q_encode(pod->vel.y,
+                                         CARGO_POD_MOTION_Q_VEL_SCALE));
+    write_f32_le(&p[12], pod->radius);
+    write_u16_le(&p[16], cargo_pod_motion_q_encode_rotation(pod->rotation));
+    write_u16_le(&p[18], pod->quantity);
+    write_u16_le(&p[20], pod->manifest_count);
+    write_u16_le(&p[22], pod->shipment_id);
+    uint8_t flags = 0;
+    uint8_t best_grade = 0;
+    cargo_pod_summary_fields(pod, &flags, &best_grade);
+    p[24] = flags;
+    p[25] = best_grade;
+    p[26] = pod->tractor_station;
+    p[27] = pod->tractor_module;
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
@@ -1918,6 +4787,20 @@ static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
     buf[0] = NET_MSG_WORLD_CARGO_PODS;
     buf[1] = (uint8_t)count;
     return 2 + count * CARGO_POD_RECORD_SIZE;
+}
+
+static inline int serialize_cargo_pods_q(uint8_t *buf,
+                                         const cargo_pod_t *pods) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        serialize_one_cargo_pod_q(&buf[2 + count * CARGO_POD_Q_RECORD_SIZE],
+                                  i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_PODS_Q;
+    buf[1] = (uint8_t)count;
+    return 2 + count * CARGO_POD_Q_RECORD_SIZE;
 }
 
 static inline int serialize_cargo_pods_for_player(uint8_t *buf,
@@ -1935,6 +4818,365 @@ static inline int serialize_cargo_pods_for_player(uint8_t *buf,
     buf[0] = NET_MSG_WORLD_CARGO_PODS;
     buf[1] = (uint8_t)count;
     return 2 + count * CARGO_POD_RECORD_SIZE;
+}
+
+static inline int serialize_cargo_pods_q_for_player(uint8_t *buf,
+                                                    const cargo_pod_t *pods,
+                                                    vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        if (!serialize_relevance_in_player_view(pods[i].pos, player_pos))
+            continue;
+        serialize_one_cargo_pod_q(&buf[2 + count * CARGO_POD_Q_RECORD_SIZE],
+                                  i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_PODS_Q;
+    buf[1] = (uint8_t)count;
+    return 2 + count * CARGO_POD_Q_RECORD_SIZE;
+}
+
+static inline uint64_t cargo_pod_net_semantic_sig(
+    int index,
+    const cargo_pod_t *pod) {
+    uint8_t rec[CARGO_POD_RECORD_SIZE];
+    serialize_one_cargo_pod(rec, index, pod);
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < CARGO_POD_RECORD_SIZE; i++) {
+        bool ignored_byte =
+            (i >= 4 && i < 20) ||  /* pos + vel */
+            (i >= 24 && i < 28);   /* rotation */
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, rec[i]);
+    }
+    return h;
+}
+
+static inline int serialize_cargo_pods_for_player_delta(
+    uint8_t *buf,
+    uint8_t *remove_buf,
+    int *remove_len_out,
+    const cargo_pod_t *pods,
+    vec2 player_pos,
+    bool *sent,
+    uint64_t *sent_sig,
+    bool refresh_all_known) {
+    int count = 0;
+    int remove_count = 0;
+    if (remove_len_out) *remove_len_out = 0;
+    if (!buf || !pods || !sent || !sent_sig) return 0;
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &pods[i];
+        bool in_view = pod->active &&
+            serialize_relevance_in_player_view(pod->pos, player_pos);
+        if (in_view) {
+            uint64_t sig = cargo_pod_net_semantic_sig(i, pod);
+            if (!sent[i] || sent_sig[i] != sig || refresh_all_known) {
+                serialize_one_cargo_pod(
+                    &buf[2 + count * CARGO_POD_RECORD_SIZE], i, pod);
+                count++;
+                sent[i] = true;
+                sent_sig[i] = sig;
+            }
+        } else if (sent[i]) {
+            if (remove_buf) {
+                remove_buf[CARGO_POD_REMOVE_MSG_HEADER +
+                           remove_count * CARGO_POD_REMOVE_RECORD_SIZE] =
+                    (uint8_t)i;
+                remove_count++;
+            }
+            sent[i] = false;
+            sent_sig[i] = 0;
+        }
+    }
+
+    buf[0] = NET_MSG_WORLD_CARGO_PODS;
+    buf[1] = (uint8_t)count;
+    if (remove_buf) {
+        remove_buf[0] = NET_MSG_WORLD_CARGO_POD_REMOVE;
+        remove_buf[1] = (uint8_t)remove_count;
+        if (remove_len_out) {
+            *remove_len_out = CARGO_POD_REMOVE_MSG_HEADER +
+                remove_count * CARGO_POD_REMOVE_RECORD_SIZE;
+        }
+    }
+    return 2 + count * CARGO_POD_RECORD_SIZE;
+}
+
+static inline int serialize_cargo_pods_q_for_player_delta(
+    uint8_t *buf,
+    uint8_t *remove_buf,
+    int *remove_len_out,
+    const cargo_pod_t *pods,
+    vec2 player_pos,
+    bool *sent,
+    uint64_t *sent_sig,
+    bool refresh_all_known) {
+    int count = 0;
+    int remove_count = 0;
+    if (remove_len_out) *remove_len_out = 0;
+    if (!buf || !pods || !sent || !sent_sig) return 0;
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &pods[i];
+        bool in_view = pod->active &&
+            serialize_relevance_in_player_view(pod->pos, player_pos);
+        if (in_view) {
+            uint64_t sig = cargo_pod_net_semantic_sig(i, pod);
+            if (!sent[i] || sent_sig[i] != sig || refresh_all_known) {
+                serialize_one_cargo_pod_q(
+                    &buf[2 + count * CARGO_POD_Q_RECORD_SIZE], i, pod);
+                count++;
+                sent[i] = true;
+                sent_sig[i] = sig;
+            }
+        } else if (sent[i]) {
+            if (remove_buf) {
+                remove_buf[CARGO_POD_REMOVE_MSG_HEADER +
+                           remove_count * CARGO_POD_REMOVE_RECORD_SIZE] =
+                    (uint8_t)i;
+                remove_count++;
+            }
+            sent[i] = false;
+            sent_sig[i] = 0;
+        }
+    }
+
+    buf[0] = NET_MSG_WORLD_CARGO_PODS_Q;
+    buf[1] = (uint8_t)count;
+    if (remove_buf) {
+        remove_buf[0] = NET_MSG_WORLD_CARGO_POD_REMOVE;
+        remove_buf[1] = (uint8_t)remove_count;
+        if (remove_len_out) {
+            *remove_len_out = CARGO_POD_REMOVE_MSG_HEADER +
+                remove_count * CARGO_POD_REMOVE_RECORD_SIZE;
+        }
+    }
+    return 2 + count * CARGO_POD_Q_RECORD_SIZE;
+}
+
+static inline void serialize_one_cargo_pod_motion(uint8_t *p,
+                                                  int index,
+                                                  const cargo_pod_t *pod) {
+    p[0] = (uint8_t)index;
+    write_f32_le(&p[1], pod->pos.x);
+    write_f32_le(&p[5], pod->pos.y);
+    write_f32_le(&p[9], pod->vel.x);
+    write_f32_le(&p[13], pod->vel.y);
+    write_f32_le(&p[17], pod->rotation);
+}
+
+static inline int serialize_cargo_pod_motion_for_player(uint8_t *buf,
+                                                        const cargo_pod_t *pods,
+                                                        vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        if (!serialize_relevance_in_player_view(pods[i].pos, player_pos))
+            continue;
+        serialize_one_cargo_pod_motion(
+            &buf[CARGO_POD_MOTION_MSG_HEADER +
+                 count * CARGO_POD_MOTION_RECORD_SIZE],
+            i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_POD_MOTION;
+    buf[1] = (uint8_t)count;
+    return CARGO_POD_MOTION_MSG_HEADER +
+           count * CARGO_POD_MOTION_RECORD_SIZE;
+}
+
+static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation) {
+    const float two_pi = 6.28318530717958647692f;
+    if (!isfinite(rotation)) return 0;
+    float wrapped = fmodf(rotation, two_pi);
+    if (wrapped < 0.0f) wrapped += two_pi;
+    float q = (wrapped / two_pi) * 65536.0f;
+    if (q >= 65536.0f) q = 0.0f;
+    return (uint16_t)q;
+}
+
+static inline void serialize_one_cargo_pod_motion_q(uint8_t *p,
+                                                    int index,
+                                                    const cargo_pod_t *pod) {
+    p[0] = (uint8_t)index;
+    asteroid_motion_q_write_i16(
+        &p[1], asteroid_motion_q_encode(pod->pos.x,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[3], asteroid_motion_q_encode(pod->pos.y,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[5], asteroid_motion_q_encode(pod->vel.x,
+                                        CARGO_POD_MOTION_Q_VEL_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[7], asteroid_motion_q_encode(pod->vel.y,
+                                        CARGO_POD_MOTION_Q_VEL_SCALE));
+    write_u16_le(&p[9], cargo_pod_motion_q_encode_rotation(pod->rotation));
+}
+
+static inline void serialize_one_cargo_pod_linear_q(uint8_t *p,
+                                                    int index,
+                                                    vec2 pos,
+                                                    vec2 vel) {
+    p[0] = (uint8_t)index;
+    asteroid_motion_q_write_i16(
+        &p[1], asteroid_motion_q_encode(pos.x,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[3], asteroid_motion_q_encode(pos.y,
+                                        CARGO_POD_MOTION_Q_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[5], asteroid_motion_q_encode(vel.x,
+                                        CARGO_POD_MOTION_Q_VEL_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[7], asteroid_motion_q_encode(vel.y,
+                                        CARGO_POD_MOTION_Q_VEL_SCALE));
+}
+
+static inline int serialize_cargo_pod_motion_q_for_player(
+    uint8_t *buf,
+    const cargo_pod_t *pods,
+    vec2 player_pos) {
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (!pods[i].active) continue;
+        if (!serialize_relevance_in_player_view(pods[i].pos, player_pos))
+            continue;
+        serialize_one_cargo_pod_motion_q(
+            &buf[CARGO_POD_MOTION_Q_MSG_HEADER +
+                 count * CARGO_POD_MOTION_Q_RECORD_SIZE],
+            i, &pods[i]);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_CARGO_POD_MOTION_Q;
+    buf[1] = (uint8_t)count;
+    return CARGO_POD_MOTION_Q_MSG_HEADER +
+           count * CARGO_POD_MOTION_Q_RECORD_SIZE;
+}
+
+#define CARGO_POD_MOTION_NET_REPEAT_TICKS 240u /* ~0.5 Hz visual correction */
+#define CARGO_POD_MOTION_PREDICT_ERROR_SQ (32.0f * 32.0f)
+#define CARGO_POD_MOTION_VEL_ERROR_SQ (8.0f * 8.0f)
+#define CARGO_POD_MOTION_ROT_ERROR 1.25f
+#define CARGO_POD_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz clean-motion safety refresh */
+#define CARGO_POD_NET_METADATA_HEARTBEAT_TICKS 2400u /* 0.05 Hz metadata reconciliation */
+
+static inline bool cargo_pod_net_metadata_refresh_due(uint32_t last_sent_tick,
+                                                      uint32_t world_tick) {
+    return last_sent_tick == 0 ||
+        (uint32_t)(world_tick - last_sent_tick) >=
+            CARGO_POD_NET_METADATA_HEARTBEAT_TICKS;
+}
+
+static inline float cargo_pod_motion_rotation_delta(float a, float b) {
+    const float two_pi = 6.28318530717958647692f;
+    if (!isfinite(a) || !isfinite(b)) return CARGO_POD_MOTION_ROT_ERROR;
+    float d = fabsf(a - b);
+    while (d > two_pi) d -= two_pi;
+    if (d < 0.0f) d = -d;
+    if (d > 3.14159265358979323846f) d = two_pi - d;
+    return d;
+}
+
+static inline bool cargo_pod_motion_should_send(
+    const server_player_t *sp,
+    uint8_t index,
+    vec2 pos,
+    vec2 vel,
+    float rotation,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_CARGO_PODS) return false;
+    uint32_t last_tick = sp->cargo_pod_motion_sent_tick[index];
+    if (last_tick == 0u) return true;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= CARGO_POD_MOTION_HEARTBEAT_TICKS)
+        return true;
+
+    float dt = (float)age_ticks * SIM_DT;
+    vec2 predicted_pos = v2_add(
+        sp->cargo_pod_motion_sent_pos[index],
+        v2_scale(sp->cargo_pod_motion_sent_vel[index], dt));
+    if (v2_dist_sq(predicted_pos, pos) >= CARGO_POD_MOTION_PREDICT_ERROR_SQ)
+        return true;
+    if (v2_dist_sq(sp->cargo_pod_motion_sent_vel[index], vel) >=
+        CARGO_POD_MOTION_VEL_ERROR_SQ)
+        return true;
+    return cargo_pod_motion_rotation_delta(
+        sp->cargo_pod_motion_sent_rotation[index], rotation) >=
+        CARGO_POD_MOTION_ROT_ERROR;
+}
+
+static inline bool cargo_pod_motion_linear_q_eligible(
+    const server_player_t *sp,
+    uint8_t index,
+    float rotation,
+    uint32_t server_tick) {
+    if (!sp || index >= MAX_CARGO_PODS) return false;
+    uint32_t last_tick = sp->cargo_pod_motion_sent_tick[index];
+    if (last_tick == 0u) return false;
+    uint32_t age_ticks = server_tick - last_tick;
+    if (age_ticks >= CARGO_POD_MOTION_HEARTBEAT_TICKS)
+        return false;
+    return cargo_pod_motion_rotation_delta(
+        sp->cargo_pod_motion_sent_rotation[index], rotation) <
+        CARGO_POD_MOTION_ROT_ERROR;
+}
+
+static inline void cargo_pod_motion_note_sent(server_player_t *sp,
+                                              uint8_t index,
+                                              vec2 pos,
+                                              vec2 vel,
+                                              float rotation,
+                                              uint32_t server_tick) {
+    if (!sp || index >= MAX_CARGO_PODS) return;
+    sp->cargo_pod_motion_sent_tick[index] = server_tick;
+    sp->cargo_pod_motion_sent_pos[index] = pos;
+    sp->cargo_pod_motion_sent_vel[index] = vel;
+    sp->cargo_pod_motion_sent_rotation[index] = rotation;
+}
+
+static inline uint64_t net_world_cargo_pods_semantic_hash(const uint8_t *data,
+                                                          int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < 2 ||
+        (data[0] != NET_MSG_WORLD_CARGO_PODS &&
+         data[0] != NET_MSG_WORLD_CARGO_PODS_Q)) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    bool compact = data[0] == NET_MSG_WORLD_CARGO_PODS_Q;
+    int record_size = compact ? CARGO_POD_Q_RECORD_SIZE :
+        CARGO_POD_RECORD_SIZE;
+    int expected = 2 + count * record_size;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        bool ignored_byte = false;
+        if (i >= 2 && i < expected) {
+            int record_off = (i - 2) % record_size;
+            if (compact) {
+                ignored_byte =
+                    (record_off >= 4 && record_off < 12) ||  /* pos + vel */
+                    (record_off >= 16 && record_off < 18);    /* rotation */
+            } else {
+                ignored_byte =
+                    (record_off >= 4 && record_off < 20) ||  /* pos + vel */
+                    (record_off >= 24 && record_off < 28);    /* rotation */
+            }
+        }
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, data[i]);
+    }
+    return h;
 }
 
 static inline void serialize_one_interaction(uint8_t *p,
@@ -1957,6 +5199,50 @@ static inline void serialize_one_interaction(uint8_t *p,
     write_f32_le(&p[34], it->intensity);
 }
 
+static inline uint16_t interaction_drift_encode_u16(float value,
+                                                    float scale) {
+    if (!isfinite(value) || scale <= 0.0f || value <= 0.0f) return 0;
+    float q = value / scale;
+    if (q > 65535.0f) return 65535u;
+    return (uint16_t)(q + 0.5f);
+}
+
+static inline uint8_t interaction_drift_encode_u8(float value) {
+    if (!isfinite(value) || value <= 0.0f) return 0;
+    if (value >= 1.0f) return 255u;
+    return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+static inline void serialize_one_interaction_q(uint8_t *p,
+                                               const sim_interaction_t *it) {
+    p[0] = it->type;
+    p[1] = it->visual;
+    p[2] = it->commodity;
+    p[3] = it->flags;
+    p[4] = it->source.type;
+    write_u16_le(&p[5], (uint16_t)(int16_t)it->source.index);
+    write_u16_le(&p[7], (uint16_t)(int16_t)it->source.aux);
+    p[9] = it->target.type;
+    write_u16_le(&p[10], (uint16_t)(int16_t)it->target.index);
+    write_u16_le(&p[12], (uint16_t)(int16_t)it->target.aux);
+    asteroid_motion_q_write_i16(
+        &p[14], asteroid_motion_q_encode(it->source_pos.x,
+                                         INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[16], asteroid_motion_q_encode(it->source_pos.y,
+                                         INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[18], asteroid_motion_q_encode(it->target_pos.x,
+                                         INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[20], asteroid_motion_q_encode(it->target_pos.y,
+                                         INTERACTION_DRIFT_POS_SCALE));
+    write_u16_le(&p[22],
+                 interaction_drift_encode_u16(it->range,
+                                              INTERACTION_DRIFT_RANGE_SCALE));
+    p[24] = interaction_drift_encode_u8(it->intensity);
+}
+
 static inline int serialize_interactions(uint8_t *buf,
                                          const sim_interactions_t *interactions) {
     int count = 0;
@@ -1975,9 +5261,333 @@ static inline int serialize_interactions(uint8_t *buf,
     return 2 + count * INTERACTION_RECORD_SIZE;
 }
 
+static inline int serialize_interactions_q(uint8_t *buf,
+                                           const sim_interactions_t *interactions) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (it->type == SIM_INTERACTION_NONE) continue;
+            serialize_one_interaction_q(
+                &buf[2 + count * INTERACTION_Q_RECORD_SIZE], it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTIONS_Q;
+    buf[1] = (uint8_t)count;
+    return 2 + count * INTERACTION_Q_RECORD_SIZE;
+}
+
+static inline bool serialize_interaction_relevant_to_player(
+    const sim_interaction_t *it,
+    vec2 player_pos) {
+    if (!it || it->type == SIM_INTERACTION_NONE) return false;
+    if (serialize_relevance_in_player_view(it->source_pos, player_pos))
+        return true;
+    if (serialize_relevance_in_player_view(it->target_pos, player_pos))
+        return true;
+    vec2 mid = v2((it->source_pos.x + it->target_pos.x) * 0.5f,
+                  (it->source_pos.y + it->target_pos.y) * 0.5f);
+    return serialize_relevance_in_player_view(mid, player_pos);
+}
+
+static inline int serialize_interactions_for_player(
+    uint8_t *buf,
+    const sim_interactions_t *interactions,
+    vec2 player_pos) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (!serialize_interaction_relevant_to_player(it, player_pos))
+                continue;
+            serialize_one_interaction(
+                &buf[2 + count * INTERACTION_RECORD_SIZE], it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTIONS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * INTERACTION_RECORD_SIZE;
+}
+
+static inline int serialize_interactions_q_for_player(
+    uint8_t *buf,
+    const sim_interactions_t *interactions,
+    vec2 player_pos) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (!serialize_interaction_relevant_to_player(it, player_pos))
+                continue;
+            serialize_one_interaction_q(
+                &buf[2 + count * INTERACTION_Q_RECORD_SIZE], it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTIONS_Q;
+    buf[1] = (uint8_t)count;
+    return 2 + count * INTERACTION_Q_RECORD_SIZE;
+}
+
+#define INTERACTION_DRIFT_NET_REPEAT_TICKS 1200u /* 0.1 Hz visual drift safety refresh */
+#define INTERACTION_NET_METADATA_HEARTBEAT_TICKS 2400u /* 0.05 Hz metadata reconciliation */
+
+static inline bool interaction_drift_repeat_due(uint32_t last_tick,
+                                                uint32_t world_tick) {
+    return last_tick == 0 ||
+        (uint32_t)(world_tick - last_tick) >=
+            INTERACTION_DRIFT_NET_REPEAT_TICKS;
+}
+
+static inline bool interaction_net_metadata_refresh_due(uint32_t last_sent_tick,
+                                                        uint32_t world_tick) {
+    return last_sent_tick == 0 ||
+        (uint32_t)(world_tick - last_sent_tick) >=
+            INTERACTION_NET_METADATA_HEARTBEAT_TICKS;
+}
+
+static inline void serialize_one_interaction_drift(uint8_t *p,
+                                                   int index,
+                                                   const sim_interaction_t *it) {
+    p[0] = (uint8_t)index;
+    asteroid_motion_q_write_i16(
+        &p[1], asteroid_motion_q_encode(it->source_pos.x,
+                                        INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[3], asteroid_motion_q_encode(it->source_pos.y,
+                                        INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[5], asteroid_motion_q_encode(it->target_pos.x,
+                                        INTERACTION_DRIFT_POS_SCALE));
+    asteroid_motion_q_write_i16(
+        &p[7], asteroid_motion_q_encode(it->target_pos.y,
+                                        INTERACTION_DRIFT_POS_SCALE));
+    write_u16_le(&p[9],
+                 interaction_drift_encode_u16(it->range,
+                                              INTERACTION_DRIFT_RANGE_SCALE));
+    p[11] = interaction_drift_encode_u8(it->intensity);
+}
+
+static inline int serialize_interaction_drift(
+    uint8_t *buf,
+    const sim_interactions_t *interactions) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (it->type == SIM_INTERACTION_NONE) continue;
+            serialize_one_interaction_drift(
+                &buf[INTERACTION_DRIFT_MSG_HEADER +
+                     count * INTERACTION_DRIFT_RECORD_SIZE],
+                count, it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTION_DRIFT;
+    buf[1] = (uint8_t)count;
+    return INTERACTION_DRIFT_MSG_HEADER +
+           count * INTERACTION_DRIFT_RECORD_SIZE;
+}
+
+static inline int serialize_interaction_drift_for_player(
+    uint8_t *buf,
+    const sim_interactions_t *interactions,
+    vec2 player_pos) {
+    int count = 0;
+    if (interactions) {
+        for (int i = 0; i < interactions->count &&
+             count < SIM_MAX_INTERACTIONS; i++) {
+            const sim_interaction_t *it = &interactions->items[i];
+            if (!serialize_interaction_relevant_to_player(it, player_pos))
+                continue;
+            serialize_one_interaction_drift(
+                &buf[INTERACTION_DRIFT_MSG_HEADER +
+                     count * INTERACTION_DRIFT_RECORD_SIZE],
+                count, it);
+            count++;
+        }
+    }
+    buf[0] = NET_MSG_WORLD_INTERACTION_DRIFT;
+    buf[1] = (uint8_t)count;
+    return INTERACTION_DRIFT_MSG_HEADER +
+           count * INTERACTION_DRIFT_RECORD_SIZE;
+}
+
+static inline uint64_t net_world_interactions_semantic_hash(const uint8_t *data,
+                                                            int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < 2 ||
+        (data[0] != NET_MSG_WORLD_INTERACTIONS &&
+         data[0] != NET_MSG_WORLD_INTERACTIONS_Q)) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    int record_size = data[0] == NET_MSG_WORLD_INTERACTIONS_Q
+        ? INTERACTION_Q_RECORD_SIZE
+        : INTERACTION_RECORD_SIZE;
+    int expected = 2 + count * record_size;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        bool ignored_byte = false;
+        if (i >= 2 && i < expected) {
+            int record_off = (i - 2) % record_size;
+            ignored_byte = record_off >= 14 && record_off < record_size;
+        }
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, data[i]);
+    }
+    return h;
+}
+
 typedef void (*server_packet_sink_fn)(void *user, const uint8_t *data, int len);
 typedef void (*server_player_packet_sink_fn)(void *user, int player_slot,
                                              const uint8_t *data, int len);
+
+#define WORLD_TIME_REPEAT_TICKS 240u /* 0.5 Hz reconciliation at 8 ms sim tick */
+
+#define INPUT_ACK_STATE_HEARTBEAT_TICKS 960u /* 8 s at 120 Hz */
+#define INPUT_ACK_STATE_POS_ERROR_SQ (64.0f * 64.0f)
+#define INPUT_ACK_STATE_VEL_ERROR_SQ (180.0f * 180.0f)
+#define INPUT_ACK_STATE_ANGLE_ERROR 0.35f
+
+static inline float input_ack_state_angle_error(float a, float b) {
+    float d = a - b;
+    while (d > PI_F) d -= TWO_PI_F;
+    while (d < -PI_F) d += TWO_PI_F;
+    return fabsf(d);
+}
+
+static inline void server_player_reset_authoritative_ack_state(
+    server_player_t *sp) {
+    if (!sp) return;
+    sp->input_ack_state_valid = false;
+    sp->input_ack_state_tick = 0;
+    sp->input_ack_state_pos = v2(0.0f, 0.0f);
+    sp->input_ack_state_vel = v2(0.0f, 0.0f);
+    sp->input_ack_state_angle = 0.0f;
+    sp->input_ack_state_flags = 0;
+    sp->input_ack_state_tractor_level = 0;
+    sp->input_ack_state_towed_count = 0;
+    for (int i = 0; i < 10; i++)
+        sp->input_ack_state_towed_fragments[i] = 0xFFFFu;
+}
+
+static inline void server_player_note_authoritative_ack_state(
+    server_player_t *sp,
+    uint32_t server_tick) {
+    if (!sp) return;
+    sp->input_ack_state_valid = true;
+    sp->input_ack_state_tick = server_tick;
+    sp->input_ack_state_pos = sp->ship.pos;
+    sp->input_ack_state_vel = sp->ship.vel;
+    sp->input_ack_state_angle = sp->ship.angle;
+    sp->input_ack_state_flags = server_player_state_flags_for_wire(sp);
+    sp->input_ack_state_tractor_level = (uint8_t)sp->ship.tractor_level;
+    sp->input_ack_state_towed_count = sp->ship.towed_count;
+    for (int i = 0; i < 10; i++) {
+        int16_t fi = (i < sp->ship.towed_count)
+            ? sp->ship.towed_fragments[i] : -1;
+        sp->input_ack_state_towed_fragments[i] =
+            (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+    }
+}
+
+static inline bool server_emit_authoritative_player_state_snapshot(
+    server_player_t *sp,
+    uint8_t player_slot,
+    uint32_t server_tick,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!sp || !send || !server_player_is_gameplay_ready(sp))
+        return false;
+    uint8_t buf[NET_STATE_AUTH_SIZE];
+    int len = serialize_authoritative_player_state(
+        buf, player_slot, sp, server_tick);
+    send(user, buf, len);
+    server_player_note_authoritative_ack_state(sp, server_tick);
+    return true;
+}
+
+static inline bool server_player_authoritative_ack_state_required(
+    const server_player_t *sp,
+    uint32_t server_tick,
+    bool force_state) {
+    if (!sp) return false;
+    if (force_state || !sp->input_ack_state_valid) return true;
+    if ((uint32_t)(server_tick - sp->input_ack_state_tick) >=
+        INPUT_ACK_STATE_HEARTBEAT_TICKS) {
+        return true;
+    }
+    vec2 dp = v2_sub(sp->ship.pos, sp->input_ack_state_pos);
+    if (v2_len_sq(dp) > INPUT_ACK_STATE_POS_ERROR_SQ) return true;
+    vec2 dv = v2_sub(sp->ship.vel, sp->input_ack_state_vel);
+    if (v2_len_sq(dv) > INPUT_ACK_STATE_VEL_ERROR_SQ) return true;
+    if (input_ack_state_angle_error(
+            sp->ship.angle, sp->input_ack_state_angle) >
+        INPUT_ACK_STATE_ANGLE_ERROR) {
+        return true;
+    }
+    if (server_player_state_flags_for_wire(sp) != sp->input_ack_state_flags)
+        return true;
+    if ((uint8_t)sp->ship.tractor_level !=
+        sp->input_ack_state_tractor_level) {
+        return true;
+    }
+    if (sp->ship.towed_count != sp->input_ack_state_towed_count)
+        return true;
+    for (int i = 0; i < 10; i++) {
+        int16_t fi = (i < sp->ship.towed_count)
+            ? sp->ship.towed_fragments[i] : -1;
+        uint16_t wire =
+            (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+        if (wire != sp->input_ack_state_towed_fragments[i])
+            return true;
+    }
+    return false;
+}
+
+typedef struct {
+    bool pending;
+    uint16_t previous_input_seq;
+    uint32_t server_tick;
+} server_pending_input_ack_t;
+
+static inline void server_pending_input_ack_reset(
+    server_pending_input_ack_t *pending) {
+    if (!pending) return;
+    pending->pending = false;
+    pending->previous_input_seq = 0;
+    pending->server_tick = 0;
+}
+
+static inline bool server_pending_input_ack_note(
+    server_pending_input_ack_t *pending,
+    const server_player_t *sp,
+    uint16_t previous_input_seq,
+    uint32_t server_tick) {
+    if (!pending || !sp || sp->last_input_seq == 0 ||
+        sp->last_input_seq == previous_input_seq) {
+        return false;
+    }
+    if (!pending->pending)
+        pending->previous_input_seq = previous_input_seq;
+    pending->server_tick = server_tick;
+    pending->pending = true;
+    return true;
+}
 
 static inline bool server_emit_input_applied_if_changed(
     const server_player_t *sp,
@@ -1991,20 +5601,151 @@ static inline bool server_emit_input_applied_if_changed(
     }
     uint8_t buf[NET_INPUT_APPLIED_SIZE];
     int len = serialize_input_applied(buf, sp->last_input_seq, server_tick,
-                                      sp->last_input_tick);
+                                      sp->last_input_tick,
+                                      sp->last_input_client_sent_ms,
+                                      sp->last_input_server_recv_ms,
+                                      0);
     send(user, buf, len);
     return true;
 }
 
+static inline bool server_emit_pending_input_applied(
+    server_pending_input_ack_t *pending,
+    const server_player_t *sp,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!pending || !pending->pending)
+        return false;
+    uint16_t previous_input_seq = pending->previous_input_seq;
+    uint32_t server_tick = pending->server_tick;
+    server_pending_input_ack_reset(pending);
+    return server_emit_input_applied_if_changed(
+        sp, previous_input_seq, server_tick, send, user);
+}
+
+static inline bool server_emit_authoritative_player_state_if_changed(
+    const server_player_t *sp,
+    uint8_t player_slot,
+    uint16_t previous_input_seq,
+    uint32_t server_tick,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!sp || !send || sp->last_input_seq == 0 ||
+        sp->last_input_seq == previous_input_seq) {
+        return false;
+    }
+    uint8_t buf[NET_STATE_AUTH_SIZE];
+    int len = serialize_authoritative_player_state(buf, player_slot, sp,
+                                                   server_tick);
+    send(user, buf, len);
+    return true;
+}
+
+static inline bool server_emit_pending_authoritative_player_state(
+    server_pending_input_ack_t *pending,
+    const server_player_t *sp,
+    uint8_t player_slot,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!pending || !pending->pending)
+        return false;
+    uint16_t previous_input_seq = pending->previous_input_seq;
+    uint32_t server_tick = pending->server_tick;
+    server_pending_input_ack_reset(pending);
+    return server_emit_authoritative_player_state_if_changed(
+        sp, player_slot, previous_input_seq, server_tick, send, user);
+}
+
+static inline bool server_emit_pending_input_ack_adaptive(
+    server_pending_input_ack_t *pending,
+    server_player_t *sp,
+    uint8_t player_slot,
+    bool force_state,
+    server_packet_sink_fn send,
+    void *user) {
+    if (!pending || !pending->pending)
+        return false;
+    uint16_t previous_input_seq = pending->previous_input_seq;
+    uint32_t server_tick = pending->server_tick;
+    bool send_state = server_player_authoritative_ack_state_required(
+        sp, server_tick, force_state);
+    server_pending_input_ack_reset(pending);
+    if (send_state) {
+        bool sent = server_emit_authoritative_player_state_if_changed(
+            sp, player_slot, previous_input_seq, server_tick, send, user);
+        if (sent)
+            server_player_note_authoritative_ack_state(sp, server_tick);
+        return sent;
+    }
+    return server_emit_input_applied_if_changed(
+        sp, previous_input_seq, server_tick, send, user);
+}
+
 typedef struct {
     uint8_t asteroids[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t asteroids_q[ASTEROID_Q_MSG_HEADER +
+                        MAX_ASTEROIDS * ASTEROID_Q_RECORD_SIZE];
+    uint8_t asteroids8_q[ASTEROID8_Q_MSG_HEADER +
+                         256 * ASTEROID8_Q_RECORD_SIZE];
+    uint8_t asteroid_motion[ASTEROID_MOTION_MSG_HEADER +
+                            MAX_ASTEROIDS * ASTEROID_MOTION_RECORD_SIZE];
+    uint8_t asteroid_motion_q[ASTEROID_MOTION_Q_MSG_HEADER +
+                              MAX_ASTEROIDS * ASTEROID_MOTION_Q_RECORD_SIZE];
+    uint8_t asteroid_posd_q[ASTEROID_POSD_Q_MSG_HEADER +
+                            MAX_ASTEROIDS * ASTEROID_POSD_Q_RECORD_SIZE];
+    uint8_t asteroid_posd8_q[ASTEROID_POSD8_Q_MSG_HEADER +
+                             256 * ASTEROID_POSD8_Q_RECORD_SIZE];
+    uint8_t asteroid_pos_q[ASTEROID_POS_Q_MSG_HEADER +
+                           MAX_ASTEROIDS * ASTEROID_POS_Q_RECORD_SIZE];
+    uint8_t asteroid_pos8_q[ASTEROID_POS8_Q_MSG_HEADER +
+                            256 * ASTEROID_POS8_Q_RECORD_SIZE];
+    uint8_t asteroid_state_q[ASTEROID_STATE_Q_MSG_HEADER +
+                             MAX_ASTEROIDS * ASTEROID_STATE_Q_RECORD_SIZE];
+    uint8_t asteroid_remove[ASTEROID_REMOVE_MSG_HEADER +
+                            MAX_ASTEROIDS * ASTEROID_REMOVE_RECORD_SIZE];
     uint8_t players[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
     uint8_t npcs[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
+    uint8_t npc_motion[NPC_MOTION_MSG_HEADER +
+                       MAX_NPC_SHIPS * NPC_MOTION_RECORD_SIZE];
+    uint8_t npc_motion_q[NPC_MOTION_Q_MSG_HEADER +
+                         MAX_NPC_SHIPS * NPC_MOTION_Q_RECORD_SIZE];
+    uint8_t npc_motion8_q[NPC_MOTION8_Q_MSG_HEADER +
+                          MAX_NPC_SHIPS * NPC_MOTION8_Q_RECORD_SIZE];
+    uint8_t npc_status[NPC_STATUS_MSG_HEADER +
+                       MAX_NPC_SHIPS * NPC_STATUS_RECORD_SIZE];
+    uint8_t npc_status8[NPC_STATUS8_MSG_HEADER +
+                        MAX_NPC_SHIPS * NPC_STATUS8_RECORD_SIZE];
     uint8_t scaffolds[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
+    uint8_t scaffold_motion_q[SCAFFOLD_MOTION_Q_MSG_HEADER +
+                              MAX_SCAFFOLDS * SCAFFOLD_MOTION_Q_RECORD_SIZE];
+    uint8_t scaffold_remove[SCAFFOLD_REMOVE_MSG_HEADER +
+                            MAX_SCAFFOLDS * SCAFFOLD_REMOVE_RECORD_SIZE];
     uint8_t cargo_pods[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
+    uint8_t cargo_pods_q[2 + MAX_CARGO_PODS * CARGO_POD_Q_RECORD_SIZE];
+    uint8_t cargo_pod_remove[CARGO_POD_REMOVE_MSG_HEADER +
+                             MAX_CARGO_PODS * CARGO_POD_REMOVE_RECORD_SIZE];
+    uint8_t cargo_pod_motion[CARGO_POD_MOTION_MSG_HEADER +
+                             MAX_CARGO_PODS * CARGO_POD_MOTION_RECORD_SIZE];
+    uint8_t cargo_pod_motion_q[CARGO_POD_MOTION_Q_MSG_HEADER +
+                               MAX_CARGO_PODS * CARGO_POD_MOTION_Q_RECORD_SIZE];
     uint8_t interactions[2 + SIM_MAX_INTERACTIONS * INTERACTION_RECORD_SIZE];
+    uint8_t interactions_q[2 + SIM_MAX_INTERACTIONS * INTERACTION_Q_RECORD_SIZE];
+    uint8_t interaction_drift[INTERACTION_DRIFT_MSG_HEADER +
+                              SIM_MAX_INTERACTIONS * INTERACTION_DRIFT_RECORD_SIZE];
     uint8_t world_time[5];
 } server_world_snapshot_scratch_t;
+
+static inline int server_live_asteroid_recipient_count(const world_t *w) {
+    if (!w) return 0;
+    int count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        const server_player_t *sp = &w->players[i];
+        if (!server_player_is_gameplay_ready(sp)) continue;
+        if (sp->docked) continue;
+        count++;
+    }
+    return count;
+}
 
 static inline void server_emit_world_snapshot_for_player(
     world_t *w,
@@ -2017,36 +5758,143 @@ static inline void server_emit_world_snapshot_for_player(
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_slot];
     if (!sp->connected) return;
+    bool emit_live_world_drift = !sp->docked;
 
-    int alen = serialize_asteroids_for_player(
-        scratch->asteroids, w->asteroids, sp->ship.pos, sp->asteroid_sent);
-    if (alen > ASTEROID_MSG_HEADER)
-        send(send_user, scratch->asteroids, alen);
+    if (emit_live_world_drift) {
+        int asteroids_q_len = 0;
+        int asteroids8_q_len = 0;
+        int motion_len = 0;
+        int motion_q_len = 0;
+        int posd_q_len = 0;
+        int posd8_q_len = 0;
+        int pos_q_len = 0;
+        int pos8_q_len = 0;
+        int state_q_len = 0;
+        int remove_len = 0;
+        int background_identity_budget =
+            asteroid_net_background_identity_budget_at_tick_for_players(
+                w->tick, server_live_asteroid_recipient_count(w));
+        int alen = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+            scratch->asteroids,
+            scratch->asteroids_q, &asteroids_q_len,
+            scratch->asteroids8_q, &asteroids8_q_len,
+            scratch->asteroid_motion, &motion_len,
+            scratch->asteroid_motion_q, &motion_q_len,
+            scratch->asteroid_posd_q, &posd_q_len,
+            scratch->asteroid_posd8_q, &posd8_q_len,
+            scratch->asteroid_pos_q, &pos_q_len,
+            scratch->asteroid_pos8_q, &pos8_q_len,
+            scratch->asteroid_state_q, &state_q_len,
+            scratch->asteroid_remove, &remove_len,
+            w->asteroids, sp->ship.pos, sp->asteroid_sent,
+            sp->asteroid_motion_sent_tick, sp->asteroid_motion_sent_pos,
+            sp->asteroid_motion_sent_vel, sp->asteroid_state_sent_tick,
+            sp->asteroid_state_sent_sig, sp->asteroid_state_sent_semantic_sig,
+            w->tick, background_identity_budget);
+        if (alen > ASTEROID_MSG_HEADER)
+            send(send_user, scratch->asteroids, alen);
+        if (asteroids8_q_len > ASTEROID8_Q_MSG_HEADER)
+            send(send_user, scratch->asteroids8_q, asteroids8_q_len);
+        if (asteroids_q_len > ASTEROID_Q_MSG_HEADER)
+            send(send_user, scratch->asteroids_q, asteroids_q_len);
+        if (remove_len > ASTEROID_REMOVE_MSG_HEADER)
+            send(send_user, scratch->asteroid_remove, remove_len);
+        if (state_q_len > ASTEROID_STATE_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_state_q, state_q_len);
+        if (motion_len > ASTEROID_MOTION_MSG_HEADER)
+            send(send_user, scratch->asteroid_motion, motion_len);
+        if (motion_q_len > ASTEROID_MOTION_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_motion_q, motion_q_len);
+        if (posd8_q_len > ASTEROID_POSD8_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_posd8_q, posd8_q_len);
+        if (posd_q_len > ASTEROID_POSD_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_posd_q, posd_q_len);
+        if (pos8_q_len > ASTEROID_POS8_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_pos8_q, pos8_q_len);
+        if (pos_q_len > ASTEROID_POS_Q_MSG_HEADER)
+            send(send_user, scratch->asteroid_pos_q, pos_q_len);
+    }
 
     if (include_player_states) {
-        int plen = serialize_all_player_states(
-            scratch->players, w->players, w->tick);
+        int plen = serialize_player_states_except_recipient(
+            scratch->players, w->players, player_slot, w->tick);
         send(send_user, scratch->players, plen);
     }
 
     int nlen = serialize_npcs_for_player(
         scratch->npcs, w->npc_ships, sp->ship.pos);
     send(send_user, scratch->npcs, nlen);
+    if (emit_live_world_drift) {
+        int nmotion8_q_len = serialize_npc_motion8_q_for_player(
+            scratch->npc_motion8_q, w->npc_ships, sp->ship.pos);
+        if (nmotion8_q_len > NPC_MOTION8_Q_MSG_HEADER)
+            send(send_user, scratch->npc_motion8_q, nmotion8_q_len);
+        int nstatus8_len = serialize_npc_status8_for_player(
+            scratch->npc_status8, w->npc_ships, sp->ship.pos);
+        if (nstatus8_len > NPC_STATUS8_MSG_HEADER) {
+            send(send_user, scratch->npc_status8, nstatus8_len);
+        } else {
+            int nstatus_len = serialize_npc_status_for_player(
+                scratch->npc_status, w->npc_ships, sp->ship.pos);
+            if (nstatus_len > NPC_STATUS_MSG_HEADER)
+                send(send_user, scratch->npc_status, nstatus_len);
+        }
+    }
 
-    int slen = serialize_scaffolds_for_player(
-        scratch->scaffolds, w->scaffolds, sp->ship.pos);
-    send(send_user, scratch->scaffolds, slen);
+    int scaffold_remove_len = 0;
+    int slen = serialize_scaffolds_for_player_delta(
+        scratch->scaffolds, scratch->scaffold_remove, &scaffold_remove_len,
+        w->scaffolds, sp->ship.pos, sp->scaffold_sent,
+        sp->scaffold_sent_sig, sp->scaffold_motion_sent_sig);
+    if (slen > 2)
+        send(send_user, scratch->scaffolds, slen);
+    if (scaffold_remove_len > SCAFFOLD_REMOVE_MSG_HEADER)
+        send(send_user, scratch->scaffold_remove, scaffold_remove_len);
+    if (emit_live_world_drift) {
+        int smotion_q_len = serialize_scaffold_motion_q_for_player_delta(
+            scratch->scaffold_motion_q, w->scaffolds, sp->ship.pos,
+            sp->scaffold_sent, sp->scaffold_motion_sent_sig);
+        if (smotion_q_len > SCAFFOLD_MOTION_Q_MSG_HEADER)
+            send(send_user, scratch->scaffold_motion_q, smotion_q_len);
+    }
 
-    int clen = serialize_cargo_pods_for_player(
-        scratch->cargo_pods, w->cargo_pods, sp->ship.pos);
-    send(send_user, scratch->cargo_pods, clen);
+    int cargo_remove_len = 0;
+    bool cargo_refresh_due = cargo_pod_net_metadata_refresh_due(
+        sp->world_cargo_pods_last_sent_tick, w->tick);
+    int clen = serialize_cargo_pods_q_for_player_delta(
+        scratch->cargo_pods_q, scratch->cargo_pod_remove, &cargo_remove_len,
+        w->cargo_pods, sp->ship.pos, sp->cargo_pod_sent,
+        sp->cargo_pod_sent_sig, cargo_refresh_due);
+    if (clen > 2)
+        send(send_user, scratch->cargo_pods_q, clen);
+    if (cargo_remove_len > CARGO_POD_REMOVE_MSG_HEADER)
+        send(send_user, scratch->cargo_pod_remove, cargo_remove_len);
+    if (emit_live_world_drift) {
+        int cmotion_q_len = serialize_cargo_pod_motion_q_for_player(
+            scratch->cargo_pod_motion_q, w->cargo_pods, sp->ship.pos);
+        if (cmotion_q_len > CARGO_POD_MOTION_Q_MSG_HEADER)
+            send(send_user, scratch->cargo_pod_motion_q, cmotion_q_len);
+    }
 
-    int ilen = serialize_interactions(scratch->interactions, &w->interactions);
-    send(send_user, scratch->interactions, ilen);
+    int ilen = serialize_interactions_q_for_player(
+        scratch->interactions_q, &w->interactions, sp->ship.pos);
+    send(send_user, scratch->interactions_q, ilen);
+    if (emit_live_world_drift) {
+        int idrift_len = serialize_interaction_drift_for_player(
+            scratch->interaction_drift, &w->interactions, sp->ship.pos);
+        if (idrift_len > INTERACTION_DRIFT_MSG_HEADER)
+            send(send_user, scratch->interaction_drift, idrift_len);
+    }
 
-    scratch->world_time[0] = NET_MSG_WORLD_TIME;
-    write_f32_le(&scratch->world_time[1], w->time);
-    send(send_user, scratch->world_time, (int)sizeof(scratch->world_time));
+    if (!sp->world_time_sent ||
+        (uint32_t)(w->tick - sp->world_time_last_sent_tick) >=
+            WORLD_TIME_REPEAT_TICKS) {
+        scratch->world_time[0] = NET_MSG_WORLD_TIME;
+        write_f32_le(&scratch->world_time[1], w->time);
+        send(send_user, scratch->world_time, (int)sizeof(scratch->world_time));
+        sp->world_time_sent = true;
+        sp->world_time_last_sent_tick = w->tick;
+    }
 }
 
 static inline void server_clear_asteroid_net_dirty(world_t *w) {
@@ -2059,6 +5907,31 @@ static inline bool server_player_slot_in_emit_range(int slot,
                                                     int only_player_slot) {
     if (slot < 0 || slot >= MAX_PLAYERS) return false;
     return only_player_slot < 0 || slot == only_player_slot;
+}
+
+static inline bool server_player_fracture_resolved_sent(
+    const server_player_t *sp,
+    uint32_t fracture_id) {
+    if (!sp || fracture_id == 0u) return false;
+    for (int i = 0; i < MAX_PENDING_RESOLVES; i++) {
+        if (sp->fracture_resolved_sent_ids[i] == fracture_id)
+            return true;
+    }
+    return false;
+}
+
+static inline void server_player_mark_fracture_resolved_sent(
+    server_player_t *sp,
+    uint32_t fracture_id) {
+    if (!sp || fracture_id == 0u ||
+        server_player_fracture_resolved_sent(sp, fracture_id)) {
+        return;
+    }
+    sp->fracture_resolved_sent_ids[
+        sp->fracture_resolved_sent_cursor % MAX_PENDING_RESOLVES] = fracture_id;
+    sp->fracture_resolved_sent_cursor =
+        (uint8_t)((sp->fracture_resolved_sent_cursor + 1u) %
+                  MAX_PENDING_RESOLVES);
 }
 
 static inline void server_emit_fracture_updates(
@@ -2078,9 +5951,14 @@ static inline void server_emit_fracture_updates(
             for (int p = 0; p < MAX_PLAYERS; p++) {
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
-                if (!w->players[p].connected) continue;
-                if (server_fracture_player_in_range_for_world(w, p, i))
+                server_player_t *sp = &w->players[p];
+                if (!sp->connected) continue;
+                if (sp->fracture_challenge_sent_id[i] == state->fracture_id)
+                    continue;
+                if (server_fracture_player_in_range_for_world(w, p, i)) {
                     send(send_user, p, buf, len);
+                    sp->fracture_challenge_sent_id[i] = state->fracture_id;
+                }
             }
             state->challenge_dirty = false;
         }
@@ -2091,9 +5969,16 @@ static inline void server_emit_fracture_updates(
             for (int p = 0; p < MAX_PLAYERS; p++) {
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
-                if (!w->players[p].connected) continue;
-                if (server_fracture_player_in_range_for_world(w, p, i))
+                server_player_t *sp = &w->players[p];
+                if (!sp->connected) continue;
+                if (server_player_fracture_resolved_sent(sp,
+                                                         state->fracture_id))
+                    continue;
+                if (server_fracture_player_in_range_for_world(w, p, i)) {
                     send(send_user, p, buf, len);
+                    server_player_mark_fracture_resolved_sent(
+                        sp, state->fracture_id);
+                }
             }
             state->resolved_dirty = false;
         }
@@ -2111,8 +5996,12 @@ static inline void server_emit_fracture_updates(
         for (int pi = 0; pi < MAX_PLAYERS; pi++) {
             if (!server_player_slot_in_emit_range(pi, only_player_slot))
                 continue;
-            if (!w->players[pi].connected) continue;
+            server_player_t *sp = &w->players[pi];
+            if (!sp->connected) continue;
+            if (server_player_fracture_resolved_sent(sp, pr->fracture_id))
+                continue;
             send(send_user, pi, buf, len);
+            server_player_mark_fracture_resolved_sent(sp, pr->fracture_id);
         }
         pr->tx_count++;
         pr->last_tx_ms = now_ms;
@@ -2211,6 +6100,99 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
     buf[0] = NET_MSG_CONTRACTS;
     buf[1] = (uint8_t)count;
     return 2 + count * CONTRACT_RECORD_SIZE;
+}
+
+static inline bool contract_q_tail_nonzero(const uint8_t *p, int n) {
+    if (!p || n <= 0) return false;
+    for (int i = 0; i < n; i++) {
+        if (p[i] != 0) return true;
+    }
+    return false;
+}
+
+static inline int serialize_contracts_q_from_full(uint8_t *buf,
+                                                  const uint8_t *full,
+                                                  int full_len) {
+    if (!buf || !full || full_len < 2 || full[0] != NET_MSG_CONTRACTS)
+        return 0;
+    uint8_t count = full[1];
+    int expected = 2 + (int)count * CONTRACT_RECORD_SIZE;
+    if (full_len < expected || expected < 2)
+        return 0;
+
+    int off = CONTRACT_Q_HEADER_SIZE;
+    buf[0] = NET_MSG_CONTRACTS_Q;
+    buf[1] = count;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t *src = &full[2 + (int)i * CONTRACT_RECORD_SIZE];
+        uint8_t flags = 0;
+        if (contract_q_tail_nonzero(&src[32], 32))
+            flags |= CONTRACT_Q_FLAG_PARENT;
+        if (contract_q_tail_nonzero(&src[64], 8))
+            flags |= CONTRACT_Q_FLAG_ORIGIN_MASK;
+        if (contract_q_tail_nonzero(&src[72], 32))
+            flags |= CONTRACT_Q_FLAG_TARGET_PUB;
+
+        int need = 1 + CONTRACT_Q_BASE_SIZE;
+        if (flags & CONTRACT_Q_FLAG_PARENT) need += 32;
+        if (flags & CONTRACT_Q_FLAG_ORIGIN_MASK) need += 8;
+        if (flags & CONTRACT_Q_FLAG_TARGET_PUB) need += 32;
+        if (off + need > CONTRACT_Q_MAX_SIZE)
+            return 0;
+
+        buf[off++] = flags;
+        memcpy(&buf[off], src, CONTRACT_Q_BASE_SIZE);
+        off += CONTRACT_Q_BASE_SIZE;
+        if (flags & CONTRACT_Q_FLAG_PARENT) {
+            memcpy(&buf[off], &src[32], 32);
+            off += 32;
+        }
+        if (flags & CONTRACT_Q_FLAG_ORIGIN_MASK) {
+            memcpy(&buf[off], &src[64], 8);
+            off += 8;
+        }
+        if (flags & CONTRACT_Q_FLAG_TARGET_PUB) {
+            memcpy(&buf[off], &src[72], 32);
+            off += 32;
+        }
+    }
+    return off;
+}
+
+static inline uint64_t net_contracts_semantic_hash(const uint8_t *data,
+                                                   int len) {
+    if (!data || len <= 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    if (len < 2 || data[0] != NET_MSG_CONTRACTS) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    int count = data[1];
+    int expected = 2 + count * CONTRACT_RECORD_SIZE;
+    if (len < expected) {
+        for (int i = 0; i < len; i++)
+            h = net_fnv1a64_update(h, data[i]);
+        return h;
+    }
+    for (int i = 0; i < len; i++) {
+        bool ignored_byte = false;
+        if (i >= 2 && i < expected) {
+            int record_off = (i - 2) % CONTRACT_RECORD_SIZE;
+            ignored_byte = record_off >= 16 && record_off < 20; /* age */
+        }
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, data[i]);
+    }
+    return h;
+}
+
+#define CONTRACTS_AGE_REFRESH_MS 30000ull /* age-only price drift refresh */
+
+static inline bool contracts_age_refresh_due(uint64_t last_sent_ms,
+                                             uint64_t now_ms) {
+    return last_sent_ms == 0 ||
+        now_ms - last_sent_ms >= CONTRACTS_AGE_REFRESH_MS;
 }
 
 static inline int contract_compact_index_for_slot(const contract_t *contracts,
@@ -2677,6 +6659,11 @@ static inline void server_emit_private_snapshot_for_player(
     server_player_t *sp = &w->players[player_slot];
     if (!sp->connected) return;
 
+    if (server_player_is_gameplay_ready(sp) && !sp->input_ack_state_valid) {
+        (void)server_emit_authoritative_player_state_snapshot(
+            sp, (uint8_t)player_slot, w->tick, send, send_user);
+    }
+
     int ship_len = serialize_player_ship_for_world(
         scratch->player_ship, (uint8_t)player_slot, w, sp);
     send(send_user, scratch->player_ship, ship_len);
@@ -2719,6 +6706,8 @@ static inline void server_emit_private_snapshot_for_player(
  * Current clients send 18 bytes. Bytes 8..9 carry a client input sequence
  * number, bytes 10..11 carry a uint16 mining target (0xFFFF = none), and
  * bytes 14..17 carry the client-predicted sim tick for movement application.
+ * bytes 18..21 carry client_sent_ms, a client monotonic timestamp echoed by
+ * INPUT_APPLIED so active ack receipts can also refresh transport RTT.
  * Byte 3 remains the low byte / legacy target sentinel for old servers.
  * Newer clients append bytes 12..13 as a uint16 action id. The server
  * uses it to drop duplicate one-shot actions while still accepting the
@@ -2732,6 +6721,11 @@ static inline uint16_t input_action_id(const uint8_t *data, int len) {
 static inline uint32_t input_client_tick(const uint8_t *data, int len) {
     if (!data || len < 18) return 0;
     return read_u32_le(&data[14]);
+}
+
+static inline uint32_t input_client_sent_ms(const uint8_t *data, int len) {
+    if (!data || len < NET_INPUT_MSG_SIZE) return 0;
+    return read_u32_le(&data[18]);
 }
 
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
@@ -3040,6 +7034,118 @@ static inline void server_process_sim_event_transport(
 /* Event broadcast serialization                                       */
 /* ------------------------------------------------------------------ */
 
+static inline bool sim_event_is_local_only_for_wire(const sim_event_t *ev) {
+    if (!ev) return false;
+    switch (ev->type) {
+    case SIM_EVENT_PICKUP:
+    case SIM_EVENT_MINING_TICK:
+    case SIM_EVENT_DOCK:
+    case SIM_EVENT_LAUNCH:
+    case SIM_EVENT_SELL:
+    case SIM_EVENT_BUY:
+    case SIM_EVENT_REPAIR:
+    case SIM_EVENT_UPGRADE:
+    case SIM_EVENT_DAMAGE:
+    case SIM_EVENT_OUTPOST_PLACED:
+    case SIM_EVENT_SIGNAL_LOST:
+    case SIM_EVENT_CONTRACT_COMPLETE:
+    case SIM_EVENT_ORDER_REJECTED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline bool sim_event_visible_to_recipient(const sim_event_t *ev,
+                                                  int recipient_slot) {
+    if (!ev || ev->type == SIM_EVENT_HAIL_RESPONSE) return false;
+    if (!sim_event_is_local_only_for_wire(ev)) return true;
+    return recipient_slot >= 0 && ev->player_id == recipient_slot;
+}
+
+static inline void serialize_event_record(uint8_t *p,
+                                          const sim_event_t *ev) {
+    memset(p, 0, NET_EVENT_RECORD_SIZE);
+    p[0] = (uint8_t)ev->type;
+    p[1] = (uint8_t)ev->player_id;
+
+    switch (ev->type) {
+    case SIM_EVENT_FRACTURE:
+        p[2] = (uint8_t)ev->fracture.tier;
+        break;
+    case SIM_EVENT_PICKUP:
+        write_f32_le(&p[2], ev->pickup.ore);
+        p[6] = (uint8_t)ev->pickup.fragments;
+        break;
+    case SIM_EVENT_UPGRADE:
+        p[2] = (uint8_t)ev->upgrade.upgrade;
+        break;
+    case SIM_EVENT_DAMAGE:
+        write_f32_le(&p[2],  ev->damage.amount);
+        write_f32_le(&p[6],  ev->damage.source_x);
+        write_f32_le(&p[10], ev->damage.source_y);
+        break;
+    case SIM_EVENT_NPC_KILL:
+        p[2] = ev->npc_kill.cause;
+        p[3] = ev->npc_kill.npc_role;
+        memcpy(&p[4], ev->npc_kill.killer_token, 8);
+        break;
+    case SIM_EVENT_DEATH:
+        /* Broadcast the killer-attribution slice only; the
+         * victim's cinematic payload travels in NET_MSG_DEATH. */
+        p[2] = ev->death.cause;
+        memcpy(&p[3], ev->death.killer_token, 8);
+        break;
+    case SIM_EVENT_OUTPOST_PLACED:
+        p[2] = (uint8_t)ev->outpost_placed.slot;
+        break;
+    case SIM_EVENT_OUTPOST_ACTIVATED:
+        p[2] = (uint8_t)ev->outpost_activated.slot;
+        break;
+    case SIM_EVENT_MODULE_ACTIVATED:
+        p[2] = (uint8_t)ev->module_activated.station;
+        p[3] = (uint8_t)ev->module_activated.module_idx;
+        p[4] = (uint8_t)ev->module_activated.module_type;
+        break;
+    case SIM_EVENT_NPC_SPAWNED:
+        p[2] = (uint8_t)ev->npc_spawned.slot;
+        p[3] = (uint8_t)ev->npc_spawned.role;
+        p[4] = (uint8_t)ev->npc_spawned.home_station;
+        break;
+    case SIM_EVENT_STATION_CONNECTED:
+        p[2] = (uint8_t)ev->station_connected.connected_count;
+        break;
+    case SIM_EVENT_CONTRACT_COMPLETE:
+        p[2] = (uint8_t)ev->contract_complete.action;
+        break;
+    case SIM_EVENT_SCAFFOLD_READY:
+        p[2] = (uint8_t)ev->scaffold_ready.station;
+        p[3] = (uint8_t)ev->scaffold_ready.module_type;
+        break;
+    case SIM_EVENT_SELL:
+        p[2] = (uint8_t)ev->sell.station;
+        p[3] = (uint8_t)ev->sell.grade;
+        write_u32_le(&p[4], (uint32_t)ev->sell.base_cr);
+        write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
+        p[12] = ev->sell.by_contract;
+        break;
+    case SIM_EVENT_BUY:
+        p[2] = (uint8_t)ev->buy.station;
+        p[3] = ev->buy.commodity;
+        p[4] = ev->buy.grade;
+        write_u32_le(&p[5], (uint32_t)ev->buy.cost);
+        write_u16_le(&p[9], ev->buy.quantity);
+        break;
+    case SIM_EVENT_ORDER_REJECTED:
+        p[2] = ev->order_rejected.reason;
+        break;
+    default:
+        /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST:
+         * type + player_id is sufficient */
+        break;
+    }
+}
+
 /* Serialize all events from the current sim step into a NET_MSG_EVENTS
  * packet. HAIL_RESPONSE has its own per-recipient message and is
  * skipped here. DEATH is broadcast in stripped form (killer_token +
@@ -3054,85 +7160,25 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
         if (ev->type == SIM_EVENT_HAIL_RESPONSE) continue;
 
         uint8_t *p = &buf[2 + count * NET_EVENT_RECORD_SIZE];
-        memset(p, 0, NET_EVENT_RECORD_SIZE);
-        p[0] = (uint8_t)ev->type;
-        p[1] = (uint8_t)ev->player_id;
+        serialize_event_record(p, ev);
+        count++;
+    }
+    buf[0] = NET_MSG_EVENTS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * NET_EVENT_RECORD_SIZE;
+}
 
-        switch (ev->type) {
-        case SIM_EVENT_FRACTURE:
-            p[2] = (uint8_t)ev->fracture.tier;
-            break;
-        case SIM_EVENT_PICKUP:
-            write_f32_le(&p[2], ev->pickup.ore);
-            p[6] = (uint8_t)ev->pickup.fragments;
-            break;
-        case SIM_EVENT_UPGRADE:
-            p[2] = (uint8_t)ev->upgrade.upgrade;
-            break;
-        case SIM_EVENT_DAMAGE:
-            write_f32_le(&p[2],  ev->damage.amount);
-            write_f32_le(&p[6],  ev->damage.source_x);
-            write_f32_le(&p[10], ev->damage.source_y);
-            break;
-        case SIM_EVENT_NPC_KILL:
-            p[2] = ev->npc_kill.cause;
-            p[3] = ev->npc_kill.npc_role;
-            memcpy(&p[4], ev->npc_kill.killer_token, 8);
-            break;
-        case SIM_EVENT_DEATH:
-            /* Broadcast the killer-attribution slice only; the
-             * victim's cinematic payload travels in NET_MSG_DEATH. */
-            p[2] = ev->death.cause;
-            memcpy(&p[3], ev->death.killer_token, 8);
-            break;
-        case SIM_EVENT_OUTPOST_PLACED:
-            p[2] = (uint8_t)ev->outpost_placed.slot;
-            break;
-        case SIM_EVENT_OUTPOST_ACTIVATED:
-            p[2] = (uint8_t)ev->outpost_activated.slot;
-            break;
-        case SIM_EVENT_MODULE_ACTIVATED:
-            p[2] = (uint8_t)ev->module_activated.station;
-            p[3] = (uint8_t)ev->module_activated.module_idx;
-            p[4] = (uint8_t)ev->module_activated.module_type;
-            break;
-        case SIM_EVENT_NPC_SPAWNED:
-            p[2] = (uint8_t)ev->npc_spawned.slot;
-            p[3] = (uint8_t)ev->npc_spawned.role;
-            p[4] = (uint8_t)ev->npc_spawned.home_station;
-            break;
-        case SIM_EVENT_STATION_CONNECTED:
-            p[2] = (uint8_t)ev->station_connected.connected_count;
-            break;
-        case SIM_EVENT_CONTRACT_COMPLETE:
-            p[2] = (uint8_t)ev->contract_complete.action;
-            break;
-        case SIM_EVENT_SCAFFOLD_READY:
-            p[2] = (uint8_t)ev->scaffold_ready.station;
-            p[3] = (uint8_t)ev->scaffold_ready.module_type;
-            break;
-        case SIM_EVENT_SELL:
-            p[2] = (uint8_t)ev->sell.station;
-            p[3] = (uint8_t)ev->sell.grade;
-            write_u32_le(&p[4], (uint32_t)ev->sell.base_cr);
-            write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
-            p[12] = ev->sell.by_contract;
-            break;
-        case SIM_EVENT_BUY:
-            p[2] = (uint8_t)ev->buy.station;
-            p[3] = ev->buy.commodity;
-            p[4] = ev->buy.grade;
-            write_u32_le(&p[5], (uint32_t)ev->buy.cost);
-            write_u16_le(&p[9], ev->buy.quantity);
-            break;
-        case SIM_EVENT_ORDER_REJECTED:
-            p[2] = ev->order_rejected.reason;
-            break;
-        default:
-            /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST:
-             * type + player_id is sufficient */
-            break;
-        }
+static inline int serialize_events_for_recipient(uint8_t *buf,
+                                                 const sim_events_t *events,
+                                                 int recipient_slot) {
+    int count = 0;
+    if (!buf || !events) return 0;
+    for (int i = 0; i < events->count; i++) {
+        const sim_event_t *ev = &events->events[i];
+        if (!sim_event_visible_to_recipient(ev, recipient_slot))
+            continue;
+        uint8_t *p = &buf[2 + count * NET_EVENT_RECORD_SIZE];
+        serialize_event_record(p, ev);
         count++;
     }
     buf[0] = NET_MSG_EVENTS;

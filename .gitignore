@@ -56,3 +56,6 @@ arweave-wallet.json
 
 # Local Cloudflare/Wrangler runtime state.
 .wrangler/
+
+# Local AWS SAM build output.
+.aws-sam/

@@ -51,12 +51,42 @@ static void configure_terrain_volatiles(world_t *w, asteroid_t *a) {
 /* Signal helpers (local to this file)                                  */
 /* ------------------------------------------------------------------ */
 
-static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
+typedef struct {
+    vec2 pos;
+    float signal_range;
+    float dock_radius;
+    bool exists;
+    bool provides_signal;
+} sim_active_station_t;
+
+static int collect_active_stations(const world_t *w,
+                                   sim_active_station_t out[MAX_STATIONS]) {
+    int count = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_provides_signal(&w->stations[s])) continue;
-        float range = w->stations[s].signal_range;
+        const station_t *st = &w->stations[s];
+        bool exists = station_exists(st);
+        bool provides_signal = station_provides_signal(st);
+        if (!exists && !provides_signal) continue;
+        out[count++] = (sim_active_station_t) {
+            .pos = st->pos,
+            .signal_range = provides_signal ? st->signal_range : 0.0f,
+            .dock_radius = st->dock_radius,
+            .exists = exists,
+            .provides_signal = provides_signal,
+        };
+    }
+    return count;
+}
+
+static bool point_within_signal_margin(const sim_active_station_t *stations,
+                                       int station_count,
+                                       vec2 pos,
+                                       float margin) {
+    for (int s = 0; s < station_count; s++) {
+        if (!stations[s].provides_signal) continue;
+        float range = stations[s].signal_range;
         float max_dist = range + margin;
-        if (v2_dist_sq(pos, w->stations[s].pos) <= max_dist * max_dist) {
+        if (v2_dist_sq(pos, stations[s].pos) <= max_dist * max_dist) {
             return true;
         }
     }
@@ -714,6 +744,8 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
         int idx = npc_towed_fragment_index(&w->npc_ships[n]);
         if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
     }
+    sim_active_station_t active_stations[MAX_STATIONS];
+    int active_station_count = collect_active_stations(w, active_stations);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
@@ -747,7 +779,8 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
         }
 
         /* Despawn asteroids that leave station-supported space. */
-        if (!point_within_signal_margin(w, a->pos, a->radius + 260.0f)) {
+        if (!point_within_signal_margin(active_stations, active_station_count,
+                                        a->pos, a->radius + 260.0f)) {
             clear_asteroid_slot(w, i);
             continue;
         }
@@ -768,9 +801,9 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
         /* Station vortex: asteroids near stations get caught in orbit.
          * Large asteroids orbit outside the perimeter.
          * S fragments spiral inward toward hoppers. */
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            const station_t *st = &w->stations[s];
-            if (!station_exists(st)) continue;
+        for (int s = 0; s < active_station_count; s++) {
+            const sim_active_station_t *st = &active_stations[s];
+            if (!st->exists) continue;
             float d_sq = v2_dist_sq(a->pos, st->pos);
             float vortex_range = st->dock_radius * 2.0f;
             if (d_sq > vortex_range * vortex_range || d_sq < 1.0f) continue;
@@ -1032,8 +1065,11 @@ void maintain_asteroid_field(world_t *w, float dt) {
         }
     }
     pool_full:
+    ;
 
     /* --- Despawn terrain asteroids in chunks no longer needed --- */
+    sim_active_station_t active_stations[MAX_STATIONS];
+    int active_station_count = collect_active_stations(w, active_stations);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
         if (!w->asteroid_origin[i].from_chunk) continue;
@@ -1051,7 +1087,8 @@ void maintain_asteroid_field(world_t *w, float dt) {
         }
         if (!needed) {
             /* Also check signal coverage — keep if still in signal */
-            if (!point_within_signal_margin(w, w->asteroids[i].pos, 260.0f))
+            if (!point_within_signal_margin(active_stations, active_station_count,
+                                            w->asteroids[i].pos, 260.0f))
                 clear_asteroid_slot(w, i);
         }
     }

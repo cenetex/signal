@@ -340,19 +340,40 @@ static bool asteroid_near_corridor_module(const asteroid_t *a,
     return false;
 }
 
+static bool asteroid_near_station_collision_envelope(const asteroid_t *a,
+                                                     const station_t *st) {
+    float station_r = fmaxf(st->radius, st->dock_radius);
+    float reach = station_r + a->radius + STATION_MODULE_COL_RADIUS +
+                  STATION_CORRIDOR_HW + 32.0f;
+    return v2_dist_sq(a->pos, st->pos) <= reach * reach;
+}
+
 void resolve_asteroid_station_collisions(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_collides(&w->stations[s])) continue;
+        station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+
+        bool any_near = false;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            asteroid_t *a = &w->asteroids[i];
+            if (!a->active) continue;
+            if (asteroid_near_station_collision_envelope(a, st)) {
+                any_near = true;
+                break;
+            }
+        }
+        if (!any_near) continue;
 
         /* A full MAX_STATIONS geometry cache is ~320 KiB with the expanded
          * station cap, which overflows the browser WASM stack. Keep only one
          * station's geometry live while walking all asteroids. */
         station_geom_t geom;
-        station_build_geom(&w->stations[s], &geom);
+        station_build_geom(st, &geom);
 
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             asteroid_t *a = &w->asteroids[i];
             if (!a->active) continue;
+            if (!asteroid_near_station_collision_envelope(a, st)) continue;
             /* Core collision */
             if (geom.has_core)
                 resolve_asteroid_module_collision(a, geom.core.center, geom.core.radius);

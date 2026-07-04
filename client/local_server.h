@@ -12,6 +12,18 @@
 typedef struct {
     world_t world;
     bool active;
+    bool station_snapshot_dirty;
+    bool private_snapshot_dirty;
+    bool global_snapshot_dirty;
+    /* false (default): emit authoritative snapshots every tick. The
+     * loopback transport is an in-process memcpy — there is no bandwidth
+     * to save, and anything less than per-tick pose data renders as
+     * visible stepping in singleplayer.
+     * true: mirror the dedicated server's throttled broadcast cadences
+     * (20 Hz player / 10 Hz world / 4 Hz private) so local mode exercises
+     * the same prediction + dead-reckoning path as multiplayer. Opt-in
+     * via ?netcadence=1 (web) or SIGNAL_LOCAL_NET_CADENCE=1 (native). */
+    bool throttled_snapshots;
 } local_server_t;
 
 /* Initialize the local server world and spawn the player. */

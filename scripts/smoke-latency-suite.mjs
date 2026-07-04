@@ -282,6 +282,7 @@ await withCleanup(async () => {
       '--client-ms=20',
       '--server-ms=20',
       '--server-world-players-ms=550',
+      '--server-input-applied-ms=550',
       '--jitter-ms=10',
     ],
   });

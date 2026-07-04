@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Signal local-first multiplayer lobby and relay wake control plane.
+
+Parameters:
+  RelayRtcUrl:
+    Type: String
+    Description: rtcs:// URL clients should join when the relay is ready.
+  RelayWakeUrl:
+    Type: String
+    Description: HTTPS wake endpoint on the Lightsail WebRTC gateway.
+  RelayWakeToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Shared wake token expected by the Lightsail gateway.
+
+Resources:
+  LobbyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  LobbyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      CodeUri: .
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          SIGNAL_LOBBY_TABLE: !Ref LobbyTable
+          SIGNAL_RTC_URL: !Ref RelayRtcUrl
+          SIGNAL_WAKE_URL: !Ref RelayWakeUrl
+          SIGNAL_WAKE_TOKEN: !Ref RelayWakeToken
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LobbyTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - execute-api:ManageConnections
+            Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${LobbyApi}/*/@connections/*
+
+  LobbyApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: signal-lobby
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: $request.body.action
+
+  LobbyIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref LobbyApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LobbyFunction.Arn}/invocations
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: $connect
+      Target: !Sub integrations/${LobbyIntegration}
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: $disconnect
+      Target: !Sub integrations/${LobbyIntegration}
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: $default
+      Target: !Sub integrations/${LobbyIntegration}
+
+  JoinRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: join
+      Target: !Sub integrations/${LobbyIntegration}
+
+  HeartbeatRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: heartbeat
+      Target: !Sub integrations/${LobbyIntegration}
+
+  SignalRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LobbyApi
+      RouteKey: signal
+      Target: !Sub integrations/${LobbyIntegration}
+
+  LobbyDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - DefaultRoute
+      - JoinRoute
+      - HeartbeatRoute
+      - SignalRoute
+    Properties:
+      ApiId: !Ref LobbyApi
+
+  LobbyStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref LobbyApi
+      DeploymentId: !Ref LobbyDeployment
+      StageName: prod
+
+  LobbyInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LobbyFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${LobbyApi}/*
+
+Outputs:
+  LobbyWebSocketUrl:
+    Description: Browser lobby URL for ?lobby=
+    Value: !Sub wss://${LobbyApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+  LobbyTableName:
+    Value: !Ref LobbyTable

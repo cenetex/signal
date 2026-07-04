@@ -9,11 +9,13 @@
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
+#include "net_clock.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #ifdef __EMSCRIPTEN__
@@ -27,6 +29,13 @@
 #endif
 
 /* ---------- Shared state ------------------------------------------------- */
+
+#define NET_LATENCY_PING_TRACK_CAP 16
+
+typedef struct {
+    uint32_t seq;
+    uint32_t sent_ms;
+} net_latency_ping_track_t;
 
 static struct {
     bool connected;
@@ -59,11 +68,25 @@ static struct {
      * also rejects strict-replay, so monotonicity is what matters). */
     uint64_t signed_action_nonce;
     uint32_t latency_ping_seq;
+    net_latency_ping_track_t latency_pings[NET_LATENCY_PING_TRACK_CAP];
+    bool player_motion_q_valid[NET_MAX_PLAYERS];
+    int16_t player_motion_qx[NET_MAX_PLAYERS];
+    int16_t player_motion_qy[NET_MAX_PLAYERS];
+    bool asteroid_pos_q_valid[MAX_ASTEROIDS];
+    int16_t asteroid_pos_qx[MAX_ASTEROIDS];
+    int16_t asteroid_pos_qy[MAX_ASTEROIDS];
 } net_state;
 
 static bool net_loopback_active = false;
 static net_loopback_send_fn net_loopback_send = NULL;
 static void *net_loopback_user = NULL;
+
+static void net_player_state_clear_ack_transport(NetPlayerState *ps) {
+    if (!ps) return;
+    ps->ack_client_sent_ms = 0;
+    ps->ack_server_recv_ms = 0;
+    ps->ack_server_send_ms = 0;
+}
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
 
@@ -86,28 +109,6 @@ static void write_u32_le(uint8_t* buf, uint32_t v) {
 static void write_u16_le(uint8_t* buf, uint16_t v) {
     buf[0] = (uint8_t)(v & 0xFFu);
     buf[1] = (uint8_t)((v >> 8) & 0xFFu);
-}
-
-static uint32_t net_now_ms32(void) {
-#ifdef __EMSCRIPTEN__
-    double ms = emscripten_get_now();
-    return (uint32_t)(ms > 0.0 ? ms : 0.0);
-#elif defined(_WIN32)
-    FILETIME ft;
-    ULARGE_INTEGER uli;
-    GetSystemTimePreciseAsFileTime(&ft);
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-    return (uint32_t)(uli.QuadPart / 10000ull);
-#else
-    struct timespec ts;
-    if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
-        uint64_t ms = (uint64_t)ts.tv_sec * 1000ull +
-                      (uint64_t)ts.tv_nsec / 1000000ull;
-        return (uint32_t)ms;
-    }
-    return (uint32_t)((uint64_t)time(NULL) * 1000ull);
-#endif
 }
 
 static uint32_t read_u32_le(const uint8_t* buf) {
@@ -135,6 +136,287 @@ static float read_f32_le(const uint8_t* buf) {
            | ((uint32_t)buf[2] << 16)
            | ((uint32_t)buf[3] << 24);
     return conv.f;
+}
+
+static int16_t net_player_motion_q_encode(float value) {
+    if (!isfinite(value) || PLAYER_MOTION_Q_POS_SCALE <= 0.0f)
+        return 0;
+    float q = value / PLAYER_MOTION_Q_POS_SCALE;
+    if (q > 32767.0f) return 32767;
+    if (q < -32768.0f) return -32768;
+    return (int16_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+}
+
+static void net_player_motion_q_note(uint8_t id,
+                                     int16_t qx,
+                                     int16_t qy) {
+    if (id >= NET_MAX_PLAYERS) return;
+    net_state.player_motion_q_valid[id] = true;
+    net_state.player_motion_qx[id] = qx;
+    net_state.player_motion_qy[id] = qy;
+}
+
+static void net_player_motion_q_note_float(uint8_t id,
+                                           float x,
+                                           float y) {
+    net_player_motion_q_note(id,
+                             net_player_motion_q_encode(x),
+                             net_player_motion_q_encode(y));
+}
+
+static int16_t net_asteroid_pos_q_encode(float value) {
+    if (!isfinite(value) || ASTEROID_MOTION_Q_POS_SCALE <= 0.0f)
+        return 0;
+    float q = value / ASTEROID_MOTION_Q_POS_SCALE;
+    if (q > 32767.0f) return 32767;
+    if (q < -32768.0f) return -32768;
+    return (int16_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
+}
+
+static void net_asteroid_pos_q_note(uint16_t index,
+                                    int16_t qx,
+                                    int16_t qy) {
+    if (index >= MAX_ASTEROIDS) return;
+    net_state.asteroid_pos_q_valid[index] = true;
+    net_state.asteroid_pos_qx[index] = qx;
+    net_state.asteroid_pos_qy[index] = qy;
+}
+
+static void net_asteroid_pos_q_note_float(uint16_t index,
+                                          float x,
+                                          float y) {
+    net_asteroid_pos_q_note(index,
+                            net_asteroid_pos_q_encode(x),
+                            net_asteroid_pos_q_encode(y));
+}
+
+static void net_asteroid_pos_q_clear(uint16_t index) {
+    if (index >= MAX_ASTEROIDS) return;
+    net_state.asteroid_pos_q_valid[index] = false;
+    net_state.asteroid_pos_qx[index] = 0;
+    net_state.asteroid_pos_qy[index] = 0;
+}
+
+static float net_asteroid_identity_q_decode_value(uint16_t q) {
+    return (float)q * ASTEROID_IDENTITY_Q_VALUE_SCALE;
+}
+
+static void net_asteroid_identity_q_unpack_detail(uint8_t detail,
+                                                  uint8_t *grade,
+                                                  uint8_t *crystal_stage,
+                                                  uint8_t *phase) {
+    if (grade) {
+        uint8_t g = detail & 0x7u;
+        *grade = (g < MINING_GRADE_COUNT) ? g : (uint8_t)MINING_GRADE_COMMON;
+    }
+    if (crystal_stage) *crystal_stage = (uint8_t)((detail >> 3) & 0x3u);
+    if (phase) *phase = (uint8_t)((detail >> 5) & 0x3u);
+}
+
+static bool net_read_span(const uint8_t *data,
+                          int len,
+                          int *off,
+                          void *dst,
+                          int n) {
+    if (!data || !off || n < 0 || *off < 0 || *off + n > len)
+        return false;
+    if (dst && n > 0) memcpy(dst, &data[*off], (size_t)n);
+    *off += n;
+    return true;
+}
+
+static bool net_read_lp_string(const uint8_t *data,
+                               int len,
+                               int *off,
+                               char *dst,
+                               size_t dst_cap) {
+    if (!data || !off || !dst || dst_cap == 0 ||
+        *off < 0 || *off >= len) {
+        return false;
+    }
+    uint8_t n = data[(*off)++];
+    if (*off + (int)n > len) return false;
+    size_t copy_n = n;
+    if (copy_n >= dst_cap) copy_n = dst_cap - 1;
+    if (copy_n > 0) memcpy(dst, &data[*off], copy_n);
+    dst[copy_n] = '\0';
+    *off += n;
+    return true;
+}
+
+static void net_decode_contract_base(contract_t *ct, const uint8_t *p) {
+    if (!ct || !p) return;
+    ct->active = true;
+    ct->action =
+        (p[0] <= CONTRACT_DELIVERY) ? (contract_action_t)p[0] :
+        CONTRACT_TRACTOR;
+    ct->station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
+    ct->commodity =
+        (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] :
+        COMMODITY_FERRITE_ORE;
+    ct->required_grade =
+        (p[3] < MINING_GRADE_COUNT) ? p[3] :
+        (uint8_t)MINING_GRADE_COMMON;
+    ct->proof_flags = p[4] & 0x1fu;
+    ct->required_prefix_class =
+        (p[5] < INGOT_PREFIX_COUNT) ? p[5] :
+        (uint8_t)INGOT_PREFIX_ANONYMOUS;
+    ct->required_recipe_id = read_u16_le(&p[6]);
+    if (ct->required_recipe_id >= RECIPE_COUNT)
+        ct->proof_flags &= (uint8_t)~CONTRACT_PROOF_REQUIRE_RECIPE;
+    ct->quantity_needed = read_f32_le(&p[8]);
+    ct->base_price = read_f32_le(&p[12]);
+    ct->age = read_f32_le(&p[16]);
+    ct->target_pos.x = read_f32_le(&p[20]);
+    ct->target_pos.y = read_f32_le(&p[24]);
+    ct->target_index = (int)(int32_t)read_u32_le(&p[28]);
+    ct->claimed_by = -1;
+}
+
+static void net_finish_contract_decode(contract_t *ct) {
+    if (!ct) return;
+    if (ct->forbidden_origin_mask == 0)
+        ct->proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
+}
+
+static bool decode_station_identity_q(NetStationIdentity *si,
+                                      const uint8_t *data,
+                                      int len) {
+    if (!si || !data || len < STATION_IDENTITY_Q_HEADER_SIZE ||
+        data[0] != NET_MSG_STATION_IDENTITY_Q) {
+        return false;
+    }
+    memset(si, 0, sizeof(*si));
+    si->index = data[1];
+    si->flags = data[2];
+    int off = STATION_IDENTITY_Q_HEADER_SIZE;
+    if (off + 24 > len) return false;
+    si->services = read_u32_le(&data[off]); off += 4;
+    si->pos_x = read_f32_le(&data[off]); off += 4;
+    si->pos_y = read_f32_le(&data[off]); off += 4;
+    si->radius = read_f32_le(&data[off]); off += 4;
+    si->dock_radius = read_f32_le(&data[off]); off += 4;
+    si->signal_range = read_f32_le(&data[off]); off += 4;
+    if (!net_read_lp_string(data, len, &off, si->name, sizeof(si->name)))
+        return false;
+
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (off + 4 > len) return false;
+        si->base_price[c] = read_f32_le(&data[off]);
+        off += 4;
+    }
+    if (off + 4 > len) return false;
+    si->scaffold_progress = read_f32_le(&data[off]);
+    off += 4;
+
+    if (off >= len) return false;
+    si->module_count = data[off++];
+    if (si->module_count > MAX_MODULES_PER_STATION) return false;
+    for (int m = 0; m < si->module_count; m++) {
+        if (off + STATION_MODULE_RECORD_SIZE > len) return false;
+        si->modules[m].type = (module_type_t)data[off];
+        si->modules[m].scaffold = data[off + 1] != 0;
+        si->modules[m].ring = data[off + 2];
+        si->modules[m].slot = data[off + 3];
+        si->modules[m].build_progress = read_f32_le(&data[off + 4]);
+        si->modules[m].commodity = data[off + 8];
+        if (si->modules[m].commodity > COMMODITY_COUNT)
+            si->modules[m].commodity = (uint8_t)COMMODITY_COUNT;
+        off += STATION_MODULE_RECORD_SIZE;
+    }
+
+    if (off >= len) return false;
+    si->arm_count = data[off++];
+    if (si->arm_count > MAX_ARMS) return false;
+    for (int a = 0; a < si->arm_count; a++) {
+        if (off + 16 > len) return false;
+        si->arm_speed[a] = read_f32_le(&data[off]); off += 4;
+        si->ring_offset[a] = read_f32_le(&data[off]); off += 4;
+        si->arm_rotation[a] = read_f32_le(&data[off]); off += 4;
+        si->arm_omega[a] = read_f32_le(&data[off]); off += 4;
+    }
+
+    if (off >= len) return false;
+    si->plan_count = data[off++];
+    if (si->plan_count > STATION_PLAN_RECORD_COUNT) return false;
+    for (int p = 0; p < si->plan_count; p++) {
+        if (off + STATION_PLAN_RECORD_SIZE > len) return false;
+        si->plans[p].type = (module_type_t)data[off + 0];
+        si->plans[p].ring = data[off + 1];
+        si->plans[p].slot = data[off + 2];
+        si->plans[p].owner = (int8_t)data[off + 3];
+        off += STATION_PLAN_RECORD_SIZE;
+    }
+
+    if (off >= len) return false;
+    si->pending_scaffold_count = data[off++];
+    if (si->pending_scaffold_count > STATION_PENDING_SCAFFOLD_RECORD_COUNT)
+        return false;
+    for (int p = 0; p < si->pending_scaffold_count; p++) {
+        if (off + STATION_PENDING_SCAFFOLD_RECORD_SIZE > len) return false;
+        si->pending_scaffolds[p].type = (module_type_t)data[off + 0];
+        si->pending_scaffolds[p].owner =
+            (data[off + 1] == 0xFF) ? -1 : (int8_t)data[off + 1];
+        off += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+    }
+
+    if (off >= len) return false;
+    si->pending_ship_build_count = data[off++];
+    if (si->pending_ship_build_count > STATION_PENDING_SHIP_RECORD_COUNT)
+        return false;
+    for (int p = 0; p < si->pending_ship_build_count; p++) {
+        if (off + STATION_PENDING_SHIP_RECORD_SIZE > len) return false;
+        si->pending_ship_builds[p].hull_class = (hull_class_t)data[off + 0];
+        si->pending_ship_builds[p].owner =
+            (data[off + 1] == 0xFF) ? -1 : (int8_t)data[off + 1];
+        si->pending_ship_builds[p].build_progress = read_f32_le(&data[off + 2]);
+        off += STATION_PENDING_SHIP_RECORD_SIZE;
+    }
+
+    if (!net_read_lp_string(data, len, &off, si->hail_message,
+                            sizeof(si->hail_message))) {
+        return false;
+    }
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (!net_read_lp_string(data, len, &off, si->miner_chatter[i],
+                                sizeof(si->miner_chatter[i]))) {
+            return false;
+        }
+    }
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (!net_read_lp_string(data, len, &off, si->hauler_chatter[i],
+                                sizeof(si->hauler_chatter[i]))) {
+            return false;
+        }
+    }
+    if (!net_read_lp_string(data, len, &off, si->rati_hail_message,
+                            sizeof(si->rati_hail_message)) ||
+        !net_read_lp_string(data, len, &off, si->currency_name,
+                            sizeof(si->currency_name))) {
+        return false;
+    }
+    if (!net_read_span(data, len, &off, si->station_pubkey,
+                       STATION_IDENTITY_PUBKEY_LEN) ||
+        !net_read_span(data, len, &off, si->stored_hull_count,
+                       HULL_CLASS_COUNT)) {
+        return false;
+    }
+    if (off + STATION_IDENTITY_FACTION_SIZE > len) return false;
+    si->faction_id = data[off++];
+    si->faction_allegiance = data[off++];
+    si->faction_ideology = data[off++];
+    for (int f = 0; f < STATION_FACTION_COUNT; f++)
+        si->faction_relations[f] = (int8_t)data[off++];
+
+    if (off >= len) return false;
+    si->policy_card_count = data[off++];
+    if (si->policy_card_count > STATION_IDENTITY_POLICY_CARD_COUNT)
+        return false;
+    if (!net_read_span(data, len, &off, si->policy_card_ids,
+                       si->policy_card_count)) {
+        return false;
+    }
+    return true;
 }
 
 static void read_named_ingot_entry(NetNamedIngotEntry *out, const uint8_t *p) {
@@ -290,9 +572,14 @@ void net_send_latency_ping(void) {
     uint8_t buf[NET_LATENCY_PING_SIZE];
     uint32_t seq = ++net_state.latency_ping_seq;
     if (seq == 0) seq = ++net_state.latency_ping_seq;
+    uint32_t sent_ms = net_now_ms32();
+    net_latency_ping_track_t *slot =
+        &net_state.latency_pings[seq % NET_LATENCY_PING_TRACK_CAP];
+    slot->seq = seq;
+    slot->sent_ms = sent_ms;
     buf[0] = NET_MSG_LATENCY_PING;
     write_u32_le(&buf[1], seq);
-    write_u32_le(&buf[5], net_now_ms32());
+    write_u32_le(&buf[5], sent_ms);
     ws_send_binary(buf, NET_LATENCY_PING_SIZE);
 }
 
@@ -310,7 +597,8 @@ void net_send_client_metrics(uint32_t seq,
                              float player_interval_ms,
                              uint16_t unacked_inputs,
                              uint16_t replay_depth,
-                             uint8_t action_queue_depth) {
+                             uint8_t action_queue_depth,
+                             uint8_t recovery_flags) {
     if (!net_state.connected) return;
     uint8_t buf[NET_CLIENT_METRICS_SIZE];
     buf[0] = NET_MSG_CLIENT_METRICS;
@@ -323,7 +611,7 @@ void net_send_client_metrics(uint32_t seq,
     write_u16_le(&buf[15], unacked_inputs);
     write_u16_le(&buf[17], replay_depth);
     buf[19] = action_queue_depth;
-    buf[20] = 0;
+    buf[20] = recovery_flags;
     ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
 }
 
@@ -612,6 +900,7 @@ static void handle_message(const uint8_t* data, int len) {
             uint8_t id = data[1];
             if (id < NET_MAX_PLAYERS) {
                 net_state.players[id].active = false;
+                net_state.player_motion_q_valid[id] = false;
             }
             if (net_state.callbacks.on_leave) {
                 net_state.callbacks.on_leave(id);
@@ -651,14 +940,23 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_INPUT_APPLIED:
-        if (len < NET_INPUT_APPLIED_SIZE) break;
+        if (len < NET_INPUT_APPLIED_LEGACY_SIZE) break;
         {
             uint16_t input_seq = read_u16_le(&data[1]);
             uint32_t server_tick = read_u32_le(&data[3]);
             uint32_t input_tick_ack = read_u32_le(&data[7]);
+            uint32_t client_sent_ms = len >= NET_INPUT_APPLIED_SIZE
+                ? read_u32_le(&data[11]) : 0;
+            uint32_t server_recv_ms = len >= NET_INPUT_APPLIED_SIZE
+                ? read_u32_le(&data[15]) : 0;
+            uint32_t server_send_ms = len >= NET_INPUT_APPLIED_SIZE
+                ? read_u32_le(&data[19]) : 0;
             if (net_state.callbacks.on_input_applied) {
                 net_state.callbacks.on_input_applied(input_seq, server_tick,
-                                                     input_tick_ack);
+                                                     input_tick_ack,
+                                                     client_sent_ms,
+                                                     server_recv_ms,
+                                                     server_send_ms);
             }
         }
         break;
@@ -695,19 +993,28 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_LATENCY_PONG:
-        if (len < NET_LATENCY_PONG_SIZE) break;
+        if (len < NET_LATENCY_PONG_LEGACY_SIZE) break;
         {
             uint32_t seq = read_u32_le(&data[1]);
             uint32_t client_sent_ms = read_u32_le(&data[5]);
             uint32_t server_recv_ms = read_u32_le(&data[9]);
             uint32_t server_send_ms = read_u32_le(&data[13]);
+            uint32_t server_tick = len >= NET_LATENCY_PONG_SIZE ?
+                read_u32_le(&data[17]) : 0;
+            if (seq == 0) break;
+            net_latency_ping_track_t *slot =
+                &net_state.latency_pings[seq % NET_LATENCY_PING_TRACK_CAP];
+            if (slot->seq != seq || slot->sent_ms != client_sent_ms) break;
             uint32_t now_ms = net_now_ms32();
-            float rtt_ms = (float)(uint32_t)(now_ms - client_sent_ms);
+            float rtt_ms = (float)(uint32_t)(now_ms - slot->sent_ms);
             float server_turnaround_ms =
                 (float)(uint32_t)(server_send_ms - server_recv_ms);
+            slot->seq = 0;
+            slot->sent_ms = 0;
             if (net_state.callbacks.on_latency_sample) {
                 net_state.callbacks.on_latency_sample(seq, rtt_ms,
-                                                      server_turnaround_ms);
+                                                      server_turnaround_ms,
+                                                      server_tick);
             }
         }
         break;
@@ -735,8 +1042,33 @@ static void handle_message(const uint8_t* data, int len) {
             } else {
                 for (int t = 0; t < 10; t++) ps->towed_fragments[t] = 0xFFFFu;
             }
+            if (len >= NET_STATE_AUTH_LEGACY_SIZE) {
+                ps->input_seq_ack =
+                    read_u16_le(&data[NET_STATE_AUTH_INPUT_ACK_OFFSET]);
+                ps->server_tick =
+                    read_u32_le(&data[NET_STATE_AUTH_SERVER_TICK_OFFSET]);
+                ps->input_tick_ack =
+                    read_u32_le(&data[NET_STATE_AUTH_INPUT_TICK_OFFSET]);
+                ps->has_input_tick_ack = true;
+                if (len >= NET_STATE_AUTH_SIZE) {
+                    ps->ack_client_sent_ms = read_u32_le(
+                        &data[NET_STATE_AUTH_CLIENT_SENT_MS_OFFSET]);
+                    ps->ack_server_recv_ms = read_u32_le(
+                        &data[NET_STATE_AUTH_SERVER_RECV_MS_OFFSET]);
+                    ps->ack_server_send_ms = read_u32_le(
+                        &data[NET_STATE_AUTH_SERVER_SEND_MS_OFFSET]);
+                } else {
+                    net_player_state_clear_ack_transport(ps);
+                }
+            } else {
+                ps->input_seq_ack = 0;
+                ps->server_tick = 0;
+                ps->input_tick_ack = 0;
+                ps->has_input_tick_ack = false;
+                net_player_state_clear_ack_transport(ps);
+            }
             ps->active = true;
-            ps->has_input_tick_ack = false;
+            net_player_motion_q_note_float(id, ps->x, ps->y);
 
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
@@ -794,9 +1126,264 @@ static void handle_message(const uint8_t* data, int len) {
                 ps->input_tick_ack =
                     (record_size >= 77) ? read_u32_le(&p[73]) : 0;
                 ps->has_input_tick_ack = record_size >= 77;
+                net_player_state_clear_ack_transport(ps);
                 ps->active = true;
+                net_player_motion_q_note_float(id, ps->x, ps->y);
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_MOTION:
+        if (len < PLAYER_MOTION_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = PLAYER_MOTION_MSG_HEADER +
+                count * PLAYER_MOTION_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_MOTION_MSG_HEADER +
+                                         i * PLAYER_MOTION_RECORD_SIZE];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS || id == net_state.local_id)
+                    continue;
+                NetPlayerState* ps = &net_state.players[id];
+                ps->player_id = id;
+                ps->x     = read_f32_le(&p[1]);
+                ps->y     = read_f32_le(&p[5]);
+                ps->vx    = read_f32_le(&p[9]);
+                ps->vy    = read_f32_le(&p[13]);
+                ps->angle = read_f32_le(&p[17]);
+                ps->active = true;
+                net_player_motion_q_note_float(id, ps->x, ps->y);
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_MOTION_Q:
+        if (len < PLAYER_MOTION_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = PLAYER_MOTION_Q_MSG_HEADER +
+                count * PLAYER_MOTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_MOTION_Q_MSG_HEADER +
+                                         i * PLAYER_MOTION_Q_RECORD_SIZE];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS || id == net_state.local_id)
+                    continue;
+                NetPlayerState* ps = &net_state.players[id];
+                ps->player_id = id;
+                int16_t qx = (int16_t)read_u16_le(&p[1]);
+                int16_t qy = (int16_t)read_u16_le(&p[3]);
+                ps->x = (float)qx *
+                        PLAYER_MOTION_Q_POS_SCALE;
+                ps->y = (float)qy *
+                        PLAYER_MOTION_Q_POS_SCALE;
+                ps->vx = (float)(int16_t)read_u16_le(&p[5]) *
+                         PLAYER_MOTION_Q_VEL_SCALE;
+                ps->vy = (float)(int16_t)read_u16_le(&p[7]) *
+                         PLAYER_MOTION_Q_VEL_SCALE;
+                ps->angle = ((float)p[9] / 256.0f) * 6.28318530718f;
+                ps->active = true;
+                net_player_motion_q_note(id, qx, qy);
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_MOTIOND_Q:
+        if (len < PLAYER_MOTIOND_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = PLAYER_MOTIOND_Q_MSG_HEADER +
+                count * PLAYER_MOTIOND_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_MOTIOND_Q_MSG_HEADER +
+                                         i * PLAYER_MOTIOND_Q_RECORD_SIZE];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS || id == net_state.local_id ||
+                    !net_state.player_motion_q_valid[id]) {
+                    continue;
+                }
+                int qx = (int)net_state.player_motion_qx[id] +
+                    (int)(int8_t)p[1];
+                int qy = (int)net_state.player_motion_qy[id] +
+                    (int)(int8_t)p[2];
+                if (qx < -32768 || qx > 32767 ||
+                    qy < -32768 || qy > 32767) {
+                    net_state.player_motion_q_valid[id] = false;
+                    continue;
+                }
+                int16_t next_qx = (int16_t)qx;
+                int16_t next_qy = (int16_t)qy;
+                NetPlayerState* ps = &net_state.players[id];
+                ps->player_id = id;
+                ps->x = (float)next_qx * PLAYER_MOTION_Q_POS_SCALE;
+                ps->y = (float)next_qy * PLAYER_MOTION_Q_POS_SCALE;
+                ps->vx = (float)(int8_t)p[3] *
+                    PLAYER_MOTIOND_Q_VEL_SCALE;
+                ps->vy = (float)(int8_t)p[4] *
+                    PLAYER_MOTIOND_Q_VEL_SCALE;
+                ps->angle = ((float)p[5] / 256.0f) * 6.28318530718f;
+                ps->active = true;
+                net_player_motion_q_note(id, next_qx, next_qy);
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_POSED_Q:
+        if (len < PLAYER_POSED_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = PLAYER_POSED_Q_MSG_HEADER +
+                count * PLAYER_POSED_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_POSED_Q_MSG_HEADER +
+                                         i * PLAYER_POSED_Q_RECORD_SIZE];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS || id == net_state.local_id ||
+                    !net_state.player_motion_q_valid[id]) {
+                    continue;
+                }
+                int qx = (int)net_state.player_motion_qx[id] +
+                    (int)(int8_t)p[1];
+                int qy = (int)net_state.player_motion_qy[id] +
+                    (int)(int8_t)p[2];
+                if (qx < -32768 || qx > 32767 ||
+                    qy < -32768 || qy > 32767) {
+                    net_state.player_motion_q_valid[id] = false;
+                    continue;
+                }
+                int16_t next_qx = (int16_t)qx;
+                int16_t next_qy = (int16_t)qy;
+                NetPlayerState *ps = &net_state.players[id];
+                ps->player_id = id;
+                ps->x = (float)next_qx * PLAYER_MOTION_Q_POS_SCALE;
+                ps->y = (float)next_qy * PLAYER_MOTION_Q_POS_SCALE;
+                ps->angle = ((float)p[3] / 256.0f) * 6.28318530718f;
+                ps->active = true;
+                net_player_motion_q_note(id, next_qx, next_qy);
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_MOTIONM_Q:
+        if (len < PLAYER_MOTIONM_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int off = PLAYER_MOTIONM_Q_MSG_HEADER;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                if (off + PLAYER_MOTIONM_Q_POSE_RECORD_SIZE > len)
+                    break;
+                uint8_t id_flags = data[off++];
+                uint8_t id = id_flags & PLAYER_MOTIONM_Q_ID_MASK;
+                bool has_velocity =
+                    (id_flags & PLAYER_MOTIONM_Q_FLAG_VEL) != 0;
+                bool reserved =
+                    (id_flags & PLAYER_MOTIONM_Q_RESERVED_MASK) != 0;
+                int8_t dx = (int8_t)data[off++];
+                int8_t dy = (int8_t)data[off++];
+                int8_t qvx = 0;
+                int8_t qvy = 0;
+                if (has_velocity) {
+                    if (off + 3 > len)
+                        break;
+                    qvx = (int8_t)data[off++];
+                    qvy = (int8_t)data[off++];
+                } else {
+                    if (off + 1 > len)
+                        break;
+                }
+                uint8_t angle = data[off++];
+                if (reserved || id >= NET_MAX_PLAYERS ||
+                    id == net_state.local_id ||
+                    !net_state.player_motion_q_valid[id]) {
+                    continue;
+                }
+                int qx = (int)net_state.player_motion_qx[id] + (int)dx;
+                int qy = (int)net_state.player_motion_qy[id] + (int)dy;
+                if (qx < -32768 || qx > 32767 ||
+                    qy < -32768 || qy > 32767) {
+                    net_state.player_motion_q_valid[id] = false;
+                    continue;
+                }
+                int16_t next_qx = (int16_t)qx;
+                int16_t next_qy = (int16_t)qy;
+                NetPlayerState *ps = &net_state.players[id];
+                ps->player_id = id;
+                ps->x = (float)next_qx * PLAYER_MOTION_Q_POS_SCALE;
+                ps->y = (float)next_qy * PLAYER_MOTION_Q_POS_SCALE;
+                if (has_velocity) {
+                    ps->vx = (float)qvx * PLAYER_MOTIOND_Q_VEL_SCALE;
+                    ps->vy = (float)qvy * PLAYER_MOTIOND_Q_VEL_SCALE;
+                }
+                ps->angle = ((float)angle / 256.0f) * 6.28318530718f;
+                ps->active = true;
+                net_player_motion_q_note(id, next_qx, next_qy);
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_PLAYER_DOCK_Q:
+        if (len < PLAYER_DOCK_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = PLAYER_DOCK_MSG_HEADER +
+                count * PLAYER_DOCK_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_DOCK_MSG_HEADER +
+                                         i * PLAYER_DOCK_RECORD_SIZE];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS || id == net_state.local_id)
+                    continue;
+                NetPlayerState* ps = &net_state.players[id];
+                ps->player_id = id;
+                uint8_t status_flags =
+                    p[1] & PLAYER_DOCK_STATUS_FLAGS_MASK;
+                ps->flags = (uint8_t)(
+                    (ps->flags & (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK) |
+                    status_flags);
+                if ((status_flags & 0x04u) != 0u) {
+                    ps->vx = 0.0f;
+                    ps->vy = 0.0f;
+                }
+                if (ps->active && net_state.callbacks.on_state) {
+                    NetPlayerState status = *ps;
+                    status.flags |= NET_PLAYER_STATE_STATUS_ONLY;
+                    net_state.callbacks.on_state(&status);
                 }
             }
         }
@@ -830,8 +1417,341 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].grade = p[32];
                     arr[i].crystal_stage = p[33];
                     arr[i].phase = p[34];
+                    if (arr[i].flags & 1)
+                        net_asteroid_pos_q_note_float(
+                            arr[i].index, arr[i].x, arr[i].y);
+                    else
+                        net_asteroid_pos_q_clear(arr[i].index);
                 }
                 net_state.callbacks.on_asteroids(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROIDS_Q:
+        if (len < ASTEROID_Q_MSG_HEADER) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = ASTEROID_Q_MSG_HEADER +
+                count * ASTEROID_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroids) {
+                static NetAsteroidState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[ASTEROID_Q_MSG_HEADER +
+                              i * ASTEROID_Q_RECORD_SIZE];
+                    int16_t qx = (int16_t)(p[3] | ((uint16_t)p[4] << 8));
+                    int16_t qy = (int16_t)(p[5] | ((uint16_t)p[6] << 8));
+                    int16_t qvx = (int16_t)(p[7] | ((uint16_t)p[8] << 8));
+                    int16_t qvy = (int16_t)(p[9] | ((uint16_t)p[10] << 8));
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].flags = p[2];
+                    arr[i].x = (float)qx * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].y = (float)qy * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].vx = (float)qvx * ASTEROID_MOTION_Q_VEL_SCALE;
+                    arr[i].vy = (float)qvy * ASTEROID_MOTION_Q_VEL_SCALE;
+                    arr[i].hp = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[11]));
+                    arr[i].ore = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[13]));
+                    arr[i].radius = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[15]));
+                    arr[i].smelt_progress = (float)p[17] / 255.0f;
+                    net_asteroid_identity_q_unpack_detail(
+                        p[18], &arr[i].grade, &arr[i].crystal_stage,
+                        &arr[i].phase);
+                    if (arr[i].flags & 1)
+                        net_asteroid_pos_q_note(arr[i].index, qx, qy);
+                    else
+                        net_asteroid_pos_q_clear(arr[i].index);
+                }
+                net_state.callbacks.on_asteroids(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROIDS8_Q:
+        if (len < ASTEROID8_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = ASTEROID8_Q_MSG_HEADER +
+                count * ASTEROID8_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroids) {
+                static NetAsteroidState arr[MAX_ASTEROIDS];
+                for (int i = 0; i < count; i++) {
+                    const uint8_t* p =
+                        &data[ASTEROID8_Q_MSG_HEADER +
+                              i * ASTEROID8_Q_RECORD_SIZE];
+                    int16_t qx = (int16_t)(p[2] | ((uint16_t)p[3] << 8));
+                    int16_t qy = (int16_t)(p[4] | ((uint16_t)p[5] << 8));
+                    int16_t qvx = (int16_t)(p[6] | ((uint16_t)p[7] << 8));
+                    int16_t qvy = (int16_t)(p[8] | ((uint16_t)p[9] << 8));
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].x = (float)qx * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].y = (float)qy * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].vx = (float)qvx * ASTEROID_MOTION_Q_VEL_SCALE;
+                    arr[i].vy = (float)qvy * ASTEROID_MOTION_Q_VEL_SCALE;
+                    arr[i].hp = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[10]));
+                    arr[i].ore = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[12]));
+                    arr[i].radius = net_asteroid_identity_q_decode_value(
+                        read_u16_le(&p[14]));
+                    arr[i].smelt_progress = (float)p[16] / 255.0f;
+                    net_asteroid_identity_q_unpack_detail(
+                        p[17], &arr[i].grade, &arr[i].crystal_stage,
+                        &arr[i].phase);
+                    if (arr[i].flags & 1)
+                        net_asteroid_pos_q_note(arr[i].index, qx, qy);
+                    else
+                        net_asteroid_pos_q_clear(arr[i].index);
+                }
+                net_state.callbacks.on_asteroids(arr, count);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_REMOVE:
+        if (len < 3) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_REMOVE_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroids) {
+                static NetAsteroidState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[3 + i * ASTEROID_REMOVE_RECORD_SIZE];
+                    memset(&arr[i], 0, sizeof(arr[i]));
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].flags = 0;
+                    net_asteroid_pos_q_clear(arr[i].index);
+                }
+                net_state.callbacks.on_asteroids(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_MOTION:
+        if (len < 3) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_MOTION_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[3 + i * ASTEROID_MOTION_RECORD_SIZE];
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].x     = read_f32_le(&p[2]);
+                    arr[i].y     = read_f32_le(&p[6]);
+                    arr[i].vx    = read_f32_le(&p[10]);
+                    arr[i].vy    = read_f32_le(&p[14]);
+                    net_asteroid_pos_q_note_float(
+                        arr[i].index, arr[i].x, arr[i].y);
+                }
+                net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_MOTION_Q:
+        if (len < 3) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_MOTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[3 + i * ASTEROID_MOTION_Q_RECORD_SIZE];
+                    int16_t qx = (int16_t)(p[2] | ((uint16_t)p[3] << 8));
+                    int16_t qy = (int16_t)(p[4] | ((uint16_t)p[5] << 8));
+                    int16_t qvx = (int16_t)(p[6] | ((uint16_t)p[7] << 8));
+                    int16_t qvy = (int16_t)(p[8] | ((uint16_t)p[9] << 8));
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].x     = (float)qx * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].y     = (float)qy * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].vx    = (float)qvx * ASTEROID_MOTION_Q_VEL_SCALE;
+                    arr[i].vy    = (float)qvy * ASTEROID_MOTION_Q_VEL_SCALE;
+                    net_asteroid_pos_q_note(arr[i].index, qx, qy);
+                }
+                net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_POS_Q:
+        if (len < 3) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_POS_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[3 + i * ASTEROID_POS_Q_RECORD_SIZE];
+                    int16_t qx = (int16_t)(p[2] | ((uint16_t)p[3] << 8));
+                    int16_t qy = (int16_t)(p[4] | ((uint16_t)p[5] << 8));
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].x     = (float)qx * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].y     = (float)qy * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].vx    = NAN;
+                    arr[i].vy    = NAN;
+                    net_asteroid_pos_q_note(arr[i].index, qx, qy);
+                }
+                net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_POS8_Q:
+        if (len < ASTEROID_POS8_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = ASTEROID_POS8_Q_MSG_HEADER +
+                count * ASTEROID_POS8_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[ASTEROID_POS8_Q_MSG_HEADER +
+                              i * ASTEROID_POS8_Q_RECORD_SIZE];
+                    int16_t qx = (int16_t)(p[1] | ((uint16_t)p[2] << 8));
+                    int16_t qy = (int16_t)(p[3] | ((uint16_t)p[4] << 8));
+                    arr[i].index = p[0];
+                    arr[i].x     = (float)qx * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].y     = (float)qy * ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[i].vx    = NAN;
+                    arr[i].vy    = NAN;
+                    net_asteroid_pos_q_note(arr[i].index, qx, qy);
+                }
+                net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_POSD_Q:
+        if (len < ASTEROID_POSD_Q_MSG_HEADER) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = ASTEROID_POSD_Q_MSG_HEADER +
+                count * ASTEROID_POSD_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int limit = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                int decoded = 0;
+                for (int i = 0; i < limit; i++) {
+                    const uint8_t* p =
+                        &data[ASTEROID_POSD_Q_MSG_HEADER +
+                              i * ASTEROID_POSD_Q_RECORD_SIZE];
+                    uint16_t index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    if (index >= MAX_ASTEROIDS ||
+                        !net_state.asteroid_pos_q_valid[index])
+                        continue;
+                    int qx = (int)net_state.asteroid_pos_qx[index] +
+                        (int)(int8_t)p[2];
+                    int qy = (int)net_state.asteroid_pos_qy[index] +
+                        (int)(int8_t)p[3];
+                    if (qx < -32768 || qx > 32767 ||
+                        qy < -32768 || qy > 32767)
+                        continue;
+                    int16_t next_qx = (int16_t)qx;
+                    int16_t next_qy = (int16_t)qy;
+                    net_asteroid_pos_q_note(index, next_qx, next_qy);
+                    arr[decoded].index = index;
+                    arr[decoded].x = (float)next_qx *
+                        ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[decoded].y = (float)next_qy *
+                        ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[decoded].vx = NAN;
+                    arr[decoded].vy = NAN;
+                    decoded++;
+                }
+                if (decoded > 0)
+                    net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_POSD8_Q:
+        if (len < ASTEROID_POSD8_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = ASTEROID_POSD8_Q_MSG_HEADER +
+                count * ASTEROID_POSD8_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_motion) {
+                static NetAsteroidMotionState arr[MAX_ASTEROIDS];
+                int decoded = 0;
+                for (int i = 0; i < count; i++) {
+                    const uint8_t* p =
+                        &data[ASTEROID_POSD8_Q_MSG_HEADER +
+                              i * ASTEROID_POSD8_Q_RECORD_SIZE];
+                    uint16_t index = p[0];
+                    if (!net_state.asteroid_pos_q_valid[index])
+                        continue;
+                    int qx = (int)net_state.asteroid_pos_qx[index] +
+                        (int)(int8_t)p[1];
+                    int qy = (int)net_state.asteroid_pos_qy[index] +
+                        (int)(int8_t)p[2];
+                    if (qx < -32768 || qx > 32767 ||
+                        qy < -32768 || qy > 32767)
+                        continue;
+                    int16_t next_qx = (int16_t)qx;
+                    int16_t next_qy = (int16_t)qy;
+                    net_asteroid_pos_q_note(index, next_qx, next_qy);
+                    arr[decoded].index = index;
+                    arr[decoded].x = (float)next_qx *
+                        ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[decoded].y = (float)next_qy *
+                        ASTEROID_MOTION_Q_POS_SCALE;
+                    arr[decoded].vx = NAN;
+                    arr[decoded].vy = NAN;
+                    decoded++;
+                }
+                if (decoded > 0)
+                    net_state.callbacks.on_asteroid_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROID_STATE_Q:
+        if (len < 3) break;
+        {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_STATE_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroid_state_q) {
+                static NetAsteroidStateQ arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p =
+                        &data[3 + i * ASTEROID_STATE_Q_RECORD_SIZE];
+                    arr[i].index = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].hp = read_f32_le(&p[2]);
+                    arr[i].ore = read_f32_le(&p[6]);
+                    arr[i].radius = read_f32_le(&p[10]);
+                    arr[i].smelt_progress = (float)p[14] / 255.0f;
+                    arr[i].grade = p[15];
+                    arr[i].crystal_stage = p[16];
+                    arr[i].phase = p[17];
+                }
+                net_state.callbacks.on_asteroid_state_q(arr, decoded);
             }
         }
         break;
@@ -869,6 +1789,224 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_NPC_MOTION:
+        if (len < NPC_MOTION_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_MOTION_MSG_HEADER +
+                count * NPC_MOTION_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_motion) {
+                NetNpcMotionState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_MOTION_MSG_HEADER +
+                                             i * NPC_MOTION_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].x     = read_f32_le(&p[2]);
+                    arr[i].y     = read_f32_le(&p[6]);
+                    arr[i].vx    = read_f32_le(&p[10]);
+                    arr[i].vy    = read_f32_le(&p[14]);
+                    arr[i].angle = read_f32_le(&p[18]);
+                }
+                net_state.callbacks.on_npc_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_MOTION_Q:
+        if (len < NPC_MOTION_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_MOTION_Q_MSG_HEADER +
+                count * NPC_MOTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_motion) {
+                NetNpcMotionState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_MOTION_Q_MSG_HEADER +
+                                             i * NPC_MOTION_Q_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].x     = (float)(int16_t)read_u16_le(&p[2]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].y     = (float)(int16_t)read_u16_le(&p[4]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].vx    = (float)(int16_t)read_u16_le(&p[6]) *
+                        NPC_MOTION_Q_VEL_SCALE;
+                    arr[i].vy    = (float)(int16_t)read_u16_le(&p[8]) *
+                        NPC_MOTION_Q_VEL_SCALE;
+                    arr[i].angle = (float)read_u16_le(&p[10]) *
+                        NPC_MOTION_Q_ANGLE_SCALE;
+                }
+                net_state.callbacks.on_npc_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_MOTION8_Q:
+        if (len < NPC_MOTION8_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_MOTION8_Q_MSG_HEADER +
+                count * NPC_MOTION8_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_motion) {
+                NetNpcMotionState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_MOTION8_Q_MSG_HEADER +
+                                             i * NPC_MOTION8_Q_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].x     = (float)(int16_t)read_u16_le(&p[2]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].y     = (float)(int16_t)read_u16_le(&p[4]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].vx    = (float)(int8_t)p[6] *
+                        NPC_MOTION8_Q_VEL_SCALE;
+                    arr[i].vy    = (float)(int8_t)p[7] *
+                        NPC_MOTION8_Q_VEL_SCALE;
+                    arr[i].angle = (float)p[8] *
+                        NPC_MOTION8_Q_ANGLE_SCALE;
+                }
+                net_state.callbacks.on_npc_motion(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_POS_Q:
+        if (len < NPC_POS_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_POS_Q_MSG_HEADER +
+                count * NPC_POS_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_pos) {
+                NetNpcPosState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_POS_Q_MSG_HEADER +
+                                             i * NPC_POS_Q_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].x = (float)(int16_t)read_u16_le(&p[1]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].y = (float)(int16_t)read_u16_le(&p[3]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                }
+                net_state.callbacks.on_npc_pos(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_POSE_Q:
+        if (len < NPC_POSE_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_POSE_Q_MSG_HEADER +
+                count * NPC_POSE_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_pose) {
+                NetNpcPoseState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_POSE_Q_MSG_HEADER +
+                                             i * NPC_POSE_Q_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].x = (float)(int16_t)read_u16_le(&p[1]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].y = (float)(int16_t)read_u16_le(&p[3]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].angle = (float)read_u16_le(&p[5]) *
+                        NPC_MOTION_Q_ANGLE_SCALE;
+                }
+                net_state.callbacks.on_npc_pose(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_LINEAR_Q:
+        if (len < NPC_LINEAR_Q_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_LINEAR_Q_MSG_HEADER +
+                count * NPC_LINEAR_Q_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_linear) {
+                NetNpcLinearState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_LINEAR_Q_MSG_HEADER +
+                                             i * NPC_LINEAR_Q_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].x = (float)(int16_t)read_u16_le(&p[1]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].y = (float)(int16_t)read_u16_le(&p[3]) *
+                        NPC_MOTION_Q_POS_SCALE;
+                    arr[i].vx = (float)(int16_t)read_u16_le(&p[5]) *
+                        NPC_MOTION_Q_VEL_SCALE;
+                    arr[i].vy = (float)(int16_t)read_u16_le(&p[7]) *
+                        NPC_MOTION_Q_VEL_SCALE;
+                }
+                net_state.callbacks.on_npc_linear(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_STATUS:
+        if (len < NPC_STATUS_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_STATUS_MSG_HEADER +
+                count * NPC_STATUS_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_status) {
+                NetNpcStatusState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_STATUS_MSG_HEADER +
+                                             i * NPC_STATUS_RECORD_SIZE];
+                    uint16_t target = read_u16_le(&p[2]);
+                    uint16_t towed = read_u16_le(&p[4]);
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].target_asteroid =
+                        (target == 0xFFFFu) ? -1 : (int)target;
+                    arr[i].towed_fragment =
+                        (towed == 0xFFFFu) ? -1 : (int)towed;
+                }
+                net_state.callbacks.on_npc_status(arr, decoded);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPC_STATUS8_Q:
+        if (len < NPC_STATUS8_MSG_HEADER) break;
+        {
+            int count = (int)data[1];
+            int expected = NPC_STATUS8_MSG_HEADER +
+                count * NPC_STATUS8_RECORD_SIZE;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npc_status) {
+                NetNpcStatusState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
+                    const uint8_t* p = &data[NPC_STATUS8_MSG_HEADER +
+                                             i * NPC_STATUS8_RECORD_SIZE];
+                    arr[i].index = p[0];
+                    arr[i].flags = p[1];
+                    arr[i].target_asteroid =
+                        (p[2] == 0xFFu) ? -1 : (int)p[2];
+                    arr[i].towed_fragment =
+                        (p[3] == 0xFFu) ? -1 : (int)p[3];
+                }
+                net_state.callbacks.on_npc_status(arr, decoded);
+            }
+        }
+        break;
+
     case NET_MSG_WORLD_STATIONS:
         if (len < 2) break;
         {
@@ -884,6 +2022,46 @@ static void handle_message(const uint8_t* data, int len) {
                     float pool = read_f32_le(&p[1 + COMMODITY_COUNT * 4]);
                     net_state.callbacks.on_stations(idx, inv, pool);
                 }
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_STATIONS_Q:
+        if (len < STATION_Q_HEADER_SIZE) break;
+        {
+            uint8_t count = data[1];
+            int off = STATION_Q_HEADER_SIZE;
+            if (!net_state.callbacks.on_stations) break;
+            for (int i = 0; i < count; i++) {
+                if (off + 3 > len) break;
+                uint8_t idx = data[off++];
+                uint16_t mask = read_u16_le(&data[off]);
+                off += 2;
+                if ((mask & (uint16_t)~(STATION_Q_COMMODITY_MASK |
+                                        STATION_Q_CREDIT_POOL_MASK)) != 0) {
+                    break;
+                }
+                float inv[COMMODITY_COUNT];
+                memset(inv, 0, sizeof(inv));
+                bool ok = true;
+                for (int c = 0; c < COMMODITY_COUNT; c++) {
+                    if ((mask & (uint16_t)(1u << c)) == 0)
+                        continue;
+                    if (off + 4 > len) {
+                        ok = false;
+                        break;
+                    }
+                    inv[c] = read_f32_le(&data[off]);
+                    off += 4;
+                }
+                if (!ok) break;
+                float pool = 0.0f;
+                if (mask & STATION_Q_CREDIT_POOL_MASK) {
+                    if (off + 4 > len) break;
+                    pool = read_f32_le(&data[off]);
+                    off += 4;
+                }
+                net_state.callbacks.on_stations(idx, inv, pool);
             }
         }
         break;
@@ -1065,6 +2243,14 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_STATION_IDENTITY_Q:
+        if (net_state.callbacks.on_station_identity) {
+            NetStationIdentity si;
+            if (decode_station_identity_q(&si, data, len))
+                net_state.callbacks.on_station_identity(&si);
+        }
+        break;
+
     case NET_MSG_STATION_DIAG:
         if (len >= STATION_DIAG_SIZE && net_state.callbacks.on_station_diag) {
             uint8_t station_id = data[1];
@@ -1100,6 +2286,50 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_SCAFFOLD_REMOVE:
+        if (len >= SCAFFOLD_REMOVE_MSG_HEADER &&
+            net_state.callbacks.on_scaffold_remove) {
+            int count = data[1];
+            int expected = SCAFFOLD_REMOVE_MSG_HEADER +
+                count * SCAFFOLD_REMOVE_RECORD_SIZE;
+            if (len < expected) break;
+            uint8_t indices[MAX_SCAFFOLDS];
+            int max = count > MAX_SCAFFOLDS ? MAX_SCAFFOLDS : count;
+            for (int i = 0; i < max; i++) {
+                indices[i] = data[SCAFFOLD_REMOVE_MSG_HEADER +
+                                  i * SCAFFOLD_REMOVE_RECORD_SIZE];
+            }
+            net_state.callbacks.on_scaffold_remove(indices, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_SCAFFOLD_MOTION_Q:
+        if (len >= SCAFFOLD_MOTION_Q_MSG_HEADER &&
+            net_state.callbacks.on_scaffold_motion) {
+            int count = data[1];
+            int expected = SCAFFOLD_MOTION_Q_MSG_HEADER +
+                count * SCAFFOLD_MOTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            NetScaffoldMotionState scaffolds[MAX_SCAFFOLDS];
+            int max = count > MAX_SCAFFOLDS ? MAX_SCAFFOLDS : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p =
+                    &data[SCAFFOLD_MOTION_Q_MSG_HEADER +
+                          i * SCAFFOLD_MOTION_Q_RECORD_SIZE];
+                int16_t qx = (int16_t)(p[1] | ((uint16_t)p[2] << 8));
+                int16_t qy = (int16_t)(p[3] | ((uint16_t)p[4] << 8));
+                int16_t qvx = (int16_t)(p[5] | ((uint16_t)p[6] << 8));
+                int16_t qvy = (int16_t)(p[7] | ((uint16_t)p[8] << 8));
+                scaffolds[i].index = p[0];
+                scaffolds[i].pos_x = (float)qx * SCAFFOLD_MOTION_Q_POS_SCALE;
+                scaffolds[i].pos_y = (float)qy * SCAFFOLD_MOTION_Q_POS_SCALE;
+                scaffolds[i].vel_x = (float)qvx * SCAFFOLD_MOTION_Q_VEL_SCALE;
+                scaffolds[i].vel_y = (float)qvy * SCAFFOLD_MOTION_Q_VEL_SCALE;
+            }
+            net_state.callbacks.on_scaffold_motion(scaffolds, max);
+        }
+        break;
+
     case NET_MSG_WORLD_CARGO_PODS:
         if (len >= 2 && net_state.callbacks.on_cargo_pods) {
             int count = data[1];
@@ -1128,6 +2358,141 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].tractor_module = p[37];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_PODS_Q:
+        if (len >= 2 && net_state.callbacks.on_cargo_pods) {
+            int count = data[1];
+            int expected = 2 + count * CARGO_POD_Q_RECORD_SIZE;
+            if (len < expected) break;
+            NetCargoPodState pods[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            const float two_pi = 6.28318530717958647692f;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p = &data[2 + i * CARGO_POD_Q_RECORD_SIZE];
+                int16_t qx = (int16_t)(p[4] | ((uint16_t)p[5] << 8));
+                int16_t qy = (int16_t)(p[6] | ((uint16_t)p[7] << 8));
+                int16_t qvx = (int16_t)(p[8] | ((uint16_t)p[9] << 8));
+                int16_t qvy = (int16_t)(p[10] | ((uint16_t)p[11] << 8));
+                uint16_t qrot = (uint16_t)(p[16] | ((uint16_t)p[17] << 8));
+                pods[i].index = p[0];
+                pods[i].kind = p[1];
+                pods[i].commodity = p[2];
+                pods[i].towed_by = (p[3] == 0xFF) ? -1 : (int8_t)p[3];
+                pods[i].pos_x = (float)qx * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].pos_y = (float)qy * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].vel_x = (float)qvx * CARGO_POD_MOTION_Q_VEL_SCALE;
+                pods[i].vel_y = (float)qvy * CARGO_POD_MOTION_Q_VEL_SCALE;
+                pods[i].radius = read_f32_le(&p[12]);
+                pods[i].rotation = ((float)qrot / 65536.0f) * two_pi;
+                pods[i].quantity = read_u16_le(&p[18]);
+                pods[i].manifest_count = read_u16_le(&p[20]);
+                pods[i].shipment_id = read_u16_le(&p[22]);
+                pods[i].summary_flags = p[24];
+                pods[i].summary_grade = p[25];
+                pods[i].tractor_station = p[26];
+                pods[i].tractor_module = p[27];
+            }
+            net_state.callbacks.on_cargo_pods(pods, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_POD_REMOVE:
+        if (len >= CARGO_POD_REMOVE_MSG_HEADER &&
+            net_state.callbacks.on_cargo_pod_remove) {
+            int count = data[1];
+            int expected = CARGO_POD_REMOVE_MSG_HEADER +
+                count * CARGO_POD_REMOVE_RECORD_SIZE;
+            if (len < expected) break;
+            uint8_t indices[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            for (int i = 0; i < max; i++) {
+                indices[i] = data[CARGO_POD_REMOVE_MSG_HEADER +
+                                  i * CARGO_POD_REMOVE_RECORD_SIZE];
+            }
+            net_state.callbacks.on_cargo_pod_remove(indices, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_POD_MOTION:
+        if (len >= CARGO_POD_MOTION_MSG_HEADER &&
+            net_state.callbacks.on_cargo_pod_motion) {
+            int count = data[1];
+            int expected = CARGO_POD_MOTION_MSG_HEADER +
+                count * CARGO_POD_MOTION_RECORD_SIZE;
+            if (len < expected) break;
+            NetCargoPodMotionState pods[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p =
+                    &data[CARGO_POD_MOTION_MSG_HEADER +
+                          i * CARGO_POD_MOTION_RECORD_SIZE];
+                pods[i].index = p[0];
+                pods[i].pos_x = read_f32_le(&p[1]);
+                pods[i].pos_y = read_f32_le(&p[5]);
+                pods[i].vel_x = read_f32_le(&p[9]);
+                pods[i].vel_y = read_f32_le(&p[13]);
+                pods[i].rotation = read_f32_le(&p[17]);
+            }
+            net_state.callbacks.on_cargo_pod_motion(pods, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_POD_MOTION_Q:
+        if (len >= CARGO_POD_MOTION_Q_MSG_HEADER &&
+            net_state.callbacks.on_cargo_pod_motion) {
+            int count = data[1];
+            int expected = CARGO_POD_MOTION_Q_MSG_HEADER +
+                count * CARGO_POD_MOTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            NetCargoPodMotionState pods[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            const float two_pi = 6.28318530717958647692f;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p =
+                    &data[CARGO_POD_MOTION_Q_MSG_HEADER +
+                          i * CARGO_POD_MOTION_Q_RECORD_SIZE];
+                int16_t qx = (int16_t)(p[1] | ((uint16_t)p[2] << 8));
+                int16_t qy = (int16_t)(p[3] | ((uint16_t)p[4] << 8));
+                int16_t qvx = (int16_t)(p[5] | ((uint16_t)p[6] << 8));
+                int16_t qvy = (int16_t)(p[7] | ((uint16_t)p[8] << 8));
+                uint16_t qrot = (uint16_t)(p[9] | ((uint16_t)p[10] << 8));
+                pods[i].index = p[0];
+                pods[i].pos_x = (float)qx * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].pos_y = (float)qy * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].vel_x = (float)qvx * CARGO_POD_MOTION_Q_VEL_SCALE;
+                pods[i].vel_y = (float)qvy * CARGO_POD_MOTION_Q_VEL_SCALE;
+                pods[i].rotation = ((float)qrot / 65536.0f) * two_pi;
+            }
+            net_state.callbacks.on_cargo_pod_motion(pods, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_CARGO_POD_LINEAR_Q:
+        if (len >= CARGO_POD_LINEAR_Q_MSG_HEADER &&
+            net_state.callbacks.on_cargo_pod_linear) {
+            int count = data[1];
+            int expected = CARGO_POD_LINEAR_Q_MSG_HEADER +
+                count * CARGO_POD_LINEAR_Q_RECORD_SIZE;
+            if (len < expected) break;
+            NetCargoPodLinearState pods[MAX_CARGO_PODS];
+            int max = count > MAX_CARGO_PODS ? MAX_CARGO_PODS : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p =
+                    &data[CARGO_POD_LINEAR_Q_MSG_HEADER +
+                          i * CARGO_POD_LINEAR_Q_RECORD_SIZE];
+                int16_t qx = (int16_t)(p[1] | ((uint16_t)p[2] << 8));
+                int16_t qy = (int16_t)(p[3] | ((uint16_t)p[4] << 8));
+                int16_t qvx = (int16_t)(p[5] | ((uint16_t)p[6] << 8));
+                int16_t qvy = (int16_t)(p[7] | ((uint16_t)p[8] << 8));
+                pods[i].index = p[0];
+                pods[i].pos_x = (float)qx * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].pos_y = (float)qy * CARGO_POD_MOTION_Q_POS_SCALE;
+                pods[i].vel_x = (float)qvx * CARGO_POD_MOTION_Q_VEL_SCALE;
+                pods[i].vel_y = (float)qvy * CARGO_POD_MOTION_Q_VEL_SCALE;
+            }
+            net_state.callbacks.on_cargo_pod_linear(pods, max);
         }
         break;
 
@@ -1160,6 +2525,79 @@ static void handle_message(const uint8_t* data, int len) {
                 it->intensity = read_f32_le(&p[34]);
             }
             net_state.callbacks.on_interactions(items, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_INTERACTIONS_Q:
+        if (len >= 2 && net_state.callbacks.on_interactions) {
+            int count = data[1];
+            int expected = 2 + count * INTERACTION_Q_RECORD_SIZE;
+            if (len < expected) break;
+            sim_interaction_t items[SIM_MAX_INTERACTIONS];
+            int max = count > SIM_MAX_INTERACTIONS ? SIM_MAX_INTERACTIONS : count;
+            memset(items, 0, sizeof(items));
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p = &data[2 + i * INTERACTION_Q_RECORD_SIZE];
+                sim_interaction_t *it = &items[i];
+                it->type = p[0];
+                it->visual = p[1];
+                it->commodity = p[2];
+                it->flags = p[3];
+                it->source.type = p[4];
+                it->source.index = (int16_t)read_u16_le(&p[5]);
+                it->source.aux = (int16_t)read_u16_le(&p[7]);
+                it->target.type = p[9];
+                it->target.index = (int16_t)read_u16_le(&p[10]);
+                it->target.aux = (int16_t)read_u16_le(&p[12]);
+                it->source_pos.x = (float)(int16_t)read_u16_le(&p[14]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                it->source_pos.y = (float)(int16_t)read_u16_le(&p[16]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                it->target_pos.x = (float)(int16_t)read_u16_le(&p[18]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                it->target_pos.y = (float)(int16_t)read_u16_le(&p[20]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                it->range = (float)read_u16_le(&p[22]) *
+                    INTERACTION_DRIFT_RANGE_SCALE;
+                it->intensity = (float)p[24] / 255.0f;
+            }
+            net_state.callbacks.on_interactions(items, max);
+        }
+        break;
+
+    case NET_MSG_WORLD_INTERACTION_DRIFT:
+        if (len >= INTERACTION_DRIFT_MSG_HEADER &&
+            net_state.callbacks.on_interaction_drift) {
+            int count = data[1];
+            int expected = INTERACTION_DRIFT_MSG_HEADER +
+                count * INTERACTION_DRIFT_RECORD_SIZE;
+            if (len < expected) break;
+            NetInteractionDriftState items[SIM_MAX_INTERACTIONS];
+            int max = count > SIM_MAX_INTERACTIONS
+                ? SIM_MAX_INTERACTIONS : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p =
+                    &data[INTERACTION_DRIFT_MSG_HEADER +
+                          i * INTERACTION_DRIFT_RECORD_SIZE];
+                items[i].index = p[0];
+                items[i].source_x =
+                    (float)(int16_t)read_u16_le(&p[1]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                items[i].source_y =
+                    (float)(int16_t)read_u16_le(&p[3]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                items[i].target_x =
+                    (float)(int16_t)read_u16_le(&p[5]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                items[i].target_y =
+                    (float)(int16_t)read_u16_le(&p[7]) *
+                    INTERACTION_DRIFT_POS_SCALE;
+                items[i].range =
+                    (float)read_u16_le(&p[9]) *
+                    INTERACTION_DRIFT_RANGE_SCALE;
+                items[i].intensity = (float)p[11] / 255.0f;
+            }
+            net_state.callbacks.on_interaction_drift(items, max);
         }
         break;
 
@@ -1552,32 +2990,68 @@ static void handle_message(const uint8_t* data, int len) {
                 int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
                 for (int i = 0; i < n; i++) {
                     const uint8_t *p = &data[2 + i * CONTRACT_RECORD_SIZE];
-                    contracts[i].active = true;
-                    contracts[i].action = (p[0] <= CONTRACT_DELIVERY) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
-                    contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
-                    contracts[i].commodity = (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] : COMMODITY_FERRITE_ORE;
-                    contracts[i].required_grade = (p[3] < MINING_GRADE_COUNT) ? p[3] : (uint8_t)MINING_GRADE_COMMON;
-                    contracts[i].proof_flags = p[4] & 0x1fu;
-                    contracts[i].required_prefix_class =
-                        (p[5] < INGOT_PREFIX_COUNT) ? p[5] : (uint8_t)INGOT_PREFIX_ANONYMOUS;
-                    contracts[i].required_recipe_id = read_u16_le(&p[6]);
-                    if (contracts[i].required_recipe_id >= RECIPE_COUNT)
-                        contracts[i].proof_flags &= (uint8_t)~CONTRACT_PROOF_REQUIRE_RECIPE;
-                    contracts[i].quantity_needed = read_f32_le(&p[8]);
-                    contracts[i].base_price = read_f32_le(&p[12]);
-                    contracts[i].age = read_f32_le(&p[16]);
-                    contracts[i].target_pos.x = read_f32_le(&p[20]);
-                    contracts[i].target_pos.y = read_f32_le(&p[24]);
-                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[28]);
+                    net_decode_contract_base(&contracts[i], p);
                     memcpy(contracts[i].required_parent, &p[32], 32);
                     contracts[i].forbidden_origin_mask = read_u64_le(&p[64]);
                     memcpy(contracts[i].target_pub, &p[72], 32);
-                    if (contracts[i].forbidden_origin_mask == 0)
-                        contracts[i].proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
-                    contracts[i].claimed_by = -1;
+                    net_finish_contract_decode(&contracts[i]);
                 }
                 net_state.callbacks.on_contracts(contracts, n);
             }
+        }
+        break;
+
+    case NET_MSG_CONTRACTS_Q:
+        if (len >= CONTRACT_Q_HEADER_SIZE && net_state.callbacks.on_contracts) {
+            uint8_t count = data[1];
+            contract_t contracts[MAX_CONTRACTS];
+            memset(contracts, 0, sizeof(contracts));
+            int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
+            int off = CONTRACT_Q_HEADER_SIZE;
+            bool ok = true;
+            for (int i = 0; i < count; i++) {
+                if (off >= len) {
+                    ok = false;
+                    break;
+                }
+                uint8_t flags = data[off++];
+                if ((flags & (uint8_t)~CONTRACT_Q_FLAG_MASK) != 0 ||
+                    off + CONTRACT_Q_BASE_SIZE > len) {
+                    ok = false;
+                    break;
+                }
+
+                contract_t *ct = i < n ? &contracts[i] : NULL;
+                if (ct) net_decode_contract_base(ct, &data[off]);
+                off += CONTRACT_Q_BASE_SIZE;
+
+                if (flags & CONTRACT_Q_FLAG_PARENT) {
+                    if (off + 32 > len) {
+                        ok = false;
+                        break;
+                    }
+                    if (ct) memcpy(ct->required_parent, &data[off], 32);
+                    off += 32;
+                }
+                if (flags & CONTRACT_Q_FLAG_ORIGIN_MASK) {
+                    if (off + 8 > len) {
+                        ok = false;
+                        break;
+                    }
+                    if (ct) ct->forbidden_origin_mask = read_u64_le(&data[off]);
+                    off += 8;
+                }
+                if (flags & CONTRACT_Q_FLAG_TARGET_PUB) {
+                    if (off + 32 > len) {
+                        ok = false;
+                        break;
+                    }
+                    if (ct) memcpy(ct->target_pub, &data[off], 32);
+                    off += 32;
+                }
+                if (ct) net_finish_contract_decode(ct);
+            }
+            if (ok) net_state.callbacks.on_contracts(contracts, n);
         }
         break;
 
@@ -2177,12 +3651,13 @@ void net_poll(void) {
 
 #endif /* __EMSCRIPTEN__ */
 
-void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
-                    uint16_t mining_target,
-                    uint8_t buy_grade, int8_t place_station,
-                    int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id, uint32_t input_tick) {
+uint32_t net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
+                        uint16_t mining_target,
+                        uint8_t buy_grade, int8_t place_station,
+                        int8_t place_ring, int8_t place_slot,
+                        uint16_t action_id, uint32_t input_tick) {
     uint8_t buf[NET_INPUT_MSG_SIZE];
+    uint32_t sent_ms = net_now_ms32();
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
@@ -2199,7 +3674,9 @@ void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[12] = (uint8_t)(action_id & 0xFFu);
     buf[13] = (uint8_t)(action_id >> 8);
     write_u32_le(&buf[14], input_tick);
+    write_u32_le(&buf[18], sent_ms);
     ws_send_binary(buf, NET_INPUT_MSG_SIZE);
+    return sent_ms;
 }
 
 bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,

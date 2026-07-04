@@ -115,6 +115,7 @@ typedef struct {
     uint32_t capacity;            /* always power of 2 */
     uint32_t mask;                /* capacity - 1 */
     uint32_t occupied;            /* number of occupied slots */
+    uint32_t overflow_count;      /* active asteroids dropped by full cells */
 } spatial_grid_t;
 
 /* Map world position to cell coordinates (unbounded). */
@@ -144,10 +145,14 @@ static inline const spatial_cell_t *spatial_grid_lookup(const spatial_grid_t *g,
 
 #define SIGNAL_GRID_DIM  256
 #define SIGNAL_CELL_SIZE 200.0f  /* covers ±25,600 units from origin */
+#define SIGNAL_BEACON_MAX (MAX_STATIONS * MAX_MODULES_PER_STATION)
 
 typedef struct {
     float *strength;           /* heap-allocated SIGNAL_GRID_DIM² floats */
     float offset_x, offset_y;  /* world offset to center grid */
+    vec2  beacons[SIGNAL_BEACON_MAX];
+    uint16_t beacon_count;
+    bool  beacon_valid;
     bool  valid;                /* false = needs rebuild */
 } signal_grid_t;
 
@@ -215,6 +220,8 @@ enum {
 typedef struct {
     uint32_t apply_tick;
     uint16_t input_seq;
+    uint32_t client_sent_ms;
+    uint32_t server_recv_ms;
     input_intent_t intent;
 } movement_input_cmd_t;
 
@@ -229,6 +236,8 @@ typedef struct {
     bool connected;
     uint8_t id;
     void *conn;
+    uint64_t client_addr_key; /* per-IP connection limit key; not persisted */
+    bool client_addr_key_valid;
     uint8_t session_token[8]; /* stable identity for save persistence */
     bool session_ready;       /* true once client sends SESSION message */
     bool grace_period;        /* true while waiting for reconnect after disconnect */
@@ -300,23 +309,101 @@ typedef struct {
     uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
+    uint32_t asteroid_motion_sent_tick[MAX_ASTEROIDS];
+    vec2 asteroid_motion_sent_pos[MAX_ASTEROIDS];
+    vec2 asteroid_motion_sent_vel[MAX_ASTEROIDS];
+    uint32_t asteroid_state_sent_tick[MAX_ASTEROIDS];
+    uint32_t asteroid_state_sent_sig[MAX_ASTEROIDS];
+    uint32_t asteroid_state_sent_semantic_sig[MAX_ASTEROIDS];
+    uint32_t fracture_challenge_sent_id[MAX_ASTEROIDS];
+    uint32_t fracture_resolved_sent_ids[MAX_PENDING_RESOLVES];
+    uint8_t fracture_resolved_sent_cursor;
     net_payload_cache_t player_ship_cache;
     net_payload_cache_t hold_ingots_cache;
     net_payload_cache_t player_manifest_cache;
     net_payload_cache_t inspect_snapshot_cache;
+    net_payload_cache_t contracts_cache;
+    uint64_t contracts_semantic_hash;
+    bool contracts_semantic_valid;
+    uint64_t contracts_last_sent_ms;
     net_payload_cache_t known_contracts_cache;
     net_payload_cache_t known_ledger_cache;
     net_payload_cache_t delivery_ledger_cache;
+    net_payload_cache_t station_identity_cache[MAX_STATIONS];
+    net_payload_cache_t world_stations_cache;
+    net_payload_cache_t world_players_cache;
+    net_payload_cache_t world_player_motion_cache;
+    net_payload_cache_t world_player_motion_delta_cache;
+    net_payload_cache_t world_player_motion_posed_cache;
+    net_payload_cache_t world_player_dock_cache;
+    bool player_motion_delta_valid[MAX_PLAYERS];
+    int16_t player_motion_delta_qx[MAX_PLAYERS];
+    int16_t player_motion_delta_qy[MAX_PLAYERS];
+    vec2 player_motion_delta_vel[MAX_PLAYERS];
+    uint8_t player_motion_delta_angle[MAX_PLAYERS];
+    uint32_t player_motion_delta_tick[MAX_PLAYERS];
+    uint32_t player_motion_delta_heartbeat_tick;
+    uint64_t world_player_motion_last_sent_ms;
+    uint64_t world_players_last_sent_ms;
+    bool world_time_sent;
+    uint32_t world_time_last_sent_tick;
+    net_payload_cache_t world_npcs_cache;
+    net_payload_cache_t world_npc_motion_cache;
+    uint64_t world_npcs_semantic_hash;
+    bool world_npcs_semantic_valid;
+    uint32_t world_npcs_last_sent_tick;
+    uint32_t world_npc_motion_last_sent_tick;
+    uint32_t npc_motion_sent_tick[MAX_NPC_SHIPS];
+    uint8_t npc_motion_sent_flags[MAX_NPC_SHIPS];
+    vec2 npc_motion_sent_pos[MAX_NPC_SHIPS];
+    vec2 npc_motion_sent_vel[MAX_NPC_SHIPS];
+    float npc_motion_sent_angle[MAX_NPC_SHIPS];
+    net_payload_cache_t world_npc_status_cache;
+    uint32_t world_npc_status_last_sent_tick;
+    net_payload_cache_t world_scaffolds_cache;
+    bool scaffold_sent[MAX_SCAFFOLDS];
+    uint64_t scaffold_sent_sig[MAX_SCAFFOLDS];
+    uint64_t scaffold_motion_sent_sig[MAX_SCAFFOLDS];
+    net_payload_cache_t world_cargo_pods_cache;
+    net_payload_cache_t world_cargo_pod_motion_cache;
+    uint64_t world_cargo_pods_semantic_hash;
+    bool world_cargo_pods_semantic_valid;
+    uint32_t world_cargo_pods_last_sent_tick;
+    uint32_t world_cargo_pod_motion_last_sent_tick;
+    bool cargo_pod_sent[MAX_CARGO_PODS];
+    uint64_t cargo_pod_sent_sig[MAX_CARGO_PODS];
+    uint32_t cargo_pod_motion_sent_tick[MAX_CARGO_PODS];
+    vec2 cargo_pod_motion_sent_pos[MAX_CARGO_PODS];
+    vec2 cargo_pod_motion_sent_vel[MAX_CARGO_PODS];
+    float cargo_pod_motion_sent_rotation[MAX_CARGO_PODS];
+    net_payload_cache_t world_interactions_cache;
+    net_payload_cache_t world_interaction_drift_cache;
+    uint64_t world_interactions_semantic_hash;
+    bool world_interactions_semantic_valid;
+    uint32_t world_interactions_last_sent_tick;
+    uint32_t world_interaction_drift_last_sent_tick;
+    uint32_t world_interaction_drift_block_tick;
     /* Set when an action result is sent. The next player payload broadcast
      * bypasses hash suppression so rejected/no-op actions also reconcile
      * any optimistic client state. */
     bool force_authoritative_resync;
+    bool input_ack_state_valid;
+    uint32_t input_ack_state_tick;
+    vec2 input_ack_state_pos;
+    vec2 input_ack_state_vel;
+    float input_ack_state_angle;
+    uint8_t input_ack_state_flags;
+    uint8_t input_ack_state_tractor_level;
+    uint8_t input_ack_state_towed_count;
+    uint16_t input_ack_state_towed_fragments[10];
     movement_input_cmd_t movement_queue[PLAYER_MOVEMENT_QUEUE_CAP];
     uint8_t movement_queue_count;
-    /* Last movement/control input sequence accepted from this client. Mirrored
-     * back in WORLD_PLAYERS so the client can reason about prediction age. */
+    /* Last movement/control input sequence accepted from this client. Private
+     * receipts carry freshness; WORLD_PLAYERS mirrors it on semantic heartbeats. */
     uint16_t last_input_seq;
     uint32_t last_input_tick;
+    uint32_t last_input_client_sent_ms;
+    uint32_t last_input_server_recv_ms;
     /* Runtime-only analytics state. Persisted identity remains session_token
      * / pubkey; these fields only drive stdout JSON and CloudWatch EMF. */
     uint64_t analytics_connected_ms;
@@ -332,6 +419,7 @@ typedef struct {
     uint16_t analytics_unacked_inputs;
     uint16_t analytics_replay_depth;
     uint8_t analytics_action_queue_depth;
+    uint8_t analytics_recovery_flags;
     /* Last one-shot action id accepted on NET_MSG_INPUT. Retransmitted
      * action frames keep the same id, so the server can ignore duplicates
      * without discarding the packet's current movement flags. */
@@ -698,6 +786,7 @@ void server_merge_one_shot_input(input_intent_t *dst,
                                  const input_intent_t *src);
 bool server_dispatch_input_message(world_t *w, int player_idx,
                                    const uint8_t *data, int len,
+                                   uint32_t server_recv_ms,
                                    server_input_dispatch_result_t *out);
 uint16_t server_signed_action_payload_id(const uint8_t *payload,
                                          uint16_t payload_len,

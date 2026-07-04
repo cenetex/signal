@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -466,6 +466,17 @@ smoke-ack-lag:
 smoke-latency-suite: build-web build-server
 	node scripts/smoke-latency-suite.mjs
 
+RELAY_PROBE_URL ?= ws://127.0.0.1:9091/ws
+RELAY_PROBE_CLIENTS ?= 2
+RELAY_PROBE_WARMUP_MS ?= 1500
+RELAY_PROBE_DURATION_MS ?= 4000
+RELAY_PROBE_PING_HZ ?= 0.5
+RELAY_PROBE_INPUT_ACK_HZ ?= 2
+RELAY_PROBE_EXTRA ?=
+
+relay-traffic-probe:
+	node scripts/relay-traffic-probe.mjs --url=$(RELAY_PROBE_URL) --clients=$(RELAY_PROBE_CLIENTS) --warmup-ms=$(RELAY_PROBE_WARMUP_MS) --duration-ms=$(RELAY_PROBE_DURATION_MS) --ping-hz=$(RELAY_PROBE_PING_HZ) --input-ack-hz=$(RELAY_PROBE_INPUT_ACK_HZ) $(RELAY_PROBE_EXTRA)
+
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs the fast/non-soak tests,
 # then joins gcovr line coverage with lizard per-function complexity to
@@ -509,6 +520,7 @@ LATENCY_UPSTREAM ?= ws://127.0.0.1:9091/ws
 LATENCY_CLIENT_MS ?= 250
 LATENCY_SERVER_MS ?= 250
 LATENCY_WORLD_PLAYERS_MS ?= 0
+LATENCY_INPUT_APPLIED_MS ?= 0
 LATENCY_JITTER_MS ?= 80
 
 latency-proxy:
@@ -518,13 +530,14 @@ latency-proxy:
 		--client-ms=$(LATENCY_CLIENT_MS) \
 		--server-ms=$(LATENCY_SERVER_MS) \
 		--server-world-players-ms=$(LATENCY_WORLD_PLAYERS_MS) \
+		--server-input-applied-ms=$(LATENCY_INPUT_APPLIED_MS) \
 		--jitter-ms=$(LATENCY_JITTER_MS)
 
 latency-proxy-high:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=450 LATENCY_SERVER_MS=450 LATENCY_JITTER_MS=150
 
 latency-proxy-ack-lag:
-	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
+	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_INPUT_APPLIED_MS=550 LATENCY_JITTER_MS=10
 
 RTC_GATEWAY_LISTEN ?= 127.0.0.1:19093
 RTC_GATEWAY_UPSTREAM ?= ws://127.0.0.1:9091/ws

@@ -1,7 +1,7 @@
 # Signal: Sector One — Engineering Design Document
 
-**Version:** 1.1
-**Date:** 2026-06-13
+**Version:** 1.2
+**Date:** 2026-07-03
 **Status:** Shipped / Live (Sector One)
 **Live:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 
@@ -318,9 +318,10 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
    ├── NPC brain step — heuristic or neural flight decisions
    └── Autopilot step — mining→tow→dock→sell loop
 
-2. Signal Grid Rebuild
-   ├── rebuild_signal_chain() — trace station connectivity to roots
-   ├── signal_grid_t recomputation — max signal across connected stations
+2. Signal Lookup (grid is event-driven, not per-tick)
+   ├── rebuild_signal_chain() + signal_grid_t recomputation run only on
+   │   topology changes (world init/load, station activation/construction)
+   ├── Per-tick consumers read the cached grid via signal_strength_at()
    └── Boundary push forces applied to out-of-signal ships
 
 3. Physics Step
@@ -338,7 +339,9 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
    ├── Ship-vs-station: crush damage
    ├── Ship-vs-ship ramming: threshold_mult=0.7 for deliberate hits
    ├── Fragment-vs-station hopper beam: smelt initiation
-   └── Spatial hash grid: O(1) neighbor lookups, rebuild per tick
+   └── Spatial hash grid: O(1) neighbor lookups, rebuilt inside the 30 Hz
+       gravity/collision gate (asteroid–asteroid only; ship–asteroid
+       collision does not use it yet — see docs/optimization-report.md)
 
 5. Mining Step
    ├── sim_mining_beam_step() — range/cone/tier validation
@@ -377,7 +380,42 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
    └── Payload caching: hash-suppressed re-broadcast (force on action result)
 ```
 
-### 5.1 Singleplayer vs Multiplayer
+### 5.1 Performance Characteristics
+
+A static hot-path analysis of the tick pipeline lives in
+[docs/optimization-report.md](docs/optimization-report.md) (2026-07-03). The
+short version:
+
+**Already right (do not regress):** the asteroid spatial grid (800-unit
+cells), the 30 Hz gate on N-body gravity/collision, the 256² cached signal
+grid, tiered netcode rates (120/20/10/4 Hz) with per-player viewport culling
+and byte budgets, and client-side per-frame render list caching.
+
+**Known scaling walls:** the dominant costs are not physics math but loop
+*shapes* of the form `entities × MAX_STATIONS × 120 Hz`:
+
+1. `sim_step_asteroid_dynamics` scans all 128 station slots twice per active
+   asteroid per tick (despawn margin + station vortex).
+2. NPC collision (`npc_resolve_station_collisions`) calls
+   `station_build_geom` per NPC per colliding station with no broad-phase
+   distance check, and NPC/player–asteroid collision scans all 2,048 asteroid
+   slots instead of the spatial grid.
+3. `signal_strength_at` runs a hidden full-station scan (off-relay dock
+   beacons) before every cached-grid lookup, defeating its O(1) contract.
+4. The per-tick manifest reconciliation pass linearly scans every station
+   manifest for every finished commodity at 120 Hz.
+5. Autosave serializes the world with synchronous `fwrite` on the sim
+   thread every 30 s (periodic hitch).
+
+The report ranks seven fixes (compact active-station array, cached beacon
+list, broad-phase guards, per-tick shared station-geometry cache, spatial-grid
+reuse, manifest count cache, async save writer). These are prerequisites for
+lifting entity caps under #285 — the walls above steepen quadratically as
+station and asteroid counts grow. `world_sim_step` has no per-phase timing
+instrumentation yet; adding a `SIM_PROFILE`-gated phase histogram is the
+first step before landing any of the fixes.
+
+### 5.2 Singleplayer vs Multiplayer
 
 | Mode | Sim Location | Input Path |
 |---|---|---|
@@ -593,7 +631,7 @@ rebuild_signal_chain(world_t *w):
   4. Mark signal_cache.valid = true
 ```
 
-Rebuild runs every tick. Connected stations form a spanning tree from roots. Isolated stations (no path to a root) don't contribute to the grid.
+Rebuild is event-driven — it runs at world init/load and on station topology changes (activation, construction, signal-chain edits), not per tick. Connected stations form a spanning tree from roots. Isolated stations (no path to a root) don't contribute to the grid. Note: `signal_strength_at` currently also scans stations for off-relay dock beacons on every call — see [docs/optimization-report.md](docs/optimization-report.md) Finding 3.
 
 ---
 
@@ -973,6 +1011,7 @@ Enforced by `scripts/check_banned_apis.py` in `make banned-apis`.
 | Anime Integration | [docs/anime-integration-plan.md](docs/anime-integration-plan.md) | Episode playback architecture |
 | Protocol Telemetry | [docs/protocol-telemetry.md](docs/protocol-telemetry.md) | Wire protocol stream reference |
 | Replay Harness | [docs/replay-harness.md](docs/replay-harness.md) | Deterministic replay tool docs |
+| Optimization Report | [docs/optimization-report.md](docs/optimization-report.md) | Sim/render hot-path analysis and ranked fix plan |
 | C Safety Policy | [docs/c_safety_policy.md](docs/c_safety_policy.md) | C safety rules and banned APIs |
 | Settlement Events | [docs/settlement-event-model.md](docs/settlement-event-model.md) | Settlement engine event model |
 | Solana Bridge | [docs/signal-solana-bridge.md](docs/signal-solana-bridge.md) | On-chain bridge design |

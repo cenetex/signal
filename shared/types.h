@@ -930,6 +930,7 @@ typedef struct {
     int8_t towed_by; /* player id, -1 = loose */
     uint8_t tractor_station; /* 0 = none, otherwise station index + 1 */
     uint8_t tractor_module;  /* 0 = none, otherwise module index + 1 */
+    uint8_t custody_station; /* 0 = none; station index + 1 owns/charges this pod */
 } cargo_pod_t;
 
 static inline void cargo_pod_clear_module_tractor(cargo_pod_t *pod) {
@@ -974,6 +975,23 @@ static inline void cargo_pod_set_module_tractor(cargo_pod_t *pod,
     }
     pod->tractor_station = (uint8_t)(station_idx + 1);
     pod->tractor_module = (uint8_t)(module_idx + 1);
+}
+
+static inline int cargo_pod_custody_station(const cargo_pod_t *pod) {
+    if (!pod || pod->custody_station == 0) return -1;
+    int station = (int)pod->custody_station - 1;
+    return (station >= 0 && station < MAX_STATIONS) ? station : -1;
+}
+
+static inline void cargo_pod_set_station_custody(cargo_pod_t *pod,
+                                                 int station_idx) {
+    if (!pod || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    pod->custody_station = (uint8_t)(station_idx + 1);
+}
+
+static inline void cargo_pod_clear_station_custody(cargo_pod_t *pod) {
+    if (!pod) return;
+    pod->custody_station = 0;
 }
 
 typedef enum {

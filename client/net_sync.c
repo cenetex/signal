@@ -8,6 +8,8 @@
 #include "onboarding.h"
 #include "episode.h"
 #include "contract_objective.h"
+#include "net_input_lead.h"
+#include "net_clock.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -21,11 +23,13 @@
 #define ASTEROID_RENDER_CORRECTION_SEC 0.18f
 #define ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC 0.75f
 #define NPC_RENDER_CORRECTION_SEC 0.18f
-#define NPC_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
+#define NPC_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
+#define REMOTE_PLAYER_RENDER_CORRECTION_SEC 0.18f
+#define REMOTE_PLAYER_RENDER_EXTRAPOLATE_MAX_SEC 2.25f
 #define SCAFFOLD_RENDER_CORRECTION_SEC 0.18f
 #define SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
 #define CARGO_POD_RENDER_CORRECTION_SEC 0.18f
-#define CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
+#define CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
 #define REMOTE_PENDING_RECEIPT_CAP 64
 #define NET_INPUT_JITTER_BUFFER_TICKS 1u
 /* Replay is keyed to server-anchored sim ticks. Movement packets carry the
@@ -91,10 +95,17 @@ static bool net_input_seq_after(uint16_t a, uint16_t b) {
     return (int16_t)(a - b) > 0;
 }
 
+float net_prediction_control_rtt_sec(void) {
+    return net_latency_control_rtt_sec(&g.net_ping_latency,
+                                       &g.net_ack_latency,
+                                       g.net_time,
+                                       NET_LATENCY_STALE_SEC,
+                                       g.net_last_ping_rtt,
+                                       g.net_last_ack_rtt);
+}
+
 static uint32_t net_one_way_latency_ticks(void) {
-    float rtt = g.net_last_ping_rtt > 0.0f
-        ? g.net_last_ping_rtt
-        : g.net_last_ack_rtt;
+    float rtt = net_prediction_control_rtt_sec();
     if (rtt <= 0.0f) return 0;
     uint32_t ticks = (uint32_t)lroundf((rtt * 0.5f) / SIM_DT);
     if (ticks > NET_INPUT_APPLY_FUTURE_MAX_TICKS)
@@ -124,6 +135,25 @@ uint32_t net_estimated_server_tick_now(uint32_t server_tick) {
         tick += elapsed_ticks;
     }
     return tick;
+}
+
+static bool net_prediction_tick_skew_for_sample(uint32_t server_tick,
+                                                int32_t *skew_out) {
+    if (server_tick == 0 || !g.net_prediction_tick_valid) return false;
+    uint32_t estimated_tick = net_estimated_server_tick_now(server_tick);
+    if (estimated_tick == 0) estimated_tick = server_tick;
+    int32_t skew = (int32_t)(g.net_prediction_tick - estimated_tick);
+    if (skew_out) *skew_out = skew;
+    return true;
+}
+
+static void net_record_prediction_tick_skew(uint32_t server_tick) {
+    int32_t skew = 0;
+    if (!net_prediction_tick_skew_for_sample(server_tick, &skew)) return;
+    int32_t abs_skew = skew < 0 ? -skew : skew;
+    g.net_motion.tick_skew = skew;
+    if (abs_skew > g.net_motion.max_tick_skew_abs)
+        g.net_motion.max_tick_skew_abs = abs_skew;
 }
 
 void net_anchor_prediction_tick(uint32_t server_tick, bool clear_replay) {
@@ -577,6 +607,7 @@ void net_reset_local_input_stream(void) {
     g.action_predict_timer = 0.0f;
 
     g.net_input_timer = 0.0f;
+    g.net_input_ack_timer = 0.0f;
     g.net_input_have_last = false;
     g.net_last_sent_flags = 0;
     g.net_last_sent_mining_target = 0xFFFFu;
@@ -587,6 +618,11 @@ void net_reset_local_input_stream(void) {
     g.net_input_tick_protocol = false;
     g.net_local_state_ready = false;
     g.net_last_ack_rtt = 0.0f;
+    net_latency_stats_reset(&g.net_ack_latency);
+    g.net_missed_input_acks = 0;
+    g.net_ack_recovery_packets = 0;
+    g.net_ack_miss_windows_reported = 0;
+    g.net_ack_recovery_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
     g.net_max_ack_rtt_5s = 0.0f;
     g.net_ack_window_elapsed = 0.0f;
     g.net_input_packets_sent = 0;
@@ -599,12 +635,23 @@ void net_reset_local_input_stream(void) {
     memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
     memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    g.net_motion.input_lead_margin_ticks =
+        NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     g.local_player_render_offset = v2(0.0f, 0.0f);
     net_replay_reset();
 }
 
 void reset_remote_dynamic_sync(void) {
     net_reset_local_input_stream();
+    g.net_last_ping_raw_rtt = 0.0f;
+    g.net_last_ping_rtt = 0.0f;
+    g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_ack_transport_sample_time = 0.0f;
+    g.net_max_ping_rtt_5s = 0.0f;
+    g.net_ping_samples = 0;
+    net_latency_stats_reset(&g.net_ping_latency);
+    g.net_missed_pongs = 0;
+    g.net_ping_miss_windows_reported = 0;
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
@@ -738,6 +785,80 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
      * render time, ensuring game logic and rendering see the same positions. */
 }
 
+void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
+                                  int count) {
+    if (!asteroids || count <= 0) return;
+
+    float elapsed = g.asteroid_interp.t * g.asteroid_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        g.asteroid_interp.prev[i] = asteroid_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
+    g.asteroid_interp.interval = lerpf(g.asteroid_interp.interval,
+                                       packet_interval, 0.3f);
+    g.asteroid_interp.t = 0.0f;
+
+    bool received[MAX_ASTEROIDS];
+    memset(received, 0, sizeof(received));
+
+    for (int i = 0; i < count; i++) {
+        uint16_t idx = asteroids[i].index;
+        if (idx >= MAX_ASTEROIDS) continue;
+        received[idx] = true;
+
+        asteroid_t* a = &g.asteroid_interp.curr[idx];
+        if (!a->active) continue;
+        float carried_age = g.asteroid_interp.prev[idx].age;
+        vec2 carried_vel = a->vel;
+        bool keep_velocity =
+            !isfinite(asteroids[i].vx) || !isfinite(asteroids[i].vy);
+        a->pos.x = asteroids[i].x;
+        a->pos.y = asteroids[i].y;
+        a->vel.x = keep_velocity ? carried_vel.x : asteroids[i].vx;
+        a->vel.y = keep_velocity ? carried_vel.y : asteroids[i].vy;
+        a->age = carried_age;
+    }
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!received[i] && g.asteroid_interp.curr[i].active)
+            g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
+    }
+}
+
+void apply_remote_asteroid_state_q(const NetAsteroidStateQ* asteroids,
+                                   int count) {
+    if (!asteroids || count <= 0) return;
+    for (int i = 0; i < count; i++) {
+        uint16_t idx = asteroids[i].index;
+        if (idx >= MAX_ASTEROIDS) continue;
+        asteroid_t *a = &g.asteroid_interp.curr[idx];
+        if (!a->active) continue;
+        a->hp = asteroids[i].hp;
+        a->ore = asteroids[i].ore;
+        a->radius = asteroids[i].radius;
+        a->smelt_progress = asteroids[i].smelt_progress;
+        a->grade = asteroids[i].grade;
+        a->crystal_stage = asteroids[i].crystal_stage;
+        a->phase = asteroids[i].phase;
+        if (a->max_hp < a->hp) a->max_hp = a->hp;
+        if (a->max_ore < a->ore) a->max_ore = a->ore;
+
+        asteroid_t *prev = &g.asteroid_interp.prev[idx];
+        if (prev->active) {
+            prev->hp = a->hp;
+            prev->ore = a->ore;
+            prev->radius = a->radius;
+            prev->smelt_progress = a->smelt_progress;
+            prev->grade = a->grade;
+            prev->crystal_stage = a->crystal_stage;
+            prev->phase = a->phase;
+            if (prev->max_hp < prev->hp) prev->max_hp = prev->hp;
+            if (prev->max_ore < prev->ore) prev->max_ore = prev->ore;
+        }
+    }
+}
+
 void apply_remote_npcs(const NetNpcState* npcs, int count) {
     float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
     npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
@@ -785,6 +906,121 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
     }
 
     /* World NPCs updated by interpolate_world_for_render(). */
+}
+
+void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
+    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
+    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
+
+    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
+    g.npc_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = npcs[i].index;
+        if (idx >= MAX_NPC_SHIPS) continue;
+
+        npc_ship_t* n = &g.npc_interp.curr[idx];
+        if (!n->active) continue;
+        n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
+        n->ship.pos.x = npcs[i].x;
+        n->ship.pos.y = npcs[i].y;
+        n->ship.vel.x = npcs[i].vx;
+        n->ship.vel.y = npcs[i].vy;
+        n->ship.angle = npcs[i].angle;
+    }
+
+    /* Visibility and identity stay owned by full WORLD_NPCS records. */
+}
+
+void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
+    if (!npcs || count <= 0) return;
+
+    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
+    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
+
+    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
+    g.npc_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = npcs[i].index;
+        if (idx >= MAX_NPC_SHIPS) continue;
+
+        npc_ship_t* n = &g.npc_interp.curr[idx];
+        if (!n->active) continue;
+        n->ship.pos.x = npcs[i].x;
+        n->ship.pos.y = npcs[i].y;
+    }
+}
+
+void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
+    if (!npcs || count <= 0) return;
+
+    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
+    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
+
+    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
+    g.npc_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = npcs[i].index;
+        if (idx >= MAX_NPC_SHIPS) continue;
+
+        npc_ship_t* n = &g.npc_interp.curr[idx];
+        if (!n->active) continue;
+        n->ship.pos.x = npcs[i].x;
+        n->ship.pos.y = npcs[i].y;
+        n->ship.angle = npcs[i].angle;
+    }
+}
+
+void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count) {
+    if (!npcs || count <= 0) return;
+
+    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
+    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
+
+    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
+    g.npc_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = npcs[i].index;
+        if (idx >= MAX_NPC_SHIPS) continue;
+
+        npc_ship_t* n = &g.npc_interp.curr[idx];
+        if (!n->active) continue;
+        n->ship.pos.x = npcs[i].x;
+        n->ship.pos.y = npcs[i].y;
+        n->ship.vel.x = npcs[i].vx;
+        n->ship.vel.y = npcs[i].vy;
+    }
+}
+
+void apply_remote_npc_status(const NetNpcStatusState* npcs, int count) {
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = npcs[i].index;
+        if (idx >= MAX_NPC_SHIPS) continue;
+
+        npc_ship_t* n = &g.npc_interp.curr[idx];
+        if (!n->active) continue;
+        n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
+        n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
+        n->ship.hull_class = npc_default_hull_class_for_role(n->role);
+        n->target_asteroid = npcs[i].target_asteroid;
+        npc_set_towed_fragment_index(n, npcs[i].towed_fragment);
+        n->towed_scaffold = -1;
+    }
 }
 
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool) {
@@ -1249,9 +1485,6 @@ void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
-    /* Server sends a snapshot of every active scaffold each tick. Anything
-     * not in the snapshot is gone; clear the interpolation target so render,
-     * SHIPYARD UI, and tow targeting converge on server truth. */
     float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
     elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_SCAFFOLDS; i++)
@@ -1262,6 +1495,9 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     g.scaffold_interp.t = 0.0f;
 
     bool seen[MAX_SCAFFOLDS] = { false };
+    const NetProtocolInfo *info = net_protocol_info();
+    bool replacement_snapshot = !info ||
+        (info->capabilities & SIGNAL_PROTOCOL_CAP_SCAFFOLD_REMOVE) == 0;
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_SCAFFOLDS) continue;
@@ -1292,8 +1528,54 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
         }
         seen[idx] = true;
     }
-    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-        if (!seen[i]) g.scaffold_interp.curr[i].active = false;
+    if (replacement_snapshot) {
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            if (!seen[i]) g.scaffold_interp.curr[i].active = false;
+        }
+    }
+}
+
+void apply_remote_scaffold_remove(const uint8_t* indices, int count) {
+    if (!indices || count <= 0) return;
+
+    float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        g.scaffold_interp.prev[i] = scaffold_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
+    g.scaffold_interp.interval = lerpf(g.scaffold_interp.interval,
+                                       packet_interval, 0.3f);
+    g.scaffold_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = indices[i];
+        if (idx >= MAX_SCAFFOLDS) continue;
+        g.scaffold_interp.curr[idx].active = false;
+    }
+}
+
+void apply_remote_scaffold_motion(const NetScaffoldMotionState* received,
+                                  int count) {
+    if (!received || count <= 0) return;
+
+    float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        g.scaffold_interp.prev[i] = scaffold_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
+    g.scaffold_interp.interval = lerpf(g.scaffold_interp.interval,
+                                       packet_interval, 0.3f);
+    g.scaffold_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = received[i].index;
+        if (idx >= MAX_SCAFFOLDS) continue;
+        scaffold_t *sc = &g.scaffold_interp.curr[idx];
+        if (!sc->active) continue;
+        sc->pos = v2(received[i].pos_x, received[i].pos_y);
+        sc->vel = v2(received[i].vel_x, received[i].vel_y);
     }
 }
 
@@ -1308,6 +1590,9 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
     g.cargo_pod_interp.t = 0.0f;
 
     bool seen[MAX_CARGO_PODS] = { false };
+    const NetProtocolInfo *info = net_protocol_info();
+    bool replacement_snapshot = !info ||
+        (info->capabilities & SIGNAL_PROTOCOL_CAP_CARGO_POD_REMOVE) == 0;
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_CARGO_PODS) continue;
@@ -1330,8 +1615,81 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->tractor_module = received[i].tractor_module;
         seen[idx] = true;
     }
-    for (int i = 0; i < MAX_CARGO_PODS; i++) {
-        if (!seen[i]) g.cargo_pod_interp.curr[i].active = false;
+    if (replacement_snapshot) {
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            if (!seen[i]) g.cargo_pod_interp.curr[i].active = false;
+        }
+    }
+}
+
+void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
+    if (!indices || count <= 0) return;
+
+    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
+    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
+                                        packet_interval, 0.3f);
+    g.cargo_pod_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = indices[i];
+        if (idx >= MAX_CARGO_PODS) continue;
+        g.cargo_pod_interp.curr[idx].active = false;
+    }
+}
+
+void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* received,
+                                   int count) {
+    if (!received || count <= 0) return;
+
+    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
+    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
+                                        packet_interval, 0.3f);
+    g.cargo_pod_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = received[i].index;
+        if (idx >= MAX_CARGO_PODS) continue;
+
+        cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
+        if (!pod->active) continue;
+        pod->pos = v2(received[i].pos_x, received[i].pos_y);
+        pod->vel = v2(received[i].vel_x, received[i].vel_y);
+        pod->rotation = received[i].rotation;
+    }
+}
+
+void apply_remote_cargo_pod_linear(const NetCargoPodLinearState* received,
+                                   int count) {
+    if (!received || count <= 0) return;
+
+    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
+    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
+
+    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
+    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
+                                        packet_interval, 0.3f);
+    g.cargo_pod_interp.t = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = received[i].index;
+        if (idx >= MAX_CARGO_PODS) continue;
+
+        cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
+        if (!pod->active) continue;
+        pod->pos = v2(received[i].pos_x, received[i].pos_y);
+        pod->vel = v2(received[i].vel_x, received[i].vel_y);
     }
 }
 
@@ -1343,6 +1701,22 @@ void apply_remote_interactions(const sim_interaction_t *items, int count) {
         if (items[i].type == SIM_INTERACTION_NONE) continue;
         if (g.world.interactions.count >= SIM_MAX_INTERACTIONS) break;
         g.world.interactions.items[g.world.interactions.count++] = items[i];
+    }
+}
+
+void apply_remote_interaction_drift(const NetInteractionDriftState *items,
+                                    int count) {
+    if (!items || count <= 0) return;
+    if (count > SIM_MAX_INTERACTIONS) count = SIM_MAX_INTERACTIONS;
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = items[i].index;
+        if (idx >= g.world.interactions.count) continue;
+        sim_interaction_t *it = &g.world.interactions.items[idx];
+        if (it->type == SIM_INTERACTION_NONE) continue;
+        it->source_pos = v2(items[i].source_x, items[i].source_y);
+        it->target_pos = v2(items[i].target_x, items[i].target_y);
+        it->range = items[i].range;
+        it->intensity = items[i].intensity;
     }
 }
 
@@ -1497,13 +1871,38 @@ void apply_remote_hail_response(uint8_t station,
     onboarding_mark_hailed();
 }
 
+static NetPlayerState remote_player_render_state_at(int slot, float elapsed) {
+    const NetPlayerState *prev = &g.player_interp.prev[slot];
+    const NetPlayerState *curr = &g.player_interp.curr[slot];
+    NetPlayerState out = *curr;
+    if (!curr->active) return out;
+
+    if ((curr->flags & 4u) == 0u) {
+        out.x += curr->vx * elapsed;
+        out.y += curr->vy * elapsed;
+    }
+    if (prev->active) {
+        float blend =
+            clampf(elapsed / REMOTE_PLAYER_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
+        out.x = lerpf(prev->x, out.x, blend);
+        out.y = lerpf(prev->y, out.y, blend);
+        out.angle = lerp_angle(prev->angle, out.angle, blend);
+    }
+    return out;
+}
+
 void begin_player_state_batch(void) {
-    memcpy(g.player_interp.prev, g.player_interp.curr,
-           sizeof(g.player_interp.prev));
-    memset(g.player_interp.curr, 0, sizeof(g.player_interp.curr));
     float prev_interval = g.net_motion.packet_interval;
     float prev_raw_interval = g.net_motion.raw_packet_interval;
     float raw_elapsed = g.player_interp.t * g.player_interp.interval;
+    float render_elapsed =
+        clampf(raw_elapsed, 0.0f, REMOTE_PLAYER_RENDER_EXTRAPOLATE_MAX_SEC);
+    NetPlayerState carried[NET_MAX_PLAYERS];
+    for (int i = 0; i < NET_MAX_PLAYERS; i++)
+        carried[i] = remote_player_render_state_at(i, render_elapsed);
+    memcpy(g.player_interp.prev, carried, sizeof(g.player_interp.prev));
+    memcpy(g.player_interp.curr, carried, sizeof(g.player_interp.curr));
+
     g.net_motion.raw_packet_interval = raw_elapsed;
     if (raw_elapsed > g.net_motion.max_raw_packet_interval_run)
         g.net_motion.max_raw_packet_interval_run = raw_elapsed;
@@ -1531,6 +1930,7 @@ void net_record_input_ack(uint16_t input_seq_ack,
                           uint32_t input_tick_ack) {
     if (input_seq_ack == 0) return;
     if (input_tick_ack != 0) g.net_input_tick_protocol = true;
+    net_record_prediction_tick_skew(server_tick);
     net_observe_server_tick(server_tick);
     if (server_tick != 0 && !g.net_prediction_tick_valid) {
         net_anchor_prediction_tick(server_tick, true);
@@ -1545,7 +1945,13 @@ void net_record_input_ack(uint16_t input_seq_ack,
     net_input_timing_t *timing = &g.net_input_timing[index];
     if (timing->seq != input_seq_ack || timing->sent_at <= 0.0f) return;
 
-    float rtt = g.net_time - timing->sent_at;
+    float rtt = 0.0f;
+    if (timing->sent_ms != 0) {
+        uint32_t elapsed_ms = net_now_ms32() - timing->sent_ms;
+        rtt = (float)elapsed_ms / 1000.0f;
+    } else {
+        rtt = g.net_time - timing->sent_at;
+    }
     if (rtt < 0.0f || rtt > 30.0f) return;
     if (timing->target_tick != 0 && input_tick_ack != 0) {
         int32_t error = (int32_t)(input_tick_ack - timing->target_tick);
@@ -1553,14 +1959,22 @@ void net_record_input_ack(uint16_t input_seq_ack,
         g.net_motion.input_apply_error_ticks = error;
         if (abs_error > g.net_motion.max_input_apply_error_abs)
             g.net_motion.max_input_apply_error_abs = abs_error;
+        g.net_motion.input_lead_margin_ticks =
+            net_input_lead_margin_after_ack(
+                g.net_motion.input_lead_margin_ticks,
+                &g.net_motion.input_lead_exact_acks,
+                error);
     }
     g.net_last_ack_rtt = rtt;
+    net_latency_stats_observe(&g.net_ack_latency, rtt, g.net_time);
+    g.net_ack_miss_windows_reported = 0;
     if (rtt > g.net_max_ack_rtt_5s) g.net_max_ack_rtt_5s = rtt;
     if (rtt > g.net_motion.max_ack_rtt_run)
         g.net_motion.max_ack_rtt_run = rtt;
     g.net_motion.total_input_acks++;
     timing->seq = 0;
     timing->sent_at = 0.0f;
+    timing->sent_ms = 0;
     timing->target_tick = 0;
 }
 
@@ -1595,7 +2009,7 @@ static void record_local_player_motion_telemetry(float correction_dist,
     }
     if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
 
-    printf("[net-motion] pkt=%.3fs raw=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f input_tick_err=%d deferred=%u/%u replayed=%u/%u frames=%u\n",
+    printf("[net-motion] pkt=%.3fs raw=%.3fs corr=%.1f max5=%.1f applied=%.1f maxapp5=%.1f velerr=%.1f input_tick_err=%d lead_margin=%d deferred=%u/%u replayed=%u/%u frames=%u\n",
            g.net_motion.packet_interval,
            g.net_motion.raw_packet_interval,
            g.net_motion.correction_dist,
@@ -1604,6 +2018,7 @@ static void record_local_player_motion_telemetry(float correction_dist,
            g.net_motion.max_applied_correction_5s,
            g.net_motion.velocity_error,
            (int)g.net_motion.input_apply_error_ticks,
+           (int)g.net_motion.input_lead_margin_ticks,
            (unsigned)g.net_motion.deferred_samples,
            (unsigned)g.net_motion.samples,
            (unsigned)g.net_motion.replayed_samples,
@@ -1672,13 +2087,9 @@ void apply_remote_player_state(const NetPlayerState* state) {
         vec2 before_pos = sp->ship.pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
         bool force_rebase = false;
-        if (state->server_tick != 0 && g.net_prediction_tick_valid) {
-            int32_t skew =
-                (int32_t)(g.net_prediction_tick - state->server_tick);
-            int32_t abs_skew = skew < 0 ? -skew : skew;
-            g.net_motion.tick_skew = skew;
-            if (abs_skew > g.net_motion.max_tick_skew_abs)
-                g.net_motion.max_tick_skew_abs = abs_skew;
+        int32_t skew = 0;
+        if (net_prediction_tick_skew_for_sample(state->server_tick, &skew)) {
+            net_record_prediction_tick_skew(state->server_tick);
             force_rebase = skew > (int32_t)NET_REPLAY_REBASE_SKEW_TICKS;
         }
         bool has_input_ack = state->input_seq_ack != 0;
@@ -1691,6 +2102,20 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 net_input_seq_after(state->input_seq_ack, g.net_input_seq)) {
                 g.net_input_seq = state->input_seq_ack;
                 g.net_input_have_last = false;
+            }
+            if (state->ack_client_sent_ms != 0 &&
+                state->ack_server_recv_ms != 0 &&
+                state->ack_server_send_ms != 0) {
+                uint32_t now_ms = net_now_ms32();
+                float rtt_ms =
+                    (float)(uint32_t)(now_ms - state->ack_client_sent_ms);
+                float server_turnaround_ms =
+                    (float)(uint32_t)(state->ack_server_send_ms -
+                                      state->ack_server_recv_ms);
+                net_observe_transport_latency_sample(rtt_ms,
+                                                     server_turnaround_ms,
+                                                     state->server_tick,
+                                                     true);
             }
             net_record_input_ack(state->input_seq_ack,
                                  state->server_tick,
@@ -1710,6 +2135,24 @@ void apply_remote_player_state(const NetPlayerState* state) {
         }
         if (!state_docked && sp->docked) {
             accept_authoritative_local_launch_state(state, sp);
+            return;
+        }
+        if (g.local_server.active && net_is_loopback() &&
+            !net_replay_enabled()) {
+            apply_authoritative_local_motion(state, sp);
+            sync_local_dock_state_from_authority(state, sp);
+            apply_local_player_remote_flags(state, sp);
+            net_replay_reset();
+            net_anchor_prediction_tick(state->server_tick, false);
+            g.local_player_render_offset = v2(0.0f, 0.0f);
+            g.action_predict_timer = 0.0f;
+            if (!state_docked) {
+                sp->docked = false;
+                sp->in_dock_range = false;
+                sp->docking_approach = false;
+                sp->nearby_station = -1;
+            }
+            frame_camera_on_authoritative_undock(sp, state_docked);
             return;
         }
 
@@ -1806,10 +2249,26 @@ void apply_remote_player_state(const NetPlayerState* state) {
          * begin_player_state_batch() already shifted prev←curr. */
         bool was_active = g.player_interp.prev[state->player_id].active ||
             g.player_interp.curr[state->player_id].active;
-        g.player_interp.curr[state->player_id] = *state;
+        NetPlayerState next = *state;
+        if ((next.flags & NET_PLAYER_STATE_STATUS_ONLY) != 0u) {
+            next.flags &= (uint8_t)~NET_PLAYER_STATE_STATUS_ONLY;
+            if (g.player_interp.curr[state->player_id].active) {
+                uint8_t status_flags =
+                    next.flags & PLAYER_DOCK_STATUS_FLAGS_MASK;
+                next = g.player_interp.curr[state->player_id];
+                next.flags = (uint8_t)(
+                    (next.flags & (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK) |
+                    status_flags);
+                if ((status_flags & 0x04u) != 0u) {
+                    next.vx = 0.0f;
+                    next.vy = 0.0f;
+                }
+            }
+        }
+        g.player_interp.curr[state->player_id] = next;
         /* First time we see this player with a callsign — show join notice */
-        if (!was_active && state->active && state->callsign[0])
-            set_notice("%s joined.", state->callsign);
+        if (!was_active && next.active && next.callsign[0])
+            set_notice("%s joined.", next.callsign);
     }
 }
 
@@ -1960,17 +2419,10 @@ void interpolate_world_for_render(void) {
 const NetPlayerState* net_get_interpolated_players(void) {
     static NetPlayerState result[NET_MAX_PLAYERS];
 
-    float pt = clampf(g.player_interp.t, 0.0f, 1.0f);
-    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
-        const NetPlayerState *prev = &g.player_interp.prev[i];
-        const NetPlayerState *curr = &g.player_interp.curr[i];
-        result[i] = *curr;
-        if (prev->active && curr->active) {
-            result[i].x = lerpf(prev->x, curr->x, pt);
-            result[i].y = lerpf(prev->y, curr->y, pt);
-            result[i].angle = lerp_angle(prev->angle, curr->angle, pt);
-        }
-    }
+    float elapsed = clampf(g.player_interp.t * g.player_interp.interval,
+                           0.0f, REMOTE_PLAYER_RENDER_EXTRAPOLATE_MAX_SEC);
+    for (int i = 0; i < NET_MAX_PLAYERS; i++)
+        result[i] = remote_player_render_state_at(i, elapsed);
     return result;
 }
 

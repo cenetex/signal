@@ -111,7 +111,10 @@ def parse_log(path: Path) -> dict[str, Any]:
     text = path.read_text(errors="replace") if path.exists() else ""
     metrics: dict[str, Any] = {
         "bot_players_spawned": text.count("bot player "),
-        "server_brain_loaded": "loaded neural bot brain checkpoint" in text,
+        "server_brain_loaded": (
+            "loaded neural bot brain checkpoint" in text
+            or "using built-in CRLPLRIMES flight brain" in text
+        ),
         "contract_teacher_fallback": "contract brain: teacher fallback" in text,
         "contract_brain_loaded": "loaded neural contract brain checkpoint" in text,
         "stuck_replans_total": 0,
@@ -222,9 +225,8 @@ def run_case(args: argparse.Namespace, mode: str, port: int, checkpoint: str) ->
         }
     )
     if mode == "neural":
-        if not checkpoint:
-            raise SystemExit("neural mode requires --checkpoint or SIGNAL_BOT_BRAIN_CHECKPOINT")
-        env["SIGNAL_BOT_BRAIN_CHECKPOINT"] = checkpoint
+        if checkpoint:
+            env["SIGNAL_BOT_BRAIN_CHECKPOINT"] = checkpoint
         if args.contract_checkpoint:
             env["SIGNAL_BOT_CONTRACT_BRAIN_CHECKPOINT"] = args.contract_checkpoint
 
