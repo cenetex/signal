@@ -49,6 +49,35 @@ void asteroid_step_thrown_state(world_t *w) {
     }
 }
 
+typedef struct {
+    vec2 pos;
+    float radius;
+    int intake_modules;
+} asteroid_pull_station_t;
+
+static int collect_asteroid_pull_stations(const world_t *w,
+                                          asteroid_pull_station_t out[MAX_STATIONS]) {
+    int count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (st->scaffold) continue;
+        int intake_modules = 0;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].scaffold) continue;
+            module_type_t mt = st->modules[m].type;
+            if (mt == MODULE_HOPPER || mt == MODULE_FURNACE)
+                intake_modules++;
+        }
+        if (intake_modules == 0) continue;
+        out[count++] = (asteroid_pull_station_t) {
+            .pos = st->pos,
+            .radius = st->radius,
+            .intake_modules = intake_modules,
+        };
+    }
+    return count;
+}
+
 /* ================================================================== */
 /* Asteroid-asteroid gravity                                          */
 /* ================================================================== */
@@ -102,26 +131,14 @@ void step_asteroid_gravity(world_t *w, float dt) {
     /* Industrial pull: only stations with active intake/processing modules
      * generate asteroid attraction. Pull scales with industrial activity
      * and inversely with asteroid size (fragments pulled strongly). */
-    /* Precompute per-station intake module count */
-    int station_intake[MAX_STATIONS];
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_intake[s] = 0;
-        const station_t *st = &w->stations[s];
-        if (st->scaffold) continue;
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].scaffold) continue;
-            module_type_t mt = st->modules[m].type;
-            if (mt == MODULE_HOPPER || mt == MODULE_FURNACE)
-                station_intake[s]++;
-        }
-    }
+    asteroid_pull_station_t pull_stations[MAX_STATIONS];
+    int pull_station_count = collect_asteroid_pull_stations(w, pull_stations);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            int intake_modules = station_intake[s];
-            if (intake_modules == 0) continue; /* relay-only or scaffold stations: no pull */
-            const station_t *st = &w->stations[s];
+        for (int s = 0; s < pull_station_count; s++) {
+            const asteroid_pull_station_t *st = &pull_stations[s];
+            int intake_modules = st->intake_modules;
             vec2 delta = v2_sub(st->pos, a->pos);
             float dist_sq = v2_len_sq(delta);
             float pull_range = 600.0f + (float)intake_modules * 100.0f;
