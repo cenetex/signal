@@ -711,6 +711,27 @@ static int sr_spawn_station_market_pod(world_t *w,
     return pod_idx;
 }
 
+static void sr_move_pod_past_station_charge_boundary(world_t *w,
+                                                     int station_idx,
+                                                     int pod_idx)
+{
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return;
+    }
+    station_t *st = &w->stations[station_idx];
+    vec2 base = st->pos;
+    int dock_idx = sr_first_station_module(st, MODULE_DOCK);
+    if (dock_idx >= 0) {
+        base = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    }
+    w->cargo_pods[pod_idx].pos =
+        v2_add(base, v2(CARGO_POD_DOCK_TRACTOR_RANGE +
+                        HOPPER_INTAKE_STAGING_RANGE + 80.0f, 0.0f));
+    w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+}
+
 static bool sr_setup_world(const sr_config_t *config,
                            world_t *w,
                            server_player_t **out_sp,
@@ -2237,8 +2258,8 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         sp->input.buy_grade = MINING_GRADE_COMMON;
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
-        if (counts->buy_events <= buy_before ||
-            sp->ship.towed_pod_count <= start_towed_pods) {
+        sp->input.buy_product = false;
+        if (sp->ship.towed_pod_count <= start_towed_pods) {
             return false;
         }
         pod_idx = sp->ship.towed_pods[start_towed_pods];
@@ -2247,6 +2268,15 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             w->cargo_pods[pod_idx].towed_by != (int8_t)sp->id ||
             w->cargo_pods[pod_idx].commodity != COMMODITY_FRAME ||
             w->cargo_pods[pod_idx].manifest_count == 0) {
+            return false;
+        }
+
+        sr_move_pod_past_station_charge_boundary(
+            w, sp->current_station, pod_idx);
+        world_sim_step(w, SIM_DT);
+        sr_accumulate_events(w, counts, event_hash);
+        if (counts->buy_events <= buy_before ||
+            cargo_pod_custody_station(&w->cargo_pods[pod_idx]) >= 0) {
             return false;
         }
 
