@@ -15,7 +15,7 @@ SCAN_SUFFIXES = (".c", ".h")
 SCAN_EXTRA_FILES = ("tools/signal_replay.c",)
 
 BANNED = {
-    "sqrtf": "use v2_len() or fixp_sqrtf()",
+    "sqrtf": "use v2_len() or fixp_sqrtf(); raw sqrtf() is only allowed inside v2_len()",
     "sinf": "use v2_from_angle() or fixp_sinf()",
     "cosf": "use v2_from_angle() or fixp_cosf()",
     "atan2f": "use fixp_atan2f()",
@@ -27,6 +27,10 @@ BANNED = {
 }
 
 CALL_RE = re.compile(r"\b(" + "|".join(map(re.escape, sorted(BANNED))) + r")\s*\(")
+
+ALLOWLIST = {
+    ("shared/math_util.h", "sqrtf"),
+}
 
 
 def strip_line_comments(line: str, in_block: bool) -> tuple[str, bool]:
@@ -68,6 +72,8 @@ def main() -> int:
             line, in_block_comment = strip_line_comments(raw, in_block_comment)
             for match in CALL_RE.finditer(line):
                 api = match.group(1)
+                if (rel, api) in ALLOWLIST:
+                    continue
                 findings.append((rel, lineno, api, BANNED[api]))
 
     if findings:
