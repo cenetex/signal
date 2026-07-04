@@ -8,8 +8,8 @@
  * Binary protocol (little-endian):
  *   JOIN  (0x01): 1 type + 1 player_id
  *   LEAVE (0x02): 1 type + 1 player_id
- *   STATE (0x03): 1 type + 1 player_id + 5 float32 (x, y, vx, vy, angle)
- *   INPUT (0x04): 18 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick
+ *   STATE (0x03): 45 bytes, optional authoritative ack/timestamp tail
+ *   INPUT (0x04): 22 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick + client_sent_ms
  *   PROTOCOL_INFO (0x41): stream classes, record sizes, max counts, cadences
  *   ASTEROID_UPDATE (0x05): relay-only
  */
@@ -28,6 +28,8 @@ enum {
     NET_NAMED_INGOT_MAX = 255,
 };
 
+#define NET_PLAYER_STATE_STATUS_ONLY 0x80u
+
 typedef struct {
     uint8_t player_id;
     float x, y;
@@ -41,6 +43,7 @@ typedef struct {
      *   bit4 = tractor_active
      *   bit5 = beam_ineffective (laser too weak for the target tier)
      *   bit6 = beam_hit (beam terminates on a target instead of empty space)
+     *   bit7 = client-local status-only callback marker
      */
     uint8_t flags;
     uint8_t tractor_level;
@@ -54,7 +57,10 @@ typedef struct {
     uint16_t input_seq_ack;        /* last input seq the server accepted */
     uint32_t server_tick;          /* authoritative tick for this pose */
     uint32_t input_tick_ack;       /* tick where input_seq_ack was applied */
-    bool has_input_tick_ack;       /* WORLD_PLAYERS used the 77-byte tick protocol */
+    uint32_t ack_client_sent_ms;   /* optional transport timestamp tail */
+    uint32_t ack_server_recv_ms;
+    uint32_t ack_server_send_ms;
+    bool has_input_tick_ack;       /* authoritative receipt included input_tick_ack */
     bool active;
 } NetPlayerState;
 
@@ -73,6 +79,23 @@ typedef struct {
     uint8_t phase;         /* asteroid_phase_t */
 } NetAsteroidState;
 
+typedef struct {
+    uint16_t index;     /* asteroid slot 0-2047 */
+    float x, y;         /* position */
+    float vx, vy;       /* velocity */
+} NetAsteroidMotionState;
+
+typedef struct {
+    uint16_t index;       /* asteroid slot 0-2047 */
+    float hp;             /* current HP */
+    float ore;            /* ore amount (for TIER_S) */
+    float radius;         /* radius */
+    float smelt_progress; /* 0.0-1.0, decoded from uint8 trailer */
+    uint8_t grade;        /* mining_grade_t */
+    uint8_t crystal_stage; /* crystal_stage_t */
+    uint8_t phase;         /* asteroid_phase_t */
+} NetAsteroidStateQ;
+
 /* Packed NPC state for world sync. */
 typedef struct {
     uint8_t index;      /* NPC slot 0-15 */
@@ -87,15 +110,59 @@ typedef struct {
     uint8_t home_station;           /* 0xFF = unknown */
 } NetNpcState;
 
+typedef struct {
+    uint8_t index;      /* NPC slot 0-15 */
+    uint8_t flags;      /* bit0=active, bit6=thrusting */
+    float x, y;         /* position */
+    float vx, vy;       /* velocity */
+    float angle;        /* facing */
+} NetNpcMotionState;
+
+typedef struct {
+    uint8_t index;      /* NPC slot 0-15 */
+    float x, y;         /* position */
+} NetNpcPosState;
+
+typedef struct {
+    uint8_t index;      /* NPC slot 0-15 */
+    float x, y;         /* position */
+    float angle;        /* facing */
+} NetNpcPoseState;
+
+typedef struct {
+    uint8_t index;      /* NPC slot 0-15 */
+    float x, y;         /* position */
+    float vx, vy;       /* velocity */
+} NetNpcLinearState;
+
+typedef struct {
+    uint8_t index;      /* NPC slot 0-15 */
+    uint8_t flags;      /* bit0=active, bits1-2=role, bits3-5=state */
+    int target_asteroid;
+    int towed_fragment;
+} NetNpcStatusState;
+
 /* Callbacks — set these before calling net_init(). */
 typedef void (*net_on_player_join_fn)(uint8_t player_id);
 typedef void (*net_on_player_leave_fn)(uint8_t player_id);
 typedef void (*net_on_player_state_fn)(const NetPlayerState* state);
 typedef void (*net_on_input_applied_fn)(uint16_t input_seq,
                                         uint32_t server_tick,
-                                        uint32_t input_tick_ack);
+                                        uint32_t input_tick_ack,
+                                        uint32_t client_sent_ms,
+                                        uint32_t server_recv_ms,
+                                        uint32_t server_send_ms);
 typedef void (*net_on_asteroids_fn)(const NetAsteroidState* asteroids, int count);
+typedef void (*net_on_asteroid_motion_fn)(
+    const NetAsteroidMotionState* asteroids, int count);
+typedef void (*net_on_asteroid_state_q_fn)(
+    const NetAsteroidStateQ* asteroids, int count);
 typedef void (*net_on_npcs_fn)(const NetNpcState* npcs, int count);
+typedef void (*net_on_npc_motion_fn)(const NetNpcMotionState* npcs, int count);
+typedef void (*net_on_npc_pos_fn)(const NetNpcPosState* npcs, int count);
+typedef void (*net_on_npc_pose_fn)(const NetNpcPoseState* npcs, int count);
+typedef void (*net_on_npc_linear_fn)(const NetNpcLinearState* npcs, int count);
+typedef void (*net_on_npc_status_fn)(const NetNpcStatusState* npcs, int count);
 /* Packed player ship state (from PLAYER_SHIP 0x15). */
 typedef struct {
     uint8_t player_id;
@@ -229,11 +296,19 @@ typedef struct {
     float   radius;
     float   build_amount;
 } NetScaffoldState;
+typedef struct {
+    uint8_t index;
+    float pos_x, pos_y;
+    float vel_x, vel_y;
+} NetScaffoldMotionState;
 
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
 /* Scaffold pool snapshot callback. */
 typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count);
+typedef void (*net_on_scaffold_remove_fn)(const uint8_t* indices, int count);
+typedef void (*net_on_scaffold_motion_fn)(
+    const NetScaffoldMotionState* scaffolds, int count);
 
 typedef struct {
     uint8_t index;
@@ -252,8 +327,33 @@ typedef struct {
     uint8_t tractor_station;
     uint8_t tractor_module;
 } NetCargoPodState;
+typedef struct {
+    uint8_t index;
+    float pos_x, pos_y;
+    float vel_x, vel_y;
+    float rotation;
+} NetCargoPodMotionState;
+typedef struct {
+    uint8_t index;
+    float pos_x, pos_y;
+    float vel_x, vel_y;
+} NetCargoPodLinearState;
 typedef void (*net_on_cargo_pods_fn)(const NetCargoPodState* pods, int count);
+typedef void (*net_on_cargo_pod_remove_fn)(const uint8_t* indices, int count);
+typedef void (*net_on_cargo_pod_motion_fn)(const NetCargoPodMotionState* pods,
+                                           int count);
+typedef void (*net_on_cargo_pod_linear_fn)(const NetCargoPodLinearState* pods,
+                                           int count);
+typedef struct {
+    uint8_t index;
+    float source_x, source_y;
+    float target_x, target_y;
+    float range;
+    float intensity;
+} NetInteractionDriftState;
 typedef void (*net_on_interactions_fn)(const sim_interaction_t *items, int count);
+typedef void (*net_on_interaction_drift_fn)(const NetInteractionDriftState *items,
+                                            int count);
 
 typedef struct {
     uint32_t flags;
@@ -374,7 +474,8 @@ typedef void (*net_on_action_result_fn)(uint16_t action_id, uint16_t input_seq,
                                         uint8_t status, uint8_t action,
                                         uint32_t server_tick);
 typedef void (*net_on_latency_sample_fn)(uint32_t seq, float rtt_ms,
-                                         float server_turnaround_ms);
+                                         float server_turnaround_ms,
+                                         uint32_t server_tick);
 typedef void (*net_on_handoff_ticket_fn)(uint8_t status,
                                          uint8_t source_station,
                                          uint8_t dest_station,
@@ -411,13 +512,26 @@ typedef struct {
     net_on_input_applied_fn on_input_applied;
     net_on_players_begin_fn on_players_begin;
     net_on_asteroids_fn on_asteroids;
+    net_on_asteroid_motion_fn on_asteroid_motion;
+    net_on_asteroid_state_q_fn on_asteroid_state_q;
     net_on_npcs_fn on_npcs;
+    net_on_npc_motion_fn on_npc_motion;
+    net_on_npc_pos_fn on_npc_pos;
+    net_on_npc_pose_fn on_npc_pose;
+    net_on_npc_linear_fn on_npc_linear;
+    net_on_npc_status_fn on_npc_status;
     net_on_stations_fn on_stations;
     net_on_station_identity_fn on_station_identity;
     net_on_station_diag_fn on_station_diag;
     net_on_scaffolds_fn on_scaffolds;
+    net_on_scaffold_remove_fn on_scaffold_remove;
+    net_on_scaffold_motion_fn on_scaffold_motion;
     net_on_cargo_pods_fn on_cargo_pods;
+    net_on_cargo_pod_remove_fn on_cargo_pod_remove;
+    net_on_cargo_pod_motion_fn on_cargo_pod_motion;
+    net_on_cargo_pod_linear_fn on_cargo_pod_linear;
     net_on_interactions_fn on_interactions;
+    net_on_interaction_drift_fn on_interaction_drift;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
@@ -532,7 +646,8 @@ void net_send_client_metrics(uint32_t seq,
                              float player_interval_ms,
                              uint16_t unacked_inputs,
                              uint16_t replay_depth,
-                             uint8_t action_queue_depth);
+                             uint8_t action_queue_depth,
+                             uint8_t recovery_flags);
 
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
@@ -549,11 +664,11 @@ void net_send_client_metrics(uint32_t seq,
  * a (station, ring, slot) via the placement reticle and the server
  * snaps to that explicit slot. Older clients only sent 5 bytes; the
  * server treats missing bytes as -1. */
-void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
-                    uint16_t mining_target,
-                    uint8_t buy_grade, int8_t place_station,
-                    int8_t place_ring, int8_t place_slot,
-                    uint16_t action_id, uint32_t input_tick);
+uint32_t net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
+                        uint16_t mining_target,
+                        uint8_t buy_grade, int8_t place_station,
+                        int8_t place_ring, int8_t place_slot,
+                        uint16_t action_id, uint32_t input_tick);
 
 /* Present a carried cargo receipt chain to the current authority. The
  * multiplayer client sends these immediately before queued sell/deliver

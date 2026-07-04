@@ -22,6 +22,8 @@
 #include "palette.h"
 #include "signal_intelligence.h"
 #include "gossip.h"
+#include "net_input_lead.h"
+#include "net_clock.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -125,9 +127,28 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 #define NET_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_IDLE_HEARTBEAT_MS / 1000.0f)
 #define NET_ACTIVE_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_ACTIVE_HEARTBEAT_MS / 1000.0f)
+#define NET_ACTIVE_INPUT_ACK_HEARTBEAT_SEC ((float)NET_INPUT_ACTIVE_ACK_HEARTBEAT_MS / 1000.0f)
+#define NET_ACTIVE_INPUT_ACK_QUIET_SEC 1.5f
+#define NET_ACTIVE_INPUT_ACK_RECOVERY_SEC 0.5f
+#define NET_ACTIVE_INPUT_ACK_RECOVERY_GAP_SEC 0.250f
+#define NET_ACTIVE_INPUT_ACK_RECOVERY_UNACKED 4u
+#define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_SEC 0.25f
+#define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_GAP_SEC 0.500f
+#define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_UNACKED 8u
+#define NET_ACTIVE_INPUT_ACK_AGE_RECOVERY_MIN_SEC 0.250f
+#define NET_ACTIVE_INPUT_ACK_AGE_RECOVERY_RTT_MULT 2.5f
 #define NET_ACTION_RESEND_SEC (1.0f / 12.0f)
 #define NET_ACTION_RETRY_SEC 6.0f
 #define NET_CLIENT_METRICS_SEC 15.0f
+#define NET_PING_BOOT_INTERVAL_SEC 1.0f
+#define NET_PING_RECOVERY_INTERVAL_SEC 0.5f
+#define NET_PING_STEADY_INTERVAL_SEC 2.0f
+#define NET_PING_QUIET_INTERVAL_SEC 2.5f
+#define NET_PING_ACK_SAMPLED_QUIET_INTERVAL_SEC 5.0f
+#define NET_PING_ACK_GAP_RECOVERY_SEC 0.250f
+#define NET_PING_MAX_WINDOW_SEC 5.0f
+#define NET_CONTROL_LANE_STABLE_GAP_SEC 0.125f
+#define NET_CONTROL_LANE_QUIET_MAX_UNACKED 1u
 #define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
 
@@ -163,7 +184,10 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
                                     uint8_t status, uint8_t action,
                                     uint32_t server_tick);
 static void on_remote_input_applied(uint16_t input_seq, uint32_t server_tick,
-                                    uint32_t input_tick_ack);
+                                    uint32_t input_tick_ack,
+                                    uint32_t client_sent_ms,
+                                    uint32_t server_recv_ms,
+                                    uint32_t server_send_ms);
 static void on_remote_handoff_ticket(uint8_t status, uint8_t source_station,
                                      uint8_t dest_station,
                                      const handoff_ticket_t *ticket);
@@ -171,7 +195,8 @@ static void on_remote_handoff_result(uint8_t status, uint8_t reason,
                                      uint8_t dest_station,
                                      const uint8_t ticket_hash[32]);
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
-                                     float server_turnaround_ms);
+                                     float server_turnaround_ms,
+                                     uint32_t server_tick);
 
 static void configure_net_callbacks(NetCallbacks *cbs) {
     if (!cbs) return;
@@ -182,13 +207,26 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_state = apply_remote_player_state;
     cbs->on_input_applied = on_remote_input_applied;
     cbs->on_asteroids = apply_remote_asteroids;
+    cbs->on_asteroid_motion = apply_remote_asteroid_motion;
+    cbs->on_asteroid_state_q = apply_remote_asteroid_state_q;
     cbs->on_npcs = apply_remote_npcs;
+    cbs->on_npc_motion = apply_remote_npc_motion;
+    cbs->on_npc_pos = apply_remote_npc_pos;
+    cbs->on_npc_pose = apply_remote_npc_pose;
+    cbs->on_npc_linear = apply_remote_npc_linear;
+    cbs->on_npc_status = apply_remote_npc_status;
     cbs->on_stations = apply_remote_stations;
     cbs->on_station_identity = apply_remote_station_identity;
     cbs->on_station_diag = apply_remote_station_diag;
     cbs->on_scaffolds = apply_remote_scaffolds;
+    cbs->on_scaffold_remove = apply_remote_scaffold_remove;
+    cbs->on_scaffold_motion = apply_remote_scaffold_motion;
     cbs->on_cargo_pods = apply_remote_cargo_pods;
+    cbs->on_cargo_pod_remove = apply_remote_cargo_pod_remove;
+    cbs->on_cargo_pod_motion = apply_remote_cargo_pod_motion;
+    cbs->on_cargo_pod_linear = apply_remote_cargo_pod_linear;
     cbs->on_interactions = apply_remote_interactions;
+    cbs->on_interaction_drift = apply_remote_interaction_drift;
     cbs->on_hail_response = apply_remote_hail_response;
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
@@ -213,7 +251,27 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_handoff_result = on_remote_handoff_result;
 }
 
+/* Singleplayer loopback emits authoritative snapshots every tick by
+ * default; opting into the dedicated server's throttled cadences turns
+ * local mode into a test bed for the prediction/dead-reckoning path.
+ * See local_server_t.throttled_snapshots. */
+static bool local_throttled_snapshots_requested(void) {
+#ifdef __EMSCRIPTEN__
+    const char *v = emscripten_run_script_string(
+        "(new URLSearchParams(window.location.search).has('netcadence')"
+        " ? '1' : '')");
+    return v && v[0] == '1';
+#else
+    const char *v = getenv("SIGNAL_LOCAL_NET_CADENCE");
+    return v && v[0] != '\0' && v[0] != '0';
+#endif
+}
+
 static bool start_local_loopback_authority(const NetCallbacks *cbs) {
+    /* Set before the initial snapshot: the advertised protocol cadences
+     * depend on the mode. Every loopback session passes through here, so
+     * the flag survives local_server_init()'s memset on any reset path. */
+    g.local_server.throttled_snapshots = local_throttled_snapshots_requested();
     local_server_attach_loopback(&g.local_server);
     if (!net_init_loopback(cbs, 0))
         return false;
@@ -221,6 +279,16 @@ static bool start_local_loopback_authority(const NetCallbacks *cbs) {
     local_server_send_initial_snapshot(&g.local_server, g.local_player_slot);
     sync_local_player_slot_from_network();
     return true;
+}
+
+static bool start_fresh_local_fallback_authority(const NetCallbacks *cbs) {
+    net_shutdown();
+    g.net_authority_enabled = false;
+    g.local_player_slot = 0;
+    world_cleanup(&g.local_server.world);
+    local_server_init(&g.local_server, 0);
+    neural_singleplayer_init();
+    return start_local_loopback_authority(cbs);
 }
 
 static bool net_tick_after_u32(uint32_t a, uint32_t b) {
@@ -240,18 +308,45 @@ static uint16_t net_unacked_input_count(void) {
     return (uint16_t)(g.net_input_seq - g.net_last_server_ack);
 }
 
-static uint32_t net_input_lead_ticks(void) {
-    float rtt = g.net_last_ping_rtt > 0.0f
-        ? g.net_last_ping_rtt
-        : g.net_last_ack_rtt;
-    uint32_t lead = NET_INPUT_LEAD_MIN_TICKS;
-    if (rtt > 0.0f) {
-        float one_way_ticks = (rtt * 0.5f) / SIM_DT;
-        lead = (uint32_t)ceilf(one_way_ticks) + NET_INPUT_LEAD_MIN_TICKS;
+static bool net_input_timing_seq_unacked(uint16_t seq) {
+    if (seq == 0 || g.net_input_seq == 0) return false;
+    if (seq == g.net_last_server_ack) return false;
+    if (g.net_last_server_ack != 0 &&
+        !net_input_seq_after_u16(seq, g.net_last_server_ack)) {
+        return false;
     }
-    if (lead < NET_INPUT_LEAD_MIN_TICKS) lead = NET_INPUT_LEAD_MIN_TICKS;
-    if (lead > NET_INPUT_LEAD_MAX_TICKS) lead = NET_INPUT_LEAD_MAX_TICKS;
-    return lead;
+    if (net_input_seq_after_u16(seq, g.net_input_seq))
+        return false;
+    return true;
+}
+
+static float net_input_timing_age_sec(const net_input_timing_t *timing) {
+    if (!timing || timing->seq == 0) return 0.0f;
+    if (timing->sent_ms != 0) {
+        uint32_t elapsed_ms = net_now_ms32() - timing->sent_ms;
+        return (float)elapsed_ms / 1000.0f;
+    }
+    return g.net_time - timing->sent_at;
+}
+
+static float net_oldest_unacked_input_age_sec(void) {
+    float oldest = 0.0f;
+    for (int i = 0; i < NET_INPUT_TIMING_CAP; i++) {
+        const net_input_timing_t *timing = &g.net_input_timing[i];
+        if (!net_input_timing_seq_unacked(timing->seq))
+            continue;
+        float age = net_input_timing_age_sec(timing);
+        if (isfinite(age) && age > oldest)
+            oldest = age;
+    }
+    return oldest;
+}
+
+static uint32_t net_input_lead_ticks(void) {
+    if (net_is_loopback()) return NET_INPUT_LEAD_MIN_TICKS;
+    float rtt = net_prediction_control_rtt_sec();
+    return net_input_lead_ticks_from_rtt(
+        rtt, SIM_DT, g.net_motion.input_lead_margin_ticks);
 }
 
 static uint32_t net_next_input_apply_tick(void) {
@@ -346,13 +441,23 @@ static void reset_world(void) {
     g.net_time = 0.0f;
     net_reset_local_input_stream();
     g.net_last_ack_rtt = 0.0f;
+    g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_ack_transport_sample_time = 0.0f;
+    net_latency_stats_reset(&g.net_ack_latency);
+    net_latency_stats_reset(&g.net_ping_latency);
     g.net_max_ping_rtt_5s = 0.0f;
     g.net_ping_samples = 0;
     g.net_ping_timer = 0.0f;
     g.net_metrics_timer = 0.0f;
     g.net_metrics_seq = 0;
+    g.net_missed_pongs = 0;
+    g.net_missed_input_acks = 0;
+    g.net_ack_recovery_packets = 0;
+    g.net_ping_miss_windows_reported = 0;
+    g.net_ack_miss_windows_reported = 0;
+    g.net_ack_recovery_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
     g.net_max_ack_rtt_5s = 0.0f;
     g.net_ack_window_elapsed = 0.0f;
     audio_clear_voices(&g.audio);
@@ -2273,6 +2378,24 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 int reset_net_motion_telemetry(void) {
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    g.net_motion.input_lead_margin_ticks =
+        NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
+    net_latency_stats_reset(&g.net_ack_latency);
+    net_latency_stats_reset(&g.net_ping_latency);
+    g.net_last_ack_rtt = 0.0f;
+    g.net_last_ping_raw_rtt = 0.0f;
+    g.net_last_ping_rtt = 0.0f;
+    g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_ack_transport_sample_time = 0.0f;
+    g.net_max_ping_rtt_5s = 0.0f;
+    g.net_ping_samples = 0;
+    g.net_missed_pongs = 0;
+    g.net_missed_input_acks = 0;
+    g.net_ack_recovery_packets = 0;
+    g.net_ping_miss_windows_reported = 0;
+    g.net_ack_miss_windows_reported = 0;
+    g.net_ack_recovery_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
+    g.net_max_ack_rtt_5s = 0.0f;
     return 1;
 }
 
@@ -2314,9 +2437,200 @@ float get_net_motion_last_ping_rtt_ms(void) {
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 #endif
+float get_net_motion_last_ping_raw_rtt_ms(void) {
+    return g.net_last_ping_raw_rtt * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_smoothed_ack_rtt_ms(void) {
+    if (!net_latency_stats_fresh(&g.net_ack_latency,
+                                 g.net_time,
+                                 NET_LATENCY_STALE_SEC)) {
+        return 0.0f;
+    }
+    return net_latency_stats_smoothed_sec(&g.net_ack_latency) * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_smoothed_ping_rtt_ms(void) {
+    if (!net_latency_stats_fresh(&g.net_ping_latency,
+                                 g.net_time,
+                                 NET_LATENCY_STALE_SEC)) {
+        return 0.0f;
+    }
+    return net_latency_stats_smoothed_sec(&g.net_ping_latency) * 1000.0f;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_ack_fresh(void) {
+    return net_latency_stats_fresh(&g.net_ack_latency,
+                                   g.net_time,
+                                   NET_LATENCY_STALE_SEC) ? 1 : 0;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_ping_fresh(void) {
+    return net_latency_stats_fresh(&g.net_ping_latency,
+                                   g.net_time,
+                                   NET_LATENCY_STALE_SEC) ? 1 : 0;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
 float get_net_motion_last_ack_gap_ms(void) {
     float ack_ms = g.net_last_ack_rtt * 1000.0f;
     float ping_ms = g.net_last_ping_rtt * 1000.0f;
+    if (ack_ms <= 0.0f || ping_ms <= 0.0f) return 0.0f;
+    return (ack_ms > ping_ms) ? (ack_ms - ping_ms) : 0.0f;
+}
+
+static void net_count_latency_miss_windows(const net_latency_stats_t *stats,
+                                           uint32_t *reported_windows,
+                                           uint32_t *total_misses) {
+    if (!reported_windows || !total_misses) return;
+    uint32_t windows = net_latency_stale_window_miss_count(
+        stats, g.net_time, NET_LATENCY_STALE_SEC);
+    if (windows < *reported_windows)
+        *reported_windows = windows;
+    if (windows > *reported_windows) {
+        *total_misses += windows - *reported_windows;
+        *reported_windows = windows;
+    }
+}
+
+static void net_update_latency_miss_counters(void) {
+    net_count_latency_miss_windows(&g.net_ping_latency,
+                                   &g.net_ping_miss_windows_reported,
+                                   &g.net_missed_pongs);
+    net_count_latency_miss_windows(&g.net_ack_latency,
+                                   &g.net_ack_miss_windows_reported,
+                                   &g.net_missed_input_acks);
+}
+
+static bool net_control_lane_quiet_stable(void) {
+    if (g.net_ping_miss_windows_reported > 0 ||
+        g.net_ack_miss_windows_reported > 0 ||
+        net_unacked_input_count() > NET_CONTROL_LANE_QUIET_MAX_UNACKED) {
+        return false;
+    }
+    return net_latency_control_lane_stable(
+        &g.net_ping_latency,
+        &g.net_ack_latency,
+        g.net_time,
+        NET_LATENCY_STALE_SEC,
+        NET_CONTROL_LANE_STABLE_GAP_SEC,
+        NET_LATENCY_STABLE_MIN_SAMPLES);
+}
+
+static bool net_recent_input_ack_transport_sample(void) {
+    return g.net_last_ack_transport_sample_time > 0.0f &&
+        g.net_time - g.net_last_ack_transport_sample_time <=
+            NET_LATENCY_STALE_SEC;
+}
+
+static float net_latency_ping_interval_sec(void) {
+    bool quiet_stable = net_control_lane_quiet_stable();
+    float quiet_interval = quiet_stable
+        ? (net_recent_input_ack_transport_sample()
+              ? NET_PING_ACK_SAMPLED_QUIET_INTERVAL_SEC
+              : NET_PING_QUIET_INTERVAL_SEC)
+        : NET_PING_STEADY_INTERVAL_SEC;
+    return net_latency_ping_interval_for_state(
+        &g.net_ping_latency,
+        &g.net_ack_latency,
+        g.net_time,
+        NET_LATENCY_STALE_SEC,
+        g.net_ping_samples,
+        NET_PING_BOOT_INTERVAL_SEC,
+        NET_PING_RECOVERY_INTERVAL_SEC,
+        NET_PING_STEADY_INTERVAL_SEC,
+        quiet_interval,
+        NET_PING_ACK_GAP_RECOVERY_SEC,
+        NET_CONTROL_LANE_STABLE_GAP_SEC,
+        NET_LATENCY_STABLE_MIN_SAMPLES);
+}
+
+static uint8_t net_active_input_ack_recovery_tier(void) {
+    bool ack_stale = g.net_motion.total_input_acks > 0 &&
+        !net_latency_stats_fresh(&g.net_ack_latency,
+                                 g.net_time,
+                                 NET_LATENCY_STALE_SEC);
+    float ack_gap = net_latency_smoothed_gap_sec(&g.net_ack_latency,
+                                                 &g.net_ping_latency,
+                                                 g.net_time,
+                                                 NET_LATENCY_STALE_SEC);
+    uint32_t age_recovery_miss =
+        net_latency_unacked_age_needs_recovery(
+            net_oldest_unacked_input_age_sec(),
+            net_prediction_control_rtt_sec(),
+            NET_ACTIVE_INPUT_ACK_AGE_RECOVERY_MIN_SEC,
+            NET_ACTIVE_INPUT_ACK_AGE_RECOVERY_RTT_MULT) ? 1u : 0u;
+    return net_latency_ack_recovery_tier(
+        net_unacked_input_count(),
+        ack_stale,
+        g.net_ack_miss_windows_reported + age_recovery_miss,
+        ack_gap,
+        NET_ACTIVE_INPUT_ACK_RECOVERY_UNACKED,
+        NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_UNACKED,
+        NET_ACTIVE_INPUT_ACK_RECOVERY_GAP_SEC,
+        NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_GAP_SEC);
+}
+
+static float net_active_input_ack_interval_for_tier(uint8_t tier) {
+    switch (tier) {
+    case NET_LATENCY_ACK_RECOVERY_HOT:
+        return NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_SEC;
+    case NET_LATENCY_ACK_RECOVERY_MILD:
+        return NET_ACTIVE_INPUT_ACK_RECOVERY_SEC;
+    default:
+        return NET_ACTIVE_INPUT_ACK_HEARTBEAT_SEC;
+    }
+}
+
+static float net_active_input_ack_interval_sec(void) {
+    g.net_ack_recovery_tier = net_active_input_ack_recovery_tier();
+    if (g.net_ack_recovery_tier == NET_LATENCY_ACK_RECOVERY_STEADY &&
+        net_control_lane_quiet_stable()) {
+        return NET_ACTIVE_INPUT_ACK_QUIET_SEC;
+    }
+    return net_active_input_ack_interval_for_tier(g.net_ack_recovery_tier);
+}
+
+static uint8_t net_client_recovery_flags(void) {
+    uint8_t flags =
+        (uint8_t)(g.net_ack_recovery_tier & NET_CLIENT_METRICS_ACK_TIER_MASK);
+    if (net_latency_stats_fresh(&g.net_ping_latency,
+                                g.net_time,
+                                NET_LATENCY_STALE_SEC)) {
+        flags |= NET_CLIENT_METRICS_PING_FRESH;
+    }
+    if (net_latency_stats_fresh(&g.net_ack_latency,
+                                g.net_time,
+                                NET_LATENCY_STALE_SEC)) {
+        flags |= NET_CLIENT_METRICS_ACK_FRESH;
+    }
+    if (g.net_ping_miss_windows_reported > 0)
+        flags |= NET_CLIENT_METRICS_PING_MISSED;
+    if (g.net_ack_miss_windows_reported > 0)
+        flags |= NET_CLIENT_METRICS_ACK_MISSED;
+    return flags;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_net_motion_smoothed_ack_gap_ms(void) {
+    float ack_ms = get_net_motion_smoothed_ack_rtt_ms();
+    float ping_ms = get_net_motion_smoothed_ping_rtt_ms();
     if (ack_ms <= 0.0f || ping_ms <= 0.0f) return 0.0f;
     return (ack_ms > ping_ms) ? (ack_ms - ping_ms) : 0.0f;
 }
@@ -2492,6 +2806,13 @@ int get_net_motion_max_input_apply_error_abs(void) {
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 #endif
+int get_net_motion_input_lead_margin_ticks(void) {
+    return (int)g.net_motion.input_lead_margin_ticks;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
 int get_net_motion_replay_depth(void) {
     return (int)g.net_replay_count;
 }
@@ -2505,19 +2826,59 @@ int get_net_motion_unacked_inputs(void) {
 
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_missed_pongs(void) {
+    return (int)g.net_missed_pongs;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_missed_input_acks(void) {
+    return (int)g.net_missed_input_acks;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_ack_recovery_packets(void) {
+    return (int)g.net_ack_recovery_packets;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_motion_ack_recovery_tier(void) {
+    return (int)g.net_ack_recovery_tier;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
+    bool saved_net_input_tick_protocol = g.net_input_tick_protocol;
+    asteroid_t saved_world_asteroids[MAX_ASTEROIDS];
+    asteroid_t saved_local_server_asteroids[MAX_ASTEROIDS];
+    asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
+    asteroid_t saved_asteroid_curr[MAX_ASTEROIDS];
     scaffold_t saved_world_scaffolds[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_prev[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_curr[MAX_SCAFFOLDS];
     cargo_pod_t saved_world_cargo_pods[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_prev[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_curr[MAX_CARGO_PODS];
+    float saved_asteroid_t = g.asteroid_interp.t;
+    float saved_asteroid_interval = g.asteroid_interp.interval;
     float saved_scaffold_t = g.scaffold_interp.t;
     float saved_scaffold_interval = g.scaffold_interp.interval;
     float saved_cargo_pod_t = g.cargo_pod_interp.t;
     float saved_cargo_pod_interval = g.cargo_pod_interp.interval;
 
+    memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
+    memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
+           sizeof(saved_local_server_asteroids));
+    memcpy(saved_asteroid_prev, g.asteroid_interp.prev, sizeof(saved_asteroid_prev));
+    memcpy(saved_asteroid_curr, g.asteroid_interp.curr, sizeof(saved_asteroid_curr));
     memcpy(saved_world_scaffolds, g.world.scaffolds, sizeof(saved_world_scaffolds));
     memcpy(saved_scaffold_prev, g.scaffold_interp.prev, sizeof(saved_scaffold_prev));
     memcpy(saved_scaffold_curr, g.scaffold_interp.curr, sizeof(saved_scaffold_curr));
@@ -2526,6 +2887,9 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
 
     g.local_server.active = false;
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.asteroid_interp.interval = 0.1f;
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
     g.scaffold_interp.interval = 0.1f;
@@ -2580,24 +2944,72 @@ int signal_smoke_remote_towable_interp_check(void) {
     interpolate_world_for_render();
     float pod_blended_x = g.world.cargo_pods[5].pos.x;
 
+    bool loopback_packet_path_ok = true;
+    if (net_is_loopback()) {
+        g.local_server.active = true;
+        g.net_input_tick_protocol = true;
+        memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+        memset(g.local_server.world.asteroids, 0,
+               sizeof(g.local_server.world.asteroids));
+        memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+        g.asteroid_interp.interval = 0.1f;
+
+        asteroid_t prev = {0};
+        prev.active = true;
+        prev.pos.x = 0.0f;
+        prev.pos.y = 0.0f;
+        prev.vel.x = 0.0f;
+        prev.vel.y = 0.0f;
+        prev.radius = 20.0f;
+        prev.tier = ASTEROID_TIER_M;
+        prev.commodity = COMMODITY_FERRITE_ORE;
+        asteroid_t curr = prev;
+        curr.pos.x = 100.0f;
+        curr.pos.y = 25.0f;
+        g.asteroid_interp.prev[7] = prev;
+        g.asteroid_interp.curr[7] = prev;
+        g.local_server.world.asteroids[7] = curr;
+        g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+
+        interpolate_world_for_render();
+        loopback_packet_path_ok =
+            fabsf(g.world.asteroids[7].pos.x) < 0.001f &&
+            fabsf(g.world.asteroids[7].pos.y) < 0.001f &&
+            fabsf(g.asteroid_interp.curr[7].pos.x) < 0.001f &&
+            g.asteroid_interp.t > 0.0f;
+    }
+
+    bool loopback_prediction_ok =
+        !net_is_loopback() || net_local_prediction_enabled();
+
     int ok = scaffold_first_x > 9.0f && scaffold_first_x < 11.5f &&
              scaffold_blended_x > scaffold_first_x &&
              scaffold_blended_x < 95.0f &&
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
              pod_blended_x > pod_first_x &&
-             pod_blended_x < 95.0f;
+             pod_blended_x < 95.0f &&
+             loopback_packet_path_ok &&
+             loopback_prediction_ok;
 
+    memcpy(g.world.asteroids, saved_world_asteroids, sizeof(saved_world_asteroids));
+    memcpy(g.local_server.world.asteroids, saved_local_server_asteroids,
+           sizeof(saved_local_server_asteroids));
+    memcpy(g.asteroid_interp.prev, saved_asteroid_prev, sizeof(saved_asteroid_prev));
+    memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
     memcpy(g.world.scaffolds, saved_world_scaffolds, sizeof(saved_world_scaffolds));
     memcpy(g.scaffold_interp.prev, saved_scaffold_prev, sizeof(saved_scaffold_prev));
     memcpy(g.scaffold_interp.curr, saved_scaffold_curr, sizeof(saved_scaffold_curr));
     memcpy(g.world.cargo_pods, saved_world_cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(g.cargo_pod_interp.prev, saved_cargo_pod_prev, sizeof(saved_cargo_pod_prev));
     memcpy(g.cargo_pod_interp.curr, saved_cargo_pod_curr, sizeof(saved_cargo_pod_curr));
+    g.asteroid_interp.t = saved_asteroid_t;
+    g.asteroid_interp.interval = saved_asteroid_interval;
     g.scaffold_interp.t = saved_scaffold_t;
     g.scaffold_interp.interval = saved_scaffold_interval;
     g.cargo_pod_interp.t = saved_cargo_pod_t;
     g.cargo_pod_interp.interval = saved_cargo_pod_interval;
     g.local_server.active = saved_local_server_active;
+    g.net_input_tick_protocol = saved_net_input_tick_protocol;
     return ok ? 1 : 0;
 }
 #endif
@@ -2672,8 +3084,8 @@ static void net_action_queue_update(float dt) {
 
 static void on_remote_action_ack(uint16_t action_id, uint16_t input_seq,
                                  uint8_t status, uint8_t action) {
-    /* ACTION_ACK is an immediate transport/dedupe receipt. Authoritative
-     * input age is measured from WORLD_PLAYERS input_seq_ack instead. */
+    /* ACTION_ACK is an immediate transport/dedupe receipt. Authoritative input
+     * age is measured from INPUT_APPLIED/private STATE receipts instead. */
     int offset = net_action_queue_find(action_id);
     if (offset >= 0) net_action_queue_remove_at(offset);
     FILE *log = status == NET_ACTION_ACK_REJECTED ? stderr : stdout;
@@ -2713,7 +3125,19 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
 }
 
 static void on_remote_input_applied(uint16_t input_seq, uint32_t server_tick,
-                                    uint32_t input_tick_ack) {
+                                    uint32_t input_tick_ack,
+                                    uint32_t client_sent_ms,
+                                    uint32_t server_recv_ms,
+                                    uint32_t server_send_ms) {
+    if (client_sent_ms != 0 && server_recv_ms != 0 &&
+        server_send_ms != 0) {
+        uint32_t now_ms = net_now_ms32();
+        float rtt_ms = (float)(uint32_t)(now_ms - client_sent_ms);
+        float server_turnaround_ms =
+            (float)(uint32_t)(server_send_ms - server_recv_ms);
+        net_observe_transport_latency_sample(rtt_ms, server_turnaround_ms,
+                                             server_tick, true);
+    }
     net_record_input_ack(input_seq, server_tick, input_tick_ack);
 }
 
@@ -2750,15 +3174,37 @@ static void on_remote_handoff_result(uint8_t status, uint8_t reason,
         g.net_handoff_ticket_valid = false;
 }
 
-static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
-                                     float server_turnaround_ms) {
-    (void)seq;
-    if (rtt_ms < 0.0f || rtt_ms > 30000.0f) return;
-    g.net_last_ping_rtt = rtt_ms / 1000.0f;
+void net_observe_transport_latency_sample(float rtt_ms,
+                                          float server_turnaround_ms,
+                                          uint32_t server_tick,
+                                          bool from_input_ack) {
+    if (rtt_ms <= 0.0f || rtt_ms > 30000.0f) return;
+    float raw_rtt_sec = rtt_ms / 1000.0f;
+    float transport_rtt_sec = net_latency_transport_rtt_sec(
+        raw_rtt_sec, server_turnaround_ms / 1000.0f);
+    if (transport_rtt_sec <= 0.0f) return;
+    net_observe_server_tick(server_tick);
+    g.net_last_ping_raw_rtt = raw_rtt_sec;
+    g.net_last_ping_rtt = transport_rtt_sec;
+    net_latency_stats_observe(&g.net_ping_latency, transport_rtt_sec,
+                              g.net_time);
+    g.net_ping_miss_windows_reported = 0;
     g.net_last_ping_server_turnaround_ms = server_turnaround_ms;
-    if (g.net_last_ping_rtt > g.net_max_ping_rtt_5s)
+    g.net_max_ping_rtt_5s = net_latency_stats_window_max_sec(
+        &g.net_ping_latency, g.net_time, NET_PING_MAX_WINDOW_SEC);
+    if (g.net_max_ping_rtt_5s <= 0.0f)
         g.net_max_ping_rtt_5s = g.net_last_ping_rtt;
     g.net_ping_samples++;
+    if (from_input_ack)
+        g.net_last_ack_transport_sample_time = g.net_time;
+}
+
+static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
+                                     float server_turnaround_ms,
+                                     uint32_t server_tick) {
+    (void)seq;
+    net_observe_transport_latency_sample(rtt_ms, server_turnaround_ms,
+                                         server_tick, false);
 }
 
 static void net_action_queue_push(uint8_t action, uint8_t buy_grade,
@@ -2930,11 +3376,13 @@ static void net_action_queue_mark_sent(uint16_t input_seq) {
     g.net_action_packets_sent++;
 }
 
-static void net_track_input_send(uint16_t seq, uint32_t target_tick) {
+static void net_track_input_send(uint16_t seq, uint32_t target_tick,
+                                 uint32_t sent_ms) {
     if (seq == 0) return;
     int index = (int)(seq % NET_INPUT_TIMING_CAP);
     g.net_input_timing[index].seq = seq;
     g.net_input_timing[index].sent_at = g.net_time;
+    g.net_input_timing[index].sent_ms = sent_ms;
     g.net_input_timing[index].target_tick = target_tick;
 }
 
@@ -2948,35 +3396,48 @@ static void frame(void) {
         bool was_connected = net_is_connected();
         net_poll();
         if (net_is_connected()) {
+            net_update_latency_miss_counters();
             g.net_ping_timer -= frame_dt;
+            float ping_interval = net_latency_ping_interval_sec();
+            if (g.net_ping_timer > ping_interval)
+                g.net_ping_timer = ping_interval;
             if (g.net_ping_timer <= 0.0f) {
                 net_send_latency_ping();
-                g.net_ping_timer = 1.0f;
+                g.net_ping_timer = ping_interval;
             }
             g.net_metrics_timer -= frame_dt;
             if (g.net_metrics_timer <= 0.0f &&
                 (g.net_ping_samples > 0 || g.net_motion.total_input_acks > 0)) {
                 uint32_t seq = ++g.net_metrics_seq;
                 if (seq == 0) seq = ++g.net_metrics_seq;
+                float ping_metric_ms = get_net_motion_smoothed_ping_rtt_ms();
+                float ack_metric_ms = get_net_motion_smoothed_ack_rtt_ms();
                 net_send_client_metrics(
                     seq,
-                    g.net_last_ping_rtt * 1000.0f,
-                    g.net_last_ack_rtt * 1000.0f,
-                    get_net_motion_last_ack_gap_ms(),
+                    ping_metric_ms,
+                    ack_metric_ms,
+                    get_net_motion_smoothed_ack_gap_ms(),
                     g.net_last_ping_server_turnaround_ms,
                     g.net_motion.packet_interval * 1000.0f,
                     net_unacked_input_count(),
                     g.net_replay_count,
-                    g.net_action_queue_count);
+                    g.net_action_queue_count,
+                    net_client_recovery_flags());
                 g.net_metrics_timer = NET_CLIENT_METRICS_SEC;
             }
         }
         sync_local_player_slot_from_network();
         net_action_queue_update(frame_dt);
         net_queue_pending_action_if_any();
-        if (was_connected && !net_is_connected()) {
-            set_notice("Connection lost. Reload to reconnect.");
-            g.local_server.active = false;
+        if (was_connected && !net_is_connected() && !net_is_loopback()) {
+            NetCallbacks fallback_cbs;
+            configure_net_callbacks(&fallback_cbs);
+            if (start_fresh_local_fallback_authority(&fallback_cbs)) {
+                set_notice("Network lost; continuing locally.");
+            } else {
+                set_notice("Connection lost. Reload to reconnect.");
+                g.local_server.active = false;
+            }
         }
         /* P key (offline): hard-reload the page. The HUD prompt is
          * "offline [P] reconnect" but a graceful net_reconnect()
@@ -3020,11 +3481,28 @@ static void frame(void) {
                 flags != g.net_last_sent_flags ||
                 mining_target != g.net_last_sent_mining_target;
             bool active_controls = flags != 0;
+            bool loopback_motion_due = net_is_loopback() && active_controls;
             bool heartbeat_due = g.net_input_timer <= 0.0f;
-            if (input_changed || heartbeat_due || action_due) {
+            g.net_input_ack_timer -= frame_dt;
+            uint8_t active_ack_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
+            float active_ack_interval = 0.0f;
+            if (active_controls) {
+                active_ack_interval = net_active_input_ack_interval_sec();
+                active_ack_tier = g.net_ack_recovery_tier;
+            } else {
+                g.net_ack_recovery_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
+            }
+            if (active_controls &&
+                g.net_input_ack_timer > active_ack_interval) {
+                g.net_input_ack_timer = active_ack_interval;
+            }
+            if (input_changed || heartbeat_due || action_due ||
+                loopback_motion_due) {
                 bool seq_advanced = false;
+                bool ack_heartbeat_due = active_controls && heartbeat_due &&
+                    g.net_input_ack_timer <= 0.0f;
                 if (input_changed || action != NET_ACTION_NONE ||
-                    (active_controls && heartbeat_due)) {
+                    ack_heartbeat_due || loopback_motion_due) {
                     g.net_input_seq++;
                     if (g.net_input_seq == 0) g.net_input_seq++;
                     seq_advanced = true;
@@ -3034,11 +3512,24 @@ static void frame(void) {
                     net_present_receipt_chains_for_action(action, buy_grade_byte);
                 }
                 uint32_t input_tick = net_next_input_apply_tick();
-                net_send_input(flags, action, g.net_input_seq, mining_target,
-                               buy_grade_byte, place_station, place_ring,
-                               place_slot, action_id, input_tick);
+                uint32_t input_sent_ms = net_send_input(
+                    flags, action, g.net_input_seq, mining_target,
+                    buy_grade_byte, place_station, place_ring,
+                    place_slot, action_id, input_tick);
                 g.net_input_packets_sent++;
-                if (seq_advanced) net_track_input_send(g.net_input_seq, input_tick);
+                if (seq_advanced) {
+                    net_track_input_send(g.net_input_seq, input_tick,
+                                         input_sent_ms);
+                    if (ack_heartbeat_due &&
+                        active_ack_tier != NET_LATENCY_ACK_RECOVERY_STEADY) {
+                        g.net_ack_recovery_packets++;
+                    }
+                    g.net_input_ack_timer = active_controls
+                        ? active_ack_interval
+                        : 0.0f;
+                } else if (!active_controls) {
+                    g.net_input_ack_timer = 0.0f;
+                }
                 if (action != NET_ACTION_NONE)
                     net_action_queue_mark_sent(g.net_input_seq);
                 g.net_input_timer = active_controls

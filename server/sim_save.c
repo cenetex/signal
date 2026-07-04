@@ -109,7 +109,9 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 72  /* v72: backfill Kepler starter Laser Module reserve
+#define SAVE_VERSION 73  /* v73: active cargo pods persist station custody so
+                          * market theft/debt survives restart.
+                          * v72: backfill Kepler starter Laser Module reserve
                           * for the first mining refit.
                           * v71: backfill starter frame pods for live saves
                           * that were already rewritten after the v69
@@ -1545,6 +1547,7 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
                 return false;
         }
     }
+    WRITE_FIELD(f, pod->custody_station);
     return true;
 }
 
@@ -1586,6 +1589,10 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
                 return false;
             pod.has_shell_frame = true;
         }
+    }
+    if (version >= 73) {
+        READ_FIELD(f, pod.custody_station);
+        if (pod.custody_station > MAX_STATIONS) pod.custody_station = 0;
     }
     if (index >= MAX_CARGO_PODS) return false;
     if (kind == CARGO_POD_NONE || kind > CARGO_POD_CARGO) return false;

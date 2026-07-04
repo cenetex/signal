@@ -2647,22 +2647,36 @@ static bool draw_published_cargo_pod_module_tractors(void) {
         const sim_interaction_t *it = &g.world.interactions.items[i];
         if (it->type != SIM_INTERACTION_TRACTOR_BEAM ||
             it->visual != SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR ||
+            it->source.type != SIM_INTERACTION_ENTITY_STATION_MODULE ||
             it->target.type != SIM_INTERACTION_ENTITY_CARGO_POD) {
             continue;
         }
+
+        int station_idx = it->source.index;
+        int module_idx = it->source.aux;
+        if (station_idx < 0 || station_idx >= MAX_STATIONS) continue;
+        const station_t *st = &g.world.stations[station_idx];
+        if (!station_exists(st)) continue;
+        if (module_idx < 0 || module_idx >= st->module_count) continue;
+        const station_module_t *module = &st->modules[module_idx];
+        if (module->scaffold) continue;
 
         int pod_idx = it->target.index;
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
         if (!pod->active) continue;
-        if (it->intensity <= 0.0f) continue;
+
+        vec2 anchor = module_world_pos_ring(st, module->ring, module->slot);
+        float range = cargo_pod_module_tractor_range_for_pod(module->type, pod);
+        tractor_beam_t beam = CARGO_POD_MODULE_TRACTOR_BEAM_INIT(range);
+        float intensity = tractor_beam_range_fraction(anchor, pod->pos, &beam);
+        if (intensity <= 0.0f) continue;
 
         commodity_t commodity = it->commodity < COMMODITY_COUNT
             ? (commodity_t)it->commodity
             : pod->commodity;
         draw_cargo_pod_module_tractor_beam(
-            it->source_pos, pod->pos, pod, commodity,
-            it->intensity, pod_idx);
+            anchor, pod->pos, pod, commodity, intensity, pod_idx);
         drew = true;
     }
     return drew;

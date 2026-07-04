@@ -533,6 +533,7 @@ static int station_append_products_to_output_pod(world_t *w,
     }
     pod->quantity = pod->manifest_count;
     pod->age = 0.0f;
+    cargo_pod_set_station_custody(pod, station_idx);
     cargo_pod_set_module_tractor(pod, station_idx, module_idx);
     return product_count;
 }
@@ -702,6 +703,7 @@ static int station_craft_product_pod_from_inputs(world_t *w,
         return 0;
     }
     cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx], &pod_shell.unit);
+    cargo_pod_set_station_custody(&w->cargo_pods[pod_idx], station_idx);
     cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
                                  station_idx, module_idx);
 
@@ -1237,6 +1239,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                 }
                 cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx],
                                           &pod_shell.unit);
+                cargo_pod_set_station_custody(&w->cargo_pods[pod_idx],
+                                              smelt_station);
                 cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
                                              smelt_station, smelt_module);
                 st->module_active_pulse[smelt_module] = 1.0f;

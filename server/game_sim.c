@@ -59,7 +59,18 @@ extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
+#ifdef SIM_PROFILE
+#include <time.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+#endif
 #ifdef _WIN32
 #include <direct.h>   /* _mkdir */
 #else
@@ -424,6 +435,7 @@ static void spatial_grid_ensure(spatial_grid_t *g) {
 }
 
 static void spatial_grid_clear(spatial_grid_t *g) {
+    g->overflow_count = 0;
     if (!g->entries) return;
     for (uint32_t i = 0; i < g->capacity; i++) {
         g->entries[i].key_x = INT32_MIN;
@@ -500,6 +512,8 @@ static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     if (!cell) return; /* OOM — see spatial_grid_ensure */
     if (cell->count < SPATIAL_MAX_PER_CELL) {
         cell->indices[cell->count++] = (int16_t)idx;
+    } else {
+        g->overflow_count++;
     }
 }
 
@@ -511,6 +525,14 @@ void spatial_grid_build(world_t *w) {
         if (!w->asteroids[i].active) continue;
         spatial_grid_insert(g, i, w->asteroids[i].pos);
     }
+#ifndef NDEBUG
+    if (g->overflow_count > 0 && (w->tick % 120u) == 0u) {
+        printf("[spatial-grid] overflow dropped=%u cap_per_cell=%u tick=%u\n",
+               (unsigned)g->overflow_count,
+               (unsigned)SPATIAL_MAX_PER_CELL,
+               (unsigned)w->tick);
+    }
+#endif
 }
 
 /* ================================================================== */
@@ -580,19 +602,43 @@ static float signal_strength_unboosted(const world_t *w, vec2 pos) {
 /* Off-relay docks still need a short-range local beacon so launches don't
  * immediately fall into near-zero control. This does not reconnect the
  * station to the relay network; it only restores handling right at the berth. */
-static float off_relay_dock_beacon_strength(const station_t *st, vec2 pos) {
+static bool station_emits_off_relay_dock_beacon(const station_t *st) {
     if (!st || !station_provides_docking(st) || st->planned || st->scaffold ||
         st->signal_range > 0.0f)
-        return 0.0f;
+        return false;
+    return true;
+}
 
+static float off_relay_dock_beacon_strength_at(vec2 beacon_pos, vec2 pos) {
+    float dist = v2_len(v2_sub(pos, beacon_pos));
+    return fmaxf(0.0f, 1.0f - dist / OFF_RELAY_DOCK_BEACON_RANGE);
+}
+
+static void signal_grid_build_off_relay_beacons(world_t *w) {
+    signal_grid_t *sg = &w->signal_cache;
+    sg->beacon_count = 0;
+    sg->beacon_valid = true;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_emits_off_relay_dock_beacon(st)) continue;
+        for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+            const station_module_t *module = &st->modules[i];
+            if (module->scaffold || module->type != MODULE_DOCK) continue;
+            if (sg->beacon_count >= SIGNAL_BEACON_MAX) return;
+            sg->beacons[sg->beacon_count++] =
+                module_world_pos_ring(st, module->ring, module->slot);
+        }
+    }
+}
+
+static float off_relay_dock_beacon_strength_scan(const station_t *st, vec2 pos) {
+    if (!station_emits_off_relay_dock_beacon(st)) return 0.0f;
     float best = 0.0f;
-    for (int i = 0; i < st->module_count; i++) {
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
         const station_module_t *module = &st->modules[i];
         if (module->scaffold || module->type != MODULE_DOCK) continue;
         vec2 dock_pos = module_world_pos_ring(st, module->ring, module->slot);
-        float dist = v2_len(v2_sub(pos, dock_pos));
-        float strength =
-            fmaxf(0.0f, 1.0f - dist / OFF_RELAY_DOCK_BEACON_RANGE);
+        float strength = off_relay_dock_beacon_strength_at(dock_pos, pos);
         if (strength > best) best = strength;
     }
     return best;
@@ -600,9 +646,17 @@ static float off_relay_dock_beacon_strength(const station_t *st, vec2 pos) {
 
 static float off_relay_dock_beacon_strength_world(const world_t *w, vec2 pos) {
     if (!w) return 0.0f;
+    const signal_grid_t *sg = &w->signal_cache;
     float best = 0.0f;
+    if (sg->beacon_valid) {
+        for (uint16_t i = 0; i < sg->beacon_count; i++) {
+            float strength = off_relay_dock_beacon_strength_at(sg->beacons[i], pos);
+            if (strength > best) best = strength;
+        }
+        return best;
+    }
     for (int s = 0; s < MAX_STATIONS; s++) {
-        float strength = off_relay_dock_beacon_strength(&w->stations[s], pos);
+        float strength = off_relay_dock_beacon_strength_scan(&w->stations[s], pos);
         if (strength > best) best = strength;
     }
     return best;
@@ -644,6 +698,7 @@ static float signal_strength_raw(const world_t *w, vec2 pos) {
  * but runs infrequently — only on structural world changes. */
 static void signal_grid_build(world_t *w) {
     signal_grid_t *sg = &w->signal_cache;
+    signal_grid_build_off_relay_beacons(w);
     if (!sg->strength) {
         sg->strength = (float *)calloc((size_t)SIGNAL_GRID_DIM * SIGNAL_GRID_DIM, sizeof(float));
         if (!sg->strength) return;
@@ -1876,6 +1931,22 @@ static bool cargo_pod_is_station_market_pod(const world_t *w,
                                               pm, pod);
 }
 
+static int cargo_pod_station_trade_owner(const world_t *w,
+                                         const cargo_pod_t *pod) {
+    int custody = cargo_pod_custody_station(pod);
+    if (custody >= 0) return custody;
+
+    int ps = -1;
+    int pm = -1;
+    if (!w || !pod ||
+        !cargo_pod_module_tractor_indices(pod, &ps, &pm) ||
+        ps < 0 || ps >= MAX_STATIONS) {
+        return -1;
+    }
+    return station_dock_can_tractor_trade_pod(&w->stations[ps], pm, pod)
+        ? ps : -1;
+}
+
 static bool cargo_pod_set_station_dock_custody(world_t *w,
                                                int pod_idx,
                                                int station_idx) {
@@ -1890,6 +1961,7 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
     if (dock_idx < 0) return false;
 
     pod->towed_by = -1;
+    cargo_pod_set_station_custody(pod, station_idx);
     cargo_pod_set_module_tractor(pod, station_idx, dock_idx);
 
     st->module_active_pulse[dock_idx] = 1.0f;
@@ -2478,6 +2550,7 @@ static bool station_intake_pay_for_pod(world_t *w,
         ledger_earn(st, sp->session_token, value);
     }
     sp->ship.stat_credits_earned += value;
+    cargo_pod_set_station_custody(pod, station_idx);
 
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
@@ -2681,7 +2754,6 @@ static int try_buy_station_market_pod(world_t *w,
     }
 
     int best_idx = -1;
-    float best_quote = 0.0f;
     int start = 0;
     int end = MAX_CARGO_PODS;
     if (prefer_pod) {
@@ -2700,7 +2772,6 @@ static int try_buy_station_market_pod(world_t *w,
         float quote = station_market_pod_sell_quote(st, pod);
         if (quote <= FLOAT_EPSILON) continue;
         best_idx = i;
-        best_quote = quote;
         break;
     }
     if (best_idx < 0) return 0;
@@ -2712,40 +2783,8 @@ static int try_buy_station_market_pod(world_t *w,
         return -1;
     }
 
-    bool pubkey_ledger = server_player_can_use_pubkey_persistence(sp);
-    float balance = pubkey_ledger
-        ? ledger_balance_by_pubkey(st, sp->pubkey)
-        : ledger_balance(st, sp->session_token);
-    bool neural_bot_credit =
-        (sp->server_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT ||
-         sp->server_brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) &&
-        sp->autopilot_mode != 0 &&
-        sp->autopilot_state == AUTOPILOT_STEP_LOGISTICS_BUY &&
-        sp->autopilot_cargo == commodity &&
-        sp->autopilot_station_target >= 0 &&
-        sp->autopilot_station_target < MAX_STATIONS;
-    bool spent = false;
-    if (neural_bot_credit) {
-        if (pubkey_ledger) {
-            ledger_force_debit_by_pubkey(st, sp->pubkey, best_quote,
-                                         &sp->ship);
-        } else {
-            ledger_force_debit(st, sp->session_token, best_quote,
-                               &sp->ship);
-        }
-        spent = true;
-    } else if (balance + FLOAT_EPSILON >= best_quote) {
-        spent = pubkey_ledger
-            ? ledger_spend_by_pubkey(st, sp->pubkey, best_quote, &sp->ship)
-            : ledger_spend(st, sp->session_token, best_quote, &sp->ship);
-    }
-    if (!spent) {
-        SIM_LOG("[buy-pod] REJECT: c=%d cost=%.2f bal=%.2f\n",
-                (int)commodity, best_quote, balance);
-        return -1;
-    }
-
     cargo_pod_t *pod = &w->cargo_pods[best_idx];
+    cargo_pod_set_station_custody(pod, station_idx);
     cargo_pod_clear_module_tractor(pod);
     pod->towed_by = (int8_t)sp->id;
     vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
@@ -2754,17 +2793,89 @@ static int try_buy_station_market_pod(world_t *w,
     pod->vel = sp->ship.vel;
     sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)best_idx;
 
+    SIM_LOG("[buy-pod] OK player %d released station-held %s pod (%u units, charge on exit) at %s\n",
+            sp->id, commodity_short_name(commodity),
+            (unsigned)pod->quantity, st->name);
+    return 1;
+}
+
+static mining_grade_t cargo_pod_best_manifest_grade(const cargo_pod_t *pod) {
+    mining_grade_t best = MINING_GRADE_COMMON;
+    if (!pod || pod->manifest_count == 0 ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return best;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        mining_grade_t grade = (mining_grade_t)pod->manifest_units[i].grade;
+        if (grade < MINING_GRADE_COUNT && grade > best)
+            best = grade;
+    }
+    return best;
+}
+
+static bool station_owned_pod_inside_charge_boundary(const world_t *w,
+                                                     int station_idx,
+                                                     const cargo_pod_t *pod) {
+    if (!w || !pod || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return false;
+
+    const float range = CARGO_POD_DOCK_TRACTOR_RANGE;
+    const float range_sq = range * range;
+    bool saw_dock = false;
+    for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        const station_module_t *module = &st->modules[m];
+        if (module->scaffold || module->type != MODULE_DOCK) continue;
+        saw_dock = true;
+        vec2 dock_pos = module_world_pos_ring(st, module->ring, module->slot);
+        if (v2_dist_sq(pod->pos, dock_pos) <= range_sq)
+            return true;
+    }
+
+    if (!saw_dock) {
+        float center_range = fmaxf(range, st->dock_radius);
+        if (v2_dist_sq(pod->pos, st->pos) <= center_range * center_range)
+            return true;
+    }
+    return false;
+}
+
+static bool charge_station_owned_pod_if_due(world_t *w,
+                                            int pod_idx,
+                                            cargo_pod_t *pod) {
+    (void)pod_idx;
+    int station_idx = cargo_pod_custody_station(pod);
+    if (!w || !pod || station_idx < 0 || pod->towed_by < 0 ||
+        pod->towed_by >= MAX_PLAYERS) {
+        return false;
+    }
+    if (station_owned_pod_inside_charge_boundary(w, station_idx, pod))
+        return false;
+
+    server_player_t *sp = &w->players[pod->towed_by];
+    if (!sp->connected) return false;
+    station_t *st = &w->stations[station_idx];
+    float cost = station_market_pod_sell_quote(st, pod);
+    if (cost <= FLOAT_EPSILON) return false;
+
+    if (server_player_can_use_pubkey_persistence(sp)) {
+        ledger_force_debit_by_pubkey(st, sp->pubkey, cost, &sp->ship);
+    } else {
+        ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+    }
+    cargo_pod_clear_station_custody(pod);
+
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_BUY, .player_id = sp->id,
         .buy = { .station = station_idx,
-                 .commodity = (uint8_t)commodity,
-                 .grade = (uint8_t)grade,
-                 .cost = (int)lroundf(best_quote),
-                 .quantity = (uint16_t)pod->quantity }});
-    SIM_LOG("[buy-pod] OK player %d bought station-held %s pod (%u units) for %.0f cr at %s\n",
-            sp->id, commodity_short_name(commodity),
-            (unsigned)pod->quantity, best_quote, st->name);
-    return 1;
+                 .commodity = (uint8_t)pod->commodity,
+                 .grade = (uint8_t)cargo_pod_best_manifest_grade(pod),
+                 .cost = (int)lroundf(cost),
+                 .quantity = pod->quantity }});
+    SIM_LOG("[pod-charge] player %d cleared %s station boundary with pod %d: %.0f %s\n",
+            sp->id, st->name, pod_idx, cost, st->currency_name);
+    return true;
 }
 
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
@@ -4221,6 +4332,13 @@ static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, boo
 /* step_ship_motion moved to server/sim_ship.c (#294 Slice 2). */
 
 /* Resolve ship vs station using shared geometry emitter. */
+static bool ship_near_station_collision_envelope(const server_player_t *sp,
+                                                 const station_t *st) {
+    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+    float reach = station_collision_envelope_radius(st) + ship_r;
+    return v2_dist_sq(sp->ship.pos, st->pos) <= reach * reach;
+}
+
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
     station_geom_t geom;
     station_build_geom(st, &geom);
@@ -4270,6 +4388,7 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
+        if (!ship_near_station_collision_envelope(sp, &w->stations[i])) continue;
         /* Skip collision with docking target during approach lerp */
         if (sp->docking_approach && i == sp->nearby_station) continue;
         resolve_module_collisions(w, sp, &w->stations[i]);
@@ -4955,10 +5074,16 @@ static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt)
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
         if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
-        if (!cargo_pod_module_tractor_player_collectible(w, pod)) continue;
+        int trade_owner = cargo_pod_station_trade_owner(w, pod);
+        if (!cargo_pod_module_tractor_player_collectible(w, pod) &&
+            trade_owner < 0) {
+            continue;
+        }
         if (tow_filter != COMMODITY_COUNT && pod->commodity != tow_filter) continue;
         if (ship_is_towing_pod(&sp->ship, i)) continue;
         if (v2_dist_sq(sp->ship.pos, pod->pos) > tr_sq) continue;
+        if (trade_owner >= 0)
+            cargo_pod_set_station_custody(pod, trade_owner);
         sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)i;
         pod->towed_by = (int8_t)sp->id;
         cargo_pod_clear_module_tractor(pod);
@@ -5845,10 +5970,14 @@ static bool cargo_pod_find_station_dock_module(const world_t *w,
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
-        bool station_origin = pod->manifest_count > 0;
-        for (uint16_t u = 0; u < pod->manifest_count && station_origin; u++) {
-            if (pod->manifest_units[u].origin_station != (uint8_t)s)
-                station_origin = false;
+        int custody_station = cargo_pod_custody_station(pod);
+        bool station_origin = custody_station == s;
+        if (!station_origin) {
+            station_origin = pod->manifest_count > 0;
+            for (uint16_t u = 0; u < pod->manifest_count && station_origin; u++) {
+                if (pod->manifest_units[u].origin_station != (uint8_t)s)
+                    station_origin = false;
+            }
         }
         if (!station_origin) continue;
         bool hopper_claim_nearby = false;
@@ -6183,7 +6312,10 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
 
     server_player_t *sp = &w->players[pod->towed_by];
     station_t *st = &w->stations[best_station];
-    if (local_output_handoff) {
+    int owner_station = cargo_pod_custody_station(pod);
+    if (local_output_handoff ||
+        (owner_station == best_station &&
+         station_owned_pod_inside_charge_boundary(w, owner_station, pod))) {
         bool removed = false;
         for (int t = 0; t < sp->ship.towed_pod_count; t++) {
             if (sp->ship.towed_pods[t] == pod_idx) {
@@ -6199,6 +6331,11 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
         if (best_module >= 0 && best_module < MAX_MODULES_PER_STATION)
             st->module_active_pulse[best_module] = 1.0f;
         return true;
+    }
+    if (owner_station >= 0) {
+        (void)charge_station_owned_pod_if_due(w, pod_idx, pod);
+        if (cargo_pod_custody_station(pod) >= 0)
+            return false;
     }
     if (!station_intake_pay_for_pod(w, sp, st, best_station, pod))
         return false;
@@ -6229,6 +6366,7 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
         if (pod->towed_by >= 0) {
+            (void)charge_station_owned_pod_if_due(w, i, pod);
             if (!cargo_pod_try_handoff_to_matching_hopper(w, i, pod)) {
                 cargo_pod_clear_module_tractor(pod);
                 continue;
@@ -10303,6 +10441,8 @@ static void server_player_queue_movement_input_impl(server_player_t *sp,
                                                     const input_intent_t *intent,
                                                     uint16_t input_seq,
                                                     uint32_t apply_tick,
+                                                    uint32_t client_sent_ms,
+                                                    uint32_t server_recv_ms,
                                                     bool preserve_apply_tick) {
     if (!sp || !intent || apply_tick == 0) return;
 
@@ -10316,6 +10456,8 @@ static void server_player_queue_movement_input_impl(server_player_t *sp,
             movement_input_cmd_t *cmd = &sp->movement_queue[i];
             if (cmd->input_seq == input_seq) {
                 cmd->intent = movement;
+                cmd->client_sent_ms = client_sent_ms;
+                cmd->server_recv_ms = server_recv_ms;
                 return;
             }
             if (cmd->input_seq != 0 &&
@@ -10356,6 +10498,8 @@ static void server_player_queue_movement_input_impl(server_player_t *sp,
     sp->movement_queue[insert] = (movement_input_cmd_t){
         .apply_tick = apply_tick,
         .input_seq = input_seq,
+        .client_sent_ms = client_sent_ms,
+        .server_recv_ms = server_recv_ms,
         .intent = movement,
     };
     sp->movement_queue_count = (uint8_t)(count + 1u);
@@ -10366,6 +10510,7 @@ void server_player_queue_movement_input(server_player_t *sp,
                                         uint16_t input_seq,
                                         uint32_t apply_tick) {
     server_player_queue_movement_input_impl(sp, intent, input_seq, apply_tick,
+                                            0, 0,
                                             false);
 }
 
@@ -10374,7 +10519,21 @@ void server_player_queue_ticked_movement_input(server_player_t *sp,
                                                uint16_t input_seq,
                                                uint32_t apply_tick) {
     server_player_queue_movement_input_impl(sp, intent, input_seq, apply_tick,
+                                            0, 0,
                                             true);
+}
+
+static void server_player_queue_received_movement_input(
+    server_player_t *sp,
+    const input_intent_t *intent,
+    uint16_t input_seq,
+    uint32_t apply_tick,
+    uint32_t client_sent_ms,
+    uint32_t server_recv_ms,
+    bool preserve_apply_tick) {
+    server_player_queue_movement_input_impl(sp, intent, input_seq, apply_tick,
+                                            client_sent_ms, server_recv_ms,
+                                            preserve_apply_tick);
 }
 
 uint32_t server_input_apply_tick_for_world(const world_t *w,
@@ -10449,6 +10608,7 @@ static void server_input_intent_wire_defaults(input_intent_t *intent) {
 
 bool server_dispatch_input_message(world_t *w, int player_idx,
                                    const uint8_t *data, int len,
+                                   uint32_t server_recv_ms,
                                    server_input_dispatch_result_t *out) {
     if (out) {
         memset(out, 0, sizeof(*out));
@@ -10473,6 +10633,7 @@ bool server_dispatch_input_message(world_t *w, int player_idx,
     uint16_t action_id = 0;
     uint8_t ack_status = 0;
     uint32_t client_tick = input_client_tick(data, len);
+    uint32_t client_sent_ms = input_client_sent_ms(data, len);
     bool rejected_unsigned_action = false;
 
     if (effective_action != NET_ACTION_NONE && sp->pubkey_set) {
@@ -10509,12 +10670,9 @@ bool server_dispatch_input_message(world_t *w, int player_idx,
     server_input_intent_wire_defaults(&parsed);
     parse_input(input_data, input_len, &parsed);
     uint32_t apply_tick = server_input_apply_tick_for_world(w, client_tick);
-    if (client_tick != 0) {
-        server_player_queue_ticked_movement_input(sp, &parsed, input_seq,
-                                                  apply_tick);
-    } else {
-        server_player_queue_movement_input(sp, &parsed, input_seq, apply_tick);
-    }
+    server_player_queue_received_movement_input(
+        sp, &parsed, input_seq, apply_tick, client_sent_ms, server_recv_ms,
+        client_tick != 0);
 
     int station_dirty = -1;
     if ((effective_action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
@@ -11164,6 +11322,8 @@ static void server_player_apply_queued_movement(server_player_t *sp,
             apply_movement_intent(sp, &cmd->intent);
             sp->last_input_seq = cmd->input_seq;
             sp->last_input_tick = tick;
+            sp->last_input_client_sent_ms = cmd->client_sent_ms;
+            sp->last_input_server_recv_ms = cmd->server_recv_ms;
         }
         consumed++;
     }
@@ -11193,18 +11353,206 @@ static void step_signal_field_decay(world_t *w) {
     w->signal_field_decay_tick = w->tick;
 }
 
+#ifdef SIM_PROFILE
+typedef enum {
+    SIM_PROF_BOOKKEEPING,
+    SIM_PROF_STATIONS,
+    SIM_PROF_ASTEROIDS,
+    SIM_PROF_CARGO,
+    SIM_PROF_GRAVITY,
+    SIM_PROF_PRODUCTION,
+    SIM_PROF_MANIFEST,
+    SIM_PROF_WORLD_OBJECTS,
+    SIM_PROF_NPCS,
+    SIM_PROF_PLAYERS,
+    SIM_PROF_COLLISIONS,
+    SIM_PROF_SYNC,
+    SIM_PROF_COUNT,
+} sim_profile_phase_t;
+
+typedef struct {
+    double total_sec;
+    double max_sec;
+    uint64_t samples;
+} sim_profile_accum_t;
+
+#ifndef SIM_PROFILE_DEFAULT_WINDOW_SEC
+#define SIM_PROFILE_DEFAULT_WINDOW_SEC 10.0
+#endif
+
+static sim_profile_accum_t sim_profile_accum[SIM_PROF_COUNT];
+static uint32_t sim_profile_window_start_tick;
+static double sim_profile_window_start_sim_sec;
+static double sim_profile_window_sec = SIM_PROFILE_DEFAULT_WINDOW_SEC;
+static bool sim_profile_window_started;
+static bool sim_profile_configured;
+static bool sim_profile_enabled = true;
+
+static const char *sim_profile_phase_name(sim_profile_phase_t phase) {
+    static const char *names[SIM_PROF_COUNT] = {
+        "book",
+        "stations",
+        "asteroids",
+        "cargo",
+        "gravity",
+        "production",
+        "manifest",
+        "objects",
+        "npcs",
+        "players",
+        "collisions",
+        "sync",
+    };
+    return names[phase];
+}
+
+static bool sim_profile_env_truthy(const char *value) {
+    if (!value || value[0] == '\0') return false;
+    if (strcmp(value, "0") == 0) return false;
+    if (strcmp(value, "false") == 0) return false;
+    if (strcmp(value, "FALSE") == 0) return false;
+    if (strcmp(value, "off") == 0) return false;
+    if (strcmp(value, "OFF") == 0) return false;
+    if (strcmp(value, "no") == 0) return false;
+    if (strcmp(value, "NO") == 0) return false;
+    return true;
+}
+
+static void sim_profile_configure_once(void) {
+    if (sim_profile_configured) return;
+    sim_profile_configured = true;
+
+    const char *enabled = getenv("SIM_PROFILE");
+    if (enabled)
+        sim_profile_enabled = sim_profile_env_truthy(enabled);
+
+    const char *window = getenv("SIM_PROFILE_WINDOW_SEC");
+    if (window && window[0] != '\0') {
+        char *end = NULL;
+        double seconds = strtod(window, &end);
+        if (end != window && isfinite(seconds) && seconds > 0.0)
+            sim_profile_window_sec = seconds;
+    }
+}
+
+static double sim_profile_clock_now(void) {
+#ifdef __EMSCRIPTEN__
+    double ms = emscripten_get_now();
+    return ms > 0.0 ? ms * 0.001 : 0.0;
+#elif defined(_WIN32)
+    static LARGE_INTEGER freq;
+    static bool have_freq;
+    LARGE_INTEGER now;
+    if (!have_freq) {
+        QueryPerformanceFrequency(&freq);
+        have_freq = true;
+    }
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#elif defined(CLOCK_MONOTONIC)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+    return (double)time(NULL);
+#else
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) == TIME_UTC)
+        return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+    return (double)time(NULL);
+#endif
+}
+
+static double sim_profile_begin_phase(void) {
+    if (!sim_profile_enabled) return 0.0;
+    return sim_profile_clock_now();
+}
+
+static void sim_profile_record(sim_profile_phase_t phase, double start) {
+    if (!sim_profile_enabled) return;
+    double end = sim_profile_clock_now();
+    if (end < start) return;
+    double sec = end - start;
+    sim_profile_accum_t *acc = &sim_profile_accum[phase];
+    acc->total_sec += sec;
+    if (sec > acc->max_sec) acc->max_sec = sec;
+    acc->samples++;
+}
+
+static void sim_profile_begin_step(void) {
+    sim_profile_configure_once();
+}
+
+static void sim_profile_maybe_dump(const world_t *w) {
+    if (!sim_profile_enabled) return;
+    if (!w) return;
+    if (!sim_profile_window_started) {
+        sim_profile_window_started = true;
+        sim_profile_window_start_tick = w->tick;
+        sim_profile_window_start_sim_sec = (double)w->time;
+        return;
+    }
+    uint32_t elapsed_ticks = w->tick - sim_profile_window_start_tick;
+    double elapsed_sim_sec = (double)w->time - sim_profile_window_start_sim_sec;
+    if (elapsed_sim_sec < sim_profile_window_sec) return;
+
+    double total_sec = 0.0;
+    for (int i = 0; i < SIM_PROF_COUNT; i++)
+        total_sec += sim_profile_accum[i].total_sec;
+
+    printf("[sim-profile] ticks=%u sim_sec=%.3f measured_ms=%.3f\n",
+           (unsigned)elapsed_ticks, elapsed_sim_sec, total_sec * 1000.0);
+    for (int i = 0; i < SIM_PROF_COUNT; i++) {
+        const sim_profile_accum_t *acc = &sim_profile_accum[i];
+        double avg_ms = acc->samples > 0
+            ? (acc->total_sec * 1000.0) / (double)acc->samples
+            : 0.0;
+        double share = total_sec > 0.0 ? (acc->total_sec / total_sec) * 100.0 : 0.0;
+        printf("[sim-profile] phase=%-11s share=%6.2f total=%.3fms avg=%.3fms max=%.3fms samples=%llu\n",
+               sim_profile_phase_name((sim_profile_phase_t)i), share,
+               acc->total_sec * 1000.0, avg_ms,
+               acc->max_sec * 1000.0, (unsigned long long)acc->samples);
+    }
+    memset(sim_profile_accum, 0, sizeof(sim_profile_accum));
+    sim_profile_window_start_tick = w->tick;
+    sim_profile_window_start_sim_sec = (double)w->time;
+}
+
+#define SIM_PROFILE_BEGIN(var) double var = sim_profile_begin_phase()
+#define SIM_PROFILE_END(phase, var) sim_profile_record((phase), (var))
+#else
+#define sim_profile_begin_step() ((void)0)
+#define SIM_PROFILE_BEGIN(var) ((void)0)
+#define SIM_PROFILE_END(phase, var) ((void)0)
+#define sim_profile_maybe_dump(w) ((void)0)
+#endif
+
 void world_sim_step(world_t *w, float dt) {
+    sim_profile_begin_step();
+
+    SIM_PROFILE_BEGIN(prof_bookkeeping);
     w->events.count = 0;
     sim_interactions_clear(w);
     w->tick++;
     w->time += dt;
     step_signal_field_decay(w);
+    SIM_PROFILE_END(SIM_PROF_BOOKKEEPING, prof_bookkeeping);
+
+    SIM_PROFILE_BEGIN(prof_stations);
     step_station_ring_dynamics(w, dt);
     step_station_jostle(w, dt);
+    SIM_PROFILE_END(SIM_PROF_STATIONS, prof_stations);
+
+    SIM_PROFILE_BEGIN(prof_asteroids);
     sim_step_asteroid_dynamics(w, dt);
+    maintain_asteroid_field(w, dt);
+    SIM_PROFILE_END(SIM_PROF_ASTEROIDS, prof_asteroids);
+
+    SIM_PROFILE_BEGIN(prof_cargo);
     step_station_cargo_pod_tractors(w, dt);
     step_cargo_pods(w, dt);
-    maintain_asteroid_field(w, dt);
+    SIM_PROFILE_END(SIM_PROF_CARGO, prof_cargo);
+
+    SIM_PROFILE_BEGIN(prof_gravity);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
     w->gravity_accumulator += dt;
     if (w->gravity_accumulator >= 1.0f / 30.0f) {
@@ -11214,6 +11562,9 @@ void world_sim_step(world_t *w, float dt) {
         resolve_asteroid_collisions(w);
         resolve_asteroid_station_collisions(w);
     }
+    SIM_PROFILE_END(SIM_PROF_GRAVITY, prof_gravity);
+
+    SIM_PROFILE_BEGIN(prof_production);
     step_fracture_claims(w);
     step_furnace_smelting(w, dt);
     sim_step_refinery_production(w, dt);
@@ -11221,7 +11572,9 @@ void world_sim_step(world_t *w, float dt) {
     step_dock_repair_kit_fab(w, dt);
     step_shipyard_shipbuilding(w, dt);
     step_module_flow(w, dt);
+    SIM_PROFILE_END(SIM_PROF_PRODUCTION, prof_production);
 
+    SIM_PROFILE_BEGIN(prof_manifest);
     /* Manifest-as-truth reconciliation: snap floor(inventory[c]) ==
      * manifest_count(c) for every finished commodity at every station.
      * Now bidirectional — production paths mint manifest in lockstep
@@ -11254,20 +11607,31 @@ void world_sim_step(world_t *w, float dt) {
             st->_inventory_cache[c] = (float)mc + frac;
         }
     }
+    SIM_PROFILE_END(SIM_PROF_MANIFEST, prof_manifest);
+
+    SIM_PROFILE_BEGIN(prof_world_objects);
     step_module_activation(w, dt);
     signal_intelligence_step_frontier_director(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);
     step_delivery_shipments(w);
+    SIM_PROFILE_END(SIM_PROF_WORLD_OBJECTS, prof_world_objects);
+
+    SIM_PROFILE_BEGIN(prof_npcs);
     step_npc_ships(w, dt);
     generate_npc_distress_contracts(w, dt);
     delivery_maybe_post_credit_contracts(w);
+    SIM_PROFILE_END(SIM_PROF_NPCS, prof_npcs);
+
+    SIM_PROFILE_BEGIN(prof_players);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!server_player_is_gameplay_ready(&w->players[p])) continue;
         server_player_apply_queued_movement(&w->players[p], w->tick);
         step_player(w, &w->players[p], dt);
     }
+    SIM_PROFILE_END(SIM_PROF_PLAYERS, prof_players);
 
+    SIM_PROFILE_BEGIN(prof_collisions);
     /* Player-player collision: ramming damage + signal interference */
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!server_player_is_gameplay_ready(&w->players[i]) ||
@@ -11398,7 +11762,9 @@ void world_sim_step(world_t *w, float dt) {
             sync_npc_paired_ship_physics(w, n);
         }
     }
+    SIM_PROFILE_END(SIM_PROF_COLLISIONS, prof_collisions);
 
+    SIM_PROFILE_BEGIN(prof_sync);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (server_player_is_gameplay_ready(&w->players[p]))
             (void)world_ship_asset_sync_from_player(w, &w->players[p]);
@@ -11409,6 +11775,8 @@ void world_sim_step(world_t *w, float dt) {
     }
     publish_cargo_pod_module_tractor_interactions(w);
     world_refresh_station_hull_inventories(w);
+    SIM_PROFILE_END(SIM_PROF_SYNC, prof_sync);
+    sim_profile_maybe_dump(w);
 }
 
 /* ================================================================== */
@@ -11471,6 +11839,8 @@ void world_cleanup(world_t *w) {
         station_cleanup(&w->stations[i]);
     free(w->signal_cache.strength);
     w->signal_cache.strength = NULL;
+    w->signal_cache.beacon_count = 0;
+    w->signal_cache.beacon_valid = false;
     w->signal_cache.valid = false;
     free(w->asteroid_grid.entries);
     w->asteroid_grid.entries = NULL;
@@ -12315,8 +12685,11 @@ void server_player_reset_input_stream(server_player_t *sp) {
     sp->movement_queue_count = 0;
     sp->last_input_seq = 0;
     sp->last_input_tick = 0;
+    sp->last_input_client_sent_ms = 0;
+    sp->last_input_server_recv_ms = 0;
     sp->last_input_action_id = 0;
     sp->last_input_action_id_valid = false;
+    server_player_reset_authoritative_ack_state(sp);
 }
 
 void server_player_clear_transient_input(server_player_t *sp) {

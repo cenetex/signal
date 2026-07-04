@@ -39,17 +39,31 @@ void on_player_leave(uint8_t player_id);
  * must be accepted instead of compared against the previous stream.
  */
 bool net_local_prediction_enabled(void);
+float net_prediction_control_rtt_sec(void);
 float net_prediction_latency_blend(void);
 void net_replay_reset(void);
 void net_replay_record_prediction(const input_intent_t *intent, float dt);
 uint32_t net_estimated_server_tick_now(uint32_t server_tick);
 void net_observe_server_tick(uint32_t server_tick);
 void net_anchor_prediction_tick(uint32_t server_tick, bool clear_replay);
+void net_observe_transport_latency_sample(float rtt_ms,
+                                          float server_turnaround_ms,
+                                          uint32_t server_tick,
+                                          bool from_input_ack);
 
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
+void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
+                                  int count);
+void apply_remote_asteroid_state_q(const NetAsteroidStateQ* asteroids,
+                                   int count);
 void apply_remote_npcs(const NetNpcState* npcs, int count);
+void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count);
+void apply_remote_npc_pos(const NetNpcPosState* npcs, int count);
+void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count);
+void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count);
+void apply_remote_npc_status(const NetNpcStatusState* npcs, int count);
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool);
 void apply_remote_contracts(const contract_t* contracts, int count);
 void apply_remote_player_known_contracts(uint32_t mask);
@@ -61,8 +75,18 @@ void apply_remote_station_identity(const NetStationIdentity* si);
 void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
                                int module_count);
 void apply_remote_scaffolds(const NetScaffoldState* scaffolds, int count);
+void apply_remote_scaffold_remove(const uint8_t* indices, int count);
+void apply_remote_scaffold_motion(const NetScaffoldMotionState* scaffolds,
+                                  int count);
 void apply_remote_cargo_pods(const NetCargoPodState* pods, int count);
+void apply_remote_cargo_pod_remove(const uint8_t* indices, int count);
+void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* pods,
+                                   int count);
+void apply_remote_cargo_pod_linear(const NetCargoPodLinearState* pods,
+                                   int count);
 void apply_remote_interactions(const sim_interaction_t *items, int count);
+void apply_remote_interaction_drift(const NetInteractionDriftState *items,
+                                    int count);
 void apply_remote_hail_response(uint8_t station,
                                 float credits,
                                 int contract_index,

@@ -6,15 +6,45 @@
  * Packet layouts (little-endian):
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
- *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
- *   INPUT           (0x04): legacy 4-14 bytes, current 18 bytes with seq + uint16 target + action id + input tick
+ *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]
+ *                         optional authoritative tail:
+ *                         [input_ack:u16][server_tick:u32][input_tick_ack:u32]
+ *                         [client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32]
+ *   INPUT           (0x04): legacy 4-18 bytes, current 22 bytes with seq + uint16 target + action id + input tick + client_sent_ms
  *   LATENCY_PING    (0x3C): [type:1][seq:u32][client_sent_ms:u32]
- *   LATENCY_PONG    (0x3D): [type:1][seq:u32][client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32]
+ *   LATENCY_PONG    (0x3D): [type:1][seq:u32][client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32][server_tick:u32]
  *   ACTION_ACK      (0x3A): [type:1][action_id:u16][input_seq:u16][status:1][action:1]
  *   ACTION_RESULT   (0x3B): [type:1][action_id:u16][input_seq:u16][status:1][action:1][server_tick:u32]
- *   INPUT_APPLIED   (0x48): [type:1][input_seq:u16][server_tick:u32][input_tick_ack:u32]
+ *   INPUT_APPLIED   (0x48): [type:1][input_seq:u16][server_tick:u32][input_tick_ack:u32][client_sent_ms:u32][server_recv_ms:u32][server_send_ms:u32]
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
+ *   WORLD_ASTEROIDS_Q (0x68): [type:1][count:u16] + count * ASTEROID_Q_RECORD_SIZE fixed-point records
+ *   WORLD_ASTEROIDS8_Q (0x69): [type:1][count:1] + count * ASTEROID8_Q_RECORD_SIZE fixed-point records
+ *   WORLD_ASTEROID_MOTION (0x4B): [type:1][count:u16] + count * ASTEROID_MOTION_RECORD_SIZE records
+ *   WORLD_ASTEROID_MOTION_Q (0x4C): [type:1][count:u16] + count * ASTEROID_MOTION_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_POS_Q (0x55): [type:1][count:u16] + count * ASTEROID_POS_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_POS8_Q (0x5C): [type:1][count:1] + count * ASTEROID_POS8_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_POSD_Q (0x66): [type:1][count:u16] + count * ASTEROID_POSD_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_POSD8_Q (0x67): [type:1][count:1] + count * ASTEROID_POSD8_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_STATE_Q (0x51): [type:1][count:u16] + count * ASTEROID_STATE_Q_RECORD_SIZE records
+ *   WORLD_ASTEROID_REMOVE (0x56): [type:1][count:u16] + count * ASTEROID_REMOVE_RECORD_SIZE records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * NPC_RECORD_SIZE records
+ *   WORLD_NPC_MOTION (0x4E): [type:1][count:1] + count * NPC_MOTION_RECORD_SIZE records
+ *   WORLD_NPC_MOTION_Q (0x52): [type:1][count:1] + count * NPC_MOTION_Q_RECORD_SIZE records
+ *   WORLD_NPC_POS_Q (0x5A): [type:1][count:1] + count * NPC_POS_Q_RECORD_SIZE records
+ *   WORLD_NPC_POSE_Q (0x5B): [type:1][count:1] + count * NPC_POSE_Q_RECORD_SIZE records
+ *   WORLD_NPC_STATUS (0x53): [type:1][count:1] + count * NPC_STATUS_RECORD_SIZE records
+ *   WORLD_NPC_STATUS8_Q (0x5D): [type:1][count:1] + count * NPC_STATUS8_RECORD_SIZE records
+ *   WORLD_NPC_LINEAR_Q (0x5E): [type:1][count:1] + count * NPC_LINEAR_Q_RECORD_SIZE records
+ *   WORLD_NPC_MOTION8_Q (0x60): [type:1][count:1] + count * NPC_MOTION8_Q_RECORD_SIZE records
+ *   WORLD_CARGO_POD_MOTION (0x4F): [type:1][count:1] + count * CARGO_POD_MOTION_RECORD_SIZE records
+ *   WORLD_CARGO_POD_MOTION_Q (0x54): [type:1][count:1] + count * CARGO_POD_MOTION_Q_RECORD_SIZE records
+ *   WORLD_CARGO_POD_REMOVE (0x57): [type:1][count:1] + count * CARGO_POD_REMOVE_RECORD_SIZE records
+ *   WORLD_CARGO_POD_LINEAR_Q (0x5F): [type:1][count:1] + count * CARGO_POD_LINEAR_Q_RECORD_SIZE records
+ *   WORLD_CARGO_PODS_Q (0x62): [type:1][count:1] + count * CARGO_POD_Q_RECORD_SIZE records
+ *   STATION_IDENTITY_Q (0x63): compact variable-length station identity
+ *   WORLD_SCAFFOLD_MOTION_Q (0x59): [type:1][count:1] + count * SCAFFOLD_MOTION_Q_RECORD_SIZE records
+ *   WORLD_INTERACTION_DRIFT (0x50): [type:1][count:1] + count * INTERACTION_DRIFT_RECORD_SIZE records
+ *   WORLD_INTERACTIONS_Q (0x61): [type:1][count:1] + count * INTERACTION_Q_RECORD_SIZE records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
@@ -25,6 +55,14 @@
  *   HANDOFF_RESULT  (0x45): [type:1][status:1][reason:1][dest_station:1][ticket_hash:32]
  *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] + fixed structural trailers
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
+ *                         per-recipient batches may omit the recipient's own
+ *                         record; local authoritative baselines ride STATE
+ *   WORLD_PLAYER_MOTION (0x4D): [type:1][count:1] + count * PLAYER_MOTION_RECORD_SIZE records
+ *   WORLD_PLAYER_MOTION_Q (0x6A): [type:1][count:1] + count * PLAYER_MOTION_Q_RECORD_SIZE records
+ *   WORLD_PLAYER_DOCK_Q (0x6B): [type:1][count:1] + count * PLAYER_DOCK_RECORD_SIZE records
+ *   WORLD_PLAYER_MOTIOND_Q (0x6C): [type:1][count:1] + count * PLAYER_MOTIOND_Q_RECORD_SIZE records
+ *   WORLD_PLAYER_POSED_Q (0x6D): [type:1][count:1] + count * PLAYER_POSED_Q_RECORD_SIZE records
+ *   WORLD_PLAYER_MOTIONM_Q (0x6E): [type:1][count:1] + mixed player delta records
  *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
  *   HAIL_RESPONSE   (0x25): [type:1][station:1][credits:f32][contract:1]
  *                         optional reason tail:
@@ -48,18 +86,34 @@ enum {
     NET_MSG_WORLD_ASTEROIDS = 0x10,
     NET_MSG_WORLD_NPCS      = 0x11,
     NET_MSG_WORLD_STATIONS  = 0x12,
+    NET_MSG_WORLD_STATIONS_Q = 0x65, /* server -> client. Sparse station
+                                      * economy summary; same semantics as
+                                      * WORLD_STATIONS without zero inventory
+                                      * padding. */
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_HOST_ASSIGN     = 0x14,
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
     NET_MSG_STATION_IDENTITY= 0x17,
+    NET_MSG_STATION_IDENTITY_Q = 0x63, /* server -> client. Compact variable
+                                        * station identity. Same semantic
+                                        * fields as STATION_IDENTITY, but
+                                        * fixed-capacity string/list trailers
+                                        * are length-prefixed and sparse. */
     NET_MSG_WORLD_PLAYERS   = 0x18,
     NET_MSG_CONTRACTS       = 0x19,
+    NET_MSG_CONTRACTS_Q     = 0x64, /* server -> client. Sparse compact
+                                     * contract snapshot. Same semantic
+                                     * fields/order as CONTRACTS, with the
+                                     * provenance tails present only when
+                                     * nonzero. */
     NET_MSG_SESSION         = 0x20, /* client -> server: [type:1][token:8] */
     NET_MSG_DEATH           = 0x21, /* server -> client: [type:1][player_id:1] */
-    NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32] */
+    NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32].
+                                     * Low-rate reconciliation; clients advance
+                                     * world time locally between samples. */
     NET_MSG_PLAN            = 0x23, /* client -> server: outpost planning intents */
-    NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: active scaffold pool */
+    NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: scaffold identity/build upserts */
     NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: station hail/balance response */
     NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
@@ -161,9 +215,11 @@ enum {
                                             *   [type:1=0x3A][action_id:u16][input_seq:u16]
                                             *   [status:1][action:1]
                                             *
-                                            * Movement-only input is acknowledged by WORLD_PLAYERS input_ack.
-                                            * This is a transport/dedupe ack for one-shot actions, not a
-                                            * semantic success response.
+                                            * Movement-only input is acknowledged by private
+                                            * INPUT_APPLIED/STATE receipts, with WORLD_PLAYERS
+                                            * mirroring the latest input_ack on semantic
+                                            * heartbeats for compatibility. This is a transport/dedupe
+                                            * ack for one-shot actions, not a semantic success response.
                                             * The normal authoritative snapshots still decide whether an action
                                             * visibly succeeded. */
     NET_MSG_ACTION_RESULT          = 0x3B, /* server -> client. Semantic result for an accepted
@@ -181,22 +237,25 @@ enum {
                                             *
                                             * This measures the wire/transport path only. It is intentionally
                                             * separate from input_seq acknowledgements, which are gated by
-                                            * server sim and WORLD_PLAYERS broadcast cadence. */
+                                            * server sim and authoritative receipt cadence. */
     NET_MSG_LATENCY_PONG           = 0x3D, /* server -> client. Immediate echo for LATENCY_PING.
                                             *
                                             *   [type:1=0x3D][seq:u32][client_sent_ms:u32]
                                             *   [server_recv_ms:u32][server_send_ms:u32]
+                                            *   [server_tick:u32]
                                             *
                                             * The client computes ping RTT from its own echoed timestamp.
                                             * The two server timestamps are same-clock server turnaround
-                                            * telemetry only; clients must not compare them with client time. */
+                                            * telemetry only; clients must not compare them with client time.
+                                            * The server tick is a cheap prediction anchor so full world
+                                            * snapshots do not need to carry the tick heartbeat alone. */
     NET_MSG_CLIENT_METRICS         = 0x3E, /* client -> server. Periodic end-user telemetry report.
                                             *
                                             *   [type:1=0x3E][seq:u32]
                                             *   [ping_rtt_ms:u16][ack_ms:u16][ack_gap_ms:u16]
                                             *   [server_turnaround_ms:u16][player_interval_ms:u16]
                                             *   [unacked_inputs:u16][replay_depth:u16]
-                                            *   [action_queue_depth:u8][reserved:u8]
+                                            *   [action_queue_depth:u8][recovery_flags:u8]
                                             *
                                             * The relay logs this as structured analytics. It never carries
                                             * raw session tokens, pubkeys, or client IPs. */
@@ -262,22 +321,24 @@ enum {
                                             *
                                             *   [type:1=0x45][status:1][reason:1]
                                             *   [dest_station:1][ticket_hash:32] */
-    NET_MSG_WORLD_CARGO_PODS       = 0x46, /* server -> client: active towable cargo pods */
+    NET_MSG_WORLD_CARGO_PODS       = 0x46, /* server -> client: active towable cargo pod identity upserts */
     NET_MSG_DELIVERY_LEDGER        = 0x47, /* server -> client. Per-player recourse
                                             * shipment/debt ledger.
                                             *
                                             *   [type:1=0x47][count:1]
                                             *     count × DELIVERY_LEDGER_RECORD_SIZE */
-    NET_MSG_INPUT_APPLIED          = 0x48, /* server -> client. Private applied-input
-                                            * receipt for movement sync.
+    NET_MSG_INPUT_APPLIED          = 0x48, /* server -> client. Fixed-size applied-input
+                                            * receipt for movement sync fallback/compatibility.
                                             *
                                             *   [type:1=0x48][input_seq:u16]
                                             *   [server_tick:u32][input_tick_ack:u32]
+                                            *   [client_sent_ms:u32][server_recv_ms:u32]
+                                            *   [server_send_ms:u32]
                                             *
-                                            * WORLD_PLAYERS still mirrors the latest
-                                            * ack for compatibility; this small packet
-                                            * decouples input timing from full pose
-                                            * broadcast cadence. */
+                                            * Modern movement ack/correction uses private
+                                            * INPUT_APPLIED/STATE receipts; WORLD_PLAYERS still
+                                            * mirrors the latest ack on semantic heartbeats for
+                                            * compatibility. */
     NET_MSG_WORLD_INTERACTIONS     = 0x49, /* server -> client: transient authored
                                             * interaction visuals such as module
                                             * tractor beams. */
@@ -292,6 +353,453 @@ enum {
                                             * packet lets remote multiplayer render
                                             * cross-station local-credit rows without
                                             * exposing full station ledger tables. */
+    NET_MSG_WORLD_ASTEROID_MOTION  = 0x4B, /* server -> client. Compact live asteroid
+                                            * motion correction for already-known clean
+                                            * rocks.
+                                            *
+                                            *   [type:1=0x4B][count:u16]
+                                            *     count × [index:u16][x:f32][y:f32]
+                                            *              [vx:f32][vy:f32]
+                                            *
+                                            * Full NET_MSG_WORLD_ASTEROIDS records still
+                                            * carry first-seen and structural
+                                            * identity updates; removals ride
+                                            * NET_MSG_WORLD_ASTEROID_REMOVE. */
+    NET_MSG_WORLD_ASTEROID_MOTION_Q= 0x4C, /* server -> client. Quantized live asteroid
+                                            * motion correction for far already-known
+                                            * clean rocks.
+                                            *
+                                            *   [type:1=0x4C][count:u16]
+                                            *     count × [index:u16][x:i16][y:i16]
+                                            *              [vx:i16][vy:i16]
+                                            *
+                                            * Position uses
+                                            * ASTEROID_MOTION_Q_POS_SCALE pixels per
+                                            * step; velocity uses
+                                            * ASTEROID_MOTION_Q_VEL_SCALE px/s per step. */
+    NET_MSG_WORLD_ASTEROID_POS_Q   = 0x55, /* server -> client. Quantized asteroid
+                                            * position correction for already-known
+                                            * clean rocks whose quantized velocity
+                                            * has not changed since the previous
+                                            * motion sample.
+                                            *
+                                            *   [type:1=0x55][count:u16]
+                                            *     count x [index:u16][x:i16][y:i16]
+                                            *
+                                            * Position uses
+                                            * ASTEROID_MOTION_Q_POS_SCALE pixels per
+                                            * step; clients retain the last known
+                                            * asteroid velocity. */
+    NET_MSG_WORLD_ASTEROID_POS8_Q  = 0x5C, /* server -> client. Byte-index variant
+                                            * of WORLD_ASTEROID_POS_Q for
+                                            * already-known asteroid slots < 256.
+                                            *
+                                            *   [type:1=0x5C][count:u8]
+                                            *     count x [index:u8][x:i16][y:i16]
+                                            *
+                                            * Slots >= 256 remain on
+                                            * WORLD_ASTEROID_POS_Q. */
+    NET_MSG_WORLD_ASTEROID_POSD_Q  = 0x66, /* server -> client. Quantized asteroid
+                                            * position delta from the previous
+                                            * absolute quantized asteroid position.
+                                            *
+                                            *   [type:1=0x66][count:u16]
+                                            *     count x [index:u16][dx:i8][dy:i8]
+                                            *
+                                            * Deltas are in
+                                            * ASTEROID_MOTION_Q_POS_SCALE steps;
+                                            * clients add them to the last
+                                            * absolute asteroid position sample. */
+    NET_MSG_WORLD_ASTEROID_POSD8_Q = 0x67, /* server -> client. Byte-index variant
+                                            * of WORLD_ASTEROID_POSD_Q for
+                                            * already-known asteroid slots < 256.
+                                            *
+                                            *   [type:1=0x67][count:u8]
+                                            *     count x [index:u8][dx:i8][dy:i8]
+                                            *
+                                            * Slots >= 256 remain on
+                                            * WORLD_ASTEROID_POSD_Q or the absolute
+                                            * WORLD_ASTEROID_POS_Q fallback. */
+    NET_MSG_WORLD_ASTEROIDS_Q      = 0x68, /* server -> client. Compact active
+                                            * asteroid identity/upsert for
+                                            * already relevant slots.
+                                            *
+                                            *   [type:1=0x68][count:u16]
+                                            *     count x [index:u16][flags:1]
+                                            *             [x:i16][y:i16]
+                                            *             [vx:i16][vy:i16]
+                                            *             [hp:u16][ore:u16]
+                                            *             [radius:u16]
+                                            *             [smelt:u8][detail:u8]
+                                            *
+                                            * Position/velocity use the same
+                                            * quantized scales as asteroid
+                                            * motion streams. Numeric identity
+                                            * fields use
+                                            * ASTEROID_IDENTITY_Q_VALUE_SCALE;
+                                            * detail packs grade, crystal, and
+                                            * phase. */
+    NET_MSG_WORLD_ASTEROIDS8_Q     = 0x69, /* server -> client. Byte-index
+                                            * compact active asteroid upsert for
+                                            * slots < 256.
+                                            *
+                                            *   [type:1=0x69][count:u8]
+                                            *     count x [index:u8][flags:1]
+                                            *             [x:i16][y:i16]
+                                            *             [vx:i16][vy:i16]
+                                            *             [hp:u16][ore:u16]
+                                            *             [radius:u16]
+                                            *             [smelt:u8][detail:u8]
+                                            *
+                                            * Numeric identity fields use
+                                            * ASTEROID_IDENTITY_Q_VALUE_SCALE;
+                                            * detail packs grade, crystal, and
+                                            * phase. Slots >= 256 remain on
+                                            * WORLD_ASTEROIDS_Q or the legacy
+                                            * WORLD_ASTEROIDS fallback. */
+    NET_MSG_WORLD_ASTEROID_REMOVE  = 0x56, /* server -> client. Compact inactive
+                                            * asteroid removals for already-known
+                                            * relevant slots that left view or were
+                                            * destroyed.
+                                            *
+                                            *   [type:1=0x56][count:u16]
+                                            *     count x [index:u16]
+                                            *
+                                            * Active first-seen/identity records
+                                            * remain on NET_MSG_WORLD_ASTEROIDS. */
+    NET_MSG_WORLD_PLAYER_MOTION    = 0x4D, /* server -> client. Compact live player
+                                            * pose correction for remote undocked
+                                            * ships.
+                                            *
+                                            *   [type:1=0x4D][count:1]
+                                            *     count × [id:1][x:f32][y:f32]
+                                            *              [vx:f32][vy:f32][angle:f32]
+                                            *
+                                            * Full NET_MSG_WORLD_PLAYERS records still
+                                            * carry identity, flags, tow state, beam
+                                            * endpoints, and input-ack metadata. */
+    NET_MSG_WORLD_PLAYER_MOTION_Q  = 0x6A, /* server -> client. Quantized live
+                                            * remote player pose correction.
+                                            *
+                                            *   [type:1=0x6A][count:1]
+                                            *     count x [id:1][x:i16][y:i16]
+                                            *             [vx:i16][vy:i16]
+                                            *             [angle:u8]
+                                            *
+                                            * x/y use 4 px units; vx/vy use
+                                            * 0.25 px/s units; angle maps a
+                                            * full turn to 256 steps. */
+    NET_MSG_WORLD_PLAYER_DOCK_Q    = 0x6B, /* server -> client. Compact remote
+                                            * dock/thrust status update.
+                                            *
+                                            *   [type:1=0x6B][count:1]
+                                            *     count x [id:1][status_flags:1]
+                                            *
+                                            * status_flags uses
+                                            * PLAYER_DOCK_STATUS_FLAGS_MASK
+                                            * from the WORLD_PLAYERS flags byte.
+                                            *
+                                            * Pose continues on STATE /
+                                            * WORLD_PLAYER_MOTION_Q. */
+    NET_MSG_WORLD_PLAYER_MOTIOND_Q = 0x6C, /* server -> client. Delta-compressed
+                                            * remote player motion after an
+                                            * absolute WORLD_PLAYER_MOTION_Q
+                                            * baseline has been delivered.
+                                            *
+                                            *   [type:1=0x6C][count:1]
+                                            *     count x [id:1][dx:i8][dy:i8]
+                                            *             [vx:i8][vy:i8]
+                                            *             [angle:u8]
+                                            *
+                                            * dx/dy are signed deltas in
+                                            * PLAYER_MOTION_Q_POS_SCALE units
+                                            * from the last sent absolute/delta
+                                            * player motion sample for that id.
+                                            * vx/vy use
+                                            * PLAYER_MOTIOND_Q_VEL_SCALE. */
+    NET_MSG_WORLD_PLAYER_POSED_Q   = 0x6D, /* server -> client. Position plus
+                                            * angle remote player delta after
+                                            * an absolute or delta motion
+                                            * baseline.
+                                            *
+                                            *   [type:1=0x6D][count:1]
+                                            *     count x [id:1][dx:i8][dy:i8]
+                                            *             [angle:u8]
+                                            *
+                                            * Retains the client's previous
+                                            * velocity for that id. */
+    NET_MSG_WORLD_PLAYER_MOTIONM_Q = 0x6E, /* server -> client. Mixed remote
+                                            * player delta packet after an
+                                            * absolute WORLD_PLAYER_MOTION_Q
+                                            * baseline.
+                                            *
+                                            *   [type:1=0x6E][count:1]
+                                            *     count x pose:
+                                            *       [id:1][dx:i8][dy:i8]
+                                            *       [angle:u8]
+                                            *     or count x motion:
+                                            *       [id|0x80:1][dx:i8][dy:i8]
+                                            *       [vx:i8][vy:i8][angle:u8]
+                                            *
+                                            * id uses the low 5 bits
+                                            * (MAX_PLAYERS=32). The 0x80 bit
+                                            * means the record includes
+                                            * velocity; otherwise the client
+                                            * retains the previous velocity. */
+    NET_MSG_WORLD_NPC_MOTION       = 0x4E, /* server -> client. Compact live NPC
+                                            * pose correction for relevant NPCs.
+                                            *
+                                            *   [type:1=0x4E][count:1]
+                                            *     count × [index:1][flags:1]
+                                            *              [x:f32][y:f32]
+                                            *              [vx:f32][vy:f32][angle:f32]
+                                            *
+                                            * Full NET_MSG_WORLD_NPCS records still
+                                            * carry visibility, role, tint, session
+                                            * token, and home station; status churn
+                                            * rides NET_MSG_WORLD_NPC_STATUS. */
+    NET_MSG_WORLD_CARGO_POD_MOTION = 0x4F, /* server -> client. Compact live cargo
+                                            * pod pose correction for already-known
+                                            * relevant pods.
+                                            *
+                                            *   [type:1=0x4F][count:1]
+                                            *     count × [index:1][x:f32][y:f32]
+                                            *              [vx:f32][vy:f32]
+                                            *              [rotation:f32]
+                                            *
+                                            * Full NET_MSG_WORLD_CARGO_PODS records
+                                            * still carry kind, commodity, radius,
+                                            * quantity, shipment, tow owner, tractor
+                                            * custody, and visible-set changes. */
+    NET_MSG_WORLD_INTERACTION_DRIFT = 0x50, /* server -> client. Quantized visual
+                                            * drift for the current
+                                            * WORLD_INTERACTIONS identity list.
+                                            *
+                                            *   [type:1=0x50][count:1]
+                                            *     count × [index:1]
+                                            *              [source_x:i16][source_y:i16]
+                                            *              [target_x:i16][target_y:i16]
+                                            *              [range:u16][intensity:u8]
+                                            *
+                                            * Full NET_MSG_WORLD_INTERACTIONS records
+                                            * still carry type, visual, commodity,
+                                            * flags, and source/target identity. */
+    NET_MSG_WORLD_ASTEROID_STATE_Q  = 0x51, /* server -> client. Compact dirty
+                                            * state for already-known active
+                                            * asteroids.
+                                            *
+                                            *   [type:1=0x51][count:u16]
+                                            *     count × [index:u16][hp:f32]
+                                            *              [ore:f32][radius:f32]
+                                            *              [smelt:u8][grade:u8]
+                                            *              [crystal_stage:u8]
+                                            *              [phase:u8]
+                                            *
+                                            * First-seen and structural identity
+                                            * changes remain on
+                                            * NET_MSG_WORLD_ASTEROIDS; removals
+                                            * ride NET_MSG_WORLD_ASTEROID_REMOVE. */
+    NET_MSG_WORLD_NPC_MOTION_Q     = 0x52, /* server -> client. Quantized live
+                                            * NPC pose correction for relevant
+                                            * NPCs.
+                                            *
+                                            *   [type:1=0x52][count:1]
+                                            *     count × [index:1][flags:1]
+                                            *              [x:i16][y:i16]
+                                            *              [vx:i16][vy:i16]
+                                            *              [angle:u16]
+                                            *
+                                            * Position uses
+                                            * NPC_MOTION_Q_POS_SCALE pixels per
+                                            * step; velocity uses
+                                            * NPC_MOTION_Q_VEL_SCALE px/s per
+                                            * step; angle covers one turn. Full
+                                            * NET_MSG_WORLD_NPCS records still
+                                            * carry visibility, role, tint,
+                                            * session token, and home station;
+                                            * status churn rides
+                                            * NET_MSG_WORLD_NPC_STATUS. */
+    NET_MSG_WORLD_NPC_STATUS       = 0x53, /* server -> client. Compact live
+                                            * NPC status for role/state/target/tow
+                                            * churn. Thrust-only visual changes
+                                            * are owned by NPC_MOTION(_Q).
+                                            *
+                                            *   [type:1=0x53][count:1]
+                                            *     count × [index:1][flags:1]
+                                            *              [target:u16]
+                                            *              [towed_fragment:u16]
+                                            *
+                                            * Full NET_MSG_WORLD_NPCS records
+                                            * carry visibility, role, tint,
+                                            * session token, and home station. */
+    NET_MSG_WORLD_CARGO_POD_MOTION_Q = 0x54, /* server -> client. Quantized live
+                                            * cargo pod pose correction for
+                                            * already-known relevant pods.
+                                            *
+                                            *   [type:1=0x54][count:1]
+                                            *     count × [index:1]
+                                            *              [x:i16][y:i16]
+                                            *              [vx:i16][vy:i16]
+                                            *              [rotation:u16]
+                                            *
+                                            * Full NET_MSG_WORLD_CARGO_PODS
+                                            * records still carry cargo identity,
+                                            * tow owner, tractor custody, and
+                                            * visible-set changes. */
+    NET_MSG_WORLD_CARGO_POD_REMOVE = 0x57, /* server -> client. Compact cargo
+                                            * pod relevance/removal update for
+                                            * already-known pod slots.
+                                            *
+                                            *   [type:1=0x57][count:1]
+                                            *     count × [index:1]
+                                            *
+                                            * With
+                                            * SIGNAL_PROTOCOL_CAP_CARGO_POD_REMOVE,
+                                            * WORLD_CARGO_PODS is an upsert lane;
+                                            * this packet owns disappearances. */
+    NET_MSG_WORLD_SCAFFOLD_REMOVE  = 0x58, /* server -> client. Compact scaffold
+                                            * relevance/removal update for
+                                            * already-known scaffold slots.
+                                            *
+                                            *   [type:1=0x58][count:1]
+                                            *     count × [index:1]
+                                            *
+                                            * With
+                                            * SIGNAL_PROTOCOL_CAP_SCAFFOLD_REMOVE,
+                                            * WORLD_SCAFFOLDS is an upsert lane;
+                                            * this packet owns disappearances. */
+    NET_MSG_WORLD_SCAFFOLD_MOTION_Q = 0x59, /* server -> client. Quantized live
+                                             * scaffold pose/velocity update.
+                                             *
+                                             *   [type:1=0x59][count:1]
+                                             *     count × [index:1][x:i16][y:i16]
+                                             *              [vx:i16][vy:i16]
+                                             *
+                                             * Full NET_MSG_WORLD_SCAFFOLDS
+                                             * records still carry scaffold
+                                             * state/module/owner/radius/build
+                                             * identity and visible-set changes. */
+    NET_MSG_WORLD_NPC_POS_Q       = 0x5A, /* server -> client. Quantized
+                                           * position-only correction for
+                                           * already-known NPC slots whose
+                                           * velocity/angle/thrust visual state
+                                           * still matches the previous motion
+                                           * baseline.
+                                           *
+                                           *   [type:1=0x5A][count:1]
+                                           *     count × [index:1][x:i16][y:i16]
+                                           *
+                                           * Velocity, angle, thrust, role, and
+                                           * target changes still use
+                                           * NPC_MOTION(_Q) or NPC_STATUS. */
+    NET_MSG_WORLD_NPC_POSE_Q      = 0x5B, /* server -> client. Quantized pose
+                                           * correction for already-known NPC
+                                           * slots whose velocity/thrust visual
+                                           * state still matches the previous
+                                           * motion baseline, but facing changed
+                                           * enough to reconcile.
+                                           *
+                                           *   [type:1=0x5B][count:1]
+                                           *     count × [index:1][x:i16][y:i16]
+                                           *              [angle:u16]
+                                           *
+                                           * Velocity, thrust, role, and target
+                                           * changes still use NPC_MOTION(_Q) or
+                                           * NPC_STATUS. */
+    NET_MSG_WORLD_NPC_STATUS8_Q   = 0x5D, /* server -> client. Compact status
+                                           * batch for visible NPCs whose
+                                           * target/towed asteroid references
+                                           * are either none or fit in one byte.
+                                           *
+                                           *   [type:1=0x5D][count:1]
+                                           *     count x [index:1][flags:1]
+                                           *             [target:u8][towed:u8]
+                                           *
+                                           * 0xFF means none. Batches needing a
+                                           * 16-bit asteroid reference use
+                                           * WORLD_NPC_STATUS. */
+    NET_MSG_WORLD_NPC_LINEAR_Q    = 0x5E, /* server -> client. Quantized
+                                           * position+velocity correction for
+                                           * already-known NPC slots whose
+                                           * angle/thrust visual state still
+                                           * matches the previous motion
+                                           * baseline.
+                                           *
+                                           *   [type:1=0x5E][count:1]
+                                           *     count x [index:1][x:i16][y:i16]
+                                           *             [vx:i16][vy:i16]
+                                           *
+                                           * Angle, thrust, role, and target
+                                           * changes still use NPC_MOTION(_Q) or
+                                           * NPC_STATUS. */
+    NET_MSG_WORLD_CARGO_POD_LINEAR_Q = 0x5F, /* server -> client. Quantized
+                                            * position+velocity correction for
+                                            * already-known cargo pods whose
+                                            * rotation still matches the
+                                            * previous motion baseline.
+                                            *
+                                            *   [type:1=0x5F][count:1]
+                                            *     count x [index:1][x:i16][y:i16]
+                                            *             [vx:i16][vy:i16]
+                                            *
+                                            * Rotation changes still use
+                                            * CARGO_POD_MOTION(_Q). */
+    NET_MSG_WORLD_NPC_MOTION8_Q   = 0x60, /* server -> client. Compact
+                                           * quantized NPC pose correction for
+                                           * relevant NPCs.
+                                           *
+                                           *   [type:1=0x60][count:1]
+                                           *     count x [index:1][flags:1]
+                                           *             [x:i16][y:i16]
+                                           *             [vx:i8][vy:i8]
+                                           *             [angle:u8]
+                                           *
+                                           * This is the preferred live NPC
+                                           * visual stream; WORLD_NPC_MOTION_Q
+                                           * remains as the higher-precision
+                                           * compatibility fallback. */
+    NET_MSG_WORLD_INTERACTIONS_Q   = 0x61, /* server -> client. Compact
+                                            * interaction identity upsert.
+                                            *
+                                            *   [type:1=0x61][count:1]
+                                            *     count x [type:1][visual:1]
+                                            *             [commodity:1][flags:1]
+                                            *             [source_type:1]
+                                            *             [source_index:i16]
+                                            *             [source_aux:i16]
+                                            *             [target_type:1]
+                                            *             [target_index:i16]
+                                            *             [target_aux:i16]
+                                            *             [source_x:i16]
+                                            *             [source_y:i16]
+                                            *             [target_x:i16]
+                                            *             [target_y:i16]
+                                            *             [range:u16]
+                                            *             [intensity:u8]
+                                            *
+                                            * Source/target identity is exact;
+                                            * visual fields use the same scales as
+                                            * WORLD_INTERACTION_DRIFT. */
+    NET_MSG_WORLD_CARGO_PODS_Q     = 0x62, /* server -> client. Compact cargo
+                                            * pod identity upsert.
+                                            *
+                                            *   [type:1=0x62][count:1]
+                                            *     count x [index:1][kind:1]
+                                            *             [commodity:1]
+                                            *             [towed_by:1]
+                                            *             [x:i16][y:i16]
+                                            *             [vx:i16][vy:i16]
+                                            *             [radius:f32]
+                                            *             [rotation:u16]
+                                            *             [quantity:u16]
+                                            *             [manifest_count:u16]
+                                            *             [shipment_id:u16]
+                                            *             [flags:1][best_grade:1]
+                                            *             [tractor_station:1]
+                                            *             [tractor_module:1]
+                                            *
+                                            * Semantic fields stay exact; visual
+                                            * pose uses CARGO_POD_MOTION_Q scales. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]
@@ -347,7 +855,30 @@ enum {
     SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS = 1u << 7,
     SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK = 1u << 8,
     SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER = 1u << 9,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_MOTION = 1u << 10,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_MOTION_Q = 1u << 11,
+    SIGNAL_PROTOCOL_CAP_PLAYER_MOTION = 1u << 12,
+    SIGNAL_PROTOCOL_CAP_NPC_MOTION = 1u << 13,
+    SIGNAL_PROTOCOL_CAP_CARGO_POD_MOTION = 1u << 14,
+    SIGNAL_PROTOCOL_CAP_INTERACTION_DRIFT = 1u << 15,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_STATE_Q = 1u << 16,
+    SIGNAL_PROTOCOL_CAP_NPC_MOTION_Q = 1u << 17,
+    SIGNAL_PROTOCOL_CAP_NPC_STATUS = 1u << 18,
+    SIGNAL_PROTOCOL_CAP_CARGO_POD_MOTION_Q = 1u << 19,
+    SIGNAL_PROTOCOL_CAP_LATENCY_PONG_TICK = 1u << 20,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_POS_Q = 1u << 21,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_REMOVE = 1u << 22,
+    SIGNAL_PROTOCOL_CAP_CARGO_POD_REMOVE = 1u << 23,
+    SIGNAL_PROTOCOL_CAP_SCAFFOLD_REMOVE = 1u << 24,
+    SIGNAL_PROTOCOL_CAP_SCAFFOLD_MOTION_Q = 1u << 25,
+    SIGNAL_PROTOCOL_CAP_NPC_POS_Q = 1u << 26,
+    SIGNAL_PROTOCOL_CAP_NPC_POSE_Q = 1u << 27,
+    SIGNAL_PROTOCOL_CAP_ASTEROID_POS8_Q = 1u << 28,
+    SIGNAL_PROTOCOL_CAP_NPC_STATUS8_Q = 1u << 29,
+    SIGNAL_PROTOCOL_CAP_NPC_LINEAR_Q = 1u << 30,
 };
+
+#define SIGNAL_PROTOCOL_CAP_ASTEROID_POSD_Q (1u << 31)
 
 enum {
     PROTOCOL_STREAM_CLASS_STATIC   = 1, /* identity/config snapshots */
@@ -370,24 +901,44 @@ enum {
 enum {
     PROTOCOL_INFO_HEADER_SIZE        = 8,
     PROTOCOL_INFO_STREAM_RECORD_SIZE = 12,
-    PROTOCOL_INFO_STREAM_CAPACITY    = 32,
+    PROTOCOL_INFO_STREAM_CAPACITY    = 72,
     PROTOCOL_INFO_SIZE = PROTOCOL_INFO_HEADER_SIZE +
                          PROTOCOL_INFO_STREAM_CAPACITY * PROTOCOL_INFO_STREAM_RECORD_SIZE,
 };
 
-enum {
-    SIGNAL_PROTOCOL_CAPABILITIES =
-        SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO |
-        SIGNAL_PROTOCOL_CAP_STATION_DIAG |
-        SIGNAL_PROTOCOL_CAP_MANIFEST_STREAMS |
-        SIGNAL_PROTOCOL_CAP_LATENCY_METRICS |
-        SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS |
-        SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT |
-        SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS |
-        SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS |
-        SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK |
-        SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER,
-};
+#define SIGNAL_PROTOCOL_CAPABILITIES \
+    (SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO | \
+     SIGNAL_PROTOCOL_CAP_STATION_DIAG | \
+     SIGNAL_PROTOCOL_CAP_MANIFEST_STREAMS | \
+     SIGNAL_PROTOCOL_CAP_LATENCY_METRICS | \
+     SIGNAL_PROTOCOL_CAP_RECEIPT_CHAINS | \
+     SIGNAL_PROTOCOL_CAP_INSPECT_SNAPSHOT | \
+     SIGNAL_PROTOCOL_CAP_HANDOFF_TICKETS | \
+     SIGNAL_PROTOCOL_CAP_DELIVERY_SHIPMENTS | \
+     SIGNAL_PROTOCOL_CAP_INPUT_APPLIED_ACK | \
+     SIGNAL_PROTOCOL_CAP_PLAYER_KNOWN_LEDGER | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_MOTION | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_MOTION_Q | \
+     SIGNAL_PROTOCOL_CAP_PLAYER_MOTION | \
+     SIGNAL_PROTOCOL_CAP_NPC_MOTION | \
+     SIGNAL_PROTOCOL_CAP_CARGO_POD_MOTION | \
+     SIGNAL_PROTOCOL_CAP_INTERACTION_DRIFT | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_STATE_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_MOTION_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_STATUS | \
+     SIGNAL_PROTOCOL_CAP_CARGO_POD_MOTION_Q | \
+     SIGNAL_PROTOCOL_CAP_LATENCY_PONG_TICK | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_POS_Q | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_REMOVE | \
+     SIGNAL_PROTOCOL_CAP_CARGO_POD_REMOVE | \
+     SIGNAL_PROTOCOL_CAP_SCAFFOLD_REMOVE | \
+     SIGNAL_PROTOCOL_CAP_SCAFFOLD_MOTION_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_POS_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_POSE_Q | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_POS8_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_STATUS8_Q | \
+     SIGNAL_PROTOCOL_CAP_NPC_LINEAR_Q | \
+     SIGNAL_PROTOCOL_CAP_ASTEROID_POSD_Q)
 
 /* Layer A.4 of #479 — legacy-save migration constants. */
 #define LEGACY_SAVES_MAX_LIST     16   /* hard cap on legacy saves enumerated to a client */
@@ -695,6 +1246,11 @@ static inline bool inspect_snapshot_unit_is_groupable(const cargo_unit_t *u) {
  * [range:f32][intensity:f32]
  */
 #define INTERACTION_RECORD_SIZE 38
+#define INTERACTION_Q_RECORD_SIZE 25
+#define INTERACTION_DRIFT_MSG_HEADER 2
+#define INTERACTION_DRIFT_RECORD_SIZE 12
+#define INTERACTION_DRIFT_POS_SCALE 4.0f
+#define INTERACTION_DRIFT_RANGE_SCALE 4.0f
 
 /* Signal channel wire record:
  *   [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200][entry_hash:32] = 246 bytes
@@ -791,20 +1347,38 @@ enum {
     NET_HANDOFF_STATUS_REJECTED = 2,
 };
 
-#define NET_INPUT_MSG_SIZE 18
-#define NET_INPUT_APPLIED_SIZE 11
+#define NET_INPUT_LEGACY_SIZE 18
+#define NET_INPUT_MSG_SIZE 22
+#define NET_STATE_MSG_SIZE 45
+#define NET_STATE_AUTH_LEGACY_SIZE 55
+#define NET_STATE_AUTH_SIZE 67
+#define NET_STATE_AUTH_INPUT_ACK_OFFSET NET_STATE_MSG_SIZE
+#define NET_STATE_AUTH_SERVER_TICK_OFFSET (NET_STATE_MSG_SIZE + 2)
+#define NET_STATE_AUTH_INPUT_TICK_OFFSET (NET_STATE_MSG_SIZE + 6)
+#define NET_STATE_AUTH_CLIENT_SENT_MS_OFFSET NET_STATE_AUTH_LEGACY_SIZE
+#define NET_STATE_AUTH_SERVER_RECV_MS_OFFSET (NET_STATE_AUTH_LEGACY_SIZE + 4)
+#define NET_STATE_AUTH_SERVER_SEND_MS_OFFSET (NET_STATE_AUTH_LEGACY_SIZE + 8)
+#define NET_INPUT_APPLIED_LEGACY_SIZE 11
+#define NET_INPUT_APPLIED_SIZE 23
 #define NET_LATENCY_PING_SIZE 9
-#define NET_LATENCY_PONG_SIZE 17
+#define NET_LATENCY_PONG_LEGACY_SIZE 17
+#define NET_LATENCY_PONG_SIZE 21
 #define NET_CLIENT_METRICS_SIZE 21
+#define NET_CLIENT_METRICS_ACK_TIER_MASK 0x03u
+#define NET_CLIENT_METRICS_PING_FRESH 0x04u
+#define NET_CLIENT_METRICS_ACK_FRESH 0x08u
+#define NET_CLIENT_METRICS_PING_MISSED 0x10u
+#define NET_CLIENT_METRICS_ACK_MISSED 0x20u
 #define NET_DEATH_MSG_SIZE 43
 
-#define NET_INPUT_ACTIVE_HEARTBEAT_MS 83u
-#define NET_INPUT_IDLE_HEARTBEAT_MS 167u
+#define NET_INPUT_ACTIVE_HEARTBEAT_MS 250u
+#define NET_INPUT_ACTIVE_ACK_HEARTBEAT_MS 1000u
+#define NET_INPUT_IDLE_HEARTBEAT_MS 1000u
 
 /* Input prediction horizon, in fixed SIM_DT ticks. The server only accepts
  * future-dated movement this far ahead; the client should rebase before replay
  * history grows into visible rollback territory. */
-#define NET_INPUT_LEAD_MIN_TICKS 2u
+#define NET_INPUT_LEAD_MIN_TICKS 1u
 #define NET_INPUT_LEAD_MAX_TICKS 12u
 #define NET_INPUT_APPLY_FUTURE_MAX_TICKS 12u
 #define NET_REPLAY_REBASE_SKEW_TICKS (NET_INPUT_APPLY_FUTURE_MAX_TICKS * 2u)
@@ -814,6 +1388,16 @@ enum {
  * index, and stable target pubkey. Kept shared so client decoders and
  * external tools do not hardcode server-local constants. */
 #define CONTRACT_RECORD_SIZE 104
+#define CONTRACT_Q_HEADER_SIZE 2
+#define CONTRACT_Q_BASE_SIZE 32
+#define CONTRACT_Q_FLAG_PARENT 0x01u
+#define CONTRACT_Q_FLAG_ORIGIN_MASK 0x02u
+#define CONTRACT_Q_FLAG_TARGET_PUB 0x04u
+#define CONTRACT_Q_FLAG_MASK 0x07u
+#define CONTRACT_Q_MAX_RECORD_SIZE \
+    (1 + CONTRACT_Q_BASE_SIZE + 32 + 8 + 32)
+#define CONTRACT_Q_MAX_SIZE \
+    (CONTRACT_Q_HEADER_SIZE + MAX_CONTRACTS * CONTRACT_Q_MAX_RECORD_SIZE)
 
 /* NET_MSG_DELIVERY_LEDGER record:
  * shipment_id:u16, status:u8, origin:u8, destination:u8, contract_index:u8,
@@ -860,6 +1444,13 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
 #define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4 + 4)  /* 41 bytes: index + inventory + credit_pool */
+#define STATION_Q_HEADER_SIZE 2
+#define STATION_Q_CREDIT_POOL_MASK 0x8000u
+#define STATION_Q_COMMODITY_MASK \
+    ((uint16_t)((1u << COMMODITY_COUNT) - 1u))
+#define STATION_Q_MAX_RECORD_SIZE (1 + 2 + COMMODITY_COUNT * 4 + 4)
+#define STATION_Q_MAX_SIZE \
+    (STATION_Q_HEADER_SIZE + MAX_STATIONS * STATION_Q_MAX_RECORD_SIZE)
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
  * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
@@ -873,10 +1464,59 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
  * predicted controls back to a stale packet. input_tick_ack is the sim tick
  * where that input was actually applied. */
 #define PLAYER_RECORD_SIZE 77  /* 51 + 16 beam coords + 2 ack + 4 pose tick + 4 input tick */
+#define PLAYER_MOTION_MSG_HEADER 2  /* type + count */
+#define PLAYER_MOTION_RECORD_SIZE 21 /* id + pos/vel/angle floats */
+#define PLAYER_MOTION_Q_MSG_HEADER 2  /* type + count */
+#define PLAYER_MOTION_Q_RECORD_SIZE 10 /* id + pos/vel i16 + angle u8 */
+#define PLAYER_MOTION_Q_POS_SCALE 4.0f
+#define PLAYER_MOTION_Q_VEL_SCALE 0.25f
+#define PLAYER_MOTIOND_Q_MSG_HEADER 2  /* type + count */
+#define PLAYER_MOTIOND_Q_RECORD_SIZE 6 /* id + pos delta i8 + vel i8 + angle u8 */
+#define PLAYER_MOTIOND_Q_VEL_SCALE 4.0f
+#define PLAYER_POSED_Q_MSG_HEADER 2  /* type + count */
+#define PLAYER_POSED_Q_RECORD_SIZE 4 /* id + pos delta i8 + angle u8 */
+#define PLAYER_MOTIONM_Q_MSG_HEADER 2  /* type + count */
+#define PLAYER_MOTIONM_Q_ID_MASK 0x1Fu
+#define PLAYER_MOTIONM_Q_FLAG_VEL 0x80u
+#define PLAYER_MOTIONM_Q_RESERVED_MASK 0x60u
+#define PLAYER_MOTIONM_Q_POSE_RECORD_SIZE 4 /* id + pos delta i8 + angle u8 */
+#define PLAYER_MOTIONM_Q_VEL_RECORD_SIZE 6 /* id|flag + pos delta i8 + vel i8 + angle u8 */
+#define PLAYER_MOTIONM_Q_MAX_RECORD_SIZE PLAYER_MOTIONM_Q_VEL_RECORD_SIZE
+#define PLAYER_DOCK_MSG_HEADER 2  /* type + count */
+#define PLAYER_DOCK_RECORD_SIZE 2 /* id + compact status flags byte */
+#define PLAYER_DOCK_STATUS_FLAGS_MASK 0x05u /* thrusting + docked */
 
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32]
  * [smelt:u8][grade:u8][crystal_stage:u8][phase:u8] */
+#define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
 #define ASTEROID_RECORD_SIZE 35  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 + crystal_stage:u8 + phase:u8 */
+#define ASTEROID_Q_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_Q_RECORD_SIZE 19
+#define ASTEROID8_Q_MSG_HEADER 2  /* type + uint8 count */
+#define ASTEROID8_Q_RECORD_SIZE 18
+
+/* Compact asteroid motion record: [index:2][pos:2xf32][vel:2xf32].
+ * Used only for clean already-known moving rocks; static/dirty state remains
+ * on NET_MSG_WORLD_ASTEROIDS and removals use NET_MSG_WORLD_ASTEROID_REMOVE. */
+#define ASTEROID_MOTION_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_MOTION_RECORD_SIZE 18
+#define ASTEROID_MOTION_Q_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_MOTION_Q_RECORD_SIZE 10
+#define ASTEROID_POS_Q_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_POS_Q_RECORD_SIZE 6
+#define ASTEROID_POS8_Q_MSG_HEADER 2  /* type + uint8 count */
+#define ASTEROID_POS8_Q_RECORD_SIZE 5
+#define ASTEROID_POSD_Q_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_POSD_Q_RECORD_SIZE 4
+#define ASTEROID_POSD8_Q_MSG_HEADER 2  /* type + uint8 count */
+#define ASTEROID_POSD8_Q_RECORD_SIZE 3
+#define ASTEROID_REMOVE_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_REMOVE_RECORD_SIZE 2
+#define ASTEROID_MOTION_Q_POS_SCALE 4.0f
+#define ASTEROID_MOTION_Q_VEL_SCALE 0.25f
+#define ASTEROID_IDENTITY_Q_VALUE_SCALE 0.125f
+#define ASTEROID_STATE_Q_MSG_HEADER 3  /* type + uint16 count */
+#define ASTEROID_STATE_Q_RECORD_SIZE 18
 
 /* Cargo pod record: [index:1][kind:1][commodity:1][towed_by:1][pos:2xf32]
  * [vel:2xf32][radius:f32][rotation:f32][quantity:u16]
@@ -886,6 +1526,20 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
  * server-derived summary truth for UI gates that need to agree with
  * authoritative material intake. */
 #define CARGO_POD_RECORD_SIZE 38
+#define CARGO_POD_Q_RECORD_SIZE 28
+_Static_assert(CARGO_POD_Q_RECORD_SIZE ==
+               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2),
+               "compact cargo pod identity record size drifted");
+#define CARGO_POD_MOTION_MSG_HEADER 2
+#define CARGO_POD_MOTION_RECORD_SIZE 21
+#define CARGO_POD_MOTION_Q_MSG_HEADER 2
+#define CARGO_POD_MOTION_Q_RECORD_SIZE 11
+#define CARGO_POD_LINEAR_Q_MSG_HEADER 2
+#define CARGO_POD_LINEAR_Q_RECORD_SIZE 9
+#define CARGO_POD_REMOVE_MSG_HEADER 2
+#define CARGO_POD_REMOVE_RECORD_SIZE 1
+#define CARGO_POD_MOTION_Q_POS_SCALE 4.0f
+#define CARGO_POD_MOTION_Q_VEL_SCALE 0.25f
 enum {
     CARGO_POD_SUMMARY_EXACT_MATERIAL = 1u << 0, /* exact, unbound manifest matching commodity */
     CARGO_POD_SUMMARY_SHIPMENT_BOUND = 1u << 1,
@@ -896,6 +1550,27 @@ enum {
  * 0xFFFF = none. The identity tail lets remote clients derive worker custody
  * pubkeys for receipt/provenance labels; station signatures remain authority. */
 #define NPC_RECORD_SIZE 38
+#define NPC_MOTION_MSG_HEADER 2  /* type + count */
+#define NPC_MOTION_RECORD_SIZE 22 /* index + flags + pos/vel/angle floats */
+#define NPC_MOTION_Q_MSG_HEADER 2  /* type + count */
+#define NPC_MOTION_Q_RECORD_SIZE 12 /* index + flags + pos/vel/angle quantized */
+#define NPC_MOTION8_Q_MSG_HEADER 2
+#define NPC_MOTION8_Q_RECORD_SIZE 9 /* index + flags + pos, i8 vel, u8 angle */
+#define NPC_POS_Q_MSG_HEADER 2
+#define NPC_POS_Q_RECORD_SIZE 5
+#define NPC_POSE_Q_MSG_HEADER 2
+#define NPC_POSE_Q_RECORD_SIZE 7
+#define NPC_LINEAR_Q_MSG_HEADER 2
+#define NPC_LINEAR_Q_RECORD_SIZE 9
+#define NPC_MOTION_Q_POS_SCALE 4.0f
+#define NPC_MOTION_Q_VEL_SCALE 0.25f
+#define NPC_MOTION_Q_ANGLE_SCALE (6.28318530717958647692f / 65536.0f)
+#define NPC_MOTION8_Q_VEL_SCALE 2.0f
+#define NPC_MOTION8_Q_ANGLE_SCALE (6.28318530717958647692f / 256.0f)
+#define NPC_STATUS_MSG_HEADER 2
+#define NPC_STATUS_RECORD_SIZE 6 /* index + flags + target + towed_fragment */
+#define NPC_STATUS8_MSG_HEADER 2
+#define NPC_STATUS8_RECORD_SIZE 4 /* index + flags + target8 + towed8 */
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
  * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×9]
@@ -937,16 +1612,24 @@ enum {
 #define STATION_IDENTITY_HULL_SIZE (STATION_IDENTITY_V1_SIZE + HULL_CLASS_COUNT)
 #define STATION_IDENTITY_FACTION_TRAILER_SIZE (STATION_IDENTITY_HULL_SIZE + STATION_IDENTITY_FACTION_SIZE)
 #define STATION_IDENTITY_SIZE (STATION_IDENTITY_FACTION_TRAILER_SIZE + STATION_IDENTITY_POLICY_SIZE)
+#define STATION_IDENTITY_Q_HEADER_SIZE 3
+#define STATION_IDENTITY_Q_MAX_SIZE STATION_IDENTITY_SIZE
 #define STATION_DIAG_SIZE (3 + MAX_MODULES_PER_STATION)
 /* The four "MAX_ARMS * 4" terms above are arm_speed[], ring_offset[],
- * arm_rotation[], and arm_omega[]. arm_omega is needed alongside
- * arm_rotation so the client can interpolate ring rotation forward
- * between 30 Hz snapshots — without it the broadcast cadence shows
- * as visibly chunky motion at 60 fps. */
+ * arm_rotation[], and arm_omega[]. arm_rotation/arm_omega seed client-side
+ * ring prediction on station snapshot; steady-state identity cache checks
+ * treat ordinary live drift as non-semantic so it does not compete with the
+ * ping/input-ack lane. */
 
 /* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
  *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */
 #define SCAFFOLD_RECORD_SIZE 28
+#define SCAFFOLD_REMOVE_MSG_HEADER 2
+#define SCAFFOLD_REMOVE_RECORD_SIZE 1
+#define SCAFFOLD_MOTION_Q_MSG_HEADER 2
+#define SCAFFOLD_MOTION_Q_RECORD_SIZE 9
+#define SCAFFOLD_MOTION_Q_POS_SCALE 4.0f
+#define SCAFFOLD_MOTION_Q_VEL_SCALE 0.25f
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32]

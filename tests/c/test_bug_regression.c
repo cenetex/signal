@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "net_input_lead.h"
+#include "net_latency.h"
 #include "sim_physics.h"
 
 static bool bug_test_spawn_towed_exact_pod(world_t *w,
@@ -512,6 +514,279 @@ TEST(test_bug36_stale_input_between_sends) {
     ASSERT_EQ_INT(stale_ticks, 0);
 }
 
+TEST(test_latency_stats_smooths_and_expires) {
+    net_latency_stats_t stats;
+    net_latency_stats_reset(&stats);
+
+    ASSERT(!net_latency_stats_fresh(&stats, 1.0f, NET_LATENCY_STALE_SEC));
+
+    net_latency_stats_observe(&stats, 0.100f, 1.0f);
+    ASSERT(net_latency_stats_fresh(&stats, 2.0f, NET_LATENCY_STALE_SEC));
+    ASSERT_EQ_INT((int)stats.count, 1);
+    ASSERT_EQ_FLOAT(stats.last, 0.100f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_stats_smoothed_sec(&stats), 0.100f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_stats_window_max_sec(&stats, 1.0f, 5.0f),
+                    0.100f, 0.0001f);
+
+    net_latency_stats_observe(&stats, 0.300f, 2.0f);
+    ASSERT_EQ_INT((int)stats.count, 2);
+    ASSERT_EQ_FLOAT(stats.last, 0.300f, 0.0001f);
+    ASSERT(net_latency_stats_smoothed_sec(&stats) > 0.100f);
+    ASSERT(net_latency_stats_smoothed_sec(&stats) < 0.300f);
+    ASSERT_EQ_FLOAT(net_latency_stats_window_max_sec(&stats, 3.0f, 5.0f),
+                    0.300f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_stats_window_max_sec(&stats, 7.0f, 5.0f),
+                    0.300f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_stats_window_max_sec(&stats, 7.1f, 5.0f),
+                    0.0f, 0.0001f);
+    ASSERT(!net_latency_stats_fresh(&stats, 5.1f, NET_LATENCY_STALE_SEC));
+}
+
+TEST(test_latency_transport_rtt_removes_server_turnaround) {
+    ASSERT_EQ_FLOAT(net_latency_transport_rtt_sec(0.120f, 0.020f),
+                    0.100f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_transport_rtt_sec(0.120f, 0.0f),
+                    0.120f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_transport_rtt_sec(0.120f, 0.200f),
+                    0.120f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_transport_rtt_sec(-0.100f, 0.010f),
+                    0.0f, 0.0001f);
+}
+
+TEST(test_latency_control_rtt_prefers_fresh_ping_over_ack) {
+    net_latency_stats_t ping;
+    net_latency_stats_t ack;
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+
+    net_latency_stats_observe(&ack, 0.450f, 1.0f);
+    net_latency_stats_observe(&ping, 0.100f, 1.0f);
+    ASSERT_EQ_FLOAT(
+        net_latency_control_rtt_sec(&ping, &ack, 2.0f,
+                                    NET_LATENCY_STALE_SEC,
+                                    0.120f, 0.500f),
+        0.100f, 0.0001f);
+
+    net_latency_stats_observe(&ping, 0.300f, 2.0f);
+    ASSERT_EQ_FLOAT(
+        net_latency_control_rtt_sec(&ping, &ack, 2.5f,
+                                    NET_LATENCY_STALE_SEC,
+                                    0.300f, 0.450f),
+        0.150f, 0.0001f);
+
+    net_latency_stats_reset(&ping);
+    ASSERT_EQ_FLOAT(
+        net_latency_control_rtt_sec(&ping, &ack, 2.5f,
+                                    NET_LATENCY_STALE_SEC,
+                                    0.0f, 0.450f),
+        0.450f, 0.0001f);
+
+    ASSERT_EQ_FLOAT(
+        net_latency_control_rtt_sec(&ping, &ack, 8.0f,
+                                    NET_LATENCY_STALE_SEC,
+                                    0.125f, 0.450f),
+        0.125f, 0.0001f);
+}
+
+TEST(test_latency_smoothed_gap_requires_fresh_ack_and_ping) {
+    net_latency_stats_t ping;
+    net_latency_stats_t ack;
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+
+    net_latency_stats_observe(&ack, 0.500f, 1.0f);
+    net_latency_stats_observe(&ping, 0.120f, 1.0f);
+    ASSERT_EQ_FLOAT(
+        net_latency_smoothed_gap_sec(&ack, &ping, 2.0f,
+                                     NET_LATENCY_STALE_SEC),
+        0.380f, 0.0001f);
+    ASSERT(net_latency_gap_exceeds_sec(&ack, &ping, 2.0f,
+                                       NET_LATENCY_STALE_SEC, 0.250f));
+
+    ASSERT_EQ_FLOAT(
+        net_latency_smoothed_gap_sec(&ack, &ping, 5.1f,
+                                     NET_LATENCY_STALE_SEC),
+        0.0f, 0.0001f);
+    ASSERT(!net_latency_gap_exceeds_sec(&ack, &ping, 5.1f,
+                                        NET_LATENCY_STALE_SEC, 0.250f));
+
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+    net_latency_stats_observe(&ping, 0.600f, 6.0f);
+    net_latency_stats_observe(&ack, 0.500f, 6.0f);
+    ASSERT_EQ_FLOAT(
+        net_latency_smoothed_gap_sec(&ack, &ping, 6.5f,
+                                     NET_LATENCY_STALE_SEC),
+        0.0f, 0.0001f);
+}
+
+TEST(test_latency_control_lane_stable_requires_fresh_low_gap_samples) {
+    net_latency_stats_t ping;
+    net_latency_stats_t ack;
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+
+    for (int i = 0; i < 3; i++) {
+        float now = 1.0f + (float)i;
+        net_latency_stats_observe(&ping, 0.100f, now);
+        net_latency_stats_observe(&ack, 0.180f, now);
+    }
+    ASSERT(net_latency_control_lane_stable(
+        &ping, &ack, 3.2f, NET_LATENCY_STALE_SEC, 0.125f,
+        NET_LATENCY_STABLE_MIN_SAMPLES));
+
+    ASSERT(!net_latency_control_lane_stable(
+        &ping, &ack, 6.2f, NET_LATENCY_STALE_SEC, 0.125f,
+        NET_LATENCY_STABLE_MIN_SAMPLES));
+
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+    for (int i = 0; i < 3; i++) {
+        float now = 4.0f + (float)i;
+        net_latency_stats_observe(&ping, 0.100f, now);
+        net_latency_stats_observe(&ack, 0.400f, now);
+    }
+    ASSERT(!net_latency_control_lane_stable(
+        &ping, &ack, 6.2f, NET_LATENCY_STALE_SEC, 0.125f,
+        NET_LATENCY_STABLE_MIN_SAMPLES));
+}
+
+TEST(test_latency_ping_interval_relaxes_only_when_control_lane_stable) {
+    net_latency_stats_t ping;
+    net_latency_stats_t ack;
+    net_latency_stats_reset(&ping);
+    net_latency_stats_reset(&ack);
+
+    ASSERT_EQ_FLOAT(net_latency_ping_interval_for_state(
+                        &ping, &ack, 1.0f, NET_LATENCY_STALE_SEC, 0u,
+                        1.0f, 0.5f, 2.0f, 2.5f, 0.250f, 0.125f,
+                        NET_LATENCY_STABLE_MIN_SAMPLES),
+                    1.0f, 0.0001f);
+
+    net_latency_stats_observe(&ping, 0.100f, 1.0f);
+    ASSERT_EQ_FLOAT(net_latency_ping_interval_for_state(
+                        &ping, &ack, 1.5f, NET_LATENCY_STALE_SEC,
+                        ping.count, 1.0f, 0.5f, 2.0f, 2.5f,
+                        0.250f, 0.125f, NET_LATENCY_STABLE_MIN_SAMPLES),
+                    2.0f, 0.0001f);
+
+    for (int i = 1; i < 3; i++) {
+        float now = 1.0f + (float)i;
+        net_latency_stats_observe(&ping, 0.100f, now);
+    }
+    for (int i = 0; i < 3; i++) {
+        float now = 1.0f + (float)i;
+        net_latency_stats_observe(&ack, 0.180f, now);
+    }
+    ASSERT_EQ_FLOAT(net_latency_ping_interval_for_state(
+                        &ping, &ack, 3.2f, NET_LATENCY_STALE_SEC,
+                        ping.count, 1.0f, 0.5f, 2.0f, 2.5f,
+                        0.250f, 0.125f, NET_LATENCY_STABLE_MIN_SAMPLES),
+                    2.5f, 0.0001f);
+
+    net_latency_stats_reset(&ack);
+    for (int i = 0; i < 3; i++) {
+        float now = 3.0f + (float)i;
+        net_latency_stats_observe(&ack, 0.500f, now);
+    }
+    ASSERT_EQ_FLOAT(net_latency_ping_interval_for_state(
+                        &ping, &ack, 5.2f, NET_LATENCY_STALE_SEC,
+                        ping.count, 1.0f, 0.5f, 2.0f, 2.5f,
+                        0.250f, 0.125f, NET_LATENCY_STABLE_MIN_SAMPLES),
+                    0.5f, 0.0001f);
+}
+
+TEST(test_latency_stale_window_miss_count_tracks_elapsed_windows) {
+    net_latency_stats_t stats;
+    net_latency_stats_reset(&stats);
+
+    ASSERT_EQ_INT((int)net_latency_stale_window_miss_count(
+                      &stats, 5.0f, NET_LATENCY_STALE_SEC),
+                  0);
+
+    net_latency_stats_observe(&stats, 0.100f, 1.0f);
+    ASSERT_EQ_INT((int)net_latency_stale_window_miss_count(
+                      &stats, 4.0f, NET_LATENCY_STALE_SEC),
+                  0);
+    ASSERT_EQ_INT((int)net_latency_stale_window_miss_count(
+                      &stats, 4.1f, NET_LATENCY_STALE_SEC),
+                  1);
+    ASSERT_EQ_INT((int)net_latency_stale_window_miss_count(
+                      &stats, 7.1f, NET_LATENCY_STALE_SEC),
+                  2);
+}
+
+TEST(test_latency_ack_recovery_tier_escalates_from_gap_and_misses) {
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      0, false, 0, 0.0f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_STEADY);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      4, false, 0, 0.0f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_MILD);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      8, false, 0, 0.0f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_HOT);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      0, true, 0, 0.0f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_MILD);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      0, true, 1, 0.0f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_HOT);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      0, false, 0, 0.300f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_MILD);
+    ASSERT_EQ_INT((int)net_latency_ack_recovery_tier(
+                      0, false, 0, 0.600f, 4, 8, 0.250f, 0.500f),
+                  NET_LATENCY_ACK_RECOVERY_HOT);
+}
+
+TEST(test_latency_unacked_age_recovery_uses_rtt_floor) {
+    ASSERT_EQ_FLOAT(
+        net_latency_ack_recovery_age_threshold_sec(0.050f, 0.250f, 2.5f),
+        0.250f, 0.0001f);
+    ASSERT_EQ_FLOAT(
+        net_latency_ack_recovery_age_threshold_sec(0.200f, 0.250f, 2.5f),
+        0.500f, 0.0001f);
+    ASSERT_EQ_FLOAT(
+        net_latency_ack_recovery_age_threshold_sec(0.0f, 0.250f, 2.5f),
+        0.250f, 0.0001f);
+
+    ASSERT(!net_latency_unacked_age_needs_recovery(
+        0.250f, 0.050f, 0.250f, 2.5f));
+    ASSERT(net_latency_unacked_age_needs_recovery(
+        0.251f, 0.050f, 0.250f, 2.5f));
+    ASSERT(!net_latency_unacked_age_needs_recovery(
+        0.450f, 0.200f, 0.250f, 2.5f));
+    ASSERT(net_latency_unacked_age_needs_recovery(
+        0.501f, 0.200f, 0.250f, 2.5f));
+}
+
+TEST(test_input_lead_policy_adapts_to_apply_error) {
+    int32_t margin = NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
+    uint32_t exact = 0;
+
+    ASSERT_EQ_INT((int)net_input_lead_ticks_from_rtt(0.0f, SIM_DT, margin),
+                  2);
+
+    for (uint32_t i = 0; i < NET_INPUT_LEAD_EXACT_DECAY_ACKS; i++) {
+        margin = net_input_lead_margin_after_ack(margin, &exact, 0);
+    }
+    ASSERT_EQ_INT((int)margin, 0);
+    ASSERT_EQ_INT((int)net_input_lead_ticks_from_rtt(0.0f, SIM_DT, margin),
+                  1);
+
+    margin = net_input_lead_margin_after_ack(margin, &exact, 2);
+    ASSERT_EQ_INT((int)margin, 2);
+    ASSERT_EQ_INT((int)exact, 0);
+
+    margin = net_input_lead_margin_after_ack(margin, &exact, -3);
+    ASSERT_EQ_INT((int)margin, 1);
+    ASSERT_EQ_INT((int)exact, 0);
+
+    margin = net_input_lead_margin_after_ack(margin, &exact, 99);
+    ASSERT_EQ_INT((int)margin, NET_INPUT_LEAD_MAX_MARGIN_TICKS);
+}
+
 TEST(test_bug37_mine_inactive_asteroid) {
     WORLD_DECL;
     world_reset(&w);
@@ -1007,7 +1282,7 @@ TEST(test_dispatch_ticked_left_input_rotates_authoritative_ship) {
     write_u32_le(&input[14], w.tick + 1u);
 
     server_input_dispatch_result_t result;
-    ASSERT(server_dispatch_input_message(&w, 0, input, NET_INPUT_MSG_SIZE,
+    ASSERT(server_dispatch_input_message(&w, 0, input, NET_INPUT_MSG_SIZE, 0,
                                          &result));
     ASSERT_EQ_INT((int)result.input_seq, 1);
     ASSERT_EQ_INT((int)result.apply_tick, (int)(w.tick + 1u));
@@ -2034,6 +2309,16 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug34_npc_no_collision);
     RUN(test_bug35_no_brake_flag);
     RUN(test_bug36_stale_input_between_sends);
+    RUN(test_latency_stats_smooths_and_expires);
+    RUN(test_latency_transport_rtt_removes_server_turnaround);
+    RUN(test_latency_control_rtt_prefers_fresh_ping_over_ack);
+    RUN(test_latency_smoothed_gap_requires_fresh_ack_and_ping);
+    RUN(test_latency_control_lane_stable_requires_fresh_low_gap_samples);
+    RUN(test_latency_ping_interval_relaxes_only_when_control_lane_stable);
+    RUN(test_latency_stale_window_miss_count_tracks_elapsed_windows);
+    RUN(test_latency_ack_recovery_tier_escalates_from_gap_and_misses);
+    RUN(test_latency_unacked_age_recovery_uses_rtt_floor);
+    RUN(test_input_lead_policy_adapts_to_apply_error);
     RUN(test_bug37_mine_inactive_asteroid);
     RUN(test_bug38_dock_dampening_framerate_dependent);
     RUN(test_bug39_launch_immediate_redock);

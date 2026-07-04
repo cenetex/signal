@@ -306,6 +306,26 @@ static float test_station_market_pod_sell_quote(const station_t *st,
     return quote;
 }
 
+static void test_move_pod_past_station_charge_boundary(world_t *w,
+                                                       int station_idx,
+                                                       int pod_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return;
+    }
+    station_t *st = &w->stations[station_idx];
+    vec2 base = st->pos;
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx >= 0) {
+        base = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    }
+    w->cargo_pods[pod_idx].pos =
+        v2_add(base, v2(CARGO_POD_DOCK_TRACTOR_RANGE +
+                        HOPPER_INTAKE_STAGING_RANGE + 80.0f, 0.0f));
+    w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+}
+
 static bool test_view_has_market_memory(const knowledge_view_t *view,
                                         uint8_t memory_kind,
                                         uint8_t station_a,
@@ -1662,17 +1682,6 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    bool found_buy = false;
-    for (int i = 0; i < w.events.count; i++) {
-        const sim_event_t *ev = &w.events.events[i];
-        if (ev->type == SIM_EVENT_BUY) {
-            found_buy = true;
-            ASSERT_EQ_INT(ev->buy.station, 0);
-            ASSERT_EQ_INT(ev->buy.commodity, COMMODITY_FERRITE_INGOT);
-            ASSERT_EQ_INT(ev->buy.quantity, 1);
-        }
-    }
-    ASSERT(found_buy);
     ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
     int bought_ingot_pod = test_find_towed_exact_cargo_pod(
         &w, sp, COMMODITY_FERRITE_INGOT);
@@ -1683,35 +1692,36 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
                   prospect_ingots_before);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
                   prospect_frames_before);
-    ASSERT(ledger_balance(prospect, sp->session_token) < prospect_start);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_ingot_pod]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    prospect_start, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token), kepler_start, 0.001f);
-    float prospect_after_buy = ledger_balance(prospect, sp->session_token);
 
-    sp->input.hail = true;
+    float expected_ingot_cost = test_station_market_pod_sell_quote(
+        prospect, &w.cargo_pods[bought_ingot_pod]);
+    ASSERT(expected_ingot_cost > 0.0f);
+    test_move_pod_past_station_charge_boundary(&w, 0, bought_ingot_pod);
     world_sim_step(&w, SIM_DT);
-    memset(&sp->input, 0, sizeof(sp->input));
-    bool found_hail = false;
+    bool found_buy = false;
     for (int i = 0; i < w.events.count; i++) {
         const sim_event_t *ev = &w.events.events[i];
-        if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
-            found_hail = true;
-            ASSERT_EQ_INT(ev->hail_response.station, 0);
-            ASSERT_EQ_FLOAT(ev->hail_response.credits,
-                            prospect_after_buy, 0.001f);
+        if (ev->type == SIM_EVENT_BUY) {
+            found_buy = true;
+            ASSERT_EQ_INT(ev->buy.station, 0);
+            ASSERT_EQ_INT(ev->buy.commodity, COMMODITY_FERRITE_INGOT);
+            ASSERT_EQ_INT(ev->buy.cost, (int)lroundf(expected_ingot_cost));
+            ASSERT_EQ_INT(ev->buy.quantity, 1);
         }
     }
-    ASSERT(found_hail);
-
-    sp->input.launch = true;
-    world_sim_step(&w, SIM_DT);
-    memset(&sp->input, 0, sizeof(sp->input));
-    ASSERT(!sp->docked);
-    ASSERT(!sp->in_dock_range);
-    ASSERT_EQ_INT(sp->nearby_station, -1);
-    for (int i = 0; i < 20; i++) {
-        world_sim_step(&w, SIM_DT);
-        ASSERT(!sp->docked);
-    }
+    ASSERT(found_buy);
+    ASSERT_EQ_FLOAT(prospect_start -
+                    ledger_balance(prospect, sp->session_token),
+                    expected_ingot_cost, 0.01f);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_ingot_pod]),
+                  -1);
+    float prospect_after_buy = ledger_balance(prospect, sp->session_token);
+    ASSERT_EQ_INT(w.cargo_pods[bought_ingot_pod].towed_by, sp->id);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
 
     int kepler_ingots_before = station_finished_count(kepler,
                                                       COMMODITY_FERRITE_INGOT);
@@ -1757,6 +1767,11 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     ASSERT_EQ_INT(w.cargo_pods[bought_frame_pod].quantity, 1);
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME),
                   kepler_frames_before);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_frame_pod]), 1);
+    ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token),
+                    kepler_after_delivery, 0.001f);
+    test_move_pod_past_station_charge_boundary(&w, 1, bought_frame_pod);
+    world_sim_step(&w, SIM_DT);
     ASSERT(ledger_balance(kepler, sp->session_token) < kepler_after_delivery);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
                     prospect_after_buy, 0.001f);
@@ -2465,6 +2480,23 @@ TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(&w, SIM_DT);
 
+    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    int bought_pod = test_find_towed_exact_cargo_pod(
+        &w, sp, COMMODITY_FERRITE_INGOT);
+    ASSERT(bought_pod >= 0);
+    ASSERT_EQ_INT(bought_pod, market_pod);
+    ASSERT_EQ_INT(w.cargo_pods[bought_pod].quantity, 1);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
+                  frames_before);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_pod]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(prospect, sp->pubkey),
+                    pubkey_before, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
+                    session_before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(&w, 0, bought_pod);
+    world_sim_step(&w, SIM_DT);
+
     bool found_buy = false;
     for (int i = 0; i < w.events.count; i++) {
         const sim_event_t *ev = &w.events.events[i];
@@ -2477,14 +2509,6 @@ TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
         }
     }
     ASSERT(found_buy);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
-    int bought_pod = test_find_towed_exact_cargo_pod(
-        &w, sp, COMMODITY_FERRITE_INGOT);
-    ASSERT(bought_pod >= 0);
-    ASSERT_EQ_INT(bought_pod, market_pod);
-    ASSERT_EQ_INT(w.cargo_pods[bought_pod].quantity, 1);
-    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME),
-                  frames_before);
     ASSERT_EQ_FLOAT(pubkey_before - ledger_balance_by_pubkey(prospect, sp->pubkey),
                     expected_cost, 0.01f);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
@@ -3352,8 +3376,6 @@ TEST(test_market_buy_ignores_legacy_manifest_ingots) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(before - ledger_balance(st, sp->session_token),
-                    expected_cost, 0.01f);
     ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
     ASSERT_EQ_INT(sp->ship.manifest.count, 0);
     int bought_pod = test_find_towed_exact_cargo_pod(
@@ -3364,6 +3386,14 @@ TEST(test_market_buy_ignores_legacy_manifest_ingots) {
     ASSERT_EQ_INT(w->cargo_pods[bought_pod].manifest_units[0].prefix_class,
                   INGOT_PREFIX_ANONYMOUS);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), frames_before);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w->cargo_pods[bought_pod]),
+                  producer);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(w, producer, bought_pod);
+    world_sim_step(w, SIM_DT);
+    ASSERT_EQ_FLOAT(before - ledger_balance(st, sp->session_token),
+                    expected_cost, 0.01f);
 
     int station_named = 0;
     for (uint16_t i = 0; i < st->manifest.count; i++) {

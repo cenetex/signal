@@ -50,6 +50,10 @@ function startUpstream() {
         '\r\n'
       );
       socket.write(wsFrame(Buffer.from([0x18, 0x00])));
+      socket.write(wsFrame(Buffer.alloc(11, 0x48)));
+      const authoritativeState = Buffer.alloc(55, 0);
+      authoritativeState[0] = 0x03;
+      socket.write(wsFrame(authoritativeState));
       socket.write(wsFrame(Buffer.alloc(17, 0x3d)));
     });
   });
@@ -98,6 +102,7 @@ async function main() {
     '--client-ms=0',
     '--server-ms=1',
     '--server-world-players-ms=200',
+    '--server-input-applied-ms=200',
     '--jitter-ms=0',
   ], { cwd: new URL('..', import.meta.url), stdio: ['ignore', 'ignore', 'pipe'] });
   let socket = null;
@@ -135,7 +140,7 @@ async function main() {
         if (leftover.length) reader.push(leftover);
       });
       const poll = setInterval(() => {
-        if (reader?.frames.length >= 2) {
+        if (reader?.frames.length >= 4) {
           clearInterval(poll);
           clearTimeout(timer);
           resolve();
@@ -144,9 +149,13 @@ async function main() {
     });
 
     const frames = reader.frames;
-    assert.equal(frames[0].type, 0x3d, 'LATENCY_PONG should bypass delayed WORLD_PLAYERS');
+    assert.equal(frames[0].type, 0x3d, 'LATENCY_PONG should bypass delayed authoritative frames');
     assert.equal(frames[1].type, 0x18, 'WORLD_PLAYERS should still arrive on its delayed lane');
+    assert.equal(frames[2].type, 0x48, 'INPUT_APPLIED should still arrive on its delayed lane');
+    assert.equal(frames[3].type, 0x03, 'authoritative STATE should still arrive on its delayed lane');
     assert(frames[1].at - frames[0].at >= 100, 'WORLD_PLAYERS delay should remain observable');
+    assert(frames[2].at - frames[0].at >= 100, 'INPUT_APPLIED delay should remain observable');
+    assert(frames[3].at - frames[0].at >= 100, 'authoritative STATE delay should remain observable');
   } finally {
     socket?.destroy();
     proxy.kill('SIGTERM');

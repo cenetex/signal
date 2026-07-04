@@ -1,7 +1,7 @@
 # Signal: Sector One — Product Requirements Document
 
-**Version:** 1.2
-**Date:** 2026-06-13
+**Version:** 1.3
+**Date:** 2026-07-03
 **Status:** Shipped / Live (Sector One MVP)
 **Live:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 **Owner:** Signal Development Team
@@ -294,7 +294,7 @@ Priority is ordered by metaproduct leverage: first make object history unavoidab
 9. **#294 unified ship/controller model:** Retire parallel NPC cargo paths that can drift from player manifest semantics.
 10. **#590 / #591 / #589 permaweb + mesh:** Bootstrap clients from Arweave snapshots/logs, then add WebRTC state-root comparison and quorum behavior.
 11. **#496 RATi vessel identity:** Bind cross-world RATi identity to substrate-born vessels once manifest transfers and settlement events are canonical.
-12. **#285 streaming entity pool:** Lift hard caps after the core economic/provenance path is settled.
+12. **#285 streaming entity pool:** Lift hard caps after the core economic/provenance path is settled. Cap lifting is additionally gated on the sim hot-path fixes in [docs/optimization-report.md](docs/optimization-report.md) — several 120 Hz loops scale as `entities × stations`, so raising `MAX_STATIONS`/`MAX_ASTEROIDS` without them degrades tick budget quadratically.
 
 ### 8.2 Post-Sector One Vision (Sector X)
 - **Dark-Sector Battery Runs:** High-risk zones beyond institutional reality: no easy comms, no instant market quote, no NPC safety net, no station guarantee, no complete telemetry, and no automatic trust.
@@ -318,4 +318,5 @@ Priority is ordered by metaproduct leverage: first make object history unavoidab
 | [docs/cargo-architecture.md](docs/cargo-architecture.md) | Canonical three-state cargo model |
 | [docs/decentralization.md](docs/decentralization.md) | Federation architecture, identity stack, chain log |
 | [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) | Federation/P2P synthesis and authority model |
+| [docs/optimization-report.md](docs/optimization-report.md) | Sim/render hot-path analysis and ranked fix plan |
 | [docs/operator-onboarding.md](docs/operator-onboarding.md) | Station operator guide |

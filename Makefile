@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -30,22 +30,24 @@ install-hooks:
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
 BUILD_TYPE ?= RelWithDebInfo
 GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+SIM_PROFILE ?=
+SIM_PROFILE_CMAKE := -DSIGNAL_SIM_PROFILE=$(if $(SIM_PROFILE),ON,OFF)
 
 # --- Native desktop client ---
 build:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal --parallel
 
 # --- Emscripten web client ---
 build-web:
-	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH)
+	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	emmake cmake --build build-web --parallel
 	python3 scripts/check_deterministic_build_flags.py build-web/compile_commands.json
 
 # --- Headless game server ---
 build-server:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_server --parallel
 
@@ -58,7 +60,7 @@ FLIGHT_TRACE_FORMAT ?= csv
 FLIGHT_TRACE_OUT ?= /tmp/signal-flight-trace.csv
 
 build-flight-trace:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target flight_trace --parallel
 
@@ -85,7 +87,7 @@ SIGNAL_REPLAY_RELEASE_BUILD ?= build-replay-release
 SIGNAL_REPLAY_WASM_BUILD ?= build-replay-wasm
 
 build-signal-replay:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_replay --parallel
 
@@ -109,15 +111,15 @@ signal-no-omniscience-soak: build-signal-replay
 	python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
 
 build-signal-replay-wasm:
-	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH)
+	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	emmake cmake --build $(SIGNAL_REPLAY_WASM_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_WASM_BUILD)/compile_commands.json
 
 replay-cross-build:
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_DEBUG_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_DEBUG_BUILD)/compile_commands.json
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_RELEASE_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_RELEASE_BUILD)/compile_commands.json
 	python3 scripts/check_replay_cross_build.py \
@@ -125,10 +127,10 @@ replay-cross-build:
 		./$(SIGNAL_REPLAY_RELEASE_BUILD)/signal_replay
 
 replay-cross-build-long:
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_DEBUG_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_DEBUG_BUILD)/compile_commands.json
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_RELEASE_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_RELEASE_BUILD)/compile_commands.json
 	python3 scripts/check_replay_cross_build.py \
@@ -155,7 +157,7 @@ CHAIN_ASSETS_LINEAGE ?=
 CHAIN_ASSETS_BUILT_FROM ?=
 
 build-chain-assets:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_chain_assets --parallel
 
@@ -189,7 +191,7 @@ RATI_STAMP_DRY_RUN ?=
 RATI_STAMP_OVERWRITE ?=
 
 build-rati-receipt:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_rati_receipt --parallel
 
@@ -304,7 +306,7 @@ TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 # ~180s to ~56s (3.25x). All 340 tests pass identically — see PR that
 # introduced this. Keep -g for usable stack traces on failure.
 build-test:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
 	# test_signal_verify shells out to signal_verify for CLI-only
@@ -392,7 +394,7 @@ SAN_TEST_FLAGS ?= --quiet --no-soak
 
 build-san:
 	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
-		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
 		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=$(SANITIZER) -fno-omit-frame-pointer" \
 		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$(SANITIZER)"
 	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
@@ -409,7 +411,7 @@ test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
 test-tsan: TEST_PREFIX=ulimit -s 16384 &&
 test-tsan:
 	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
-		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
 		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
 		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 	@ln -sf build-tsan/compile_commands.json compile_commands.json
@@ -466,6 +468,17 @@ smoke-ack-lag:
 smoke-latency-suite: build-web build-server
 	node scripts/smoke-latency-suite.mjs
 
+RELAY_PROBE_URL ?= ws://127.0.0.1:9091/ws
+RELAY_PROBE_CLIENTS ?= 2
+RELAY_PROBE_WARMUP_MS ?= 1500
+RELAY_PROBE_DURATION_MS ?= 4000
+RELAY_PROBE_PING_HZ ?= 0.5
+RELAY_PROBE_INPUT_ACK_HZ ?= 2
+RELAY_PROBE_EXTRA ?=
+
+relay-traffic-probe:
+	node scripts/relay-traffic-probe.mjs --url=$(RELAY_PROBE_URL) --clients=$(RELAY_PROBE_CLIENTS) --warmup-ms=$(RELAY_PROBE_WARMUP_MS) --duration-ms=$(RELAY_PROBE_DURATION_MS) --ping-hz=$(RELAY_PROBE_PING_HZ) --input-ack-hz=$(RELAY_PROBE_INPUT_ACK_HZ) $(RELAY_PROBE_EXTRA)
+
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs the fast/non-soak tests,
 # then joins gcovr line coverage with lizard per-function complexity to
@@ -509,6 +522,7 @@ LATENCY_UPSTREAM ?= ws://127.0.0.1:9091/ws
 LATENCY_CLIENT_MS ?= 250
 LATENCY_SERVER_MS ?= 250
 LATENCY_WORLD_PLAYERS_MS ?= 0
+LATENCY_INPUT_APPLIED_MS ?= 0
 LATENCY_JITTER_MS ?= 80
 
 latency-proxy:
@@ -518,13 +532,14 @@ latency-proxy:
 		--client-ms=$(LATENCY_CLIENT_MS) \
 		--server-ms=$(LATENCY_SERVER_MS) \
 		--server-world-players-ms=$(LATENCY_WORLD_PLAYERS_MS) \
+		--server-input-applied-ms=$(LATENCY_INPUT_APPLIED_MS) \
 		--jitter-ms=$(LATENCY_JITTER_MS)
 
 latency-proxy-high:
 	$(MAKE) latency-proxy LATENCY_CLIENT_MS=450 LATENCY_SERVER_MS=450 LATENCY_JITTER_MS=150
 
 latency-proxy-ack-lag:
-	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_JITTER_MS=10
+	$(MAKE) latency-proxy LATENCY_CLIENT_MS=20 LATENCY_SERVER_MS=20 LATENCY_WORLD_PLAYERS_MS=550 LATENCY_INPUT_APPLIED_MS=550 LATENCY_JITTER_MS=10
 
 RTC_GATEWAY_LISTEN ?= 127.0.0.1:19093
 RTC_GATEWAY_UPSTREAM ?= ws://127.0.0.1:9091/ws

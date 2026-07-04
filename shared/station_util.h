@@ -28,6 +28,7 @@ int           station_active_module_count(const station_t *st, module_type_t typ
 int           station_active_shipyard_count(const station_t *st);
 bool          station_can_order_scaffold(const station_t *st, module_type_t type);
 int           station_max_ring(const station_t *st);
+float         station_collision_envelope_radius(const station_t *st);
 int           station_spawn_fee(const station_t *st);
 bool          station_consumes(const station_t *st, commodity_t c);
 bool          station_produces(const station_t *st, commodity_t c);

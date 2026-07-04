@@ -5641,6 +5641,13 @@ static bool npc_reached_station_dock_lane(const npc_ship_t *npc,
     return false;
 }
 
+static bool npc_near_station_collision_envelope(const npc_ship_t *npc,
+                                                const station_t *st,
+                                                float ship_r) {
+    float reach = station_collision_envelope_radius(st) + ship_r;
+    return v2_dist_sq(npc->ship.pos, st->pos) <= reach * reach;
+}
+
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
     float ship_r = hull->ship_radius;
@@ -5648,6 +5655,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
         if (!station_collides(st)) continue;
+        if (!npc_near_station_collision_envelope(npc, st, ship_r)) continue;
 
         station_geom_t geom;
         station_build_geom(st, &geom);

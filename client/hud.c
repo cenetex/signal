@@ -832,8 +832,18 @@ static void hud_format_latency_label(char *out, size_t cap) {
     if (!out || cap == 0) return;
     out[0] = '\0';
 
-    float ping_ms = g.net_last_ping_rtt * 1000.0f;
-    float ack_ms = g.net_last_ack_rtt * 1000.0f;
+    float ping_ms =
+        net_latency_stats_fresh(&g.net_ping_latency,
+                                g.net_time,
+                                NET_LATENCY_STALE_SEC)
+        ? net_latency_stats_smoothed_sec(&g.net_ping_latency) * 1000.0f
+        : 0.0f;
+    float ack_ms =
+        net_latency_stats_fresh(&g.net_ack_latency,
+                                g.net_time,
+                                NET_LATENCY_STALE_SEC)
+        ? net_latency_stats_smoothed_sec(&g.net_ack_latency) * 1000.0f
+        : 0.0f;
     if (ping_ms > 0.0f && ack_ms > 0.0f) {
         snprintf(out, cap, "ping %.0fms ack %.0fms", ping_ms, ack_ms);
         return;
@@ -880,13 +890,24 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
     if (g.net_authority_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
         bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
-        if (match)              { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
+        if (net_is_loopback())  { sdtx_color3b(PAL_SYNC_OK);          sdtx_puts("local"); }
+        else if (match)         { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
         else if (srv[0] == '\0'){ sdtx_color3b(PAL_SYNC_CONNECTING);  sdtx_puts("connecting..."); }
         else                    { sdtx_color3b(PAL_SYNC_RESYNCING);   sdtx_puts("syncing..."); }
-        if (g.net_last_ack_rtt > 0.0f || g.net_last_ping_rtt > 0.0f) {
+        bool ping_fresh = net_latency_stats_fresh(&g.net_ping_latency,
+                                                  g.net_time,
+                                                  NET_LATENCY_STALE_SEC);
+        bool ack_fresh = net_latency_stats_fresh(&g.net_ack_latency,
+                                                 g.net_time,
+                                                 NET_LATENCY_STALE_SEC);
+        if (ack_fresh || ping_fresh) {
             float net_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 176.0f : 304.0f)));
-            float ack_ms = g.net_last_ack_rtt * 1000.0f;
-            float ping_ms = g.net_last_ping_rtt * 1000.0f;
+            float ack_ms = ack_fresh
+                ? net_latency_stats_smoothed_sec(&g.net_ack_latency) * 1000.0f
+                : 0.0f;
+            float ping_ms = ping_fresh
+                ? net_latency_stats_smoothed_sec(&g.net_ping_latency) * 1000.0f
+                : 0.0f;
             float gap_ms = (ack_ms > 0.0f && ping_ms > 0.0f && ack_ms > ping_ms)
                 ? ack_ms - ping_ms : 0.0f;
             float warning_ms = (ack_ms > 0.0f) ? ack_ms : ping_ms;

@@ -16,10 +16,19 @@ Options:
   --server-world-players-ms=N extra delay for server WORLD_PLAYERS frames (default: 0).
                               This is a logical stream delay; immediate control
                               frames such as LATENCY_PONG can pass it.
+  --server-input-applied-ms=N extra delay for server INPUT_APPLIED frames (default: 0).
+                              Also delays authoritative STATE tails. Use this
+                              with WORLD_PLAYERS delay to model high
+                              authoritative ack age without delaying pings.
   --jitter-ms=N               additive per-frame jitter, preserving order (default: 0)
   --log-frames                log forwarded frame sizes
 `);
 }
+
+const NET_MSG_STATE = 0x03;
+const NET_STATE_AUTH_SIZE = 55;
+const NET_MSG_WORLD_PLAYERS = 0x18;
+const NET_MSG_INPUT_APPLIED = 0x48;
 
 function parseArgs(argv) {
   const out = {
@@ -28,6 +37,7 @@ function parseArgs(argv) {
     clientMs: 0,
     serverMs: 0,
     serverWorldPlayersMs: 0,
+    serverInputAppliedMs: 0,
     jitterMs: 0,
     logFrames: false,
   };
@@ -46,6 +56,8 @@ function parseArgs(argv) {
       out.serverMs = Number(arg.slice('--server-ms='.length));
     } else if (arg.startsWith('--server-world-players-ms=')) {
       out.serverWorldPlayersMs = Number(arg.slice('--server-world-players-ms='.length));
+    } else if (arg.startsWith('--server-input-applied-ms=')) {
+      out.serverInputAppliedMs = Number(arg.slice('--server-input-applied-ms='.length));
     } else if (arg.startsWith('--jitter-ms=')) {
       out.jitterMs = Number(arg.slice('--jitter-ms='.length));
     } else if (arg === '--log-frames') {
@@ -61,6 +73,7 @@ function parseArgs(argv) {
     ['client-ms', out.clientMs],
     ['server-ms', out.serverMs],
     ['server-world-players-ms', out.serverWorldPlayersMs],
+    ['server-input-applied-ms', out.serverInputAppliedMs],
     ['jitter-ms', out.jitterMs],
   ]) {
     if (!Number.isFinite(value) || value < 0) {
@@ -82,30 +95,30 @@ function parseHostPort(value) {
   return { host, port };
 }
 
-function websocketPayloadType(frame) {
-  if (frame.length < 2) return -1;
+function websocketPayloadInfo(frame) {
+  if (frame.length < 2) return { type: -1, length: 0 };
   const masked = (frame[1] & 0x80) !== 0;
   let len = frame[1] & 0x7f;
   let off = 2;
   if (len === 126) {
-    if (frame.length < off + 2) return -1;
+    if (frame.length < off + 2) return { type: -1, length: 0 };
     len = frame.readUInt16BE(off);
     off += 2;
   } else if (len === 127) {
-    if (frame.length < off + 8) return -1;
+    if (frame.length < off + 8) return { type: -1, length: 0 };
     const high = frame.readUInt32BE(off);
     const low = frame.readUInt32BE(off + 4);
-    if (high !== 0) return -1;
+    if (high !== 0) return { type: -1, length: 0 };
     len = low;
     off += 8;
   }
-  if (len <= 0) return -1;
+  if (len <= 0) return { type: -1, length: 0 };
   if (masked) {
-    if (frame.length < off + 5) return -1;
-    return frame[off + 4] ^ frame[off];
+    if (frame.length < off + 5) return { type: -1, length: 0 };
+    return { type: frame[off + 4] ^ frame[off], length: len };
   }
-  if (frame.length < off + 1) return -1;
-  return frame[off];
+  if (frame.length < off + 1) return { type: -1, length: 0 };
+  return { type: frame[off], length: len };
 }
 
 function findHeaderEnd(buffer) {
@@ -288,8 +301,15 @@ async function handleClient(client, opts) {
         to: client,
         label: 'server->client',
         delayMs: opts.serverMs,
-        extraDelayForFrame: (frame) =>
-          websocketPayloadType(frame) === 0x18 ? opts.serverWorldPlayersMs : 0,
+        extraDelayForFrame: (frame) => {
+          const { type, length } = websocketPayloadInfo(frame);
+          if (type === NET_MSG_WORLD_PLAYERS) return opts.serverWorldPlayersMs;
+          if (type === NET_MSG_INPUT_APPLIED) return opts.serverInputAppliedMs;
+          if (type === NET_MSG_STATE && length >= NET_STATE_AUTH_SIZE) {
+            return opts.serverInputAppliedMs;
+          }
+          return 0;
+        },
         jitterMs: opts.jitterMs,
         logFrames: opts.logFrames,
       });
@@ -317,7 +337,8 @@ server.listen(listen.port, listen.host, () => {
   console.error(
     `[ws-latency] listening ws://${host}:${port}/ -> ${opts.upstream} ` +
     `(client=${opts.clientMs}ms server=${opts.serverMs}ms ` +
-    `world_players=${opts.serverWorldPlayersMs}ms jitter=${opts.jitterMs}ms)`
+    `world_players=${opts.serverWorldPlayersMs}ms ` +
+    `input_applied=${opts.serverInputAppliedMs}ms jitter=${opts.jitterMs}ms)`
   );
 });
 

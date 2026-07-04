@@ -151,6 +151,21 @@ int station_max_ring(const station_t *st) {
     return max;
 }
 
+float station_collision_envelope_radius(const station_t *st) {
+    if (!st) return 0.0f;
+    float radius = st->radius > 0.0f ? st->radius + 4.0f : 0.0f;
+    if (st->dock_radius > radius) radius = st->dock_radius;
+    for (int i = 0; i < st->module_count && i < MAX_MODULES_PER_STATION; i++) {
+        int ring = (int)st->modules[i].ring;
+        if (ring <= 0 || ring > STATION_NUM_RINGS) continue;
+        float module_reach = STATION_RING_RADIUS[ring] + STATION_MODULE_COL_RADIUS;
+        float corridor_reach = STATION_RING_RADIUS[ring] + STATION_CORRIDOR_HW;
+        if (module_reach > radius) radius = module_reach;
+        if (corridor_reach > radius) radius = corridor_reach;
+    }
+    return radius;
+}
+
 int station_spawn_fee(const station_t *st) {
     if (!st) return (int)REPAIR_KITS_PER_RESPAWN;
     float kit_price = station_sell_price(st, COMMODITY_REPAIR_KIT);

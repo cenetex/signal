@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal 3D Render Prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f0f4ec;
+      --muted: #9aa39b;
+      --panel: rgba(10, 12, 13, 0.78);
+      --edge: rgba(218, 232, 214, 0.18);
+      --hot: #f06a2a;
+      --cool: #5fc6d1;
+      --gold: #d9b35c;
+      --green: #71b982;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #050606;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      outline: none;
+    }
+
+    .topbar {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      top: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      pointer-events: none;
+    }
+
+    .brand,
+    .readout,
+    .controls {
+      pointer-events: auto;
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 6px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      min-width: 228px;
+      padding: 10px 12px;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.3;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(54px, 1fr));
+      gap: 4px;
+      width: min(336px, 48vw);
+    }
+
+    button {
+      min-height: 30px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--ink);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: rgba(240, 244, 236, 0.28);
+      background: rgba(255, 255, 255, 0.10);
+    }
+
+    button[aria-pressed="true"] {
+      border-color: rgba(95, 198, 209, 0.64);
+      background: rgba(95, 198, 209, 0.16);
+      color: #dffcff;
+    }
+
+    .signal {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 154px;
+      padding-left: 8px;
+      border-left: 1px solid var(--edge);
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 82px;
+      accent-color: var(--cool);
+    }
+
+    .readout {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(96px, 1fr));
+      gap: 1px;
+      max-width: min(680px, calc(100vw - 32px));
+      overflow: hidden;
+    }
+
+    .cell {
+      min-height: 62px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .cell b {
+      display: block;
+      margin-bottom: 6px;
+      color: #f6f0d0;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .cell span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .fallback {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 28px;
+      background: #050606;
+      color: var(--ink);
+      text-align: center;
+    }
+
+    .fallback.visible {
+      display: grid;
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .segmented {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .signal {
+        border-left: 0;
+        border-top: 1px solid var(--edge);
+        padding: 8px 0 0;
+      }
+
+      .readout {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Signal 3D render prototype"></canvas>
+
+  <div class="topbar">
+    <div class="brand">
+      <strong>SIGNAL RENDER STUDY</strong>
+      <span>ship · asteroid · station</span>
+    </div>
+
+    <div class="controls" aria-label="Scene focus">
+      <div class="segmented" role="group">
+        <button type="button" data-focus="all" aria-pressed="true" title="Show the full composition">ALL</button>
+        <button type="button" data-focus="ship" aria-pressed="false" title="Frame the ship form">SHIP</button>
+        <button type="button" data-focus="rock" aria-pressed="false" title="Frame the asteroid form">ROCK</button>
+        <button type="button" data-focus="station" aria-pressed="false" title="Frame the station form">STATION</button>
+      </div>
+      <label class="signal">
+        SIGNAL
+        <input id="signal" type="range" min="0" max="100" value="82">
+      </label>
+    </div>
+  </div>
+
+  <div class="readout" aria-label="Render characteristics">
+    <div class="cell">
+      <b>SHIP</b>
+      <span>wedge hull</span>
+      <span>cyan cockpit</span>
+    </div>
+    <div class="cell">
+      <b>ROCK</b>
+      <span>seeded facets</span>
+      <span>hot fracture seam</span>
+    </div>
+    <div class="cell">
+      <b>STATION</b>
+      <span>ring with dock gap</span>
+      <span>module silhouettes</span>
+    </div>
+    <div class="cell">
+      <b>SIGNAL</b>
+      <span>color certainty</span>
+      <span>projection shadows</span>
+    </div>
+  </div>
+
+  <div id="fallback" class="fallback">
+    <p>WebGL2 is unavailable in this browser.</p>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("scene");
+      const fallback = document.getElementById("fallback");
+      const gl = canvas.getContext("webgl2", {
+        antialias: true,
+        depth: true,
+        alpha: false,
+        preserveDrawingBuffer: true
+      });
+
+      if (!gl) {
+        fallback.classList.add("visible");
+        return;
+      }
+
+      const focusButtons = Array.from(document.querySelectorAll("[data-focus]"));
+      const signalSlider = document.getElementById("signal");
+
+      const focusTargets = {
+        all: { target: [0.10, 0.50, 0.02], distance: 9.1, yaw: 0.18, pitch: 0.45 },
+        ship: { target: [-3.35, 0.42, -0.20], distance: 3.6, yaw: -0.36, pitch: 0.38 },
+        rock: { target: [0.05, 0.35, 0.02], distance: 3.7, yaw: 0.42, pitch: 0.48 },
+        station: { target: [3.32, 0.28, 0.02], distance: 4.5, yaw: 0.08, pitch: 0.50 }
+      };
+
+      let focus = "all";
+      let camera = {
+        target: focusTargets.all.target.slice(),
+        distance: focusTargets.all.distance,
+        yaw: focusTargets.all.yaw,
+        pitch: focusTargets.all.pitch
+      };
+
+      focusButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          focus = button.dataset.focus;
+          focusButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+        });
+      });
+
+      const vertexShaderSource = `#version 300 es
+        in vec3 aPosition;
+        in vec3 aNormal;
+        in vec3 aColor;
+
+        uniform mat4 uModel;
+        uniform mat4 uViewProj;
+
+        out vec3 vNormal;
+        out vec3 vColor;
+        out vec3 vWorld;
+
+        void main() {
+          vec4 world = uModel * vec4(aPosition, 1.0);
+          vWorld = world.xyz;
+          vNormal = normalize(mat3(uModel) * aNormal);
+          vColor = aColor;
+          gl_Position = uViewProj * world;
+        }
+      `;
+
+      const fragmentShaderSource = `#version 300 es
+        precision highp float;
+
+        in vec3 vNormal;
+        in vec3 vColor;
+        in vec3 vWorld;
+
+        uniform vec3 uCamera;
+        uniform vec3 uLightDir;
+        uniform float uSignal;
+
+        out vec4 outColor;
+
+        vec3 desaturate(vec3 color, float amount) {
+          float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          return mix(color, vec3(gray), amount);
+        }
+
+        void main() {
+          vec3 n = normalize(vNormal);
+          vec3 light = normalize(-uLightDir);
+          vec3 viewDir = normalize(uCamera - vWorld);
+          float diffuse = max(dot(n, light), 0.0);
+          float halfLambert = 0.28 + diffuse * 0.72;
+          float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.15);
+          vec3 color = vColor * halfLambert + vec3(0.42, 0.82, 0.88) * rim * 0.10;
+          color = desaturate(color, (1.0 - uSignal) * 0.78);
+          float dist = length(uCamera - vWorld);
+          float fog = smoothstep(6.0, 13.0, dist);
+          color = mix(color, vec3(0.025, 0.028, 0.027), fog * (0.40 + (1.0 - uSignal) * 0.25));
+          outColor = vec4(color, 1.0);
+        }
+      `;
+
+      const lineVertexShaderSource = `#version 300 es
+        in vec3 aPosition;
+        in vec3 aColor;
+
+        uniform mat4 uModel;
+        uniform mat4 uViewProj;
+
+        out vec3 vColor;
+        out vec3 vWorld;
+
+        void main() {
+          vec4 world = uModel * vec4(aPosition, 1.0);
+          vWorld = world.xyz;
+          vColor = aColor;
+          gl_Position = uViewProj * world;
+        }
+      `;
+
+      const lineFragmentShaderSource = `#version 300 es
+        precision highp float;
+
+        in vec3 vColor;
+        in vec3 vWorld;
+
+        uniform vec3 uCamera;
+        uniform float uSignal;
+        uniform float uAlpha;
+
+        out vec4 outColor;
+
+        vec3 desaturate(vec3 color, float amount) {
+          float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          return mix(color, vec3(gray), amount);
+        }
+
+        void main() {
+          float dist = length(uCamera - vWorld);
+          float fog = smoothstep(7.0, 15.0, dist);
+          vec3 color = desaturate(vColor, (1.0 - uSignal) * 0.76);
+          color = mix(color, vec3(0.025, 0.028, 0.027), fog * 0.34);
+          outColor = vec4(color, uAlpha);
+        }
+      `;
+
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader));
+        }
+        return shader;
+      }
+
+      function createProgram(vsSource, fsSource) {
+        const program = gl.createProgram();
+        gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+        return program;
+      }
+
+      const solidProgram = createProgram(vertexShaderSource, fragmentShaderSource);
+      const lineProgram = createProgram(lineVertexShaderSource, lineFragmentShaderSource);
+
+      function solidLocations(program) {
+        return {
+          position: gl.getAttribLocation(program, "aPosition"),
+          normal: gl.getAttribLocation(program, "aNormal"),
+          color: gl.getAttribLocation(program, "aColor"),
+          model: gl.getUniformLocation(program, "uModel"),
+          viewProj: gl.getUniformLocation(program, "uViewProj"),
+          camera: gl.getUniformLocation(program, "uCamera"),
+          lightDir: gl.getUniformLocation(program, "uLightDir"),
+          signal: gl.getUniformLocation(program, "uSignal")
+        };
+      }
+
+      function lineLocations(program) {
+        return {
+          position: gl.getAttribLocation(program, "aPosition"),
+          color: gl.getAttribLocation(program, "aColor"),
+          model: gl.getUniformLocation(program, "uModel"),
+          viewProj: gl.getUniformLocation(program, "uViewProj"),
+          camera: gl.getUniformLocation(program, "uCamera"),
+          signal: gl.getUniformLocation(program, "uSignal"),
+          alpha: gl.getUniformLocation(program, "uAlpha")
+        };
+      }
+
+      const solidLoc = solidLocations(solidProgram);
+      const lineLoc = lineLocations(lineProgram);
+
+      const V3 = {
+        add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+        sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+        scale: (v, s) => [v[0] * s, v[1] * s, v[2] * s],
+        dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+        cross: (a, b) => [
+          a[1] * b[2] - a[2] * b[1],
+          a[2] * b[0] - a[0] * b[2],
+          a[0] * b[1] - a[1] * b[0]
+        ],
+        norm: (v) => {
+          const len = Math.hypot(v[0], v[1], v[2]) || 1;
+          return [v[0] / len, v[1] / len, v[2] / len];
+        },
+        mix: (a, b, t) => [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t
+        ]
+      };
+
+      const M4 = {
+        identity: () => new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          0, 0, 0, 1
+        ]),
+        multiply: (a, b) => {
+          const out = new Float32Array(16);
+          for (let c = 0; c < 4; c++) {
+            for (let r = 0; r < 4; r++) {
+              out[c * 4 + r] =
+                a[0 * 4 + r] * b[c * 4 + 0] +
+                a[1 * 4 + r] * b[c * 4 + 1] +
+                a[2 * 4 + r] * b[c * 4 + 2] +
+                a[3 * 4 + r] * b[c * 4 + 3];
+            }
+          }
+          return out;
+        },
+        translation: (x, y, z) => {
+          const out = M4.identity();
+          out[12] = x;
+          out[13] = y;
+          out[14] = z;
+          return out;
+        },
+        scale: (x, y, z) => {
+          const out = M4.identity();
+          out[0] = x;
+          out[5] = y;
+          out[10] = z;
+          return out;
+        },
+        rotateX: (a) => {
+          const c = Math.cos(a);
+          const s = Math.sin(a);
+          return new Float32Array([
+            1, 0, 0, 0,
+            0, c, s, 0,
+            0, -s, c, 0,
+            0, 0, 0, 1
+          ]);
+        },
+        rotateY: (a) => {
+          const c = Math.cos(a);
+          const s = Math.sin(a);
+          return new Float32Array([
+            c, 0, -s, 0,
+            0, 1, 0, 0,
+            s, 0, c, 0,
+            0, 0, 0, 1
+          ]);
+        },
+        rotateZ: (a) => {
+          const c = Math.cos(a);
+          const s = Math.sin(a);
+          return new Float32Array([
+            c, s, 0, 0,
+            -s, c, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+          ]);
+        },
+        perspective: (fov, aspect, near, far) => {
+          const f = 1 / Math.tan(fov / 2);
+          const nf = 1 / (near - far);
+          return new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far + near) * nf, -1,
+            0, 0, 2 * far * near * nf, 0
+          ]);
+        },
+        lookAt: (eye, center, up) => {
+          const z = V3.norm(V3.sub(eye, center));
+          const x = V3.norm(V3.cross(up, z));
+          const y = V3.cross(z, x);
+          return new Float32Array([
+            x[0], y[0], z[0], 0,
+            x[1], y[1], z[1], 0,
+            x[2], y[2], z[2], 0,
+            -V3.dot(x, eye), -V3.dot(y, eye), -V3.dot(z, eye), 1
+          ]);
+        }
+      };
+
+      function modelMatrix({ translate = [0, 0, 0], rotate = [0, 0, 0], scale = [1, 1, 1] }) {
+        let m = M4.translation(translate[0], translate[1], translate[2]);
+        m = M4.multiply(m, M4.rotateY(rotate[1]));
+        m = M4.multiply(m, M4.rotateX(rotate[0]));
+        m = M4.multiply(m, M4.rotateZ(rotate[2]));
+        m = M4.multiply(m, M4.scale(scale[0], scale[1], scale[2]));
+        return m;
+      }
+
+      function makeSolidMesh(vertices, normals, colors, indices) {
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+
+        function bindArray(location, data, size) {
+          const buffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+        }
+
+        bindArray(solidLoc.position, vertices, 3);
+        bindArray(solidLoc.normal, normals, 3);
+        bindArray(solidLoc.color, colors, 3);
+
+        const indexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+
+        return { vao, count: indices.length };
+      }
+
+      function makeLineMesh(vertices, colors) {
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+
+        function bindArray(location, data, size) {
+          const buffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+        }
+
+        bindArray(lineLoc.position, vertices, 3);
+        bindArray(lineLoc.color, colors, 3);
+        gl.bindVertexArray(null);
+        return { vao, count: vertices.length / 3 };
+      }
+
+      function pushTri(vertices, normals, colors, indices, a, b, c, color) {
+        const base = vertices.length / 3;
+        const normal = V3.norm(V3.cross(V3.sub(b, a), V3.sub(c, a)));
+        [a, b, c].forEach((p) => {
+          vertices.push(p[0], p[1], p[2]);
+          normals.push(normal[0], normal[1], normal[2]);
+          colors.push(color[0], color[1], color[2]);
+        });
+        indices.push(base, base + 1, base + 2);
+      }
+
+      function boxMesh(size, color) {
+        const sx = size[0] * 0.5;
+        const sy = size[1] * 0.5;
+        const sz = size[2] * 0.5;
+        const p = [
+          [-sx, -sy, -sz], [ sx, -sy, -sz], [ sx,  sy, -sz], [-sx,  sy, -sz],
+          [-sx, -sy,  sz], [ sx, -sy,  sz], [ sx,  sy,  sz], [-sx,  sy,  sz]
+        ];
+        const faces = [
+          [0, 1, 2, 3], [5, 4, 7, 6], [4, 0, 3, 7],
+          [1, 5, 6, 2], [3, 2, 6, 7], [4, 5, 1, 0]
+        ];
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        faces.forEach((f, idx) => {
+          const tint = 0.82 + (idx % 3) * 0.08;
+          const faceColor = color.map((v) => v * tint);
+          pushTri(vertices, normals, colors, indices, p[f[0]], p[f[1]], p[f[2]], faceColor);
+          pushTri(vertices, normals, colors, indices, p[f[0]], p[f[2]], p[f[3]], faceColor);
+        });
+        return makeSolidMesh(vertices, normals, colors, indices);
+      }
+
+      function coneMesh(radius, height, segments, colorA, colorB) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        const tip = [0, height * 0.5, 0];
+        const baseCenter = [0, -height * 0.5, 0];
+        for (let i = 0; i < segments; i++) {
+          const a0 = (i / segments) * Math.PI * 2;
+          const a1 = ((i + 1) / segments) * Math.PI * 2;
+          const p0 = [Math.cos(a0) * radius, -height * 0.5, Math.sin(a0) * radius];
+          const p1 = [Math.cos(a1) * radius, -height * 0.5, Math.sin(a1) * radius];
+          pushTri(vertices, normals, colors, indices, p0, p1, tip, V3.mix(colorA, colorB, i / segments));
+          pushTri(vertices, normals, colors, indices, p1, p0, baseCenter, colorA);
+        }
+        return makeSolidMesh(vertices, normals, colors, indices);
+      }
+
+      function shipMesh() {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        const hull = [0.52, 0.58, 0.56];
+        const side = [0.36, 0.40, 0.40];
+        const nose = [0.83, 0.86, 0.78];
+        const p = {
+          tip: [1.22, 0.00, 0.00],
+          top: [0.06, 0.30, 0.00],
+          belly: [0.00, -0.15, 0.00],
+          left: [-0.88, -0.04, -0.55],
+          right: [-0.88, -0.04, 0.55],
+          tail: [-1.12, 0.02, 0.00]
+        };
+        pushTri(vertices, normals, colors, indices, p.tip, p.top, p.left, nose);
+        pushTri(vertices, normals, colors, indices, p.tip, p.right, p.top, nose);
+        pushTri(vertices, normals, colors, indices, p.tip, p.left, p.belly, hull);
+        pushTri(vertices, normals, colors, indices, p.tip, p.belly, p.right, hull);
+        pushTri(vertices, normals, colors, indices, p.left, p.top, p.tail, side);
+        pushTri(vertices, normals, colors, indices, p.top, p.right, p.tail, side);
+        pushTri(vertices, normals, colors, indices, p.left, p.tail, p.belly, [0.26, 0.29, 0.29]);
+        pushTri(vertices, normals, colors, indices, p.right, p.belly, p.tail, [0.26, 0.29, 0.29]);
+        return makeSolidMesh(vertices, normals, colors, indices);
+      }
+
+      function asteroidMesh(seed, radius, latBands, lonBands) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        const points = [];
+
+        function noise(a, b) {
+          const x = Math.sin(a * 127.1 + b * 311.7 + seed * 74.7) * 43758.5453;
+          return x - Math.floor(x);
+        }
+
+        for (let y = 0; y <= latBands; y++) {
+          const v = y / latBands;
+          const theta = v * Math.PI;
+          for (let x = 0; x <= lonBands; x++) {
+            const u = x / lonBands;
+            const phi = u * Math.PI * 2;
+            const dir = [
+              Math.sin(theta) * Math.cos(phi),
+              Math.cos(theta),
+              Math.sin(theta) * Math.sin(phi)
+            ];
+            const ridge = Math.sin(phi * 4.0 + seed) * Math.sin(theta * 3.0);
+            const chip = noise(x, y) - 0.5;
+            const r = radius * (0.84 + noise(x + 4.2, y + 9.1) * 0.28 + ridge * 0.08 + chip * 0.12);
+            points.push([dir[0] * r * 1.12, dir[1] * r * 0.82, dir[2] * r]);
+          }
+        }
+
+        for (let y = 0; y < latBands; y++) {
+          for (let x = 0; x < lonBands; x++) {
+            const i0 = y * (lonBands + 1) + x;
+            const i1 = i0 + 1;
+            const i2 = i0 + lonBands + 1;
+            const i3 = i2 + 1;
+            const vein = Math.abs(Math.sin((x / lonBands) * Math.PI * 5.0 + seed)) < 0.18;
+            const base = vein ? [0.78, 0.42, 0.22] : [0.35, 0.32, 0.28];
+            const cap = vein ? [0.96, 0.62, 0.32] : [0.52, 0.49, 0.42];
+            const t = noise(x + 1.5, y + 3.7);
+            const color = V3.mix(base, cap, t);
+            pushTri(vertices, normals, colors, indices, points[i0], points[i2], points[i1], color);
+            pushTri(vertices, normals, colors, indices, points[i1], points[i2], points[i3], color);
+          }
+        }
+        return makeSolidMesh(vertices, normals, colors, indices);
+      }
+
+      function torusMesh(major, tube, majorSegments, tubeSegments, gapCenter, gapWidth, colorA, colorB) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        const indices = [];
+        const points = [];
+
+        function angleDistance(a, b) {
+          let d = a - b;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          return Math.abs(d);
+        }
+
+        for (let i = 0; i <= majorSegments; i++) {
+          const u = (i / majorSegments) * Math.PI * 2;
+          const row = [];
+          for (let j = 0; j <= tubeSegments; j++) {
+            const v = (j / tubeSegments) * Math.PI * 2;
+            const x = (major + tube * Math.cos(v)) * Math.cos(u);
+            const y = tube * Math.sin(v);
+            const z = (major + tube * Math.cos(v)) * Math.sin(u);
+            row.push([x, y, z]);
+          }
+          points.push(row);
+        }
+
+        for (let i = 0; i < majorSegments; i++) {
+          const mid = ((i + 0.5) / majorSegments) * Math.PI * 2;
+          if (angleDistance(mid, gapCenter) < gapWidth * 0.5) continue;
+          for (let j = 0; j < tubeSegments; j++) {
+            const p0 = points[i][j];
+            const p1 = points[i + 1][j];
+            const p2 = points[i][j + 1];
+            const p3 = points[i + 1][j + 1];
+            const color = V3.mix(colorA, colorB, (j % tubeSegments) / tubeSegments);
+            pushTri(vertices, normals, colors, indices, p0, p1, p2, color);
+            pushTri(vertices, normals, colors, indices, p2, p1, p3, color);
+          }
+        }
+
+        return makeSolidMesh(vertices, normals, colors, indices);
+      }
+
+      function gridMesh(size, step) {
+        const vertices = [];
+        const colors = [];
+        const count = Math.floor(size / step);
+        for (let i = -count; i <= count; i++) {
+          const v = i * step;
+          const axis = i === 0;
+          const color = axis ? [0.22, 0.42, 0.43] : [0.08, 0.12, 0.12];
+          vertices.push(-size, 0, v, size, 0, v);
+          colors.push(...color, ...color);
+          vertices.push(v, 0, -size, v, 0, size);
+          colors.push(...color, ...color);
+        }
+        return makeLineMesh(vertices, colors);
+      }
+
+      function circleLineMesh(radius, segments, color, y = 0.01) {
+        const vertices = [];
+        const colors = [];
+        for (let i = 0; i < segments; i++) {
+          const a0 = (i / segments) * Math.PI * 2;
+          const a1 = ((i + 1) / segments) * Math.PI * 2;
+          vertices.push(Math.cos(a0) * radius, y, Math.sin(a0) * radius);
+          vertices.push(Math.cos(a1) * radius, y, Math.sin(a1) * radius);
+          colors.push(...color, ...color);
+        }
+        return makeLineMesh(vertices, colors);
+      }
+
+      const meshes = {
+        grid: gridMesh(12, 0.8),
+        ship: shipMesh(),
+        cockpit: boxMesh([0.48, 0.12, 0.26], [0.13, 0.78, 0.86]),
+        engine: boxMesh([0.30, 0.16, 0.16], [0.92, 0.35, 0.12]),
+        asteroid: asteroidMesh(42, 1.05, 13, 18),
+        seam: torusMesh(1.00, 0.018, 48, 5, 2.35, 2.7, [0.95, 0.28, 0.12], [1.0, 0.78, 0.34]),
+        shard: coneMesh(0.15, 0.68, 7, [0.18, 0.52, 0.58], [0.62, 0.95, 0.92]),
+        stationOuter: torusMesh(1.42, 0.085, 72, 8, Math.PI, 0.72, [0.45, 0.48, 0.44], [0.73, 0.62, 0.38]),
+        stationInner: torusMesh(0.88, 0.062, 64, 7, Math.PI, 0.72, [0.34, 0.40, 0.42], [0.38, 0.66, 0.63]),
+        stationHub: torusMesh(0.24, 0.07, 32, 7, Math.PI, 0.0, [0.44, 0.46, 0.43], [0.78, 0.52, 0.28]),
+        module: boxMesh([0.28, 0.18, 0.42], [0.59, 0.54, 0.43]),
+        furnace: boxMesh([0.34, 0.22, 0.52], [0.88, 0.39, 0.16]),
+        relay: coneMesh(0.10, 0.42, 6, [0.26, 0.75, 0.73], [0.77, 0.95, 0.82]),
+        lane: circleLineMesh(1.72, 64, [0.85, 0.72, 0.36], 0.02),
+        shadowShip: circleLineMesh(0.80, 48, [0.08, 0.20, 0.20], 0.012),
+        shadowRock: circleLineMesh(1.30, 64, [0.16, 0.10, 0.07], 0.012),
+        shadowStation: circleLineMesh(1.76, 80, [0.12, 0.16, 0.13], 0.012)
+      };
+
+      const drawItems = [];
+      const lineItems = [];
+
+      function addSolid(mesh, transform, extra = {}) {
+        drawItems.push({ mesh, transform, extra });
+      }
+
+      function addLine(mesh, transform, alpha = 1.0) {
+        lineItems.push({ mesh, transform, alpha });
+      }
+
+      function buildScene(time) {
+        drawItems.length = 0;
+        lineItems.length = 0;
+
+        addLine(meshes.grid, { translate: [0, -0.035, 0] }, 0.66);
+
+        addLine(meshes.shadowShip, { translate: [-3.25, -0.025, -0.25], scale: [1.0, 1.0, 0.58] }, 0.42);
+        addSolid(meshes.ship, { translate: [-3.25, 0.34, -0.25], rotate: [0.04, 0.22 + Math.sin(time * 0.0012) * 0.05, 0.0], scale: [0.86, 0.86, 0.86] });
+        addSolid(meshes.cockpit, { translate: [-3.20, 0.55, -0.25], rotate: [0.04, 0.22, 0.0], scale: [0.70, 0.70, 0.70] });
+        addSolid(meshes.engine, { translate: [-4.06, 0.31, -0.61], rotate: [0.0, 0.22, 0.0], scale: [0.72, 0.72, 0.72] });
+        addSolid(meshes.engine, { translate: [-4.06, 0.31, 0.10], rotate: [0.0, 0.22, 0.0], scale: [0.72, 0.72, 0.72] });
+
+        addLine(meshes.shadowRock, { translate: [0.0, -0.02, 0.0], scale: [0.96, 1.0, 0.76] }, 0.48);
+        addSolid(meshes.asteroid, { translate: [0.0, 0.58, 0.0], rotate: [0.24, time * 0.00018, -0.10], scale: [1.0, 1.0, 1.0] });
+        addSolid(meshes.seam, { translate: [0.0, 0.58, 0.0], rotate: [1.14, time * 0.00018 + 0.48, 0.40], scale: [1.02, 1.02, 1.02] });
+        addSolid(meshes.shard, { translate: [0.44, 1.45, 0.20], rotate: [0.20, 0.50, -0.42], scale: [1.0, 1.0, 1.0] });
+        addSolid(meshes.shard, { translate: [-0.48, 1.26, -0.44], rotate: [-0.18, -0.42, 0.36], scale: [0.72, 0.72, 0.72] });
+
+        addLine(meshes.shadowStation, { translate: [3.35, -0.02, 0.0], scale: [1.0, 1.0, 0.82] }, 0.40);
+        addLine(meshes.lane, { translate: [3.35, 0.025, 0.0], rotate: [0.0, time * 0.00013, 0.0] }, 0.70);
+        addSolid(meshes.stationOuter, { translate: [3.35, 0.46, 0.0], rotate: [0.0, time * 0.00020, 0.0], scale: [1.0, 1.0, 1.0] });
+        addSolid(meshes.stationInner, { translate: [3.35, 0.47, 0.0], rotate: [0.0, -time * 0.00026, 0.0], scale: [1.0, 1.0, 1.0] });
+        addSolid(meshes.stationHub, { translate: [3.35, 0.48, 0.0], rotate: [0.0, time * 0.00020, 0.0], scale: [1.0, 1.0, 1.0] });
+
+        const moduleAngles = [-1.10, -0.42, 0.42, 1.12, 2.38];
+        moduleAngles.forEach((a, i) => {
+          const r = i === 4 ? 0.90 : 1.44;
+          const x = 3.35 + Math.cos(a + time * 0.00020) * r;
+          const z = Math.sin(a + time * 0.00020) * r;
+          const mesh = i === 1 ? meshes.furnace : meshes.module;
+          addSolid(mesh, {
+            translate: [x, 0.52, z],
+            rotate: [0.0, -a - time * 0.00020, 0.0],
+            scale: [1.0, 1.0, 1.0]
+          });
+        });
+        addSolid(meshes.relay, { translate: [3.35, 1.00, 0.0], rotate: [0.0, time * 0.00020, 0.0], scale: [1.0, 1.0, 1.0] });
+      }
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+        const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        gl.viewport(0, 0, width, height);
+      }
+
+      function smoothCamera(dt) {
+        const target = focusTargets[focus];
+        const t = 1 - Math.pow(0.001, dt / 1000);
+        camera.target = V3.mix(camera.target, target.target, t);
+        camera.distance += (target.distance - camera.distance) * t;
+        camera.yaw += (target.yaw - camera.yaw) * t;
+        camera.pitch += (target.pitch - camera.pitch) * t;
+      }
+
+      function drawSolid(item, viewProj, cameraPos, signal) {
+        gl.useProgram(solidProgram);
+        gl.bindVertexArray(item.mesh.vao);
+        const model = modelMatrix(item.transform);
+        gl.uniformMatrix4fv(solidLoc.model, false, model);
+        gl.uniformMatrix4fv(solidLoc.viewProj, false, viewProj);
+        gl.uniform3fv(solidLoc.camera, cameraPos);
+        gl.uniform3fv(solidLoc.lightDir, V3.norm([-0.42, -0.78, -0.34]));
+        gl.uniform1f(solidLoc.signal, signal);
+        gl.drawElements(gl.TRIANGLES, item.mesh.count, gl.UNSIGNED_SHORT, 0);
+      }
+
+      function drawLine(item, viewProj, cameraPos, signal) {
+        gl.useProgram(lineProgram);
+        gl.bindVertexArray(item.mesh.vao);
+        const model = modelMatrix(item.transform);
+        gl.uniformMatrix4fv(lineLoc.model, false, model);
+        gl.uniformMatrix4fv(lineLoc.viewProj, false, viewProj);
+        gl.uniform3fv(lineLoc.camera, cameraPos);
+        gl.uniform1f(lineLoc.signal, signal);
+        gl.uniform1f(lineLoc.alpha, item.alpha);
+        gl.drawArrays(gl.LINES, 0, item.mesh.count);
+      }
+
+      let last = performance.now();
+
+      function frame(now) {
+        const dt = Math.min(40, now - last);
+        last = now;
+        resize();
+        smoothCamera(dt);
+        buildScene(now);
+
+        const aspect = canvas.width / canvas.height;
+        const target = camera.target;
+        const orbit = now * 0.000055;
+        let yaw = camera.yaw + orbit;
+        const pitch = camera.pitch;
+        let distance = camera.distance;
+        if (aspect < 0.72 && focus === "all") {
+          yaw += 1.08;
+          distance *= 1.18;
+        }
+        const cameraPos = [
+          target[0] + Math.sin(yaw) * Math.cos(pitch) * distance,
+          target[1] + Math.sin(pitch) * distance,
+          target[2] + Math.cos(yaw) * Math.cos(pitch) * distance
+        ];
+        const projection = M4.perspective(Math.PI / 4.2, aspect, 0.05, 60);
+        const view = M4.lookAt(cameraPos, target, [0, 1, 0]);
+        const viewProj = M4.multiply(projection, view);
+        const signal = Number(signalSlider.value) / 100;
+
+        gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+        gl.clearColor(0.018, 0.020, 0.019, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        lineItems.forEach((item) => drawLine(item, viewProj, cameraPos, signal));
+        gl.depthMask(true);
+
+        drawItems.forEach((item) => drawSolid(item, viewProj, cameraPos, signal));
+
+        gl.bindVertexArray(null);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>

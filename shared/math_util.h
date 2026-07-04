@@ -64,7 +64,9 @@ static inline float v2_len_sq(vec2 value) {
 }
 
 static inline float v2_len(vec2 value) {
-    return fixp_sqrtf(v2_len_sq(value));
+    float len_sq = v2_len_sq(value);
+    if (!isfinite(len_sq) || len_sq <= 0.0f) return 0.0f;
+    return sqrtf(len_sq);
 }
 
 static inline vec2 v2_norm(vec2 value) {

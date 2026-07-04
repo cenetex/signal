@@ -1,17 +1,17 @@
-const FLY_ORIGIN = "https://signal-relay-kind-pond-4338.fly.dev";
-const FLY_HOST = new URL(FLY_ORIGIN).host;
+const ORIGIN = "http://signal-origin.ratimics.com";
+const ORIGIN_HOST = new URL(ORIGIN).host;
 
 export default {
   async fetch(request) {
     const publicUrl = new URL(request.url);
-    const target = new URL(publicUrl.pathname + publicUrl.search, FLY_ORIGIN);
+    const target = new URL(publicUrl.pathname + publicUrl.search, ORIGIN);
 
     if (target.pathname === "/") {
       target.pathname = "/play";
     }
 
     const proxyRequest = new Request(target.toString(), request);
-    proxyRequest.headers.set("Host", FLY_HOST);
+    proxyRequest.headers.set("Host", ORIGIN_HOST);
     proxyRequest.headers.set("X-Forwarded-Host", publicUrl.host);
     proxyRequest.headers.set("X-Forwarded-Proto", publicUrl.protocol.replace(":", ""));
 
@@ -19,7 +19,7 @@ export default {
     const location = response.headers.get("Location");
     if (!location) return response;
 
-    const rewrittenLocation = rewriteFlyLocation(location, publicUrl);
+    const rewrittenLocation = rewriteOriginLocation(location, publicUrl);
     if (!rewrittenLocation) return response;
 
     const headers = new Headers(response.headers);
@@ -33,9 +33,9 @@ export default {
   },
 };
 
-function rewriteFlyLocation(location, publicUrl) {
-  const target = new URL(location, FLY_ORIGIN);
-  if (target.host !== FLY_HOST) return null;
+function rewriteOriginLocation(location, publicUrl) {
+  const target = new URL(location, ORIGIN);
+  if (target.host !== ORIGIN_HOST) return null;
 
   target.protocol = publicUrl.protocol;
   target.host = publicUrl.host;

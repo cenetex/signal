@@ -1,5 +1,7 @@
 #include "signal_field.h"
 
+#include "fixpoint.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +38,7 @@ static signal_field_cell_t *signal_field_cell(signal_field_t *field,
 static float signal_field_decay_multiplier(uint32_t elapsed,
                                            uint32_t half_life_ticks) {
     if (elapsed == 0 || half_life_ticks == 0) return 1.0f;
-    return powf(0.5f, (float)elapsed / (float)half_life_ticks);
+    return fixp_powf(0.5f, (float)elapsed / (float)half_life_ticks);
 }
 
 const char *signal_field_kind_label(signal_field_kind_t kind) {

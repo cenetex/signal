@@ -213,6 +213,26 @@ static int test_spawn_station_market_exact_pod(world_t *w,
     return pod_idx;
 }
 
+static void test_move_pod_past_station_charge_boundary(world_t *w,
+                                                       int station_idx,
+                                                       int pod_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return;
+    }
+    station_t *st = &w->stations[station_idx];
+    vec2 base = st->pos;
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx >= 0) {
+        base = module_world_pos_ring(st, st->modules[dock_idx].ring,
+                                     st->modules[dock_idx].slot);
+    }
+    w->cargo_pods[pod_idx].pos =
+        v2_add(base, v2(CARGO_POD_DOCK_TRACTOR_RANGE +
+                        HOPPER_INTAKE_STAGING_RANGE + 80.0f, 0.0f));
+    w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+}
+
 static int test_destroy_stored_station_loaners(world_t *w, int station_idx) {
     int count = 0;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
@@ -1216,6 +1236,11 @@ TEST(test_buy_station_held_pod_transfers_custody_to_ship) {
     ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[pod_idx]));
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
     ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[pod_idx]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(&w, 0, pod_idx);
+    world_sim_step(&w, SIM_DT);
     ASSERT(ledger_balance(st, sp->session_token) < before);
 }
 
@@ -1497,6 +1522,11 @@ TEST(test_station_dock_adopts_finished_output_pod_for_market) {
     ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[pod_idx]));
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
     ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[pod_idx]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(&w, 0, pod_idx);
+    world_sim_step(&w, SIM_DT);
     ASSERT(ledger_balance(st, sp->session_token) < before);
 }
 
@@ -8009,6 +8039,10 @@ TEST(test_neural_bot_logistics_buys_on_station_credit) {
     ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 1);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FRAME), 1);
+    ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token), 0.0f, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(&w, 0, prospect_market_pod);
+    world_sim_step(&w, SIM_DT);
     ASSERT(ledger_balance(prospect, sp->session_token) < 0.0f);
 }
 
