@@ -985,17 +985,75 @@ void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
     configure_terrain_volatiles(w, a);
 }
 
-/* Check if a chunk is already materialized (has at least one active terrain
- * asteroid from this chunk). */
-static bool chunk_materialized(const world_t *w, int32_t cx, int32_t cy) {
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!w->asteroids[i].active) continue;
-        if (w->asteroid_origin[i].from_chunk &&
-            w->asteroid_origin[i].chunk_x == cx &&
-            w->asteroid_origin[i].chunk_y == cy)
-            return true;
+enum {
+    MATERIALIZED_CHUNK_SET_CAP = 4096,
+    MATERIALIZED_CHUNK_SET_MASK = MATERIALIZED_CHUNK_SET_CAP - 1,
+};
+
+typedef struct {
+    int32_t cx;
+    int32_t cy;
+    bool occupied;
+} materialized_chunk_slot_t;
+
+typedef struct {
+    materialized_chunk_slot_t slots[MATERIALIZED_CHUNK_SET_CAP];
+} materialized_chunk_set_t;
+
+static uint32_t materialized_chunk_hash(int32_t cx, int32_t cy) {
+    uint32_t x = (uint32_t)cx;
+    uint32_t y = (uint32_t)cy;
+    uint32_t h = x * 73856093u ^ y * 19349663u;
+    h ^= h >> 16;
+    return h;
+}
+
+static bool materialized_chunk_set_contains(const materialized_chunk_set_t *set,
+                                            int32_t cx,
+                                            int32_t cy) {
+    uint32_t start = materialized_chunk_hash(cx, cy) & MATERIALIZED_CHUNK_SET_MASK;
+    for (uint32_t probe = 0, idx = start;
+         probe < MATERIALIZED_CHUNK_SET_CAP;
+         probe++, idx = (idx + 1u) & MATERIALIZED_CHUNK_SET_MASK) {
+        const materialized_chunk_slot_t *slot = &set->slots[idx];
+        if (!slot->occupied) return false;
+        if (slot->cx == cx && slot->cy == cy) return true;
     }
     return false;
+}
+
+static void materialized_chunk_set_insert(materialized_chunk_set_t *set,
+                                          int32_t cx,
+                                          int32_t cy) {
+    uint32_t start = materialized_chunk_hash(cx, cy) & MATERIALIZED_CHUNK_SET_MASK;
+    for (uint32_t probe = 0, idx = start;
+         probe < MATERIALIZED_CHUNK_SET_CAP;
+         probe++, idx = (idx + 1u) & MATERIALIZED_CHUNK_SET_MASK) {
+        materialized_chunk_slot_t *slot = &set->slots[idx];
+        if (slot->occupied) {
+            if (slot->cx == cx && slot->cy == cy) return;
+            continue;
+        }
+        slot->occupied = true;
+        slot->cx = cx;
+        slot->cy = cy;
+        return;
+    }
+}
+
+/* Materialized means at least one active terrain asteroid from the chunk
+ * exists. Fully destroyed/empty chunks intentionally stay absent so the
+ * old retry behavior is preserved. */
+static void materialized_chunk_set_build(const world_t *w,
+                                         materialized_chunk_set_t *set) {
+    memset(set, 0, sizeof(*set));
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        materialized_chunk_set_insert(set,
+            w->asteroid_origin[i].chunk_x,
+            w->asteroid_origin[i].chunk_y);
+    }
 }
 
 /* Is this asteroid "disturbed" (moved by gameplay, shouldn't auto-despawn)? */
@@ -1028,6 +1086,8 @@ void maintain_asteroid_field(world_t *w, float dt) {
     /* --- Materialize needed chunks --- */
     float mr = MATERIALIZE_RADIUS;
     int chunks_in_radius = (int)ceilf(mr / CHUNK_SIZE);
+    materialized_chunk_set_t materialized_chunks;
+    materialized_chunk_set_build(w, &materialized_chunks);
 
     for (int vi = 0; vi < nv; vi++) {
         int32_t vcx, vcy;
@@ -1039,7 +1099,8 @@ void maintain_asteroid_field(world_t *w, float dt) {
                 int32_t cy = vcy + dy;
 
                 /* Skip if already materialized */
-                if (chunk_materialized(w, cx, cy)) continue;
+                if (materialized_chunk_set_contains(&materialized_chunks, cx, cy))
+                    continue;
 
                 /* Skip if outside signal coverage */
                 if (!chunk_in_signal(w, cx, cy)) continue;
@@ -1053,6 +1114,7 @@ void maintain_asteroid_field(world_t *w, float dt) {
                 chunk_asteroid_t rocks[CHUNK_MAX_ASTEROIDS];
                 int count = chunk_generate(&w->belt, w->rng, cx, cy,
                                             rocks, CHUNK_MAX_ASTEROIDS);
+                bool chunk_inserted = false;
                 for (int r = 0; r < count; r++) {
                     uint8_t pub[32];
                     compute_rock_pub(w->belt_seed, cx, cy, (uint16_t)r, pub);
@@ -1060,6 +1122,10 @@ void maintain_asteroid_field(world_t *w, float dt) {
                     int slot = find_free_slot(w);
                     if (slot < 0) goto pool_full;
                     materialize_asteroid(w, slot, &rocks[r], cx, cy, (uint16_t)r);
+                    if (!chunk_inserted) {
+                        materialized_chunk_set_insert(&materialized_chunks, cx, cy);
+                        chunk_inserted = true;
+                    }
                 }
             }
         }
