@@ -30,22 +30,24 @@ install-hooks:
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
 BUILD_TYPE ?= RelWithDebInfo
 GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+SIM_PROFILE ?=
+SIM_PROFILE_CMAKE := -DSIGNAL_SIM_PROFILE=$(if $(SIM_PROFILE),ON,OFF)
 
 # --- Native desktop client ---
 build:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal --parallel
 
 # --- Emscripten web client ---
 build-web:
-	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH)
+	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	emmake cmake --build build-web --parallel
 	python3 scripts/check_deterministic_build_flags.py build-web/compile_commands.json
 
 # --- Headless game server ---
 build-server:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_server --parallel
 
@@ -58,7 +60,7 @@ FLIGHT_TRACE_FORMAT ?= csv
 FLIGHT_TRACE_OUT ?= /tmp/signal-flight-trace.csv
 
 build-flight-trace:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target flight_trace --parallel
 
@@ -85,7 +87,7 @@ SIGNAL_REPLAY_RELEASE_BUILD ?= build-replay-release
 SIGNAL_REPLAY_WASM_BUILD ?= build-replay-wasm
 
 build-signal-replay:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_replay --parallel
 
@@ -109,15 +111,15 @@ signal-no-omniscience-soak: build-signal-replay
 	python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
 
 build-signal-replay-wasm:
-	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH)
+	emcmake cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_WASM_BUILD) -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DBUILD_WASM_REPLAY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	emmake cmake --build $(SIGNAL_REPLAY_WASM_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_WASM_BUILD)/compile_commands.json
 
 replay-cross-build:
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_DEBUG_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_DEBUG_BUILD)/compile_commands.json
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_RELEASE_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_RELEASE_BUILD)/compile_commands.json
 	python3 scripts/check_replay_cross_build.py \
@@ -125,10 +127,10 @@ replay-cross-build:
 		./$(SIGNAL_REPLAY_RELEASE_BUILD)/signal_replay
 
 replay-cross-build-long:
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_DEBUG_BUILD) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_DEBUG_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_DEBUG_BUILD)/compile_commands.json
-	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B $(SIGNAL_REPLAY_RELEASE_BUILD) -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	cmake --build $(SIGNAL_REPLAY_RELEASE_BUILD) --target signal_replay --parallel
 	python3 scripts/check_deterministic_build_flags.py $(SIGNAL_REPLAY_RELEASE_BUILD)/compile_commands.json
 	python3 scripts/check_replay_cross_build.py \
@@ -155,7 +157,7 @@ CHAIN_ASSETS_LINEAGE ?=
 CHAIN_ASSETS_BUILT_FROM ?=
 
 build-chain-assets:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_chain_assets --parallel
 
@@ -189,7 +191,7 @@ RATI_STAMP_DRY_RUN ?=
 RATI_STAMP_OVERWRITE ?=
 
 build-rati-receipt:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_rati_receipt --parallel
 
@@ -304,7 +306,7 @@ TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 # ~180s to ~56s (3.25x). All 340 tests pass identically — see PR that
 # introduced this. Keep -g for usable stack traces on failure.
 build-test:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH)
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g" -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
 	# test_signal_verify shells out to signal_verify for CLI-only
@@ -392,7 +394,7 @@ SAN_TEST_FLAGS ?= --quiet --no-soak
 
 build-san:
 	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
-		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
 		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=$(SANITIZER) -fno-omit-frame-pointer" \
 		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$(SANITIZER)"
 	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
@@ -409,7 +411,7 @@ test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
 test-tsan: TEST_PREFIX=ulimit -s 16384 &&
 test-tsan:
 	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
-		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
 		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
 		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 	@ln -sf build-tsan/compile_commands.json compile_commands.json

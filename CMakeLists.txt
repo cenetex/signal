@@ -59,6 +59,13 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 # server-only Docker image flips it off.
 option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
+option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
+
+function(signal_apply_sim_profile target_name)
+    if(SIGNAL_SIM_PROFILE)
+        target_compile_definitions(${target_name} PRIVATE SIM_PROFILE=1)
+    endif()
+endfunction()
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
@@ -204,6 +211,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         MG_ENABLE_LOG=0    # silence mongoose's internal [INFO]/[ERROR] spam
         GAME_SIM_VERBOSE   # enable [sim] log lines (matches prod Docker)
     )
+    signal_apply_sim_profile(signal_server)
     if(NOT MSVC)
         target_link_libraries(signal_server PRIVATE m)
         target_compile_options(signal_server PRIVATE
@@ -290,6 +298,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     target_include_directories(signal_test PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    signal_apply_sim_profile(signal_test)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -373,6 +382,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     target_include_directories(flight_trace PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    signal_apply_sim_profile(flight_trace)
     if(NOT MSVC)
         target_link_libraries(flight_trace PRIVATE m)
         target_compile_options(flight_trace PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -392,6 +402,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     target_include_directories(signal_replay PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    signal_apply_sim_profile(signal_replay)
     if(NOT MSVC)
         target_link_libraries(signal_replay PRIVATE m)
         target_compile_options(signal_replay PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -413,6 +424,7 @@ if(BUILD_WASM_REPLAY AND EMSCRIPTEN)
     target_include_directories(signal_replay PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    signal_apply_sim_profile(signal_replay)
     target_link_libraries(signal_replay PRIVATE m)
     target_compile_options(signal_replay PRIVATE
         -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -460,6 +472,7 @@ target_include_directories(signal SYSTEM PRIVATE
 )
 target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
+signal_apply_sim_profile(signal)
 
 if(SIGNAL_VOICE)
     target_compile_definitions(signal PRIVATE SIGNAL_VOICE)

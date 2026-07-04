@@ -63,6 +63,13 @@ extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B
 #include <sys/stat.h>
 #ifdef SIM_PROFILE
 #include <time.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #endif
 #ifdef _WIN32
 #include <direct.h>   /* _mkdir */
@@ -11308,8 +11315,17 @@ typedef struct {
     uint64_t samples;
 } sim_profile_accum_t;
 
+#ifndef SIM_PROFILE_DEFAULT_WINDOW_SEC
+#define SIM_PROFILE_DEFAULT_WINDOW_SEC 10.0
+#endif
+
 static sim_profile_accum_t sim_profile_accum[SIM_PROF_COUNT];
 static uint32_t sim_profile_window_start_tick;
+static double sim_profile_window_start_sim_sec;
+static double sim_profile_window_sec = SIM_PROFILE_DEFAULT_WINDOW_SEC;
+static bool sim_profile_window_started;
+static bool sim_profile_configured;
+static bool sim_profile_enabled = true;
 
 static const char *sim_profile_phase_name(sim_profile_phase_t phase) {
     static const char *names[SIM_PROF_COUNT] = {
@@ -11329,52 +11345,129 @@ static const char *sim_profile_phase_name(sim_profile_phase_t phase) {
     return names[phase];
 }
 
-static clock_t sim_profile_clock_now(void) {
-    return clock();
+static bool sim_profile_env_truthy(const char *value) {
+    if (!value || value[0] == '\0') return false;
+    if (strcmp(value, "0") == 0) return false;
+    if (strcmp(value, "false") == 0) return false;
+    if (strcmp(value, "FALSE") == 0) return false;
+    if (strcmp(value, "off") == 0) return false;
+    if (strcmp(value, "OFF") == 0) return false;
+    if (strcmp(value, "no") == 0) return false;
+    if (strcmp(value, "NO") == 0) return false;
+    return true;
 }
 
-static void sim_profile_record(sim_profile_phase_t phase, clock_t start) {
-    clock_t end = sim_profile_clock_now();
+static void sim_profile_configure_once(void) {
+    if (sim_profile_configured) return;
+    sim_profile_configured = true;
+
+    const char *enabled = getenv("SIM_PROFILE");
+    if (enabled)
+        sim_profile_enabled = sim_profile_env_truthy(enabled);
+
+    const char *window = getenv("SIM_PROFILE_WINDOW_SEC");
+    if (window && window[0] != '\0') {
+        char *end = NULL;
+        double seconds = strtod(window, &end);
+        if (end != window && isfinite(seconds) && seconds > 0.0)
+            sim_profile_window_sec = seconds;
+    }
+}
+
+static double sim_profile_clock_now(void) {
+#ifdef __EMSCRIPTEN__
+    double ms = emscripten_get_now();
+    return ms > 0.0 ? ms * 0.001 : 0.0;
+#elif defined(_WIN32)
+    static LARGE_INTEGER freq;
+    static bool have_freq;
+    LARGE_INTEGER now;
+    if (!have_freq) {
+        QueryPerformanceFrequency(&freq);
+        have_freq = true;
+    }
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#elif defined(CLOCK_MONOTONIC)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+    return (double)time(NULL);
+#else
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) == TIME_UTC)
+        return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+    return (double)time(NULL);
+#endif
+}
+
+static double sim_profile_begin_phase(void) {
+    if (!sim_profile_enabled) return 0.0;
+    return sim_profile_clock_now();
+}
+
+static void sim_profile_record(sim_profile_phase_t phase, double start) {
+    if (!sim_profile_enabled) return;
+    double end = sim_profile_clock_now();
     if (end < start) return;
-    double sec = (double)(end - start) / (double)CLOCKS_PER_SEC;
+    double sec = end - start;
     sim_profile_accum_t *acc = &sim_profile_accum[phase];
     acc->total_sec += sec;
     if (sec > acc->max_sec) acc->max_sec = sec;
     acc->samples++;
 }
 
-static void sim_profile_maybe_dump(const world_t *w) {
-    if (!w) return;
-    if (sim_profile_window_start_tick == 0)
-        sim_profile_window_start_tick = w->tick;
-    uint32_t elapsed_ticks = w->tick - sim_profile_window_start_tick;
-    if (elapsed_ticks < 1200u) return;
+static void sim_profile_begin_step(void) {
+    sim_profile_configure_once();
+}
 
-    printf("[sim-profile] ticks=%u", (unsigned)elapsed_ticks);
+static void sim_profile_maybe_dump(const world_t *w) {
+    if (!sim_profile_enabled) return;
+    if (!w) return;
+    if (!sim_profile_window_started) {
+        sim_profile_window_started = true;
+        sim_profile_window_start_tick = w->tick;
+        sim_profile_window_start_sim_sec = (double)w->time;
+        return;
+    }
+    uint32_t elapsed_ticks = w->tick - sim_profile_window_start_tick;
+    double elapsed_sim_sec = (double)w->time - sim_profile_window_start_sim_sec;
+    if (elapsed_sim_sec < sim_profile_window_sec) return;
+
+    double total_sec = 0.0;
+    for (int i = 0; i < SIM_PROF_COUNT; i++)
+        total_sec += sim_profile_accum[i].total_sec;
+
+    printf("[sim-profile] ticks=%u sim_sec=%.3f measured_ms=%.3f\n",
+           (unsigned)elapsed_ticks, elapsed_sim_sec, total_sec * 1000.0);
     for (int i = 0; i < SIM_PROF_COUNT; i++) {
         const sim_profile_accum_t *acc = &sim_profile_accum[i];
         double avg_ms = acc->samples > 0
             ? (acc->total_sec * 1000.0) / (double)acc->samples
             : 0.0;
-        printf(" %s_avg=%.3fms %s_max=%.3fms",
-               sim_profile_phase_name((sim_profile_phase_t)i), avg_ms,
-               sim_profile_phase_name((sim_profile_phase_t)i),
-               acc->max_sec * 1000.0);
+        double share = total_sec > 0.0 ? (acc->total_sec / total_sec) * 100.0 : 0.0;
+        printf("[sim-profile] phase=%-11s share=%6.2f total=%.3fms avg=%.3fms max=%.3fms samples=%llu\n",
+               sim_profile_phase_name((sim_profile_phase_t)i), share,
+               acc->total_sec * 1000.0, avg_ms,
+               acc->max_sec * 1000.0, (unsigned long long)acc->samples);
     }
-    printf("\n");
     memset(sim_profile_accum, 0, sizeof(sim_profile_accum));
     sim_profile_window_start_tick = w->tick;
+    sim_profile_window_start_sim_sec = (double)w->time;
 }
 
-#define SIM_PROFILE_BEGIN(var) clock_t var = sim_profile_clock_now()
+#define SIM_PROFILE_BEGIN(var) double var = sim_profile_begin_phase()
 #define SIM_PROFILE_END(phase, var) sim_profile_record((phase), (var))
 #else
+#define sim_profile_begin_step() ((void)0)
 #define SIM_PROFILE_BEGIN(var) ((void)0)
 #define SIM_PROFILE_END(phase, var) ((void)0)
 #define sim_profile_maybe_dump(w) ((void)0)
 #endif
 
 void world_sim_step(world_t *w, float dt) {
+    sim_profile_begin_step();
+
     SIM_PROFILE_BEGIN(prof_bookkeeping);
     w->events.count = 0;
     sim_interactions_clear(w);
