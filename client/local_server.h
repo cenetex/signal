@@ -12,6 +12,9 @@
 typedef struct {
     world_t world;
     bool active;
+    bool station_snapshot_dirty;
+    bool private_snapshot_dirty;
+    bool global_snapshot_dirty;
 } local_server_t;
 
 /* Initialize the local server world and spawn the player. */
