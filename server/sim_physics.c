@@ -359,9 +359,7 @@ static bool asteroid_near_corridor_module(const asteroid_t *a,
 
 static bool asteroid_near_station_collision_envelope(const asteroid_t *a,
                                                      const station_t *st) {
-    float station_r = fmaxf(st->radius, st->dock_radius);
-    float reach = station_r + a->radius + STATION_MODULE_COL_RADIUS +
-                  STATION_CORRIDOR_HW + 32.0f;
+    float reach = station_collision_envelope_radius(st) + a->radius;
     return v2_dist_sq(a->pos, st->pos) <= reach * reach;
 }
 

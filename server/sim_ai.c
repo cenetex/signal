@@ -5644,9 +5644,7 @@ static bool npc_reached_station_dock_lane(const npc_ship_t *npc,
 static bool npc_near_station_collision_envelope(const npc_ship_t *npc,
                                                 const station_t *st,
                                                 float ship_r) {
-    float station_r = fmaxf(st->radius, st->dock_radius);
-    float reach = station_r + ship_r + STATION_MODULE_COL_RADIUS +
-                  STATION_CORRIDOR_HW + 32.0f;
+    float reach = station_collision_envelope_radius(st) + ship_r;
     return v2_dist_sq(npc->ship.pos, st->pos) <= reach * reach;
 }
 

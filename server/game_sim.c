@@ -4335,9 +4335,7 @@ static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, boo
 static bool ship_near_station_collision_envelope(const server_player_t *sp,
                                                  const station_t *st) {
     float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-    float station_r = fmaxf(st->radius, st->dock_radius);
-    float reach = station_r + ship_r + STATION_MODULE_COL_RADIUS +
-                  STATION_CORRIDOR_HW + 32.0f;
+    float reach = station_collision_envelope_radius(st) + ship_r;
     return v2_dist_sq(sp->ship.pos, st->pos) <= reach * reach;
 }
 
