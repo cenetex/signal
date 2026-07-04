@@ -5,6 +5,11 @@ below. The measurement reorders the static rankings: fixed-point math and
 `maintain_asteroid_field` dominate the real workload; the NPC/station scan
 findings are real but secondary at current entity counts.*
 
+*Updated again 2026-07-04 after the measured hot-path pass. Slices 0-4
+landed as independent commits: SIM_PROFILE phase timing, O(1)
+`chunk_materialized` lookup, compact station scans, conservative station
+collision broad phase, and hardware `sqrtf` for `v2_len`.*
+
 *Date: 2026-07-03. Scope: static analysis of the 120 Hz authoritative sim
 (`server/`), the network broadcast layer (`server/main.c`,
 `server/net_protocol.h`), and the client render path (`client/world_draw.c`).
@@ -40,43 +45,80 @@ Breakdown of sim samples:
 | ~7% | `sim_step_asteroid_dynamics` | Static Finding 1 (station scans per asteroid). |
 | ~3% | NPC collision (`npc_resolve_asteroid_collisions`, `station_build_geom`) | Static Finding 2 — real, but small at the current NPC activity level. |
 
-### M1. `v2_len` routes through software 128-bit division — **measured P0**
+## Hot-path pass result (2026-07-04)
 
-`shared/math_util.h:66` defines `v2_len` as `fixp_sqrtf(v2_len_sq(...))`.
-`fixp_sqrtf` (`shared/fixpoint.c:109`) converts float → q32.32, takes an
-integer-sqrt initial guess, then runs **up to 8 Newton iterations, each
-performing a `fixp_div` = 128÷64-bit division** (`__udivmodti4` in
-compiler-rt — software, even on ARM64; far worse in WASM where it's emulated
-i64 math). Every vector length in the entire sim pays this. The single
-hottest leaf in the profile.
+Post-pass `SIM_PROFILE` sample, `signal_server` RelWithDebInfo with
+`SIGNAL_SIM_PROFILE=ON`, temp copy of the repo `world.sav` plus `chain/` and
+`stations/`, no connected clients, 10-second profile window:
 
-Options, in order of preference:
+```text
+[sim-profile] ticks=1196 sim_sec=10.001 measured_ms=188.283
+[sim-profile] phase=book        share=  0.04 total=0.078ms avg=0.000ms max=0.013ms samples=1197
+[sim-profile] phase=stations    share=  0.93 total=1.748ms avg=0.001ms max=0.005ms samples=1197
+[sim-profile] phase=asteroids   share=  6.12 total=11.531ms avg=0.010ms max=0.854ms samples=1197
+[sim-profile] phase=cargo       share= 34.97 total=65.848ms avg=0.055ms max=0.092ms samples=1197
+[sim-profile] phase=gravity     share= 29.72 total=55.950ms avg=0.047ms max=0.345ms samples=1197
+[sim-profile] phase=production  share=  5.08 total=9.556ms avg=0.008ms max=0.022ms samples=1197
+[sim-profile] phase=manifest    share=  0.16 total=0.295ms avg=0.000ms max=0.001ms samples=1197
+[sim-profile] phase=objects     share=  3.71 total=6.976ms avg=0.006ms max=0.021ms samples=1197
+[sim-profile] phase=npcs        share= 14.36 total=27.039ms avg=0.023ms max=0.142ms samples=1197
+[sim-profile] phase=players     share=  0.02 total=0.029ms avg=0.000ms max=0.001ms samples=1197
+[sim-profile] phase=collisions  share=  0.42 total=0.799ms avg=0.001ms max=0.002ms samples=1197
+[sim-profile] phase=sync        share=  4.48 total=8.434ms avg=0.007ms max=0.028ms samples=1197
+```
 
-1. **Use hardware `sqrtf`.** IEEE 754 *requires* correctly-rounded square
-   root, so `sqrtf` is bit-exact across x86/ARM/WASM — unlike `sinf`/
-   `cosf`/`atan2f`, which genuinely need the fixp versions. If the
-   native↔WASM replay gates pass with `sqrtf` in `v2_len`, this is a
-   one-line change that deletes the entire cost. (Emscripten compiles
-   `sqrtf` to the `f32.sqrt` WASM instruction, also correctly rounded.)
-   Verify with `make replay-native-wasm` and the long-horizon probes
-   before accepting.
-2. If (1) is rejected for determinism-policy reasons: rewrite
-   `fixp_sqrt_fixp` as a pure integer sqrt over the full 96-bit value
-   (shift-and-subtract, no division), and/or cut Newton iterations — the
-   integer initial guess is already accurate enough that 8 iterations with
-   a 128-bit divide each is heavily overprovisioned.
-3. Independently: the gravity pair loop already has `dist_sq`; hoisting a
-   single `1/dist` and strength-reducing removes redundant work but does
-   not fix the underlying primitive.
+That is **188.3 ms / 1196 ticks = 0.157 ms/tick**, comfortably below the
+0.6 ms/tick target and roughly an 87% reduction from the original
+`sample`-derived 1.2 ms/tick estimate on the same save shape. A second clean
+window in the same run reported 182.9 ms / 1196 ticks = 0.153 ms/tick.
 
-### M2. `chunk_materialized` linear scan — **measured P1**
+Validation gates:
 
-`sim_asteroid.c:990` scans every asteroid slot to answer "is chunk (cx,cy)
-materialized," and `maintain_asteroid_field` asks it for every candidate
-chunk around every viewport — including all ~100 NPC positions. Fix: build
-a small hash set of materialized `(cx,cy)` once per call (one pass over
-asteroids), then O(1) lookups; or maintain a persistent per-chunk count
-updated in `materialize_asteroid`/`clear_asteroid_slot`.
+| Gate | Result |
+|------|--------|
+| `make deterministic-libm` | pass |
+| `make test-fast` | 1137/1137 pass |
+| `make replay-repeatability` | pass, 20 fast scenarios |
+| `make replay-native-wasm` at pre-Slice-4 parent `47dde71` | pass, 20 fast scenarios |
+| `make replay-native-wasm` | pass, 20 fast scenarios |
+| `make replay-native-wasm-long` | pass, 4 long scenarios |
+| `make signal-no-omniscience-soak` | pass, 5 deterministic scenarios |
+| `make build-server` | pass |
+| `make build-web` | pass |
+
+Slice 4 inventory: no baked replay state-hash goldens were found under
+`tests/` or the replay corpus before switching `v2_len` to hardware
+`sqrtf`; current replay gates compare freshly generated native/native or
+native/WASM runs. The deterministic-libm ratchet still bans raw libm calls in
+deterministic code except the single intentional `sqrtf` inside `v2_len`.
+
+The new ranking is also sharper than the old call-stack sample: cargo and
+gravity remain the next real targets, with NPC work now visible at ~14%.
+`maintain_asteroid_field` has dropped into the asteroid phase bucket at ~6%.
+
+### M1. `v2_len` routed through software 128-bit division — **resolved**
+
+Before this pass, `shared/math_util.h:66` defined `v2_len` as
+`fixp_sqrtf(v2_len_sq(...))`. `fixp_sqrtf` (`shared/fixpoint.c:109`)
+converts float → q32.32, takes an integer-sqrt initial guess, then runs
+**up to 8 Newton iterations, each performing a `fixp_div` = 128÷64-bit
+division** (`__udivmodti4` in compiler-rt — software, even on ARM64; far
+worse in WASM where it's emulated i64 math). Every vector length in the
+entire sim paid this. The single hottest leaf in the original profile.
+
+Implemented: `v2_len` now uses hardware `sqrtf` for finite positive squared
+lengths and preserves the old 0.0f result for zero/nonfinite inputs. Native,
+WASM, long-horizon replay, and no-omniscience gates all passed. If a future
+platform ever rejects this assumption, the fallback remains a division-free
+`fixp_sqrt_fixp` rewrite, but the current deterministic evidence supports the
+hardware path.
+
+### M2. `chunk_materialized` linear scan — **resolved**
+
+`maintain_asteroid_field` now builds a small open-addressed set of
+materialized `(cx,cy)` chunks once per call and uses O(1) lookups in the
+materialization loop. The behavior is intentionally equivalent to the old
+"at least one active terrain asteroid exists in the chunk" predicate.
 
 ### M3. Cargo pod stepping — **measured P1**
 
@@ -259,11 +301,11 @@ are what is actually slow today.*
 
 | Step | Change | Effort | Expected effect |
 |------|--------|--------|-----------------|
-| 0a | `sqrtf` in `v2_len` (gated on replay-gate pass), or division-free `fixp_sqrt` | small | Deletes the hottest measured leaf (~15%+ of sim; far more in WASM) |
-| 0b | Hash set / per-chunk count for `chunk_materialized` | small | Removes ~13% of measured sim time |
-| 1 | Compact active-station array, used by asteroid dynamics, vortex, industrial pull, despawn, cargo pod helpers | small | Removes the dominant `asteroids × 128-slot` traffic |
+| done | `sqrtf` in `v2_len` | small | Deleted the hottest measured leaf; replay native/WASM gates passed |
+| done | Hash set for `chunk_materialized` | small | Removed the linear asteroid-slot scan per candidate chunk |
+| done | Compact station arrays for asteroid/vortex/industrial pull scans | small | Removed the dominant `asteroids × 128-slot` traffic in covered paths |
+| done | Broad-phase distance guard before station collision geometry | small | Cuts far-away `station_build_geom` calls with a derived conservative bound |
 | 2 | Off-relay beacon list + early-out in `signal_strength_at` | small | Restores the O(1) promise of the signal cache |
-| 3 | Broad-phase distance guard before every `station_build_geom` in collision paths | small | Cuts geometry builds to near-zero when far from stations |
 | 4 | Rebuild spatial grid per tick; use it for NPC + player asteroid collision | medium | ~25M slot checks/sec → thousands |
 | 5 | Per-tick shared `station_geom_t` cache (heap) | medium | One geom build per station per tick, all consumers |
 | 6 | Manifest count cache or 2 Hz gate on reconciliation | small | Deletes a constant per-tick scan |
@@ -275,11 +317,15 @@ gate (`make test` + no-omniscience replay) before shipping.
 
 ## Measure before/after
 
-There is no per-phase timing in `world_sim_step` today. Before starting,
-add a cheap instrumentation pass — accumulate per-phase `mach_absolute_time`
-/ `clock_gettime` deltas across the ~15 step functions in
-`world_sim_step` (`game_sim.c:11230`) and dump a histogram every N seconds
-under a `SIM_PROFILE` env var or build flag. That turns this report's
-worst-case arithmetic into real numbers, catches regressions, and will
-rank steps 1–5 by actual (not estimated) payoff on the live workload. The
-`perf/` directory is the natural home for captured runs.
+Per-phase timing is now available behind `SIGNAL_SIM_PROFILE` at build time
+and the `SIM_PROFILE` runtime env var. For native tools:
+
+```sh
+SIM_PROFILE=1 make build-server
+SIM_PROFILE=1 SIM_PROFILE_WINDOW_SEC=10 ./build/signal_server
+```
+
+The same flag is wired through replay and WASM builds; prefix the relevant
+make target with `SIM_PROFILE=1`. Keep the default off for normal builds;
+enable it when sampling a save or a replay scenario, then paste the
+10-second phase dump here.
