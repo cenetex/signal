@@ -599,6 +599,92 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
     return out;
 }
 
+static float net_prediction_future_elapsed(float t, float interval,
+                                           float dt, float max_elapsed) {
+    if (!isfinite(interval) || interval <= 0.0f) interval = 0.01f;
+    float elapsed = (isfinite(t) && t > 0.0f) ? t * interval : 0.0f;
+    if (isfinite(dt) && dt > 0.0f) elapsed += dt;
+    return clampf(elapsed, 0.0f, max_elapsed);
+}
+
+static void net_adopt_local_asteroid_prediction(int idx, float elapsed) {
+    if (idx < 0 || idx >= MAX_ASTEROIDS) return;
+    const asteroid_t *predicted = &g.world.asteroids[idx];
+    if (!predicted->active) return;
+
+    asteroid_t backdated = *predicted;
+    backdated.pos = v2_sub(predicted->pos,
+                           v2_scale(predicted->vel, elapsed));
+    backdated.rotation =
+        wrap_angle(predicted->rotation - predicted->spin * elapsed);
+    backdated.age = fmaxf(0.0f, predicted->age - elapsed);
+
+    g.asteroid_interp.prev[idx] = *predicted;
+    g.asteroid_interp.curr[idx] = backdated;
+}
+
+static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
+    if (idx < 0 || idx >= MAX_CARGO_PODS) return;
+    const cargo_pod_t *predicted = &g.world.cargo_pods[idx];
+    if (!predicted->active) return;
+
+    cargo_pod_t backdated = *predicted;
+    backdated.pos = v2_sub(predicted->pos,
+                           v2_scale(predicted->vel, elapsed));
+
+    g.cargo_pod_interp.prev[idx] = *predicted;
+    g.cargo_pod_interp.curr[idx] = backdated;
+}
+
+static void net_adopt_local_scaffold_prediction(int idx, float elapsed) {
+    if (idx < 0 || idx >= MAX_SCAFFOLDS) return;
+    const scaffold_t *predicted = &g.world.scaffolds[idx];
+    if (!predicted->active) return;
+
+    scaffold_t backdated = *predicted;
+    backdated.pos = v2_sub(predicted->pos,
+                           v2_scale(predicted->vel, elapsed));
+
+    g.scaffold_interp.prev[idx] = *predicted;
+    g.scaffold_interp.curr[idx] = backdated;
+}
+
+void net_adopt_local_tow_prediction(float dt) {
+    if (!g.net_authority_enabled || !net_local_prediction_enabled()) return;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+
+    const server_player_t *sp = &g.world.players[g.local_player_slot];
+    if (!sp->connected || sp->docked) return;
+
+    float asteroid_elapsed = net_prediction_future_elapsed(
+        g.asteroid_interp.t, g.asteroid_interp.interval, dt,
+        ASTEROID_RENDER_EXTRAPOLATE_MAX_SEC);
+    int tow_count = sp->ship.towed_count;
+    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                        sizeof(sp->ship.towed_fragments[0]));
+    if (tow_count > tow_cap) tow_count = tow_cap;
+    for (int t = 0; t < tow_count; t++)
+        net_adopt_local_asteroid_prediction(
+            sp->ship.towed_fragments[t], asteroid_elapsed);
+
+    float pod_elapsed = net_prediction_future_elapsed(
+        g.cargo_pod_interp.t, g.cargo_pod_interp.interval, dt,
+        CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+    int pod_count = sp->ship.towed_pod_count;
+    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
+                        sizeof(sp->ship.towed_pods[0]));
+    if (pod_count > pod_cap) pod_count = pod_cap;
+    for (int t = 0; t < pod_count; t++)
+        net_adopt_local_cargo_pod_prediction(
+            sp->ship.towed_pods[t], pod_elapsed);
+
+    float scaffold_elapsed = net_prediction_future_elapsed(
+        g.scaffold_interp.t, g.scaffold_interp.interval, dt,
+        SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
+    net_adopt_local_scaffold_prediction(sp->ship.towed_scaffold,
+                                        scaffold_elapsed);
+}
+
 void net_reset_local_input_stream(void) {
     g.pending_net_action = NET_ACTION_NONE;
     g.pending_net_buy_grade = MINING_GRADE_COUNT;
@@ -728,6 +814,9 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 
     bool received[MAX_ASTEROIDS];
     memset(received, 0, sizeof(received));
+    const NetProtocolInfo *info = net_protocol_info();
+    bool replacement_snapshot = !info ||
+        (info->capabilities & SIGNAL_PROTOCOL_CAP_ASTEROID_REMOVE) == 0;
 
     for (int i = 0; i < count; i++) {
         uint16_t idx = asteroids[i].index;
@@ -774,11 +863,15 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }
 
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!received[i] && g.asteroid_interp.curr[i].active) {
-            /* Not in this delta: continue from the dead-reckoned visual
-             * position instead of freezing until a later packet. */
-            g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
+    if (replacement_snapshot) {
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!received[i] && g.asteroid_interp.curr[i].active) {
+                /* Legacy snapshots are replacement lists, so a missing
+                 * asteroid means inactive. Modern streams use explicit
+                 * WORLD_ASTEROID_REMOVE records; sparse identity upserts must
+                 * not collapse motion targets for unrelated rocks. */
+                g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
+            }
         }
     }
 
@@ -800,13 +893,9 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
                                        packet_interval, 0.3f);
     g.asteroid_interp.t = 0.0f;
 
-    bool received[MAX_ASTEROIDS];
-    memset(received, 0, sizeof(received));
-
     for (int i = 0; i < count; i++) {
         uint16_t idx = asteroids[i].index;
         if (idx >= MAX_ASTEROIDS) continue;
-        received[idx] = true;
 
         asteroid_t* a = &g.asteroid_interp.curr[idx];
         if (!a->active) continue;
@@ -819,11 +908,6 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         a->vel.x = keep_velocity ? carried_vel.x : asteroids[i].vx;
         a->vel.y = keep_velocity ? carried_vel.y : asteroids[i].vy;
         a->age = carried_age;
-    }
-
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!received[i] && g.asteroid_interp.curr[i].active)
-            g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
     }
 }
 

@@ -1336,7 +1336,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  rootBundleSmokeTest('smooths remote towable scaffold and cargo pod snapshots', async ({ page }) => {
+  rootBundleSmokeTest('smooths remote towable scaffold, cargo pod, and fragment snapshots', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });

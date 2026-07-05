@@ -1196,6 +1196,7 @@ void submit_input(const input_intent_t *intent, float dt) {
     if (net_local_prediction_enabled() && !LOCAL_PLAYER.docked) {
         net_replay_record_prediction(intent, dt);
         world_sim_step_player_only(&g.world, g.local_player_slot, dt);
+        net_adopt_local_tow_prediction(dt);
     }
 
     /* Detect one-shot actions for prediction suppression and network send */

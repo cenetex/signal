@@ -50,6 +50,7 @@ void net_observe_transport_latency_sample(float rtt_ms,
                                           float server_turnaround_ms,
                                           uint32_t server_tick,
                                           bool from_input_ack);
+void net_adopt_local_tow_prediction(float dt);
 
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);

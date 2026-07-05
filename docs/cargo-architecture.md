@@ -226,9 +226,13 @@ manifest.** Two plausible future use cases:
    legitimate concern; quantity solves it for the shape of matter
    where it actually applies.
 
-2. **Bulk repair kits / consumables.** A repair kit that's "100 kits
-   from this fab batch" could compress similarly. Anonymous,
-   per-batch identity, quantity > 1.
+2. **Legacy bulk consumables.** The current repair-kit path can use
+   quantity as a compatibility compression hook, but it should not be
+   treated as the final matter model. A "100 kits from this fab batch"
+   object is exactly the kind of hidden multiplier the visible matter
+   algebra should retire. The destination is block-count hull/station
+   repair: damage removes visible blocks, and repair welds frames or
+   blocks back on.
 
 So slice 0's work isn't wasted. It just turns out the field's natural
 use is for compressing *finished* goods of low individual value, not

@@ -296,15 +296,17 @@ The active backlog is ordered by dependency, not by excitement:
 
 1. **#588 determinism acceptance:** full `q32.32` migration or explicit promotion of the strict native↔WASM replay ratchet with broader platform coverage.
 2. **#340 / #339 manifest authority:** make trade, delivery, and production move concrete `cargo_unit_t` rows by default and retire finished-goods float authority.
-3. **Lineage view:** CLI cargo lineage exists; next expose rock -> fragment -> ingot -> frame -> outpost/gate contribution as a first-class UI query over manifests, receipts, and chain logs.
-4. **#587 typed provenance contracts:** contract targets become explicit object/event pubkeys, including fracture/death fulfillment.
-5. **#354 / #355 / #356 settlement bridge:** game-sim validation emits canonical settlement events and signal-channel roots.
-6. **Player-facing legibility:** cargo lineage and station history become first-class UI surfaces.
-7. **Institution tooling:** shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
-8. **#294 unified ship/controller model:** NPC and player cargo semantics converge on the same `ship_t`/`character_t` substrate.
-9. **#590 / #591 / #589 permaweb/P2P:** client Arweave reads, peer anchoring, and WebRTC quorum behavior.
-10. **#496 RATi vessel identity:** RATi-bearing vessels become substrate-born identities after manifest and settlement semantics are canonical.
-11. **#285 streaming entity pool:** cap lifting and `game_sim.c` extraction once economic/provenance invariants are stable.
+3. **Visible matter algebra:** migrate conserved production to the quartering rule: fragment -> 4 ingots, ingot -> 4 frames, ingot+frame -> module, and 4 frames -> station block. Preserve effective rock costs by restating frame costs at 16/20 and ingot costs at 4/10 of their legacy values; route repair work away from the 100-kit path toward block-count hull/station repair.
+4. **Lineage view:** CLI cargo lineage exists; next expose rock -> fragment -> ingot -> frame -> outpost/gate contribution as a first-class UI query over manifests, receipts, and chain logs.
+5. **#587 typed provenance contracts:** contract targets become explicit object/event pubkeys, including fracture/death fulfillment.
+6. **#354 / #355 / #356 settlement bridge:** game-sim validation emits canonical settlement events and signal-channel roots.
+7. **Player-facing legibility:** cargo lineage and station history become first-class UI surfaces.
+8. **Institution tooling:** shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
+9. **#294 unified ship/controller model:** NPC and player cargo semantics converge on the same `ship_t`/`character_t` substrate.
+10. **#590 / #591 / #589 permaweb/P2P:** client Arweave reads, peer anchoring, and WebRTC quorum behavior.
+11. **#496 RATi vessel identity:** RATi-bearing vessels become substrate-born identities after manifest and settlement semantics are canonical.
+12. **#343 / #603 hull/station blocks:** unify hull-as-merkle, sheared blocks, and ship/station repair so damage removes visible blocks and repair welds matter back on; repair kits disappear as a player-facing unit.
+13. **#285 streaming entity pool:** cap lifting and `game_sim.c` extraction once economic/provenance invariants are stable.
 
 ---
 
@@ -351,10 +353,10 @@ The simulation runs at a fixed 120 Hz (`SIM_DT = 1.0 / 120.0`). Every tick:
    └── Fracture-claim window expiration/resolution
 
 6. Production Step
-   ├── Station smelting: fragment→ingot via furnace (REFINERY_BASE_SMELT_RATE=2.0/s)
-   ├── Station fabrication: ingots→frames/lasers/tractors (STATION_PRODUCTION_RATE=1.0/s)
+   ├── Station smelting: fragment→ingot via furnace (legacy 10 ingots; backlog target 4 visible quarters)
+   ├── Station fabrication: ingots→frames/lasers/tractors (legacy frame press ×2; backlog target 1 ingot→4 frames)
    ├── Shipyard scaffold manufacturing: station inventory feeds nascent scaffolds
-   ├── Shipyard repair-kit fab: 1 frame+1 laser+1 tractor → 100 kits / 30 seconds
+   ├── Shipyard repair-kit fab: legacy 1 frame+1 laser+1 tractor → 100 kits / 30 seconds; target block repair removes kits
    └── Module supply delivery: station inventory → awaiting-supply modules
 
 7. AI Step
@@ -957,11 +959,11 @@ Remediation targets: keep native/WASM replay gates on the blocking path, add Lin
 | `SHIP_COLLISION_DAMAGE_SCALE` | 0.12 | Damage per excess impact unit |
 | `REFINERY_BASE_SMELT_RATE` | 2.0 /s | Fragments → ingots |
 | `STATION_PRODUCTION_RATE` | 1.0 /s | Ingots → finished goods |
-| `REFINERY_INGOTS_PER_FRAGMENT` | 10.0 | One fragment yields 10 ingots |
+| `REFINERY_INGOTS_PER_FRAGMENT` | 10.0 legacy; target 4.0 | One fragment should visibly quarter into 4 ingots |
 | `STATION_REPAIR_COST_PER_HULL` | 5.0 cr/HP | Repair pricing |
 | `REPAIR_KIT_FAB_PERIOD` | 30 s | Shipyard kit batch time |
-| `REPAIR_KIT_PER_BATCH` | 100 kits | Kits per batch |
-| `SCAFFOLD_MATERIAL_NEEDED` | 60.0 frames | Outpost construction |
+| `REPAIR_KIT_PER_BATCH` | 100 kits legacy | Target removes kit math in favor of block-count repair |
+| `SCAFFOLD_MATERIAL_NEEDED` | 60.0 frames legacy; target 48.0 | Outpost construction should remain 3 rocks under quarter algebra |
 | `OUTPOST_MIN_DISTANCE` | 1500 u | Inter-station spacing |
 | `OUTPOST_SIGNAL_RANGE` | 6000 u | Outpost coverage |
 | `OUTPOST_MAX_SIGNAL` | 0.80 | Can't place in core coverage |

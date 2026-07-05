@@ -222,6 +222,36 @@ TEST(test_registry_same_token_takeover_moves_live_ship) {
     ASSERT_EQ_FLOAT(new_slot->ship.stat_credits_earned, 91.0f, 0.001f);
 }
 
+TEST(test_registry_same_token_reattach_finds_active_duplicate) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t tok[8]; fill_token(tok, 57);
+    uint8_t other_tok[8]; fill_token(other_tok, 58);
+
+    server_player_t *old = &w->players[0];
+    old->connected = true;
+    old->id = 0;
+    memcpy(old->session_token, tok, 8);
+    old->session_ready = true;
+    old->grace_period = false;
+
+    server_player_t *fresh = &w->players[5];
+    fresh->connected = true;
+    fresh->id = 5;
+    fresh->session_ready = false;
+
+    ASSERT_EQ_INT(server_find_session_reattach_slot(w, 5, tok), 0);
+    ASSERT_EQ_INT(server_find_session_reattach_slot(w, 5, other_tok), -1);
+
+    old->grace_period = true;
+    ASSERT_EQ_INT(server_find_session_reattach_slot(w, 5, tok), 0);
+
+    old->connected = false;
+    ASSERT_EQ_INT(server_find_session_reattach_slot(w, 5, tok), -1);
+}
+
 TEST(test_player_clear_live_session_identity) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
@@ -428,6 +458,7 @@ void register_registry_tests(void) {
     RUN(test_registry_reconnect_with_new_token);
     RUN(test_registry_lookup_skips_disconnected_stale_session);
     RUN(test_registry_same_token_takeover_moves_live_ship);
+    RUN(test_registry_same_token_reattach_finds_active_duplicate);
     RUN(test_player_clear_live_session_identity);
     RUN(test_registry_two_pubkeys_one_machine);
     RUN(test_registry_save_load_roundtrip);

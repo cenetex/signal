@@ -1644,6 +1644,38 @@ TEST(test_player_only_predicts_tow_band_reaction) {
     ASSERT_EQ_INT(w.players[0].ship.towed_count, 1);
 }
 
+TEST(test_player_only_predicts_towed_scaffold_motion) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.scaffolds, 0, sizeof(w.scaffolds));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship.pos = v2(5000.0f, 0.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.towed_scaffold = 0;
+
+    scaffold_t *sc = &w.scaffolds[0];
+    sc->active = true;
+    sc->state = SCAFFOLD_TOWING;
+    sc->module_type = MODULE_DOCK;
+    sc->owner = 0;
+    sc->pos = v2(5180.0f, 0.0f);
+    sc->vel = v2(0.0f, 0.0f);
+    sc->radius = 30.0f;
+    sc->towed_by = 0;
+
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    ASSERT(sp->ship.towed_scaffold == 0);
+    ASSERT(sc->state == SCAFFOLD_TOWING);
+    ASSERT(sc->vel.x < 0.0f);
+    ASSERT(sc->pos.x < 5180.0f);
+}
+
 TEST(test_player_only_does_not_sync_ship_asset_registry) {
     WORLD_DECL;
     world_reset(&w);
@@ -2353,6 +2385,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_asteroid_collision_geometry);
     RUN(test_player_only_predicts_station_collision_geometry);
     RUN(test_player_only_predicts_tow_band_reaction);
+    RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_does_not_sync_ship_asset_registry);
     RUN(test_player_only_ignores_authoritative_one_shots);
     RUN(test_bug48_titan_fracture_overflow);

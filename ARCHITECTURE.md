@@ -88,6 +88,12 @@ tractor modules use cuprite ingots plus frames. Shipyards consume those
 finished parts for hull commissions, station-module scaffolds, and the repair
 kit sink.
 
+The groomed backlog moves conserved matter to a visible quartering algebra:
+fragments smelt into four ingots, ingots press into four frames, modules show
+their ingot+frame recipe, and four frames weld into one station/hull block.
+Repair kits are a legacy sink on that path; the target repair model is
+block-count damage and frame/block welding.
+
 Mining progression has both size and material gates. The starter L1 laser can
 fracture M rocks. Each laser upgrade raises the largest fracture size one
 step; cuprite requires L2, and crystal requires L3.

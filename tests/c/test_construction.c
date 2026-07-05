@@ -20,6 +20,37 @@ static int construction_count_active_ship_assets(const world_t *w) {
     return count;
 }
 
+static bool construction_bytes_any(const uint8_t bytes[32]) {
+    for (int i = 0; i < 32; i++)
+        if (bytes[i] != 0) return true;
+    return false;
+}
+
+static void construction_seed_birth_fragment(world_t *w, int idx,
+                                             commodity_t commodity,
+                                             vec2 pos, uint8_t tag) {
+    asteroid_t *a = &w->asteroids[idx];
+    memset(a, 0, sizeof(*a));
+    memset(&w->fracture_claims[idx], 0, sizeof(w->fracture_claims[idx]));
+    a->active = true;
+    a->fracture_child = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = commodity;
+    a->pos = pos;
+    a->vel = v2(0.0f, 0.0f);
+    a->radius = 10.0f;
+    a->hp = 1.0f;
+    a->max_hp = 1.0f;
+    a->ore = 4.0f;
+    a->max_ore = 4.0f;
+    a->last_towed_by = -1;
+    a->last_fractured_by = -1;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int i = 0; i < 32; i++)
+        a->fragment_pub[i] = (uint8_t)(tag + i + 1);
+    a->net_dirty = true;
+}
+
 static bool construction_spawn_towed_material_pod(world_t *w,
                                                   server_player_t *sp,
                                                   commodity_t c,
@@ -747,6 +778,69 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT(world_station_stored_hull_count(&w, 1, HULL_CLASS_MINER) >= 1);
+}
+
+TEST(test_shipyard_birth_assembly_consumes_three_fragments) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.fracture_claims, 0, sizeof(w.fracture_claims));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[1];
+    ASSERT(station_has_module(st, MODULE_SHIPYARD));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+
+    construction_seed_birth_fragment(&w, 0, COMMODITY_FERRITE_ORE,
+                                     v2(st->pos.x - 640.0f, st->pos.y - 180.0f),
+                                     0x10);
+    construction_seed_birth_fragment(&w, 1, COMMODITY_CUPRITE_ORE,
+                                     v2(st->pos.x + 620.0f, st->pos.y - 160.0f),
+                                     0x40);
+    construction_seed_birth_fragment(&w, 2, COMMODITY_CRYSTAL_ORE,
+                                     v2(st->pos.x + 20.0f, st->pos.y + 720.0f),
+                                     0x70);
+    uint8_t expected_pubs[3][32];
+    memcpy(expected_pubs[0], w.asteroids[0].fragment_pub, 32);
+    memcpy(expected_pubs[1], w.asteroids[1].fragment_pub, 32);
+    memcpy(expected_pubs[2], w.asteroids[2].fragment_pub, 32);
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xB1, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+
+    ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT(w.ship_birth_assemblies[1][0].active);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
+
+    for (int i = 0; i < 4000 && st->pending_ship_build_count > 0; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+
+    ASSERT_EQ_INT(st->pending_ship_build_count, 0);
+    ASSERT(!w.asteroids[0].active);
+    ASSERT(!w.asteroids[1].active);
+    ASSERT(!w.asteroids[2].active);
+    ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
+    const ship_asset_t *asset = world_ship_asset_by_id_const(&w, sp->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY);
+    ASSERT(construction_bytes_any(asset->birth_soul_pub));
+    ASSERT(construction_bytes_any(asset->birth_material_root));
+    ASSERT(memcmp(asset->birth_fragment_pubs[0], expected_pubs[0], 32) == 0);
+    ASSERT(memcmp(asset->birth_fragment_pubs[1], expected_pubs[1], 32) == 0);
+    ASSERT(memcmp(asset->birth_fragment_pubs[2], expected_pubs[2], 32) == 0);
 }
 
 TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
@@ -3818,6 +3912,7 @@ void register_construction_modules_tests(void) {
     RUN(test_docked_buy_one_unit_per_intent);
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
     RUN(test_shipyard_commission_completes_onto_docked_player);
+    RUN(test_shipyard_birth_assembly_consumes_three_fragments);
     RUN(test_shipyard_commission_owner_survives_player_slot_reuse);
     RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_shipyard_commission_consumes_towed_material_pods);

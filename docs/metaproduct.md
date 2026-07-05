@@ -164,6 +164,47 @@ Gate Alpha, Segment 3
 
 That artifact is the whole product in miniature.
 
+## Visible Matter Algebra
+
+Matter should obey one visible operation wherever it crosses a manufactured
+boundary: a 2x2 quartering.
+
+```text
+1 rock fragment -> smelt -> 4 ingots
+1 ingot         -> press -> 4 frames
+1 ingot+frame   -> fab   -> 1 module
+4 frames        -> weld  -> 1 block
+```
+
+The balance target is not "make every number smaller." It is: keep current
+effective rock costs while replacing hidden decimal-ish ratios with visible
+powers of four. A dock that currently costs 20 frames is one old rock because
+one rock produces 20 frames; in the target algebra it costs 16 frames because
+one rock produces 16 frames. A furnace that currently costs 60 frames remains
+three rocks by becoming 48 frames. The rest of the cost table should be
+restated the same way: frame costs scale by 16/20, ingot costs scale by 4/10,
+and prices are tuned separately because price is information, not matter.
+
+The visual rule is the product rule. Fracture remains irregular: a rock breaks
+into two to four messy fragments because nature is uncounted. The furnace is
+where nature becomes geometry. Smelt should visibly cut a fragment into four
+exact squares, and each ingot should be a named crate-form object. The frame
+press repeats the same gesture: one solid square is drawn into four hollow
+frames. Modules should show their recipe directly: a gunmetal frame outline
+holding a crystal-violet or cuprite-green core. Nothing in the matter ladder
+should require the player to memorize a hidden multiplier.
+
+This is also the line between analog flow and conserved matter. Smelt rates,
+craft duration, demand pressure, and prices may remain continuous because they
+are time or information. Conserved matter should be countable on screen.
+
+Repair kits are the known violation. A recipe that turns one fabrication set
+into 100 kits creates a thing no sprite can honestly explain. The destination
+is hull and stations as blocks: damage knocks blocks off, repair welds frames
+or blocks back on, and hull is a block count rather than an HP bar plus kit
+stack. That convergence belongs in a gated epic, but every interim repair slice
+should point toward it rather than further entrenching kits.
+
 ## Grand Arc
 
 ### Act I: Sector One — Learn Civilization
@@ -276,12 +317,19 @@ native station history rather than define it.
 2. **#340 / #339 manifest-backed transfers:** buy, sell, deliver, and production
    should move concrete `cargo_unit_t` rows; retire finished-goods float
    authority once compatibility is no longer needed.
-3. **Lineage view:** the CLI can print cargo lineage from chain logs; next make
+3. **Visible matter algebra migration:** restate conserved production around
+   the quartering rule: `REFINERY_INGOTS_PER_FRAGMENT = 4`, frame press
+   `1 ingot -> 4 frames`, module fab `1 ingot + 1 frame -> 1 module`,
+   station blocks `4 frames -> 1 block`, and build costs restated to preserve
+   effective rock costs (`dock 16 frames = 1 rock`, `furnace 48 frames = 3
+   rocks`). Do not treat the repair-kit x100 path as a permanent system; route
+   repair work toward block-count hull/station repair.
+4. **Lineage view:** the CLI can print cargo lineage from chain logs; next make
    rock -> fragment -> ingot -> frame -> outpost/gate contribution inspectable
    in the player-facing UI.
-4. **#587 typed provenance contracts:** support explicit target pubkeys and
+5. **#587 typed provenance contracts:** support explicit target pubkeys and
    fracture/death fulfillment so contracts can price witnessed events.
-5. **Player-facing lineage:** expose cargo history, local station ledger facts,
+6. **Player-facing lineage:** expose cargo history, local station ledger facts,
    and provenance requirements in the docked UI.
 
 ### Next
@@ -302,9 +350,13 @@ native station history rather than define it.
 1. **#590 / #591 / #589 permaweb and P2P:** Arweave reads, peer anchoring, and
    WebRTC quorum behavior.
 2. **#496 RATi vessel identity:** substrate-born cross-world identity.
-3. **#285 streaming entity pool:** cap lifting and broader `game_sim.c`
+3. **Hull/station block convergence:** converge #343 hull-as-merkle, #603
+   sheared blocks, and ship/station repair into one visible block grammar:
+   damage removes blocks, repair welds frames/blocks back, and repair kits
+   disappear as a player-facing matter type.
+4. **#285 streaming entity pool:** cap lifting and broader `game_sim.c`
    decomposition.
-4. **External-chain adapters:** Solana bridge, burn-to-mint, and bounty payout
+5. **External-chain adapters:** Solana bridge, burn-to-mint, and bounty payout
    flows over native Signal settlement history.
 
 ## Positioning Sentence

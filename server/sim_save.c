@@ -1375,6 +1375,8 @@ static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
         asset->status = asset->destroyed
             ? SHIP_ASSET_STATUS_DESTROYED
             : SHIP_ASSET_STATUS_STORED;
+    if (asset->provenance > SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY)
+        asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
     if (asset->destroyed)
         asset->status = SHIP_ASSET_STATUS_DESTROYED;
     return true;

@@ -77,17 +77,23 @@ This is the key alignment. Signal's smelt boundary — where `cargo_unit.pub` is
 
 ## Composition: from ingots to frames to modules
 
-Signal's cargo architecture already defines composition:
+Signal's target matter algebra defines composition as visible quartering,
+not consolidation:
 
 ```
-cargo_unit (ingot) → hash_product(recipe_id, sorted_input_pubs, idx) → cargo_unit (frame)
-cargo_unit (frame) → hash_product(recipe_id, sorted_input_pubs, idx) → cargo_unit (module)
+cargo_unit (fragment) -> smelt -> 4 cargo_unit (ingot)
+cargo_unit (ingot)   -> press -> 4 cargo_unit (frame)
+ingot + frame        -> fab   -> 1 cargo_unit (module)
+4 frames             -> weld  -> 1 cargo_unit (block)
 ```
 
 For yield-split, composition works the same way:
-- Burn N ingot NFTs → mint 1 frame NFT
-- The frame's `parent_merkle = merkle_root(sorted_ingot_pubs)`
-- The frame NFT has a higher yield multiplier (it represents N ingots worth of yield)
+- Burn 1 ingot NFT -> mint 4 frame NFTs
+- Each frame's `parent_merkle` points at the source ingot; the output index
+  identifies which quarter-frame it is
+- Burn 1 ingot NFT + 1 frame NFT -> mint 1 module NFT
+- Burn 4 frame NFTs -> mint 1 block NFT
+- Yield weight follows matter weight; it is not a composition bonus
 - The provenance DAG is intact: walk from frame → each ingot → each fragment → each asteroid
 
 ### Yield multiplier and composition bonus
@@ -96,10 +102,16 @@ For yield-split, composition works the same way:
 |------|-------------|----------------|-------------------|-----------------|
 | Fragment | raw fragment | Not an NFT yet | — | Matter before smelt boundary |
 | Ingot | smelted ingot | 1× (baseline) | — | First crate identity |
-| Frame | fabricated frame | 10× (from 10 ingots) | None (exact sum) | Hash of input ingots |
-| Module | assembled module | 50× (from 5 frames) | None (exact sum) | Hash of input frames |
+| Frame | pressed frame | 0.25× (one quarter of an ingot) | None (exact matter) | Hash of source ingot + output index |
+| Module | assembled module | 1.25× (1 ingot + 1 frame) | None (exact matter) | Hash of ingot + frame |
+| Block | welded block | 1× (4 frames) | None (exact matter) | Hash of four frame inputs |
 
-The yield multiplier is simply the number of base ingots the composed unit represents. A frame made from 10 ingots earns 10× the yield of one ingot — no bonus needed, because it IS 10 ingots, just consolidated into one NFT. The value proposition of composition is consolidation and higher-tier utility, not yield multiplication.
+The yield multiplier is simply the number of base-ingot equivalents the unit
+represents. A frame earns one quarter of an ingot because it is visibly the
+edge-material of one quartered ingot. A module earns one-and-a-quarter ingots
+because its sprite and recipe both say "ingot core mounted in frame." The
+value proposition of composition is utility and provenance, not hidden yield
+multiplication.
 
 Alternatively, a composition bonus could be funded by the token-burn side of harvests: if the protocol burns 100 units of token-side fees this harvest cycle, it could allocate an extra 20 units worth of quote-token yield to composed holders. The bonus rewards consolidation without diluting fragment-level holders.
 

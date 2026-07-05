@@ -2956,21 +2956,17 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (session.has_callsign) {
                 printf("[server] player %d callsign: %s\n", pid, session.callsign);
             }
-            /* Check for existing grace-period player with same token */
-            int reattach = -1;
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (i == pid) continue;
-                if (world.players[i].connected && world.players[i].grace_period &&
-                    world.players[i].session_ready &&
-                    memcmp(world.players[i].session_token, token, 8) == 0) {
-                    reattach = i;
-                    break;
-                }
-            }
+            /* Reattach a previous slot with the same browser token. Most
+             * reconnects arrive after the old slot entered grace, but a page
+             * reload can send SESSION before WebRTC/WebSocket close reaches
+             * the server. Treat that active duplicate as a handoff too. */
+            int reattach = server_find_session_reattach_slot(&world, pid, token);
             bool reattached_live_state = false;
             if (reattach >= 0) {
                 /* Reattach: copy state from grace slot to new slot */
                 server_player_t *old = &world.players[reattach];
+                struct mg_connection *old_conn =
+                    (struct mg_connection *)old->conn;
                 if (!world_player_transfer_ship_state(&world, pid, reattach))
                     break;
                 if (!server_apply_session_message(&world, pid, &session))
@@ -2981,6 +2977,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 old->conn = NULL;
                 server_player_clear_live_session_identity(old);
                 server_player_clear_transient_input(old);
+                if (old_conn && old_conn != c) {
+                    mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                    old_conn->is_closing = 1;
+                }
                 uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
                 broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);

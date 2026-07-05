@@ -83,6 +83,12 @@ Station production currently flows through the physical fragment economy:
 6. Shipyards consume frames, laser modules, and tractor modules to commission
    ships, print scaffolds, and fabricate repair kits.
 
+Backlog target: conserved matter should use the visible quartering algebra
+(`1 fragment -> 4 ingots`, `1 ingot -> 4 frames`, `4 frames -> 1 block`) while
+prices and production time remain analog. Repair kits are legacy matter math;
+the target repair model is block-count hull/station damage and frame/block
+welding.
+
 ## Current Station Ops
 
 Press `H` to send a hail/scan ping. If you are docked, the docked station

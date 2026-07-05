@@ -3143,6 +3143,34 @@ int signal_smoke_remote_towable_interp_check(void) {
     interpolate_world_for_render();
     float pod_blended_x = g.world.cargo_pods[5].pos.x;
 
+    NetAsteroidState asteroid = {
+        .index = 7,
+        .flags = (uint8_t)(1u | (1u << 1) |
+                 (((uint8_t)ASTEROID_TIER_S & 0x7u) << 2) |
+                 (((uint8_t)COMMODITY_FERRITE_ORE & 0x7u) << 5)),
+        .x = 0.0f,
+        .y = 0.0f,
+        .vx = 100.0f,
+        .vy = 0.0f,
+        .hp = 10.0f,
+        .ore = 4.0f,
+        .radius = 18.0f,
+        .smelt_progress = 0.0f,
+        .grade = MINING_GRADE_COMMON,
+        .crystal_stage = 0,
+        .phase = 0,
+    };
+    apply_remote_asteroids(&asteroid, 1);
+    g.asteroid_interp.t = 0.1f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float asteroid_first_x = g.world.asteroids[7].pos.x;
+    asteroid.x = 100.0f;
+    asteroid.vx = 0.0f;
+    apply_remote_asteroids(&asteroid, 1);
+    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float asteroid_blended_x = g.world.asteroids[7].pos.x;
+
     bool loopback_packet_path_ok = true;
     if (net_is_loopback()) {
         g.local_server.active = true;
@@ -3187,6 +3215,9 @@ int signal_smoke_remote_towable_interp_check(void) {
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
              pod_blended_x > pod_first_x &&
              pod_blended_x < 95.0f &&
+             asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
+             asteroid_blended_x > asteroid_first_x &&
+             asteroid_blended_x < 95.0f &&
              loopback_packet_path_ok &&
              loopback_prediction_ok;
 

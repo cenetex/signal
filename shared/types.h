@@ -458,6 +458,7 @@ typedef enum {
     SHIP_ASSET_PROVENANCE_GENESIS = 0,
     SHIP_ASSET_PROVENANCE_SHIPYARD,
     SHIP_ASSET_PROVENANCE_LEGACY,
+    SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY,
 } ship_asset_provenance_t;
 
 typedef struct {
@@ -478,6 +479,9 @@ typedef struct {
     uint8_t _pad[2];
     uint8_t owner_pubkey[32];
     uint8_t owner_session[8];
+    uint8_t birth_soul_pub[32];
+    uint8_t birth_material_root[32];
+    uint8_t birth_fragment_pubs[3][32];
 } ship_asset_t;
 
 typedef struct {

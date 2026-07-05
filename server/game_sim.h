@@ -200,6 +200,16 @@ typedef struct {
     uint8_t  winner_pub[32];
 } pending_resolve_t;
 
+typedef struct {
+    bool active;
+    uint8_t _pad0[3];
+    int16_t fragment_slots[3];
+    float age;
+    float start_dist[3];
+    vec2 target;
+    uint8_t fragment_pubs[3][32];
+} ship_birth_assembly_t;
+
 /* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
@@ -630,6 +640,10 @@ typedef struct {
      * mirror the assigned asset for protocol compatibility in v1. */
     ship_asset_t ship_assets[MAX_SHIP_ASSETS];
     uint32_t next_ship_asset_id;
+    /* Runtime-only ship birth choreography. Pending ship builds stay
+     * save-stable; this sidecar reclaims three live ore fragments when
+     * one is available and drives them to their centroid before mint. */
+    ship_birth_assembly_t ship_birth_assemblies[MAX_STATIONS][4];
     /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
      * here; the paired character_t.ship_idx points to it. Players still
      * carry an inline ship_t in server_player_t — converging is a later
@@ -919,6 +933,8 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
  * server_player_t side. */
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
+int server_find_session_reattach_slot(const world_t *w, int player_idx,
+                                      const uint8_t session_token[8]);
 bool server_player_can_use_pubkey_persistence(const server_player_t *sp);
 bool server_finalize_pubkey_identity(world_t *w, int player_idx);
 
