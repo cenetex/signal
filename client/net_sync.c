@@ -159,9 +159,9 @@ static void net_record_prediction_tick_skew(uint32_t server_tick) {
 void net_anchor_prediction_tick(uint32_t server_tick, bool clear_replay) {
     if (server_tick == 0) return;
     net_observe_server_tick(server_tick);
-    uint32_t anchor_tick = net_estimated_server_tick_now(server_tick);
-    if (anchor_tick == 0) anchor_tick = server_tick;
-    g.net_prediction_tick = anchor_tick;
+    /* Replay frames must be contiguous from the authoritative snapshot tick.
+     * Input scheduling uses net_estimated_server_tick_now() separately. */
+    g.net_prediction_tick = server_tick;
     g.net_prediction_tick_valid = true;
     if (clear_replay) net_replay_clear_frames();
 }
