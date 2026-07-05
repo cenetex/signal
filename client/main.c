@@ -2201,6 +2201,18 @@ static void step_local_player_render_offset(float dt) {
         v2_scale(g.local_player_render_offset, keep);
 }
 
+static float local_player_render_extrapolation_dt(void) {
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return 0.0f;
+    if (g.death_cinematic.active || LOCAL_PLAYER.docked)
+        return 0.0f;
+
+    float t = g.runtime.accumulator;
+    if (!isfinite(t) || t <= 0.0f) return 0.0f;
+    if (t > SIM_DT) t = SIM_DT;
+    return t;
+}
+
 static void render_frame(void) {
     interpolate_world_for_render();
     float frame_dt = (float)sapp_frame_duration();
@@ -2220,13 +2232,27 @@ static void render_frame(void) {
     }
 
     vec2 saved_ship_pos = LOCAL_PLAYER.ship.pos;
-    bool apply_visual_offset = v2_len_sq(g.local_player_render_offset) > 0.01f;
-    if (apply_visual_offset)
-        LOCAL_PLAYER.ship.pos = v2_add(LOCAL_PLAYER.ship.pos,
-                                       g.local_player_render_offset);
+    float saved_ship_angle = LOCAL_PLAYER.ship.angle;
+    float render_ahead = local_player_render_extrapolation_dt();
+    bool apply_visual_pose =
+        render_ahead > 0.0f || v2_len_sq(g.local_player_render_offset) > 0.01f;
+    if (apply_visual_pose) {
+        vec2 render_pos = v2_add(saved_ship_pos, g.local_player_render_offset);
+        render_pos = v2_add(render_pos,
+                            v2_scale(LOCAL_PLAYER.ship.vel, render_ahead));
+        LOCAL_PLAYER.ship.pos = render_pos;
+        if (fabsf(LOCAL_PLAYER.input.turn) > 0.0001f) {
+            const hull_def_t *hull = ship_hull_def(&LOCAL_PLAYER.ship);
+            LOCAL_PLAYER.ship.angle = wrap_angle(
+                saved_ship_angle +
+                LOCAL_PLAYER.input.turn * hull->turn_speed * render_ahead);
+        }
+    }
     render_world();
-    if (apply_visual_offset)
+    if (apply_visual_pose) {
         LOCAL_PLAYER.ship.pos = saved_ship_pos;
+        LOCAL_PLAYER.ship.angle = saved_ship_angle;
+    }
     render_ui();
 
     sg_begin_pass(&(sg_pass){
