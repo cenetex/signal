@@ -1613,6 +1613,7 @@ static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
 #define ASTEROID_NET_CRAWL_SPEED_SQ (1.0f * 1.0f)
 #define ASTEROID_NET_SLOW_SPEED_SQ (10.0f * 10.0f)
 #define ASTEROID_NET_MOVING_REPEAT_TICKS 36u /* ~3.3 Hz at the 120 Hz sim tick */
+#define ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS 12u /* 10 Hz for tow-chain rocks */
 #define ASTEROID_NET_CRAWL_MOVING_REPEAT_TICKS 240u /* 0.5 Hz for sub-pixel drift */
 #define ASTEROID_NET_FAR_MOVING_REPEAT_TICKS 120u /* 1 Hz for far-field drift */
 #define ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS 240u /* 0.5 Hz ordinary far-field drift */
@@ -1632,6 +1633,7 @@ static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
 #define ASTEROID_NET_BACKGROUND_IDENTITY_BURST_TICKS 4u
 #define ASTEROID_NET_FAST_SPEED_SQ (30.0f * 30.0f)
 #define ASTEROID_NET_NEAR_PREDICT_ERROR_SQ (16.0f * 16.0f)
+#define ASTEROID_NET_TOWED_PREDICT_ERROR_SQ (5.0f * 5.0f)
 #define ASTEROID_NET_NEAR_SLOW_PREDICT_ERROR_SQ (32.0f * 32.0f)
 #define ASTEROID_NET_CRAWL_PREDICT_ERROR_SQ (64.0f * 64.0f)
 #define ASTEROID_NET_FAR_PREDICT_ERROR_SQ (48.0f * 48.0f)
@@ -1648,6 +1650,14 @@ static inline bool asteroid_net_high_detail(float dist_sq, float speed_sq) {
     return dist_sq <= ASTEROID_NET_INTERACTION_RADIUS_SQ ||
         (speed_sq >= ASTEROID_NET_FAST_SPEED_SQ &&
          dist_sq <= ASTEROID_NET_FAST_RADIUS_SQ);
+}
+
+static inline bool asteroid_net_tow_lifecycle_high_detail(
+    const asteroid_t *a,
+    float dist_sq) {
+    return a && a->active && a->tier == ASTEROID_TIER_S &&
+        a->fracture_child && a->last_towed_by >= 0 &&
+        dist_sq <= ASTEROID_NET_NEAR_RADIUS_SQ;
 }
 
 static inline uint32_t asteroid_net_moving_repeat_ticks(float dist_sq,
@@ -1992,15 +2002,25 @@ static inline bool asteroid_net_motion_should_send(
     uint32_t server_tick) {
     if (!a || last_tick == 0u) return true;
     uint32_t age_ticks = server_tick - last_tick;
-    if (age_ticks < asteroid_net_moving_repeat_ticks(dist_sq, speed_sq))
+    uint32_t repeat_ticks =
+        asteroid_net_moving_repeat_ticks(dist_sq, speed_sq);
+    if (asteroid_net_tow_lifecycle_high_detail(a, dist_sq) &&
+        repeat_ticks > ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS) {
+        repeat_ticks = ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS;
+    }
+    if (age_ticks < repeat_ticks)
         return false;
     if (age_ticks >= asteroid_net_motion_heartbeat_ticks(dist_sq, speed_sq))
         return true;
 
     float dt = (float)age_ticks * SIM_DT;
     vec2 predicted_pos = v2_add(last_pos, v2_scale(last_vel, dt));
-    return v2_dist_sq(predicted_pos, a->pos) >=
-        asteroid_net_predict_error_sq(dist_sq, speed_sq);
+    float error_sq = asteroid_net_predict_error_sq(dist_sq, speed_sq);
+    if (asteroid_net_tow_lifecycle_high_detail(a, dist_sq) &&
+        error_sq > ASTEROID_NET_TOWED_PREDICT_ERROR_SQ) {
+        error_sq = ASTEROID_NET_TOWED_PREDICT_ERROR_SQ;
+    }
+    return v2_dist_sq(predicted_pos, a->pos) >= error_sq;
 }
 
 static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(

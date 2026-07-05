@@ -4808,6 +4808,42 @@ static void emit_fragment_release_event(world_t *w, const asteroid_t *a,
                          &payload, (uint16_t)sizeof(payload));
 }
 
+static void resolve_towed_fragment_neighbors(world_t *w,
+                                             const ship_t *ship,
+                                             int tow_slot,
+                                             asteroid_t *a) {
+    if (!w || !ship || !a) return;
+
+    /* Fragment-fragment separation: towed rocks push apart so they
+     * settle into a constellation around the ship instead of stacking.
+     * Keep this shared between server authority and client prediction so
+     * rock clusters do not need correction packets to unwind overlaps. */
+    for (int u = tow_slot + 1; u < ship->towed_count; u++) {
+        int uidx = ship->towed_fragments[u];
+        if (uidx < 0 || uidx >= MAX_ASTEROIDS ||
+            !w->asteroids[uidx].active) {
+            continue;
+        }
+        asteroid_t *b = &w->asteroids[uidx];
+        float sep = a->radius + b->radius + 2.0f;
+        vec2 ab = v2_sub(b->pos, a->pos);
+        float ab_sq = v2_len_sq(ab);
+        if (ab_sq < sep * sep && ab_sq > 0.1f) {
+            float abd = fixp_sqrtf(ab_sq);
+            float overlap = (sep - abd) * 0.5f;
+            vec2 n = v2_scale(ab, overlap / abd);
+            a->pos = v2_sub(a->pos, n);
+            b->pos = v2_add(b->pos, n);
+            float closing = v2_dot(v2_sub(b->vel, a->vel), n);
+            if (closing < 0.0f) {
+                vec2 impulse = v2_scale(n, -closing * 0.5f);
+                a->vel = v2_sub(a->vel, impulse);
+                b->vel = v2_add(b->vel, impulse);
+            }
+        }
+    }
+}
+
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
     float nearby_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
     float tr = ship_tractor_range(&sp->ship);
@@ -4834,30 +4870,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
                                         a->radius, 4.0f);
 
-        /* Fragment-fragment separation: towed rocks push apart so they
-         * settle into a constellation around the ship instead of
-         * stacking. */
-        for (int u = t + 1; u < sp->ship.towed_count; u++) {
-            int uidx = sp->ship.towed_fragments[u];
-            if (uidx < 0 || uidx >= MAX_ASTEROIDS || !w->asteroids[uidx].active) continue;
-            asteroid_t *b = &w->asteroids[uidx];
-            float sep = a->radius + b->radius + 2.0f;
-            vec2 ab = v2_sub(b->pos, a->pos);
-            float ab_sq = v2_len_sq(ab);
-            if (ab_sq < sep * sep && ab_sq > 0.1f) {
-                float abd = fixp_sqrtf(ab_sq);
-                float overlap = (sep - abd) * 0.5f;
-                vec2 n = v2_scale(ab, overlap / abd);
-                a->pos = v2_sub(a->pos, n);
-                b->pos = v2_add(b->pos, n);
-                float closing = v2_dot(v2_sub(b->vel, a->vel), n);
-                if (closing < 0.0f) {
-                    vec2 impulse = v2_scale(n, -closing * 0.5f);
-                    a->vel = v2_sub(a->vel, impulse);
-                    b->vel = v2_add(b->vel, impulse);
-                }
-            }
-        }
+        resolve_towed_fragment_neighbors(w, &sp->ship, t, a);
     }
 
     int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
@@ -5120,6 +5133,7 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
                                              float dt) {
     if (!w || !sp) return;
 
+    bool separate_fragments = sp->input.tractor_hold;
     for (int t = 0; t < sp->ship.towed_count; t++) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
@@ -5128,6 +5142,8 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
         apply_band_force(sp, a, dt);
         resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
                                         a->radius, 4.0f);
+        if (separate_fragments)
+            resolve_towed_fragment_neighbors(w, &sp->ship, t, a);
     }
 
     for (int t = 0; t < sp->ship.towed_pod_count; t++) {

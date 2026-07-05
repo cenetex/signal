@@ -348,6 +348,23 @@ static void apply_authoritative_local_motion(const NetPlayerState *state,
         sp->docked = false;
 }
 
+static void sync_local_tow_state_from_authority(const NetPlayerState *state,
+                                                server_player_t *sp) {
+    if (!state || !sp) return;
+    sp->ship.tractor_level = (int)state->tractor_level;
+
+    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                        sizeof(sp->ship.towed_fragments[0]));
+    int tow_count = state->towed_count;
+    if (tow_count > tow_cap) tow_count = tow_cap;
+    sp->ship.towed_count = (uint8_t)tow_count;
+    for (int t = 0; t < tow_cap; t++) {
+        uint16_t wire = (t < tow_count) ? state->towed_fragments[t] : 0xFFFFu;
+        sp->ship.towed_fragments[t] =
+            (wire != 0xFFFFu && wire < MAX_ASTEROIDS) ? (int16_t)wire : -1;
+    }
+}
+
 static void apply_local_player_remote_flags(const NetPlayerState *state,
                                             server_player_t *sp) {
     sp->beam_active      = (state->flags & 2) != 0;
@@ -2270,6 +2287,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
                                  state->input_tick_ack);
         }
         net_observe_server_tick(state->server_tick);
+        sync_local_tow_state_from_authority(state, sp);
 
         if (!g.net_local_state_ready) {
             accept_initial_local_player_state(state, sp);

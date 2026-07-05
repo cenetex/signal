@@ -990,6 +990,52 @@ TEST(test_asteroid_delta_throttles_clean_moving_repeat_by_tick) {
                   (buf[ASTEROID_MSG_HEADER + 1] << 8), 6);
 }
 
+TEST(test_asteroid_delta_towed_fragments_use_tighter_motion_gate) {
+    ASSERT_EQ_INT((int)ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS, 12);
+    ASSERT_EQ_FLOAT(ASTEROID_NET_TOWED_PREDICT_ERROR_SQ, 25.0f, 0.001f);
+
+    asteroid_t asteroids[MAX_ASTEROIDS];
+    memset(asteroids, 0, sizeof(asteroids));
+    bool sent[MAX_ASTEROIDS] = {0};
+    uint32_t motion_sent_tick[MAX_ASTEROIDS] = {0};
+    vec2 motion_sent_pos[MAX_ASTEROIDS] = {0};
+    vec2 motion_sent_vel[MAX_ASTEROIDS] = {0};
+
+    asteroids[6].active = true;
+    asteroids[6].tier = ASTEROID_TIER_S;
+    asteroids[6].fracture_child = true;
+    asteroids[6].last_towed_by = 0;
+    asteroids[6].pos = v2(6.0f, 0.0f);
+    asteroids[6].radius = 10.0f;
+    asteroids[6].hp = 10.0f;
+    asteroids[6].vel = v2(12.0f, 0.0f);
+    sent[6] = true;
+    motion_sent_tick[6] = 100u;
+    motion_sent_pos[6] = v2(0.0f, 0.0f);
+    motion_sent_vel[6] = v2(0.0f, 0.0f);
+
+    uint8_t full[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t motion[ASTEROID_MOTION_MSG_HEADER +
+                   MAX_ASTEROIDS * ASTEROID_MOTION_RECORD_SIZE];
+    uint8_t motion_q[ASTEROID_MOTION_Q_MSG_HEADER +
+                     MAX_ASTEROIDS * ASTEROID_MOTION_Q_RECORD_SIZE];
+    int motion_len = 0;
+    int motion_q_len = 0;
+    int full_len = serialize_asteroids_for_player_split_ext_at_tick(
+        full, motion, &motion_len, motion_q, &motion_q_len,
+        NULL, NULL, NULL, NULL, NULL, NULL,
+        asteroids, v2(0.0f, 0.0f), sent,
+        motion_sent_tick, motion_sent_pos, motion_sent_vel, 112u);
+
+    ASSERT_EQ_INT(full_len, ASTEROID_MSG_HEADER);
+    ASSERT_EQ_INT(motion_len, ASTEROID_MOTION_MSG_HEADER);
+    ASSERT_EQ_INT(motion_q[0], NET_MSG_WORLD_ASTEROID_MOTION_Q);
+    ASSERT_EQ_INT(motion_q[1] | (motion_q[2] << 8), 1);
+    ASSERT_EQ_INT(motion_q_len,
+                  ASTEROID_MOTION_Q_MSG_HEADER + ASTEROID_MOTION_Q_RECORD_SIZE);
+    ASSERT_EQ_INT((int)motion_sent_tick[6], 112);
+}
+
 TEST(test_asteroid_delta_throttles_far_slow_moving_repeat) {
     ASSERT_EQ_INT((int)ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS, 240);
     ASSERT_EQ_INT((int)ASTEROID_NET_FAR_SLOW_MOTION_HEARTBEAT_TICKS, 1200);
@@ -8285,6 +8331,7 @@ void register_protocol_main_tests(void) {
     RUN(test_asteroid_delta_suppresses_clean_static_repeat);
     RUN(test_asteroid_delta_sends_dirty_or_moving_repeat);
     RUN(test_asteroid_delta_throttles_clean_moving_repeat_by_tick);
+    RUN(test_asteroid_delta_towed_fragments_use_tighter_motion_gate);
     RUN(test_asteroid_delta_throttles_far_slow_moving_repeat);
     RUN(test_asteroid_delta_relaxes_outer_near_slow_motion);
     RUN(test_asteroid_delta_keeps_old_far_cadence_quiet);

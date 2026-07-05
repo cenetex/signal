@@ -1644,6 +1644,60 @@ TEST(test_player_only_predicts_tow_band_reaction) {
     ASSERT_EQ_INT(w.players[0].ship.towed_count, 1);
 }
 
+static void setup_two_towed_fragment_prediction_world(world_t *w) {
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship.pos = v2(5000.0f, 0.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->input.tractor_hold = true;
+    sp->ship.towed_fragments[0] = 0;
+    sp->ship.towed_fragments[1] = 1;
+    sp->ship.towed_count = 2;
+
+    w->asteroids[0].active = true;
+    w->asteroids[0].tier = ASTEROID_TIER_S;
+    w->asteroids[0].radius = 20.0f;
+    w->asteroids[0].pos = v2(5120.0f, 0.0f);
+    w->asteroids[0].vel = v2(0.0f, 0.0f);
+
+    w->asteroids[1].active = true;
+    w->asteroids[1].tier = ASTEROID_TIER_S;
+    w->asteroids[1].radius = 20.0f;
+    w->asteroids[1].pos = v2(5130.0f, 0.0f);
+    w->asteroids[1].vel = v2(0.0f, 0.0f);
+}
+
+TEST(test_player_only_predicts_towed_fragment_separation) {
+    WORLD_DECL_NAME(authority);
+    WORLD_DECL_NAME(predicted);
+    setup_two_towed_fragment_prediction_world(&authority);
+    setup_two_towed_fragment_prediction_world(&predicted);
+
+    float initial_dist = v2_len(v2_sub(authority.asteroids[1].pos,
+                                      authority.asteroids[0].pos));
+
+    world_sim_step(&authority, SIM_DT);
+    world_sim_step_player_only(&predicted, 0, SIM_DT);
+
+    float authority_dist = v2_len(v2_sub(authority.asteroids[1].pos,
+                                        authority.asteroids[0].pos));
+    float predicted_dist = v2_len(v2_sub(predicted.asteroids[1].pos,
+                                        predicted.asteroids[0].pos));
+
+    ASSERT(authority_dist > initial_dist);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].pos.x,
+                    authority.asteroids[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[1].pos.x,
+                    authority.asteroids[1].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted_dist, authority_dist, 0.001f);
+}
+
 TEST(test_player_only_predicts_towed_scaffold_motion) {
     WORLD_DECL;
     world_reset(&w);
@@ -2385,6 +2439,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_asteroid_collision_geometry);
     RUN(test_player_only_predicts_station_collision_geometry);
     RUN(test_player_only_predicts_tow_band_reaction);
+    RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_does_not_sync_ship_asset_registry);
     RUN(test_player_only_ignores_authoritative_one_shots);
