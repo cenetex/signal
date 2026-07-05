@@ -2213,6 +2213,161 @@ static float local_player_render_extrapolation_dt(void) {
     return t;
 }
 
+typedef struct {
+    int index;
+    vec2 pos;
+    float rotation;
+    float age;
+} local_asteroid_render_pose_t;
+
+typedef struct {
+    int index;
+    vec2 pos;
+    float rotation;
+    float age;
+} local_cargo_pod_render_pose_t;
+
+typedef struct {
+    int index;
+    vec2 pos;
+    float rotation;
+    float age;
+} local_scaffold_render_pose_t;
+
+static vec2 local_towed_body_render_pos(vec2 pos, vec2 vel,
+                                        vec2 shared_offset,
+                                        float render_ahead) {
+    vec2 render_pos = v2_add(pos, shared_offset);
+    if (render_ahead > 0.0f)
+        render_pos = v2_add(render_pos, v2_scale(vel, render_ahead));
+    return render_pos;
+}
+
+static int apply_local_towed_asteroid_render_pose(
+    local_asteroid_render_pose_t saves[10],
+    vec2 shared_offset,
+    float render_ahead)
+{
+    int count = 0;
+    int tow_count = LOCAL_PLAYER.ship.towed_count;
+    if (tow_count > 10) tow_count = 10;
+
+    for (int t = 0; t < tow_count; t++) {
+        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || count >= 10) continue;
+        asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active) continue;
+
+        saves[count++] = (local_asteroid_render_pose_t){
+            .index = idx,
+            .pos = a->pos,
+            .rotation = a->rotation,
+            .age = a->age,
+        };
+        a->pos = local_towed_body_render_pos(a->pos, a->vel,
+                                             shared_offset, render_ahead);
+        if (render_ahead > 0.0f) {
+            a->rotation = wrap_angle(a->rotation + a->spin * render_ahead);
+            a->age += render_ahead;
+        }
+    }
+    return count;
+}
+
+static int apply_local_towed_cargo_pod_render_pose(
+    local_cargo_pod_render_pose_t saves[10],
+    vec2 shared_offset,
+    float render_ahead)
+{
+    int count = 0;
+    int tow_count = LOCAL_PLAYER.ship.towed_pod_count;
+    if (tow_count > 10) tow_count = 10;
+
+    for (int t = 0; t < tow_count; t++) {
+        int idx = LOCAL_PLAYER.ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || count >= 10) continue;
+        cargo_pod_t *pod = &g.world.cargo_pods[idx];
+        if (!pod->active) continue;
+
+        saves[count++] = (local_cargo_pod_render_pose_t){
+            .index = idx,
+            .pos = pod->pos,
+            .rotation = pod->rotation,
+            .age = pod->age,
+        };
+        pod->pos = local_towed_body_render_pos(pod->pos, pod->vel,
+                                               shared_offset, render_ahead);
+        if (render_ahead > 0.0f) {
+            pod->rotation = wrap_angle(pod->rotation + pod->spin * render_ahead);
+            pod->age += render_ahead;
+        }
+    }
+    return count;
+}
+
+static bool apply_local_towed_scaffold_render_pose(
+    local_scaffold_render_pose_t *save,
+    vec2 shared_offset,
+    float render_ahead)
+{
+    int idx = LOCAL_PLAYER.ship.towed_scaffold;
+    if (idx < 0 || idx >= MAX_SCAFFOLDS || !save) return false;
+    scaffold_t *sc = &g.world.scaffolds[idx];
+    if (!sc->active) return false;
+
+    *save = (local_scaffold_render_pose_t){
+        .index = idx,
+        .pos = sc->pos,
+        .rotation = sc->rotation,
+        .age = sc->age,
+    };
+    sc->pos = local_towed_body_render_pos(sc->pos, sc->vel,
+                                          shared_offset, render_ahead);
+    if (render_ahead > 0.0f) {
+        sc->rotation = wrap_angle(sc->rotation + sc->spin * render_ahead);
+        sc->age += render_ahead;
+    }
+    return true;
+}
+
+static void restore_local_towed_asteroid_render_pose(
+    const local_asteroid_render_pose_t saves[10],
+    int count)
+{
+    for (int i = 0; i < count; i++) {
+        int idx = saves[i].index;
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        asteroid_t *a = &g.world.asteroids[idx];
+        a->pos = saves[i].pos;
+        a->rotation = saves[i].rotation;
+        a->age = saves[i].age;
+    }
+}
+
+static void restore_local_towed_cargo_pod_render_pose(
+    const local_cargo_pod_render_pose_t saves[10],
+    int count)
+{
+    for (int i = 0; i < count; i++) {
+        int idx = saves[i].index;
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &g.world.cargo_pods[idx];
+        pod->pos = saves[i].pos;
+        pod->rotation = saves[i].rotation;
+        pod->age = saves[i].age;
+    }
+}
+
+static void restore_local_towed_scaffold_render_pose(
+    const local_scaffold_render_pose_t *save)
+{
+    if (!save || save->index < 0 || save->index >= MAX_SCAFFOLDS) return;
+    scaffold_t *sc = &g.world.scaffolds[save->index];
+    sc->pos = save->pos;
+    sc->rotation = save->rotation;
+    sc->age = save->age;
+}
+
 static void render_frame(void) {
     interpolate_world_for_render();
     float frame_dt = (float)sapp_frame_duration();
@@ -2233,6 +2388,12 @@ static void render_frame(void) {
 
     vec2 saved_ship_pos = LOCAL_PLAYER.ship.pos;
     float saved_ship_angle = LOCAL_PLAYER.ship.angle;
+    local_asteroid_render_pose_t saved_asteroids[10];
+    local_cargo_pod_render_pose_t saved_pods[10];
+    local_scaffold_render_pose_t saved_scaffold = { .index = -1 };
+    int saved_asteroid_count = 0;
+    int saved_pod_count = 0;
+    bool saved_scaffold_active = false;
     float render_ahead = local_player_render_extrapolation_dt();
     bool apply_visual_pose =
         render_ahead > 0.0f || v2_len_sq(g.local_player_render_offset) > 0.01f;
@@ -2247,9 +2408,21 @@ static void render_frame(void) {
                 saved_ship_angle +
                 LOCAL_PLAYER.input.turn * hull->turn_speed * render_ahead);
         }
+        saved_asteroid_count = apply_local_towed_asteroid_render_pose(
+            saved_asteroids, g.local_player_render_offset, render_ahead);
+        saved_pod_count = apply_local_towed_cargo_pod_render_pose(
+            saved_pods, g.local_player_render_offset, render_ahead);
+        saved_scaffold_active = apply_local_towed_scaffold_render_pose(
+            &saved_scaffold, g.local_player_render_offset, render_ahead);
     }
     render_world();
     if (apply_visual_pose) {
+        restore_local_towed_asteroid_render_pose(saved_asteroids,
+                                                 saved_asteroid_count);
+        restore_local_towed_cargo_pod_render_pose(saved_pods,
+                                                  saved_pod_count);
+        if (saved_scaffold_active)
+            restore_local_towed_scaffold_render_pose(&saved_scaffold);
         LOCAL_PLAYER.ship.pos = saved_ship_pos;
         LOCAL_PLAYER.ship.angle = saved_ship_angle;
     }
