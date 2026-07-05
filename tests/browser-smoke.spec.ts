@@ -831,6 +831,48 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
+  test('loopback flight corrections apply without stale deferral', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer loopback');
+    test.setTimeout(45_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page);
+
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? 1, {
+        timeout: 8_000,
+        message: 'local loopback launch should leave dock before measuring flight corrections',
+      })
+      .toBe(0);
+
+    await resetNetMotionTelemetry(page);
+    const acksBefore = (await netMotionSnapshot(page)).inputAcks;
+    await hold(page, 'W', 2_500);
+
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
+        timeout: 10_000,
+        message: 'held thrust should receive authoritative loopback ACKs',
+      })
+      .toBeGreaterThan(acksBefore);
+    await expect
+      .poll(async () => (await netMotionSnapshot(page)).samples, {
+        timeout: 10_000,
+        message: 'loopback flight should collect motion correction samples',
+      })
+      .toBeGreaterThan(0);
+
+    const motion = await netMotionSnapshot(page);
+    expect(motion.deferredSamples).toBe(0);
+    expect(motion.maxCorrection).toBeLessThan(5);
+
+    expectNoFatalErrors(logs);
+  });
+
   test('live relay launch accepts flight input', async ({ page }) => {
     test.skip(!usesLiveSmokeUrl(), 'requires SMOKE_URL pointed at a live relay URL');
     test.skip(

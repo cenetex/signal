@@ -322,7 +322,8 @@ static bool should_defer_stale_unacked_motion(const NetPlayerState *state,
     if (dist_sq > defer_dist * defer_dist) return false;
     if ((state->flags & 4) != 0) return true;
     if (!net_replay_enabled()) return true;
-    return !net_replay_has_frames_after(state->server_tick);
+    return replay_tick_after(g.net_prediction_tick, state->server_tick) &&
+           !net_replay_has_frames_after(state->server_tick);
 }
 
 static bool should_defer_active_prediction_motion(const NetPlayerState *state,
