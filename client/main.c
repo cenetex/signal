@@ -3055,7 +3055,13 @@ int get_net_motion_ack_recovery_tier(void) {
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
+    bool saved_net_authority_enabled = g.net_authority_enabled;
     bool saved_net_input_tick_protocol = g.net_input_tick_protocol;
+    int saved_local_player_slot = g.local_player_slot;
+    bool saved_player0_connected = g.world.players[0].connected;
+    bool saved_player0_docked = g.world.players[0].docked;
+    uint8_t saved_player0_towed_count = g.world.players[0].ship.towed_count;
+    int16_t saved_player0_towed_fragments[10];
     asteroid_t saved_world_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_local_server_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
@@ -3073,6 +3079,9 @@ int signal_smoke_remote_towable_interp_check(void) {
     float saved_cargo_pod_t = g.cargo_pod_interp.t;
     float saved_cargo_pod_interval = g.cargo_pod_interp.interval;
 
+    memcpy(saved_player0_towed_fragments,
+           g.world.players[0].ship.towed_fragments,
+           sizeof(saved_player0_towed_fragments));
     memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
     memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
            sizeof(saved_local_server_asteroids));
@@ -3171,6 +3180,46 @@ int signal_smoke_remote_towable_interp_check(void) {
     interpolate_world_for_render();
     float asteroid_blended_x = g.world.asteroids[7].pos.x;
 
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.asteroid_interp.interval = 0.1f;
+    g.net_authority_enabled = true;
+    g.net_input_tick_protocol = true;
+    g.local_player_slot = 0;
+    g.world.players[0].connected = true;
+    g.world.players[0].docked = false;
+    memset(g.world.players[0].ship.towed_fragments, -1,
+           sizeof(g.world.players[0].ship.towed_fragments));
+    g.world.players[0].ship.towed_fragments[0] = 7;
+    g.world.players[0].ship.towed_count = 1;
+
+    asteroid_t predicted_asteroid = {0};
+    predicted_asteroid.active = true;
+    predicted_asteroid.fracture_child = true;
+    predicted_asteroid.tier = ASTEROID_TIER_S;
+    predicted_asteroid.commodity = COMMODITY_FERRITE_ORE;
+    predicted_asteroid.pos = v2(250.0f, 0.0f);
+    predicted_asteroid.vel = v2(20.0f, 0.0f);
+    predicted_asteroid.hp = 10.0f;
+    predicted_asteroid.ore = 4.0f;
+    predicted_asteroid.radius = 18.0f;
+    predicted_asteroid.grade = MINING_GRADE_COMMON;
+    g.world.asteroids[7] = predicted_asteroid;
+    g.asteroid_interp.curr[7] = predicted_asteroid;
+    g.asteroid_interp.prev[7] = predicted_asteroid;
+
+    asteroid.x = -200.0f;
+    asteroid.y = 0.0f;
+    asteroid.vx = 0.0f;
+    asteroid.vy = 0.0f;
+    asteroid.hp = 7.0f;
+    asteroid.ore = 3.0f;
+    apply_remote_asteroids(&asteroid, 1);
+    interpolate_world_for_render();
+    float local_towed_asteroid_x = g.world.asteroids[7].pos.x;
+    float local_towed_asteroid_vx = g.world.asteroids[7].vel.x;
+    float local_towed_asteroid_hp = g.world.asteroids[7].hp;
+
     bool loopback_packet_path_ok = true;
     if (net_is_loopback()) {
         g.local_server.active = true;
@@ -3218,6 +3267,11 @@ int signal_smoke_remote_towable_interp_check(void) {
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
+             local_towed_asteroid_x > 249.0f &&
+             local_towed_asteroid_x < 251.0f &&
+             local_towed_asteroid_vx > 19.0f &&
+             local_towed_asteroid_vx < 21.0f &&
+             fabsf(local_towed_asteroid_hp - 7.0f) < 0.001f &&
              loopback_packet_path_ok &&
              loopback_prediction_ok;
 
@@ -3239,7 +3293,15 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.cargo_pod_interp.t = saved_cargo_pod_t;
     g.cargo_pod_interp.interval = saved_cargo_pod_interval;
     g.local_server.active = saved_local_server_active;
+    g.net_authority_enabled = saved_net_authority_enabled;
     g.net_input_tick_protocol = saved_net_input_tick_protocol;
+    g.local_player_slot = saved_local_player_slot;
+    g.world.players[0].connected = saved_player0_connected;
+    g.world.players[0].docked = saved_player0_docked;
+    g.world.players[0].ship.towed_count = saved_player0_towed_count;
+    memcpy(g.world.players[0].ship.towed_fragments,
+           saved_player0_towed_fragments,
+           sizeof(saved_player0_towed_fragments));
     return ok ? 1 : 0;
 }
 #endif

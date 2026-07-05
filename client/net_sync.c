@@ -467,6 +467,7 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
         last_tick = frame->tick;
         (*out_replayed)++;
     }
+    net_adopt_local_tow_prediction(0.0f);
     g.world.events = saved_events;
 
     g.net_prediction_tick = last_tick;
@@ -599,6 +600,26 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
     return out;
 }
 
+static bool net_local_player_towing_asteroid(int idx) {
+    if (!g.net_authority_enabled || !net_local_prediction_enabled())
+        return false;
+    if (idx < 0 || idx >= MAX_ASTEROIDS) return false;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return false;
+
+    const server_player_t *sp = &g.world.players[g.local_player_slot];
+    if (!sp->connected || sp->docked) return false;
+
+    int tow_count = sp->ship.towed_count;
+    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                        sizeof(sp->ship.towed_fragments[0]));
+    if (tow_count > tow_cap) tow_count = tow_cap;
+    for (int t = 0; t < tow_count; t++) {
+        if (sp->ship.towed_fragments[t] == idx) return true;
+    }
+    return false;
+}
+
 static float net_prediction_future_elapsed(float t, float interval,
                                            float dt, float max_elapsed) {
     if (!isfinite(interval) || interval <= 0.0f) interval = 0.01f;
@@ -607,20 +628,39 @@ static float net_prediction_future_elapsed(float t, float interval,
     return clampf(elapsed, 0.0f, max_elapsed);
 }
 
-static void net_adopt_local_asteroid_prediction(int idx, float elapsed) {
+static void net_adopt_local_asteroid_prediction_base(int idx, float elapsed,
+                                                     const asteroid_t *base) {
     if (idx < 0 || idx >= MAX_ASTEROIDS) return;
     const asteroid_t *predicted = &g.world.asteroids[idx];
     if (!predicted->active) return;
+    if (base && !base->active) return;
 
-    asteroid_t backdated = *predicted;
-    backdated.pos = v2_sub(predicted->pos,
-                           v2_scale(predicted->vel, elapsed));
+    asteroid_t visual = base ? *base : *predicted;
+    visual.active = predicted->active;
+    visual.pos = predicted->pos;
+    visual.vel = predicted->vel;
+    visual.rotation = predicted->rotation;
+    visual.spin = predicted->spin;
+    visual.age = predicted->age;
+
+    asteroid_t backdated = visual;
+    backdated.pos = v2_sub(visual.pos, v2_scale(visual.vel, elapsed));
     backdated.rotation =
-        wrap_angle(predicted->rotation - predicted->spin * elapsed);
-    backdated.age = fmaxf(0.0f, predicted->age - elapsed);
+        wrap_angle(visual.rotation - visual.spin * elapsed);
+    backdated.age = fmaxf(0.0f, visual.age - elapsed);
 
-    g.asteroid_interp.prev[idx] = *predicted;
+    g.asteroid_interp.prev[idx] = visual;
     g.asteroid_interp.curr[idx] = backdated;
+}
+
+static void net_adopt_local_asteroid_prediction(int idx, float elapsed) {
+    net_adopt_local_asteroid_prediction_base(idx, elapsed, NULL);
+}
+
+static void net_preserve_local_towed_asteroid_prediction(int idx) {
+    if (!net_local_player_towing_asteroid(idx)) return;
+    net_adopt_local_asteroid_prediction_base(
+        idx, 0.0f, &g.asteroid_interp.curr[idx]);
 }
 
 static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
@@ -861,6 +901,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         }
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
+        net_preserve_local_towed_asteroid_prediction((int)idx);
     }
 
     if (replacement_snapshot) {
@@ -908,6 +949,7 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         a->vel.x = keep_velocity ? carried_vel.x : asteroids[i].vx;
         a->vel.y = keep_velocity ? carried_vel.y : asteroids[i].vy;
         a->age = carried_age;
+        net_preserve_local_towed_asteroid_prediction((int)idx);
     }
 }
 
