@@ -663,6 +663,24 @@ static void net_preserve_local_towed_asteroid_prediction(int idx) {
         idx, 0.0f, &g.asteroid_interp.curr[idx]);
 }
 
+static void net_preserve_local_towed_asteroid_predictions(void) {
+    if (!g.net_authority_enabled || !net_local_prediction_enabled()) return;
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+
+    const server_player_t *sp = &g.world.players[g.local_player_slot];
+    if (!sp->connected || sp->docked) return;
+
+    int tow_count = sp->ship.towed_count;
+    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                        sizeof(sp->ship.towed_fragments[0]));
+    if (tow_count > tow_cap) tow_count = tow_cap;
+    for (int t = 0; t < tow_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        net_adopt_local_asteroid_prediction_base(
+            idx, 0.0f, &g.asteroid_interp.curr[idx]);
+    }
+}
+
 static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
     if (idx < 0 || idx >= MAX_CARGO_PODS) return;
     const cargo_pod_t *predicted = &g.world.cargo_pods[idx];
@@ -916,6 +934,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         }
     }
 
+    net_preserve_local_towed_asteroid_predictions();
+
     /* World asteroids are updated by interpolate_world_for_render() at
      * render time, ensuring game logic and rendering see the same positions. */
 }
@@ -951,6 +971,7 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         a->age = carried_age;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
+    net_preserve_local_towed_asteroid_predictions();
 }
 
 void apply_remote_asteroid_state_q(const NetAsteroidStateQ* asteroids,

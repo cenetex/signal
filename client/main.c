@@ -3220,6 +3220,46 @@ int signal_smoke_remote_towable_interp_check(void) {
     float local_towed_asteroid_vx = g.world.asteroids[7].vel.x;
     float local_towed_asteroid_hp = g.world.asteroids[7].hp;
 
+    predicted_asteroid.pos = v2(300.0f, 0.0f);
+    predicted_asteroid.vel = v2(20.0f, 0.0f);
+    predicted_asteroid.hp = 7.0f;
+    predicted_asteroid.ore = 3.0f;
+    g.world.asteroids[7] = predicted_asteroid;
+    g.asteroid_interp.prev[7] = predicted_asteroid;
+    g.asteroid_interp.curr[7] = predicted_asteroid;
+    g.asteroid_interp.curr[7].pos.x = 200.0f;
+    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+
+    NetAsteroidState unrelated_asteroid = asteroid;
+    unrelated_asteroid.index = 8;
+    unrelated_asteroid.x = 0.0f;
+    unrelated_asteroid.y = 80.0f;
+    unrelated_asteroid.vx = 0.0f;
+    unrelated_asteroid.vy = 0.0f;
+    apply_remote_asteroids(&unrelated_asteroid, 1);
+    interpolate_world_for_render();
+    float local_towed_asteroid_unrelated_x =
+        g.world.asteroids[7].pos.x;
+
+    predicted_asteroid.pos = v2(350.0f, 0.0f);
+    g.world.asteroids[7] = predicted_asteroid;
+    g.asteroid_interp.prev[7] = predicted_asteroid;
+    g.asteroid_interp.curr[7] = predicted_asteroid;
+    g.asteroid_interp.curr[7].pos.x = 240.0f;
+    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+
+    NetAsteroidMotionState unrelated_motion = {
+        .index = 8,
+        .x = 30.0f,
+        .y = 80.0f,
+        .vx = 0.0f,
+        .vy = 0.0f,
+    };
+    apply_remote_asteroid_motion(&unrelated_motion, 1);
+    interpolate_world_for_render();
+    float local_towed_asteroid_unrelated_motion_x =
+        g.world.asteroids[7].pos.x;
+
     bool loopback_packet_path_ok = true;
     if (net_is_loopback()) {
         g.local_server.active = true;
@@ -3272,6 +3312,10 @@ int signal_smoke_remote_towable_interp_check(void) {
              local_towed_asteroid_vx > 19.0f &&
              local_towed_asteroid_vx < 21.0f &&
              fabsf(local_towed_asteroid_hp - 7.0f) < 0.001f &&
+             local_towed_asteroid_unrelated_x > 299.0f &&
+             local_towed_asteroid_unrelated_x < 301.0f &&
+             local_towed_asteroid_unrelated_motion_x > 349.0f &&
+             local_towed_asteroid_unrelated_motion_x < 351.0f &&
              loopback_packet_path_ok &&
              loopback_prediction_ok;
 
