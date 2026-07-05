@@ -1656,7 +1656,7 @@ static inline bool asteroid_net_tow_lifecycle_high_detail(
     const asteroid_t *a,
     float dist_sq) {
     return a && a->active && a->tier == ASTEROID_TIER_S &&
-        a->fracture_child && a->last_towed_by >= 0 &&
+        a->last_towed_by >= 0 &&
         dist_sq <= ASTEROID_NET_NEAR_RADIUS_SQ;
 }
 
@@ -2021,6 +2021,35 @@ static inline bool asteroid_net_motion_should_send(
         error_sq = ASTEROID_NET_TOWED_PREDICT_ERROR_SQ;
     }
     return v2_dist_sq(predicted_pos, a->pos) >= error_sq;
+}
+
+static inline void server_prioritize_towed_asteroid_identities(
+    server_player_t *sp,
+    const asteroid_t *asteroids) {
+    if (!sp || !asteroids) return;
+
+    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                        sizeof(sp->ship.towed_fragments[0]));
+    int tow_count = sp->ship.towed_count;
+    if (tow_count > tow_cap) tow_count = tow_cap;
+
+    for (int t = 0; t < tow_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &asteroids[idx];
+        if (!a->active) continue;
+        if (v2_dist_sq(a->pos, sp->ship.pos) >= ASTEROID_VIEW_RADIUS_SQ)
+            continue;
+
+        sp->asteroid_sent[idx] = false;
+        sp->asteroid_motion_sent_tick[idx] = 0u;
+        sp->asteroid_motion_sent_pos[idx] = v2(0.0f, 0.0f);
+        sp->asteroid_motion_sent_vel[idx] = v2(0.0f, 0.0f);
+        asteroid_state_q_clear_sent(
+            idx, sp->asteroid_state_sent_tick,
+            sp->asteroid_state_sent_sig,
+            sp->asteroid_state_sent_semantic_sig);
+    }
 }
 
 static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
@@ -5794,6 +5823,7 @@ static inline void server_emit_world_snapshot_for_player(
         int background_identity_budget =
             asteroid_net_background_identity_budget_at_tick_for_players(
                 w->tick, server_live_asteroid_recipient_count(w));
+        server_prioritize_towed_asteroid_identities(sp, w->asteroids);
         int alen = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
             scratch->asteroids,
             scratch->asteroids_q, &asteroids_q_len,

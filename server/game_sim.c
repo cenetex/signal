@@ -12296,6 +12296,41 @@ static input_intent_t player_only_movement_intent(input_intent_t in) {
     return in;
 }
 
+static void step_player_only_towed_body_drift(world_t *w,
+                                              const server_player_t *sp,
+                                              float dt) {
+    if (!w || !sp) return;
+
+    int frag_cap = (int)(sizeof(sp->ship.towed_fragments) /
+                         sizeof(sp->ship.towed_fragments[0]));
+    int frag_count = sp->ship.towed_count;
+    if (frag_count > frag_cap) frag_count = frag_cap;
+    for (int t = 0; t < frag_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        asteroid_t *a = &w->asteroids[idx];
+        if (!a->active) continue;
+        a->rotation += a->spin * dt;
+        a->pos = v2_add(a->pos, v2_scale(a->vel, dt));
+        a->age += dt;
+    }
+
+    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
+                        sizeof(sp->ship.towed_pods[0]));
+    int pod_count = sp->ship.towed_pod_count;
+    if (pod_count > pod_cap) pod_count = pod_cap;
+    for (int t = 0; t < pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!pod->active) continue;
+        pod->pos = v2_add(pod->pos, v2_scale(pod->vel, dt));
+        pod->vel = v2_scale(pod->vel, 1.0f / (1.0f + 0.35f * dt));
+        pod->rotation += pod->spin * dt;
+        pod->age += dt;
+    }
+}
+
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
     sim_interactions_clear(w);
@@ -12304,6 +12339,7 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     server_player_t *sp = &w->players[player_idx];
     if (!sp->connected) return;
     input_intent_t saved_input = sp->input;
+    step_player_only_towed_body_drift(w, sp, dt);
     sp->input = player_only_movement_intent(saved_input);
     w->player_only_mode = true;  /* suppress mining HP and world RNG mutation */
     step_player(w, sp, dt);

@@ -4707,6 +4707,46 @@ TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
     ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
 }
 
+TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
+    world_t w;
+    memset(&w, 0, sizeof(w));
+    w.players[0].connected = true;
+    w.players[0].id = 0;
+    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship.towed_fragments[0] = 2;
+    w.players[0].ship.towed_count = 1;
+    w.players[0].asteroid_sent[2] = true;
+    w.players[0].asteroid_motion_sent_tick[2] = 100u;
+    w.players[0].asteroid_motion_sent_pos[2] = v2(40.0f, 0.0f);
+    w.players[0].asteroid_motion_sent_vel[2] = v2(2.0f, 0.0f);
+
+    w.asteroids[2].active = true;
+    w.asteroids[2].tier = ASTEROID_TIER_S;
+    w.asteroids[2].last_towed_by = 0;
+    w.asteroids[2].pos = v2(50.0f, 0.0f);
+    w.asteroids[2].vel = v2(2.0f, 0.0f);
+    w.asteroids[2].radius = 12.0f;
+    w.asteroids[2].hp = 20.0f;
+    w.tick = 105u;
+    w.time = 12.5f;
+
+    static server_world_snapshot_scratch_t scratch;
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    server_emit_world_snapshot_for_player(&w, 0, false,
+                                          packet_capture_sink, &cap,
+                                          &scratch);
+
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
+    ASSERT_EQ_INT(cap.len[0],
+                  ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
+    ASSERT(w.players[0].asteroid_sent[2]);
+    ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
+                  (int)w.tick);
+}
+
 TEST(test_world_snapshot_defers_asteroids_while_docked) {
     world_t w;
     memset(&w, 0, sizeof(w));
@@ -8398,6 +8438,7 @@ void register_protocol_main_tests(void) {
     RUN(test_relevance_filtered_world_snapshots);
     RUN(test_world_snapshot_emitter_sequence_shared);
     RUN(test_world_snapshot_emits_compact_asteroid_motion_stream);
+    RUN(test_world_snapshot_prioritizes_local_towed_asteroid_identity);
     RUN(test_world_snapshot_defers_asteroids_while_docked);
     RUN(test_world_snapshot_defers_live_drift_while_docked);
     RUN(test_world_time_snapshot_reconciles_at_low_cadence);

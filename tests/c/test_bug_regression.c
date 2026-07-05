@@ -1644,6 +1644,55 @@ TEST(test_player_only_predicts_tow_band_reaction) {
     ASSERT_EQ_INT(w.players[0].ship.towed_count, 1);
 }
 
+static void setup_towed_fragment_drift_prediction_world(world_t *w) {
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship.pos = v2(5000.0f, 0.0f);
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.towed_fragments[0] = 0;
+    sp->ship.towed_count = 1;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->radius = 8.0f;
+    a->pos = v2(5200.0f, 0.0f);
+    a->vel = v2(24.0f, -6.0f);
+    a->rotation = 0.4f;
+    a->spin = 0.75f;
+    a->age = 3.0f;
+}
+
+TEST(test_player_only_predicts_towed_fragment_drift) {
+    WORLD_DECL_NAME(authority);
+    WORLD_DECL_NAME(predicted);
+    setup_towed_fragment_drift_prediction_world(&authority);
+    setup_towed_fragment_drift_prediction_world(&predicted);
+
+    world_sim_step(&authority, SIM_DT);
+    world_sim_step_player_only(&predicted, 0, SIM_DT);
+
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].pos.x,
+                    authority.asteroids[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].pos.y,
+                    authority.asteroids[0].pos.y, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].vel.x,
+                    authority.asteroids[0].vel.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].vel.y,
+                    authority.asteroids[0].vel.y, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].rotation,
+                    authority.asteroids[0].rotation, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].age,
+                    authority.asteroids[0].age, 0.001f);
+}
+
 static void setup_two_towed_fragment_prediction_world(world_t *w) {
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -2439,6 +2488,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_asteroid_collision_geometry);
     RUN(test_player_only_predicts_station_collision_geometry);
     RUN(test_player_only_predicts_tow_band_reaction);
+    RUN(test_player_only_predicts_towed_fragment_drift);
     RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_does_not_sync_ship_asset_registry);
