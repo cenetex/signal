@@ -2014,6 +2014,67 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
     }
 }
 
+/* Tractor tethers are field lines, not cables: a traveling wave rides the
+ * tether and flattens as the leash pulls taut, so slack reads as a lazy
+ * shimmer and tension reads as a straight, bright pull. `tautness` is
+ * 0 slack .. 1 fully stretched; `phase` de-syncs multiple tethers. */
+static void draw_tractor_tether_wave(vec2 from, vec2 to,
+                                     float r, float g0, float b,
+                                     float alpha, float tautness,
+                                     float phase) {
+    vec2 span = v2_sub(to, from);
+    float len = sqrtf(v2_len_sq(span));
+    if (len < 1.0f) {
+        return;
+    }
+    vec2 dir = v2_scale(span, 1.0f / len);
+    vec2 perp = v2(-dir.y, dir.x);
+    float taut = clampf(tautness, 0.0f, 1.0f);
+    float amp = (2.5f + len * 0.045f) * (1.0f - taut);
+    const int steps = 12;
+    sgl_begin_line_strip();
+    sgl_c4f(r, g0, b, alpha);
+    for (int s = 0; s <= steps; s++) {
+        float u = (float)s / (float)steps;
+        /* Envelope pins the wave at ship and fragment anchor points. */
+        float envelope = sinf(u * PI_F);
+        float wave = sinf(u * 4.0f * PI_F - g.world.time * 6.0f + phase);
+        vec2 p = v2_add(from, v2_scale(dir, u * len));
+        p = v2_add(p, v2_scale(perp, amp * envelope * wave));
+        sgl_v2f(p.x, p.y);
+    }
+    sgl_end();
+    /* Straight core: faint when slack, carries the load when taut. */
+    draw_segment(from, to, r, g0, b, alpha * (0.25f + 0.55f * taut));
+}
+
+/* Inward-curling field lines for an active tractor: slowly rotating
+ * spiral arms brighten toward the ship so the field reads as pull, not
+ * just a boundary radius. `seed` de-syncs multiple ships' fields. */
+static void draw_tractor_field_spirals(vec2 center, float radius,
+                                       float r, float g0, float b,
+                                       float alpha, float seed) {
+    const int arms = 5;
+    const int steps = 9;
+    float inner = fminf(26.0f, radius * 0.25f);
+    if (radius <= inner) {
+        return;
+    }
+    for (int arm = 0; arm < arms; arm++) {
+        float base = seed + (float)arm * (2.0f * PI_F / (float)arms)
+                     - g.world.time * 0.9f;
+        sgl_begin_line_strip();
+        for (int s = 0; s <= steps; s++) {
+            float u = (float)s / (float)steps; /* 0 = rim, 1 = ship */
+            float rr = radius - (radius - inner) * u;
+            float ang = base + u * 1.8f;
+            sgl_c4f(r, g0, b, alpha * (0.25f + 0.75f * u));
+            sgl_v2f(center.x + cosf(ang) * rr, center.y + sinf(ang) * rr);
+        }
+        sgl_end();
+    }
+}
+
 void draw_ship_tractor_field(void) {
     if (g.death_cinematic.active) return;
     float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
@@ -2038,10 +2099,9 @@ void draw_ship_tractor_field(void) {
         float ease = expand * expand * (3.0f - 2.0f * expand);
         float radius = 20.0f + (tr - 20.0f) * ease;
         float alpha = (0.6f - 0.25f * ease) * (expand < 1.0f ? 1.0f : 0.5f);
-        draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
-        float shimmer = 0.5f + 0.5f * sinf(g.world.time * 13.0f);
-        draw_circle_outline(LOCAL_PLAYER.ship.pos, radius * (0.94f + 0.04f * shimmer), 40,
-                            PAL_F_SIGNAL_OPERATIONAL, alpha * 0.26f);
+        draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha * 0.8f);
+        draw_tractor_field_spirals(LOCAL_PLAYER.ship.pos, radius,
+                                   PAL_F_SIGNAL_OPERATIONAL, alpha * 0.55f, 0.0f);
     } else if (LOCAL_PLAYER.ship.towed_count > 0) {
         /* LEASHED: beam lines to fragments. Towed fragments are already in
          * custody, so showing rarity here is intentional; brightness still
@@ -2062,7 +2122,9 @@ void draw_ship_tractor_field(void) {
             float beam_g = fminf(1.0f, gg * boost);
             float beam_b = fminf(1.0f, gb * boost);
             float beam_a = 0.20f + 0.55f * stretch;
-            draw_segment(LOCAL_PLAYER.ship.pos, fpos, beam_r, beam_g, beam_b, beam_a);
+            draw_tractor_tether_wave(LOCAL_PLAYER.ship.pos, fpos,
+                                     beam_r, beam_g, beam_b, beam_a,
+                                     stretch, (float)t * 1.7f);
         }
     }
     world_signal_visual_leave_cue(cue_prev);
@@ -2543,7 +2605,11 @@ void draw_npc_ships(void) {
             float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship.pos)) : 0.0f;
             if (ta->active && tr > 0.0f && d <= tr * 1.5f) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
-                draw_segment(tnpc->ship.pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
+                float slack = tr * 0.5f;
+                float stretch = clampf((d - slack) / (tr - slack), 0.0f, 1.0f);
+                draw_tractor_tether_wave(tnpc->ship.pos, ta->pos,
+                                         0.7f, 0.5f, 0.2f, tp,
+                                         stretch, (float)i * 2.3f);
             }
         }
         if (i == scan_npc) {
@@ -3012,6 +3078,9 @@ void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
     if (LOCAL_PLAYER.ship.towed_count == 0) return;
     float cue_prev = world_signal_visual_enter_cue();
+    float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+    float slack = tr * 0.5f;
+    float band = tr - slack;
     for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
         int idx = LOCAL_PLAYER.ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
@@ -3022,7 +3091,11 @@ void draw_towed_tethers(void) {
         float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
         if (a->grade >= (uint8_t)MINING_GRADE_RARE)
             pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
-        draw_segment(LOCAL_PLAYER.ship.pos, a->pos, r, gg, b, pulse);
+        float dist = sqrtf(v2_dist_sq(LOCAL_PLAYER.ship.pos, a->pos));
+        float stretch = band > 0.0f
+            ? clampf((dist - slack) / band, 0.0f, 1.0f) : 0.0f;
+        draw_tractor_tether_wave(LOCAL_PLAYER.ship.pos, a->pos,
+                                 r, gg, b, pulse, stretch, (float)t * 1.7f);
     }
     world_signal_visual_leave_cue(cue_prev);
 }
@@ -3295,10 +3368,14 @@ void draw_remote_players(void) {
             vec2 pos = v2(players[i].x, players[i].y);
             if (tractor_on) {
                 float pulse = 0.28f + (sinf(g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
-                draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse);
+                draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse * 0.8f);
+                draw_tractor_field_spirals(pos, tr, cr * 0.5f, cg * 0.85f, cb,
+                                           pulse * 0.7f, (float)i * 1.3f);
             }
 
             /* Tether lines to towed fragments */
+            float slack = tr * 0.5f;
+            float band = tr - slack;
             for (int t = 0; t < players[i].towed_count && t < 10; t++) {
                 uint16_t raw = players[i].towed_fragments[t];
                 if (raw == 0xFFFFu || raw >= MAX_ASTEROIDS) continue;
@@ -3309,7 +3386,11 @@ void draw_remote_players(void) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
                 if (a->grade >= (uint8_t)MINING_GRADE_RARE)
                     tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
-                draw_segment(pos, a->pos, rr, rg, rb, tp);
+                float dist = sqrtf(v2_dist_sq(pos, a->pos));
+                float stretch = band > 0.0f
+                    ? clampf((dist - slack) / band, 0.0f, 1.0f) : 0.0f;
+                draw_tractor_tether_wave(pos, a->pos, rr, rg, rb, tp,
+                                         stretch, (float)t * 1.7f + (float)i);
             }
         }
     }
