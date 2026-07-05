@@ -1,4 +1,4 @@
-const ORIGIN = "http://signal-origin.ratimics.com";
+const ORIGIN = "https://signal-relay-kind-pond-4338.fly.dev";
 const ORIGIN_HOST = new URL(ORIGIN).host;
 
 export default {
