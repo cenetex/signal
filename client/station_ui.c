@@ -1470,6 +1470,12 @@ static int ship_towed_pod_capacity_local(const ship_t *ship)
     return cap;
 }
 
+static int ship_towed_body_count_local(const ship_t *ship)
+{
+    if (!ship) return 0;
+    return ship->towed_count + ship->towed_pod_count;
+}
+
 static bool local_ship_lists_towed_pod(const ship_t *ship, int pod_idx)
 {
     if (!ship || pod_idx < 0) return false;
@@ -2092,7 +2098,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     if (station_idx < 0) return 0;
     int row_count = 0;
     float credits = player_current_balance();
-    int tow_space = ship_towed_pod_capacity_local(ship) - ship->towed_pod_count;
+    int tow_space = ship_towed_pod_capacity_local(ship) -
+        ship_towed_body_count_local(ship);
     if (tow_space < 0) tow_space = 0;
 
     /* BUY rows backed by physical dock-held pods. These are the crate

@@ -1614,6 +1614,7 @@ static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
 #define ASTEROID_NET_SLOW_SPEED_SQ (10.0f * 10.0f)
 #define ASTEROID_NET_MOVING_REPEAT_TICKS 36u /* ~3.3 Hz at the 120 Hz sim tick */
 #define ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS 12u /* 10 Hz for tow-chain rocks */
+#define ASTEROID_NET_TOWED_IDENTITY_HEARTBEAT_TICKS 48u /* 2.5 Hz identity safety */
 #define ASTEROID_NET_CRAWL_MOVING_REPEAT_TICKS 240u /* 0.5 Hz for sub-pixel drift */
 #define ASTEROID_NET_FAR_MOVING_REPEAT_TICKS 120u /* 1 Hz for far-field drift */
 #define ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS 240u /* 0.5 Hz ordinary far-field drift */
@@ -2023,9 +2024,10 @@ static inline bool asteroid_net_motion_should_send(
     return v2_dist_sq(predicted_pos, a->pos) >= error_sq;
 }
 
-static inline void server_prioritize_towed_asteroid_identities(
+static inline void server_prioritize_towed_asteroid_streams(
     server_player_t *sp,
-    const asteroid_t *asteroids) {
+    const asteroid_t *asteroids,
+    uint32_t server_tick) {
     if (!sp || !asteroids) return;
 
     int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
@@ -2041,14 +2043,22 @@ static inline void server_prioritize_towed_asteroid_identities(
         if (v2_dist_sq(a->pos, sp->ship.pos) >= ASTEROID_VIEW_RADIUS_SQ)
             continue;
 
-        sp->asteroid_sent[idx] = false;
+        uint32_t last_identity_tick = sp->asteroid_state_sent_tick[idx];
+        bool identity_due = !sp->asteroid_sent[idx] ||
+            last_identity_tick == 0u ||
+            (uint32_t)(server_tick - last_identity_tick) >=
+                ASTEROID_NET_TOWED_IDENTITY_HEARTBEAT_TICKS;
+
+        if (identity_due) {
+            sp->asteroid_sent[idx] = false;
+            asteroid_state_q_clear_sent(
+                idx, sp->asteroid_state_sent_tick,
+                sp->asteroid_state_sent_sig,
+                sp->asteroid_state_sent_semantic_sig);
+        }
         sp->asteroid_motion_sent_tick[idx] = 0u;
         sp->asteroid_motion_sent_pos[idx] = v2(0.0f, 0.0f);
         sp->asteroid_motion_sent_vel[idx] = v2(0.0f, 0.0f);
-        asteroid_state_q_clear_sent(
-            idx, sp->asteroid_state_sent_tick,
-            sp->asteroid_state_sent_sig,
-            sp->asteroid_state_sent_semantic_sig);
     }
 }
 
@@ -5823,7 +5833,7 @@ static inline void server_emit_world_snapshot_for_player(
         int background_identity_budget =
             asteroid_net_background_identity_budget_at_tick_for_players(
                 w->tick, server_live_asteroid_recipient_count(w));
-        server_prioritize_towed_asteroid_identities(sp, w->asteroids);
+        server_prioritize_towed_asteroid_streams(sp, w->asteroids, w->tick);
         int alen = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
             scratch->asteroids,
             scratch->asteroids_q, &asteroids_q_len,

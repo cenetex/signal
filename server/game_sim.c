@@ -1890,11 +1890,31 @@ static void remove_towed_pod_slot(ship_t *ship, int tow_slot) {
     ship->towed_pods[ship->towed_pod_count] = -1;
 }
 
-static int ship_towed_pod_capacity(const ship_t *ship) {
+int ship_tow_body_capacity(const ship_t *ship) {
     int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
     if (cap < 0) cap = 0;
     if (cap > 10) cap = 10;
     return cap;
+}
+
+int ship_towed_body_count(const ship_t *ship) {
+    if (!ship) return 0;
+    int fragment_count = ship->towed_count;
+    int pod_count = ship->towed_pod_count;
+    int fragment_cap = (int)(sizeof(ship->towed_fragments) /
+                             sizeof(ship->towed_fragments[0]));
+    int pod_cap = (int)(sizeof(ship->towed_pods) /
+                        sizeof(ship->towed_pods[0]));
+    if (fragment_count < 0) fragment_count = 0;
+    if (pod_count < 0) pod_count = 0;
+    if (fragment_count > fragment_cap) fragment_count = fragment_cap;
+    if (pod_count > pod_cap) pod_count = pod_cap;
+    return fragment_count + pod_count;
+}
+
+int ship_tow_body_space(const ship_t *ship) {
+    int space = ship_tow_body_capacity(ship) - ship_towed_body_count(ship);
+    return space > 0 ? space : 0;
 }
 
 static int station_first_dock_module(const station_t *st) {
@@ -2779,8 +2799,7 @@ static int try_buy_station_market_pod(world_t *w,
     }
     if (best_idx < 0) return 0;
 
-    int tow_space = ship_towed_pod_capacity(&sp->ship) -
-        sp->ship.towed_pod_count;
+    int tow_space = ship_tow_body_space(&sp->ship);
     if (tow_space <= 0) {
         SIM_LOG("[buy-pod] REJECT: tow slots full for c=%d\n", (int)commodity);
         return -1;
@@ -3728,8 +3747,7 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     if (!station_manifest_bootstrap(origin)) {
         return 0;
     }
-    int max_tow = 2 + sp->ship.tractor_level * 2;
-    if (sp->ship.towed_pod_count >= max_tow) return 0;
+    if (ship_tow_body_space(&sp->ship) <= 0) return 0;
     int stock = delivery_source_stock_count(origin, ct);
     if (stock <= 0) return 0;
     int needed = (int)ceilf(ct->quantity_needed);
@@ -3799,7 +3817,7 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     int pod_idx = spawn_cargo_pod_with_manifest(
         w, pod_pos, sp->ship.vel, ct->commodity,
         scratch.cargo_units, (uint16_t)moved, CARGO_POD_CARGO);
-    if (pod_idx < 0 || sp->ship.towed_pod_count >= max_tow) {
+    if (pod_idx < 0 || ship_tow_body_space(&sp->ship) <= 0) {
         station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
         delivery_restore_shipment_to_origin(origin, shipment, moved);
         sync_station_finished_inventory(origin, ct->commodity);
@@ -4873,7 +4891,6 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         resolve_towed_fragment_neighbors(w, &sp->ship, t, a);
     }
 
-    int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
     commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
     /* Use nearby range (the larger of the two) for the broad check */
     float broad_sq = (nearby_sq > tr_sq) ? nearby_sq : tr_sq;
@@ -4894,7 +4911,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
              * No drift phase — if it's in range and there's room, grab it.
              * The fracture claim window owns rarity; tow ownership only
              * matters for the later smelt-time payout split. */
-            if (sp->ship.towed_count < max_tow) {
+            if (ship_tow_body_space(&sp->ship) > 0) {
                 sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
                 sp->ship.towed_count++;
                 a->last_towed_by = (int8_t)sp->id;
@@ -5080,13 +5097,12 @@ static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
 static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt) {
     step_towed_pod_forces(w, sp, dt);
 
-    int max_tow = 2 + sp->ship.tractor_level * 2;
-    if (!sp->ship.tractor_active || sp->ship.towed_pod_count >= max_tow) return;
+    if (!sp->ship.tractor_active || ship_tow_body_space(&sp->ship) <= 0) return;
 
     float tr = ship_tractor_range(&sp->ship);
     float tr_sq = tr * tr;
     commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
-    for (int i = 0; i < MAX_CARGO_PODS && sp->ship.towed_pod_count < max_tow; i++) {
+    for (int i = 0; i < MAX_CARGO_PODS && ship_tow_body_space(&sp->ship) > 0; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
         if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;

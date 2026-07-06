@@ -213,6 +213,28 @@ static int test_spawn_station_market_exact_pod(world_t *w,
     return pod_idx;
 }
 
+static server_player_t *test_prepare_undocked_tractor_player(world_t *w,
+                                                             vec2 pos) {
+    if (!w) return NULL;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x74, sizeof(sp->session_token));
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = -1;
+    sp->in_dock_range = false;
+    sp->ship.pos = pos;
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->ship.tractor_level = 0;
+    sp->input.tractor_hold = true;
+    return sp;
+}
+
 static void test_move_pod_past_station_charge_boundary(world_t *w,
                                                        int station_idx,
                                                        int pod_idx) {
@@ -1895,6 +1917,95 @@ TEST(test_towed_fragment_loads_raw_contract_at_dock) {
                     before + 7.0f, 0.001f);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 3.0f, 0.001f);
     ASSERT(sp->ship.stat_credits_earned > 0.0f);
+}
+
+TEST(test_tow_capacity_counts_pods_against_fragment_pickup) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    vec2 pos = v2_add(w.stations[0].pos, v2(900.0f, 0.0f));
+    server_player_t *sp = test_prepare_undocked_tractor_player(&w, pos);
+    ASSERT(sp != NULL);
+
+    int pod_a = test_spawn_exact_pod(&w, v2_add(pos, v2(-45.0f, 0.0f)),
+                                     COMMODITY_FRAME, 1);
+    int pod_b = test_spawn_exact_pod(&w, v2_add(pos, v2(-70.0f, 0.0f)),
+                                     COMMODITY_LASER_MODULE, 1);
+    ASSERT(pod_a >= 0);
+    ASSERT(pod_b >= 0);
+    w.cargo_pods[pod_a].towed_by = 0;
+    w.cargo_pods[pod_b].towed_by = 0;
+    sp->ship.towed_pods[0] = (int16_t)pod_a;
+    sp->ship.towed_pods[1] = (int16_t)pod_b;
+    sp->ship.towed_pod_count = 2;
+
+    asteroid_t *frag = &w.asteroids[0];
+    frag->active = true;
+    frag->tier = ASTEROID_TIER_S;
+    frag->commodity = COMMODITY_FERRITE_ORE;
+    frag->pos = v2_add(pos, v2(45.0f, 0.0f));
+    frag->radius = 8.0f;
+    frag->ore = 4.0f;
+    frag->max_ore = 4.0f;
+    frag->hp = 4.0f;
+    frag->max_hp = 4.0f;
+    frag->fracture_child = true;
+
+    ASSERT_EQ_INT(ship_tow_body_capacity(&sp->ship), 2);
+    ASSERT_EQ_INT(ship_tow_body_space(&sp->ship), 0);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 2);
+    ASSERT_EQ_INT(sp->ship.towed_count, 0);
+    ASSERT_EQ_INT(ship_tow_body_space(&sp->ship), 0);
+}
+
+TEST(test_tow_capacity_counts_fragments_against_pod_pickup) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    vec2 pos = v2_add(w.stations[0].pos, v2(1100.0f, 0.0f));
+    server_player_t *sp = test_prepare_undocked_tractor_player(&w, pos);
+    ASSERT(sp != NULL);
+
+    int held_pod = test_spawn_exact_pod(&w, v2_add(pos, v2(-45.0f, 0.0f)),
+                                        COMMODITY_FRAME, 1);
+    int loose_pod = test_spawn_exact_pod(&w, v2_add(pos, v2(65.0f, 0.0f)),
+                                         COMMODITY_LASER_MODULE, 1);
+    ASSERT(held_pod >= 0);
+    ASSERT(loose_pod >= 0);
+    w.cargo_pods[held_pod].towed_by = 0;
+    w.cargo_pods[loose_pod].towed_by = -1;
+    sp->ship.towed_pods[0] = (int16_t)held_pod;
+    sp->ship.towed_pod_count = 1;
+
+    asteroid_t *frag = &w.asteroids[0];
+    frag->active = true;
+    frag->tier = ASTEROID_TIER_S;
+    frag->commodity = COMMODITY_FERRITE_ORE;
+    frag->pos = v2_add(pos, v2(45.0f, 0.0f));
+    frag->radius = 8.0f;
+    frag->ore = 4.0f;
+    frag->max_ore = 4.0f;
+    frag->hp = 4.0f;
+    frag->max_hp = 4.0f;
+    frag->fracture_child = true;
+    sp->ship.towed_fragments[0] = 0;
+    sp->ship.towed_count = 1;
+
+    ASSERT_EQ_INT(ship_tow_body_space(&sp->ship), 0);
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], held_pod);
+    ASSERT_EQ_INT(sp->ship.towed_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_fragments[0], 0);
+    ASSERT_EQ_INT(w.cargo_pods[loose_pod].towed_by, -1);
+    ASSERT_EQ_INT(ship_tow_body_space(&sp->ship), 0);
 }
 
 TEST(test_gas_rich_asteroid_emits_gas_pod) {
@@ -9119,6 +9230,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full);
     RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
+    RUN(test_tow_capacity_counts_pods_against_fragment_pickup);
+    RUN(test_tow_capacity_counts_fragments_against_pod_pickup);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
     RUN(test_npc_embedded_towed_fragment_skips_ambient_asteroid_drag);
     RUN(test_hail_responds_while_docked);

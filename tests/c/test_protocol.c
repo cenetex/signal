@@ -4745,6 +4745,27 @@ TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
     ASSERT(w.players[0].asteroid_sent[2]);
     ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
                   (int)w.tick);
+
+    memset(&cap, 0, sizeof(cap));
+    w.tick += 1u;
+    w.time += SIM_DT;
+    w.asteroids[2].pos = v2(50.5f, 0.0f);
+    server_emit_world_snapshot_for_player(&w, 0, false,
+                                          packet_capture_sink, &cap,
+                                          &scratch);
+
+    ASSERT(!packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROIDS));
+    ASSERT(!packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROIDS_Q));
+    ASSERT(!packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROIDS8_Q));
+    ASSERT(packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_MOTION) ||
+           packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_MOTION_Q) ||
+           packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POS_Q) ||
+           packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POS8_Q) ||
+           packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POSD_Q) ||
+           packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POSD8_Q));
+    ASSERT(w.players[0].asteroid_sent[2]);
+    ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
+                  (int)w.tick);
 }
 
 TEST(test_world_snapshot_defers_asteroids_while_docked) {

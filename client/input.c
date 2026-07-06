@@ -715,7 +715,8 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
         ? row->total_price : row->unit_price * quantity);
     int tow_cap = 2 + (ship ? ship->tractor_level : 0) * 2;
     if (tow_cap > 10) tow_cap = 10;
-    int tow_space = tow_cap - (ship ? ship->towed_pod_count : 0);
+    int tow_space = tow_cap -
+        (ship ? ship->towed_pod_count + ship->towed_count : 0);
     float balance = player_current_balance();
     if (tow_space <= 0) {
         set_notice("Tow slots full.");

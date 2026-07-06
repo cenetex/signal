@@ -3227,15 +3227,13 @@ static void player_restore_towed_cargo_pods(server_player_t *sp,
                                             world_t *w,
                                             int slot) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
-    int max_tow = 2 + sp->ship.tractor_level * 2;
-    if (max_tow > 10) max_tow = 10;
     sp->ship.towed_pod_count = 0;
     memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active || pod->towed_by != slot) continue;
-        if (sp->ship.towed_pod_count >= max_tow) {
+        if (ship_tow_body_space(&sp->ship) <= 0) {
             pod->towed_by = -1;
             continue;
         }
