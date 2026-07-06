@@ -3183,6 +3183,41 @@ int signal_smoke_remote_towable_interp_check(void) {
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = 0.1f;
+    asteroid.index = 7;
+    asteroid.x = 0.0f;
+    asteroid.y = 0.0f;
+    asteroid.vx = 100.0f;
+    asteroid.vy = 0.0f;
+    apply_remote_asteroids(&asteroid, 1);
+    g.asteroid_interp.t = 0.1f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float loose_asteroid_before_unrelated_x = g.world.asteroids[7].pos.x;
+    NetAsteroidState unrelated_loose_asteroid = asteroid;
+    unrelated_loose_asteroid.index = 8;
+    unrelated_loose_asteroid.x = 0.0f;
+    unrelated_loose_asteroid.y = 90.0f;
+    unrelated_loose_asteroid.vx = 0.0f;
+    unrelated_loose_asteroid.vy = 0.0f;
+    apply_remote_asteroids(&unrelated_loose_asteroid, 1);
+    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float loose_asteroid_after_unrelated_x = g.world.asteroids[7].pos.x;
+    NetAsteroidMotionState unrelated_loose_motion = {
+        .index = 8,
+        .x = 30.0f,
+        .y = 90.0f,
+        .vx = 0.0f,
+        .vy = 0.0f,
+    };
+    apply_remote_asteroid_motion(&unrelated_loose_motion, 1);
+    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    interpolate_world_for_render();
+    float loose_asteroid_after_unrelated_motion_x =
+        g.world.asteroids[7].pos.x;
+
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.asteroid_interp.interval = 0.1f;
     g.net_authority_enabled = true;
     g.net_input_tick_protocol = true;
     g.local_player_slot = 0;
@@ -3307,6 +3342,12 @@ int signal_smoke_remote_towable_interp_check(void) {
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
+             loose_asteroid_before_unrelated_x > 9.0f &&
+             loose_asteroid_before_unrelated_x < 11.5f &&
+             loose_asteroid_after_unrelated_x > 14.0f &&
+             loose_asteroid_after_unrelated_x < 16.0f &&
+             loose_asteroid_after_unrelated_motion_x > 19.0f &&
+             loose_asteroid_after_unrelated_motion_x < 21.0f &&
              local_towed_asteroid_x > 249.0f &&
              local_towed_asteroid_x < 251.0f &&
              local_towed_asteroid_vx > 19.0f &&

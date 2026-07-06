@@ -698,6 +698,17 @@ static void net_preserve_local_towed_asteroid_predictions(void) {
     }
 }
 
+static void net_carry_unreceived_asteroid_baselines(
+    const bool received[MAX_ASTEROIDS]) {
+    if (!received) return;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (received[i]) continue;
+        if (!g.asteroid_interp.curr[i].active) continue;
+        g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
+        g.asteroid_interp.prev[i].active = false;
+    }
+}
+
 static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
     if (idx < 0 || idx >= MAX_CARGO_PODS) return;
     const cargo_pod_t *predicted = &g.world.cargo_pods[idx];
@@ -949,6 +960,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
                 g.asteroid_interp.curr[i] = g.asteroid_interp.prev[i];
             }
         }
+    } else {
+        net_carry_unreceived_asteroid_baselines(received);
     }
 
     net_preserve_local_towed_asteroid_predictions();
@@ -971,9 +984,13 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
                                        packet_interval, 0.3f);
     g.asteroid_interp.t = 0.0f;
 
+    bool received[MAX_ASTEROIDS];
+    memset(received, 0, sizeof(received));
+
     for (int i = 0; i < count; i++) {
         uint16_t idx = asteroids[i].index;
         if (idx >= MAX_ASTEROIDS) continue;
+        received[idx] = true;
 
         asteroid_t* a = &g.asteroid_interp.curr[idx];
         if (!a->active) continue;
@@ -988,6 +1005,7 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         a->age = carried_age;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
+    net_carry_unreceived_asteroid_baselines(received);
     net_preserve_local_towed_asteroid_predictions();
 }
 
