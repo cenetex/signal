@@ -161,7 +161,8 @@ typedef enum {
     HUD_ACTION_SCAN_PILOT,         /* int_a = pilot id, int_b = hull, str_a = callsign when known */
     HUD_ACTION_SCAN_CARGO_POD,     /* commodity/grade/int_a quantity, int_b = cargo_pod_kind_t */
     HUD_ACTION_MINING,             /* claim window after fracture */
-    HUD_ACTION_TOWING,             /* int_a = towed_count, int_b = tractor_active (1/0) */
+    HUD_ACTION_TOWING,             /* int_a = total tow, int_b = tractor_active,
+                                    * tier = fragments, commodity = cargo pods */
     HUD_ACTION_TRACTOR_LOCK,       /* int_a = tractor_fragments, int_b = nearby_fragments */
     HUD_ACTION_TRACTOR_REACHING,   /* tractor active, no frag yet — int_b = nearby_fragments */
     HUD_ACTION_FRAGMENTS_NEARBY,   /* tractor inactive, frags in range — int_b = nearby_fragments */
@@ -515,12 +516,16 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.kind = HUD_ACTION_MINING;
         return out;
     }
-    if (LOCAL_PLAYER.ship.towed_count > 0) {
+    int towed_fragments = ship_towed_fragment_count(&LOCAL_PLAYER.ship);
+    int towed_pods = ship_towed_pod_count(&LOCAL_PLAYER.ship);
+    if (towed_fragments > 0 || towed_pods > 0) {
         out.kind = HUD_ACTION_TOWING;
-        out.int_a = LOCAL_PLAYER.ship.towed_count;
+        out.int_a = towed_fragments + towed_pods;
         out.int_b = LOCAL_PLAYER.ship.tractor_active ? 1 : 0;
+        out.tier = towed_fragments;
+        out.commodity = towed_pods;
         out.grade = (int)hud_best_towed_fragment_grade();
-        for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+        for (int t = 0; t < towed_fragments; t++) {
             int idx = LOCAL_PLAYER.ship.towed_fragments[t];
             if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
             const asteroid_t *a = &g.world.asteroids[idx];
@@ -627,9 +632,15 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "MINING... // CLAIM WINDOW");
         return;
     case HUD_ACTION_TOWING:
-        if (a->str_a) snprintf(out, out_size, "TOWING %d // %s", a->int_a, a->str_a);
-        else if (a->int_b) snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
-        else          snprintf(out, out_size, "TOWING %d // tap [Space] release", a->int_a);
+        if (a->str_a && a->commodity == 0)
+            snprintf(out, out_size, "TOWING %d // %s", a->int_a, a->str_a);
+        else if (a->int_b)
+            snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
+        else if (a->commodity > 0 && a->tier == 0)
+            snprintf(out, out_size, "TOWING %d CRATE%s // tap [Space] drop",
+                     a->commodity, a->commodity == 1 ? "" : "S");
+        else
+            snprintf(out, out_size, "TOWING %d // tap [Space] release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
         snprintf(out, out_size, "TRACTOR // %d FRAG", a->int_a);
@@ -721,9 +732,15 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         snprintf(out, out_size, "Mining... // claim window");
         return;
     case HUD_ACTION_TOWING:
-        if (a->str_a) snprintf(out, out_size, "Towing %d // %s", a->int_a, a->str_a);
-        else if (a->int_b) snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
-        else          snprintf(out, out_size, "Towing %d // tap [Space] to release", a->int_a);
+        if (a->str_a && a->commodity == 0)
+            snprintf(out, out_size, "Towing %d // %s", a->int_a, a->str_a);
+        else if (a->int_b)
+            snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
+        else if (a->commodity > 0 && a->tier == 0)
+            snprintf(out, out_size, "Towing %d crate%s // tap [Space] to drop",
+                     a->commodity, a->commodity == 1 ? "" : "s");
+        else
+            snprintf(out, out_size, "Towing %d // tap [Space] to release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
         snprintf(out, out_size, "Tractor lock // %d frag%s",

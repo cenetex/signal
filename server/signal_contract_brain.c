@@ -297,7 +297,7 @@ static void fill_features(const world_t *w,
     row[16] = scale(c->distance, 9000.0);
     row[17] = scale(c->age, 300.0);
     row[18] = clip(c->hull_ratio, 0.0, 1.0);
-    row[19] = scale((double)sp->ship.towed_count, 10.0);
+    row[19] = scale((double)ship_towed_body_count(&sp->ship), 10.0);
     row[20] = (src_st && station_produces(src_st, c->commodity)) ? 1.0 : 0.0;
     row[21] = (dst_st && station_consumes(dst_st, c->commodity)) ? 1.0 : 0.0;
     row[22] = (src == 0) ? 1.0 : 0.0;

@@ -174,6 +174,8 @@ static int test_first_dock_module_idx(const station_t *st) {
     return -1;
 }
 
+static bool test_first_dock_berth_pos(const station_t *st, vec2 *out);
+
 static station_t *test_reset_single_active_station(world_t *w,
                                                    int station_idx) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return NULL;
@@ -1323,6 +1325,51 @@ TEST(test_buy_selected_station_held_pod_transfers_that_pod) {
     ASSERT_EQ_INT(w.cargo_pods[first].towed_by, -1);
 }
 
+TEST(test_docked_towed_cargo_pod_stays_parked_at_ship) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    anchor_ship_in_station(sp, &w);
+
+    int dock_idx = test_first_dock_module_idx(&w.stations[0]);
+    ASSERT(dock_idx >= 0);
+    int pod_idx = test_spawn_exact_pod(
+        &w, v2_add(sp->ship.pos, v2(120.0f, 60.0f)),
+        COMMODITY_FERRITE_INGOT, 2);
+    ASSERT(pod_idx >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+    w.cargo_pods[pod_idx].vel = v2(520.0f, -180.0f);
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_idx], 0, dock_idx);
+
+    for (int i = 0; i < 24; i++)
+        world_sim_step(&w, SIM_DT);
+
+    vec2 expected = v2_add(sp->ship.pos,
+                           v2_scale(v2_from_angle(sp->ship.angle + PI_F),
+                                    46.0f));
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+    ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[pod_idx]));
+    ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].pos.x, expected.x, 0.01f);
+    ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].pos.y, expected.y, 0.01f);
+    ASSERT_EQ_FLOAT(v2_len(w.cargo_pods[pod_idx].vel), 0.0f, 0.001f);
+}
+
 TEST(test_cargo_pods_collide_and_separate) {
     WORLD_DECL;
     world_reset(&w);
@@ -1861,6 +1908,73 @@ TEST(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper) {
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
     ASSERT(ledger_balance(kepler, sp->session_token) > before);
     ASSERT(sp->ship.stat_credits_earned > 0.0f);
+}
+
+TEST(test_docking_works_while_towing_cargo_pod) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->current_station = -1;
+
+    vec2 berth = {0};
+    ASSERT(test_first_dock_berth_pos(&w.stations[0], &berth));
+    sp->ship.pos = berth;
+    sp->ship.vel = v2(0.0f, 0.0f);
+
+    int pod_idx = spawn_cargo_pod(&w, v2_add(berth, v2(-72.0f, 0.0f)),
+                                  v2(0.0f, 0.0f), COMMODITY_CRYSTAL_ORE,
+                                  3, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = 0;
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+
+    sp->input.interact = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->current_station, 0);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+}
+
+TEST(test_space_release_drops_cargo_pod_instead_of_slingshot) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    vec2 pos = v2_add(w.stations[0].pos, v2(1100.0f, 0.0f));
+    server_player_t *sp = test_prepare_undocked_tractor_player(&w, pos);
+    ASSERT(sp != NULL);
+    sp->ship.angle = 0.0f;
+    sp->ship.vel = v2(300.0f, 0.0f);
+    sp->input.tractor_hold = false;
+    sp->input.release_tow = true;
+
+    int pod_idx = spawn_cargo_pod(&w, v2_add(pos, v2(-100.0f, 0.0f)),
+                                  v2(0.0f, 0.0f), COMMODITY_CRYSTAL_ORE,
+                                  3, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].towed_by = 0;
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    float pod_speed = v2_len(w.cargo_pods[pod_idx].vel);
+    float ship_speed = v2_len(sp->ship.vel);
+    ASSERT(pod_speed < ship_speed * 0.5f + 30.0f);
 }
 
 TEST(test_towed_fragment_loads_raw_contract_at_dock) {
@@ -8091,6 +8205,54 @@ TEST(test_neural_bot_contract_logistics_buys_and_delivers_ingot) {
     ASSERT(sold_at_kepler);
 }
 
+TEST(test_autopilot_toggle_with_towed_pod_plans_logistics_delivery) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 1.0f,
+        .base_price = 70.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->current_station = 0;
+    sp->nearby_station = -1;
+    sp->in_dock_range = false;
+    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->ship.pos = v2_add(w.stations[0].pos, v2(700.0f, 0.0f));
+    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->input.toggle_autopilot = true;
+
+    int pod_idx = test_spawn_exact_pod(&w, v2_add(sp->ship.pos, v2(-55.0f, 0.0f)),
+                                       COMMODITY_FERRITE_INGOT, 1);
+    ASSERT(pod_idx >= 0);
+    sp->ship.towed_pods[0] = (int16_t)pod_idx;
+    sp->ship.towed_pod_count = 1;
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->autopilot_mode, 1);
+    ASSERT_EQ_INT(sp->autopilot_state, AUTOPILOT_STEP_LOGISTICS_TRAVEL);
+    ASSERT_EQ_INT(sp->autopilot_station_target, 1);
+    ASSERT_EQ_INT(sp->autopilot_cargo, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship.towed_pods[0], pod_idx);
+}
+
 TEST(test_neural_bot_logistics_buys_on_station_credit) {
     WORLD_DECL;
     world_reset(&w);
@@ -9217,6 +9379,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_shell_pod_keeps_shell_after_intake_custody_sale);
     RUN(test_buy_station_held_pod_transfers_custody_to_ship);
     RUN(test_buy_selected_station_held_pod_transfers_that_pod);
+    RUN(test_docked_towed_cargo_pod_stays_parked_at_ship);
     RUN(test_cargo_pods_collide_and_separate);
     RUN(test_station_dock_tractor_spreads_market_pods);
     RUN(test_station_dock_tractor_clears_after_pod_moves_out_of_range);
@@ -9229,6 +9392,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_manifest_cargo_pod_sale_preserves_exact_units);
     RUN(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full);
     RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
+    RUN(test_docking_works_while_towing_cargo_pod);
+    RUN(test_space_release_drops_cargo_pod_instead_of_slingshot);
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_tow_capacity_counts_pods_against_fragment_pickup);
     RUN(test_tow_capacity_counts_fragments_against_pod_pickup);
@@ -9269,6 +9434,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_furnace_smelting_consumes_loose_frame_shell);
     RUN(test_crystal_requires_two_distinct_furnace_passes);
     RUN(test_neural_bot_contract_logistics_buys_and_delivers_ingot);
+    RUN(test_autopilot_toggle_with_towed_pod_plans_logistics_delivery);
     RUN(test_neural_bot_logistics_buys_on_station_credit);
     RUN(test_neural_autopilot_flight_records_decision_reason);
     RUN(test_autopilot_prioritizes_raw_ore_contract_mining_target);

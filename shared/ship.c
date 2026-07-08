@@ -66,6 +66,54 @@ float ship_collect_radius(const ship_t* ship) {
     return SHIP_BASE_COLLECT_RADIUS + ((float)ship->tractor_level * SHIP_COLLECT_UPGRADE_STEP);
 }
 
+int ship_tow_body_capacity(const ship_t *ship) {
+    int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
+    if (cap < 0) cap = 0;
+    if (cap > 10) cap = 10;
+    return cap;
+}
+
+int ship_towed_fragment_count(const ship_t *ship) {
+    if (!ship) return 0;
+    int count = ship->towed_count;
+    int cap = (int)(sizeof(ship->towed_fragments) /
+                    sizeof(ship->towed_fragments[0]));
+    if (count < 0) count = 0;
+    if (count > cap) count = cap;
+    return count;
+}
+
+int ship_towed_pod_count(const ship_t *ship) {
+    if (!ship) return 0;
+    int count = ship->towed_pod_count;
+    int cap = (int)(sizeof(ship->towed_pods) /
+                    sizeof(ship->towed_pods[0]));
+    if (count < 0) count = 0;
+    if (count > cap) count = cap;
+    return count;
+}
+
+int ship_towed_body_count(const ship_t *ship) {
+    return ship_towed_fragment_count(ship) + ship_towed_pod_count(ship);
+}
+
+int ship_tow_body_space(const ship_t *ship) {
+    int space = ship_tow_body_capacity(ship) - ship_towed_body_count(ship);
+    return space > 0 ? space : 0;
+}
+
+bool ship_has_towed_fragments(const ship_t *ship) {
+    return ship_towed_fragment_count(ship) > 0;
+}
+
+bool ship_has_towed_pods(const ship_t *ship) {
+    return ship_towed_pod_count(ship) > 0;
+}
+
+bool ship_has_towed_bodies(const ship_t *ship) {
+    return ship_towed_body_count(ship) > 0;
+}
+
 int ship_upgrade_level(const ship_t* ship, ship_upgrade_t upgrade) {
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:

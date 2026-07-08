@@ -1085,6 +1085,8 @@ void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
 static void release_towed_scaffold(world_t *w, server_player_t *sp);
+static void remove_towed_pod_slot(ship_t *ship, int tow_slot);
+static void sync_docked_towed_pods(world_t *w, server_player_t *sp);
 static float apply_scaffold_tow_physics(server_player_t *sp,
                                         scaffold_t *sc,
                                         float dt);
@@ -1128,6 +1130,7 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->ship.towed_scaffold >= 0) release_towed_scaffold(w, sp);
     /* Keep ship at its current position (already in dock range) — just stop it */
     sp->ship.vel = v2(0.0f, 0.0f);
+    sync_docked_towed_pods(w, sp);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
     /* Track dock event for relationship data (#257). w->time is a
      * float — explicitly cast to the uint64_t tick parameter. */
@@ -1890,31 +1893,37 @@ static void remove_towed_pod_slot(ship_t *ship, int tow_slot) {
     ship->towed_pods[ship->towed_pod_count] = -1;
 }
 
-int ship_tow_body_capacity(const ship_t *ship) {
-    int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
-    if (cap < 0) cap = 0;
-    if (cap > 10) cap = 10;
-    return cap;
-}
+static void sync_docked_towed_pods(world_t *w, server_player_t *sp) {
+    if (!w || !sp) return;
+    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
+                        sizeof(sp->ship.towed_pods[0]));
+    if (sp->ship.towed_pod_count > pod_cap)
+        sp->ship.towed_pod_count = (uint8_t)pod_cap;
 
-int ship_towed_body_count(const ship_t *ship) {
-    if (!ship) return 0;
-    int fragment_count = ship->towed_count;
-    int pod_count = ship->towed_pod_count;
-    int fragment_cap = (int)(sizeof(ship->towed_fragments) /
-                             sizeof(ship->towed_fragments[0]));
-    int pod_cap = (int)(sizeof(ship->towed_pods) /
-                        sizeof(ship->towed_pods[0]));
-    if (fragment_count < 0) fragment_count = 0;
-    if (pod_count < 0) pod_count = 0;
-    if (fragment_count > fragment_cap) fragment_count = fragment_cap;
-    if (pod_count > pod_cap) pod_count = pod_cap;
-    return fragment_count + pod_count;
-}
-
-int ship_tow_body_space(const ship_t *ship) {
-    int space = ship_tow_body_capacity(ship) - ship_towed_body_count(ship);
-    return space > 0 ? space : 0;
+    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
+    float sync_range = fmaxf(180.0f, ship_tractor_range(&sp->ship) * 1.5f);
+    float sync_range_sq = sync_range * sync_range;
+    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
+        int idx = sp->ship.towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
+            remove_towed_pod_slot(&sp->ship, t);
+            t--;
+            continue;
+        }
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (cargo_pod_has_module_tractor(pod)) {
+            remove_towed_pod_slot(&sp->ship, t);
+            t--;
+            continue;
+        }
+        if (v2_dist_sq(pod->pos, sp->ship.pos) > sync_range_sq)
+            continue;
+        float spacing = 46.0f + 8.0f * (float)t;
+        pod->towed_by = (int8_t)sp->id;
+        cargo_pod_clear_module_tractor(pod);
+        pod->pos = v2_add(sp->ship.pos, v2_scale(pod_dir, spacing));
+        pod->vel = sp->ship.vel;
+    }
 }
 
 static int station_first_dock_module(const station_t *st) {
@@ -5181,18 +5190,22 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
 }
 
 static void release_towed_pods(world_t *w, server_player_t *sp) {
+    /* Cargo release is an intake handoff/drop, not the rock slingshot. */
+    const float drop_speed = 12.0f;
+    const float inherited_speed = 0.35f;
     for (int t = 0; t < sp->ship.towed_pod_count; t++) {
         int idx = sp->ship.towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) continue;
         cargo_pod_t *pod = &w->cargo_pods[idx];
-        vec2 to_ship = v2_sub(sp->ship.pos, pod->pos);
-        float dist = v2_len(to_ship);
+        vec2 away = v2_sub(pod->pos, sp->ship.pos);
+        float dist = v2_len(away);
         if (dist > 0.01f) {
-            vec2 dir = v2_scale(to_ship, 1.0f / dist);
-            float stretch = fmaxf(0.0f, dist - SHIP_TOW_BAND_REST_LEN);
-            float fling = ROCK_THROW_BASE_SPEED + fixp_sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
-            pod->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
+            away = v2_scale(away, 1.0f / dist);
+        } else {
+            away = v2_scale(ship_forward(sp->ship.angle), -1.0f);
         }
+        pod->vel = v2_add(v2_scale(sp->ship.vel, inherited_speed),
+                          v2_scale(away, drop_speed));
         pod->towed_by = -1;
     }
     sp->ship.towed_pod_count = 0;
@@ -7870,7 +7883,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             float sig = signal_strength_at(w, sp->ship.pos);
             if (sig >= 0.80f) {
                 sp->autopilot_mode = 1;
-                if (sp->ship.towed_count > 0) {
+                if (ship_has_towed_fragments(&sp->ship)) {
                     sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
                 } else {
                     sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
@@ -8002,12 +8015,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         step_ship_boost_drain(w, sp, dt, boost, turn_input);
         step_ship_motion(&sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */
-        if (sp->ship.towed_count > 0) {
-            float tow_drag = 0.15f * (float)sp->ship.towed_count;
+        int towed_fragments = ship_towed_fragment_count(&sp->ship);
+        if (towed_fragments > 0) {
+            float tow_drag = 0.15f * (float)towed_fragments;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
-        if (sp->ship.towed_pod_count > 0) {
-            float tow_drag = 0.22f * (float)sp->ship.towed_pod_count;
+        int towed_pods = ship_towed_pod_count(&sp->ship);
+        if (towed_pods > 0) {
+            float tow_drag = 0.22f * (float)towed_pods;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
         /* Scaffold tow drag: heavy — ship feels the mass. Speed cap
@@ -8052,7 +8067,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (w->player_only_mode) {
                 step_predicted_towed_body_forces(w, sp, dt);
             } else {
-                /* Hold R = tractor active; tap R = release fragments + scaffold */
+                /* Hold Space = tractor active; tap Space = release towed bodies. */
                 sp->ship.tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
                     release_towed_fragments(w, sp);
@@ -8064,10 +8079,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     step_fragment_collection(w, sp, dt);
                     step_cargo_pod_collection(w, sp, dt);
                 } else {
-                    if (sp->ship.towed_pod_count > 0)
+                    if (ship_has_towed_pods(&sp->ship))
                         step_leashed_cargo_pods(w, sp, dt);
                 }
-                if (!sp->ship.tractor_active && sp->ship.towed_count > 0)
+                if (!sp->ship.tractor_active && ship_has_towed_fragments(&sp->ship))
                     step_leashed_fragments(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
 
@@ -8115,6 +8130,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_docking_state(w, sp, dt);
         if (!launch_requested && !w->player_only_mode)
             step_station_interaction_system(w, sp, &sp->input);
+        if (sp->docked)
+            sync_docked_towed_pods(w, sp);
     }
 
     /* Hail: contact nearby station(s) and report station-local balance. */

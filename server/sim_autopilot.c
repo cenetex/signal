@@ -23,7 +23,8 @@
  * towed fragment's commodity. Returns COMMODITY_COUNT when nothing is
  * towed. */
 static commodity_t autopilot_towed_commodity(const world_t *w, const server_player_t *sp) {
-    for (int t = 0; t < sp->ship.towed_count; t++) {
+    int fragment_count = ship_towed_fragment_count(&sp->ship);
+    for (int t = 0; t < fragment_count; t++) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &w->asteroids[idx];
@@ -35,7 +36,8 @@ static commodity_t autopilot_towed_commodity(const world_t *w, const server_play
 
 static const asteroid_t *autopilot_first_towed_fragment(const world_t *w,
                                                         const server_player_t *sp) {
-    for (int t = 0; t < sp->ship.towed_count; t++) {
+    int fragment_count = ship_towed_fragment_count(&sp->ship);
+    for (int t = 0; t < fragment_count; t++) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &w->asteroids[idx];
@@ -108,7 +110,7 @@ static bool autopilot_asteroid_claimed_by_peer(const world_t *w,
         if (other == self) continue;
         if (!other->connected || other->docked || other->autopilot_mode == 0)
             continue;
-        if (other->ship.towed_count > 0)
+        if (ship_has_towed_fragments(&other->ship))
             continue;
         if (other->autopilot_target != asteroid_idx)
             continue;
@@ -686,6 +688,58 @@ static float autopilot_contract_score(const world_t *w,
     return contract_price(ct) / fmaxf(1.0f, dist / 1000.0f);
 }
 
+static int autopilot_find_carried_delivery_destination(const world_t *w,
+                                                       const server_player_t *sp,
+                                                       commodity_t cargo) {
+    if (!w || !sp || !autopilot_finished_good(cargo)) return -1;
+
+    int best_contract_station = -1;
+    float best_contract_score = -1.0f;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->commodity != cargo || ct->quantity_needed <= 0.01f) continue;
+        float score = autopilot_contract_score(w, sp, ct);
+        if (score > best_contract_score) {
+            best_contract_score = score;
+            best_contract_station = ct->station_index;
+        }
+    }
+    if (best_contract_station >= 0) return best_contract_station;
+
+    int best_station = -1;
+    float best_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!autopilot_valid_dock_station(w, s)) continue;
+        if (!station_consumes(&w->stations[s], cargo)) continue;
+        float d = v2_dist_sq(sp->ship.pos, w->stations[s].pos);
+        if (d < best_d) {
+            best_d = d;
+            best_station = s;
+        }
+    }
+    return best_station;
+}
+
+static bool autopilot_plan_carried_logistics(world_t *w,
+                                             server_player_t *sp) {
+    commodity_t cargo = COMMODITY_COUNT;
+    if (!autopilot_first_ship_finished(w, sp, &cargo)) return false;
+
+    int dest = autopilot_find_carried_delivery_destination(w, sp, cargo);
+    if (dest < 0) return false;
+
+    sp->autopilot_station_target = dest;
+    sp->autopilot_cargo = cargo;
+    sp->autopilot_target = -1;
+    sp->autopilot_state =
+        (sp->docked && sp->current_station == dest)
+            ? AUTOPILOT_STEP_LOGISTICS_DELIVER
+            : AUTOPILOT_STEP_LOGISTICS_TRAVEL;
+    sp->autopilot_timer = 0.0f;
+    return true;
+}
+
 static bool autopilot_source_can_sell_to_bot(const world_t *w,
                                              const server_player_t *sp,
                                              int source_station,
@@ -751,7 +805,7 @@ static int autopilot_append_contract_candidates(
     int cap) {
     if (!autopilot_logistics_enabled(sp) ||
         !autopilot_valid_dock_station(w, source_station) ||
-        sp->ship.towed_count > 0 ||
+        ship_has_towed_fragments(&sp->ship) ||
         cap <= 0) {
         return 0;
     }
@@ -893,7 +947,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
                  * force a path recompute (clear path age). Don't abandon
                  * the delivery — that causes the ship to tow rocks away
                  * from the station toward a new mining target. */
-                if (sp->ship.towed_count > 0 &&
+                if (ship_has_towed_fragments(&sp->ship) &&
                     sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
                     nav_force_replan(nav_player_path(sp->id));
                     keep_target = true;
@@ -952,11 +1006,14 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         (sp->autopilot_state == AUTOPILOT_STEP_MINE ||
          sp->autopilot_state == AUTOPILOT_STEP_COLLECT ||
          (sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY &&
-          sp->ship.towed_count > 0));
+          ship_has_towed_fragments(&sp->ship)));
 
     /* Mode 1: mining loop. */
     switch (sp->autopilot_state) {
     case AUTOPILOT_STEP_FIND_TARGET: {
+        if (autopilot_plan_carried_logistics(w, sp)) {
+            break;
+        }
         if (sp->docked) {
             if (autopilot_plan_docked_logistics(w, sp)) {
                 break;
@@ -967,7 +1024,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         /* Carrying fragments means the next objective is a furnace/hopper
          * beam corridor, not another mining target or the station dock. */
-        if (sp->ship.towed_count > 0) {
+        if (ship_has_towed_fragments(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -1006,13 +1063,16 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
+        if (autopilot_plan_carried_logistics(w, sp)) {
+            break;
+        }
         const asteroid_t *a = &w->asteroids[sp->autopilot_target];
         if (!a->active || asteroid_is_collectible(a)) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
         /* Bail to delivery if carrying fragments. */
-        if (sp->ship.towed_count > 0) {
+        if (ship_has_towed_fragments(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -1079,8 +1139,11 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
+        if (autopilot_plan_carried_logistics(w, sp)) {
+            break;
+        }
         /* Don't mine while carrying fragments. */
-        if (sp->ship.towed_count > 0) {
+        if (ship_has_towed_fragments(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
@@ -1138,6 +1201,9 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * is full OR nothing's nearby OR we've been loitering too long. */
         sp->input.tractor_hold = true;
         sp->input.mine = false;
+        if (autopilot_plan_carried_logistics(w, sp)) {
+            break;
+        }
         /* Signal check — don't collect in weak signal. */
         if (signal_strength_at(w, sp->ship.pos) < 0.5f) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
@@ -1146,7 +1212,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
         /* Carrying fragments = go deliver. */
-        if (sp->ship.towed_count > 0) {
+        if (ship_has_towed_fragments(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
@@ -1166,7 +1232,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             /* No more fragments in range. If we're carrying anything,
              * dump it at the nearest refinery; otherwise look for a
              * new mining target. */
-            sp->autopilot_state = (sp->ship.towed_count > 0)
+            sp->autopilot_state = ship_has_towed_fragments(&sp->ship)
                 ? AUTOPILOT_STEP_RETURN_TO_REFINERY
                 : AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
@@ -1180,7 +1246,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.thrust = (fixp_cosf(diff) > 0.5f) ? 0.6f : 0.0f;
         if (sp->autopilot_timer > 8.0f) {
-            sp->autopilot_state = (sp->ship.towed_count > 0)
+            sp->autopilot_state = ship_has_towed_fragments(&sp->ship)
                 ? AUTOPILOT_STEP_RETURN_TO_REFINERY
                 : AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
@@ -1212,7 +1278,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * the silo never reaches them. */
         commodity_t towed_ore = autopilot_towed_commodity(w, sp);
         const asteroid_t *towed_fragment = autopilot_first_towed_fragment(w, sp);
-        bool hauling_fragment = sp->ship.towed_count > 0 &&
+        bool hauling_fragment = ship_has_towed_fragments(&sp->ship) &&
                                 towed_ore < COMMODITY_COUNT &&
                                 towed_fragment != NULL;
         bool need_repair = autopilot_needs_repair(&sp->ship) && !hauling_fragment;
@@ -1238,7 +1304,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * everything we towed in, head back out for another load. The
          * furnace pulls fragments in while we hold position at the
          * smelt point above. */
-        if (!need_dock && sp->ship.towed_count == 0 && dist < 500.0f) {
+        if (!need_dock && !ship_has_towed_fragments(&sp->ship) && dist < 500.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;

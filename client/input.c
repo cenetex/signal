@@ -12,8 +12,9 @@
  *         2. Towing a scaffold undocked → place at nearest slot.
  *         3. Plan mode active → lock outpost (ghost sub-mode) or
  *            place / clear module (real sub-mode).
- *         4. Undocked with targeted module → dock (if DOCK) or toggle
- *            inspect pane.
+ *         4. Undocked in dock range → dock.
+ *         5. Undocked with targeted module outside dock range → dock
+ *            (if DOCK) or toggle inspect pane.
  *
  *   [B]   1. Docked → (no action; plan mode needs undocked).
  *         2. Plan mode active → exit plan mode.
@@ -28,6 +29,7 @@
  *   [S]   TRADE tab → sell accepted cargo; CONTRACTS tab → load/unload/proof
  *         selected delivery-credit cargo, or deliver matching contract cargo.
  *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
+ *           Fragments slingshot; cargo pods gently detach for intake handoff.
  *   [R]   SHIP panel → repair; plan mode → cycle module type.
  *   [M]   SHIP panel → upgrade mining laser; undocked → mining laser.
  *   [C]   SHIP panel → upgrade cargo hold.
@@ -63,6 +65,7 @@
 #include "manifest.h"
 #include "contract_fit.h"
 #include "npc_radio.h"
+#include "ship.h"
 
 static float action_predict_window_sec(void) {
     float window = 0.5f;
@@ -446,12 +449,19 @@ static void sample_targeting(const input_intent_t *intent) {
     }
 }
 
-/* E key: docked = LAUNCH; undocked = activate the targeted module
- * (dock if it's a DOCK module, otherwise toggle the inspect pane), or
- * fall back to "dock" when in dock range with no target. */
+/* E key: docked = LAUNCH; scaffold/plan modes are handled by their own
+ * samplers; undocked in dock range = dock. Outside dock range, a targeted
+ * module can be inspected or used as a dock target. */
 static void sample_e_interact(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_E)) return;
     if (LOCAL_PLAYER.docked) { intent->interact = true; return; }
+    if (LOCAL_PLAYER.ship.towed_scaffold >= 0 || g.plan_mode_active) return;
+    if (LOCAL_PLAYER.in_dock_range) {
+        intent->interact = true;
+        g.target_station = -1;
+        g.target_module = -1;
+        return;
+    }
     if (g.target_station >= 0 && g.target_module >= 0) {
         const station_t *tst = station_at(g.target_station);
         if (!tst) {
@@ -713,10 +723,7 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     int quantity = row->quantity > 0 ? row->quantity : 1;
     float total_price = (float)(row->total_price > 0
         ? row->total_price : row->unit_price * quantity);
-    int tow_cap = 2 + (ship ? ship->tractor_level : 0) * 2;
-    if (tow_cap > 10) tow_cap = 10;
-    int tow_space = tow_cap -
-        (ship ? ship->towed_pod_count + ship->towed_count : 0);
+    int tow_space = ship_tow_body_space(ship);
     float balance = player_current_balance();
     if (tow_space <= 0) {
         set_notice("Tow slots full.");

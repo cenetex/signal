@@ -1115,9 +1115,6 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod);
 bool cargo_pod_take_manifest_unit(cargo_pod_t *pod, commodity_t commodity,
                                   cargo_unit_t *out_unit);
 void step_station_cargo_pod_tractors(world_t *w, float dt);
-int ship_tow_body_capacity(const ship_t *ship);
-int ship_towed_body_count(const ship_t *ship);
-int ship_tow_body_space(const ship_t *ship);
 int ship_towed_pods_manifest_count(const world_t *w, const ship_t *ship,
                                    commodity_t commodity);
 bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,

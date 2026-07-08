@@ -1462,20 +1462,6 @@ static float ship_manifest_backed_cargo_volume(const ship_t *ship)
     return total;
 }
 
-static int ship_towed_pod_capacity_local(const ship_t *ship)
-{
-    int cap = 2 + (ship ? ship->tractor_level : 0) * 2;
-    if (cap < 0) cap = 0;
-    if (cap > 10) cap = 10;
-    return cap;
-}
-
-static int ship_towed_body_count_local(const ship_t *ship)
-{
-    if (!ship) return 0;
-    return ship->towed_count + ship->towed_pod_count;
-}
-
 static bool local_ship_lists_towed_pod(const ship_t *ship, int pod_idx)
 {
     if (!ship || pod_idx < 0) return false;
@@ -2098,9 +2084,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     if (station_idx < 0) return 0;
     int row_count = 0;
     float credits = player_current_balance();
-    int tow_space = ship_towed_pod_capacity_local(ship) -
-        ship_towed_body_count_local(ship);
-    if (tow_space < 0) tow_space = 0;
+    int tow_space = ship_tow_body_space(ship);
 
     /* BUY rows backed by physical dock-held pods. These are the crate
      * economy's primary market surface: buying transfers custody of the

@@ -25,6 +25,14 @@ float ship_cargo_capacity(const ship_t* ship);
 float ship_mining_rate(const ship_t* ship);
 float ship_tractor_range(const ship_t* ship);
 float ship_collect_radius(const ship_t* ship);
+int ship_tow_body_capacity(const ship_t *ship);
+int ship_towed_fragment_count(const ship_t *ship);
+int ship_towed_pod_count(const ship_t *ship);
+int ship_towed_body_count(const ship_t *ship);
+int ship_tow_body_space(const ship_t *ship);
+bool ship_has_towed_fragments(const ship_t *ship);
+bool ship_has_towed_pods(const ship_t *ship);
+bool ship_has_towed_bodies(const ship_t *ship);
 
 int ship_upgrade_level(const ship_t* ship, ship_upgrade_t upgrade);
 bool ship_upgrade_maxed(const ship_t* ship, ship_upgrade_t upgrade);

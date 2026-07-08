@@ -1313,7 +1313,7 @@ enum {
     NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED #259 — legacy build menu, no-op on server */
     NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_HAIL           = 26,  /* signal hail/contact scan */
-    NET_ACTION_RELEASE_TOW    = 27,  /* tap R: release towed fragments (no longer toggles) */
+    NET_ACTION_RELEASE_TOW    = 27,  /* tap Space: release towed bodies */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_INGOT      = 29,  /* direct named-ingot purchase; result/telemetry only */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
