@@ -1924,6 +1924,12 @@ static inline uint32_t asteroid_state_q_semantic_signature(
     return h;
 }
 
+static inline uint32_t asteroid_identity_signature(const asteroid_t *a) {
+    uint32_t h = 2166136261u;
+    h = asteroid_state_q_hash_u32(h, (uint32_t)asteroid_wire_flags(a));
+    return h;
+}
+
 static inline uint32_t asteroid_state_q_numeric_signature(
     const asteroid_t *a) {
     uint32_t h = asteroid_state_q_semantic_signature(a);
@@ -2051,6 +2057,7 @@ static inline void server_prioritize_towed_asteroid_streams(
 
         if (identity_due) {
             sp->asteroid_sent[idx] = false;
+            sp->asteroid_identity_sent_sig[idx] = 0u;
             asteroid_state_q_clear_sent(
                 idx, sp->asteroid_state_sent_tick,
                 sp->asteroid_state_sent_sig,
@@ -2076,7 +2083,8 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
     uint8_t *remove_buf, int *remove_len_out,
     const asteroid_t *asteroids, vec2 player_pos, bool *sent,
     uint32_t *motion_sent_tick, vec2 *motion_sent_pos,
-    vec2 *motion_sent_vel, uint32_t *state_sent_tick,
+    vec2 *motion_sent_vel, uint32_t *identity_sent_sig,
+    uint32_t *state_sent_tick,
     uint32_t *state_sent_sig, uint32_t *state_sent_semantic_sig,
     uint32_t server_tick,
     int background_identity_budget) {
@@ -2110,13 +2118,16 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
         bool in_view = a->active && dist_sq < ASTEROID_VIEW_RADIUS_SQ;
 
         if (in_view) {
+            uint32_t identity_sig = asteroid_identity_signature(a);
+            bool identity_matches = identity_sent_sig == NULL ||
+                identity_sent_sig[i] == identity_sig;
             float speed_sq = v2_len_sq(a->vel);
             bool moving = speed_sq > ASTEROID_NET_MOVING_SPEED_SQ;
             bool was_sent_moving = motion_sent_tick && motion_sent_tick[i] != 0u;
             bool motion_only = false;
             bool settling_motion_only = false;
             bool state_q_only = false;
-            if (sent[i] && !a->net_dirty) {
+            if (sent[i] && !a->net_dirty && identity_matches) {
                 if (moving) {
                     if (motion_sent_tick &&
                         !asteroid_net_motion_should_send(
@@ -2132,7 +2143,8 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
                 } else if (!was_sent_moving) {
                     continue;
                 }
-            } else if (sent[i] && a->net_dirty && state_q_buf != NULL) {
+            } else if (sent[i] && a->net_dirty && state_q_buf != NULL &&
+                       identity_matches) {
                 state_q_only = true;
                 if (asteroid_state_q_should_send(
                         a, i, state_sent_tick, state_sent_sig,
@@ -2311,6 +2323,8 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
                 count++;
             }
             sent[i] = true;
+            if (identity_sent_sig)
+                identity_sent_sig[i] = identity_sig;
             if (motion_sent_tick) {
                 motion_sent_tick[i] = moving ? server_tick : 0u;
                 if (motion_sent_pos) motion_sent_pos[i] = a->pos;
@@ -2343,6 +2357,8 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
             asteroid_state_q_clear_sent(
                 i, state_sent_tick, state_sent_sig,
                 state_sent_semantic_sig);
+            if (identity_sent_sig)
+                identity_sent_sig[i] = 0u;
         }
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
@@ -2455,7 +2471,7 @@ static inline int serialize_asteroids_for_player_split_ext_state_at_tick(
         pos_q_buf, pos_q_len_out, pos8_q_buf, pos8_q_len_out,
         state_q_buf, state_q_len_out, remove_buf, remove_len_out,
         asteroids, player_pos, sent, motion_sent_tick, motion_sent_pos,
-        motion_sent_vel, state_sent_tick, state_sent_sig,
+        motion_sent_vel, NULL, state_sent_tick, state_sent_sig,
         state_sent_semantic_sig, server_tick, -1);
 }
 
@@ -5848,7 +5864,8 @@ static inline void server_emit_world_snapshot_for_player(
             scratch->asteroid_remove, &remove_len,
             w->asteroids, sp->ship.pos, sp->asteroid_sent,
             sp->asteroid_motion_sent_tick, sp->asteroid_motion_sent_pos,
-            sp->asteroid_motion_sent_vel, sp->asteroid_state_sent_tick,
+            sp->asteroid_motion_sent_vel, sp->asteroid_identity_sent_sig,
+            sp->asteroid_state_sent_tick,
             sp->asteroid_state_sent_sig, sp->asteroid_state_sent_semantic_sig,
             w->tick, background_identity_budget);
         if (alen > ASTEROID_MSG_HEADER)

@@ -322,6 +322,7 @@ typedef struct {
     uint32_t asteroid_motion_sent_tick[MAX_ASTEROIDS];
     vec2 asteroid_motion_sent_pos[MAX_ASTEROIDS];
     vec2 asteroid_motion_sent_vel[MAX_ASTEROIDS];
+    uint32_t asteroid_identity_sent_sig[MAX_ASTEROIDS];
     uint32_t asteroid_state_sent_tick[MAX_ASTEROIDS];
     uint32_t asteroid_state_sent_sig[MAX_ASTEROIDS];
     uint32_t asteroid_state_sent_semantic_sig[MAX_ASTEROIDS];

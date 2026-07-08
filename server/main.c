@@ -1191,12 +1191,15 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->world_interactions_last_sent_tick = 0;
     sp->world_interaction_drift_last_sent_tick = 0;
     sp->world_interaction_drift_block_tick = 0;
+    memset(sp->asteroid_sent, 0, sizeof(sp->asteroid_sent));
     memset(sp->asteroid_motion_sent_tick, 0,
            sizeof(sp->asteroid_motion_sent_tick));
     memset(sp->asteroid_motion_sent_pos, 0,
            sizeof(sp->asteroid_motion_sent_pos));
     memset(sp->asteroid_motion_sent_vel, 0,
            sizeof(sp->asteroid_motion_sent_vel));
+    memset(sp->asteroid_identity_sent_sig, 0,
+           sizeof(sp->asteroid_identity_sent_sig));
     memset(sp->asteroid_state_sent_tick, 0,
            sizeof(sp->asteroid_state_sent_tick));
     memset(sp->asteroid_state_sent_sig, 0,
@@ -1467,7 +1470,8 @@ static void send_initial_world_bundle_to_player(struct mg_connection *c,
             world.asteroids, sp->ship.pos,
             sp->asteroid_sent, sp->asteroid_motion_sent_tick,
             sp->asteroid_motion_sent_pos,
-            sp->asteroid_motion_sent_vel, NULL, NULL, NULL,
+            sp->asteroid_motion_sent_vel, sp->asteroid_identity_sent_sig,
+            NULL, NULL, NULL,
             world.tick,
             asteroid_net_background_identity_budget_at_tick(world.tick));
         if (sync_len > ASTEROID_MSG_HEADER)

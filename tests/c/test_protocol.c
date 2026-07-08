@@ -832,7 +832,7 @@ TEST(test_asteroid_identity_budget_trickles_background_first_visible) {
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         asteroids, v2(0.0f, 0.0f), sent, NULL, NULL, NULL,
-        NULL, NULL, NULL, 10u, 1);
+        NULL, NULL, NULL, NULL, 10u, 1);
 
     ASSERT_EQ_INT(len, ASTEROID_MSG_HEADER);
     ASSERT_EQ_INT(asteroids8_q[0], NET_MSG_WORLD_ASTEROIDS8_Q);
@@ -850,7 +850,7 @@ TEST(test_asteroid_identity_budget_trickles_background_first_visible) {
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         asteroids, v2(0.0f, 0.0f), sent, NULL, NULL, NULL,
-        NULL, NULL, NULL, 11u, 1);
+        NULL, NULL, NULL, NULL, 11u, 1);
 
     ASSERT_EQ_INT(len, ASTEROID_MSG_HEADER);
     ASSERT_EQ_INT(asteroids8_q[1], 1);
@@ -2337,6 +2337,75 @@ TEST(test_asteroid_delta_uses_compact_state_stream_for_known_dirty) {
     ASSERT_EQ_INT(p[15], MINING_GRADE_RARE);
     ASSERT_EQ_INT(p[16], CRYSTAL_STAGE_INTERMEDIATE);
     ASSERT_EQ_INT(p[17], ASTEROID_PHASE_GAS_RICH);
+}
+
+TEST(test_asteroid_identity_change_forces_full_upsert) {
+    asteroid_t asteroids[MAX_ASTEROIDS];
+    memset(asteroids, 0, sizeof(asteroids));
+    bool sent[MAX_ASTEROIDS] = {0};
+    uint32_t identity_sent_sig[MAX_ASTEROIDS] = {0};
+    uint32_t state_sent_tick[MAX_ASTEROIDS] = {0};
+    uint32_t state_sent_sig[MAX_ASTEROIDS] = {0};
+    uint32_t state_sent_semantic_sig[MAX_ASTEROIDS] = {0};
+
+    asteroid_t parent = {0};
+    parent.active = true;
+    parent.fracture_child = false;
+    parent.tier = ASTEROID_TIER_M;
+    parent.commodity = COMMODITY_FERRITE_ORE;
+
+    asteroids[7].active = true;
+    asteroids[7].net_dirty = true;
+    asteroids[7].fracture_child = true;
+    asteroids[7].tier = ASTEROID_TIER_S;
+    asteroids[7].commodity = COMMODITY_FERRITE_ORE;
+    asteroids[7].pos = v2(80.0f, 90.0f);
+    asteroids[7].vel = v2(8.0f, -3.0f);
+    asteroids[7].radius = 12.0f;
+    asteroids[7].hp = 18.0f;
+    asteroids[7].ore = 10.0f;
+    sent[7] = true;
+    identity_sent_sig[7] = asteroid_identity_signature(&parent);
+    state_sent_tick[7] = 100u;
+    state_sent_sig[7] = 1234u;
+    state_sent_semantic_sig[7] = 5678u;
+
+    uint8_t full[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t motion[ASTEROID_MOTION_MSG_HEADER +
+                   MAX_ASTEROIDS * ASTEROID_MOTION_RECORD_SIZE];
+    uint8_t motion_q[ASTEROID_MOTION_Q_MSG_HEADER +
+                     MAX_ASTEROIDS * ASTEROID_MOTION_Q_RECORD_SIZE];
+    uint8_t state_q[ASTEROID_STATE_Q_MSG_HEADER +
+                    MAX_ASTEROIDS * ASTEROID_STATE_Q_RECORD_SIZE];
+    int motion_len = 0;
+    int motion_q_len = 0;
+    int state_q_len = 0;
+
+    int full_len = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+        full, NULL, NULL, NULL, NULL,
+        motion, &motion_len, motion_q, &motion_q_len,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        state_q, &state_q_len, NULL, NULL,
+        asteroids, v2(0.0f, 0.0f), sent,
+        NULL, NULL, NULL, identity_sent_sig,
+        state_sent_tick, state_sent_sig, state_sent_semantic_sig,
+        101u, -1);
+
+    ASSERT_EQ_INT(full_len, ASTEROID_MSG_HEADER + ASTEROID_RECORD_SIZE);
+    ASSERT_EQ_INT(full[1] | (full[2] << 8), 1);
+    ASSERT_EQ_INT(state_q[1] | (state_q[2] << 8), 0);
+    ASSERT_EQ_INT(state_q_len, ASTEROID_STATE_Q_MSG_HEADER);
+
+    const uint8_t *p = &full[ASTEROID_MSG_HEADER];
+    ASSERT_EQ_INT(p[0] | (p[1] << 8), 7);
+    ASSERT(p[2] & 1);
+    ASSERT(p[2] & (1 << 1));
+    ASSERT_EQ_INT((p[2] >> 2) & 0x7, ASTEROID_TIER_S);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[19]), 18.0f, 0.01f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[23]), 10.0f, 0.01f);
+    ASSERT_EQ_INT((int)identity_sent_sig[7],
+                  (int)asteroid_identity_signature(&asteroids[7]));
+    ASSERT_EQ_INT((int)state_sent_tick[7], 101);
 }
 
 TEST(test_asteroid_delta_coalesces_dirty_state_stream_per_player) {
@@ -4686,6 +4755,8 @@ TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
     w.asteroids[2].vel = v2(2.0f, 0.0f);
     w.asteroids[2].radius = 12.0f;
     w.asteroids[2].hp = 20.0f;
+    w.players[0].asteroid_identity_sent_sig[2] =
+        asteroid_identity_signature(&w.asteroids[2]);
     w.tick = 100u + ASTEROID_NET_MOVING_REPEAT_TICKS;
     w.time = 12.5f;
 
@@ -8415,6 +8486,7 @@ void register_protocol_main_tests(void) {
     RUN(test_asteroid_delta_uses_quantized_motion_stream_for_far_repeat);
     RUN(test_asteroid_delta_uses_quantized_motion_stream_for_settling);
     RUN(test_asteroid_delta_uses_compact_state_stream_for_known_dirty);
+    RUN(test_asteroid_identity_change_forces_full_upsert);
     RUN(test_asteroid_delta_coalesces_dirty_state_stream_per_player);
     RUN(test_asteroid_delta_sends_inactive_removal);
     RUN(test_asteroid_delta_uses_compact_removal_stream_when_available);
