@@ -93,6 +93,10 @@ function smokeUrl(options: { singleplayer?: boolean } = {}): string {
   let url = process.env.SMOKE_URL || '/play.html?singleplayer=1';
   url = addQueryParam(url, 'smoke', '1');
   if (options.singleplayer) url = addQueryParam(url, 'singleplayer', '1');
+  if (process.env.SMOKE_LIVE_RELAY_ASSERT &&
+      !/[?&](server|online|multiplayer|network)=/.test(url)) {
+    url = addQueryParam(url, 'online', '1');
+  }
   return url;
 }
 

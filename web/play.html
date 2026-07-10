@@ -289,7 +289,12 @@
       }
 
       function signalStartLobby() {
-        if (signalParams.has('server') || signalParams.has('singleplayer')) return;
+        /* Explicit authority selections are already connected by the game
+         * client. Starting lobby matchmaking as well can receive serverReady
+         * and replace the page while WASM is still initializing. */
+        if (signalParams.has('server') || signalParams.has('singleplayer') ||
+            signalParams.has('online') || signalParams.has('multiplayer') ||
+            signalParams.has('network')) return;
         var lobby = signalLobbyEndpoint(signalParams.get('lobby') || window.SIGNAL_LOBBY_URL || '');
         if (!lobby) return;
         var room = signalParams.get('room') || 'signal-main';

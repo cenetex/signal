@@ -11,8 +11,9 @@ relay, auto-start on demand, and keep persistent state on a small volume.
 - One Fly Volume mounted at `/app/data`.
 - The server listens on `PORT=8080`, serves the web client from `/app/public`,
   and exposes `/ws`, `/health`, and `/api/protocol`.
-- `/play` redirects to `/play.html`; by default `play.html` connects to the
-  same-origin `wss://.../ws` relay. `?singleplayer=1` still forces the
+- `/play` redirects to `/play.html`. The default is local-first singleplayer
+  with lobby promotion when another peer arrives; `?online=1` selects the
+  same-origin WebRTC relay immediately, while `?singleplayer=1` forces the
   in-process local sim.
 - `auto_stop_machines = "suspend"` and `min_machines_running = 0` keep the
   server off when there are no connections, while resume is faster than a cold
@@ -130,7 +131,9 @@ For a live Fly app, run the browser smoke directly:
 
 ```sh
 SMOKE_URL="https://signal.ratimics.com/play" \
-  npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "connects"
+SMOKE_LIVE_RELAY_ASSERT=1 \
+  npx playwright test tests/browser-smoke.spec.ts --project=chromium \
+    --grep "live relay launch accepts flight input"
 ```
 
 ## Cost Controls
