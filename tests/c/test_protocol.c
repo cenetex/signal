@@ -2408,6 +2408,53 @@ TEST(test_asteroid_identity_change_forces_full_upsert) {
     ASSERT_EQ_INT((int)state_sent_tick[7], 101);
 }
 
+TEST(test_asteroid_cache_invalidation_preserves_pending_removal) {
+    static server_player_t sp;
+    static asteroid_t asteroids[MAX_ASTEROIDS];
+    static uint8_t full[ASTEROID_MSG_HEADER +
+                        MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    static uint8_t remove_buf[ASTEROID_REMOVE_MSG_HEADER +
+                              MAX_ASTEROIDS * ASTEROID_REMOVE_RECORD_SIZE];
+    memset(&sp, 0, sizeof(sp));
+    memset(asteroids, 0, sizeof(asteroids));
+
+    sp.asteroid_sent[7] = true;
+    sp.asteroid_motion_sent_tick[7] = 90u;
+    sp.asteroid_motion_sent_pos[7] = v2(10.0f, 20.0f);
+    sp.asteroid_motion_sent_vel[7] = v2(3.0f, 4.0f);
+    sp.asteroid_identity_sent_sig[7] = 123u;
+    sp.asteroid_state_sent_tick[7] = 90u;
+    sp.asteroid_state_sent_sig[7] = 456u;
+    sp.asteroid_state_sent_semantic_sig[7] = 789u;
+
+    server_player_invalidate_asteroid_stream_caches(&sp);
+
+    ASSERT(sp.asteroid_sent[7]);
+    ASSERT_EQ_INT((int)sp.asteroid_motion_sent_tick[7], 0);
+    ASSERT_EQ_INT((int)sp.asteroid_identity_sent_sig[7], 0);
+    ASSERT_EQ_INT((int)sp.asteroid_state_sent_tick[7], 0);
+
+    int remove_len = 0;
+    int full_len = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+        full, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, remove_buf, &remove_len,
+        asteroids, v2(0.0f, 0.0f), sp.asteroid_sent,
+        sp.asteroid_motion_sent_tick, sp.asteroid_motion_sent_pos,
+        sp.asteroid_motion_sent_vel, sp.asteroid_identity_sent_sig,
+        sp.asteroid_state_sent_tick, sp.asteroid_state_sent_sig,
+        sp.asteroid_state_sent_semantic_sig, 100u, -1);
+
+    ASSERT_EQ_INT(full_len, ASTEROID_MSG_HEADER);
+    ASSERT_EQ_INT(remove_len,
+                  ASTEROID_REMOVE_MSG_HEADER + ASTEROID_REMOVE_RECORD_SIZE);
+    ASSERT_EQ_INT(remove_buf[0], NET_MSG_WORLD_ASTEROID_REMOVE);
+    ASSERT_EQ_INT(remove_buf[1] | (remove_buf[2] << 8), 1);
+    ASSERT_EQ_INT(remove_buf[3] | (remove_buf[4] << 8), 7);
+    ASSERT(!sp.asteroid_sent[7]);
+}
+
 TEST(test_asteroid_delta_coalesces_dirty_state_stream_per_player) {
     ASSERT_EQ_INT((int)ASTEROID_STATE_Q_NUMERIC_REPEAT_TICKS, 240);
     ASSERT_EQ_INT((int)ASTEROID_STATE_Q_HEARTBEAT_TICKS, 960);
@@ -8487,6 +8534,7 @@ void register_protocol_main_tests(void) {
     RUN(test_asteroid_delta_uses_quantized_motion_stream_for_settling);
     RUN(test_asteroid_delta_uses_compact_state_stream_for_known_dirty);
     RUN(test_asteroid_identity_change_forces_full_upsert);
+    RUN(test_asteroid_cache_invalidation_preserves_pending_removal);
     RUN(test_asteroid_delta_coalesces_dirty_state_stream_per_player);
     RUN(test_asteroid_delta_sends_inactive_removal);
     RUN(test_asteroid_delta_uses_compact_removal_stream_when_available);

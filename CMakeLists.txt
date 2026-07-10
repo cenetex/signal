@@ -98,6 +98,19 @@ if(EXISTS "${SIGNAL_STATIC_FLIGHT_BRAIN_DIR}/signal_client_flight.c" AND
     add_compile_definitions(SIGNAL_HAS_STATIC_FLIGHT_BRAIN=1)
 endif()
 
+# The generated inference loops request vectorization for production builds.
+# Clang's sanitizer instrumentation can make that requested transform
+# impossible and reports the miss as -Wpass-failed, which becomes fatal under
+# the project's -Werror policy. Suppress only that optimizer diagnostic, only
+# for the generated source, and only in Clang sanitizer configurations; normal
+# builds still fail if the production optimization unexpectedly regresses.
+if(SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES AND
+   CMAKE_C_COMPILER_ID MATCHES "Clang" AND
+   CMAKE_C_FLAGS MATCHES "(^| )-fsanitize=")
+    set_property(SOURCE ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES} APPEND PROPERTY
+        COMPILE_OPTIONS -Wno-pass-failed)
+endif()
+
 # Headless simulation — used by signal_server, signal_test, and the
 # client (which runs the same sim in-process for singleplayer via
 # local_server.c). New server sim files go here.

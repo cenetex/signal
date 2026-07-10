@@ -1191,21 +1191,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->world_interactions_last_sent_tick = 0;
     sp->world_interaction_drift_last_sent_tick = 0;
     sp->world_interaction_drift_block_tick = 0;
-    memset(sp->asteroid_sent, 0, sizeof(sp->asteroid_sent));
-    memset(sp->asteroid_motion_sent_tick, 0,
-           sizeof(sp->asteroid_motion_sent_tick));
-    memset(sp->asteroid_motion_sent_pos, 0,
-           sizeof(sp->asteroid_motion_sent_pos));
-    memset(sp->asteroid_motion_sent_vel, 0,
-           sizeof(sp->asteroid_motion_sent_vel));
-    memset(sp->asteroid_identity_sent_sig, 0,
-           sizeof(sp->asteroid_identity_sent_sig));
-    memset(sp->asteroid_state_sent_tick, 0,
-           sizeof(sp->asteroid_state_sent_tick));
-    memset(sp->asteroid_state_sent_sig, 0,
-           sizeof(sp->asteroid_state_sent_sig));
-    memset(sp->asteroid_state_sent_semantic_sig, 0,
-           sizeof(sp->asteroid_state_sent_semantic_sig));
+    server_player_invalidate_asteroid_stream_caches(sp);
     memset(sp->cargo_pod_motion_sent_tick, 0,
            sizeof(sp->cargo_pod_motion_sent_tick));
     memset(sp->cargo_pod_motion_sent_pos, 0,
@@ -2648,7 +2634,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 
     const uint8_t *data = (const uint8_t *)wm->data.buf;
     int len = (int)wm->data.len;
-    if (len < 1 || pid < 0 || pid >= MAX_PLAYERS) return;
+    if (len < 1) return;
     uint8_t type = data[0];
 
     /* Rate limit: silently drop excess messages. Latency probes have a

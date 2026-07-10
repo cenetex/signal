@@ -1999,6 +1999,30 @@ static inline void asteroid_state_q_clear_sent(
     if (state_sent_semantic_sig) state_sent_semantic_sig[index] = 0u;
 }
 
+/* Invalidate asteroid delta baselines without forgetting which slots the
+ * client currently owns. Keeping asteroid_sent lets the next serializer pass
+ * emit removals for slots that became inactive or left relevance during a
+ * resync; clearing the identity signatures still forces full upserts for every
+ * active known slot. */
+static inline void server_player_invalidate_asteroid_stream_caches(
+    server_player_t *sp) {
+    if (!sp) return;
+    memset(sp->asteroid_motion_sent_tick, 0,
+           sizeof(sp->asteroid_motion_sent_tick));
+    memset(sp->asteroid_motion_sent_pos, 0,
+           sizeof(sp->asteroid_motion_sent_pos));
+    memset(sp->asteroid_motion_sent_vel, 0,
+           sizeof(sp->asteroid_motion_sent_vel));
+    memset(sp->asteroid_identity_sent_sig, 0,
+           sizeof(sp->asteroid_identity_sent_sig));
+    memset(sp->asteroid_state_sent_tick, 0,
+           sizeof(sp->asteroid_state_sent_tick));
+    memset(sp->asteroid_state_sent_sig, 0,
+           sizeof(sp->asteroid_state_sent_sig));
+    memset(sp->asteroid_state_sent_semantic_sig, 0,
+           sizeof(sp->asteroid_state_sent_semantic_sig));
+}
+
 static inline bool asteroid_net_motion_should_send(
     const asteroid_t *a,
     float dist_sq,
