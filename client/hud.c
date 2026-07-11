@@ -925,8 +925,10 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
             float ping_ms = ping_fresh
                 ? net_latency_stats_smoothed_sec(&g.net_ping_latency) * 1000.0f
                 : 0.0f;
-            float gap_ms = (ack_ms > 0.0f && ping_ms > 0.0f && ack_ms > ping_ms)
-                ? ack_ms - ping_ms : 0.0f;
+            float gap_ms = net_latency_gap_stats_fresh(
+                &g.net_ack_gap, g.net_time, NET_LATENCY_STALE_SEC)
+                ? net_latency_gap_stats_smoothed_sec(&g.net_ack_gap) * 1000.0f
+                : 0.0f;
             float warning_ms = (ack_ms > 0.0f) ? ack_ms : ping_ms;
             sdtx_pos(net_x, info_y + 1.2f);
             if (warning_ms >= HUD_LATENCY_BAD_MS)
@@ -945,17 +947,17 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
                 if (ping_ms > 0.0f && ack_ms > 0.0f) {
                     sdtx_pos(net_x, info_y + 2.4f);
                     if (g.net_replay_count > 0) {
-                        sdtx_printf("lag %.0fms replay %u",
+                        sdtx_printf("excess %.0fms history %u",
                                     gap_ms,
                                     (unsigned)g.net_replay_count);
                     } else {
-                        sdtx_printf("lag %.0fms queue %u",
+                        sdtx_printf("excess %.0fms queue %u",
                                     gap_ms,
                                     (unsigned)g.net_action_queue_count);
                     }
                 }
             } else if (ping_ms > 0.0f && ack_ms > 0.0f) {
-                sdtx_printf("ping %.0fms ack %.0fms lag %.0fms queue %u replay %u",
+                sdtx_printf("ping %.0fms ack %.0fms excess %.0fms queue %u history %u",
                             ping_ms,
                             ack_ms,
                             gap_ms,

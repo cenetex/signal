@@ -542,6 +542,30 @@ TEST(test_latency_stats_smooths_and_expires) {
     ASSERT(!net_latency_stats_fresh(&stats, 5.1f, NET_LATENCY_STALE_SEC));
 }
 
+TEST(test_latency_gap_stats_pair_ack_with_ping_at_send) {
+    net_latency_gap_stats_t stats;
+    net_latency_gap_stats_reset(&stats);
+
+    net_latency_gap_stats_observe(&stats, 0.499f, 0.434f, 1.0f);
+    ASSERT_EQ_INT((int)stats.count, 1);
+    ASSERT_EQ_FLOAT(stats.last, 0.065f, 0.0001f);
+    ASSERT_EQ_FLOAT(net_latency_gap_stats_smoothed_sec(&stats),
+                    0.065f, 0.0001f);
+    ASSERT(net_latency_gap_stats_fresh(&stats, 3.0f,
+                                       NET_LATENCY_STALE_SEC));
+
+    /* A later 215 ms ping must not retroactively turn that ACK into a
+     * fabricated 284 ms gap. The next ACK uses its own send-time baseline. */
+    net_latency_gap_stats_observe(&stats, 0.240f, 0.215f, 2.0f);
+    ASSERT_EQ_FLOAT(stats.last, 0.025f, 0.0001f);
+    ASSERT(net_latency_gap_stats_smoothed_sec(&stats) < 0.065f);
+    ASSERT(!net_latency_gap_stats_fresh(&stats, 5.1f,
+                                        NET_LATENCY_STALE_SEC));
+
+    net_latency_gap_stats_observe(&stats, 0.500f, 0.0f, 6.0f);
+    ASSERT_EQ_INT((int)stats.count, 2);
+}
+
 TEST(test_latency_transport_rtt_removes_server_turnaround) {
     ASSERT_EQ_FLOAT(net_latency_transport_rtt_sec(0.120f, 0.020f),
                     0.100f, 0.0001f);
@@ -2445,6 +2469,7 @@ void register_bug_regression_batch4_tests(void) {
     RUN(test_bug35_no_brake_flag);
     RUN(test_bug36_stale_input_between_sends);
     RUN(test_latency_stats_smooths_and_expires);
+    RUN(test_latency_gap_stats_pair_ack_with_ping_at_send);
     RUN(test_latency_transport_rtt_removes_server_turnaround);
     RUN(test_latency_control_rtt_prefers_fresh_ping_over_ack);
     RUN(test_latency_smoothed_gap_requires_fresh_ack_and_ping);

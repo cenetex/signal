@@ -5,7 +5,9 @@ Signal's low-population multiplayer should be local-first:
 1. Browser starts in local singleplayer unless `?server=...` or `?online=1` is present.
 2. Optional `?lobby=wss://...` connects to the AWS WebSocket lobby in the background.
 3. When the lobby sees enough compatible players in a room, it wakes the relay.
-4. Clients reload into the authoritative RTC session with `?server=rtcs://...`.
+4. Clients reload into the authoritative session. The page converts the relay's
+   RTC address to its lower-latency WebSocket `/ws` endpoint by default;
+   `?transport=rtc` preserves the RTC route for comparison or fallback.
 5. If the remote session drops, the client starts a fresh local loopback authority.
 
 The hot gameplay path stays:

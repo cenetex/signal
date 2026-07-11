@@ -792,6 +792,7 @@ void net_reset_local_input_stream(void) {
     g.net_local_state_ready = false;
     g.net_last_ack_rtt = 0.0f;
     net_latency_stats_reset(&g.net_ack_latency);
+    net_latency_gap_stats_reset(&g.net_ack_gap);
     g.net_missed_input_acks = 0;
     g.net_ack_recovery_packets = 0;
     g.net_ack_miss_windows_reported = 0;
@@ -819,6 +820,7 @@ void reset_remote_dynamic_sync(void) {
     g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_dedicated_ping_sample_time = 0.0f;
     g.net_last_ack_transport_sample_time = 0.0f;
     g.net_max_ping_rtt_5s = 0.0f;
     g.net_ping_samples = 0;
@@ -2150,6 +2152,8 @@ void net_record_input_ack(uint16_t input_seq_ack,
     }
     g.net_last_ack_rtt = rtt;
     net_latency_stats_observe(&g.net_ack_latency, rtt, g.net_time);
+    net_latency_gap_stats_observe(&g.net_ack_gap, rtt,
+                                  timing->ping_rtt_at_send, g.net_time);
     g.net_ack_miss_windows_reported = 0;
     if (rtt > g.net_max_ack_rtt_5s) g.net_max_ack_rtt_5s = rtt;
     if (rtt > g.net_motion.max_ack_rtt_run)
@@ -2159,6 +2163,7 @@ void net_record_input_ack(uint16_t input_seq_ack,
     timing->sent_at = 0.0f;
     timing->sent_ms = 0;
     timing->target_tick = 0;
+    timing->ping_rtt_at_send = 0.0f;
 }
 
 static void record_local_player_motion_telemetry(float correction_dist,

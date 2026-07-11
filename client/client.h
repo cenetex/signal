@@ -280,6 +280,7 @@ typedef struct {
     float sent_at;
     uint32_t sent_ms;
     uint32_t target_tick;
+    float ping_rtt_at_send;
 } net_input_timing_t;
 
 typedef struct {
@@ -452,9 +453,11 @@ typedef struct {
     float net_last_ping_raw_rtt;
     float net_last_ping_rtt;
     float net_last_ping_server_turnaround_ms;
+    float net_last_dedicated_ping_sample_time;
     float net_last_ack_transport_sample_time;
     net_latency_stats_t net_ack_latency;
     net_latency_stats_t net_ping_latency;
+    net_latency_gap_stats_t net_ack_gap;
     float net_max_ping_rtt_5s;
     uint32_t net_ping_samples;
     float net_ping_timer;

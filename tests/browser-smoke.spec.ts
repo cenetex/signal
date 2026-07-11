@@ -777,6 +777,18 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
 test.describe('Browser smoke tests', () => {
   const rootBundleSmokeTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
 
+  test('online mode prefers WebSocket while preserving an RTC opt-in', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'transport selection is covered against the local bundle');
+
+    await page.goto('/play.html?online=1', { waitUntil: 'domcontentloaded' });
+    expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
+      .toBe(`ws://${new URL(page.url()).host}/ws`);
+
+    await page.goto('/play.html?online=1&transport=rtc', { waitUntil: 'domcontentloaded' });
+    expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
+      .toBe(`rtc://${new URL(page.url()).host}/rtc/signal-main`);
+  });
+
   test('boots, renders, and persists browser identity across reload', async ({ page }) => {
     const logs = installFatalCollectors(page);
 
@@ -1530,7 +1542,10 @@ test.describe('Browser smoke tests', () => {
 
     const motion = await netMotionSnapshot(page);
     expect(motion.samples).toBeGreaterThan(10);
-    expect(motion.playerBatches).toBeGreaterThan(1);
+    // A one-client authority can suppress unchanged recipient-excluded player
+    // batches after the initial baseline. Local correction samples below are
+    // the meaningful repeated-authority signal for this case.
+    expect(motion.playerBatches).toBeGreaterThan(0);
     expect(motion.inputAcks).toBeGreaterThan(0);
     expect(motion.pingSamples).toBeGreaterThan(0);
     expect(motion.lastPingRttMs).toBeGreaterThan(250);
@@ -1584,7 +1599,7 @@ test.describe('Browser smoke tests', () => {
 
     const motion = await netMotionSnapshot(page);
     expect(motion.samples).toBeGreaterThan(10);
-    expect(motion.playerBatches).toBeGreaterThan(1);
+    expect(motion.playerBatches).toBeGreaterThan(0);
     expect(motion.pingSamples).toBeGreaterThan(0);
     expect(motion.inputAcks).toBeGreaterThan(0);
     expect(motion.lastPingRttMs).toBeGreaterThan(0);

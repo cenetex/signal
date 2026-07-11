@@ -27,9 +27,65 @@ typedef struct {
     float last_sample_at;
 } net_latency_stats_t;
 
+/* Excess authoritative-ack latency must compare samples from the same point
+ * in time. Subtracting the current ping EMA from an older ACK EMA creates a
+ * false gap whenever the route is still converging. Capture the ping baseline
+ * when an input is sent, then feed that paired sample here when its ACK lands. */
+typedef struct {
+    float ema;
+    float last;
+    float last_sample_at;
+    uint32_t count;
+} net_latency_gap_stats_t;
+
 static inline void net_latency_stats_reset(net_latency_stats_t *stats) {
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
+}
+
+static inline void net_latency_gap_stats_reset(
+    net_latency_gap_stats_t *stats) {
+    if (!stats) return;
+    memset(stats, 0, sizeof(*stats));
+}
+
+static inline void net_latency_gap_stats_observe(
+    net_latency_gap_stats_t *stats,
+    float ack_rtt_sec,
+    float ping_at_send_sec,
+    float now_sec) {
+    if (!stats || !isfinite(ack_rtt_sec) || !isfinite(ping_at_send_sec) ||
+        !isfinite(now_sec) || ack_rtt_sec <= 0.0f ||
+        ping_at_send_sec <= 0.0f) {
+        return;
+    }
+    float gap = ack_rtt_sec > ping_at_send_sec
+        ? ack_rtt_sec - ping_at_send_sec : 0.0f;
+    stats->last = gap;
+    stats->last_sample_at = now_sec;
+    if (stats->count == 0)
+        stats->ema = gap;
+    else
+        stats->ema += (gap - stats->ema) * 0.25f;
+    stats->count++;
+}
+
+static inline bool net_latency_gap_stats_fresh(
+    const net_latency_gap_stats_t *stats,
+    float now_sec,
+    float stale_sec) {
+    if (!stats || stats->count == 0 || !isfinite(now_sec) ||
+        !isfinite(stale_sec) || stale_sec < 0.0f) {
+        return false;
+    }
+    float age = now_sec - stats->last_sample_at;
+    return age >= 0.0f && age <= stale_sec;
+}
+
+static inline float net_latency_gap_stats_smoothed_sec(
+    const net_latency_gap_stats_t *stats) {
+    if (!stats || stats->count == 0) return 0.0f;
+    return stats->ema;
 }
 
 static inline void net_latency_stats_observe(net_latency_stats_t *stats,

@@ -239,7 +239,8 @@
 
       /* ?singleplayer=1 forces the in-process server.
        * ?server=ws://... or ?server=rtcs://... connects to an explicit relay.
-       * ?online=1 connects to the same-origin WebRTC gateway.
+       * ?online=1 connects to the same-origin WebSocket relay. Add
+       * ?transport=rtc to opt into the WebRTC gateway.
        * Default is local-first singleplayer; ?lobby=wss://... lets a lobby
        * promote the page into a network session when a second player arrives. */
       var signalParams = new URLSearchParams(window.location.search);
@@ -250,8 +251,14 @@
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
       else if (signalParams.has('online') || signalParams.has('multiplayer') || signalParams.has('network')) {
-        var signalRtcProto = window.location.protocol === 'https:' ? 'rtcs:' : 'rtc:';
-        window.SIGNAL_SERVER = signalRtcProto + '//' + window.location.host + '/rtc/signal-main';
+        var signalTransport = (signalParams.get('transport') || 'ws').toLowerCase();
+        if (signalTransport === 'rtc' || signalTransport === 'webrtc') {
+          var signalRtcProto = window.location.protocol === 'https:' ? 'rtcs:' : 'rtc:';
+          window.SIGNAL_SERVER = signalRtcProto + '//' + window.location.host + '/rtc/signal-main';
+        } else {
+          var signalWsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          window.SIGNAL_SERVER = signalWsProto + '//' + window.location.host + '/ws';
+        }
       }
       else {
         window.SIGNAL_SERVER = '';
@@ -271,6 +278,31 @@
         if (raw.indexOf('https://') === 0) return 'wss://' + raw.slice('https://'.length);
         if (raw.indexOf('http://') === 0) return 'ws://' + raw.slice('http://'.length);
         return raw;
+      }
+
+      function signalPreferredOnlineServer(raw) {
+        if (!raw) return raw;
+        var transport = (signalParams.get('transport') || 'ws').toLowerCase();
+        if (transport === 'rtc' || transport === 'webrtc') return raw;
+        if (raw.indexOf('rtcs://') !== 0 && raw.indexOf('rtc://') !== 0 &&
+            raw.indexOf('webrtc+wss://') !== 0 &&
+            raw.indexOf('webrtc+ws://') !== 0) {
+          return raw;
+        }
+        try {
+          var websocketRaw = raw
+            .replace(/^rtcs:/, 'wss:')
+            .replace(/^rtc:/, 'ws:')
+            .replace(/^webrtc\+wss:/, 'wss:')
+            .replace(/^webrtc\+ws:/, 'ws:');
+          var serverUrl = new URL(websocketRaw);
+          serverUrl.pathname = '/ws';
+          serverUrl.search = '';
+          serverUrl.hash = '';
+          return serverUrl.toString();
+        } catch (_) {
+          return raw;
+        }
       }
 
       function signalStablePeerId() {
@@ -317,7 +349,8 @@
           var msg;
           try { msg = JSON.parse(ev.data); } catch (_) { return; }
           if (msg.type !== 'serverReady' && msg.type !== 'server-ready') return;
-          var server = msg.server || msg.rtcUrl || msg.url;
+          var server = signalPreferredOnlineServer(
+            msg.server || msg.rtcUrl || msg.url);
           if (!server) return;
           var u = new URL(window.location.href);
           u.searchParams.set('server', server);

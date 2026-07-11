@@ -444,9 +444,11 @@ static void reset_world(void) {
     g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_dedicated_ping_sample_time = 0.0f;
     g.net_last_ack_transport_sample_time = 0.0f;
     net_latency_stats_reset(&g.net_ack_latency);
     net_latency_stats_reset(&g.net_ping_latency);
+    net_latency_gap_stats_reset(&g.net_ack_gap);
     g.net_max_ping_rtt_5s = 0.0f;
     g.net_ping_samples = 0;
     g.net_ping_timer = 0.0f;
@@ -2581,10 +2583,12 @@ int reset_net_motion_telemetry(void) {
         NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     net_latency_stats_reset(&g.net_ack_latency);
     net_latency_stats_reset(&g.net_ping_latency);
+    net_latency_gap_stats_reset(&g.net_ack_gap);
     g.net_last_ack_rtt = 0.0f;
     g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
+    g.net_last_dedicated_ping_sample_time = 0.0f;
     g.net_last_ack_transport_sample_time = 0.0f;
     g.net_max_ping_rtt_5s = 0.0f;
     g.net_ping_samples = 0;
@@ -2686,10 +2690,7 @@ int get_net_motion_ping_fresh(void) {
 EMSCRIPTEN_KEEPALIVE
 #endif
 float get_net_motion_last_ack_gap_ms(void) {
-    float ack_ms = g.net_last_ack_rtt * 1000.0f;
-    float ping_ms = g.net_last_ping_rtt * 1000.0f;
-    if (ack_ms <= 0.0f || ping_ms <= 0.0f) return 0.0f;
-    return (ack_ms > ping_ms) ? (ack_ms - ping_ms) : 0.0f;
+    return g.net_ack_gap.count > 0 ? g.net_ack_gap.last * 1000.0f : 0.0f;
 }
 
 static void net_count_latency_miss_windows(const net_latency_stats_t *stats,
@@ -2763,10 +2764,9 @@ static uint8_t net_active_input_ack_recovery_tier(void) {
         !net_latency_stats_fresh(&g.net_ack_latency,
                                  g.net_time,
                                  NET_LATENCY_STALE_SEC);
-    float ack_gap = net_latency_smoothed_gap_sec(&g.net_ack_latency,
-                                                 &g.net_ping_latency,
-                                                 g.net_time,
-                                                 NET_LATENCY_STALE_SEC);
+    float ack_gap = net_latency_gap_stats_fresh(
+        &g.net_ack_gap, g.net_time, NET_LATENCY_STALE_SEC)
+        ? net_latency_gap_stats_smoothed_sec(&g.net_ack_gap) : 0.0f;
     uint32_t age_recovery_miss =
         net_latency_unacked_age_needs_recovery(
             net_oldest_unacked_input_age_sec(),
@@ -2828,10 +2828,12 @@ static uint8_t net_client_recovery_flags(void) {
 EMSCRIPTEN_KEEPALIVE
 #endif
 float get_net_motion_smoothed_ack_gap_ms(void) {
-    float ack_ms = get_net_motion_smoothed_ack_rtt_ms();
-    float ping_ms = get_net_motion_smoothed_ping_rtt_ms();
-    if (ack_ms <= 0.0f || ping_ms <= 0.0f) return 0.0f;
-    return (ack_ms > ping_ms) ? (ack_ms - ping_ms) : 0.0f;
+    if (!net_latency_gap_stats_fresh(&g.net_ack_gap,
+                                     g.net_time,
+                                     NET_LATENCY_STALE_SEC)) {
+        return 0.0f;
+    }
+    return net_latency_gap_stats_smoothed_sec(&g.net_ack_gap) * 1000.0f;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -3561,6 +3563,17 @@ void net_observe_transport_latency_sample(float rtt_ms,
         raw_rtt_sec, server_turnaround_ms / 1000.0f);
     if (transport_rtt_sec <= 0.0f) return;
     net_observe_server_tick(server_tick);
+    bool dedicated_ping_fresh =
+        g.net_last_dedicated_ping_sample_time > 0.0f &&
+        g.net_time - g.net_last_dedicated_ping_sample_time <=
+            NET_LATENCY_STALE_SEC;
+    if (from_input_ack && dedicated_ping_fresh) {
+        /* INPUT_APPLIED can be delayed independently by an ordered proxy or
+         * congested snapshot lane. Do not let that class-specific delay poison
+         * a fresh dedicated PONG estimate. */
+        g.net_last_ack_transport_sample_time = g.net_time;
+        return;
+    }
     g.net_last_ping_raw_rtt = raw_rtt_sec;
     g.net_last_ping_rtt = transport_rtt_sec;
     net_latency_stats_observe(&g.net_ping_latency, transport_rtt_sec,
@@ -3572,8 +3585,11 @@ void net_observe_transport_latency_sample(float rtt_ms,
     if (g.net_max_ping_rtt_5s <= 0.0f)
         g.net_max_ping_rtt_5s = g.net_last_ping_rtt;
     g.net_ping_samples++;
-    if (from_input_ack)
+    if (from_input_ack) {
         g.net_last_ack_transport_sample_time = g.net_time;
+    } else {
+        g.net_last_dedicated_ping_sample_time = g.net_time;
+    }
 }
 
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
@@ -3761,6 +3777,12 @@ static void net_track_input_send(uint16_t seq, uint32_t target_tick,
     g.net_input_timing[index].sent_at = g.net_time;
     g.net_input_timing[index].sent_ms = sent_ms;
     g.net_input_timing[index].target_tick = target_tick;
+    g.net_input_timing[index].ping_rtt_at_send =
+        net_latency_stats_fresh(&g.net_ping_latency,
+                                g.net_time,
+                                NET_LATENCY_STALE_SEC)
+        ? net_latency_stats_smoothed_sec(&g.net_ping_latency)
+        : 0.0f;
 }
 
 static void frame(void) {
