@@ -1876,9 +1876,6 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     }
     sp->ship.angle = fixp_atan2f(away.y, away.x);
     sp->ship.vel = v2_scale(away, 95.0f / len);
-    /* First launch: "Hull integrity 94%" */
-    if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
-        sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
     SIM_LOG("[sim] player %d launched station=%d berth=%d pos=(%.1f,%.1f) vel=(%.1f,%.1f)\n",
             sp->id, sp->current_station, sp->dock_berth,
             sp->ship.pos.x, sp->ship.pos.y,

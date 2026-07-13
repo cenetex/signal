@@ -14,7 +14,11 @@ void onboarding_mark_fractured(void);
 void onboarding_mark_tractored(void);
 void onboarding_mark_threw(void);
 void onboarding_mark_hailed(void);
+void onboarding_mark_earned(void);
+void onboarding_mark_docked_after_earning(void);
+void onboarding_mark_viewed_trade(void);
 void onboarding_mark_boosted(void);
+bool onboarding_autopilot_unlocked(void);
 
 /* Returns true and fills message with the tracked contract's next concrete
  * player step: fracture, tow to furnace, deliver, or make the upstream good. */

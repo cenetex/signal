@@ -926,6 +926,8 @@ TEST(test_launch_clears_dock_berth_under_thrust) {
     w.players[0].input.launch = true;
     world_sim_step(&w, SIM_DT);
     ASSERT(!w.players[0].docked);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull,
+                    ship_max_hull(&w.players[0].ship), 0.001f);
 
     w.players[0].input.thrust = 1.0f;
     for (int i = 0; i < 180; i++) {

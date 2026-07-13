@@ -581,6 +581,12 @@ static bool ev_is_local(const sim_event_t *ev) {
 static bool local_station_balance_for_player(int station_idx, float *out);
 static void maybe_notice_local_credits_rule(int station_idx, float balance);
 
+static void defer_episode_until_docked(int episode_index) {
+    if (episode_index < 0 || episode_index >= EPISODE_COUNT) return;
+    g.deferred_episode_mask |= (uint16_t)(1u << episode_index);
+    g.deferred_episode_timer = 2.5f;
+}
+
 static void sim_on_fracture(const sim_event_t *ev) {
     audio_play_fracture(&g.audio, ev->fracture.tier);
     if (ev_is_local(ev)) onboarding_mark_fractured();
@@ -596,6 +602,7 @@ static void sim_on_dock(const sim_event_t *ev) {
     audio_play_dock(&g.audio);
     g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
     g.dock_settle_timer = 1.0f; /* show ship settling before panel */
+    onboarding_mark_docked_after_earning();
     int ds = LOCAL_PLAYER.current_station;
     float bal = 0.0f;
     if (local_station_balance_for_player(ds, &bal))
@@ -611,7 +618,10 @@ static void sim_on_launch(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     audio_play_launch(&g.audio);
     g.screen_shake = fmaxf(g.screen_shake, 5.0f); /* launch kick */
-    episode_trigger(&g.episode, 0); /* Ep 0: First Light */
+    if (g.onboarding.complete)
+        episode_trigger(&g.episode, 0); /* returning pilot: launch is quiet enough */
+    else
+        defer_episode_until_docked(0); /* newcomer: never cover flight teaching */
     if (!g.music.playing && !g.music.loading) music_next_track(&g.music);
 }
 
@@ -679,10 +689,16 @@ static void station_hail_label(int station_idx, char *out, size_t cap) {
 static void sim_on_sell(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     audio_play_sale(&g.audio);
-    episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
     mining_client_record_strike((mining_grade_t)ev->sell.grade, ev->sell.bonus_cr);
     int total = ev->sell.base_cr + ev->sell.bonus_cr;
-    if (total > 0) sell_batch_accumulate(ev, total);
+    if (total > 0) {
+        onboarding_mark_earned();
+        /* The furnace milestone supersedes the launch intro and waits until
+         * the player has docked, opened the market, and read the payout. */
+        g.deferred_episode_mask &= (uint16_t)~(1u << 0);
+        defer_episode_until_docked(2);
+        sell_batch_accumulate(ev, total);
+    }
     if (ev->sell.grade >= (uint8_t)MINING_GRADE_RATI &&
         ev->sell.station >= 0 && ev->sell.station < MAX_STATIONS &&
         g.world.stations[ev->sell.station].rati_hail_message[0]) {
@@ -1260,9 +1276,33 @@ static void onboarding_per_frame(void) {
     /* Tractor milestone: detect fragment pickup via towed_count */
     if (!g.onboarding.tractored && LOCAL_PLAYER.ship.towed_count > 0)
         onboarding_mark_tractored();
+    if (LOCAL_PLAYER.docked && g.onboarding.earned)
+        onboarding_mark_docked_after_earning();
+    if (LOCAL_PLAYER.docked &&
+        g.station_view == STATION_VIEW_TRADE &&
+        g.onboarding.docked_after_earning) {
+        onboarding_mark_viewed_trade();
+    }
 }
 
-static void episode_per_frame(void) {
+static void episode_per_frame(float dt) {
+    if (episode_is_active(&g.episode)) return;
+
+    if (g.deferred_episode_mask != 0u && LOCAL_PLAYER.docked &&
+        g.onboarding.complete) {
+        if (g.deferred_episode_timer > 0.0f) {
+            g.deferred_episode_timer = fmaxf(
+                0.0f, g.deferred_episode_timer - fmaxf(0.0f, dt));
+        } else {
+            for (int i = 0; i < EPISODE_COUNT; i++) {
+                uint16_t bit = (uint16_t)(1u << i);
+                if ((g.deferred_episode_mask & bit) == 0u) continue;
+                g.deferred_episode_mask &= (uint16_t)~bit;
+                episode_trigger(&g.episode, i);
+                break;
+            }
+        }
+    }
     if (episode_is_active(&g.episode)) return;
 
     /* Ep 3: Scaffold — currently towing a scaffold */
@@ -1526,7 +1566,10 @@ static void sim_step(float dt) {
         g.camera_station_v_side = 0;
         g.camera_drift_timer = 0.0f;
         g.local_player_render_offset = v2(0.0f, 0.0f);
-        episode_trigger(&g.episode, 0);
+        if (g.onboarding.complete)
+            episode_trigger(&g.episode, 0);
+        else
+            defer_episode_until_docked(0);
         if (!g.music.playing && !g.music.loading)
             music_next_track(&g.music);
     }
@@ -1556,7 +1599,7 @@ static void sim_step(float dt) {
     g.was_docked = LOCAL_PLAYER.docked;
 
     onboarding_per_frame();
-    episode_per_frame();
+    episode_per_frame(dt);
     episode_update(&g.episode, dt);
     music_update(&g.music, dt);
     {

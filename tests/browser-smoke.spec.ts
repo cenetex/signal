@@ -655,6 +655,10 @@ const smokeLoopState = {
   cupriteGate: 17,
   scanLaserFab: 18,
   trackedCupriteContract: 19,
+  onboardingDeliver: 20,
+  onboardingReturn: 21,
+  onboardingMarket: 22,
+  onboardingComplete: 23,
 } as const;
 
 const mobileFlag = {
@@ -1347,6 +1351,26 @@ test.describe('Browser smoke tests', () => {
         message: 'remote pilot should reveal once inside tractor scan range',
       })
       .toBe(1);
+
+    await setSmokeLoopState(page, smokeLoopState.onboardingDeliver);
+    expect(await hudHintText(page)).toContain(
+      'DELIVER ORE ::::: TOW IT TO THE GLOWING FURNACE AT Prospect Refinery',
+    );
+
+    await setSmokeLoopState(page, smokeLoopState.onboardingReturn);
+    expect(await hudHintText(page)).toContain(
+      'PAYMENT RECEIVED ::::: RETURN TO Prospect Refinery // [E] DOCK',
+    );
+
+    await setSmokeLoopState(page, smokeLoopState.onboardingMarket);
+    expect(await hudHintText(page)).toContain(
+      'OPEN LOCAL MARKET ::::: [TAB] TO TRADE // CREDITS STAY HERE',
+    );
+
+    await setSmokeLoopState(page, smokeLoopState.onboardingComplete);
+    expect(await hudHintText(page)).toContain(
+      'ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL',
+    );
 
     expectNoFatalErrors(logs);
   });

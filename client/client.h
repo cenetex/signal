@@ -505,13 +505,20 @@ typedef struct {
         bool moved;          /* pressed a movement key */
         bool fractured;      /* broke an asteroid */
         bool tractored;      /* collected ore fragments */
-        bool threw;          /* released a towed fragment with the slingshot */
         bool hailed;         /* pressed H to hail a station */
+        bool earned;         /* station paid for smelted/delivered matter */
+        bool docked_after_earning; /* returned to a station after first pay */
+        bool viewed_trade;   /* opened the local market after first pay */
+        bool threw;          /* optional: released a tow with the slingshot */
         bool boosted;        /* held SHIFT outside core signal */
-        bool complete;       /* core loop done — stations take over */
+        bool complete;       /* first physical economy loop is complete */
         bool welcomed;       /* completion message shown */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
+    /* Milestone videos wait for a quiet docked moment instead of covering
+     * launch, mining, or the first station payout. */
+    uint16_t deferred_episode_mask;
+    float deferred_episode_timer;
     /* --- Module activation effect --- */
     float commission_timer;     /* countdown for activation flash */
     vec2 commission_pos;        /* world position of activated module */

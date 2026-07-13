@@ -1151,6 +1151,10 @@ static void sample_autopilot(input_intent_t *intent) {
         intent->toggle_autopilot = true; /* always allow turning off */
         return;
     }
+    if (!onboarding_autopilot_unlocked()) {
+        set_notice("Finish one manual ore delivery before enabling autopilot.");
+        return;
+    }
     float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
     if (sig < SIGNAL_BAND_OPERATIONAL) {
         set_notice("Signal too weak for autopilot.");

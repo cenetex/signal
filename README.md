@@ -146,7 +146,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   signal to create a planned outpost.
 - Scaffold placement: tow a scaffold with the tractor and press `E` to place
   it on a ring slot or found/materialize an outpost.
-- Utility: `H` hail/scan the local area, `O` toggle mining autopilot, `[` and
+- Utility: `H` hail/scan the local area. After one manual paid ore delivery,
+  `O` toggles mining autopilot. `[` and
   `]` switch music tracks, `/` toggle music pause, `X` self-destruct/reset in
   singleplayer, `Esc` quits.
 

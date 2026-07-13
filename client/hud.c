@@ -3590,7 +3590,26 @@ enum {
     SMOKE_LOOP_STATE_CUPRITE_GATE = 17,
     SMOKE_LOOP_STATE_SCAN_LASER_FAB = 18,
     SMOKE_LOOP_STATE_TRACKED_CUPRITE_CONTRACT = 19,
+    SMOKE_LOOP_STATE_ONBOARDING_DELIVER = 20,
+    SMOKE_LOOP_STATE_ONBOARDING_RETURN = 21,
+    SMOKE_LOOP_STATE_ONBOARDING_MARKET = 22,
+    SMOKE_LOOP_STATE_ONBOARDING_COMPLETE = 23,
 };
+
+static void smoke_set_onboarding_economy_progress(bool earned,
+                                                  bool docked_after_earning,
+                                                  bool viewed_trade) {
+    memset(&g.onboarding, 0, sizeof(g.onboarding));
+    g.onboarding.loaded = true;
+    g.onboarding.moved = true;
+    g.onboarding.hailed = true;
+    g.onboarding.fractured = true;
+    g.onboarding.tractored = true;
+    g.onboarding.earned = earned;
+    g.onboarding.docked_after_earning = docked_after_earning;
+    g.onboarding.viewed_trade = viewed_trade;
+    g.onboarding.complete = earned && docked_after_earning && viewed_trade;
+}
 
 static void smoke_clear_loop_state(void) {
     server_player_t *sp = &LOCAL_PLAYER;
@@ -3879,6 +3898,9 @@ static int smoke_apply_loop_state(int state) {
         g.onboarding.tractored = true;
         g.onboarding.threw = true;
         g.onboarding.hailed = true;
+        g.onboarding.earned = true;
+        g.onboarding.docked_after_earning = true;
+        g.onboarding.viewed_trade = true;
         g.onboarding.complete = true;
         g.onboarding.welcomed = true;
         g.tracked_contract = 0;
@@ -3896,6 +3918,27 @@ static int smoke_apply_loop_state(int state) {
             .target_pos = g.world.stations[0].pos,
             .claimed_by = -1,
         };
+        return 1;
+    case SMOKE_LOOP_STATE_ONBOARDING_DELIVER:
+        smoke_set_onboarding_economy_progress(false, false, false);
+        sp->docked = false;
+        sp->ship.towed_count = 1;
+        sp->ship.towed_fragments[0] = 0;
+        return 1;
+    case SMOKE_LOOP_STATE_ONBOARDING_RETURN:
+        smoke_set_onboarding_economy_progress(true, false, false);
+        sp->docked = false;
+        return 1;
+    case SMOKE_LOOP_STATE_ONBOARDING_MARKET:
+        smoke_set_onboarding_economy_progress(true, true, false);
+        sp->docked = true;
+        g.station_view = STATION_VIEW_DOCK;
+        return 1;
+    case SMOKE_LOOP_STATE_ONBOARDING_COMPLETE:
+        smoke_set_onboarding_economy_progress(true, true, true);
+        sp->docked = true;
+        g.station_view = STATION_VIEW_TRADE;
+        g.onboarding.welcomed = false;
         return 1;
     case SMOKE_LOOP_STATE_SCAN_LASER_FAB: {
         if (g.world.station_count <= 2 || !station_exists(&g.world.stations[2]))

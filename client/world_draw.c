@@ -10,6 +10,7 @@
 #include "net.h"
 #include "net_sync.h"
 #include "contract_objective.h"
+#include "contract_fit.h"
 #include "station_voice.h"
 #include "signal_model.h"
 #include "manifest.h"
@@ -29,7 +30,7 @@
 #define HAIL_PING_PEAK_ZOOM  1.18f   /* half-extent multiplier - subtle */
 #define HAIL_PING_IN_END     0.10f   /* lifecycle frac where widen finishes (~0.8s) */
 #define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
-#define HAIL_SCAN_ASTEROID_TAG_LIMIT 32
+#define HAIL_SCAN_ASTEROID_TAG_LIMIT 12
 #define HAIL_SCAN_REVEAL_SOFTNESS 120.0f
 #define HAIL_CONVERSATION_LINE_DURATION 3.4f
 #define ASTEROID_FRACTURE_DRIFT_SEC 0.62f
@@ -193,6 +194,39 @@ static void hail_asteroid_identity_label(const asteroid_t *a, char out[8]) {
         return;
     }
     out[0] = '\0';
+}
+
+static float hail_asteroid_relevance(const asteroid_t *a,
+                                     int asteroid_index,
+                                     float dist_sq) {
+    if (!a) return -dist_sq;
+    float score = -dist_sq * 0.001f;
+
+    if (asteroid_index == LOCAL_PLAYER.hover_asteroid)
+        score += 100000.0f;
+    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
+        const contract_t *ct = &g.world.contracts[g.tracked_contract];
+        if (ct->active && contract_fit_is_ok(contract_fit_asteroid(ct, a)))
+            score += 80000.0f;
+    }
+    if (a->tier == ASTEROID_TIER_S)
+        score += 50000.0f;
+    if (mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship.mining_level, a))
+        score += 30000.0f;
+
+    float best_demand = 0.0f;
+    int station_count = g.world.station_count;
+    if (station_count < 0) station_count = 0;
+    if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+    for (int s = 0; s < station_count; s++) {
+        station_demand_t demand = station_demand_for(
+            &g.world.stations[s], a->commodity);
+        if (demand.severity > best_demand) best_demand = demand.severity;
+    }
+    score += best_demand * 12000.0f;
+    if (a->grade < (uint8_t)MINING_GRADE_COUNT)
+        score += (float)a->grade * 750.0f;
+    return score;
 }
 
 static const char *world_npc_role_label(npc_role_t role) {
@@ -3451,6 +3485,7 @@ void draw_npc_chatter(void) {
         int index;
         float dist_sq;
         float reveal;
+        float relevance;
     } hail_asteroid_tag_t;
 
     hail_asteroid_tag_t tags[HAIL_SCAN_ASTEROID_TAG_LIMIT];
@@ -3465,16 +3500,22 @@ void draw_npc_chatter(void) {
         if (dist_sq > hail_range_sq) continue;
         float reveal = hail_scan_reveal_alpha(a->pos);
         if (reveal <= 0.01f) continue;
+        float relevance = hail_asteroid_relevance(a, i, dist_sq);
 
         if (tag_count < HAIL_SCAN_ASTEROID_TAG_LIMIT) {
-            tags[tag_count++] = (hail_asteroid_tag_t){ i, dist_sq, reveal };
+            tags[tag_count++] = (hail_asteroid_tag_t){
+                i, dist_sq, reveal, relevance
+            };
         } else {
             int worst = 0;
             for (int j = 1; j < HAIL_SCAN_ASTEROID_TAG_LIMIT; j++) {
-                if (tags[j].dist_sq > tags[worst].dist_sq) worst = j;
+                if (tags[j].relevance < tags[worst].relevance) worst = j;
             }
-            if (dist_sq < tags[worst].dist_sq)
-                tags[worst] = (hail_asteroid_tag_t){ i, dist_sq, reveal };
+            if (relevance > tags[worst].relevance) {
+                tags[worst] = (hail_asteroid_tag_t){
+                    i, dist_sq, reveal, relevance
+                };
+            }
         }
     }
 
