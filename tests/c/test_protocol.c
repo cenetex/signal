@@ -6427,7 +6427,7 @@ TEST(test_world_stations_q_omits_zero_inventory_slots) {
 
     uint8_t full[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int full_len = serialize_stations(full, stations);
-    uint8_t q[STATION_Q_MAX_SIZE];
+    uint8_t q[STATION_Q_MAX_SIZE] = {0};
     int q_len = serialize_stations_q_from_full(q, full, full_len);
 
     ASSERT_EQ_INT(q[0], NET_MSG_WORLD_STATIONS_Q);
@@ -7067,7 +7067,7 @@ TEST(test_contracts_q_omits_zero_optional_tails) {
 
     uint8_t full[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
     int full_len = serialize_contracts(full, contracts);
-    uint8_t q[CONTRACT_Q_MAX_SIZE];
+    uint8_t q[CONTRACT_Q_MAX_SIZE] = {0};
     int q_len = serialize_contracts_q_from_full(q, full, full_len);
 
     ASSERT_EQ_INT(q[0], NET_MSG_CONTRACTS_Q);
