@@ -222,6 +222,7 @@ def run_case(args: argparse.Namespace, mode: str, port: int, checkpoint: str) ->
             "SIGNAL_BOT_BRAIN_MODE": mode,
             "SIGNAL_WORLD_SEED": str(args.seed),
             "SIGNAL_WORLD_SEQ": str(args.world_seq),
+            "SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET": "1",
         }
     )
     if mode == "neural":

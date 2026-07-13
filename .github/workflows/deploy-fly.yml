@@ -46,8 +46,39 @@ env:
   SIGNAL_STATION_AUTH_SECRET: ${{ secrets.SIGNAL_STATION_AUTH_SECRET }}
 
 jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Run safety gates
+        run: |
+          make build-server
+          make test
+          make test-san
+          make banned-apis deterministic-libm
+          make cppcheck
+      - name: Build browser client
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GIT_HASH="${GITHUB_SHA::7}" \
+            emscripten/emsdk:4.0.15 \
+            bash -lc 'emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH="$GIT_HASH" && emmake cmake --build build-web --parallel'
+      - name: Run browser smoke
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run smoke
+
   deploy:
     name: Launch or deploy app
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,13 +141,13 @@ jobs:
             --yes
 
       - name: Stage station authority secret
-        if: github.event_name == 'workflow_dispatch' && inputs.launch == true
+        if: github.event_name != 'workflow_dispatch' || inputs.launch == true || inputs.deploy == true
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "$SIGNAL_STATION_AUTH_SECRET" ]; then
-            echo "::warning::SIGNAL_STATION_AUTH_SECRET is not set; relay will use its development station authority secret"
-            exit 0
+            echo "::error::SIGNAL_STATION_AUTH_SECRET is required for deployment"
+            exit 1
           fi
           flyctl secrets set \
             --app "$FLY_APP" \

@@ -12,7 +12,25 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Run safety gates
+        run: |
+          make build-server
+          make test
+          make test-san
+          make banned-apis deterministic-libm
+          make cppcheck
+
   build-native:
+    needs: verify
     strategy:
       matrix:
         include:
@@ -64,6 +82,7 @@ jobs:
           path: signal-${{ matrix.name }}.*
 
   build-server:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

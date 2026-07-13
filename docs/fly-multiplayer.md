@@ -37,9 +37,12 @@ The GitHub Actions path is the intended bootstrap:
    random value, for example `openssl rand -hex 32`.
 3. Run the `Deploy Fly App` workflow manually with `launch=true`.
 
-The workflow runs `fly launch --copy-config --no-deploy`, creates the
-`signal_data` volume if needed, stages `SIGNAL_STATION_AUTH_SECRET`, deploys
-the app, and checks `/health`. Pushes to `main` deploy Fly after that. The old
+The workflow runs the native test, sanitizer, and policy gates, then runs
+`fly launch --copy-config --no-deploy`, creates the `signal_data` volume if
+needed, stages `SIGNAL_STATION_AUTH_SECRET`, deploys the app, and checks
+`/health`. Every deployment requires the repository secret; the server also
+fails startup if the Fly secret is absent. Pushes to `main` deploy Fly after
+that. The old
 Arweave/Irys deployment workflow and upload helpers have been removed.
 
 You can override the defaults with repository variables:
@@ -103,7 +106,7 @@ Build and run the same headless server locally:
 
 ```sh
 make build-server
-PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+PORT=9091 SIGNAL_DATA_DIR=data SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 ./build/signal_server
 ```
 
 In a second terminal, serve the browser build:

@@ -174,8 +174,12 @@ Relevant environment variables (read in [`server/main.c`](../server/main.c)):
   admin REST surfaces. If `SIGNAL_STATION_AUTH_SECRET` is unset, this token is
   also used as the station authority secret fallback.
 - `SIGNAL_STATION_AUTH_SECRET` — operator-held secret mixed into every station
-  keypair derivation. Required for `external_s3` persistence unless
-  `SIGNAL_API_TOKEN` is set.
+  keypair derivation. Server startup requires this or `SIGNAL_API_TOKEN`.
+- `SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1` — explicitly permits the public,
+  deterministic development secret for disposable local worlds. Never set
+  this in a deployed environment.
+- `SIGNAL_REQUIRE_STATION_AUTH_SECRET` — explicit production guard used by the
+  Fly configuration. When truthy, the development-secret override is refused.
 - `SIGNAL_REQUIRE_API_TOKEN` — when set, refuses admin requests that don't
   present `SIGNAL_API_TOKEN`; startup fails if this is set without a token.
 - `SIGNAL_INTERNAL_SHARED_KEY` — bearer for `/internal/v1/operator-post`.

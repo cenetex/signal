@@ -6592,6 +6592,12 @@ static bool cargo_pod_near_corridor_module(const cargo_pod_t *pod,
     return false;
 }
 
+static bool cargo_pod_near_station_collision_envelope(
+    const cargo_pod_t *pod, const station_t *st) {
+    float reach = station_collision_envelope_radius(st) + pod->radius;
+    return v2_dist_sq(pod->pos, st->pos) <= reach * reach;
+}
+
 static bool resolve_cargo_pod_corridor_collision(world_t *w,
                                                  int pod_idx,
                                                  vec2 center,
@@ -6652,6 +6658,7 @@ static bool resolve_cargo_pod_station_collisions(world_t *w, int pod_idx) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_collides(st)) continue;
+        if (!cargo_pod_near_station_collision_envelope(pod, st)) continue;
         station_geom_t geom;
         station_build_geom(st, &geom);
         if (geom.has_core) {

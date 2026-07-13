@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * chain_log.c -- Per-station signed event chain log (Layer C of #479).
  * See chain_log.h for the high-level scheme.
@@ -11,6 +15,7 @@
 #include "signal_crypto.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +24,7 @@
 
 #if defined(_WIN32)
 #  include <direct.h>
+#  include <io.h>
 #  define MKDIR(p) _mkdir(p)
 #else
 #  include <unistd.h>
@@ -47,6 +53,28 @@ _Static_assert(CHAIN_UNSIGNED_HEADER_SIZE ==
 
 static char g_chain_dir[256] = "chain";
 static bool g_chain_log_disk_enabled = true;
+
+static bool chain_log_flush_durable(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+#if defined(_WIN32)
+    return _commit(_fileno(f)) == 0;
+#else
+    return fsync(fileno(f)) == 0;
+#endif
+}
+
+static void chain_log_rollback_append(const char *path, long length) {
+    if (!path || length < 0) return;
+#if defined(_WIN32)
+    int fd = _open(path, _O_RDWR | _O_BINARY);
+    if (fd >= 0) {
+        (void)_chsize_s(fd, (long long)length);
+        (void)_close(fd);
+    }
+#else
+    (void)truncate(path, (off_t)length);
+#endif
+}
 
 void chain_log_set_dir(const char *dir) {
     if (!dir || dir[0] == '\0') {
@@ -287,31 +315,44 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
         return 0;
     }
     ensure_chain_dir();
-    FILE *f = fopen(path, "ab");
+    FILE *f = fopen(path, "r+b");
+    if (!f && errno == ENOENT) f = fopen(path, "w+b");
     if (!f) {
         SIM_LOG("[chain] fopen(%s) failed: %s\n", path, strerror(errno));
         return 0;
     }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        SIM_LOG("[chain] seek(%s) failed: %s\n", path, strerror(errno));
+        fclose(f);
+        return 0;
+    }
+    long append_start = ftell(f);
+    if (append_start < 0) {
+        SIM_LOG("[chain] tell(%s) failed: %s\n", path, strerror(errno));
+        fclose(f);
+        return 0;
+    }
     uint8_t packed[CHAIN_EVENT_HEADER_SIZE];
     chain_event_header_pack(&hdr, packed);
-    if (fwrite(packed, CHAIN_EVENT_HEADER_SIZE, 1, f) != 1) {
-        SIM_LOG("[chain] write header failed: %s\n", strerror(errno));
-        fclose(f);
+    bool write_ok = fwrite(packed, CHAIN_EVENT_HEADER_SIZE, 1, f) == 1 &&
+                    fwrite(&payload_len, sizeof(payload_len), 1, f) == 1 &&
+                    (payload_len == 0 ||
+                     fwrite(payload, payload_len, 1, f) == 1);
+    if (write_ok) write_ok = chain_log_flush_durable(f);
+    if (fclose(f) != 0) write_ok = false;
+    if (!write_ok) {
+        int saved_errno = errno;
+        (void)saved_errno;
+        chain_log_rollback_append(path, append_start);
+        s->chain_append_blocked = true;
+        s->chain_health_status = CHAIN_HEALTH_FAILED;
+        snprintf(s->chain_health_message, sizeof(s->chain_health_message),
+                 "durable append failed at event %llu",
+                 (unsigned long long)hdr.event_id);
+        SIM_LOG("[chain] durable append failed for %s: %s; appends blocked\n",
+                path, strerror(saved_errno));
         return 0;
     }
-    if (fwrite(&payload_len, sizeof(payload_len), 1, f) != 1) {
-        SIM_LOG("[chain] write payload_len failed: %s\n", strerror(errno));
-        fclose(f);
-        return 0;
-    }
-    if (payload_len > 0 &&
-        fwrite(payload, payload_len, 1, f) != 1) {
-        SIM_LOG("[chain] write payload failed: %s\n", strerror(errno));
-        fclose(f);
-        return 0;
-    }
-    fflush(f);
-    fclose(f);
 
     /* Update in-memory chain state — the next event's prev_hash. */
     chain_event_header_hash(&hdr, s->chain_last_hash);

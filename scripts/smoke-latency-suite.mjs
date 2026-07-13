@@ -243,6 +243,7 @@ await withCleanup(async () => {
       SIGNAL_DATA_DIR: dataDir,
       SIGNAL_WORLD_SEED: '2037',
       SIGNAL_WORLD_SEQ: '1',
+      SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET: '1',
     },
   });
   await waitForHttp(`http://127.0.0.1:${serverPort}/health`, 'signal_server', [server], 30000);

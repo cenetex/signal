@@ -1,0 +1,39 @@
+name: Native Safety Gates
+
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'server/**'
+      - 'shared/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-safety-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Run test and policy gates
+        run: |
+          make build-server
+          make test
+          make test-san
+          make banned-apis deterministic-libm
+          make cppcheck

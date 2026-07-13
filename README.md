@@ -193,7 +193,7 @@ Local multiplayer dev:
 
 ```sh
 make build-server
-PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+PORT=9091 SIGNAL_DATA_DIR=data SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 ./build/signal_server
 ```
 
 In a second terminal:
@@ -209,7 +209,7 @@ Local WebRTC gateway dev:
 
 ```sh
 make build-server
-PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+PORT=9091 SIGNAL_DATA_DIR=data SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 ./build/signal_server
 ```
 
 In separate terminals:
@@ -229,7 +229,7 @@ High-latency multiplayer test:
 
 ```sh
 make build-server
-PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+PORT=9091 SIGNAL_DATA_DIR=data SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 ./build/signal_server
 ```
 
 In separate terminals:
@@ -531,7 +531,7 @@ and then sample raw WebSocket traffic by message type:
 ```sh
 # in one shell
 make build-server
-PORT=9091 SIGNAL_DATA_DIR=data ./build/signal_server
+PORT=9091 SIGNAL_DATA_DIR=data SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 ./build/signal_server
 
 # in another shell
 make relay-traffic-probe RELAY_PROBE_CLIENTS=2

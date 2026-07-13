@@ -1667,6 +1667,43 @@ TEST(test_cargo_pod_bounces_off_station_corridor_ring) {
     ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, radial) > 0.0f);
 }
 
+TEST(test_cargo_pod_bounces_off_outer_ring_module_at_collision_envelope) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    for (int a = 0; a < MAX_ARMS; a++) {
+        st->arm_speed[a] = 0.0f;
+        st->arm_omega[a] = 0.0f;
+        st->arm_rotation[a] = 0.0f;
+    }
+    st->module_count = 1;
+    st->modules[0].type = MODULE_SIGNAL_RELAY;
+    st->modules[0].ring = STATION_NUM_RINGS;
+    st->modules[0].slot = 0;
+    st->modules[0].scaffold = false;
+
+    vec2 module_pos = module_world_pos_ring(
+        st, STATION_NUM_RINGS, st->modules[0].slot);
+    vec2 radial = v2_norm(v2_sub(module_pos, st->pos));
+    float pod_r = 18.0f;
+    float contact = STATION_MODULE_COL_RADIUS + pod_r;
+    vec2 pos = v2_add(module_pos, v2_scale(radial, contact - 4.0f));
+    int pod_idx = test_spawn_exact_pod(&w, pos, COMMODITY_LASER_MODULE, 1);
+    ASSERT(pod_idx >= 0);
+    w.cargo_pods[pod_idx].vel = v2_scale(radial, -110.0f);
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, module_pos) >=
+           contact * contact);
+    ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, radial) > 0.0f);
+}
+
 TEST(test_cargo_pod_bounces_off_asteroid) {
     WORLD_DECL;
     world_reset(&w);
@@ -9386,6 +9423,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_dock_adopts_finished_output_pod_for_market);
     RUN(test_cargo_pod_high_speed_station_impact_destroys_shell);
     RUN(test_cargo_pod_bounces_off_station_corridor_ring);
+    RUN(test_cargo_pod_bounces_off_outer_ring_module_at_collision_envelope);
     RUN(test_cargo_pod_bounces_off_asteroid);
     RUN(test_towed_cargo_pod_bulk_sell_no_longer_uses_dock_custody);
     RUN(test_towed_cargo_pod_row_sell_no_longer_uses_dock_custody);

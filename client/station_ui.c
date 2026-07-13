@@ -3819,6 +3819,11 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     float row_h = compact ? 14.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
+    float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
+    get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
+    (void)panel_x;
+    (void)panel_w;
+    float content_bottom = panel_y + panel_h - (compact ? 72.0f : 78.0f);
 
     const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
     const uint8_t COL_AMBER[3] = { PAL_ORE_AMBER };
@@ -3845,9 +3850,11 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         snprintf(left_buf, sizeof(left_buf), "SCAFFOLD %d%%", pct);
         snprintf(right_buf, sizeof(right_buf), "%d/%d %s",
                  supplied, required, commodity_short_label(material));
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_FADED,
                     right_buf);
         my += row_h * 1.5f;
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         if (held > 0) {
             snprintf(left_buf, sizeof(left_buf), "carry %s",
                      commodity_short_label(material));
@@ -3863,17 +3870,20 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     }
 
     /* -------- SHIP BAY (always visible) -------- */
+    if (!station_row_has_room(my, row_h, content_bottom)) return;
     my += draw_section_header(cx, my, inner_right, "SHIP BAY", HDR_FIT);
     {
         const hull_def_t *def = ship_hull_def(ship);
         const char *class_name = def && def->name ? def->name : "-";
         char right_buf[48];
 
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_TEXT, "hull class", COL_TEXT, class_name);
         my += row_h;
 
         snprintf(right_buf, sizeof(right_buf), "%d / %d",
                  (int)lroundf(ship->hull), (int)lroundf(ship_max_hull(ship)));
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_TEXT, "hull", COL_TEXT, right_buf);
         my += row_h;
 
@@ -3889,6 +3899,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                      (int)lroundf(internal_volume),
                      (int)lroundf(ship_cargo_capacity(ship)));
         }
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_TEXT, "hold", COL_TEXT, right_buf);
         /* Grade-tinted cargo fill bar -- sits inside the cargo row, just
          * below the text baseline so it visually belongs to that row.
@@ -3985,11 +3996,18 @@ static void draw_verbs_view(const station_ui_state_t *ui,
             snprintf(right_buf, sizeof(right_buf), "laser %d  hold %d  tractor %d",
                      ship->mining_level, ship->hold_level, ship->tractor_level);
         }
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_TEXT, "modules", COL_TEXT, right_buf);
         my += row_h;
     }
     my += 6.0f;
-    my = draw_station_memory_summary(st, cx, my, inner_right, compact);
+    /* Memory is useful context but the primary repair/refit rows must remain
+     * visible. Reserve five rows for that section and omit memory when the
+     * panel cannot fit both. */
+    float service_core_h = row_h * 5.0f;
+    float memory_max_h = row_h * 3.0f + 6.0f;
+    if (!compact && my + memory_max_h + service_core_h <= content_bottom)
+        my = draw_station_memory_summary(st, cx, my, inner_right, compact);
 
     station_construction_need_t build_need;
     if (station_construction_material_need(st, &build_need)) {
@@ -3999,35 +4017,54 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         int held = ship_manifest_count_c(ship, build_need.material);
         if (remaining < 1) remaining = 1;
         char left_buf[64], right_buf[48];
-
-        my += draw_section_header(cx, my, inner_right, "CONSTRUCTION", HDR_YARD);
         snprintf(left_buf, sizeof(left_buf), "%s r%d/s%d",
                  module_type_name(build_need.module_type),
                  st->modules[build_need.module_index].ring,
                  st->modules[build_need.module_index].slot);
         snprintf(right_buf, sizeof(right_buf), "%d/%d %s",
                  supplied, required, commodity_short_label(build_need.material));
-        draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT,
-                    right_buf);
-        my += row_h;
 
-        if (held > 0) {
-            snprintf(left_buf, sizeof(left_buf), "ready to supply %s",
-                     commodity_short_label(build_need.material));
-            snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
-                     held, remaining);
+        float full_construction_h = row_h * 3.0f + 6.0f;
+        if (!compact &&
+            my + full_construction_h + service_core_h <= content_bottom) {
+            my += draw_section_header(cx, my, inner_right,
+                                      "CONSTRUCTION", HDR_YARD);
             draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT,
                         right_buf);
-        } else {
-            snprintf(right_buf, sizeof(right_buf), "need %d %s",
-                     remaining, commodity_short_label(build_need.material));
-            draw_row_lr(cx, my, inner_right, COL_DIM, "supply needed",
+            my += row_h;
+
+            if (held > 0) {
+                snprintf(left_buf, sizeof(left_buf), "ready to supply %s",
+                         commodity_short_label(build_need.material));
+                snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
+                         held, remaining);
+                draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT,
+                            right_buf);
+            } else {
+                snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                         remaining, commodity_short_label(build_need.material));
+                draw_row_lr(cx, my, inner_right, COL_DIM, "supply needed",
+                            COL_FADED, right_buf);
+            }
+            my += row_h + 6.0f;
+        } else if (my + row_h + 6.0f + service_core_h <= content_bottom) {
+            char compact_left[64];
+            snprintf(compact_left, sizeof(compact_left), "build %s",
+                     module_type_name(build_need.module_type));
+            if (held > 0)
+                snprintf(right_buf, sizeof(right_buf), "carry %d / need %d",
+                         held, remaining);
+            else
+                snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                         remaining, commodity_short_label(build_need.material));
+            draw_row_lr(cx, my, inner_right, COL_AMBER, compact_left,
                         COL_FADED, right_buf);
+            my += row_h + 6.0f;
         }
-        my += row_h + 6.0f;
     }
 
     /* -------- SERVICES (always visible; rows always show their status) -------- */
+    if (!station_row_has_room(my, row_h, content_bottom)) return;
     my += draw_section_header(cx, my, inner_right, "REPAIR + REFIT", HDR_SERVICE);
 
     /* [R] repair hull — same grammar as the upgrade rows:
@@ -4041,6 +4078,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         char right_buf[32];
         char short_cur[5];
         ui_station_currency_short(st, short_cur, sizeof(short_cur));
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         if (ui->hull_now >= ui->hull_max) {
             draw_row_lr(cx, my, inner_right, COL_DIM, "hull",
                         COL_FADED, "full");
@@ -4092,6 +4130,11 @@ static void draw_verbs_view(const station_ui_state_t *ui,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR) },
     };
     for (int i = 0; i < 3; i++) {
+        if (!station_row_has_room(my, row_h, content_bottom)) {
+            if (my < content_bottom)
+                draw_more_rows_hint(cx, my, "more refit rows hidden");
+            return;
+        }
         char right_buf[40];
         char short_cur[5];
         ui_station_currency_short(st, short_cur, sizeof(short_cur));
@@ -4115,11 +4158,15 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                         COL_TEXT, right_buf);
             my += row_h;
             if (!refit[i].maxed && refit[i].upgrade == SHIP_UPGRADE_MINING) {
-                draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
-                            COL_FADED,
-                            ui_upgrade_effect_label(refit[i].upgrade, ship));
-                my += row_h;
-                if (starter_reserve) {
+                int remaining_primary = 2 - i;
+                if (my + row_h + remaining_primary * row_h <= content_bottom) {
+                    draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
+                                COL_FADED,
+                                ui_upgrade_effect_label(refit[i].upgrade, ship));
+                    my += row_h;
+                }
+                if (starter_reserve &&
+                    my + row_h + remaining_primary * row_h <= content_bottom) {
                     draw_row_lr(cx, my, inner_right, COL_DIM, "source",
                                 COL_FADED, "Kepler starter reserve");
                     my += row_h;
@@ -4148,20 +4195,25 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                     COL_FADED, right_buf);
         my += row_h;
         if (!refit[i].maxed && refit[i].upgrade == SHIP_UPGRADE_MINING) {
-            draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
-                        COL_FADED,
-                        ui_upgrade_effect_label(refit[i].upgrade, ship));
-            my += row_h;
+            int remaining_primary = 2 - i;
+            if (my + row_h + remaining_primary * row_h <= content_bottom) {
+                draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
+                            COL_FADED,
+                            ui_upgrade_effect_label(refit[i].upgrade, ship));
+                my += row_h;
+            }
             char source[112];
             if (ui_upgrade_source_label(refit[i].upgrade, source,
-                                        sizeof(source))) {
+                                        sizeof(source)) &&
+                my + row_h + remaining_primary * row_h <= content_bottom) {
                 draw_row_lr(cx, my, inner_right, COL_DIM, "source",
                             COL_FADED, source);
                 my += row_h;
             }
             char gate[80];
             if (ui_upgrade_input_gate_label(refit[i].upgrade, ship,
-                                            gate, sizeof(gate))) {
+                                            gate, sizeof(gate)) &&
+                my + row_h + remaining_primary * row_h <= content_bottom) {
                 draw_row_lr(cx, my, inner_right, COL_DIM, "input gate",
                             COL_FADED, gate);
                 my += row_h;

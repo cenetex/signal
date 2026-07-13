@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * sim_catalog.c -- Per-station identity catalog persistence.
  *
@@ -19,6 +23,17 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 /* ---- CRC32 (IEEE 802.3, same implementation as sim_save.c) ---- */
@@ -46,6 +61,35 @@ static uint32_t crc32_file(FILE *f) {
     return crc;
 }
 
+static bool catalog_flush_durable(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+#ifdef _WIN32
+    return _commit(_fileno(f)) == 0;
+#else
+    return fsync(fileno(f)) == 0;
+#endif
+}
+
+static bool catalog_replace_file(const char *tmp_path, const char *final_path) {
+#ifdef _WIN32
+    return MoveFileExA(tmp_path, final_path,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    if (rename(tmp_path, final_path) != 0) return false;
+    char dir[256];
+    int n = snprintf(dir, sizeof(dir), "%s", final_path);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0';
+    else snprintf(dir, sizeof(dir), ".");
+    int fd = open(dir[0] ? dir : "/", O_RDONLY);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+#endif
+}
+
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
 #define CATALOG_VERSION 7  /* v7: Helios furnace set is 2x crystal + 1x cuprite.
                             * v6: station-authored NPC/RATi hail text.
@@ -54,7 +98,7 @@ static uint32_t crc32_file(FILE *f) {
                             * v3: per-module commodity tag (hopper specialization). */
 
 /* ---- helper macros (same pattern as sim_save.c) ---- */
-#define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
+#define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 #define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1)  { fclose(f); return false; } } while(0)
 
 /* ---- directory helper ---- */
@@ -204,19 +248,7 @@ static bool station_catalog_migrate_v5_helios(station_t *st, int index, uint32_t
 /* Save                                                                */
 /* ================================================================== */
 
-bool station_catalog_save(const station_t *st, int index, const char *dir) {
-    if (!station_exists(st)) return false;
-
-    ensure_dir(dir);
-
-    /* Write to temp file, then rename for atomicity */
-    char tmp_path[256], final_path[256];
-    snprintf(final_path, sizeof(final_path), "%s/%d.cat", dir, index);
-    snprintf(tmp_path, sizeof(tmp_path), "%s/%d.cat.tmp", dir, index);
-
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) return false;
-
+static bool station_catalog_write_payload(const station_t *st, FILE *f) {
     /* Header */
     { uint32_t magic = CATALOG_MAGIC; WRITE_FIELD(f, magic); }
     { uint32_t ver   = CATALOG_VERSION; WRITE_FIELD(f, ver); }
@@ -254,21 +286,49 @@ bool station_catalog_save(const station_t *st, int index, const char *dir) {
     WRITE_FIELD(f, st->rati_hail_message);
     WRITE_FIELD(f, st->station_slug);
 
-    /* CRC32 trailer — close and reopen to ensure all data is on disk */
-    fclose(f);
-    {
-        FILE *rf = fopen(tmp_path, "rb");
-        if (!rf) { remove(tmp_path); return false; }
-        uint32_t crc = crc32_file(rf);
-        fclose(rf);
-        FILE *af = fopen(tmp_path, "ab");
-        if (!af) { remove(tmp_path); return false; }
-        fwrite(&crc, sizeof(crc), 1, af);
-        fclose(af);
+    return true;
+}
+
+bool station_catalog_save(const station_t *st, int index, const char *dir) {
+    if (!station_exists(st) || !dir) return false;
+
+    ensure_dir(dir);
+
+    char tmp_path[256], final_path[256];
+    int final_n = snprintf(final_path, sizeof(final_path), "%s/%d.cat", dir, index);
+    int tmp_n = snprintf(tmp_path, sizeof(tmp_path), "%s/%d.cat.tmp", dir, index);
+    if (final_n <= 0 || (size_t)final_n >= sizeof(final_path) ||
+        tmp_n <= 0 || (size_t)tmp_n >= sizeof(tmp_path)) return false;
+
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) return false;
+    bool ok = station_catalog_write_payload(st, f);
+    if (ok) ok = fflush(f) == 0;
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
     }
-    /* Atomic rename */
-    remove(final_path);
-    if (rename(tmp_path, final_path) != 0) {
+
+    /* CRC32 trailer — close and reopen to ensure all data is on disk */
+    FILE *rf = fopen(tmp_path, "rb");
+    if (!rf) { remove(tmp_path); return false; }
+    uint32_t crc = crc32_file(rf);
+    ok = !ferror(rf);
+    if (fclose(rf) != 0) ok = false;
+    if (!ok) { remove(tmp_path); return false; }
+
+    FILE *af = fopen(tmp_path, "ab");
+    if (!af) { remove(tmp_path); return false; }
+    ok = fwrite(&crc, sizeof(crc), 1, af) == 1 &&
+         catalog_flush_durable(af);
+    if (fclose(af) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
+    }
+
+    if (!catalog_replace_file(tmp_path, final_path)) {
         remove(tmp_path);
         return false;
     }

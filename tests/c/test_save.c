@@ -230,6 +230,36 @@ static bool test_patch_file_byte(const char *path, long offset, uint8_t value) {
     return ok;
 }
 
+static bool test_copy_file_prefix(const char *src_path,
+                                  const char *dst_path,
+                                  long prefix_len) {
+    if (!src_path || !dst_path || prefix_len < 0) return false;
+    FILE *src = fopen(src_path, "rb");
+    if (!src) return false;
+    FILE *dst = fopen(dst_path, "wb");
+    if (!dst) {
+        fclose(src);
+        return false;
+    }
+    bool ok = true;
+    uint8_t chunk[4096];
+    long remaining = prefix_len;
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(chunk)
+            ? (size_t)remaining
+            : sizeof(chunk);
+        if (fread(chunk, 1, want, src) != want ||
+            fwrite(chunk, 1, want, dst) != want) {
+            ok = false;
+            break;
+        }
+        remaining -= (long)want;
+    }
+    if (fclose(src) != 0) ok = false;
+    if (fclose(dst) != 0) ok = false;
+    return ok;
+}
+
 static long test_find_bytes_in_file(const char *path, const uint8_t *needle,
                                     size_t needle_len) {
     if (!needle || needle_len == 0) return -1;
@@ -2266,6 +2296,62 @@ TEST(test_save_future_version_rejected) {
     remove(TMP("test_future.sav"));
 }
 
+TEST(test_world_load_bad_crc_rejects_before_mutating_destination) {
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    saved->rng = 424242u;
+    world_reset(saved);
+    ASSERT(world_save(saved, TMP("test_world_bad_crc.sav")));
+
+    FILE *f = fopen(TMP("test_world_bad_crc.sav"), "r+b");
+    ASSERT(f != NULL);
+    ASSERT(fseek(f, 12, SEEK_SET) == 0);
+    int byte = fgetc(f);
+    ASSERT(byte != EOF);
+    ASSERT(fseek(f, 12, SEEK_SET) == 0);
+    ASSERT(fputc(byte ^ 0x5a, f) != EOF);
+    ASSERT(fclose(f) == 0);
+
+    WORLD_HEAP destination = calloc(1, sizeof(world_t));
+    ASSERT(destination != NULL);
+    destination->rng = 0xdeadbeefu;
+    destination->world_seq = 0xa5a5a5a5u;
+    ASSERT(!world_load(destination, TMP("test_world_bad_crc.sav")));
+    ASSERT(destination->rng == 0xdeadbeefu);
+    ASSERT(destination->world_seq == 0xa5a5a5a5u);
+
+    remove(TMP("test_world_bad_crc.sav"));
+}
+
+TEST(test_world_load_missing_crc_rejects_before_mutating_destination) {
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    saved->rng = 424242u;
+    world_reset(saved);
+    ASSERT(world_save(saved, TMP("test_world_with_crc.sav")));
+
+    FILE *f = fopen(TMP("test_world_with_crc.sav"), "rb");
+    ASSERT(f != NULL);
+    ASSERT(fseek(f, 0, SEEK_END) == 0);
+    long len = ftell(f);
+    ASSERT(len > 8);
+    ASSERT(fclose(f) == 0);
+    ASSERT(test_copy_file_prefix(TMP("test_world_with_crc.sav"),
+                                 TMP("test_world_without_crc.sav"),
+                                 len - 8));
+
+    WORLD_HEAP destination = calloc(1, sizeof(world_t));
+    ASSERT(destination != NULL);
+    destination->rng = 0xdeadbeefu;
+    destination->world_seq = 0xa5a5a5a5u;
+    ASSERT(!world_load(destination, TMP("test_world_without_crc.sav")));
+    ASSERT(destination->rng == 0xdeadbeefu);
+    ASSERT(destination->world_seq == 0xa5a5a5a5u);
+
+    remove(TMP("test_world_with_crc.sav"));
+    remove(TMP("test_world_without_crc.sav"));
+}
+
 void register_save_persistence_tests(void) {
     TEST_SECTION("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);
@@ -2295,6 +2381,8 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_clamps_upgrade_levels);
     RUN(test_player_load_invalid_station_falls_back);
     RUN(test_player_load_repairs_degenerate_dock_berth);
+    RUN(test_world_load_bad_crc_rejects_before_mutating_destination);
+    RUN(test_world_load_missing_crc_rejects_before_mutating_destination);
     RUN(test_player_load_bad_magic_fails);
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);

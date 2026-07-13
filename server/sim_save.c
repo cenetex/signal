@@ -48,10 +48,19 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
+#include <fcntl.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #define mkdir_700(p) _mkdir(p)
 #else
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
 #define mkdir_700(p) mkdir((p), 0700)
 #endif
 
@@ -85,6 +94,50 @@ static uint32_t crc32_file(FILE *f) {
     return crc;
 }
 
+static bool save_flush_durable(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+#ifdef _WIN32
+    return _commit(_fileno(f)) == 0;
+#else
+    return fsync(fileno(f)) == 0;
+#endif
+}
+
+static bool save_sync_parent_dir(const char *path) {
+#ifdef _WIN32
+    (void)path;
+    return true;
+#else
+    if (!path || !path[0]) return false;
+    char dir[512];
+    int n = snprintf(dir, sizeof(dir), "%s", path);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        if (slash == dir) slash[1] = '\0';
+        else *slash = '\0';
+    } else {
+        snprintf(dir, sizeof(dir), ".");
+    }
+    int fd = open(dir, O_RDONLY);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+#endif
+}
+
+static bool save_replace_file(const char *tmp_path, const char *final_path) {
+#ifdef _WIN32
+    return MoveFileExA(tmp_path, final_path,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0 &&
+           save_sync_parent_dir(final_path);
+#else
+    if (rename(tmp_path, final_path) != 0) return false;
+    return save_sync_parent_dir(final_path);
+#endif
+}
+
 static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
     if (!f || !out_crc || end < 0) return false;
     uint32_t crc = 0;
@@ -107,7 +160,8 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
     return true;
 }
 
-#define SAVE_MAGIC 0x5349474E  /* "SIGN" */
+#define SAVE_MAGIC     0x5349474E  /* "SIGN" */
+#define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define SAVE_VERSION 73  /* v73: active cargo pods persist station custody so
                           * market theft/debt survives restart.
@@ -409,8 +463,8 @@ void world_apply_cargo_schema_migration(world_t *w) {
 }
 
 /* ---- helper macros for explicit field I/O ---- */
-#define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
-#define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1)  { fclose(f); return false; } } while(0)
+#define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
+#define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 
 /* ---- station field-by-field I/O ---- */
 /* write_station removed in v24 — station identity now persisted via
@@ -572,7 +626,6 @@ static bool write_station_session(FILE *f, const station_t *s) {
             for (uint8_t k = 0; k < len; k++) {
                 const cargo_receipt_t *r = &rcpts->chains[u].links[k];
                 if (fwrite(r, sizeof(*r), 1, f) != 1) {
-                    fclose(f);
                     return false;
                 }
             }
@@ -585,8 +638,8 @@ static bool write_station_session(FILE *f, const station_t *s) {
      * written here (in addition to the catalog) so outpost identity
      * stays self-contained in world.sav — saves loaded without the
      * matching catalog still rederive a working keypair. */
-    if (fwrite(s->station_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
-    if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(s->station_pubkey, 32, 1, f) != 1) return false;
+    if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, s->outpost_planted_tick);
     WRITE_FIELD(f, s->name);
     WRITE_FIELD(f, s->faction_id);
@@ -598,7 +651,7 @@ static bool write_station_session(FILE *f, const station_t *s) {
      * continuation pointers (last full-record hash + monotonic event
      * counter) ride along with the world save so a restart can pick
      * up the chain without re-reading + re-hashing the entire log. */
-    if (fwrite(s->chain_last_hash, 32, 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(s->chain_last_hash, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, s->chain_event_count);
     return true;
 }
@@ -800,7 +853,6 @@ static bool read_station_session(FILE *f, station_t *s) {
                         return false;
                     for (uint8_t k = 0; k < chain.len; k++) {
                         if (fread(&chain.links[k], sizeof(chain.links[k]), 1, f) != 1) {
-                            fclose(f);
                             return false;
                         }
                     }
@@ -1613,14 +1665,7 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     return true;
 }
 
-bool world_save(const world_t *w, const char *path) {
-    /* Write to a temp file first, then rename atomically to avoid
-     * truncated saves if the process is interrupted mid-write. */
-    char tmp_path[272];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) return false;
-
+static bool world_save_payload(const world_t *w, FILE *f) {
     /* Header */
     uint32_t magic = SAVE_MAGIC;
     uint32_t version = SAVE_VERSION;
@@ -1637,7 +1682,7 @@ bool world_save(const world_t *w, const char *path) {
 
     /* Stations — session-tier only (identity lives in station catalog) */
     for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!write_station_session(f, &w->stations[i])) { fclose(f); remove(tmp_path); return false; }
+        if (!write_station_session(f, &w->stations[i])) return false;
     }
     /* Active fracture children (v27+): counted sidecar section.
      * Terrain asteroids still remain derived from the belt seed. */
@@ -1652,8 +1697,6 @@ bool world_save(const world_t *w, const char *path) {
             if (!w->asteroids[i].active || !w->asteroids[i].fracture_child) continue;
             if (!write_fracture_child(f, (uint16_t)i, &w->asteroids[i],
                                       &w->fracture_claims[i])) {
-                fclose(f);
-                remove(tmp_path);
                 return false;
             }
         }
@@ -1672,24 +1715,22 @@ bool world_save(const world_t *w, const char *path) {
         WRITE_FIELD(f, count);
         for (uint16_t i = 0; i < count; i++) {
             if (fwrite(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
-                fclose(f); remove(tmp_path); return false;
+                return false;
             }
             WRITE_FIELD(f, w->destroyed_rocks[i].destroyed_at_ms);
         }
     }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (!write_npc(f, &w->npc_ships[i])) { fclose(f); remove(tmp_path); return false; }
+        if (!write_npc(f, &w->npc_ships[i])) return false;
     }
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
+        if (!write_contract(f, &w->contracts[i])) return false;
     }
     WRITE_FIELD(f, w->next_delivery_shipment_id);
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         if (!write_delivery_shipment(f, &w->delivery_shipments[i])) {
-            fclose(f);
-            remove(tmp_path);
             return false;
         }
     }
@@ -1706,10 +1747,10 @@ bool world_save(const world_t *w, const char *path) {
         for (int r = 0; r < MAX_PLAYERS; r++) {
             if (!w->pubkey_registry[r].in_use) continue;
             if (fwrite(w->pubkey_registry[r].pubkey, 32, 1, f) != 1) {
-                fclose(f); remove(tmp_path); return false;
+                return false;
             }
             if (fwrite(w->pubkey_registry[r].session_token, 8, 1, f) != 1) {
-                fclose(f); remove(tmp_path); return false;
+                return false;
             }
         }
     }
@@ -1722,8 +1763,6 @@ bool world_save(const world_t *w, const char *path) {
         if (w->npc_ships[i].active)
             ship = world_save_npc_ship_for(w, i);
         if (!write_npc_ship_manifest_payload(f, ship)) {
-            fclose(f);
-            remove(tmp_path);
             return false;
         }
     }
@@ -1732,8 +1771,6 @@ bool world_save(const world_t *w, const char *path) {
     WRITE_FIELD(f, w->next_ship_asset_id);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         if (!write_ship_asset(f, &w->ship_assets[i])) {
-            fclose(f);
-            remove(tmp_path);
             return false;
         }
     }
@@ -1748,46 +1785,75 @@ bool world_save(const world_t *w, const char *path) {
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             if (!w->cargo_pods[i].active) continue;
             if (!write_cargo_pod(f, (uint16_t)i, &w->cargo_pods[i])) {
-                fclose(f);
-                remove(tmp_path);
                 return false;
             }
         }
     }
 
-    fclose(f);
-
-    /* Append CRC32 trailer: reopen to read data, compute CRC, then append */
-    {
-        FILE *rf = fopen(tmp_path, "rb");
-        if (!rf) { remove(tmp_path); return false; }
-        uint32_t crc = crc32_file(rf);
-        fclose(rf);
-        FILE *af = fopen(tmp_path, "ab");
-        if (!af) { remove(tmp_path); return false; }
-        uint32_t crc_magic = 0x43524332u; /* "CRC2" */
-        fwrite(&crc_magic, sizeof(crc_magic), 1, af);
-        fwrite(&crc, sizeof(crc), 1, af);
-        fclose(af);
-    }
-    /* Atomic rename — on POSIX rename() atomically replaces the target.
-     * Do NOT remove(path) first: that creates a window where a crash
-     * would leave no valid save file at all. */
-    if (rename(tmp_path, path) != 0) { remove(tmp_path); return false; }
     return true;
 }
 
-bool world_load(world_t *w, const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
+bool world_save(const world_t *w, const char *path) {
+    if (!w || !path || !path[0]) return false;
+    char tmp_path[272];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (n <= 0 || (size_t)n >= sizeof(tmp_path)) return false;
 
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) return false;
+    bool ok = world_save_payload(w, f);
+    if (ok) ok = fflush(f) == 0;
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
+    }
+
+    FILE *rf = fopen(tmp_path, "rb");
+    if (!rf) {
+        remove(tmp_path);
+        return false;
+    }
+    uint32_t crc = crc32_file(rf);
+    ok = !ferror(rf);
+    if (fclose(rf) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
+    }
+
+    FILE *af = fopen(tmp_path, "ab");
+    if (!af) {
+        remove(tmp_path);
+        return false;
+    }
+    uint32_t crc_magic = SAVE_CRC_MAGIC;
+    ok = fwrite(&crc_magic, sizeof(crc_magic), 1, af) == 1 &&
+         fwrite(&crc, sizeof(crc), 1, af) == 1 &&
+         save_flush_durable(af);
+    if (fclose(af) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return false;
+    }
+
+    /* POSIX rename atomically replaces the destination. The temporary file is
+     * durable before replacement, and the parent directory is synced after. */
+    if (!save_replace_file(tmp_path, path)) {
+        remove(tmp_path);
+        return false;
+    }
+    return true;
+}
+
+static bool world_load_payload(world_t *w, FILE *f) {
     uint32_t magic, version;
     READ_FIELD(f, magic);
     READ_FIELD(f, version);
     if (magic != SAVE_MAGIC || version < MIN_SAVE_VERSION || version > SAVE_VERSION) {
         printf("[save] rejected save: magic=0x%08x version=%u (need %d-%d)\n",
                magic, version, MIN_SAVE_VERSION, SAVE_VERSION);
-        fclose(f); return false;
+        return false;
     }
     g_loaded_save_version = (int)version;
 
@@ -1831,12 +1897,10 @@ bool world_load(world_t *w, const char *path) {
             uint32_t fracture_child_count = 0;
             READ_FIELD(f, fracture_child_count);
             if (fracture_child_count > MAX_ASTEROIDS) {
-                fclose(f);
                 return false;
             }
             for (uint32_t i = 0; i < fracture_child_count; i++) {
                 if (!read_fracture_child(f, w)) {
-                    fclose(f);
                     return false;
                 }
             }
@@ -1857,7 +1921,6 @@ bool world_load(world_t *w, const char *path) {
     }
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_manifest_bootstrap(&w->stations[i])) {
-            fclose(f);
             return false;
         }
     }
@@ -1876,10 +1939,10 @@ bool world_load(world_t *w, const char *path) {
         }
         uint16_t count = 0;
         READ_FIELD(f, count);
-        if (count > MAX_DESTROYED_ROCKS) { fclose(f); return false; }
+        if (count > MAX_DESTROYED_ROCKS) return false;
         for (uint16_t i = 0; i < count; i++) {
             if (fread(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
-                fclose(f); return false;
+                return false;
             }
             if (version >= 38) {
                 READ_FIELD(f, w->destroyed_rocks[i].destroyed_at_ms);
@@ -1905,7 +1968,6 @@ bool world_load(world_t *w, const char *path) {
             w->next_delivery_shipment_id = 1;
         for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
             if (!read_delivery_shipment(f, &w->delivery_shipments[i], version)) {
-                fclose(f);
                 return false;
             }
         }
@@ -1926,16 +1988,13 @@ bool world_load(world_t *w, const char *path) {
         uint32_t reg_count = 0;
         READ_FIELD(f, reg_count);
         if (reg_count > MAX_PLAYERS) {
-            fclose(f);
             return false;
         }
         for (uint32_t r = 0; r < reg_count; r++) {
             if (fread(w->pubkey_registry[r].pubkey, 32, 1, f) != 1) {
-                fclose(f);
                 return false;
             }
             if (fread(w->pubkey_registry[r].session_token, 8, 1, f) != 1) {
-                fclose(f);
                 return false;
             }
             w->pubkey_registry[r].in_use = true;
@@ -1954,7 +2013,6 @@ bool world_load(world_t *w, const char *path) {
             if (w->npc_ships[i].active)
                 ship = world_npc_ship_for(w, i);
             if (!read_npc_ship_manifest_payload(f, ship)) {
-                fclose(f);
                 return false;
             }
             if (ship && ship->manifest.count > 0)
@@ -1973,7 +2031,6 @@ bool world_load(world_t *w, const char *path) {
             w->next_ship_asset_id = 1;
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
             if (!read_ship_asset(f, &w->ship_assets[i])) {
-                fclose(f);
                 return false;
             }
         }
@@ -1984,40 +2041,36 @@ bool world_load(world_t *w, const char *path) {
         memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
         READ_FIELD(f, pod_count);
         if (pod_count > MAX_CARGO_PODS) {
-            fclose(f);
             return false;
         }
         for (uint16_t i = 0; i < pod_count; i++) {
             if (!read_cargo_pod(f, w, version)) {
-                fclose(f);
                 return false;
             }
         }
     }
 
-    /* Check for CRC32 trailer after all data fields.
-     * If the next 4 bytes are the CRC2 magic, verify the checksum
-     * against everything read so far. Legacy saves without the trailer
-     * are loaded without verification. */
+    /* Every supported world-save version has a CRC32 trailer. Require it at
+     * the exact payload boundary so appended or truncated data cannot be
+     * mistaken for a legacy save. */
     {
         long data_end = ftell(f);
         uint32_t trail_magic = 0;
-        if (fread(&trail_magic, sizeof(trail_magic), 1, f) == 1 &&
-            trail_magic == 0x43524332u) { /* "CRC2" */
-            uint32_t stored_crc;
-            if (fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
-                printf("[save] truncated CRC32 trailer\n");
-                fclose(f); return false;
-            }
-            uint32_t crc = 0;
-            if (!crc32_file_prefix(f, data_end, &crc)) {
-                fclose(f); return false;
-            }
-            if (crc != stored_crc) {
-                printf("[save] CRC32 mismatch: computed=0x%08x stored=0x%08x -- save may be corrupt\n",
-                       crc, stored_crc);
-                fclose(f); return false;
-            }
+        uint32_t stored_crc = 0;
+        if (fread(&trail_magic, sizeof(trail_magic), 1, f) != 1 ||
+            trail_magic != SAVE_CRC_MAGIC ||
+            fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
+            printf("[save] missing or truncated CRC32 trailer\n");
+            return false;
+        }
+        uint32_t crc = 0;
+        if (!crc32_file_prefix(f, data_end, &crc)) {
+            return false;
+        }
+        if (crc != stored_crc) {
+            printf("[save] CRC32 mismatch: computed=0x%08x stored=0x%08x -- save may be corrupt\n",
+                   crc, stored_crc);
+            return false;
         }
     }
 
@@ -2264,7 +2317,6 @@ bool world_load(world_t *w, const char *path) {
         memset(&w->players[i], 0, sizeof(w->players[i]));
     }
 
-    fclose(f);
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
     if (!characters_rebuilt)
@@ -2385,6 +2437,44 @@ bool world_load(world_t *w, const char *path) {
      * reset/load does not invent peer-station radio. */
     gossip_bootstrap_world_stations(w);
     return true;
+}
+
+static bool world_load_precheck_crc(FILE *f) {
+    if (!f || fseek(f, 0, SEEK_END) != 0) return false;
+    long len = ftell(f);
+    if (len < (long)(sizeof(uint32_t) * 4)) {
+        printf("[save] missing or truncated CRC32 trailer\n");
+        return false;
+    }
+
+    long trailer = len - (long)(sizeof(uint32_t) * 2);
+    uint32_t magic = 0;
+    uint32_t stored_crc = 0;
+    if (fseek(f, trailer, SEEK_SET) != 0 ||
+        fread(&magic, sizeof(magic), 1, f) != 1 ||
+        fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
+        return false;
+    }
+    if (magic != SAVE_CRC_MAGIC) {
+        printf("[save] missing or truncated CRC32 trailer\n");
+        return false;
+    }
+    uint32_t crc = 0;
+    if (!crc32_file_prefix(f, trailer, &crc) || crc != stored_crc) {
+        printf("[save] CRC32 mismatch before decode: computed=0x%08x stored=0x%08x\n",
+               crc, stored_crc);
+        return false;
+    }
+    return fseek(f, 0, SEEK_SET) == 0;
+}
+
+bool world_load(world_t *w, const char *path) {
+    if (!w || !path) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    bool ok = world_load_precheck_crc(f) && world_load_payload(w, f);
+    if (fclose(f) != 0) ok = false;
+    return ok;
 }
 
 /* ================================================================== */
@@ -2859,6 +2949,7 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
              fwrite(&crc, sizeof(crc), 1, f) == 1;
     }
+    if (ok) ok = save_flush_durable(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
         remove(tmp_path);
@@ -2866,7 +2957,7 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     }
     /* Atomic rename matches world_save(): never remove the previous
      * player save before the replacement is complete. */
-    if (rename(tmp_path, path) != 0) {
+    if (!save_replace_file(tmp_path, path)) {
         remove(tmp_path);
         return false;
     }

@@ -233,6 +233,17 @@ static uint64_t server_connection_limit_key(const struct mg_connection *c) {
     return server_peer_addr_key(c);
 }
 
+static uint64_t server_http_client_key(const struct mg_connection *c,
+                                       struct mg_http_message *hm) {
+    if (trust_proxy_headers && hm) {
+        char token[96];
+        if (server_proxy_client_addr_token(hm, token, sizeof(token))) {
+            return server_client_addr_key_bytes(token, strlen(token));
+        }
+    }
+    return server_peer_addr_key(c);
+}
+
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
 static uint8_t station_hull_inventory_last[MAX_STATIONS][HULL_CLASS_COUNT];
@@ -2597,10 +2608,9 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
         server_player_reset_input_stream(sp);
         force_player_authoritative_resync(sp);
         printf("[server] player %d: kept live pubkey reconnect state\n", pid);
-    } else if (true &&
-        player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
+    } else if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
         printf("[server] player %d: restored save by pubkey\n", pid);
-    } else if (true) {
+    } else {
         char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
         char names[LEGACY_SAVES_MAX_LIST][64];
         int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
@@ -2619,9 +2629,6 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
             printf("[server] player %d: advertised %d legacy save(s)\n",
                    pid, n);
         }
-    } else {
-        printf("[server] player %d: persistence disabled, fresh pubkey session\n",
-               pid);
     }
 }
 
@@ -2865,11 +2872,6 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         /* Layer A.4 of #479. Client supplies (token_hex, signature). We
          * verify sig against the registered pubkey, then rename the
          * legacy save to the pubkey-keyed path and load it. */
-        if (!true || !true) {
-            printf("[server] player %d: legacy save claim ignored in %s mode\n",
-                   pid, "local");
-            break;
-        }
         if (len < 2) break;
         server_player_t *sp = &world.players[pid];
         if (!server_player_can_use_pubkey_persistence(sp)) break;
@@ -4636,26 +4638,64 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
 /* Mongoose event handler                                             */
 /* ------------------------------------------------------------------ */
 
-/* REST API token-bucket rate limiter: 20 tokens/sec, 40 burst cap */
-static uint64_t api_rate_last_refill = 0;
-static int api_rate_bucket = 40;
+/* Per-client REST API token buckets. A single process-wide bucket allowed an
+ * unauthenticated caller to starve every operator endpoint. Keep this table
+ * bounded and evict the least-recently-used entry when it fills. */
+#define API_RATE_CLIENTS 128
 #define API_RATE_REFILL_PER_SEC 20
 #define API_RATE_BUCKET_MAX 40
 
-static bool api_rate_check(void) {
+typedef struct {
+    uint64_t key;
+    uint64_t last_refill;
+    uint64_t last_seen;
+    int tokens;
+    bool in_use;
+} api_rate_bucket_t;
+
+static api_rate_bucket_t api_rate_buckets[API_RATE_CLIENTS];
+
+static api_rate_bucket_t *api_rate_bucket_for(uint64_t key, uint64_t now) {
+    api_rate_bucket_t *free_slot = NULL;
+    api_rate_bucket_t *oldest = NULL;
+    for (int i = 0; i < API_RATE_CLIENTS; i++) {
+        api_rate_bucket_t *bucket = &api_rate_buckets[i];
+        if (bucket->in_use && bucket->key == key) return bucket;
+        if (!bucket->in_use && !free_slot) free_slot = bucket;
+        if (bucket->in_use && (!oldest || bucket->last_seen < oldest->last_seen))
+            oldest = bucket;
+    }
+    api_rate_bucket_t *bucket = free_slot ? free_slot : oldest;
+    if (!bucket) return NULL;
+    *bucket = (api_rate_bucket_t){
+        .key = key,
+        .last_refill = now,
+        .last_seen = now,
+        .tokens = API_RATE_BUCKET_MAX,
+        .in_use = true,
+    };
+    return bucket;
+}
+
+static bool api_rate_check(struct mg_connection *c,
+                           struct mg_http_message *hm) {
     uint64_t now = mg_millis();
-    uint64_t elapsed = now - api_rate_last_refill;
+    api_rate_bucket_t *bucket = api_rate_bucket_for(
+        server_http_client_key(c, hm), now);
+    if (!bucket) return false;
+    uint64_t elapsed = now - bucket->last_refill;
     if (elapsed >= 50) {  /* refill every 50ms to smooth out bursts */
         int refill = (int)(elapsed * API_RATE_REFILL_PER_SEC / 1000);
         if (refill > 0) {
-            api_rate_bucket += refill;
-            if (api_rate_bucket > API_RATE_BUCKET_MAX)
-                api_rate_bucket = API_RATE_BUCKET_MAX;
-            api_rate_last_refill = now;
+            bucket->tokens += refill;
+            if (bucket->tokens > API_RATE_BUCKET_MAX)
+                bucket->tokens = API_RATE_BUCKET_MAX;
+            bucket->last_refill = now;
         }
     }
-    if (api_rate_bucket <= 0) return false;
-    api_rate_bucket--;
+    bucket->last_seen = now;
+    if (bucket->tokens <= 0) return false;
+    bucket->tokens--;
     return true;
 }
 
@@ -4855,19 +4895,19 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             server_note_ws_client_addr(c, hm);
             mg_ws_upgrade(c, hm, NULL);
         } else if (mg_match(hm->uri, mg_str("/api/protocol"), NULL)) {
-            if (!api_rate_check()) {
+            if (!api_rate_check(c, hm)) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 handle_protocol_info_http(c);
             }
         } else if (mg_match(hm->uri, mg_str("/api/npc_chatter_context"), NULL)) {
-            if (!api_rate_check()) {
+            if (!api_rate_check(c, hm)) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 handle_npc_chatter_context(c, hm);
             }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/state"), NULL)) {
-            if (!api_rate_check()) {
+            if (!api_rate_check(c, hm)) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 int sid = parse_station_id(hm);
@@ -4882,10 +4922,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 }
             }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/command"), NULL)) {
-            if (!api_rate_check()) {
-                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
-            } else if (!api_auth_ok(hm)) {
+            if (!api_auth_ok(hm)) {
                 mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else if (!api_rate_check(c, hm)) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
@@ -4896,10 +4936,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/signal_channel"), NULL)) {
             /* Station posts to the broadcast log (#316). */
-            if (!api_rate_check()) {
-                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
-            } else if (!api_auth_ok(hm)) {
+            if (!api_auth_ok(hm)) {
                 mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else if (!api_rate_check(c, hm)) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
@@ -4939,10 +4979,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 }
             }
         } else if (mg_match(hm->uri, mg_str("/api/signal_channel/messages"), NULL)) {
-            if (!api_rate_check()) {
-                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
-            } else if (!api_auth_ok(hm)) {
+            if (!api_auth_ok(hm)) {
                 mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else if (!api_rate_check(c, hm)) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else {
                 /* Parse ?since=<id>&limit=<1..100> — crude query scan
                  * since mongoose gives us hm->query as a raw string. */
@@ -5089,10 +5129,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        (unsigned long long)signal_intelligence_npc_worker_teacher_decision_count(),
                        version,
                        "local",
-                       true ? "true" : "false",
-                       true ? "true" : "false",
-                       false ? "true" : "false",
-                       false ? "s3" : "none");
+                       "true",
+                       "true",
+                       "false",
+                       "none");
             BUF_APPEND(pos, buf, HEALTH_BUFSZ, "\",\"data_dir\":\"");
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "\"},"
@@ -5782,15 +5822,20 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         } else if (api_token && api_token[0] != '\0') {
             station_authority_configure_secret(api_token);
             printf("[server] Station authority secret derived from SIGNAL_API_TOKEN\n");
-        } else if (
-                   getenv("SIGNAL_REQUIRE_STATION_AUTH_SECRET")) {
-            fprintf(stderr, "[FATAL] station authority requires SIGNAL_STATION_AUTH_SECRET "
-                            "or SIGNAL_API_TOKEN\n");
-            return false;
         } else {
+            bool allow_dev = env_truthy(
+                getenv("SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET"));
+            if (!allow_dev ||
+                env_truthy(getenv("SIGNAL_REQUIRE_STATION_AUTH_SECRET"))) {
+                fprintf(stderr,
+                        "[FATAL] station authority requires "
+                        "SIGNAL_STATION_AUTH_SECRET or SIGNAL_API_TOKEN; "
+                        "set SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET=1 only for "
+                        "disposable local worlds\n");
+                return false;
+            }
             station_authority_use_dev_secret();
-            fprintf(stderr, "[WARN] using deterministic development station authority secret "
-                            "(set SIGNAL_STATION_AUTH_SECRET in production)\n");
+            fprintf(stderr, "[WARN] using deterministic development station authority secret\n");
         }
     }
     internal_token = getenv("SIGNAL_INTERNAL_SHARED_KEY");
@@ -5812,7 +5857,6 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
 }
 
 static void ensure_persistence_dirs(void) {
-    if (!true && !true) return;
     MKDIR_PATH(PLAYER_SAVE_DIR);
     MKDIR_PATH(STATION_CATALOG_DIR);
     /* Layer A.4 of #479: ensure pubkey/ + legacy/ subdirs exist and any
@@ -5822,7 +5866,6 @@ static void ensure_persistence_dirs(void) {
 }
 
 static bool enter_persistence_data_dir(void) {
-    if (!true && !true) return true;
     if (!persistence_data_dir || persistence_data_dir[0] == '\0' ||
         strcmp(persistence_data_dir, ".") == 0) {
         return true;
@@ -5959,22 +6002,17 @@ static void server_apply_npc_worker_trace_fixture(void) {
  *   2. Catalog overwrites identity for any persisted stations
  *   3. Session snapshot overlays economy state
  *   4. Rebuild derived structures (signal chain, station nav, hash chain) */
-static void load_world_state(void) {
+static bool load_world_state(void) {
     /* Belt seed is persistent across normal restarts: rotate only when
      * world.sav is absent (true first boot of a fresh world). On a
      * resume, world_load below overwrites belt_seed and world_seq with
      * the persisted values so asteroid layout, station Ed25519 pubkeys,
      * and the leaderboard's world ordering all stay stable. */
     bool fresh_world = true;
-    if (true) {
-        FILE *probe = fopen(SAVE_PATH, "rb");
-        if (probe) {
-            fclose(probe);
-            fresh_world = false;
-        }
-    } else {
-        printf("[server] %s mode: skipping local world/catalog/player load\n",
-               "local");
+    FILE *probe = fopen(SAVE_PATH, "rb");
+    if (probe) {
+        fclose(probe);
+        fresh_world = false;
     }
     if (fresh_world) {
         world.rng = fresh_world_seed_override
@@ -5984,14 +6022,19 @@ static void load_world_state(void) {
     }
     world_reset(&world);
 
-    if (true) {
-        int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
-                                                     STATION_CATALOG_DIR);
-        if (catalog_count > 0)
-            printf("[server] loaded %d station(s) from catalog\n", catalog_count);
-    }
+    int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
+                                                 STATION_CATALOG_DIR);
+    if (catalog_count > 0)
+        printf("[server] loaded %d station(s) from catalog\n", catalog_count);
 
-    if (true && world_load(&world, SAVE_PATH)) {
+    if (!fresh_world) {
+        if (!world_load(&world, SAVE_PATH)) {
+            fprintf(stderr,
+                    "[FATAL] %s exists but is invalid or unreadable; refusing "
+                    "to replace it with a fresh world\n",
+                    SAVE_PATH);
+            return false;
+        }
         printf("[server] loaded session from %s (belt_seed=%u world_seq=%u)\n",
                SAVE_PATH, world.belt_seed, world.world_seq);
     } else {
@@ -6043,8 +6086,7 @@ static void load_world_state(void) {
     /* Replay the on-disk hash chain so the Network tab survives a
      * server restart and the chain links continue from where we left
      * off (no fork at the genesis block). */
-    if (true)
-        signal_chain_load(&world);
+    signal_chain_load(&world);
 
     /* Highscores are now a *view* of the chain log: walk every
      * chain/<base58>.log file and project CHAIN_EVT_DEATH events
@@ -6052,18 +6094,17 @@ static void load_world_state(void) {
      * survive as orphans (their station pubkeys differ once
      * belt_seed rotates) and contribute alongside the current
      * world's runs — each row carries its world_id. */
-    if (true) {
-        highscore_replay_from_chain(&highscores, chain_log_get_dir());
-        if (highscores.count > 0)
-            printf("[server] replayed %d highscore(s) from chain log\n",
-                   highscores.count);
-    }
+    highscore_replay_from_chain(&highscores, chain_log_get_dir());
+    if (highscores.count > 0)
+        printf("[server] replayed %d highscore(s) from chain log\n",
+               highscores.count);
 
     /* Anchor the current world's identity in every station chain. The
      * BUILD_INFO + WORLD_INFO operator posts let replay/analyzer walks
      * tag subsequent events with this world's belt_seed, world_seq, and
      * build SHA. emit_world_identity_anchor is below. */
     emit_world_identity_anchor();
+    return true;
 }
 
 /* Forward-declared above load_world_state but defined here so it can
@@ -6400,6 +6441,36 @@ static int server_poll_timeout_ms(uint64_t now,
     return (int)wait;
 }
 
+static bool save_active_players(void) {
+    bool ok = true;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &world.players[i];
+        if (!sp->session_ready) continue;
+        if (!player_save(sp, PLAYER_SAVE_DIR, i)) {
+            fprintf(stderr, "[save] player %d autosave failed: %s\n",
+                    i, strerror(errno));
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+static bool save_persistent_state(void) {
+    bool catalogs_ok = station_catalog_save_all(
+        world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
+    bool world_ok = world_save(&world, SAVE_PATH);
+    bool players_ok = save_active_players();
+    if (!catalogs_ok || !world_ok || !players_ok) {
+        fprintf(stderr,
+                "[save] persistence snapshot incomplete "
+                "(catalogs=%s world=%s players=%s)\n",
+                catalogs_ok ? "ok" : "failed",
+                world_ok ? "ok" : "failed",
+                players_ok ? "ok" : "failed");
+    }
+    return catalogs_ok && world_ok && players_ok;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -6425,7 +6496,7 @@ int main(void) {
     signal_chain_set_disk_enabled(true);
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
-    load_world_state();
+    if (!load_world_state()) return 1;
     server_apply_npc_worker_trace_fixture();
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
     signal_intelligence_holographic_init();
@@ -6589,21 +6660,17 @@ int main(void) {
             last_analytics = now;
         }
         if (now - last_save >= AUTOSAVE_MS) {
-            if (true) {
-                station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
-                world_save(&world, SAVE_PATH);
-            }
+            (void)save_persistent_state();
             last_save = now;
         }
     }
 
     mg_mgr_free(&mgr);
-    if (true) {
-        station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
-        world_save(&world, SAVE_PATH);
+    if (save_persistent_state()) {
         printf("[server] world saved\n");
     } else {
-        printf("[server] world save skipped (%s mode)\n", "local");
+        fprintf(stderr, "[server] shutdown persistence failed\n");
+        return 1;
     }
     printf("[server] shutdown\n");
     return 0;
