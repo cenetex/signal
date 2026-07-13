@@ -4981,7 +4981,7 @@ static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
 /* Deposit towed fragments: when the SHIP is near an ore buyer module,
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
-/* HOPPER_PULL_RANGE, HOPPER_PULL_ACCEL → game_sim.h */
+/* HOPPER_PULL_RANGE → game_sim.h */
 #define FURNACE_SMELT_RANGE 250.0f  /* fragment counts as "held" by furnace within this range */
 
 static void release_towed_fragments(world_t *w, server_player_t *sp);
@@ -5049,12 +5049,12 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         vec2 dir = v2_scale(to_ship, 1.0f / dist);
         /* Stretch beyond rest length — only the elastic portion counts
          * as stored energy. A rock at slack-distance gets just BASE. */
-        float stretch = dist - SHIP_TOW_BAND_REST_LEN;
+        float stretch = dist - TRACTOR_TOW_BAND_REST_LENGTH;
         if (stretch < 0.0f) stretch = 0.0f;
         /* v = sqrt(K) * stretch  is the elastic-energy fling. With
-         * SHIP_TOW_BAND_SPRING_K = 4 and stretch = 200 (deep stretch),
+         * TRACTOR_TOW_BAND_SPRING_K = 4 and stretch = 200 (deep stretch),
          * this is ~400 m/s. Half-stretch (100) is ~200 m/s. */
-        float elastic = fixp_sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
+        float elastic = fixp_sqrtf(TRACTOR_TOW_BAND_SPRING_K) * stretch;
         float fling = ROCK_THROW_BASE_SPEED + elastic;
         a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
         asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
@@ -6168,7 +6168,7 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     float valid_range =
         cargo_pod_module_tractor_range_for_pod(held_module->type, pod);
     tractor_beam_t pod_tractor =
-        CARGO_POD_MODULE_TRACTOR_BEAM_INIT(valid_range);
+        cargo_pod_module_tractor_beam(valid_range);
     if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor)) {
         cargo_pod_clear_module_tractor(pod);
         return false;
@@ -6452,7 +6452,7 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
             float tractor_range =
                 cargo_pod_module_tractor_range_for_pod(module->type, pod);
             tractor_beam_t pod_tractor =
-                CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+                cargo_pod_module_tractor_beam(tractor_range);
             (void)tractor_apply(&src, &tgt, &pod_tractor, dt);
             if (station_idx >= 0 && station_idx < MAX_STATIONS &&
                 pulse_module >= 0 && pulse_module < MAX_MODULES_PER_STATION) {
@@ -6491,7 +6491,7 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
         float tractor_range =
             cargo_pod_module_tractor_range_for_pod(module->type, pod);
         tractor_beam_t pod_tractor =
-            CARGO_POD_MODULE_TRACTOR_BEAM_INIT(tractor_range);
+            cargo_pod_module_tractor_beam(tractor_range);
         float intensity = tractor_beam_range_fraction(
             anchor, pod->pos, &pod_tractor);
         if (intensity <= 0.0f) continue;

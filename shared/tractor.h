@@ -32,6 +32,7 @@
  *   server/sim_ai.c   step_npc_ships RETURN     (NPC fragment tow)
  *   server/sim_ai.c   step_scaffold_tow_contract (worker scaffold tow)
  *   server/sim_production.c::step_furnace_smelting   (smelt beam pull)
+ *   server/game_sim.c::step_station_cargo_pod_tractors (module pod tow)
  *   server/game_sim.c::step_scaffolds LOOSE     (planned blueprint pull)
  *   server/game_sim.c::step_scaffolds SNAPPING  (module slot snap)
  *
@@ -53,11 +54,10 @@
  *   damping for natural swing." In practice, several migrated sites
  *   had to keep tangent_damping near axial value to satisfy existing
  *   integration tests that were tuned around the legacy isotropic
- *   drag (`vel *= 1/(1+k*dt)`). Specifically: NPC fragment tow,
- *   blueprint pull, and slot snap all run with tangent ≈ axial.
- *   Player tow uses the legacy axial=0.6, tangent=0.4 split. Smelt
- *   beam and scaffold tow use ~25% tangent. Worth revisiting once
- *   visual playtest confirms the right feel for each site.
+ *   drag (`vel *= 1/(1+k*dt)`). Specifically: NPC pickup tow,
+ *   blueprint pull, and slot snap keep specialized profiles. Standard
+ *   ship, hopper, furnace, and cargo-pod tow bands share the preset below
+ *   at axial=1.8 and tangent=1.1. Scaffold tow remains specialized.
  */
 #ifndef SHARED_TRACTOR_H
 #define SHARED_TRACTOR_H
@@ -115,6 +115,32 @@ typedef struct {
     tractor_falloff_t falloff;
 } tractor_beam_t;
 
+/* Standard tractor-beam force profile for ship and station elastic tows.
+ * Callers may choose the attachment geometry (range and rest length), but
+ * ships, hoppers, docks, and production modules all share the same spring,
+ * damping, and falloff. A rest length of zero makes a fixed station anchor
+ * pull a pod directly onto its assigned hold point. */
+#define TRACTOR_TOW_BAND_REST_LENGTH      80.0f
+#define TRACTOR_TOW_BAND_SPRING_K          4.0f
+#define TRACTOR_TOW_BAND_AXIAL_DAMPING     1.8f
+#define TRACTOR_TOW_BAND_TANGENT_DAMPING   1.1f
+
+static inline tractor_beam_t tractor_tow_beam(float range,
+                                               float rest_length) {
+    return (tractor_beam_t){
+        .rest_length     = rest_length,
+        .pull_strength   = TRACTOR_TOW_BAND_SPRING_K,
+        .push_strength   = TRACTOR_TOW_BAND_SPRING_K,
+        .pull_constant   = 0.0f,
+        .push_constant   = 0.0f,
+        .range           = range,
+        .axial_damping   = TRACTOR_TOW_BAND_AXIAL_DAMPING,
+        .tangent_damping = TRACTOR_TOW_BAND_TANGENT_DAMPING,
+        .speed_cap       = 0.0f,
+        .falloff         = TRACTOR_FALLOFF_CONSTANT,
+    };
+}
+
 static inline bool tractor_beam_points_in_range(vec2 src,
                                                 vec2 tgt,
                                                 const tractor_beam_t *beam) {
@@ -133,6 +159,19 @@ static inline float tractor_beam_range_fraction(vec2 src,
     if (d_sq >= range_sq) return 0.0f;
     float d = v2_len(v2_sub(tgt, src));
     return clampf(1.0f - d / beam->range, 0.0f, 1.0f);
+}
+
+/* Visual/load tension for an elastic tow: slack at or inside rest length,
+ * fully taut at range. Keeping this beside the force profile prevents ship
+ * and fixed-module renderers from inventing different beam semantics. */
+static inline float tractor_beam_tautness(vec2 src,
+                                          vec2 tgt,
+                                          const tractor_beam_t *beam) {
+    if (!beam) return 0.0f;
+    float d = v2_len(v2_sub(tgt, src));
+    float span = beam->range - beam->rest_length;
+    if (span <= 0.0f) return d > beam->rest_length ? 1.0f : 0.0f;
+    return clampf((d - beam->rest_length) / span, 0.0f, 1.0f);
 }
 
 /* Apply one beam tick. Returns true iff the beam was active

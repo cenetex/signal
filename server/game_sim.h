@@ -1247,7 +1247,6 @@ void activate_outpost(world_t *w, int station_idx);
 
 /* Hopper/furnace constants — shared between game_sim.c and sim_production.c */
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
-#define HOPPER_PULL_ACCEL 500.0f    /* base pull strength */
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
 /* Cargo-pod module tractor tuning. Docks can retain sold/delivery custody
@@ -1255,17 +1254,8 @@ void activate_outpost(world_t *w, int station_idx);
  * CARGO_POD_DOCK_TRACTOR_RANGE at call sites. */
 #define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
 #define CARGO_POD_DOCK_CUSTODY_RANGE (HOPPER_PULL_RANGE * 200.0f)
-#define CARGO_POD_MODULE_TRACTOR_BEAM_INIT(range_value) { \
-    .rest_length     = 0.0f, \
-    .pull_strength   = 0.0f, \
-    .push_strength   = 0.0f, \
-    .pull_constant   = HOPPER_PULL_ACCEL * 3.60f, \
-    .push_constant   = 0.0f, \
-    .range           = (range_value), \
-    .axial_damping   = 9.0f, \
-    .tangent_damping = 3.6f, \
-    .speed_cap       = 320.0f, \
-    .falloff         = TRACTOR_FALLOFF_LINEAR, \
+static inline tractor_beam_t cargo_pod_module_tractor_beam(float range) {
+    return tractor_tow_beam(range, 0.0f);
 }
 
 static inline bool cargo_pod_uses_dock_custody_range(const cargo_pod_t *pod) {

@@ -1090,26 +1090,15 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (!furnace_reach || !silo_reach) continue;  /* both must reach */
 
                 /* Pull fragment toward the midpoint between furnace and
-                 * silo. World-pinned source (midpoint isn't a single
-                 * body — it's the geometric center of the two-module
-                 * smelt path). Linear-falloff constant-pull beam:
-                 * peak at d=0, decays to zero at pull_range. */
+                 * silo. The source is world-pinned because the midpoint
+                 * is not a single body, but its force profile is the same
+                 * elastic tow beam used by ships and cargo-pod modules. */
                 vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
-                static const tractor_beam_t SMELT_BEAM = {
-                    .rest_length     = 0.0f,
-                    .pull_strength   = 0.0f,
-                    .push_strength   = 0.0f,
-                    .pull_constant   = HOPPER_PULL_ACCEL * 1.5f,
-                    .push_constant   = 0.0f,
-                    .range           = HOPPER_PULL_RANGE,
-                    .axial_damping   = 8.0f,
-                    .tangent_damping = 2.0f,    /* ~25% of axial */
-                    .speed_cap       = 100.0f,
-                    .falloff         = TRACTOR_FALLOFF_LINEAR,
-                };
+                tractor_beam_t smelt_beam = tractor_tow_beam(
+                    HOPPER_PULL_RANGE, 0.0f);
                 tractor_anchor_t src = { .pos = midpoint, .vel = NULL,    .inv_mass = 0.0f };
                 tractor_anchor_t tgt = { .pos = a->pos,   .vel = &a->vel, .inv_mass = 1.0f };
-                (void)tractor_apply(&src, &tgt, &SMELT_BEAM, dt);
+                (void)tractor_apply(&src, &tgt, &smelt_beam, dt);
 
                 /* Pulse the furnace module — the existing ring-spoke
                  * physics in step_station_ring_dynamics looks at

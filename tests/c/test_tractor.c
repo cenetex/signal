@@ -22,6 +22,36 @@ static tractor_anchor_t mk_world_anchor(vec2 pos) {
     return a;
 }
 
+TEST(test_tractor_tow_profile_is_shared_across_anchor_types) {
+    tractor_beam_t ship = tractor_tow_beam(
+        0.0f, TRACTOR_TOW_BAND_REST_LENGTH);
+    tractor_beam_t module = tractor_tow_beam(300.0f, 0.0f);
+
+    ASSERT_EQ_FLOAT(ship.pull_strength, module.pull_strength, 0.001f);
+    ASSERT_EQ_FLOAT(ship.push_strength, module.push_strength, 0.001f);
+    ASSERT_EQ_FLOAT(ship.axial_damping, module.axial_damping, 0.001f);
+    ASSERT_EQ_FLOAT(ship.tangent_damping, module.tangent_damping, 0.001f);
+    ASSERT_EQ_FLOAT(module.range, 300.0f, 0.001f);
+    ASSERT_EQ_FLOAT(module.rest_length, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(module.speed_cap, 0.0f, 0.001f);
+    ASSERT_EQ_INT(module.falloff, TRACTOR_FALLOFF_CONSTANT);
+    ASSERT_EQ_FLOAT(tractor_beam_tautness(
+                        v2(0.0f, 0.0f), v2(150.0f, 0.0f), &module),
+                    0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(tractor_beam_tautness(
+                        v2(0.0f, 0.0f),
+                        v2(TRACTOR_TOW_BAND_REST_LENGTH, 0.0f), &ship),
+                    0.0f, 0.001f);
+
+    vec2 target_vel = v2(0.0f, 0.0f);
+    tractor_anchor_t source = mk_world_anchor(v2(0.0f, 0.0f));
+    tractor_anchor_t target = mk_body_anchor(
+        v2(100.0f, 0.0f), &target_vel, 1.0f);
+    ASSERT(tractor_apply(&source, &target, &module, 0.1f));
+    ASSERT_EQ_FLOAT(target_vel.x, -40.0f, 0.001f);
+    ASSERT_EQ_FLOAT(target_vel.y, 0.0f, 0.001f);
+}
+
 TEST(test_tractor_pull_engages_beyond_rest) {
     /* Body at d=10 along +X from origin. rest=5, pull=2, push=0.
      * stretch = 5; spring_mag = -2 * 5 = -10 (toward source, i.e. -X).
@@ -278,6 +308,7 @@ TEST(test_tractor_diagonal_pull_deterministic_reference) {
 
 void register_tractor_tests(void) {
     TEST_SECTION("\nTractor primitive (R1):\n");
+    RUN(test_tractor_tow_profile_is_shared_across_anchor_types);
     RUN(test_tractor_pull_engages_beyond_rest);
     RUN(test_tractor_push_engages_below_rest);
     RUN(test_tractor_constant_pull_independent_of_stretch);

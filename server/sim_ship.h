@@ -43,13 +43,9 @@ void step_ship_thrust(ship_t *s, float dt, float thrust_input,
  * duplicating the formula. */
 float ship_boost_thrust_mult(bool boost, float hold_t);
 
-/* Shared fragment tow band used by player ships and NPC miner ships.
- * The tractor pickup and elastic-limit gates live at the call sites;
- * this helper applies the per-tick tether force and ship reaction. */
-#define SHIP_TOW_BAND_REST_LEN      80.0f
-#define SHIP_TOW_BAND_SPRING_K       4.0f
-#define SHIP_TOW_BAND_DAMPING        1.8f
-#define SHIP_TOW_BAND_TANGENT_DRAG   1.1f
+/* Ship mass is the only ship-specific part of the shared tow beam. The
+ * spring profile and rest length live in shared/tractor.h so fixed module
+ * anchors and moving ships cannot silently drift onto different physics. */
 #define SHIP_TOW_BAND_SHIP_MASS      8.0f
 
 /* Common physical tow endpoint. Cargo pods and disabled ships should
