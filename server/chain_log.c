@@ -72,6 +72,8 @@ static void chain_log_rollback_append(const char *path, long length) {
         (void)_close(fd);
     }
 #else
+    /* Fortified glibc marks truncate() warn_unused_result; checking it also
+     * keeps a failed durability rollback visible in production logs. */
     if (truncate(path, (off_t)length) != 0) {
         SIM_LOG("[chain] rollback truncate(%s) failed: %s\n",
                 path, strerror(errno));
