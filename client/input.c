@@ -29,7 +29,7 @@
  *   [S]   TRADE tab → sell accepted cargo; CONTRACTS tab → load/unload/proof
  *         selected delivery-credit cargo, or deliver matching contract cargo.
  *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
- *           Fragments slingshot; cargo pods gently detach for intake handoff.
+ *           Fragments and cargo pods both slingshot along the tow band.
  *   [R]   SHIP panel → repair; plan mode → cycle module type.
  *   [M]   SHIP panel → upgrade mining laser; undocked → mining laser.
  *   [C]   SHIP panel → upgrade cargo hold.
@@ -350,10 +350,12 @@ static void sample_tractor(input_intent_t *intent) {
     if (g.input.tractor_press_time > 0.0f) {
         float held = g.world.time - g.input.tractor_press_time;
         if (held < 0.2f) intent->release_tow = true;
-        if (intent->release_tow && LOCAL_PLAYER.ship.towed_count > 0 &&
+        if (intent->release_tow &&
+            (LOCAL_PLAYER.ship.towed_count > 0 ||
+             LOCAL_PLAYER.ship.towed_pod_count > 0) &&
             !g.onboarding.threw) {
             onboarding_mark_threw();
-            set_notice("Throw calibrated. Band line predicts impact; tow another fragment to smelt or fight.");
+            set_notice("Throw calibrated. Band line predicts impact; tow another body to haul or fight.");
         }
         g.input.tractor_press_time = 0.0f;
     }

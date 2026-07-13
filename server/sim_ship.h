@@ -47,6 +47,7 @@ float ship_boost_thrust_mult(bool boost, float hold_t);
  * spring profile and rest length live in shared/tractor.h so fixed module
  * anchors and moving ships cannot silently drift onto different physics. */
 #define SHIP_TOW_BAND_SHIP_MASS      8.0f
+#define SHIP_TOW_RELEASE_BASE_SPEED 40.0f
 
 /* Common physical tow endpoint. Cargo pods and disabled ships should
  * use this same shape; asteroid fragments are just the first adapter. */
@@ -58,6 +59,12 @@ typedef struct {
 
 void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt);
 void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt);
+
+/* Release any body from a ship tow band. Stored spring energy becomes
+ * velocity along the band axis, on top of the towing ship's velocity.
+ * Keeping this body-agnostic is important: fragments and cargo pods are
+ * acquired, leashed, snapped, and released by the same tractor mechanic. */
+void ship_release_body_tow(const ship_t *ship, vec2 body_pos, vec2 *body_vel);
 
 /* Integrate velocity onto position with hull drag, plus apply the
  * signal-frontier inward push when the ship is past the boundary

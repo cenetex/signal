@@ -5020,7 +5020,6 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
  *
  * last_towed_token stays set for smelt provenance. thrown_by_token is the
  * short-lived combat owner used for damage and kill credit. */
-#define ROCK_THROW_BASE_SPEED  40.0f
 static void release_towed_fragments(world_t *w, server_player_t *sp) {
     for (int t = 0; t < sp->ship.towed_count; t++) {
         int idx = sp->ship.towed_fragments[t];
@@ -5032,28 +5031,7 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
          * the rock flying) — both are tow terminations from the chain
          * log's perspective. */
         emit_fragment_release_event(w, a, sp, FRAGMENT_RELEASE_MANUAL);
-        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-        float dist = v2_len(to_ship);
-        if (dist < 0.01f) {
-            /* Degenerate: rock is on top of the ship. Fire forward as
-             * a fallback — no band axis to read. */
-            vec2 fwd = v2_from_angle(sp->ship.angle);
-            a->vel = v2_add(sp->ship.vel, v2_scale(fwd, ROCK_THROW_BASE_SPEED));
-            asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
-            a->net_dirty = true;
-            continue;
-        }
-        vec2 dir = v2_scale(to_ship, 1.0f / dist);
-        /* Stretch beyond rest length — only the elastic portion counts
-         * as stored energy. A rock at slack-distance gets just BASE. */
-        float stretch = dist - TRACTOR_TOW_BAND_REST_LENGTH;
-        if (stretch < 0.0f) stretch = 0.0f;
-        /* v = sqrt(K) * stretch  is the elastic-energy fling. With
-         * TRACTOR_TOW_BAND_SPRING_K = 4 and stretch = 200 (deep stretch),
-         * this is ~400 m/s. Half-stretch (100) is ~200 m/s. */
-        float elastic = fixp_sqrtf(TRACTOR_TOW_BAND_SPRING_K) * stretch;
-        float fling = ROCK_THROW_BASE_SPEED + elastic;
-        a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
+        ship_release_body_tow(&sp->ship, a->pos, &a->vel);
         asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
         a->net_dirty = true;
         /* last_towed_by / last_towed_token already set when the
@@ -5187,22 +5165,11 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
 }
 
 static void release_towed_pods(world_t *w, server_player_t *sp) {
-    /* Cargo release is an intake handoff/drop, not the rock slingshot. */
-    const float drop_speed = 12.0f;
-    const float inherited_speed = 0.35f;
     for (int t = 0; t < sp->ship.towed_pod_count; t++) {
         int idx = sp->ship.towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) continue;
         cargo_pod_t *pod = &w->cargo_pods[idx];
-        vec2 away = v2_sub(pod->pos, sp->ship.pos);
-        float dist = v2_len(away);
-        if (dist > 0.01f) {
-            away = v2_scale(away, 1.0f / dist);
-        } else {
-            away = v2_scale(ship_forward(sp->ship.angle), -1.0f);
-        }
-        pod->vel = v2_add(v2_scale(sp->ship.vel, inherited_speed),
-                          v2_scale(away, drop_speed));
+        ship_release_body_tow(&sp->ship, pod->pos, &pod->vel);
         pod->towed_by = -1;
     }
     sp->ship.towed_pod_count = 0;

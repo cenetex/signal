@@ -52,6 +52,26 @@ void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
     ship_apply_body_tow(ship, &body, dt);
 }
 
+void ship_release_body_tow(const ship_t *ship, vec2 body_pos, vec2 *body_vel) {
+    if (!ship || !body_vel) return;
+
+    vec2 to_ship = v2_sub(ship->pos, body_pos);
+    float dist = v2_len(to_ship);
+    vec2 dir;
+    if (dist > 0.01f) {
+        dir = v2_scale(to_ship, 1.0f / dist);
+    } else {
+        /* No band axis to read when the body is on top of the ship. */
+        dir = ship_forward(ship->angle);
+    }
+
+    float stretch = dist - TRACTOR_TOW_BAND_REST_LENGTH;
+    if (stretch < 0.0f) stretch = 0.0f;
+    float elastic = fixp_sqrtf(TRACTOR_TOW_BAND_SPRING_K) * stretch;
+    float release_speed = SHIP_TOW_RELEASE_BASE_SPEED + elastic;
+    *body_vel = v2_add(ship->vel, v2_scale(dir, release_speed));
+}
+
 void step_ship_thrust(ship_t *s, float dt, float thrust_input,
                       vec2 forward, bool boost, float boost_hold,
                       bool reverse_allowed) {

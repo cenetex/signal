@@ -257,6 +257,24 @@ TEST(test_ship_tow_applies_to_ship_like_body) {
     ASSERT(tractor.vel.x > 0.0f);
 }
 
+TEST(test_ship_tow_release_is_body_agnostic) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(20.0f, 10.0f);
+    ship.vel = v2(30.0f, -5.0f);
+
+    vec2 fragment_vel = v2(-100.0f, 20.0f);
+    vec2 pod_vel = v2(90.0f, -40.0f);
+    vec2 body_pos = v2(-80.0f, 10.0f);
+    ship_release_body_tow(&ship, body_pos, &fragment_vel);
+    ship_release_body_tow(&ship, body_pos, &pod_vel);
+
+    ASSERT_EQ_FLOAT(fragment_vel.x, pod_vel.x, 0.001f);
+    ASSERT_EQ_FLOAT(fragment_vel.y, pod_vel.y, 0.001f);
+    ASSERT_EQ_FLOAT(fragment_vel.x, 110.0f, 0.001f);
+    ASSERT_EQ_FLOAT(fragment_vel.y, -5.0f, 0.001f);
+}
+
 TEST(test_product_name) {
     ASSERT_STR_EQ(product_name(PRODUCT_FRAME), "Frames");
     ASSERT_STR_EQ(product_name(PRODUCT_LASER_MODULE), "Laser Modules");
@@ -283,5 +301,6 @@ void register_ship_tests(void) {
     RUN(test_ship_annular_pushback_uses_deterministic_angle_margin);
     RUN(test_ship_fragment_tow_applies_ship_reaction);
     RUN(test_ship_tow_applies_to_ship_like_body);
+    RUN(test_ship_tow_release_is_body_agnostic);
     RUN(test_product_name);
 }

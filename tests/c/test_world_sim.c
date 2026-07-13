@@ -1984,7 +1984,7 @@ TEST(test_docking_works_while_towing_cargo_pod) {
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
 }
 
-TEST(test_space_release_drops_cargo_pod_instead_of_slingshot) {
+TEST(test_space_release_slingshots_cargo_pod_like_fragment) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
@@ -2009,9 +2009,8 @@ TEST(test_space_release_drops_cargo_pod_instead_of_slingshot) {
 
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
-    float pod_speed = v2_len(w.cargo_pods[pod_idx].vel);
-    float ship_speed = v2_len(sp->ship.vel);
-    ASSERT(pod_speed < ship_speed * 0.5f + 30.0f);
+    ASSERT(w.cargo_pods[pod_idx].vel.x > sp->ship.vel.x + 30.0f);
+    ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].vel.y, sp->ship.vel.y, 0.1f);
 }
 
 TEST(test_towed_fragment_loads_raw_contract_at_dock) {
@@ -9431,7 +9430,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full);
     RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
     RUN(test_docking_works_while_towing_cargo_pod);
-    RUN(test_space_release_drops_cargo_pod_instead_of_slingshot);
+    RUN(test_space_release_slingshots_cargo_pod_like_fragment);
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_tow_capacity_counts_pods_against_fragment_pickup);
     RUN(test_tow_capacity_counts_fragments_against_pod_pickup);

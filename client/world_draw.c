@@ -41,10 +41,6 @@
 #define THROW_LOCK_MAX_RANGE 900.0f
 #define THROW_LOCK_MIN_HOTNESS 0.08f
 
-/* Mirror server/game_sim.c's release floor so the throw preview shows
- * the actual slingshot release velocity instead of a generic aim line. */
-#define ROCK_THROW_BASE_SPEED 40.0f
-
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
 static float g_cam_half_w; /* cached for LOD calculations */
@@ -2188,12 +2184,8 @@ static bool throw_preview_for_fragment(const asteroid_t *a,
     vec2 release_dir = dist > 0.01f
         ? v2_scale(to_ship, 1.0f / dist)
         : v2_from_angle(LOCAL_PLAYER.ship.angle);
-    float stretch = dist - TRACTOR_TOW_BAND_REST_LENGTH;
-    if (stretch < 0.0f) stretch = 0.0f;
-    float fling = ROCK_THROW_BASE_SPEED +
-        sqrtf(TRACTOR_TOW_BAND_SPRING_K) * stretch;
-    vec2 predicted_vel = v2_add(LOCAL_PLAYER.ship.vel,
-                                v2_scale(release_dir, fling));
+    vec2 predicted_vel;
+    ship_release_body_tow(&LOCAL_PLAYER.ship, a->pos, &predicted_vel);
     float speed = v2_len(predicted_vel);
     vec2 dir = speed > 0.01f ? v2_scale(predicted_vel, 1.0f / speed)
                              : release_dir;
