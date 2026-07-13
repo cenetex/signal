@@ -330,7 +330,16 @@ NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
 TEST_BIN ?= ./build/signal_test
 TEST_ENV ?=
-TEST_PREFIX ?=
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+# world_t is larger than Linux's usual 8 MiB soft stack limit. Legacy tests
+# intentionally use WORLD_DECL stack allocation, matching the 64 MiB stack
+# reserved for the macOS test binary in CMakeLists.txt.
+TEST_STACK_PREFIX := ulimit -s 65536 &&
+else
+TEST_STACK_PREFIX :=
+endif
+TEST_PREFIX ?= $(TEST_STACK_PREFIX)
 
 # Reusable parallel-shard runner. Caller passes RUN_FLAGS for the test
 # binary (e.g. --no-soak / --soak-only); the runner handles sharding,
@@ -402,13 +411,13 @@ build-san:
 
 test-san: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
 test-san: TEST_ENV=ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-test-san: TEST_PREFIX=ulimit -s 16384 &&
+test-san: TEST_PREFIX=$(TEST_STACK_PREFIX)
 test-san: build-san
 	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
 test-tsan: TEST_BIN=./build-tsan/signal_test
 test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
-test-tsan: TEST_PREFIX=ulimit -s 16384 &&
+test-tsan: TEST_PREFIX=$(TEST_STACK_PREFIX)
 test-tsan:
 	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
 		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
