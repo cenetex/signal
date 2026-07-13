@@ -724,8 +724,9 @@ typedef struct {
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
         asteroid_t curr[MAX_ASTEROIDS];
-        float t;
-        float interval;
+        /* Sparse asteroid packet classes arrive independently. Keep a clock
+         * per slot so a packet for one rock cannot rebase every other rock. */
+        float elapsed[MAX_ASTEROIDS];
     } asteroid_interp;
     struct {
         npc_ship_t prev[MAX_NPC_SHIPS];

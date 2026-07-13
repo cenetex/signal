@@ -3864,8 +3864,8 @@ static int smoke_apply_loop_state(int state) {
         g.world.asteroids[4].age = 0.12f;
         memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
         memcpy(g.asteroid_interp.prev, g.world.asteroids, sizeof(g.asteroid_interp.prev));
-        g.asteroid_interp.t = 0.0f;
-        g.asteroid_interp.interval = 0.1f;
+        memset(g.asteroid_interp.elapsed, 0,
+               sizeof(g.asteroid_interp.elapsed));
         memset(g.npc_interp.curr, 0, sizeof(g.npc_interp.curr));
         memset(g.npc_interp.prev, 0, sizeof(g.npc_interp.prev));
         g.npc_interp.t = 0.0f;

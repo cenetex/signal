@@ -413,7 +413,6 @@ static void reset_world(void) {
     g.inspect_receipt_browser = false;
     g.inspect_was_active = false;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
     g.npc_interp.interval = 0.1f;
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
@@ -1533,7 +1532,7 @@ static void sim_step(float dt) {
     }
 
     /* Advance interpolation timers (both modes) */
-    g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
+    net_advance_asteroid_interpolation(dt);
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
     g.scaffold_interp.t += dt / fmaxf(g.scaffold_interp.interval, 0.01f);
     g.cargo_pod_interp.t += dt / fmaxf(g.cargo_pod_interp.interval, 0.01f);
@@ -3111,14 +3110,13 @@ int signal_smoke_remote_towable_interp_check(void) {
     asteroid_t saved_local_server_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_curr[MAX_ASTEROIDS];
+    float saved_asteroid_elapsed[MAX_ASTEROIDS];
     scaffold_t saved_world_scaffolds[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_prev[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_curr[MAX_SCAFFOLDS];
     cargo_pod_t saved_world_cargo_pods[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_prev[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_curr[MAX_CARGO_PODS];
-    float saved_asteroid_t = g.asteroid_interp.t;
-    float saved_asteroid_interval = g.asteroid_interp.interval;
     float saved_scaffold_t = g.scaffold_interp.t;
     float saved_scaffold_interval = g.scaffold_interp.interval;
     float saved_cargo_pod_t = g.cargo_pod_interp.t;
@@ -3132,6 +3130,8 @@ int signal_smoke_remote_towable_interp_check(void) {
            sizeof(saved_local_server_asteroids));
     memcpy(saved_asteroid_prev, g.asteroid_interp.prev, sizeof(saved_asteroid_prev));
     memcpy(saved_asteroid_curr, g.asteroid_interp.curr, sizeof(saved_asteroid_curr));
+    memcpy(saved_asteroid_elapsed, g.asteroid_interp.elapsed,
+           sizeof(saved_asteroid_elapsed));
     memcpy(saved_world_scaffolds, g.world.scaffolds, sizeof(saved_world_scaffolds));
     memcpy(saved_scaffold_prev, g.scaffold_interp.prev, sizeof(saved_scaffold_prev));
     memcpy(saved_scaffold_curr, g.scaffold_interp.curr, sizeof(saved_scaffold_curr));
@@ -3140,9 +3140,9 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
 
     g.local_server.active = false;
+    g.world.players[0].ship.towed_count = 0;
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = 0.1f;
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
     g.scaffold_interp.interval = 0.1f;
@@ -3215,26 +3215,25 @@ int signal_smoke_remote_towable_interp_check(void) {
         .phase = 0,
     };
     apply_remote_asteroids(&asteroid, 1);
-    g.asteroid_interp.t = 0.1f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    g.asteroid_interp.elapsed[7] = 0.1f;
     interpolate_world_for_render();
     float asteroid_first_x = g.world.asteroids[7].pos.x;
     asteroid.x = 100.0f;
     asteroid.vx = 0.0f;
     apply_remote_asteroids(&asteroid, 1);
-    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    g.asteroid_interp.elapsed[7] = 0.05f;
     interpolate_world_for_render();
     float asteroid_blended_x = g.world.asteroids[7].pos.x;
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = 0.1f;
     asteroid.index = 7;
     asteroid.x = 0.0f;
     asteroid.y = 0.0f;
     asteroid.vx = 100.0f;
     asteroid.vy = 0.0f;
     apply_remote_asteroids(&asteroid, 1);
-    g.asteroid_interp.t = 0.1f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    g.asteroid_interp.elapsed[7] = 0.1f;
     interpolate_world_for_render();
     float loose_asteroid_before_unrelated_x = g.world.asteroids[7].pos.x;
     NetAsteroidState unrelated_loose_asteroid = asteroid;
@@ -3244,7 +3243,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     unrelated_loose_asteroid.vx = 0.0f;
     unrelated_loose_asteroid.vy = 0.0f;
     apply_remote_asteroids(&unrelated_loose_asteroid, 1);
-    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    net_advance_asteroid_interpolation(0.05f);
     interpolate_world_for_render();
     float loose_asteroid_after_unrelated_x = g.world.asteroids[7].pos.x;
     NetAsteroidMotionState unrelated_loose_motion = {
@@ -3255,14 +3254,61 @@ int signal_smoke_remote_towable_interp_check(void) {
         .vy = 0.0f,
     };
     apply_remote_asteroid_motion(&unrelated_loose_motion, 1);
-    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    net_advance_asteroid_interpolation(0.05f);
     interpolate_world_for_render();
     float loose_asteroid_after_unrelated_motion_x =
         g.world.asteroids[7].pos.x;
 
+    /* A correction for slot A followed by a separate same-tick packet for
+     * slot B must leave A's reconciliation intact. */
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = 0.1f;
+    asteroid_t correction_base = {0};
+    correction_base.active = true;
+    correction_base.fracture_child = true;
+    correction_base.tier = ASTEROID_TIER_S;
+    correction_base.commodity = COMMODITY_FERRITE_ORE;
+    correction_base.radius = 18.0f;
+    correction_base.hp = 10.0f;
+    correction_base.ore = 4.0f;
+    g.asteroid_interp.prev[7] = correction_base;
+    g.asteroid_interp.curr[7] = correction_base;
+    correction_base.pos.y = 90.0f;
+    g.asteroid_interp.prev[8] = correction_base;
+    g.asteroid_interp.curr[8] = correction_base;
+    NetAsteroidMotionState correction_a = {
+        .index = 7,
+        .x = 100.0f,
+        .y = 0.0f,
+        .vx = 0.0f,
+        .vy = 0.0f,
+    };
+    NetAsteroidMotionState correction_b = {
+        .index = 8,
+        .x = 30.0f,
+        .y = 90.0f,
+        .vx = 0.0f,
+        .vy = 0.0f,
+    };
+    apply_remote_asteroid_motion(&correction_a, 1);
+    apply_remote_asteroid_motion(&correction_b, 1);
+    g.asteroid_interp.elapsed[7] = 0.18f;
+
+    /* Free-motion prediction must continue across a multi-second quiet
+     * cadence and follow the server's ambient-drag curve. */
+    asteroid_t drag_baseline = correction_base;
+    drag_baseline.pos = v2(0.0f, 180.0f);
+    drag_baseline.vel = v2(20.0f, 0.0f);
+    g.asteroid_interp.prev[9].active = false;
+    g.asteroid_interp.curr[9] = drag_baseline;
+    g.asteroid_interp.elapsed[9] = 2.0f;
+    interpolate_world_for_render();
+    float same_tick_correction_x = g.world.asteroids[7].pos.x;
+    float long_gap_drag_x = g.world.asteroids[9].pos.x;
+    float long_gap_drag_vx = g.world.asteroids[9].vel.x;
+
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.net_authority_enabled = true;
     g.net_input_tick_protocol = true;
     g.local_player_slot = 0;
@@ -3308,7 +3354,8 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.asteroid_interp.prev[7] = predicted_asteroid;
     g.asteroid_interp.curr[7] = predicted_asteroid;
     g.asteroid_interp.curr[7].pos.x = 200.0f;
-    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    g.asteroid_interp.elapsed[7] = 0.05f;
+    net_adopt_local_tow_prediction(0.0f);
 
     NetAsteroidState unrelated_asteroid = asteroid;
     unrelated_asteroid.index = 8;
@@ -3326,7 +3373,8 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.asteroid_interp.prev[7] = predicted_asteroid;
     g.asteroid_interp.curr[7] = predicted_asteroid;
     g.asteroid_interp.curr[7].pos.x = 240.0f;
-    g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+    g.asteroid_interp.elapsed[7] = 0.05f;
+    net_adopt_local_tow_prediction(0.0f);
 
     NetAsteroidMotionState unrelated_motion = {
         .index = 8,
@@ -3348,7 +3396,6 @@ int signal_smoke_remote_towable_interp_check(void) {
         memset(g.local_server.world.asteroids, 0,
                sizeof(g.local_server.world.asteroids));
         memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-        g.asteroid_interp.interval = 0.1f;
 
         asteroid_t prev = {0};
         prev.active = true;
@@ -3365,14 +3412,14 @@ int signal_smoke_remote_towable_interp_check(void) {
         g.asteroid_interp.prev[7] = prev;
         g.asteroid_interp.curr[7] = prev;
         g.local_server.world.asteroids[7] = curr;
-        g.asteroid_interp.t = 0.05f / fmaxf(g.asteroid_interp.interval, 0.001f);
+        g.asteroid_interp.elapsed[7] = 0.05f;
 
         interpolate_world_for_render();
         loopback_packet_path_ok =
             fabsf(g.world.asteroids[7].pos.x) < 0.001f &&
             fabsf(g.world.asteroids[7].pos.y) < 0.001f &&
             fabsf(g.asteroid_interp.curr[7].pos.x) < 0.001f &&
-            g.asteroid_interp.t > 0.0f;
+            g.asteroid_interp.elapsed[7] > 0.0f;
     }
 
     bool loopback_prediction_ok =
@@ -3393,6 +3440,10 @@ int signal_smoke_remote_towable_interp_check(void) {
              loose_asteroid_after_unrelated_x < 16.0f &&
              loose_asteroid_after_unrelated_motion_x > 19.0f &&
              loose_asteroid_after_unrelated_motion_x < 21.0f &&
+             same_tick_correction_x > 88.0f &&
+             same_tick_correction_x < 94.0f &&
+             long_gap_drag_x > 26.0f && long_gap_drag_x < 28.5f &&
+             long_gap_drag_vx > 8.0f && long_gap_drag_vx < 9.5f &&
              local_towed_asteroid_x > 249.0f &&
              local_towed_asteroid_x < 251.0f &&
              local_towed_asteroid_vx > 19.0f &&
@@ -3410,14 +3461,14 @@ int signal_smoke_remote_towable_interp_check(void) {
            sizeof(saved_local_server_asteroids));
     memcpy(g.asteroid_interp.prev, saved_asteroid_prev, sizeof(saved_asteroid_prev));
     memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
+    memcpy(g.asteroid_interp.elapsed, saved_asteroid_elapsed,
+           sizeof(saved_asteroid_elapsed));
     memcpy(g.world.scaffolds, saved_world_scaffolds, sizeof(saved_world_scaffolds));
     memcpy(g.scaffold_interp.prev, saved_scaffold_prev, sizeof(saved_scaffold_prev));
     memcpy(g.scaffold_interp.curr, saved_scaffold_curr, sizeof(saved_scaffold_curr));
     memcpy(g.world.cargo_pods, saved_world_cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(g.cargo_pod_interp.prev, saved_cargo_pod_prev, sizeof(saved_cargo_pod_prev));
     memcpy(g.cargo_pod_interp.curr, saved_cargo_pod_curr, sizeof(saved_cargo_pod_curr));
-    g.asteroid_interp.t = saved_asteroid_t;
-    g.asteroid_interp.interval = saved_asteroid_interval;
     g.scaffold_interp.t = saved_scaffold_t;
     g.scaffold_interp.interval = saved_scaffold_interval;
     g.cargo_pod_interp.t = saved_cargo_pod_t;
