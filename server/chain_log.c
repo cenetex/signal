@@ -72,7 +72,10 @@ static void chain_log_rollback_append(const char *path, long length) {
         (void)_close(fd);
     }
 #else
-    (void)truncate(path, (off_t)length);
+    if (truncate(path, (off_t)length) != 0) {
+        SIM_LOG("[chain] rollback truncate(%s) failed: %s\n",
+                path, strerror(errno));
+    }
 #endif
 }
 
