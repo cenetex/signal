@@ -822,6 +822,35 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('E docks again immediately after launch while still in range', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'deterministic launch/dock timing requires local authority');
+
+    const logs = installFatalCollectors(page);
+    const canvas = await loadGame(page, false, { singleplayer: true });
+    await canvas.click();
+
+    await expect.poll(async () => (await playerStateSnapshot(page))?.docked ?? -1)
+      .toBe(1);
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? -1, {
+        timeout: 5_000,
+      })
+      .toBe(0);
+
+    /* Launch leaves the ship inside DOCK_APPROACH_RANGE. An authoritative
+     * undocked snapshot used to clear the client's proximity hint here, so E
+     * emitted no action even though the server would have accepted docking. */
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? -1, {
+        timeout: 8_000,
+      })
+      .toBe(1);
+
+    expectNoFatalErrors(logs);
+  });
+
   test('desktop core controls stay alive through the golden path keys', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });

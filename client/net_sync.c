@@ -377,6 +377,32 @@ static void apply_local_player_remote_flags(const NetPlayerState *state,
     g.server_thrusting = (state->flags & 1) != 0;
 }
 
+/* Dock proximity is not carried by NetPlayerState. Re-derive it from the
+ * authoritative position instead of clearing it whenever an undocked state
+ * arrives. Clearing the flag left clients unable to emit an E-key dock action
+ * until local movement prediction happened to run another sim step (and on
+ * newly launched/legacy connections that step may not run at all). */
+static void sync_local_undocked_dock_proximity(server_player_t *sp) {
+    if (!sp) return;
+    sp->in_dock_range = false;
+    sp->nearby_station = -1;
+    if (sp->docked) return;
+
+    float approach_sq = DOCK_APPROACH_RANGE * DOCK_APPROACH_RANGE;
+    float best_d = INFINITY;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t *st = &g.world.stations[i];
+        if (!station_exists(st) || !station_has_module(st, MODULE_DOCK))
+            continue;
+        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d_sq <= approach_sq && d_sq < best_d) {
+            best_d = d_sq;
+            sp->nearby_station = i;
+        }
+    }
+    sp->in_dock_range = sp->nearby_station >= 0;
+}
+
 static void sync_local_dock_state_from_authority(const NetPlayerState *state,
                                                  server_player_t *sp) {
     bool state_docked = (state->flags & 4) != 0;
@@ -391,8 +417,7 @@ static void sync_local_dock_state_from_authority(const NetPlayerState *state,
         }
         sp->in_dock_range = true;
     } else {
-        sp->in_dock_range = false;
-        sp->nearby_station = -1;
+        sync_local_undocked_dock_proximity(sp);
     }
 }
 
@@ -2337,9 +2362,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
             g.action_predict_timer = 0.0f;
             if (!state_docked) {
                 sp->docked = false;
-                sp->in_dock_range = false;
                 sp->docking_approach = false;
-                sp->nearby_station = -1;
+                sync_local_undocked_dock_proximity(sp);
             }
             frame_camera_on_authoritative_undock(sp, state_docked);
             return;
@@ -2417,9 +2441,8 @@ void apply_remote_player_state(const NetPlayerState* state) {
             defer_motion_correction, replayed_frames);
         if (!state_docked) {
             sp->docked = false;
-            sp->in_dock_range = false;
             sp->docking_approach = false;
-            sp->nearby_station = -1;
+            sync_local_undocked_dock_proximity(sp);
         }
         frame_camera_on_authoritative_undock(sp, state_docked);
         /* A/D changes often have tiny position error, so stale snapshots can
@@ -2509,9 +2532,8 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      *   or the predict window has expired. */
     if (!state->docked) {
         sp->docked = false;
-        sp->in_dock_range = false;
         sp->docking_approach = false;
-        sp->nearby_station = -1;
+        sync_local_undocked_dock_proximity(sp);
     } else if (sp->docked || g.action_predict_timer <= 0.0f) {
         sp->docked = true;
         sp->current_station = (int)state->current_station;
