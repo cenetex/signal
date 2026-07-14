@@ -26,6 +26,8 @@
  * after a fraction of a second. */
 #define ASTEROID_RENDER_PREDICT_MAX_SEC 60.0f
 #define ASTEROID_AMBIENT_DRAG 0.42f
+#define ASTEROID_RENDER_CORRECTION_CUTOFF_SEC \
+    (ASTEROID_RENDER_CORRECTION_SEC * 4.0f)
 #define NPC_RENDER_CORRECTION_SEC 0.18f
 #define NPC_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
 #define REMOTE_PLAYER_RENDER_CORRECTION_SEC 0.18f
@@ -569,8 +571,8 @@ void on_player_leave(uint8_t player_id) {
     g.scanned_players[player_id] = false;
 }
 
-static bool net_asteroid_is_towed(int idx) {
-    if (idx < 0 || idx >= MAX_ASTEROIDS) return false;
+static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
+    memset(towed, 0, sizeof(bool) * MAX_ASTEROIDS);
 
     for (int p = 0; p < MAX_PLAYERS; p++) {
         const server_player_t *sp = &g.world.players[p];
@@ -580,15 +582,17 @@ static bool net_asteroid_is_towed(int idx) {
                             sizeof(sp->ship.towed_fragments[0]));
         if (tow_count > tow_cap) tow_count = tow_cap;
         for (int t = 0; t < tow_count; t++) {
-            if (sp->ship.towed_fragments[t] == idx) return true;
+            int idx = sp->ship.towed_fragments[t];
+            if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
         }
     }
 
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         const npc_ship_t *npc = &g.world.npc_ships[n];
-        if (npc->active && npc_towed_fragment_index(npc) == idx) return true;
+        if (!npc->active) continue;
+        int idx = npc_towed_fragment_index(npc);
+        if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
     }
-    return false;
 }
 
 static void asteroid_predict_motion(const asteroid_t *base, float elapsed,
@@ -600,37 +604,37 @@ static void asteroid_predict_motion(const asteroid_t *base, float elapsed,
         pos = v2_add(pos, v2_scale(vel, elapsed));
     } else if (elapsed > 0.0f) {
         /* Match sim_step_asteroid_dynamics(): integrate position, then apply
-         * the rational drag factor once per fixed simulation tick. */
-        float drag_step = 1.0f / (1.0f + ASTEROID_AMBIENT_DRAG * SIM_DT);
-        int whole_ticks = (int)floorf(elapsed / SIM_DT);
-        float whole_time = (float)whole_ticks * SIM_DT;
-        float remainder = fmaxf(0.0f, elapsed - whole_time);
-        float retained = powf(drag_step, (float)whole_ticks);
-        float displacement_scale = 0.0f;
-        if (whole_ticks > 0) {
-            displacement_scale =
-                SIM_DT * (1.0f - retained) / (1.0f - drag_step);
+         * the rational drag factor once per fixed simulation tick. Cache the
+         * derived constants and use one exponential for the smooth
+         * fractional-tick continuation; fixed-tick positions remain exact. */
+        static float drag_decay_rate;
+        static float drag_displacement_limit;
+        if (drag_decay_rate <= 0.0f) {
+            float drag_step =
+                1.0f / (1.0f + ASTEROID_AMBIENT_DRAG * SIM_DT);
+            drag_decay_rate = -logf(drag_step) / SIM_DT;
+            drag_displacement_limit = SIM_DT / (1.0f - drag_step);
         }
-        displacement_scale += retained * remainder;
+        float retained = expf(-drag_decay_rate * elapsed);
+        float displacement_scale =
+            drag_displacement_limit * (1.0f - retained);
         pos = v2_add(pos, v2_scale(vel, displacement_scale));
         vel = v2_scale(vel, retained);
-        if (remainder > 0.0f)
-            vel = v2_scale(vel, powf(drag_step, remainder / SIM_DT));
     }
 
     *out_pos = pos;
     *out_vel = vel;
 }
 
-static asteroid_t asteroid_render_state_at(int slot, float elapsed) {
+static asteroid_t asteroid_render_state_at(int slot, float elapsed,
+                                           bool towed) {
     const asteroid_t *prev = &g.asteroid_interp.prev[slot];
     const asteroid_t *curr = &g.asteroid_interp.curr[slot];
     asteroid_t out = *curr;
     if (!curr->active) return out;
 
     elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_PREDICT_MAX_SEC);
-    asteroid_predict_motion(curr, elapsed, net_asteroid_is_towed(slot),
-                            &out.pos, &out.vel);
+    asteroid_predict_motion(curr, elapsed, towed, &out.pos, &out.vel);
     out.age += elapsed;
     out.rotation = wrap_angle(curr->rotation + curr->spin * elapsed);
 
@@ -852,12 +856,25 @@ void net_adopt_local_tow_prediction(float dt) {
 void net_advance_asteroid_interpolation(float dt) {
     if (!isfinite(dt) || dt <= 0.0f) return;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!g.asteroid_interp.curr[i].active &&
-            !g.asteroid_interp.prev[i].active)
+        asteroid_t *curr = &g.asteroid_interp.curr[i];
+        asteroid_t *prev = &g.asteroid_interp.prev[i];
+        if (!curr->active) {
+            if (prev->active) prev->active = false;
+            if (g.asteroid_interp.elapsed[i] != 0.0f)
+                g.asteroid_interp.elapsed[i] = 0.0f;
             continue;
-        g.asteroid_interp.elapsed[i] = clampf(
-            g.asteroid_interp.elapsed[i] + dt,
-            0.0f, ASTEROID_RENDER_PREDICT_MAX_SEC);
+        }
+        float elapsed = g.asteroid_interp.elapsed[i];
+        if (elapsed < ASTEROID_RENDER_PREDICT_MAX_SEC) {
+            elapsed = fminf(elapsed + dt,
+                            ASTEROID_RENDER_PREDICT_MAX_SEC);
+            g.asteroid_interp.elapsed[i] = elapsed;
+        }
+        /* At four correction windows the critically damped residual is below
+         * two parts per million. Retire it so settled rocks skip expf(). */
+        if (prev->active &&
+            elapsed >= ASTEROID_RENDER_CORRECTION_CUTOFF_SEC)
+            prev->active = false;
     }
 }
 
@@ -976,6 +993,9 @@ void net_update_remote_player_scans(const NetPlayerState *players) {
 }
 
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
+    bool asteroid_towed[MAX_ASTEROIDS];
+    net_collect_towed_asteroids(asteroid_towed);
+
     bool received[MAX_ASTEROIDS];
     memset(received, 0, sizeof(received));
     const NetProtocolInfo *info = net_protocol_info();
@@ -988,7 +1008,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         received[idx] = true;
 
         float elapsed = g.asteroid_interp.elapsed[idx];
-        asteroid_t visual = asteroid_render_state_at((int)idx, elapsed);
+        asteroid_t visual = asteroid_render_state_at(
+            (int)idx, elapsed, asteroid_towed[idx]);
         g.asteroid_interp.prev[idx] = visual;
         g.asteroid_interp.elapsed[idx] = 0.0f;
 
@@ -1043,7 +1064,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
                  * WORLD_ASTEROID_REMOVE records; sparse identity upserts must
                  * not collapse motion targets for unrelated rocks. */
                 asteroid_t visual = asteroid_render_state_at(
-                    i, g.asteroid_interp.elapsed[i]);
+                    i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
                 g.asteroid_interp.prev[i] = visual;
                 g.asteroid_interp.curr[i] = visual;
                 g.asteroid_interp.curr[i].active = false;
@@ -1060,6 +1081,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
                                   int count) {
     if (!asteroids || count <= 0) return;
+    bool asteroid_towed[MAX_ASTEROIDS];
+    net_collect_towed_asteroids(asteroid_towed);
 
     for (int i = 0; i < count; i++) {
         uint16_t idx = asteroids[i].index;
@@ -1068,7 +1091,7 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         asteroid_t* a = &g.asteroid_interp.curr[idx];
         if (!a->active) continue;
         asteroid_t visual = asteroid_render_state_at(
-            (int)idx, g.asteroid_interp.elapsed[idx]);
+            (int)idx, g.asteroid_interp.elapsed[idx], asteroid_towed[idx]);
         g.asteroid_interp.prev[idx] = visual;
         g.asteroid_interp.elapsed[idx] = 0.0f;
 
@@ -2621,6 +2644,9 @@ void sync_local_player_slot_from_network(void) {
 }
 
 void interpolate_world_for_render(void) {
+    bool asteroid_towed[MAX_ASTEROIDS];
+    net_collect_towed_asteroids(asteroid_towed);
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *curr = &g.asteroid_interp.curr[i];
         const asteroid_t *prev = &g.asteroid_interp.prev[i];
@@ -2630,7 +2656,8 @@ void interpolate_world_for_render(void) {
             continue;
         }
         asteroid_t *dst = &g.world.asteroids[i];
-        *dst = asteroid_render_state_at(i, g.asteroid_interp.elapsed[i]);
+        *dst = asteroid_render_state_at(
+            i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
     }
 
     float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,

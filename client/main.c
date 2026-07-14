@@ -3306,6 +3306,9 @@ int signal_smoke_remote_towable_interp_check(void) {
     float same_tick_correction_x = g.world.asteroids[7].pos.x;
     float long_gap_drag_x = g.world.asteroids[9].pos.x;
     float long_gap_drag_vx = g.world.asteroids[9].vel.x;
+    net_advance_asteroid_interpolation(0.55f);
+    bool settled_correction_retired =
+        !g.asteroid_interp.prev[7].active;
 
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
@@ -3444,6 +3447,7 @@ int signal_smoke_remote_towable_interp_check(void) {
              same_tick_correction_x < 94.0f &&
              long_gap_drag_x > 26.0f && long_gap_drag_x < 28.5f &&
              long_gap_drag_vx > 8.0f && long_gap_drag_vx < 9.5f &&
+             settled_correction_retired &&
              local_towed_asteroid_x > 249.0f &&
              local_towed_asteroid_x < 251.0f &&
              local_towed_asteroid_vx > 19.0f &&
