@@ -1120,34 +1120,34 @@ void step_furnace_smelting(world_t *w, float dt) {
                 bool silo_reach = (d_silo_sq <= pull_sq);
                 if (!furnace_reach || !silo_reach) continue;  /* both must reach */
 
-                /* Pull fragment toward the midpoint between furnace and
-                 * silo. The cooperative source inherits the average live
-                 * velocity of both rotating ring anchors and uses the same
-                 * resolved link as ships and cargo-pod modules. */
+                /* The furnace and its ore hopper are two real tractor
+                 * sources. Apply exactly the two links that are published to
+                 * clients so the visible field and authoritative momentum
+                 * cannot disagree. Their equal springs naturally converge
+                 * on the midpoint used by the smelting corridor below. */
                 vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
-                vec2 source_vel = v2_scale(v2_add(
+                vec2 beam_velocities[2] = {
                     module_world_velocity_ring(st, ring,
                                                st->modules[m].slot),
-                    station_ring_point_velocity(st, silo_ring, silo_pos)),
-                    0.5f);
-                tractor_link_t link = {
-                    .source = {
-                        .pos = midpoint,
-                        .vel = &source_vel,
-                        .inv_mass = 0.0f,
-                    },
-                    .target = {
-                        .pos = a->pos,
-                        .vel = &a->vel,
-                        .inv_mass = 1.0f,
-                    },
-                    .beam = tractor_tow_beam(HOPPER_PULL_RANGE, 0.0f),
+                    station_ring_point_velocity(st, silo_ring, silo_pos),
                 };
-                (void)tractor_link_apply(&link, dt);
-
                 const int beam_modules[2] = {m, silo_module};
                 const vec2 beam_sources[2] = {furnace_pos, silo_pos};
                 for (int beam_idx = 0; beam_idx < 2; beam_idx++) {
+                    tractor_link_t link = {
+                        .source = {
+                            .pos = beam_sources[beam_idx],
+                            .vel = &beam_velocities[beam_idx],
+                            .inv_mass = 0.0f,
+                        },
+                        .target = {
+                            .pos = a->pos,
+                            .vel = &a->vel,
+                            .inv_mass = 1.0f,
+                        },
+                        .beam = tractor_tow_beam(HOPPER_PULL_RANGE, 0.0f),
+                    };
+                    (void)tractor_link_apply(&link, dt);
                     float intensity = tractor_beam_range_fraction(
                         beam_sources[beam_idx], a->pos, &link.beam);
                     if (intensity <= 0.0f || beam_modules[beam_idx] < 0)

@@ -43,8 +43,9 @@ bool tractor_apply(const tractor_anchor_t *src,
         spring_mag *= scale;
     }
 
-    /* Target must be body-attached — there's nothing to do otherwise. */
-    if (!tgt->vel) return true;
+    /* Target must be a dynamic body — kinematic/world-pinned anchors have
+     * no velocity response even when they carry a readable velocity. */
+    if (!tgt->vel || tgt->inv_mass <= 0.0f) return true;
 
     /* Relative velocity along and perpendicular to the beam line.
      * src->vel may be NULL (world-pinned) — treat its velocity as zero. */
@@ -58,9 +59,12 @@ bool tractor_apply(const tractor_anchor_t *src,
     vec2 tangent_force = v2_scale(v_tangent, -beam->tangent_damping);
     vec2 force = v2_add(axial_force, tangent_force);
 
-    /* Apply impulse to target. Caller treats target as unit mass —
-     * tuning constants are accel directly, not force. */
-    *tgt->vel = v2_add(*tgt->vel, v2_scale(force, dt));
+    /* Apply equal-and-opposite physical impulse through each body's inverse
+     * mass. Unit-mass targets retain the historical tuning exactly, while
+     * gas pods, cargo pods, ships, and future heavy bodies now respond to
+     * the mass declared by their resolved anchors. */
+    *tgt->vel = v2_add(*tgt->vel,
+                       v2_scale(force, dt * tgt->inv_mass));
 
     /* Speed cap (post-impulse, isotropic on target's absolute velocity). */
     if (beam->speed_cap > 0.0f) {

@@ -1552,6 +1552,116 @@ TEST(test_station_tractor_hold_slots_do_not_shift_when_pod_leaves) {
     ASSERT_EQ_FLOAT(after.y, before.y, 0.001f);
 }
 
+TEST(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = &w.stations[0];
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (!st->modules[m].scaffold &&
+            st->modules[m].type == MODULE_DOCK) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+
+    const station_module_t *dock = &st->modules[dock_idx];
+    vec2 module_pos = module_world_pos_ring(st, dock->ring, dock->slot);
+    vec2 outward = v2_norm(v2_sub(module_pos, st->pos));
+    vec2 mouth = v2_add(module_pos, v2_scale(
+        outward, STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
+    int pod_zero = spawn_cargo_pod(&w, mouth, v2(0.0f, 0.0f),
+                                   COMMODITY_FERRITE_INGOT, 1,
+                                   CARGO_POD_CARGO);
+    ASSERT_EQ_INT(pod_zero, 0);
+    w.cargo_pods[16] = w.cargo_pods[pod_zero];
+    w.cargo_pods[16].active = true;
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_zero], 0, dock_idx);
+    cargo_pod_set_module_tractor(&w.cargo_pods[16], 0, dock_idx);
+
+    vec2 anchor_zero = v2(0.0f, 0.0f);
+    vec2 anchor_sixteen = v2(0.0f, 0.0f);
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_zero], 0, dock_idx, &anchor_zero));
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[16], 0, dock_idx, &anchor_sixteen));
+    ASSERT(v2_dist_sq(anchor_zero, anchor_sixteen) > 1.0f);
+}
+
+TEST(test_station_tractor_arrival_requires_relative_velocity_capture) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = &w.stations[0];
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (!st->modules[m].scaffold &&
+            st->modules[m].type == MODULE_DOCK) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+    const station_module_t *dock = &st->modules[dock_idx];
+    vec2 module_pos = module_world_pos_ring(st, dock->ring, dock->slot);
+    vec2 outward = v2_norm(v2_sub(module_pos, st->pos));
+    vec2 mouth = v2_add(module_pos, v2_scale(
+        outward, STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
+    int pod_idx = spawn_cargo_pod(&w, mouth, v2(0.0f, 0.0f),
+                                  COMMODITY_FERRITE_INGOT, 1,
+                                  CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_set_module_tractor(&w.cargo_pods[pod_idx], 0, dock_idx);
+
+    vec2 anchor = v2(0.0f, 0.0f);
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_idx], 0, dock_idx, &anchor));
+    vec2 anchor_vel = station_ring_point_velocity(st, dock->ring, anchor);
+    w.cargo_pods[pod_idx].pos = anchor;
+    w.cargo_pods[pod_idx].vel = v2_add(anchor_vel, v2(120.0f, 0.0f));
+    ASSERT(!cargo_pod_module_tractor_arrived(
+        &w, &w.cargo_pods[pod_idx], 0, dock_idx));
+    w.cargo_pods[pod_idx].vel = anchor_vel;
+    ASSERT(cargo_pod_module_tractor_arrived(
+        &w, &w.cargo_pods[pod_idx], 0, dock_idx));
+}
+
+TEST(test_cargo_tractor_interaction_evicts_fragment_when_buffer_full) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.interactions.count = SIM_MAX_INTERACTIONS;
+    for (int i = 0; i < SIM_MAX_INTERACTIONS; i++) {
+        w.interactions.items[i] = (sim_interaction_t){
+            .type = SIM_INTERACTION_TRACTOR_BEAM,
+            .visual = SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+        };
+    }
+
+    sim_interaction_t cargo = {
+        .type = SIM_INTERACTION_TRACTOR_BEAM,
+        .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
+        .target = {
+            .type = SIM_INTERACTION_ENTITY_CARGO_POD,
+            .index = 7,
+        },
+    };
+    sim_emit_interaction(&w, cargo);
+
+    ASSERT_EQ_INT(w.interactions.count, SIM_MAX_INTERACTIONS);
+    bool found = false;
+    for (int i = 0; i < w.interactions.count; i++) {
+        if (w.interactions.items[i].visual ==
+                SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR &&
+            w.interactions.items[i].target.index == 7) {
+            found = true;
+            break;
+        }
+    }
+    ASSERT(found);
+}
+
 TEST(test_station_tractor_uses_rotating_anchor_velocity) {
     WORLD_DECL;
     world_reset(&w);
@@ -1805,6 +1915,48 @@ TEST(test_cargo_pod_bounces_off_outer_ring_module_at_collision_envelope) {
     ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, module_pos) >=
            contact * contact);
     ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, radial) > 0.0f);
+}
+
+TEST(test_cargo_pod_collision_inherits_rotating_module_velocity) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[0];
+    int module_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (!st->modules[m].scaffold &&
+            st->modules[m].type != MODULE_DOCK &&
+            st->modules[m].ring >= 1) {
+            module_idx = m;
+            break;
+        }
+    }
+    ASSERT(module_idx >= 0);
+    const station_module_t *module = &st->modules[module_idx];
+    for (int a = 0; a < MAX_ARMS; a++) {
+        st->arm_speed[a] = 0.0f;
+        st->arm_omega[a] = 0.0f;
+    }
+    memset(st->module_active_pulse, 0, sizeof(st->module_active_pulse));
+    st->arm_omega[module->ring - 1] = 0.16f;
+
+    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    vec2 radial = v2_norm(v2_sub(module_pos, st->pos));
+    vec2 tangent = v2(-radial.y, radial.x);
+    float separation = STATION_MODULE_COL_RADIUS + 18.0f - 2.0f;
+    int pod_idx = spawn_cargo_pod(
+        &w, v2_add(module_pos, v2_scale(tangent, separation)),
+        v2(0.0f, 0.0f), COMMODITY_CUPRITE_ORE, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    /* Keep station ownership out of this collision-only scenario. */
+    w.cargo_pods[pod_idx].towed_by = 0;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, tangent) > 1.0f);
 }
 
 TEST(test_cargo_pod_bounces_off_asteroid) {
@@ -9602,12 +9754,16 @@ void register_world_sim_basic_tests(void) {
     RUN(test_cargo_pods_collide_and_separate);
     RUN(test_station_dock_tractor_spreads_market_pods);
     RUN(test_station_tractor_hold_slots_do_not_shift_when_pod_leaves);
+    RUN(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods);
+    RUN(test_station_tractor_arrival_requires_relative_velocity_capture);
+    RUN(test_cargo_tractor_interaction_evicts_fragment_when_buffer_full);
     RUN(test_station_tractor_uses_rotating_anchor_velocity);
     RUN(test_station_dock_tractor_clears_after_pod_moves_out_of_range);
     RUN(test_station_dock_adopts_finished_output_pod_for_market);
     RUN(test_cargo_pod_high_speed_station_impact_destroys_shell);
     RUN(test_cargo_pod_bounces_off_station_corridor_ring);
     RUN(test_cargo_pod_bounces_off_outer_ring_module_at_collision_envelope);
+    RUN(test_cargo_pod_collision_inherits_rotating_module_velocity);
     RUN(test_cargo_pod_bounces_off_asteroid);
     RUN(test_towed_cargo_pod_bulk_sell_no_longer_uses_dock_custody);
     RUN(test_towed_cargo_pod_row_sell_no_longer_uses_dock_custody);

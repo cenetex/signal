@@ -77,7 +77,8 @@
  * `inv_mass > 0`, the anchor receives Newton's-third reaction force.
  *
  * `inv_mass` = 1 / mass. Zero models an immovable / infinite-mass
- * anchor. */
+ * anchor. Both dynamic endpoints scale the shared beam force by their
+ * inverse mass, so unequal bodies receive equal-and-opposite momentum. */
 typedef struct {
     vec2  pos;
     vec2 *vel;
@@ -94,9 +95,9 @@ typedef enum {
  * Sites typically declare a static const beam config near the call.
  *
  * Two strength components on each side, summed:
- *   - *_strength is the spring term: accel per unit of stretch from
+ *   - *_strength is the spring term: force per unit of stretch from
  *     rest. Linear in distance, settles to equilibrium at rest.
- *   - *_constant is the always-on term: a fixed accel that engages
+ *   - *_constant is the always-on term: a fixed force that engages
  *     whenever the beam is on the corresponding side of rest. Models
  *     a "thruster on the rope" — fragment yanks in regardless of how
  *     far away it is.
@@ -104,13 +105,13 @@ typedef enum {
  * fragment pickup is pure constant. */
 typedef struct {
     float rest_length;       /* happy distance; 0 = pull-toward-source */
-    float pull_strength;     /* spring: accel per unit (d - rest) when d > rest */
-    float push_strength;     /* spring: accel per unit (rest - d) when d < rest */
-    float pull_constant;     /* constant pull magnitude when d > rest */
-    float push_constant;     /* constant push magnitude when d < rest */
+    float pull_strength;     /* spring force per unit (d - rest) when d > rest */
+    float push_strength;     /* spring force per unit (rest - d) when d < rest */
+    float pull_constant;     /* constant pull force when d > rest */
+    float push_constant;     /* constant push force when d < rest */
     float range;             /* d > range → no force at all this tick */
-    float axial_damping;     /* accel per unit along-beam relative velocity */
-    float tangent_damping;   /* accel per unit perpendicular-to-beam relative velocity */
+    float axial_damping;     /* force per unit along-beam relative velocity */
+    float tangent_damping;   /* force per unit perpendicular relative velocity */
     float speed_cap;         /* optional |target.vel| cap after impulse; 0 = no cap */
     tractor_falloff_t falloff;
 } tractor_beam_t;
@@ -185,8 +186,8 @@ static inline float tractor_beam_tautness(vec2 src,
 }
 
 /* Apply one beam tick. Returns true iff the beam was active
- * (target was within `range`). Mutates tgt->vel always; mutates
- * src->vel iff src->vel != NULL && src->inv_mass > 0. */
+ * (target was within `range`). Mutates a velocity only when its anchor has
+ * a non-NULL vel pointer and positive inv_mass. */
 bool tractor_apply(const tractor_anchor_t *src,
                    const tractor_anchor_t *tgt,
                    const tractor_beam_t   *beam,

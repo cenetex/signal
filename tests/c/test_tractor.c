@@ -228,6 +228,26 @@ TEST(test_tractor_reaction_symmetry_conserves_momentum) {
     ASSERT(src_vel.x > 0.0f);   /* source pulled toward target (+X) */
 }
 
+TEST(test_tractor_inverse_mass_scales_both_endpoints) {
+    /* A 4-mass source and 2-mass target must receive equal-and-opposite
+     * momentum even though their velocity changes differ. */
+    vec2 src_vel = v2(0.0f, 0.0f);
+    vec2 tgt_vel = v2(0.0f, 0.0f);
+    tractor_anchor_t src = mk_body_anchor(v2(0.0f, 0.0f), &src_vel, 0.25f);
+    tractor_anchor_t tgt = mk_body_anchor(v2(10.0f, 0.0f), &tgt_vel, 0.5f);
+    tractor_beam_t beam = {
+        .rest_length = 5.0f,
+        .pull_strength = 2.0f,
+        .range = 100.0f,
+        .falloff = TRACTOR_FALLOFF_CONSTANT,
+    };
+
+    ASSERT(tractor_apply(&src, &tgt, &beam, 1.0f));
+    ASSERT_EQ_FLOAT(src_vel.x, 2.5f, 0.001f);
+    ASSERT_EQ_FLOAT(tgt_vel.x, -5.0f, 0.001f);
+    ASSERT_EQ_FLOAT(4.0f * src_vel.x + 2.0f * tgt_vel.x, 0.0f, 0.001f);
+}
+
 TEST(test_tractor_world_pinned_source_no_reaction) {
     /* src.vel = NULL → no reaction force computed even if the math
      * would otherwise apply. Target gets full impulse; source state
@@ -317,6 +337,7 @@ void register_tractor_tests(void) {
     RUN(test_tractor_linear_falloff_halves_at_half_range);
     RUN(test_tractor_axial_vs_tangent_damping_isolation);
     RUN(test_tractor_reaction_symmetry_conserves_momentum);
+    RUN(test_tractor_inverse_mass_scales_both_endpoints);
     RUN(test_tractor_world_pinned_source_no_reaction);
     RUN(test_tractor_speed_cap_clamps_target);
     RUN(test_tractor_speed_cap_uses_deterministic_length);

@@ -163,7 +163,9 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 73  /* v73: active cargo pods persist station custody so
+#define SAVE_VERSION 74  /* v74: cargo pods persist their active module tractor
+                          * owner so parking/handoff continuity survives restart.
+                          * v73: active cargo pods persist station custody so
                           * market theft/debt survives restart.
                           * v72: backfill Kepler starter Laser Module reserve
                           * for the first mining refit.
@@ -1602,6 +1604,8 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
         }
     }
     WRITE_FIELD(f, pod->custody_station);
+    WRITE_FIELD(f, pod->tractor_station);
+    WRITE_FIELD(f, pod->tractor_module);
     return true;
 }
 
@@ -1647,6 +1651,20 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     if (version >= 73) {
         READ_FIELD(f, pod.custody_station);
         if (pod.custody_station > MAX_STATIONS) pod.custody_station = 0;
+    }
+    if (version >= 74) {
+        READ_FIELD(f, pod.tractor_station);
+        READ_FIELD(f, pod.tractor_module);
+        bool partial_owner = (pod.tractor_station == 0) !=
+                             (pod.tractor_module == 0);
+        int tractor_station = -1;
+        int tractor_module = -1;
+        if (partial_owner ||
+            (pod.tractor_station != 0 &&
+             !cargo_pod_module_tractor_indices(
+                 &pod, &tractor_station, &tractor_module))) {
+            cargo_pod_clear_module_tractor(&pod);
+        }
     }
     if (index >= MAX_CARGO_PODS) return false;
     if (kind == CARGO_POD_NONE || kind > CARGO_POD_CARGO) return false;

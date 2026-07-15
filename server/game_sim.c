@@ -297,7 +297,26 @@ static void sim_interactions_clear(world_t *w) {
 }
 
 void sim_emit_interaction(world_t *w, sim_interaction_t interaction) {
-    if (!w || w->interactions.count >= SIM_MAX_INTERACTIONS) return;
+    if (!w) return;
+    if (w->interactions.count >= SIM_MAX_INTERACTIONS) {
+        /* Cargo links are durable gameplay ownership made visible. Furnace
+         * fragments can fan out into two links each and exhaust the shared
+         * visual buffer before cargo publication runs at the end of the
+         * tick. Preserve every cargo link by evicting the newest lower-
+         * priority interaction when the fixed wire budget is saturated. */
+        if (interaction.visual ==
+            SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR) {
+            for (int i = w->interactions.count - 1; i >= 0; i--) {
+                if (w->interactions.items[i].visual ==
+                    SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR) {
+                    continue;
+                }
+                w->interactions.items[i] = interaction;
+                return;
+            }
+        }
+        return;
+    }
     w->interactions.items[w->interactions.count++] = interaction;
 }
 
@@ -5275,8 +5294,9 @@ static int cargo_pod_module_hold_slot(const world_t *w,
 
     /* The old rank-among-active-pods layout retargeted every remaining pod
      * whenever an earlier pod was removed. A pod's world-pool identity is
-     * stable for its lifetime, so use it as a fixed parking slot. */
-    return self & 15;
+     * stable for its lifetime, so use the complete pool index as a fixed,
+     * collision-free parking identity. */
+    return self;
 }
 
 static vec2 station_module_cargo_hold_anchor(const world_t *w,
@@ -5311,16 +5331,14 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
     vec2 tangent = v2(-outward.y, outward.x);
 
     int slot = cargo_pod_module_hold_slot(w, pod, station_idx, module_idx);
-    static const int8_t lane_for_slot[16] = {
-         0, -1,  1,  0, -1,  1, -2,  2,
-         0, -1,  1, -2,  2, -2,  2,  0,
+    /* Eleven center-out lanes by six rows cover all 64 world-pool slots
+     * without aliasing, while keeping the most distant anchor inside the
+     * standard 300u hopper reach for normal pod radii. */
+    static const int8_t lane_for_column[11] = {
+         0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5,
     };
-    static const uint8_t row_for_slot[16] = {
-        0, 0, 0, 1, 1, 1, 0, 0,
-        2, 2, 2, 1, 1, 2, 2, 3,
-    };
-    int row = row_for_slot[slot];
-    int lane = lane_for_slot[slot];
+    int row = slot / 11;
+    int lane = lane_for_column[slot % 11];
 
     float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
     float lane_spacing = compact_lane ? pod_radius * 2.0f + 4.0f
@@ -6083,8 +6101,8 @@ static bool cargo_pod_current_module_tractor_link(
     if (!station_can_hold || !valid_owner) return false;
 
     const station_module_t *held_module = &st->modules[module_idx];
-    vec2 anchor = station_module_cargo_mouth(st, &st->modules[module_idx],
-                                             pod);
+    vec2 mouth = station_module_cargo_mouth(st, held_module, pod);
+    vec2 anchor = mouth;
     int pulse_module = module_idx;
     bool compact_lane = false;
     if (station_module_input_hopper_for_pod(st, module_idx, pod,
@@ -6113,10 +6131,17 @@ static bool cargo_pod_current_module_tractor_link(
                                               pod, anchor, compact_lane);
     float valid_range =
         cargo_pod_module_tractor_range_for_pod(held_module->type, pod);
-    tractor_beam_t pod_tractor =
-        cargo_pod_module_tractor_beam(valid_range);
-    if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor))
+    tractor_beam_t reach = cargo_pod_module_tractor_beam(valid_range);
+    if (!tractor_beam_points_in_range(mouth, pod->pos, &reach))
         return false;
+
+    /* The module mouth owns the real acquisition range. The resolved hold
+     * point can be offset to give multiple pods stable parking slots, so its
+     * spring range includes that offset without granting any extra mouth-
+     * relative acquisition reach. */
+    tractor_beam_t pod_tractor =
+        cargo_pod_module_tractor_beam(
+            valid_range + v2_len(v2_sub(anchor, mouth)));
 
     if (out_link) {
         *out_link = (cargo_pod_module_tractor_link_t){
@@ -6142,8 +6167,28 @@ bool cargo_pod_module_tractor_arrived(const world_t *w,
         return false;
     }
     const float capture_radius = 48.0f;
-    return v2_dist_sq(pod->pos, link.anchor) <=
-           capture_radius * capture_radius;
+    const float capture_speed = 60.0f;
+    if (v2_dist_sq(pod->pos, link.anchor) >
+        capture_radius * capture_radius) {
+        return false;
+    }
+    vec2 relative_vel = v2_sub(pod->vel, link.anchor_vel);
+    return v2_len_sq(relative_vel) <= capture_speed * capture_speed;
+}
+
+bool cargo_pod_module_tractor_anchor(const world_t *w,
+                                     const cargo_pod_t *pod,
+                                     int station_idx,
+                                     int module_idx,
+                                     vec2 *out_anchor) {
+    cargo_pod_module_tractor_link_t link;
+    if (!out_anchor ||
+        !cargo_pod_current_module_tractor_link(w, pod, &link) ||
+        link.station_idx != station_idx || link.module_idx != module_idx) {
+        return false;
+    }
+    *out_anchor = link.anchor;
+    return true;
 }
 
 static bool cargo_pod_try_acquire_module_tractor(world_t *w,
@@ -6641,9 +6686,11 @@ static bool resolve_cargo_pod_station_collisions(world_t *w, int pod_idx) {
             if (!w->cargo_pods[pod_idx].active) return true;
         }
         for (int i = 0; i < geom.circle_count; i++) {
+            const geom_circle_t *circle = &geom.circles[i];
             if (resolve_cargo_pod_circle_collision(
-                    w, pod_idx, geom.circles[i].center,
-                    geom.circles[i].radius, st->jostle_vel)) {
+                    w, pod_idx, circle->center, circle->radius,
+                    station_ring_point_velocity(st, circle->ring,
+                                                circle->center))) {
                 return true;
             }
             if (!w->cargo_pods[pod_idx].active) return true;
@@ -6651,9 +6698,11 @@ static bool resolve_cargo_pod_station_collisions(world_t *w, int pod_idx) {
         for (int i = 0; i < geom.corridor_count; i++) {
             const geom_corridor_t *cor = &geom.corridors[i];
             if (cargo_pod_near_corridor_module(pod, &geom, cor)) continue;
+            vec2 corridor_vel = station_ring_point_velocity(
+                st, cor->ring, pod->pos);
             if (resolve_cargo_pod_corridor_collision(
                     w, pod_idx, geom.center, cor->ring_radius,
-                    cor->angle_a, cor->arc_delta, st->jostle_vel)) {
+                    cor->angle_a, cor->arc_delta, corridor_vel)) {
                 return true;
             }
             if (!w->cargo_pods[pod_idx].active) return true;

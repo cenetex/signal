@@ -1583,6 +1583,8 @@ TEST(test_world_save_load_preserves_smelted_ingot_pod) {
     const cargo_pod_t *loaded_pod = &loaded->cargo_pods[loaded_pod_idx];
     ASSERT_EQ_INT(loaded_pod->manifest_count, expected.manifest_count);
     ASSERT_EQ_INT(loaded_pod->quantity, expected.quantity);
+    ASSERT_EQ_INT(loaded_pod->tractor_station, expected.tractor_station);
+    ASSERT_EQ_INT(loaded_pod->tractor_module, expected.tractor_module);
     ASSERT(memcmp(loaded_pod->manifest_units[0].pub,
                   expected.manifest_units[0].pub, 32) == 0);
     ASSERT(memcmp(loaded_pod->manifest_units[expected.manifest_count - 1].pub,
@@ -2129,8 +2131,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * v72: Kepler starter Laser Module reserve adds eight
              * manifest-backed cargo_unit_t rows.
              * v73: active cargo pods persist custody_station; fresh worlds
-             * have two starter pods, so +2 bytes. */
-			#define EXPECTED_SAVE_SIZE 767644
+             * have two starter pods, so +2 bytes.
+             * v74: each active pod also persists tractor_station and
+             * tractor_module; two starter pods add four bytes. */
+			#define EXPECTED_SAVE_SIZE 767648
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2167,7 +2171,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 73);
+    ASSERT_EQ_INT((int)version, 74);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

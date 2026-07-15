@@ -1277,4 +1277,13 @@ bool cargo_pod_module_tractor_arrived(const world_t *w,
                                       int station_idx,
                                       int module_idx);
 
+/* Resolve the current live module-local hold anchor. Server physics and
+ * client rendering both call this so a rotating ring cannot visually drift
+ * away from the physical tractor source between network drift packets. */
+bool cargo_pod_module_tractor_anchor(const world_t *w,
+                                     const cargo_pod_t *pod,
+                                     int station_idx,
+                                     int module_idx,
+                                     vec2 *out_anchor);
+
 #endif /* GAME_SIM_H */
