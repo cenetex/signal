@@ -296,7 +296,7 @@ static void sim_interactions_clear(world_t *w) {
     if (w) w->interactions.count = 0;
 }
 
-static void emit_interaction(world_t *w, sim_interaction_t interaction) {
+void sim_emit_interaction(world_t *w, sim_interaction_t interaction) {
     if (!w || w->interactions.count >= SIM_MAX_INTERACTIONS) return;
     w->interactions.items[w->interactions.count++] = interaction;
 }
@@ -5259,13 +5259,13 @@ static vec2 station_module_cargo_mouth(const station_t *st,
 static int cargo_pod_module_hold_slot(const world_t *w,
                                       const cargo_pod_t *pod,
                                       int station_idx,
-                                      int module_idx,
-                                      int *out_total) {
-    if (out_total) *out_total = 1;
+                                      int module_idx) {
     if (!w || !pod || station_idx < 0 || module_idx < 0)
         return 0;
+    (void)station_idx;
+    (void)module_idx;
 
-    int self = -1;
+    int self = 0;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         if (&w->cargo_pods[i] == pod) {
             self = i;
@@ -5273,23 +5273,10 @@ static int cargo_pod_module_hold_slot(const world_t *w,
         }
     }
 
-    int slot = 0;
-    int total = 0;
-    for (int i = 0; i < MAX_CARGO_PODS; i++) {
-        const cargo_pod_t *other = &w->cargo_pods[i];
-        int ps = -1;
-        int pm = -1;
-        if (!other->active ||
-            !cargo_pod_module_tractor_indices(other, &ps, &pm) ||
-            ps != station_idx || pm != module_idx) {
-            continue;
-        }
-        if (i == self) slot = total;
-        total++;
-    }
-
-    if (out_total) *out_total = total > 0 ? total : 1;
-    return slot;
+    /* The old rank-among-active-pods layout retargeted every remaining pod
+     * whenever an earlier pod was removed. A pod's world-pool identity is
+     * stable for its lifetime, so use it as a fixed parking slot. */
+    return self & 15;
 }
 
 static vec2 station_module_cargo_hold_anchor(const world_t *w,
@@ -5323,23 +5310,24 @@ static vec2 station_module_cargo_hold_anchor(const world_t *w,
     }
     vec2 tangent = v2(-outward.y, outward.x);
 
-    int total = 1;
-    int slot = cargo_pod_module_hold_slot(w, pod, station_idx, module_idx,
-                                          &total);
-    enum { POD_HOLD_LANES = 4 };
-    int row = slot / POD_HOLD_LANES;
-    int lane = slot % POD_HOLD_LANES;
-    int remaining = total - row * POD_HOLD_LANES;
-    int lanes_this_row = remaining < POD_HOLD_LANES ? remaining : POD_HOLD_LANES;
-    if (lanes_this_row < 1) lanes_this_row = 1;
+    int slot = cargo_pod_module_hold_slot(w, pod, station_idx, module_idx);
+    static const int8_t lane_for_slot[16] = {
+         0, -1,  1,  0, -1,  1, -2,  2,
+         0, -1,  1, -2,  2, -2,  2,  0,
+    };
+    static const uint8_t row_for_slot[16] = {
+        0, 0, 0, 1, 1, 1, 0, 0,
+        2, 2, 2, 1, 1, 2, 2, 3,
+    };
+    int row = row_for_slot[slot];
+    int lane = lane_for_slot[slot];
 
     float pod_radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
-    float lane_spacing = compact_lane ? pod_radius * 2.05f + 6.0f
-                                      : pod_radius * 2.90f + 16.0f;
-    float row_spacing = compact_lane ? pod_radius * 1.10f + 4.0f
-                                     : pod_radius * 2.20f + 20.0f;
-    float centered_lane = (float)lane - ((float)lanes_this_row - 1.0f) * 0.5f;
-    vec2 spread = v2_add(v2_scale(tangent, centered_lane * lane_spacing),
+    float lane_spacing = compact_lane ? pod_radius * 2.0f + 4.0f
+                                      : pod_radius * 2.15f + 6.0f;
+    float row_spacing = compact_lane ? pod_radius * 1.55f + 4.0f
+                                     : pod_radius * 1.75f + 6.0f;
+    vec2 spread = v2_add(v2_scale(tangent, (float)lane * lane_spacing),
                          v2_scale(outward, (float)row * row_spacing));
     return v2_add(base_anchor, spread);
 }
@@ -5652,8 +5640,7 @@ static bool cargo_pod_find_matching_hopper_module(const world_t *w,
     if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
         return false;
 
-    const float acquire_sq =
-        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
     float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
@@ -5663,11 +5650,11 @@ static bool cargo_pod_find_matching_hopper_module(const world_t *w,
         for (int m = 0; m < st->module_count && m < MAX_MODULES_PER_STATION; m++) {
             if (!station_hopper_matches_pod(st, m, pod)) continue;
 
-            vec2 anchor = module_world_pos_ring(st, st->modules[m].ring,
-                                                st->modules[m].slot);
+            vec2 anchor = station_module_cargo_mouth(
+                st, &st->modules[m], pod);
             if (demand_only &&
                 !station_hopper_input_anchor_for_pod(st, m, pod,
-                                                     NULL, &anchor)) {
+                                                     NULL, NULL)) {
                 continue;
             }
             float d = v2_dist_sq(pod->pos, anchor);
@@ -5697,8 +5684,7 @@ static bool cargo_pod_find_producer_output_module(const world_t *w,
     if (pod->manifest_count >= CARGO_POD_UNIT_CAPACITY)
         return false;
 
-    const float acquire_sq =
-        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
     float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
@@ -5735,8 +5721,7 @@ static bool cargo_pod_find_module_input_module(const world_t *w,
     if (!w || !pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
         return false;
 
-    const float acquire_sq =
-        HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
+    const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
     float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
@@ -5748,20 +5733,16 @@ static bool cargo_pod_find_module_input_module(const world_t *w,
             if (!station_module_input_hopper_for_pod(st, m, pod,
                                                      &hopper_idx, NULL))
                 continue;
-            const station_module_t *module = &st->modules[m];
             const station_module_t *hopper = &st->modules[hopper_idx];
-            vec2 module_pos = module_world_pos_ring(st, module->ring,
-                                                    module->slot);
-            vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
-                                                    hopper->slot);
-            float d = point_segment_dist_sq(pod->pos, module_pos, hopper_pos);
+            vec2 hopper_pos = station_module_cargo_mouth(st, hopper, pod);
+            float d = v2_dist_sq(pod->pos, hopper_pos);
             if (d > acquire_sq) continue;
-            float score = cargo_pod_module_candidate_score(w, s, m, d,
-                                                           acquire_sq);
+            float score = cargo_pod_module_candidate_score(
+                w, s, hopper_idx, d, acquire_sq);
             if (score <= best_score) {
                 best_score = score;
                 best_station = s;
-                best_module = m;
+                best_module = hopper_idx;
             }
         }
     }
@@ -6068,12 +6049,19 @@ static bool cargo_pod_find_black_market_dock_module(world_t *w,
     return true;
 }
 
-static bool cargo_pod_current_module_tractor_valid(const world_t *w,
-                                                   cargo_pod_t *pod,
-                                                   int *out_station,
-                                                   int *out_module,
-                                                   vec2 *out_anchor,
-                                                   int *out_pulse_module) {
+typedef struct {
+    int station_idx;
+    int module_idx;
+    int pulse_module;
+    vec2 anchor;
+    vec2 anchor_vel;
+    tractor_beam_t beam;
+} cargo_pod_module_tractor_link_t;
+
+static bool cargo_pod_current_module_tractor_link(
+    const world_t *w,
+    const cargo_pod_t *pod,
+    cargo_pod_module_tractor_link_t *out_link) {
     int station_idx = -1;
     int module_idx = -1;
     if (!w || !pod ||
@@ -6092,35 +6080,30 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     bool station_can_hold = station_is_active(st) ||
         (dock_owner && station_provides_docking(st) &&
          station_policy_accepts_contract_bound_cargo(st));
-    if (!station_can_hold || !valid_owner) {
-        cargo_pod_clear_module_tractor(pod);
-        return false;
-    }
+    if (!station_can_hold || !valid_owner) return false;
+
+    const station_module_t *held_module = &st->modules[module_idx];
     vec2 anchor = station_module_cargo_mouth(st, &st->modules[module_idx],
                                              pod);
     int pulse_module = module_idx;
     bool compact_lane = false;
     if (station_module_input_hopper_for_pod(st, module_idx, pod,
-                                            NULL, &anchor)) {
+                                            NULL, NULL)) {
         pulse_module = module_idx;
         compact_lane = true;
     } else {
         int consumer_idx = -1;
-        vec2 input_anchor = anchor;
         if (station_hopper_input_anchor_for_pod(st, module_idx, pod,
                                                 &consumer_idx,
-                                                &input_anchor)) {
-            anchor = input_anchor;
+                                                NULL)) {
             pulse_module = consumer_idx;
             compact_lane = true;
         } else {
             int furnace_idx = -1;
-            vec2 shell_anchor = anchor;
             if (station_frame_hopper_shell_anchor_for_pod(st, module_idx, pod,
                                                           &furnace_idx,
-                                                          &shell_anchor,
+                                                          NULL,
                                                           NULL)) {
-                anchor = shell_anchor;
                 pulse_module = furnace_idx;
                 compact_lane = true;
             }
@@ -6128,20 +6111,39 @@ static bool cargo_pod_current_module_tractor_valid(const world_t *w,
     }
     anchor = station_module_cargo_hold_anchor(w, st, station_idx, module_idx,
                                               pod, anchor, compact_lane);
-    const station_module_t *held_module = &st->modules[module_idx];
     float valid_range =
         cargo_pod_module_tractor_range_for_pod(held_module->type, pod);
     tractor_beam_t pod_tractor =
         cargo_pod_module_tractor_beam(valid_range);
-    if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor)) {
-        cargo_pod_clear_module_tractor(pod);
+    if (!tractor_beam_points_in_range(anchor, pod->pos, &pod_tractor))
+        return false;
+
+    if (out_link) {
+        *out_link = (cargo_pod_module_tractor_link_t){
+            .station_idx = station_idx,
+            .module_idx = module_idx,
+            .pulse_module = pulse_module,
+            .anchor = anchor,
+            .anchor_vel = station_ring_point_velocity(
+                st, held_module->ring, anchor),
+            .beam = pod_tractor,
+        };
+    }
+    return true;
+}
+
+bool cargo_pod_module_tractor_arrived(const world_t *w,
+                                      const cargo_pod_t *pod,
+                                      int station_idx,
+                                      int module_idx) {
+    cargo_pod_module_tractor_link_t link;
+    if (!cargo_pod_current_module_tractor_link(w, pod, &link) ||
+        link.station_idx != station_idx || link.module_idx != module_idx) {
         return false;
     }
-    if (out_station) *out_station = station_idx;
-    if (out_module) *out_module = module_idx;
-    if (out_anchor) *out_anchor = anchor;
-    if (out_pulse_module) *out_pulse_module = pulse_module;
-    return true;
+    const float capture_radius = 48.0f;
+    return v2_dist_sq(pod->pos, link.anchor) <=
+           capture_radius * capture_radius;
 }
 
 static bool cargo_pod_try_acquire_module_tractor(world_t *w,
@@ -6236,9 +6238,9 @@ static bool station_player_buy_intent_targets_pod(const world_t *w,
     return false;
 }
 
-static bool cargo_pod_try_handoff_from_station_dock(world_t *w,
-                                                    int pod_idx,
-                                                    cargo_pod_t *pod) {
+static bool cargo_pod_try_handoff_from_station_module(world_t *w,
+                                                      int pod_idx,
+                                                      cargo_pod_t *pod) {
     int station_idx = -1;
     int module_idx = -1;
     int best_module = -1;
@@ -6249,9 +6251,16 @@ static bool cargo_pod_try_handoff_from_station_dock(world_t *w,
     }
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
     station_t *st = &w->stations[station_idx];
-    if (!station_dock_can_tractor_trade_pod(st, module_idx, pod))
+    bool dock_owner = station_dock_can_tractor_trade_pod(
+        st, module_idx, pod);
+    bool producer_owner = station_producer_can_tractor_output_pod(
+        st, module_idx, pod);
+    if (!dock_owner && !producer_owner)
         return false;
-    if (station_player_buy_intent_targets_pod(w, station_idx, pod_idx, pod))
+    if (dock_owner &&
+        station_player_buy_intent_targets_pod(w, station_idx, pod_idx, pod))
+        return false;
+    if (!cargo_pod_module_tractor_arrived(w, pod, station_idx, module_idx))
         return false;
     if (!cargo_pod_find_station_work_module(w, station_idx, pod,
                                             &best_module)) {
@@ -6394,33 +6403,35 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
         if (!cargo_pod_has_module_tractor(pod))
             (void)cargo_pod_try_acquire_module_tractor(w, pod);
         else
-            (void)cargo_pod_try_handoff_from_station_dock(w, i, pod);
+            (void)cargo_pod_try_handoff_from_station_module(w, i, pod);
 
-        int station_idx = -1;
-        int module_idx = -1;
-        int pulse_module = -1;
-        vec2 anchor = pod->pos;
-        if (!cargo_pod_current_module_tractor_valid(
-                w, pod, &station_idx, &module_idx, &anchor, &pulse_module)) {
+        cargo_pod_module_tractor_link_t resolved;
+        if (!cargo_pod_current_module_tractor_link(w, pod, &resolved)) {
+            cargo_pod_clear_module_tractor(pod);
             continue;
         }
         if (dt > 0.0f) {
-            tractor_anchor_t src = {
-                .pos = anchor, .vel = NULL, .inv_mass = 0.0f
+            vec2 source_vel = resolved.anchor_vel;
+            tractor_link_t link = {
+                .source = {
+                    .pos = resolved.anchor,
+                    .vel = &source_vel,
+                    .inv_mass = 0.0f,
+                },
+                .target = {
+                    .pos = pod->pos,
+                    .vel = &pod->vel,
+                    .inv_mass = 1.0f,
+                },
+                .beam = resolved.beam,
             };
-            tractor_anchor_t tgt = {
-                .pos = pod->pos, .vel = &pod->vel, .inv_mass = 1.0f
-            };
-            const station_module_t *module =
-                &w->stations[station_idx].modules[module_idx];
-            float tractor_range =
-                cargo_pod_module_tractor_range_for_pod(module->type, pod);
-            tractor_beam_t pod_tractor =
-                cargo_pod_module_tractor_beam(tractor_range);
-            (void)tractor_apply(&src, &tgt, &pod_tractor, dt);
-            if (station_idx >= 0 && station_idx < MAX_STATIONS &&
-                pulse_module >= 0 && pulse_module < MAX_MODULES_PER_STATION) {
-                w->stations[station_idx].module_active_pulse[pulse_module] = 1.0f;
+            (void)tractor_link_apply(&link, dt);
+            if (resolved.station_idx >= 0 &&
+                resolved.station_idx < MAX_STATIONS &&
+                resolved.pulse_module >= 0 &&
+                resolved.pulse_module < MAX_MODULES_PER_STATION) {
+                w->stations[resolved.station_idx]
+                    .module_active_pulse[resolved.pulse_module] = 1.0f;
             }
         }
     }
@@ -6428,7 +6439,8 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
 
 static void cargo_pod_revalidate_module_tractor(world_t *w, cargo_pod_t *pod) {
     if (!cargo_pod_has_module_tractor(pod)) return;
-    (void)cargo_pod_current_module_tractor_valid(w, pod, NULL, NULL, NULL, NULL);
+    if (!cargo_pod_current_module_tractor_link(w, pod, NULL))
+        cargo_pod_clear_module_tractor(pod);
 }
 
 static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
@@ -6437,13 +6449,13 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active || !cargo_pod_has_module_tractor(pod)) continue;
 
-        int station_idx = -1;
-        int module_idx = -1;
-        vec2 anchor = pod->pos;
-        if (!cargo_pod_current_module_tractor_valid(
-                w, pod, &station_idx, &module_idx, &anchor, NULL)) {
+        cargo_pod_module_tractor_link_t resolved;
+        if (!cargo_pod_current_module_tractor_link(w, pod, &resolved)) {
+            cargo_pod_clear_module_tractor(pod);
             continue;
         }
+        int station_idx = resolved.station_idx;
+        int module_idx = resolved.module_idx;
         if (station_idx < 0 || station_idx >= MAX_STATIONS ||
             module_idx < 0 || module_idx >= MAX_MODULES_PER_STATION) {
             continue;
@@ -6451,16 +6463,11 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
 
         const station_t *st = &w->stations[station_idx];
         if (module_idx >= st->module_count) continue;
-        const station_module_t *module = &st->modules[module_idx];
-        float tractor_range =
-            cargo_pod_module_tractor_range_for_pod(module->type, pod);
-        tractor_beam_t pod_tractor =
-            cargo_pod_module_tractor_beam(tractor_range);
         float intensity = tractor_beam_range_fraction(
-            anchor, pod->pos, &pod_tractor);
+            resolved.anchor, pod->pos, &resolved.beam);
         if (intensity <= 0.0f) continue;
 
-        emit_interaction(w, (sim_interaction_t){
+        sim_emit_interaction(w, (sim_interaction_t){
             .type = SIM_INTERACTION_TRACTOR_BEAM,
             .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
             .commodity = pod->commodity < COMMODITY_COUNT
@@ -6476,9 +6483,9 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
                 .index = (int16_t)i,
                 .aux = -1,
             },
-            .source_pos = anchor,
+            .source_pos = resolved.anchor,
             .target_pos = pod->pos,
-            .range = tractor_range,
+            .range = resolved.beam.range,
             .intensity = intensity,
         });
     }

@@ -2730,62 +2730,42 @@ static bool draw_published_cargo_pod_module_tractors(void) {
  * field line used by ship tractors. Color still identifies the module or
  * commodity supplying the beam. */
 void draw_hopper_tractors(void) {
-    float pull_range = 300.0f;
-    float pull_sq = pull_range * pull_range;
-    const asteroid_render_lists_t *lists = asteroid_render_lists();
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        const station_t *st = &g.world.stations[s];
-        if (!station_exists(st) || st->scaffold) continue;
-        float station_pull_radius =
-            fmaxf(st->dock_radius, STATION_RING_RADIUS[STATION_NUM_RINGS]) + pull_range + 80.0f;
-        if (!on_screen(st->pos.x, st->pos.y, station_pull_radius)) continue;
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].scaffold) continue;
-            module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_HOPPER) continue;
-            vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
-            if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
-
-            float fr, fg, fb;
-            module_color(mt, &fr, &fg, &fb);
-
-            /* Draw tow bands to all S-tier fragments in range. */
-            for (int li = 0; li < lists->s_tier_count; li++) {
-                int i = lists->s_tier[li];
-                const asteroid_t *a = &g.world.asteroids[i];
-                float d_sq = v2_dist_sq(a->pos, mp);
-                if (d_sq > pull_sq) continue;
-                float d = sqrtf(d_sq);
-                float tautness = d / pull_range;
-                float pulse = 0.5f + 0.3f * sinf(g.world.time * 6.0f + (float)i * 1.7f);
-                float brightness = (a->smelt_progress > 0.01f) ? (0.6f + a->smelt_progress * 0.4f) : 0.3f;
-                float alpha = (0.20f + 0.55f * tautness) * pulse * brightness;
-                draw_tractor_tether_wave(mp, a->pos, fr, fg, fb, alpha,
-                                         tautness,
-                                         (float)i * 1.7f + (float)m);
-
-                /* Sparks on smelting fragments — more intense */
-                if (a->smelt_progress > 0.1f) {
-                    float spark1 = sinf(g.world.time * 31.0f + (float)i * 3.1f);
-                    float spark2 = sinf(g.world.time * 43.0f + (float)i * 7.3f);
-                    float spark3 = sinf(g.world.time * 19.0f + (float)i * 2.7f);
-                    float sr = a->radius * 1.2f;
-                    float sp = a->smelt_progress;
-                    if (spark1 > 0.0f) {
-                        vec2 s1 = v2_add(a->pos, v2(sr * sinf(g.world.time * 11.0f), sr * cosf(g.world.time * 13.0f)));
-                        draw_segment(a->pos, s1, 1.0f, 0.9f, 0.3f, spark1 * sp * 0.7f);
-                    }
-                    if (spark2 > 0.0f) {
-                        vec2 s2 = v2_add(a->pos, v2(-sr * cosf(g.world.time * 9.0f), sr * sinf(g.world.time * 7.0f)));
-                        draw_segment(a->pos, s2, 1.0f, 0.7f, 0.15f, spark2 * sp * 0.5f);
-                    }
-                    if (spark3 > 0.0f) {
-                        vec2 s3 = v2_add(a->pos, v2(sr * cosf(g.world.time * 17.0f), -sr * sinf(g.world.time * 23.0f)));
-                        draw_segment(a->pos, s3, 0.9f, 0.5f, 0.1f, spark3 * sp * 0.4f);
-                    }
-                }
-            }
+    for (int i = 0; i < g.world.interactions.count; i++) {
+        const sim_interaction_t *it = &g.world.interactions.items[i];
+        if (it->type != SIM_INTERACTION_TRACTOR_BEAM ||
+            it->visual !=
+                SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR ||
+            it->source.type != SIM_INTERACTION_ENTITY_STATION_MODULE ||
+            it->target.type != SIM_INTERACTION_ENTITY_ASTEROID) {
+            continue;
         }
+        int station_idx = it->source.index;
+        int module_idx = it->source.aux;
+        int asteroid_idx = it->target.index;
+        if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+            asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) {
+            continue;
+        }
+        const station_t *st = &g.world.stations[station_idx];
+        if (!station_exists(st) || module_idx < 0 ||
+            module_idx >= st->module_count) {
+            continue;
+        }
+        const asteroid_t *a = &g.world.asteroids[asteroid_idx];
+        if (!a->active) continue;
+
+        tractor_beam_t beam = tractor_tow_beam(it->range, 0.0f);
+        float tautness = tractor_beam_tautness(
+            it->source_pos, a->pos, &beam);
+        float fr, fg, fb;
+        module_color(st->modules[module_idx].type, &fr, &fg, &fb);
+        float pulse = 0.78f + 0.22f *
+            sinf(g.world.time * 6.0f + (float)asteroid_idx * 1.7f);
+        float alpha = (0.22f + 0.58f * tautness) * pulse *
+                      clampf(it->intensity, 0.15f, 1.0f);
+        draw_tractor_tether_wave(
+            it->source_pos, a->pos, fr, fg, fb, alpha, tautness,
+            (float)asteroid_idx * 1.7f + (float)module_idx);
     }
 
     (void)draw_published_cargo_pod_module_tractors();

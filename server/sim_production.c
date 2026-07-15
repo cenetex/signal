@@ -90,6 +90,9 @@ static bool furnace_take_loose_shell_frame(world_t *w,
         if (tractor_station != station_idx ||
             tractor_module < 0 || tractor_module >= st->module_count)
             continue;
+        if (!cargo_pod_module_tractor_arrived(w, pod, station_idx,
+                                              tractor_module))
+            continue;
         const station_module_t *owner = &st->modules[tractor_module];
         if (owner->scaffold) continue;
         bool owner_can_unfold_shell = false;
@@ -339,12 +342,13 @@ static int selected_count_for_pod(const loose_pod_recipe_input_t *selected,
     return count;
 }
 
-static bool production_pod_staged_at_matching_hopper(const station_t *st,
+static bool production_pod_staged_at_matching_hopper(const world_t *w,
+                                                     const station_t *st,
                                                      int station_idx,
                                                      int module_idx,
                                                      const cargo_pod_t *pod,
                                                      commodity_t commodity) {
-    if (!st || !pod || commodity >= COMMODITY_COUNT ||
+    if (!w || !st || !pod || commodity >= COMMODITY_COUNT ||
         module_idx < 0 || module_idx >= st->module_count) {
         return false;
     }
@@ -360,7 +364,9 @@ static bool production_pod_staged_at_matching_hopper(const station_t *st,
                 (commodity_t)hopper->commodity == commodity) {
                 vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
                                                         hopper->slot);
-                if (v2_dist_sq(hopper_pos, module_pos) <= consumer_range_sq)
+                if (v2_dist_sq(hopper_pos, module_pos) <= consumer_range_sq &&
+                    cargo_pod_module_tractor_arrived(
+                        w, pod, station_idx, module_idx))
                     return true;
             }
         }
@@ -374,7 +380,8 @@ static bool production_pod_staged_at_matching_hopper(const station_t *st,
                                                 hopper->slot);
         if (v2_dist_sq(hopper_pos, module_pos) > consumer_range_sq)
             continue;
-        return true;
+        if (cargo_pod_module_tractor_arrived(w, pod, station_idx, i))
+            return true;
     }
     return false;
 }
@@ -403,7 +410,7 @@ static bool station_select_loose_pod_recipe_inputs(
             const cargo_pod_t *pod = &w->cargo_pods[i];
             if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
             if (pod->towed_by >= 0) continue;
-            if (!production_pod_staged_at_matching_hopper(st, station_idx,
+            if (!production_pod_staged_at_matching_hopper(w, st, station_idx,
                                                           module_idx, pod,
                                                           commodity))
                 continue;
@@ -490,6 +497,7 @@ static int station_find_output_pod_for_module(world_t *w,
     }
 
     const station_module_t *module = &st->modules[module_idx];
+    int output_hopper = station_find_output_hopper_for_module(st, module);
     vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
     const float staged_sq =
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
@@ -501,7 +509,10 @@ static int station_find_output_pod_for_module(world_t *w,
         if (!production_pod_can_accept_output(pod, commodity, product_count))
             continue;
         if (pod->towed_by >= 0) continue;
-        if (cargo_pod_is_tractored_by_module(pod, station_idx, module_idx))
+        if (cargo_pod_is_tractored_by_module(pod, station_idx, module_idx) ||
+            (output_hopper >= 0 &&
+             cargo_pod_is_tractored_by_module(pod, station_idx,
+                                               output_hopper)))
             return i;
         if (cargo_pod_has_module_tractor(pod)) continue;
 
@@ -534,7 +545,10 @@ static int station_append_products_to_output_pod(world_t *w,
     pod->quantity = pod->manifest_count;
     pod->age = 0.0f;
     cargo_pod_set_station_custody(pod, station_idx);
-    cargo_pod_set_module_tractor(pod, station_idx, module_idx);
+    const station_module_t *module = &st->modules[module_idx];
+    int output_hopper = station_find_output_hopper_for_module(st, module);
+    cargo_pod_set_module_tractor(
+        pod, station_idx, output_hopper >= 0 ? output_hopper : module_idx);
     return product_count;
 }
 
@@ -551,6 +565,9 @@ static bool production_take_loose_shell_frame(world_t *w,
         if (!cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME)) continue;
         if (pod->towed_by >= 0) continue;
         if (!cargo_pod_is_tractored_by_module(pod, station_idx, module_idx))
+            continue;
+        if (!cargo_pod_module_tractor_arrived(w, pod, station_idx,
+                                              module_idx))
             continue;
 
         furnace_shell_source_t next = {0};
@@ -583,7 +600,9 @@ static bool production_loose_shell_frame_available(const world_t *w,
         const cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME)) continue;
         if (pod->towed_by >= 0) continue;
-        if (cargo_pod_is_tractored_by_module(pod, station_idx, module_idx))
+        if (cargo_pod_is_tractored_by_module(pod, station_idx, module_idx) &&
+            cargo_pod_module_tractor_arrived(w, pod, station_idx,
+                                             module_idx))
             return true;
     }
     return false;
@@ -692,8 +711,10 @@ static int station_craft_product_pod_from_inputs(world_t *w,
     vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
     float angle = module_angle_ring(st, module->ring, module->slot);
     vec2 dir = v2_from_angle(angle);
-    vec2 pod_pos = v2_add(module_pos, v2_scale(dir, 34.0f));
-    vec2 pod_vel = v2_scale(dir, 42.0f);
+    const float pod_radius = 18.0f;
+    const float mouth_offset = STATION_MODULE_COL_RADIUS + pod_radius + 8.0f;
+    vec2 pod_pos = v2_add(module_pos, v2_scale(dir, mouth_offset));
+    vec2 pod_vel = station_ring_point_velocity(st, module->ring, pod_pos);
     int pod_idx = spawn_cargo_pod_with_manifest_deterministic(
         w, pod_pos, pod_vel, recipe->output_commodity,
         &products[payload_start], (uint16_t)payload_count,
@@ -704,8 +725,10 @@ static int station_craft_product_pod_from_inputs(world_t *w,
     }
     cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx], &pod_shell.unit);
     cargo_pod_set_station_custody(&w->cargo_pods[pod_idx], station_idx);
-    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                 station_idx, module_idx);
+    int output_hopper = station_find_output_hopper_for_module(st, module);
+    cargo_pod_set_module_tractor(
+        &w->cargo_pods[pod_idx], station_idx,
+        output_hopper >= 0 ? output_hopper : module_idx);
 
     for (int i = payload_start; i < crafted; i++)
         station_emit_craft_event(w, st, recipe_id, inputs,
@@ -1063,6 +1086,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * angles, shifting the smelt midpoint and the visible
                  * beam endpoint to the wrong hopper. */
                 vec2 silo_pos = furnace_pos;
+                int silo_ring = ring;
+                int silo_module = -1;
                 bool has_silo = false;
                 float best_d = 1e18f;
                 int adj_rings[] = { ring + 1, ring - 1 };
@@ -1076,7 +1101,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                         if ((commodity_t)st->modules[m2].commodity != a->commodity) continue;
                         vec2 mp2 = module_world_pos_ring(st, adj, st->modules[m2].slot);
                         float dd = v2_dist_sq(furnace_pos, mp2);
-                        if (dd < best_d) { best_d = dd; silo_pos = mp2; has_silo = true; }
+                        if (dd < best_d) {
+                            best_d = dd;
+                            silo_pos = mp2;
+                            silo_ring = adj;
+                            silo_module = m2;
+                            has_silo = true;
+                        }
                     }
                 }
                 if (!has_silo) continue;
@@ -1090,15 +1121,58 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (!furnace_reach || !silo_reach) continue;  /* both must reach */
 
                 /* Pull fragment toward the midpoint between furnace and
-                 * silo. The source is world-pinned because the midpoint
-                 * is not a single body, but its force profile is the same
-                 * elastic tow beam used by ships and cargo-pod modules. */
+                 * silo. The cooperative source inherits the average live
+                 * velocity of both rotating ring anchors and uses the same
+                 * resolved link as ships and cargo-pod modules. */
                 vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
-                tractor_beam_t smelt_beam = tractor_tow_beam(
-                    HOPPER_PULL_RANGE, 0.0f);
-                tractor_anchor_t src = { .pos = midpoint, .vel = NULL,    .inv_mass = 0.0f };
-                tractor_anchor_t tgt = { .pos = a->pos,   .vel = &a->vel, .inv_mass = 1.0f };
-                (void)tractor_apply(&src, &tgt, &smelt_beam, dt);
+                vec2 source_vel = v2_scale(v2_add(
+                    module_world_velocity_ring(st, ring,
+                                               st->modules[m].slot),
+                    station_ring_point_velocity(st, silo_ring, silo_pos)),
+                    0.5f);
+                tractor_link_t link = {
+                    .source = {
+                        .pos = midpoint,
+                        .vel = &source_vel,
+                        .inv_mass = 0.0f,
+                    },
+                    .target = {
+                        .pos = a->pos,
+                        .vel = &a->vel,
+                        .inv_mass = 1.0f,
+                    },
+                    .beam = tractor_tow_beam(HOPPER_PULL_RANGE, 0.0f),
+                };
+                (void)tractor_link_apply(&link, dt);
+
+                const int beam_modules[2] = {m, silo_module};
+                const vec2 beam_sources[2] = {furnace_pos, silo_pos};
+                for (int beam_idx = 0; beam_idx < 2; beam_idx++) {
+                    float intensity = tractor_beam_range_fraction(
+                        beam_sources[beam_idx], a->pos, &link.beam);
+                    if (intensity <= 0.0f || beam_modules[beam_idx] < 0)
+                        continue;
+                    sim_emit_interaction(w, (sim_interaction_t){
+                        .type = SIM_INTERACTION_TRACTOR_BEAM,
+                        .visual =
+                            SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+                        .commodity = (uint8_t)a->commodity,
+                        .source = {
+                            .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+                            .index = (int16_t)s,
+                            .aux = (int16_t)beam_modules[beam_idx],
+                        },
+                        .target = {
+                            .type = SIM_INTERACTION_ENTITY_ASTEROID,
+                            .index = (int16_t)i,
+                            .aux = -1,
+                        },
+                        .source_pos = beam_sources[beam_idx],
+                        .target_pos = a->pos,
+                        .range = HOPPER_PULL_RANGE,
+                        .intensity = intensity,
+                    });
+                }
 
                 /* Pulse the furnace module — the existing ring-spoke
                  * physics in step_station_ring_dynamics looks at
@@ -1208,14 +1282,17 @@ void step_furnace_smelting(world_t *w, float dt) {
                     continue;
                 }
 
+                const station_module_t *furnace =
+                    &st->modules[smelt_module];
                 vec2 dir = v2_sub(smelt_midpoint, st->pos);
                 float dir_len = v2_len(dir);
                 if (dir_len > 0.001f)
                     dir = v2_scale(dir, 1.0f / dir_len);
                 else
                     dir = v2_from_angle((float)smelt_module * 0.731f);
-                vec2 pod_pos = v2_add(smelt_midpoint, v2_scale(dir, 34.0f));
-                vec2 pod_vel = v2_add(a->vel, v2_scale(dir, 36.0f));
+                vec2 pod_pos = smelt_midpoint;
+                vec2 pod_vel = station_ring_point_velocity(
+                    st, furnace->ring, pod_pos);
                 float rotation = fixp_atan2f(dir.y, dir.x);
                 pod_idx = spawn_cargo_pod_with_manifest_deterministic(
                     w, pod_pos, pod_vel, output, units, (uint16_t)pushed,
@@ -1230,8 +1307,10 @@ void step_furnace_smelting(world_t *w, float dt) {
                                           &pod_shell.unit);
                 cargo_pod_set_station_custody(&w->cargo_pods[pod_idx],
                                               smelt_station);
-                cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                             smelt_station, smelt_module);
+                int output_hopper = station_find_hopper_for(st, output);
+                cargo_pod_set_module_tractor(
+                    &w->cargo_pods[pod_idx], smelt_station,
+                    output_hopper >= 0 ? output_hopper : smelt_module);
                 st->module_active_pulse[smelt_module] = 1.0f;
             }
 

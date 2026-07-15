@@ -338,6 +338,25 @@ vec2 module_world_pos_ring(const station_t *st, int ring, int slot) {
     return v2_add(st->pos, v2_scale(v2_from_angle(angle), r));
 }
 
+vec2 station_ring_point_velocity(const station_t *st, int ring, vec2 point) {
+    if (!st) return v2(0.0f, 0.0f);
+    if (ring < 1 || ring > STATION_NUM_RINGS)
+        return st->jostle_vel;
+    vec2 offset = v2_sub(point, st->pos);
+    float omega = 0.0f;
+    int idx = ring - 1;
+    if (idx >= 0 && idx < MAX_ARMS)
+        omega = st->arm_omega[idx];
+    return v2_add(st->jostle_vel,
+                  v2(-omega * offset.y, omega * offset.x));
+}
+
+vec2 module_world_velocity_ring(const station_t *st, int ring, int slot) {
+    if (!st) return v2(0.0f, 0.0f);
+    return station_ring_point_velocity(
+        st, ring, module_world_pos_ring(st, ring, slot));
+}
+
 float module_angle_ring(const station_t *st, int ring, int slot) {
     if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
     int slots = STATION_RING_SLOTS[ring];

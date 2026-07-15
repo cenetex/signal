@@ -326,6 +326,30 @@ static void test_move_pod_past_station_charge_boundary(world_t *w,
     w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
 }
 
+static bool test_stage_pod_at_station_dock_mouth(world_t *w,
+                                                  int station_idx,
+                                                  int pod_idx) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return false;
+    }
+    station_t *st = &w->stations[station_idx];
+    int dock_idx = test_first_dock_module_idx(st);
+    if (dock_idx < 0) return false;
+    const station_module_t *dock = &st->modules[dock_idx];
+    vec2 dock_pos = module_world_pos_ring(st, dock->ring, dock->slot);
+    vec2 outward = v2_norm(v2_sub(dock_pos, st->pos));
+    if (v2_len_sq(outward) < 0.5f)
+        outward = v2_from_angle(module_angle_ring(st, dock->ring,
+                                                  dock->slot));
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    float radius = pod->radius > 0.0f ? pod->radius : 18.0f;
+    pod->pos = v2_add(dock_pos, v2_scale(
+        outward, STATION_MODULE_COL_RADIUS + radius + 8.0f));
+    pod->vel = station_ring_point_velocity(st, dock->ring, pod->pos);
+    return true;
+}
+
 static bool test_view_has_market_memory(const knowledge_view_t *view,
                                         uint8_t memory_kind,
                                         uint8_t station_a,
@@ -1850,6 +1874,7 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     float helios_before = ledger_balance(helios, sp->session_token);
     int helios_dock = test_first_dock_module_idx(helios);
     ASSERT(helios_dock >= 0);
+    ASSERT(test_stage_pod_at_station_dock_mouth(&w, 2, shipment_pod));
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
@@ -1963,8 +1988,9 @@ TEST(test_delivery_credit_dock_custody_does_not_teleport_far_pod) {
     ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
     ASSERT(w.cargo_pods[shipment_pod].active);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
-    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
-                                            2, helios_dock));
+    ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[shipment_pod]));
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[shipment_pod]), 2);
     ASSERT(v2_dist_sq(w.cargo_pods[shipment_pod].pos, far_pos) <
            80.0f * 80.0f);
     ASSERT(v2_dist_sq(w.cargo_pods[shipment_pod].pos, dock_pos) >
@@ -2052,6 +2078,7 @@ TEST(test_delivery_credit_requires_exact_bound_cargo) {
     sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
     int helios_dock = test_first_dock_module_idx(helios);
     ASSERT(helios_dock >= 0);
+    ASSERT(test_stage_pod_at_station_dock_mouth(&w, 2, shipment_pod));
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
@@ -2123,6 +2150,7 @@ TEST(test_delivery_credit_row_sell_unloads_bound_pod) {
     float helios_before = ledger_balance(helios, sp->session_token);
     int helios_dock = test_first_dock_module_idx(helios);
     ASSERT(helios_dock >= 0);
+    ASSERT(test_stage_pod_at_station_dock_mouth(&w, 2, shipment_pod));
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
@@ -2322,6 +2350,7 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     float pirate_before = ledger_balance(pirate, sp->session_token);
     int pirate_dock = test_first_dock_module_idx(pirate);
     ASSERT(pirate_dock >= 0);
+    ASSERT(test_stage_pod_at_station_dock_mouth(&w, 3, shipment_pod));
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 

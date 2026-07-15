@@ -3600,9 +3600,9 @@ TEST(test_interaction_drift_stream_quantizes_visual_fields) {
 }
 
 TEST(test_interaction_drift_repeat_uses_visual_cadence) {
-    ASSERT_EQ_INT((int)INTERACTION_DRIFT_NET_REPEAT_TICKS, 1200);
+    ASSERT_EQ_INT((int)INTERACTION_DRIFT_NET_REPEAT_TICKS, 12);
     ASSERT(interaction_drift_repeat_due(0u, 100u));
-    ASSERT(!interaction_drift_repeat_due(100u, 340u));
+    ASSERT(interaction_drift_repeat_due(100u, 340u));
     ASSERT(!interaction_drift_repeat_due(
         100u, 100u + INTERACTION_DRIFT_NET_REPEAT_TICKS - 1u));
     ASSERT(interaction_drift_repeat_due(

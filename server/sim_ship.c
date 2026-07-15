@@ -27,19 +27,20 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
 
 void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt) {
     if (!ship || !body || !body->pos || !body->vel) return;
-    tractor_beam_t tow_beam = tractor_tow_beam(
-        0.0f, TRACTOR_TOW_BAND_REST_LENGTH);
-    tractor_anchor_t src = {
-        .pos      = ship->pos,
-        .vel      = &ship->vel,
-        .inv_mass = 1.0f / SHIP_TOW_BAND_SHIP_MASS,
+    tractor_link_t link = {
+        .source = {
+            .pos      = ship->pos,
+            .vel      = &ship->vel,
+            .inv_mass = 1.0f / SHIP_TOW_BAND_SHIP_MASS,
+        },
+        .target = {
+            .pos      = *body->pos,
+            .vel      = body->vel,
+            .inv_mass = body->inv_mass,
+        },
+        .beam = tractor_tow_beam(0.0f, TRACTOR_TOW_BAND_REST_LENGTH),
     };
-    tractor_anchor_t tgt = {
-        .pos      = *body->pos,
-        .vel      = body->vel,
-        .inv_mass = body->inv_mass,
-    };
-    (void)tractor_apply(&src, &tgt, &tow_beam, dt);
+    (void)tractor_link_apply(&link, dt);
 }
 
 void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {

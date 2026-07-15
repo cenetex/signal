@@ -2913,7 +2913,10 @@ TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
     ASSERT(w.cargo_pods[pod_idx].active);
     ASSERT(!module_is_fully_supplied(m));
 
-    w.cargo_pods[pod_idx].pos = hopper_pos;
+    vec2 hopper_out = v2_norm(v2_sub(hopper_pos, st->pos));
+    w.cargo_pods[pod_idx].pos = v2_add(hopper_pos, v2_scale(
+        hopper_out, STATION_MODULE_COL_RADIUS +
+                    w.cargo_pods[pod_idx].radius + 8.0f));
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!w.cargo_pods[pod_idx].active);

@@ -1671,6 +1671,7 @@ typedef enum {
 typedef enum {
     SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR = 0,
     SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR = 1,
+    SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR = 2,
 } sim_interaction_visual_t;
 
 typedef struct {

@@ -72,8 +72,8 @@
  * computation lives at the call site, not here).
  *
  * `vel` is a pointer into the body's velocity vector. NULL means the
- * anchor is world-pinned (e.g. the smelt beam's furnace-silo midpoint,
- * which doesn't belong to any single body). When non-NULL and
+ * anchor is world-pinned. Kinematic station anchors still provide their
+ * live ring velocity here, with zero inverse mass. When non-NULL and
  * `inv_mass > 0`, the anchor receives Newton's-third reaction force.
  *
  * `inv_mass` = 1 / mass. Zero models an immovable / infinite-mass
@@ -114,6 +114,16 @@ typedef struct {
     float speed_cap;         /* optional |target.vel| cap after impulse; 0 = no cap */
     tractor_falloff_t falloff;
 } tractor_beam_t;
+
+/* A fully resolved tractor connection for one simulation tick.  Keeping the
+ * endpoints and force profile together gives ships, stations, hoppers, docks,
+ * and furnaces one physical contract: both endpoints have world position and
+ * velocity, even when the source has infinite mass. */
+typedef struct {
+    tractor_anchor_t source;
+    tractor_anchor_t target;
+    tractor_beam_t beam;
+} tractor_link_t;
 
 /* Standard tractor-beam force profile for ship and station elastic tows.
  * Callers may choose the attachment geometry (range and rest length), but
@@ -181,5 +191,10 @@ bool tractor_apply(const tractor_anchor_t *src,
                    const tractor_anchor_t *tgt,
                    const tractor_beam_t   *beam,
                    float dt);
+
+/* Apply a resolved link. This is the canonical entry point for gameplay
+ * tractors; tractor_apply remains available for low-level tests and custom
+ * force profiles. */
+bool tractor_link_apply(const tractor_link_t *link, float dt);
 
 #endif /* SHARED_TRACTOR_H */

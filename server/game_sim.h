@@ -1186,6 +1186,7 @@ vec2 player_launch_clear_position(const world_t *w, int player_slot,
                                   const station_t *st, const ship_t *ship,
                                   vec2 away);
 void emit_event(world_t *w, sim_event_t ev);
+void sim_emit_interaction(world_t *w, sim_interaction_t interaction);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);
 /* Net currency a station has issued, derived from the ledger as
@@ -1249,18 +1250,11 @@ void activate_outpost(world_t *w, int station_idx);
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
-/* Cargo-pod module tractor tuning. Docks can retain sold/delivery custody
- * from farther out, but loose-pod acquisition still uses the shorter
- * CARGO_POD_DOCK_TRACTOR_RANGE at call sites. */
+/* Cargo-pod module tractor tuning. Economic custody does not create a
+ * long-range physical beam: docks and hoppers both obey their real reach. */
 #define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
-#define CARGO_POD_DOCK_CUSTODY_RANGE (HOPPER_PULL_RANGE * 200.0f)
 static inline tractor_beam_t cargo_pod_module_tractor_beam(float range) {
     return tractor_tow_beam(range, 0.0f);
-}
-
-static inline bool cargo_pod_uses_dock_custody_range(const cargo_pod_t *pod) {
-    return pod && pod->kind == CARGO_POD_CARGO && pod->towed_by < 0 &&
-           (pod->manifest_count > 0 || pod->has_shell_frame);
 }
 
 static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
@@ -1272,11 +1266,15 @@ static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
 static inline float cargo_pod_module_tractor_range_for_pod(
     module_type_t module_type,
     const cargo_pod_t *pod) {
-    if (module_type == MODULE_DOCK &&
-        cargo_pod_uses_dock_custody_range(pod)) {
-        return CARGO_POD_DOCK_CUSTODY_RANGE;
-    }
+    (void)pod;
     return cargo_pod_module_tractor_range(module_type);
 }
+
+/* True only after a pod has physically reached its resolved module-local
+ * hold anchor. Assignment alone is not delivery. */
+bool cargo_pod_module_tractor_arrived(const world_t *w,
+                                      const cargo_pod_t *pod,
+                                      int station_idx,
+                                      int module_idx);
 
 #endif /* GAME_SIM_H */

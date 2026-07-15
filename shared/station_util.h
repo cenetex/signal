@@ -80,6 +80,10 @@ commodity_t   station_primary_sell(const station_t *st);
 /* ----- Ring rotation / module world geometry ----- */
 float         station_ring_rotation(const station_t *st, int ring);
 vec2          module_world_pos_ring(const station_t *st, int ring, int slot);
+vec2          station_ring_point_velocity(const station_t *st, int ring,
+                                          vec2 point);
+vec2          module_world_velocity_ring(const station_t *st, int ring,
+                                         int slot);
 float         module_angle_ring   (const station_t *st, int ring, int slot);
 float         station_dock_lane_angle(const station_t *st, int ring, int slot);
 vec2          station_dock_lane_pos(const station_t *st, int ring, int slot,

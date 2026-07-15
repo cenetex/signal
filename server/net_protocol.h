@@ -5433,7 +5433,7 @@ static inline int serialize_interactions_q_for_player(
     return 2 + count * INTERACTION_Q_RECORD_SIZE;
 }
 
-#define INTERACTION_DRIFT_NET_REPEAT_TICKS 1200u /* 0.1 Hz visual drift safety refresh */
+#define INTERACTION_DRIFT_NET_REPEAT_TICKS 12u /* 10 Hz: keep beams attached to rotating rings */
 #define INTERACTION_NET_METADATA_HEARTBEAT_TICKS 2400u /* 0.05 Hz metadata reconciliation */
 
 static inline bool interaction_drift_repeat_due(uint32_t last_tick,

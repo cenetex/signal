@@ -57,12 +57,14 @@ static void emit_module_supply_contribution(world_t *w, station_t *st,
                          &payload, sizeof(payload));
 }
 
-static bool construction_pod_staged_at_matching_hopper(const station_t *st,
+static bool construction_pod_staged_at_matching_hopper(const world_t *w,
+                                                       const station_t *st,
                                                        int station_idx,
                                                        const station_module_t *module,
                                                        const cargo_pod_t *pod,
                                                        commodity_t material) {
-    if (!st || !module || !pod || material >= COMMODITY_COUNT) return false;
+    if (!w || !st || !module || !pod || material >= COMMODITY_COUNT)
+        return false;
     const float consumer_range_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
     for (int i = 0; i < st->module_count; i++) {
@@ -74,7 +76,8 @@ static bool construction_pod_staged_at_matching_hopper(const station_t *st,
                                                 hopper->slot);
         if (v2_dist_sq(hopper_pos, module_pos) > consumer_range_sq)
             continue;
-        return true;
+        if (cargo_pod_module_tractor_arrived(w, pod, station_idx, i))
+            return true;
     }
     return false;
 }
@@ -98,7 +101,7 @@ static int feed_module_supply_from_loose_pods(world_t *w, station_t *st,
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, material)) continue;
         if (pod->towed_by >= 0) continue;
-        if (!construction_pod_staged_at_matching_hopper(st, station_idx,
+        if (!construction_pod_staged_at_matching_hopper(w, st, station_idx,
                                                         module, pod,
                                                         material))
             continue;

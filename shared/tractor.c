@@ -80,3 +80,8 @@ bool tractor_apply(const tractor_anchor_t *src,
     }
     return true;
 }
+
+bool tractor_link_apply(const tractor_link_t *link, float dt) {
+    if (!link) return false;
+    return tractor_apply(&link->source, &link->target, &link->beam, dt);
+}
