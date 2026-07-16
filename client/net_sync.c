@@ -345,11 +345,11 @@ static bool should_defer_active_prediction_motion(const NetPlayerState *state,
 
 static void apply_authoritative_local_motion(const NetPlayerState *state,
                                              server_player_t *sp) {
-    sp->ship.pos.x = state->x;
-    sp->ship.pos.y = state->y;
-    sp->ship.vel.x = state->vx;
-    sp->ship.vel.y = state->vy;
-    sp->ship.angle = state->angle;
+    sp->ship->pos.x = state->x;
+    sp->ship->pos.y = state->y;
+    sp->ship->vel.x = state->vx;
+    sp->ship->vel.y = state->vy;
+    sp->ship->angle = state->angle;
     if ((state->flags & 4) == 0)
         sp->docked = false;
 }
@@ -357,16 +357,16 @@ static void apply_authoritative_local_motion(const NetPlayerState *state,
 static void sync_local_tow_state_from_authority(const NetPlayerState *state,
                                                 server_player_t *sp) {
     if (!state || !sp) return;
-    sp->ship.tractor_level = (int)state->tractor_level;
+    sp->ship->tractor_level = (int)state->tractor_level;
 
-    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                        sizeof(sp->ship.towed_fragments[0]));
+    int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                        sizeof(sp->ship->towed_fragments[0]));
     int tow_count = state->towed_count;
     if (tow_count > tow_cap) tow_count = tow_cap;
-    sp->ship.towed_count = (uint8_t)tow_count;
+    sp->ship->towed_count = (uint8_t)tow_count;
     for (int t = 0; t < tow_cap; t++) {
         uint16_t wire = (t < tow_count) ? state->towed_fragments[t] : 0xFFFFu;
-        sp->ship.towed_fragments[t] =
+        sp->ship->towed_fragments[t] =
             (wire != 0xFFFFu && wire < MAX_ASTEROIDS) ? (int16_t)wire : -1;
     }
 }
@@ -379,7 +379,7 @@ static void apply_local_player_remote_flags(const NetPlayerState *state,
     sp->scan_active      = (state->flags & 8) != 0;
     sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
     sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
-    sp->ship.tractor_active = (state->flags & 16) != 0;
+    sp->ship->tractor_active = (state->flags & 16) != 0;
     g.server_thrusting = (state->flags & 1) != 0;
 }
 
@@ -400,7 +400,7 @@ static void sync_local_undocked_dock_proximity(server_player_t *sp) {
         const station_t *st = &g.world.stations[i];
         if (!station_exists(st) || !station_has_module(st, MODULE_DOCK))
             continue;
-        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        float d_sq = v2_dist_sq(sp->ship->pos, st->pos);
         if (d_sq <= approach_sq && d_sq < best_d) {
             best_d = d_sq;
             sp->nearby_station = i;
@@ -415,7 +415,7 @@ static void sync_local_dock_state_from_authority(const NetPlayerState *state,
     sp->docked = state_docked;
     sp->docking_approach = false;
     if (state_docked) {
-        int station = nearest_station_index(sp->ship.pos);
+        int station = nearest_station_index(sp->ship->pos);
         if (station >= 0 && station < MAX_STATIONS &&
             station_exists(&g.world.stations[station])) {
             sp->current_station = station;
@@ -429,7 +429,7 @@ static void sync_local_dock_state_from_authority(const NetPlayerState *state,
 
 static void frame_camera_on_authoritative_baseline(const server_player_t *sp) {
     if (!sp) return;
-    g.camera_pos = sp->ship.pos;
+    g.camera_pos = sp->ship->pos;
     g.camera_initialized = true;
     g.camera_station_index = -1;
     g.camera_station_side = 0;
@@ -455,7 +455,7 @@ static void accept_initial_local_player_state(const NetPlayerState *state,
 
 static void accept_docked_local_player_state(const NetPlayerState *state,
                                              server_player_t *sp) {
-    vec2 before_pos = sp->ship.pos;
+    vec2 before_pos = sp->ship->pos;
     apply_authoritative_local_motion(state, sp);
     sync_local_dock_state_from_authority(state, sp);
     apply_local_player_remote_flags(state, sp);
@@ -463,7 +463,7 @@ static void accept_docked_local_player_state(const NetPlayerState *state,
     net_anchor_prediction_tick(state->server_tick, false);
     g.was_docked = true;
     if (!g.camera_initialized ||
-        v2_dist_sq(before_pos, sp->ship.pos) > 20.0f * 20.0f) {
+        v2_dist_sq(before_pos, sp->ship->pos) > 20.0f * 20.0f) {
         frame_camera_on_authoritative_baseline(sp);
     } else {
         g.local_player_render_offset = v2(0.0f, 0.0f);
@@ -524,20 +524,37 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
     return true;
 }
 
-static void server_player_cleanup_local(server_player_t *sp) {
-    if (!sp) return;
-    ship_cleanup(&sp->ship);
+static void client_reset_player_slot(int player_slot) {
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    world_player_ship_slot_release(&g.world, player_slot);
+    world_player_runtime_slot_reset(&g.world, player_slot);
+    (void)world_player_ship_slot_activate(&g.world, player_slot);
 }
 
-static bool server_player_copy_local(server_player_t *dst, const server_player_t *src) {
-    ship_t cloned_ship = {0};
+static bool client_move_player_slot(int dst_slot, int src_slot) {
+    if (dst_slot < 0 || dst_slot >= MAX_PLAYERS ||
+        src_slot < 0 || src_slot >= MAX_PLAYERS || dst_slot == src_slot) {
+        return false;
+    }
+    server_player_t controller = g.world.players[src_slot];
+    if (!world_player_transfer_ship_state(&g.world, dst_slot, src_slot))
+        return false;
 
-    if (!dst || !src) return false;
-    if (dst == src) return true;
-    if (!ship_copy(&cloned_ship, &src->ship)) return false;
-    server_player_cleanup_local(dst);
-    *dst = *src;
-    dst->ship = cloned_ship;
+    server_player_t *dst = &g.world.players[dst_slot];
+    server_connection_t *connection = dst->connection;
+    server_replication_t *replication = dst->replication;
+    entity_ref_t ship_ref = dst->ship_ref;
+    ship_t *ship = dst->ship;
+    uint32_t ship_asset_id = dst->ship_asset_id;
+    *dst = controller;
+    dst->connection = connection;
+    dst->replication = replication;
+    dst->ship_ref = ship_ref;
+    dst->ship = ship;
+    dst->ship_asset_id = ship_asset_id;
+
+    world_player_runtime_slot_reset(&g.world, src_slot);
+    (void)world_player_ship_slot_activate(&g.world, src_slot);
     return true;
 }
 
@@ -558,9 +575,7 @@ void on_player_leave(uint8_t player_id) {
             set_notice("%s left.", ps->callsign);
         else
             set_notice("Pilot left.");
-        server_player_cleanup_local(&g.world.players[player_id]);
-        memset(&g.world.players[player_id], 0,
-               sizeof(g.world.players[player_id]));
+        client_reset_player_slot(player_id);
     } else {
         g.world.players[player_id].connected = false;
     }
@@ -577,12 +592,12 @@ static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
     for (int p = 0; p < MAX_PLAYERS; p++) {
         const server_player_t *sp = &g.world.players[p];
         if (!sp->connected) continue;
-        int tow_count = sp->ship.towed_count;
-        int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                            sizeof(sp->ship.towed_fragments[0]));
+        int tow_count = sp->ship->towed_count;
+        int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                            sizeof(sp->ship->towed_fragments[0]));
         if (tow_count > tow_cap) tow_count = tow_cap;
         for (int t = 0; t < tow_count; t++) {
-            int idx = sp->ship.towed_fragments[t];
+            int idx = sp->ship->towed_fragments[t];
             if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
         }
     }
@@ -665,20 +680,20 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
     return out;
 }
 
-static npc_ship_t npc_render_state_at(int slot, float elapsed) {
-    const npc_ship_t *prev = &g.npc_interp.prev[slot];
-    const npc_ship_t *curr = &g.npc_interp.curr[slot];
-    npc_ship_t out = *curr;
+static client_npc_render_state_t npc_render_state_at(int slot, float elapsed) {
+    const client_npc_render_state_t *prev = &g.npc_interp.prev[slot];
+    const client_npc_render_state_t *curr = &g.npc_interp.curr[slot];
+    client_npc_render_state_t out = *curr;
     if (!curr->active) return out;
 
-    out.ship.pos.x += curr->ship.vel.x * elapsed;
-    out.ship.pos.y += curr->ship.vel.y * elapsed;
+    out.pos.x += curr->vel.x * elapsed;
+    out.pos.y += curr->vel.y * elapsed;
 
     if (prev->active) {
         float blend = clampf(elapsed / NPC_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
-        out.ship.pos.x = lerpf(prev->ship.pos.x, out.ship.pos.x, blend);
-        out.ship.pos.y = lerpf(prev->ship.pos.y, out.ship.pos.y, blend);
-        out.ship.angle = lerp_angle(prev->ship.angle, out.ship.angle, blend);
+        out.pos.x = lerpf(prev->pos.x, out.pos.x, blend);
+        out.pos.y = lerpf(prev->pos.y, out.pos.y, blend);
+        out.angle = lerp_angle(prev->angle, out.angle, blend);
     }
     return out;
 }
@@ -732,12 +747,12 @@ static bool net_local_player_towing_asteroid(int idx) {
     const server_player_t *sp = &g.world.players[g.local_player_slot];
     if (!sp->connected || sp->docked) return false;
 
-    int tow_count = sp->ship.towed_count;
-    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                        sizeof(sp->ship.towed_fragments[0]));
+    int tow_count = sp->ship->towed_count;
+    int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                        sizeof(sp->ship->towed_fragments[0]));
     if (tow_count > tow_cap) tow_count = tow_cap;
     for (int t = 0; t < tow_count; t++) {
-        if (sp->ship.towed_fragments[t] == idx) return true;
+        if (sp->ship->towed_fragments[t] == idx) return true;
     }
     return false;
 }
@@ -822,12 +837,12 @@ void net_adopt_local_tow_prediction(float dt) {
     const server_player_t *sp = &g.world.players[g.local_player_slot];
     if (!sp->connected || sp->docked) return;
 
-    int tow_count = sp->ship.towed_count;
-    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                        sizeof(sp->ship.towed_fragments[0]));
+    int tow_count = sp->ship->towed_count;
+    int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                        sizeof(sp->ship->towed_fragments[0]));
     if (tow_count > tow_cap) tow_count = tow_cap;
     for (int t = 0; t < tow_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+        int idx = sp->ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         float elapsed = g.asteroid_interp.elapsed[idx];
         if (isfinite(dt) && dt > 0.0f) elapsed += dt;
@@ -838,18 +853,18 @@ void net_adopt_local_tow_prediction(float dt) {
     float pod_elapsed = net_prediction_future_elapsed(
         g.cargo_pod_interp.t, g.cargo_pod_interp.interval, dt,
         CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
-    int pod_count = sp->ship.towed_pod_count;
-    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
-                        sizeof(sp->ship.towed_pods[0]));
+    int pod_count = sp->ship->towed_pod_count;
+    int pod_cap = (int)(sizeof(sp->ship->towed_pods) /
+                        sizeof(sp->ship->towed_pods[0]));
     if (pod_count > pod_cap) pod_count = pod_cap;
     for (int t = 0; t < pod_count; t++)
         net_adopt_local_cargo_pod_prediction(
-            sp->ship.towed_pods[t], pod_elapsed);
+            sp->ship->towed_pods[t], pod_elapsed);
 
     float scaffold_elapsed = net_prediction_future_elapsed(
         g.scaffold_interp.t, g.scaffold_interp.interval, dt,
         SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
-    net_adopt_local_scaffold_prediction(sp->ship.towed_scaffold,
+    net_adopt_local_scaffold_prediction(sp->ship->towed_scaffold,
                                         scaffold_elapsed);
 }
 
@@ -939,7 +954,10 @@ void reset_remote_dynamic_sync(void) {
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
 
-    memset(g.world.npc_ships, 0, sizeof(g.world.npc_ships));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        world_npc_ship_slot_release(&g.world, i);
+        memset(&g.world.npc_ships[i], 0, sizeof(g.world.npc_ships[i]));
+    }
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
     g.npc_interp.interval = 0.1f;
 
@@ -967,7 +985,7 @@ void net_update_remote_player_scans(const NetPlayerState *players) {
 
     const server_player_t *local = &LOCAL_PLAYER;
     int local_id = (int)net_local_id();
-    float tractor_range = ship_tractor_range(&local->ship);
+    float tractor_range = ship_tractor_range(local->ship);
     float tractor_range_sq = tractor_range * tractor_range;
 
     for (int i = 0; i < NET_MAX_PLAYERS; i++) {
@@ -987,7 +1005,7 @@ void net_update_remote_player_scans(const NetPlayerState *players) {
         }
 
         vec2 remote_pos = v2(players[i].x, players[i].y);
-        if (v2_dist_sq(local->ship.pos, remote_pos) <= tractor_range_sq)
+        if (v2_dist_sq(local->ship->pos, remote_pos) <= tractor_range_sq)
             g.scanned_players[i] = true;
     }
 }
@@ -1159,19 +1177,19 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         if (idx >= MAX_NPC_SHIPS) continue;
         received[idx] = true;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
-        n->ship.hull_class = npc_default_hull_class_for_role(n->role);
-        n->ship.pos.x = npcs[i].x;
-        n->ship.pos.y = npcs[i].y;
-        n->ship.vel.x = npcs[i].vx;
-        n->ship.vel.y = npcs[i].vy;
-        n->ship.angle = npcs[i].angle;
+        n->hull_class = npc_default_hull_class_for_role(n->role);
+        n->pos.x = npcs[i].x;
+        n->pos.y = npcs[i].y;
+        n->vel.x = npcs[i].vx;
+        n->vel.y = npcs[i].vy;
+        n->angle = npcs[i].angle;
         n->target_asteroid = npcs[i].target_asteroid;
-        npc_set_towed_fragment_index(n, npcs[i].towed_fragment);
+        n->towed_fragment = npcs[i].towed_fragment;
         n->towed_scaffold = -1;
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
@@ -1204,14 +1222,14 @@ void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
-        n->ship.pos.x = npcs[i].x;
-        n->ship.pos.y = npcs[i].y;
-        n->ship.vel.x = npcs[i].vx;
-        n->ship.vel.y = npcs[i].vy;
-        n->ship.angle = npcs[i].angle;
+        n->pos.x = npcs[i].x;
+        n->pos.y = npcs[i].y;
+        n->vel.x = npcs[i].vx;
+        n->vel.y = npcs[i].vy;
+        n->angle = npcs[i].angle;
     }
 
     /* Visibility and identity stay owned by full WORLD_NPCS records. */
@@ -1233,10 +1251,10 @@ void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
-        n->ship.pos.x = npcs[i].x;
-        n->ship.pos.y = npcs[i].y;
+        n->pos.x = npcs[i].x;
+        n->pos.y = npcs[i].y;
     }
 }
 
@@ -1256,11 +1274,11 @@ void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
-        n->ship.pos.x = npcs[i].x;
-        n->ship.pos.y = npcs[i].y;
-        n->ship.angle = npcs[i].angle;
+        n->pos.x = npcs[i].x;
+        n->pos.y = npcs[i].y;
+        n->angle = npcs[i].angle;
     }
 }
 
@@ -1280,12 +1298,12 @@ void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
-        n->ship.pos.x = npcs[i].x;
-        n->ship.pos.y = npcs[i].y;
-        n->ship.vel.x = npcs[i].vx;
-        n->ship.vel.y = npcs[i].vy;
+        n->pos.x = npcs[i].x;
+        n->pos.y = npcs[i].y;
+        n->vel.x = npcs[i].vx;
+        n->vel.y = npcs[i].vy;
     }
 }
 
@@ -1294,13 +1312,13 @@ void apply_remote_npc_status(const NetNpcStatusState* npcs, int count) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
-        npc_ship_t* n = &g.npc_interp.curr[idx];
+        client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
-        n->ship.hull_class = npc_default_hull_class_for_role(n->role);
+        n->hull_class = npc_default_hull_class_for_role(n->role);
         n->target_asteroid = npcs[i].target_asteroid;
-        npc_set_towed_fragment_index(n, npcs[i].towed_fragment);
+        n->towed_fragment = npcs[i].towed_fragment;
         n->towed_scaffold = -1;
     }
 }
@@ -1463,7 +1481,7 @@ static void remote_store_receipt_chain(const cargo_receipt_chain_t *chain) {
     remote_pending_receipts[idx] = *chain;
 
     if (g.local_player_slot >= 0 && g.local_player_slot < MAX_PLAYERS)
-        (void)remote_attach_receipt_chain(&g.world.players[g.local_player_slot].ship,
+        (void)remote_attach_receipt_chain(g.world.players[g.local_player_slot].ship,
                                           chain);
 }
 
@@ -1576,7 +1594,7 @@ void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
 void apply_remote_player_manifest(const NetStationManifestEntry *entries,
                                   int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
-    ship_t *ship = &g.world.players[g.local_player_slot].ship;
+    ship_t *ship = g.world.players[g.local_player_slot].ship;
     /* Always apply -- WORLD_STATE overwrites cargo[] every tick, so
      * gating manifest on action_predict_timer leaves cargo and
      * manifest in inconsistent states (cargo refreshed, manifest
@@ -1680,9 +1698,9 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     station_reconcile_module_diag_for_identity(st, si->modules, si->module_count);
     st->module_count = si->module_count;
     for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
-        st->modules[m] = si->modules[m];
+        station_module_copy_identity(&st->modules[m], &si->modules[m]);
     for (int m = si->module_count; m < MAX_MODULES_PER_STATION; m++)
-        st->module_diag[m] = STATION_FLOW_DIAG_NONE;
+        memset(&st->modules[m], 0, sizeof(st->modules[m]));
     st->arm_count = si->arm_count;
     for (int a = 0; a < MAX_ARMS; a++) {
         st->arm_speed[a] = si->arm_speed[a];
@@ -1763,7 +1781,7 @@ void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
     if (module_count > MAX_MODULES_PER_STATION)
         module_count = MAX_MODULES_PER_STATION;
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
-        st->module_diag[m] = (m < module_count) ? diag[m] : STATION_FLOW_DIAG_NONE;
+        st->modules[m].flow_diag = (m < module_count) ? diag[m] : STATION_FLOW_DIAG_NONE;
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
@@ -1882,7 +1900,7 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->active = true;
         pod->kind = (cargo_pod_kind_t)received[i].kind;
         pod->commodity = (commodity_t)received[i].commodity;
-        pod->towed_by = received[i].towed_by;
+        cargo_pod_clear_tractor(pod);
         pod->pos = v2(received[i].pos_x, received[i].pos_y);
         pod->vel = v2(received[i].vel_x, received[i].vel_y);
         pod->radius = received[i].radius;
@@ -1893,8 +1911,14 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->shipment_id = received[i].shipment_id;
         pod->summary_flags = received[i].summary_flags;
         pod->summary_grade = received[i].summary_grade;
-        pod->tractor_station = received[i].tractor_station;
-        pod->tractor_module = received[i].tractor_module;
+        if (received[i].tractor_player >= 0) {
+            cargo_pod_set_player_tractor(pod, received[i].tractor_player);
+        } else if (received[i].tractor_station > 0 &&
+                   received[i].tractor_module > 0) {
+            cargo_pod_set_module_tractor(
+                pod, (int)received[i].tractor_station - 1,
+                (int)received[i].tractor_module - 1);
+        }
         seen[idx] = true;
     }
     if (replacement_snapshot) {
@@ -2351,10 +2375,10 @@ static void frame_camera_on_authoritative_undock(const server_player_t *sp,
     if (!sp || state_docked) return;
     if (!(g.was_docked || g.action_predict_timer > 0.0f)) return;
 
-    vec2 offset = v2_sub(sp->ship.pos, g.camera_pos);
+    vec2 offset = v2_sub(sp->ship->pos, g.camera_pos);
     if (v2_len_sq(offset) < 140.0f * 140.0f) return;
 
-    g.camera_pos = sp->ship.pos;
+    g.camera_pos = sp->ship->pos;
     g.camera_initialized = true;
     g.camera_station_index = -1;
     g.camera_station_side = 0;
@@ -2369,7 +2393,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id == net_local_id()) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
-        vec2 before_pos = sp->ship.pos;
+        vec2 before_pos = sp->ship->pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
         bool force_rebase = false;
         int32_t skew = 0;
@@ -2444,12 +2468,12 @@ void apply_remote_player_state(const NetPlayerState* state) {
         float target_x = state->x;
         float target_y = state->y;
 
-        float dx = target_x - sp->ship.pos.x;
-        float dy = target_y - sp->ship.pos.y;
+        float dx = target_x - sp->ship->pos.x;
+        float dy = target_y - sp->ship->pos.y;
         float dist_sq = dx * dx + dy * dy;
         float correction_dist = sqrtf(dist_sq);
-        float dvx = state->vx - sp->ship.vel.x;
-        float dvy = state->vy - sp->ship.vel.y;
+        float dvx = state->vx - sp->ship->vel.x;
+        float dvy = state->vy - sp->ship->vel.y;
         float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
         int replayed_frames = 0;
@@ -2483,29 +2507,29 @@ void apply_remote_player_state(const NetPlayerState* state) {
         if (!force_rebase && !used_replay && !defer_motion_correction) {
             if (dist_sq > 200.0f * 200.0f) {
                 used_snap = true;
-                sp->ship.pos.x = target_x;
-                sp->ship.pos.y = target_y;
-                sp->ship.vel.x = state->vx;
-                sp->ship.vel.y = state->vy;
+                sp->ship->pos.x = target_x;
+                sp->ship->pos.y = target_y;
+                sp->ship->vel.x = state->vx;
+                sp->ship->vel.y = state->vy;
             } else if (dist_sq > 20.0f * 20.0f) {
                 used_lerp = true;
-                sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.5f);
-                sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.5f);
-                sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
-                sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
+                sp->ship->pos.x = lerpf(sp->ship->pos.x, target_x, 0.5f);
+                sp->ship->pos.y = lerpf(sp->ship->pos.y, target_y, 0.5f);
+                sp->ship->vel.x = lerpf(sp->ship->vel.x, state->vx, 0.5f);
+                sp->ship->vel.y = lerpf(sp->ship->vel.y, state->vy, 0.5f);
             } else {
                 used_lerp = dist_sq > 0.01f;
-                sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.2f);
-                sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.2f);
-                sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
-                sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+                sp->ship->pos.x = lerpf(sp->ship->pos.x, target_x, 0.2f);
+                sp->ship->pos.y = lerpf(sp->ship->pos.y, target_y, 0.2f);
+                sp->ship->vel.x = lerpf(sp->ship->vel.x, state->vx, 0.2f);
+                sp->ship->vel.y = lerpf(sp->ship->vel.y, state->vy, 0.2f);
             }
             net_replay_reset();
             net_anchor_prediction_tick(state->server_tick, false);
         }
         if (used_snap) g.net_motion.total_snap_samples++;
         if (used_lerp) g.net_motion.total_lerp_samples++;
-        vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
+        vec2 applied_delta = v2_sub(before_pos, sp->ship->pos);
         add_local_player_render_correction(
             applied_delta, v2_len(applied_delta), state_docked);
         record_local_player_motion_telemetry(
@@ -2524,7 +2548,7 @@ void apply_remote_player_state(const NetPlayerState* state) {
          * ship visibly turns, then gets blended back by authority. */
         if (!used_replay && !defer_motion_correction &&
             !has_local_turn_prediction)
-            sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
+            sp->ship->angle = lerp_angle(sp->ship->angle, state->angle, 0.3f);
         /* Beam/tractor/thrust visual flags are server-authoritative for the
          * local player too; autopilot and mining effects run server-side. */
         apply_local_player_remote_flags(state, sp);
@@ -2573,17 +2597,17 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
         /* Death detection moved to on_remote_death (NET_MSG_DEATH).
          * The packet now carries position + stats so the cinematic can
          * anchor at the wreckage. */
-        sp->ship.hull = state->hull;
-        sp->ship.mining_level = (int)state->mining_level;
-        sp->ship.hold_level = (int)state->hold_level;
-        sp->ship.tractor_level = (int)state->tractor_level;
+        sp->ship->hull = state->hull;
+        sp->ship->mining_level = (int)state->mining_level;
+        sp->ship->hold_level = (int)state->hold_level;
+        sp->ship->tractor_level = (int)state->tractor_level;
         for (int c = 0; c < COMMODITY_COUNT; c++)
-            sp->ship.cargo[c] = state->cargo[c];
+            sp->ship->cargo[c] = state->cargo[c];
         sp->nearby_fragments = (int)state->nearby_fragments;
         sp->tractor_fragments = (int)state->tractor_fragments;
-        sp->ship.towed_count = state->towed_count;
+        sp->ship->towed_count = state->towed_count;
         for (int t = 0; t < 10; t++)
-            sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFFFFu)
+            sp->ship->towed_fragments[t] = (state->towed_fragments[t] == 0xFFFFu)
                 ? -1 : (int16_t)state->towed_fragments[t];
         /* Autopilot is also predict-protected: the [O] press triggers an
          * optimistic local toggle, and stale PLAYER_SHIP messages can
@@ -2616,8 +2640,6 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
 
 void sync_local_player_slot_from_network(void) {
     uint8_t net_id = net_local_id();
-    server_player_t previous = {0};
-    bool have_previous = false;
     if (net_id == 0xFF || net_id >= MAX_PLAYERS) return;
     if (g.local_player_slot == (int)net_id) {
         LOCAL_PLAYER.connected = true;
@@ -2625,22 +2647,16 @@ void sync_local_player_slot_from_network(void) {
     }
 
     net_reset_local_input_stream();
-    have_previous = server_player_copy_local(&previous, &g.world.players[g.local_player_slot]);
+    int previous_slot = g.local_player_slot;
     server_player_t* assigned = &g.world.players[net_id];
-    server_player_cleanup_local(&g.world.players[g.local_player_slot]);
-    memset(&g.world.players[g.local_player_slot], 0, sizeof(g.world.players[g.local_player_slot]));
+    bool should_move = !assigned->connected && assigned->ship &&
+                       assigned->ship->hull <= 0.0f;
+    bool moved = should_move && client_move_player_slot(net_id, previous_slot);
+    if (!moved) client_reset_player_slot(previous_slot);
     g.local_player_slot = (int)net_id;
-    if (have_previous && !assigned->connected && assigned->ship.hull <= 0.0f) {
-        server_player_cleanup_local(assigned);
-        *assigned = previous;
-        previous.ship.manifest.units = NULL;
-        previous.ship.manifest.count = 0;
-        previous.ship.manifest.cap = 0;
-    }
-    server_player_cleanup_local(&previous);
     LOCAL_PLAYER.id = net_id;
     LOCAL_PLAYER.connected = true;
-    LOCAL_PLAYER.conn = NULL;
+    if (LOCAL_PLAYER.connection) LOCAL_PLAYER.connection->conn = NULL;
 }
 
 void interpolate_world_for_render(void) {
@@ -2663,14 +2679,39 @@ void interpolate_world_for_render(void) {
     float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,
                                0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        const npc_ship_t *curr = &g.npc_interp.curr[i];
-        const npc_ship_t *prev = &g.npc_interp.prev[i];
+        const client_npc_render_state_t *curr = &g.npc_interp.curr[i];
+        const client_npc_render_state_t *prev = &g.npc_interp.prev[i];
         if (!curr->active && !prev->active) {
-            g.world.npc_ships[i].active = false;
+            if (g.world.npc_ships[i].active) {
+                world_npc_ship_slot_release(&g.world, i);
+                memset(&g.world.npc_ships[i], 0,
+                       sizeof(g.world.npc_ships[i]));
+            }
+            continue;
+        }
+        client_npc_render_state_t render = npc_render_state_at(i, npc_elapsed);
+        if (!g.world.npc_ships[i].ship &&
+            !world_npc_ship_slot_activate(&g.world, i)) {
             continue;
         }
         npc_ship_t *dst = &g.world.npc_ships[i];
-        *dst = npc_render_state_at(i, npc_elapsed);
+        dst->active = render.active;
+        dst->role = render.role;
+        dst->state = render.state;
+        dst->thrusting = render.thrusting;
+        dst->target_asteroid = render.target_asteroid;
+        dst->tint_r = render.tint_r;
+        dst->tint_g = render.tint_g;
+        dst->tint_b = render.tint_b;
+        memcpy(dst->session_token, render.session_token,
+               sizeof(dst->session_token));
+        dst->home_station = render.home_station;
+        dst->ship->hull_class = render.hull_class;
+        dst->ship->pos = render.pos;
+        dst->ship->vel = render.vel;
+        dst->ship->angle = render.angle;
+        npc_set_towed_fragment_index(dst, render.towed_fragment);
+        dst->ship->towed_scaffold = render.towed_scaffold;
     }
 
     float scaffold_elapsed = clampf(g.scaffold_interp.t * g.scaffold_interp.interval,
@@ -2742,7 +2783,7 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     g.thrusting = false;
     LOCAL_PLAYER.beam_active = false;
     LOCAL_PLAYER.beam_hit = false;
-    LOCAL_PLAYER.ship.tractor_active = false;
+    LOCAL_PLAYER.ship->tractor_active = false;
     g.screen_shake = fmaxf(g.screen_shake, clampf(26.0f + impact_speed * 0.12f, 38.0f, 82.0f));
     for (int i = 0; i < 8; i++) {
         float ang = ((float)i / 8.0f) * 2.0f * PI_F + (float)(i * 13 % 7) * 0.15f;

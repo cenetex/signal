@@ -3,19 +3,13 @@
 
 /* Gossip / knowledge dock handshake.
  *
- * Contracts spread between stations and ships as bounded copies in
- * known_contracts pools. Information speed = ship speed; no station-
- * to-station radio. The full contract_t is the authoritative storage
- * at the issuing station; the contract_summary_t is the gossip payload
- * embedded in station_t and ship/npc_ship_t known_contracts arrays.
- * Slice 1 also mirrors those summaries into knowledge_view_t as
- * KNOW_CONTRACT items. Existing behavior continues to read
- * known_contracts[] until later slices move actor queries to knowledge.
+ * Contracts spread between stations and ships as KNOW_CONTRACT items in
+ * bounded knowledge views. Information speed = ship speed; no station-
+ * to-station radio. Full contract_t rows remain authoritative at issuers.
  *
  * The handshake is bidirectional: station merges its locally-issued
- * contracts into its own known pool, then station and ship copy
- * unmatched/newer summaries to each other (FIFO eviction on overflow,
- * newer-wins on dedup match by age_at_copy).
+ * contracts into its local view, then station and ship exchange unmatched
+ * or newer items with bounded eviction.
  */
 
 #include "../shared/types.h"
@@ -29,6 +23,12 @@ void contract_pool_insert(contract_summary_t *list, uint8_t *count, int cap,
 void knowledge_view_configure(knowledge_view_t *view, uint8_t capacity);
 void knowledge_view_insert(knowledge_view_t *view, const knowledge_item_t *item);
 void knowledge_view_exchange(knowledge_view_t *a, knowledge_view_t *b);
+bool knowledge_view_insert_contract(knowledge_view_t *view,
+                                    const contract_summary_t *summary);
+uint8_t knowledge_view_collect_contracts(const knowledge_view_t *view,
+                                         contract_summary_t *out,
+                                         uint8_t out_cap);
+uint8_t knowledge_view_contract_count(const knowledge_view_t *view);
 
 bool knowledge_item_from_contract_summary(const contract_summary_t *s,
                                           knowledge_item_t *out);
@@ -120,8 +120,6 @@ int gossip_ship_contact_exchange(world_t *w);
  * station_index == self) — that's a local read at the station, not
  * peer-station radio. */
 void gossip_dock_handshake(world_t *w, int station_index,
-                           contract_summary_t *ship_pool,
-                           uint8_t *ship_count, int ship_cap,
                            knowledge_view_t *ship_knowledge);
 
 /* Cold-start bootstrap: refresh every active station's own situated

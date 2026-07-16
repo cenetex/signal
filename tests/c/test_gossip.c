@@ -296,7 +296,7 @@ TEST(test_hnn_market_memory_resonance_round_trips) {
 
 TEST(test_signal_intelligence_contract_reason_records_memory_pressure) {
     WORLD_DECL;
-    server_player_t sp = {0};
+    SERVER_PLAYER_DECL(sp);
     signal_contract_candidate_t candidates[2];
     memset(candidates, 0, sizeof(candidates));
     candidates[0].action = SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK;
@@ -1106,8 +1106,6 @@ TEST(test_dock_receipt_gossip_emits_route_history_chain_event) {
     st->chain_event_count = 0;
     memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
     memset(&st->knowledge, 0, sizeof(st->knowledge));
-    st->known_contract_count = 0;
-    memset(st->known_contracts, 0, sizeof(st->known_contracts));
 
     SHIP_DECL(ship);
     knowledge_view_configure(&ship.knowledge, SHIP_KNOWN_ITEM_CAP);
@@ -1124,11 +1122,7 @@ TEST(test_dock_receipt_gossip_emits_route_history_chain_event) {
     ASSERT(knowledge_item_from_market_memory(&receipt, &item));
     knowledge_view_insert(&ship.knowledge, &item);
 
-    gossip_dock_handshake(&w, 3,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 3, &ship.knowledge);
     ASSERT_EQ_INT((int)st->chain_event_count, 0);
 
     ASSERT(market_memory_from_delivery_receipt(1, 3,
@@ -1141,11 +1135,7 @@ TEST(test_dock_receipt_gossip_emits_route_history_chain_event) {
     ASSERT(knowledge_item_from_market_memory(&receipt, &item));
     knowledge_view_insert(&ship.knowledge, &item);
 
-    gossip_dock_handshake(&w, 3,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 3, &ship.knowledge);
 
     ASSERT_EQ_INT((int)st->chain_event_count, 1);
     uint64_t walked = 0;
@@ -1162,11 +1152,7 @@ TEST(test_dock_receipt_gossip_emits_route_history_chain_event) {
     ASSERT_EQ_INT(payload.evidence_count, 5);
     ASSERT_EQ_INT(payload.value_hint, 210);
 
-    gossip_dock_handshake(&w, 3,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 3, &ship.knowledge);
     ASSERT_EQ_INT((int)st->chain_event_count, 1);
 
     chain_log_set_dir(NULL);
@@ -1244,8 +1230,6 @@ TEST(test_dock_gossip_dual_writes_contract_knowledge) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
-    memset(w.stations[0].known_contracts, 0, sizeof(w.stations[0].known_contracts));
-    w.stations[0].known_contract_count = 0;
     memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
 
     w.contracts[0] = (contract_t){
@@ -1262,14 +1246,10 @@ TEST(test_dock_gossip_dual_writes_contract_knowledge) {
     };
 
     SHIP_DECL(ship);
-    gossip_dock_handshake(&w, 0,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 0, &ship.knowledge);
 
-    ASSERT_EQ_INT(ship.known_contract_count, 1);
-    ASSERT_EQ_INT(w.stations[0].known_contract_count, 1);
+    ASSERT_EQ_INT(knowledge_view_contract_count(&ship.knowledge), 1);
+    ASSERT_EQ_INT(knowledge_view_contract_count(&w.stations[0].knowledge), 1);
     ASSERT(view_has_contract(&ship.knowledge, (uint8_t)CONTRACT_TRACTOR, 0,
                              (uint8_t)COMMODITY_FERRITE_INGOT, NULL));
     ASSERT(view_has_contract(&w.stations[0].knowledge,
@@ -1291,9 +1271,6 @@ TEST(test_dock_gossip_emits_stale_contract_risk_memory) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
-    memset(w.stations[2].known_contracts, 0,
-           sizeof(w.stations[2].known_contracts));
-    w.stations[2].known_contract_count = 0;
     memset(&w.stations[2].knowledge, 0, sizeof(w.stations[2].knowledge));
 
     w.contracts[0] = (contract_t){
@@ -1310,13 +1287,9 @@ TEST(test_dock_gossip_emits_stale_contract_risk_memory) {
     };
 
     SHIP_DECL(ship);
-    gossip_dock_handshake(&w, 2,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 2, &ship.knowledge);
 
-    ASSERT_EQ_INT(ship.known_contract_count, 1);
+    ASSERT_EQ_INT(knowledge_view_contract_count(&ship.knowledge), 1);
     ASSERT(view_has_contract(&ship.knowledge, (uint8_t)CONTRACT_TRACTOR, 2,
                              (uint8_t)COMMODITY_FERRITE_INGOT, NULL));
     market_memory_t demand = {0};
@@ -1342,9 +1315,6 @@ TEST(test_dock_gossip_decays_carried_market_memory) {
     world_reset(&w);
     signal_field_init(&w.signal_field);
     memset(w.contracts, 0, sizeof(w.contracts));
-    memset(w.stations[0].known_contracts, 0,
-           sizeof(w.stations[0].known_contracts));
-    w.stations[0].known_contract_count = 0;
     memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
 
     SHIP_DECL(ship);
@@ -1364,11 +1334,7 @@ TEST(test_dock_gossip_decays_carried_market_memory) {
     ASSERT(knowledge_item_from_market_memory(&memory, &item));
     knowledge_view_insert(&ship.knowledge, &item);
 
-    gossip_dock_handshake(&w, 0,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 0, &ship.knowledge);
 
     market_memory_t out = {0};
     ASSERT(view_has_market_memory(&ship.knowledge,
@@ -1405,11 +1371,7 @@ TEST(test_dock_gossip_marks_signal_field_at_physical_station) {
     ASSERT(knowledge_item_from_market_memory(&receipt, &item));
     knowledge_view_insert(&ship.knowledge, &item);
 
-    gossip_dock_handshake(&w, 0,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 0, &ship.knowledge);
 
     ASSERT(signal_field_query(&w.signal_field, w.stations[0].pos,
                               SIGNAL_FIELD_KIND_PROOF, 0) > 0.0f);
@@ -1422,20 +1384,13 @@ TEST(test_dock_gossip_dual_writes_station_supply_memory) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
-    memset(w.stations[0].known_contracts, 0,
-           sizeof(w.stations[0].known_contracts));
-    w.stations[0].known_contract_count = 0;
     memset(&w.stations[0].knowledge, 0, sizeof(w.stations[0].knowledge));
 
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_FERRITE_INGOT, 5));
 
     SHIP_DECL(ship);
-    gossip_dock_handshake(&w, 0,
-                          ship.known_contracts,
-                          &ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &ship.knowledge);
+    gossip_dock_handshake(&w, 0, &ship.knowledge);
 
     market_memory_t supply = {0};
     ASSERT(view_has_market_memory(&w.stations[0].knowledge,
@@ -1466,16 +1421,12 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
 
     a->state = NPC_STATE_IDLE;
     b->state = NPC_STATE_IDLE;
-    a->ship.pos = v2(100.0f, 100.0f);
-    b->ship.pos = v2(220.0f, 100.0f);
-    memset(a->known_contracts, 0, sizeof(a->known_contracts));
-    memset(b->known_contracts, 0, sizeof(b->known_contracts));
-    a->known_contract_count = 0;
-    b->known_contract_count = 0;
-    memset(&a->knowledge, 0, sizeof(a->knowledge));
-    memset(&b->knowledge, 0, sizeof(b->knowledge));
-    knowledge_view_configure(&a->knowledge, SHIP_KNOWN_ITEM_CAP);
-    knowledge_view_configure(&b->knowledge, SHIP_KNOWN_ITEM_CAP);
+    a->ship->pos = v2(100.0f, 100.0f);
+    b->ship->pos = v2(220.0f, 100.0f);
+    memset(&a->ship->knowledge, 0, sizeof(a->ship->knowledge));
+    memset(&b->ship->knowledge, 0, sizeof(b->ship->knowledge));
+    knowledge_view_configure(&a->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_configure(&b->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
     hnn_memory_init(&a->hnn_market_mem);
     hnn_memory_init(&b->hnn_market_mem);
 
@@ -1487,8 +1438,7 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
         .base_price = 80.0f,
         .age_at_copy = 5.0f,
     };
-    contract_pool_insert(a->known_contracts, &a->known_contract_count,
-                         SHIP_KNOWN_CONTRACT_CAP, &contract);
+    ASSERT(test_add_known_contract(&a->ship->knowledge, &contract));
 
     market_memory_t memory = {
         .active = true,
@@ -1505,13 +1455,13 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
     };
     knowledge_item_t item;
     ASSERT(knowledge_item_from_market_memory(&memory, &item));
-    knowledge_view_insert(&a->knowledge, &item);
+    knowledge_view_insert(&a->ship->knowledge, &item);
     ASSERT(gossip_hnn_store_market_memory(&a->hnn_market_mem, &memory));
 
     ASSERT_EQ_INT(gossip_ship_contact_exchange(&w), 1);
 
-    ASSERT_EQ_INT(b->known_contract_count, 1);
-    ASSERT(view_has_market_memory(&b->knowledge,
+    ASSERT_EQ_INT(knowledge_view_contract_count(&b->ship->knowledge), 1);
+    ASSERT(view_has_market_memory(&b->ship->knowledge,
                                   (uint8_t)MARKET_MEMORY_DEMAND,
                                   2, 0xff,
                                   (uint8_t)COMMODITY_FERRITE_INGOT,
@@ -1674,9 +1624,6 @@ TEST(test_bootstrap_seeds_station_local_contracts_only) {
 
     memset(w.contracts, 0, sizeof(w.contracts));
     for (int i = 0; i < MAX_STATIONS; i++) {
-        memset(w.stations[i].known_contracts, 0,
-               sizeof(w.stations[i].known_contracts));
-        w.stations[i].known_contract_count = 0;
         memset(&w.stations[i].knowledge, 0, sizeof(w.stations[i].knowledge));
     }
 
@@ -1689,10 +1636,12 @@ TEST(test_bootstrap_seeds_station_local_contracts_only) {
 
     gossip_bootstrap_world_stations(&w);
 
-    ASSERT_EQ_INT(w.stations[2].known_contract_count, 1);
-    ASSERT_EQ_INT(w.stations[2].known_contracts[0].station_index, 2);
-    ASSERT_EQ_INT(w.stations[2].known_contracts[0].commodity,
-                  COMMODITY_FERRITE_INGOT);
+    contract_summary_t station_contracts[STATION_KNOWN_ITEM_CAP];
+    ASSERT_EQ_INT(test_known_contracts(&w.stations[2].knowledge,
+                                       station_contracts,
+                                       STATION_KNOWN_ITEM_CAP), 1);
+    ASSERT_EQ_INT(station_contracts[0].station_index, 2);
+    ASSERT_EQ_INT(station_contracts[0].commodity, COMMODITY_FERRITE_INGOT);
     ASSERT(view_has_contract(&w.stations[2].knowledge,
                              (uint8_t)CONTRACT_TRACTOR,
                              2,
@@ -1701,7 +1650,7 @@ TEST(test_bootstrap_seeds_station_local_contracts_only) {
     ASSERT(signal_field_query(&w.signal_field, w.stations[2].pos,
                               SIGNAL_FIELD_KIND_DEMAND, 0) > 0.0f);
 
-    ASSERT_EQ_INT(w.stations[0].known_contract_count, 0);
+    ASSERT_EQ_INT(knowledge_view_contract_count(&w.stations[0].knowledge), 0);
     ASSERT(!view_has_contract(&w.stations[0].knowledge,
                               (uint8_t)CONTRACT_TRACTOR,
                               2,

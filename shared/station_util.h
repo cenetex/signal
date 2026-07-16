@@ -33,6 +33,18 @@ int           station_spawn_fee(const station_t *st);
 bool          station_consumes(const station_t *st, commodity_t c);
 bool          station_produces(const station_t *st, commodity_t c);
 void          rebuild_station_services(station_t *st);
+/* Atomic module-slot lifecycle. Runtime buffers and diagnostics live inside
+ * station_module_t, so callers must use these helpers rather than changing
+ * module_count or compacting modules[] by hand. */
+void          station_module_clear_runtime(station_module_t *module);
+void          station_modules_clear_runtime(station_t *st);
+station_module_t *station_module_append(station_t *st, module_type_t type,
+                                        uint8_t ring, uint8_t slot,
+                                        bool scaffold, float build_progress,
+                                        commodity_t commodity);
+bool          station_module_remove(station_t *st, int module_index);
+void          station_module_copy_identity(station_module_t *dst,
+                                           const station_module_t *src);
 
 /* ----- Construction yard state ----- */
 int           station_nascent_scaffold_index(const scaffold_t *scaffolds,
@@ -213,7 +225,7 @@ typedef struct {
 } station_plan_flow_hint_t;
 
 /* Display-facing flow summary. `mirrored_authoritative` means callers
- * should trust station_t.module_diag exactly, as multiplayer clients do.
+ * should trust station_module_t.flow_diag exactly, as multiplayer clients do.
  * Otherwise the helper uses any mirrored non-idle byte when present and
  * falls back to deriving local sim state. */
 station_flow_diag_t station_module_flow_diag_view(const station_t *st,

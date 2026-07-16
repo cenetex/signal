@@ -92,7 +92,7 @@ production helper in `shared/economy.c`.
 Players no longer carry raw ore in `ship.cargo[]` after the #259 tow
 migration (the service-sell path in `server/game_sim.c` says this directly).
 NPCs never deposit raw ore: they tow a single fragment through the embedded
-`npc_ship_t.ship.towed_fragments[0]` slot, with `npc_ship_t.towed_fragment`
+`npc_ship_t.ship->towed_fragments[0]` slot, with `npc_ship_t.towed_fragment`
 kept as a legacy save/wire/UI mirror, and deliver through the fragment-tow path.
 
 So in practice, the hopper float for raw ore is not populated in normal
@@ -174,7 +174,7 @@ not a thing you can put your hand on.
 |---|---|
 | Storage | `world.asteroids[]`. Each `asteroid_t` carries `fragment_pub[32]`, `fracture_seed[32]`, `last_towed_token[8]`, `last_fractured_token[8]`, `grade`, and `rock_pub[32]` (`shared/types.h`). |
 | Player tow list | `ship.towed_fragments[10]` of int16 indices, plus `towed_count` (`shared/types.h`). |
-| NPC tow | NPCs use `npc_ship_t.ship.towed_fragments[0]` as the ship-shaped tow slot, plus `npc_ship_t.towed_fragment` as a legacy mirror (`shared/types.h`). NPC ships only tow one fragment at a time. |
+| NPC tow | NPCs use `npc_ship_t.ship->towed_fragments[0]` as the ship-shaped tow slot, plus `npc_ship_t.towed_fragment` as a legacy mirror (`shared/types.h`). NPC ships only tow one fragment at a time. |
 | Tow-add site | `server/game_sim.c` tractor collection. Fragment ownership is stamped via `last_towed_by` and `last_towed_token[8]` at the same instant. |
 | Tow-remove sites (player) | `server/sim_production.c` for smelt completion; `server/game_sim.c` for asteroid destruction, band snap, station-beam landing, and manual `R` release. |
 | Fragment generation | Initial spawn/materialization from `shared/belt.c` and `server/sim_asteroid.c`. Fracture children are also created in `server/sim_asteroid.c`. |

@@ -54,63 +54,6 @@ static uint32_t test_crc32_update(uint32_t crc, const void *buf, size_t len) {
     return ~crc;
 }
 
-static bool test_patch_world_save_version(const char *path, uint32_t version) {
-    FILE *f = fopen(path, "r+b");
-    if (!f) return false;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return false;
-    }
-    long len = ftell(f);
-    if (len < 16) {
-        fclose(f);
-        return false;
-    }
-    if (fseek(f, 4, SEEK_SET) != 0 ||
-        fwrite(&version, sizeof(version), 1, f) != 1) {
-        fclose(f);
-        return false;
-    }
-
-    long data_end = len;
-    uint32_t trailer_magic = 0;
-    if (len >= 8 && fseek(f, len - 8, SEEK_SET) == 0 &&
-        fread(&trailer_magic, sizeof(trailer_magic), 1, f) == 1 &&
-        trailer_magic == 0x43524332u) {
-        data_end = len - 8;
-    }
-    if (data_end == len) {
-        fclose(f);
-        return true;
-    }
-
-    if (fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return false;
-    }
-    uint32_t crc = 0;
-    long remaining = data_end;
-    uint8_t chunk[4096];
-    while (remaining > 0) {
-        size_t want = remaining < (long)sizeof(chunk)
-            ? (size_t)remaining
-            : sizeof(chunk);
-        if (fread(chunk, 1, want, f) != want) {
-            fclose(f);
-            return false;
-        }
-        crc = test_crc32_update(crc, chunk, want);
-        remaining -= (long)want;
-    }
-    if (fseek(f, data_end + 4, SEEK_SET) != 0 ||
-        fwrite(&crc, sizeof(crc), 1, f) != 1) {
-        fclose(f);
-        return false;
-    }
-    fclose(f);
-    return true;
-}
-
 static int test_count_exact_frame_pod_units(const world_t *w) {
     if (!w) return 0;
     int total = 0;
@@ -417,12 +360,16 @@ TEST(test_world_save_load_preserves_stations) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 42.0f;
-    w->stations[0]._inventory_cache[COMMODITY_FRAME] = 15.0f;
+    ASSERT(test_set_station_finished_units(&w->stations[0],
+                                           COMMODITY_FRAME, 15));
     ASSERT(world_save(w, TMP("test_world.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, TMP("test_world.sav")));
     ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FRAME], 15.0f, 0.01f);
+    ASSERT_EQ_INT(station_finished_count(&loaded->stations[0],
+                                         COMMODITY_FRAME), 15);
+    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FRAME],
+                    0.0f, 0.0f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_world.sav"));
@@ -459,8 +406,12 @@ TEST(test_world_save_load_preserves_npcs) {
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, TMP("test_npcs.sav")));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship.pos.x, w->npc_ships[i].ship.pos.x, 0.01f);
-        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship.pos.y, w->npc_ships[i].ship.pos.y, 0.01f);
+        ASSERT_EQ_INT(loaded->npc_ships[i].active, w->npc_ships[i].active);
+        if (!w->npc_ships[i].active) continue;
+        ASSERT(loaded->npc_ships[i].ship != NULL);
+        ASSERT(w->npc_ships[i].ship != NULL);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship->pos.x, w->npc_ships[i].ship->pos.x, 0.01f);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship->pos.y, w->npc_ships[i].ship->pos.y, 0.01f);
     }
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
@@ -468,12 +419,8 @@ TEST(test_world_save_load_preserves_npcs) {
 }
 
 TEST(test_npc_ship_physics_in_sync_each_tick) {
-    /* Tripwire for the Slice 13 physics flip and any future mirror
-     * direction change: at the end of every sim step, every active
-     * NPC's paired ship_t must agree with its npc_ship_t on hull,
-     * hull_class, pos, vel, and angle. A missed write site lasts at
-     * most one tick before the reverse mirror washes it out, so
-     * behavioral tests don't catch it — this one does, immediately.
+    /* Tripwire for split ship ownership: every active NPC lookup must
+     * return its embedded ship and expose the same live physics state.
      * Runs for 10 sim seconds (1200 ticks @ 120 Hz) to cover spawn,
      * mine, dock, hauler-in-transit, and at least one despawn cycle. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -485,25 +432,21 @@ TEST(test_npc_ship_physics_in_sync_each_tick) {
             if (!npc->active) continue;
             const ship_t *s = world_npc_ship_for(w, n);
             ASSERT(s != NULL);
-            ASSERT_EQ_FLOAT(s->hull, npc->hull, 0.001f);
-            ASSERT(s->hull_class == npc->ship.hull_class);
-            ASSERT_EQ_FLOAT(s->pos.x, npc->ship.pos.x, 0.001f);
-            ASSERT_EQ_FLOAT(s->pos.y, npc->ship.pos.y, 0.001f);
-            ASSERT_EQ_FLOAT(s->vel.x, npc->ship.vel.x, 0.001f);
-            ASSERT_EQ_FLOAT(s->vel.y, npc->ship.vel.y, 0.001f);
-            ASSERT_EQ_FLOAT(s->angle, npc->ship.angle, 0.001f);
+            ASSERT_EQ_FLOAT(s->hull, npc->ship->hull, 0.001f);
+            ASSERT(s->hull_class == npc->ship->hull_class);
+            ASSERT_EQ_FLOAT(s->pos.x, npc->ship->pos.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->pos.y, npc->ship->pos.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.x, npc->ship->vel.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.y, npc->ship->vel.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->angle, npc->ship->angle, 0.001f);
         }
     }
 }
 
 TEST(test_world_load_rebuilds_character_pool) {
-    /* world_load only restores npc_ships[]; the paired character_t /
-     * ships[] pools are server-side transient and have to be rebuilt
-     * via rebuild_characters_from_npcs at the end of load. Verify
-     * (a) every active NPC has a paired character with the right kind
-     * and ship_idx, (b) apply_npc_ship_damage hits the rebuilt ship
-     * (not a phantom one), (c) the paired ship sees the damage on the
-     * very next sim step's reverse-mirror back to npc.hull. */
+    /* world_load restores NPC actors and then rebuilds the transient
+     * character registry. Verify every active NPC has the right registry
+     * entry and that damage reaches its embedded ship immediately. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
@@ -521,14 +464,20 @@ TEST(test_world_load_rebuilds_character_pool) {
         int found_char = -1;
         for (int c = 0; c < char_cap; c++) {
             if (!loaded->characters[c].active) continue;
-            if (loaded->characters[c].npc_slot == n) { found_char = c; break; }
+            if (loaded->characters[c].actor_slot == n) { found_char = c; break; }
         }
         ASSERT(found_char >= 0);
         const character_t *c = &loaded->characters[found_char];
         ASSERT(c->kind == CHARACTER_KIND_NPC_MINER ||
                c->kind == CHARACTER_KIND_NPC_HAULER ||
                c->kind == CHARACTER_KIND_NPC_TOW);
-        ASSERT(c->ship_idx >= 0 && c->ship_idx < MAX_SHIPS);
+        ASSERT_EQ_INT(c->actor_slot, n);
+        ASSERT_EQ_INT(c->ship_ref.kind, ENTITY_KIND_SHIP);
+        ASSERT_EQ_INT(c->ship_ref.index, loaded->npc_ships[n].ship_ref.index);
+        ASSERT_EQ_INT(c->ship_ref.generation,
+                      loaded->npc_ships[n].ship_ref.generation);
+        ASSERT(world_ship_resolve(loaded, c->ship_ref) ==
+               loaded->npc_ships[n].ship);
     }
     ASSERT(active_npcs > 0);
 
@@ -538,13 +487,12 @@ TEST(test_world_load_rebuilds_character_pool) {
         if (loaded->npc_ships[n].active) { target = n; break; }
     }
     ASSERT(target >= 0);
-    float pre = loaded->npc_ships[target].hull;
+    float pre = loaded->npc_ships[target].ship->hull;
     ASSERT(pre > 5.0f);
     apply_npc_ship_damage(loaded, target, 5.0f);
-    /* npc.hull only updates after the next sim step's reverse mirror;
-     * one tick is enough. */
+    /* One tick also verifies the rebuilt actor remains live in simulation. */
     world_sim_step(loaded, SIM_DT);
-    ASSERT(loaded->npc_ships[target].hull < pre);
+    ASSERT(loaded->npc_ships[target].ship->hull < pre);
 
     remove(TMP("test_char_pool.sav"));
 }
@@ -664,7 +612,7 @@ TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
     w->players[0].connected = true;
     w->players[0].session_ready = true;
     memcpy(w->players[0].session_token, "PERSIST01", 8);
-    w->players[0].ship.pos = w->stations[0].pos;
+    w->players[0].ship->pos = w->stations[0].pos;
 
     a->active = true;
     a->fracture_child = true;
@@ -693,7 +641,7 @@ TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
     loaded->players[1].connected = true;
     loaded->players[1].session_ready = true;
     memcpy(loaded->players[1].session_token, w->players[0].session_token, 8);
-    loaded->players[1].ship.pos = loaded->stations[0].pos;
+    loaded->players[1].ship->pos = loaded->stations[0].pos;
     ASSERT(!submit_fracture_claim(loaded, 1, 818, best_nonce, (uint8_t)best_grade));
 
     remove(TMP("test_fracture_claim_dedupe.sav"));
@@ -710,23 +658,23 @@ TEST(test_player_save_load_preserves_ship) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    sp.ship.hull = 42.0f;
-    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 5.0f;
-    sp.ship.mining_level = 2;
-    sp.ship.hold_level = 1;
-    sp.ship.tractor_level = 3;
+    sp.ship->hull = 42.0f;
+    sp.ship->cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    sp.ship->cargo[COMMODITY_CUPRITE_ORE] = 5.0f;
+    sp.ship->mining_level = 2;
+    sp.ship->hold_level = 1;
+    sp.ship->tractor_level = 3;
     sp.current_station = 1;
     ASSERT(player_save(&sp, test_tmp_dir(), 99));
 
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 99));
-    ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 10.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_CUPRITE_ORE], 5.0f, 0.01f);
-    ASSERT_EQ_INT(loaded.ship.mining_level, 2);
-    ASSERT_EQ_INT(loaded.ship.hold_level, 1);
-    ASSERT_EQ_INT(loaded.ship.tractor_level, 3);
+    ASSERT_EQ_FLOAT(loaded.ship->hull, 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship->cargo[COMMODITY_FERRITE_ORE], 10.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship->cargo[COMMODITY_CUPRITE_ORE], 5.0f, 0.01f);
+    ASSERT_EQ_INT(loaded.ship->mining_level, 2);
+    ASSERT_EQ_INT(loaded.ship->hold_level, 1);
+    ASSERT_EQ_INT(loaded.ship->tractor_level, 3);
     ASSERT_EQ_INT(loaded.current_station, 1);
     ASSERT(loaded.docked);
     remove(TMP("player_99.sav"));
@@ -752,18 +700,18 @@ TEST(test_player_load_prefers_existing_bound_ship_asset) {
     ASSERT(hauler != NULL);
     ASSERT(ship_asset_claim_for_player(&w, 0, 1));
     ASSERT_EQ_INT(sp->ship_asset_id, hauler->asset_id);
-    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
-    sp->ship.hull = 88.0f;
+    ASSERT_EQ_INT(sp->ship->hull_class, HULL_CLASS_HAULER);
+    sp->ship->hull = 88.0f;
     ASSERT(player_save(sp, test_tmp_dir(), 0));
 
-    sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull = 1.0f;
+    sp->ship->hull_class = HULL_CLASS_MINER;
+    sp->ship->hull = 1.0f;
     sp->current_station = 0;
     ASSERT(player_load(sp, &w, test_tmp_dir(), 0));
 
     ASSERT_EQ_INT(sp->ship_asset_id, hauler->asset_id);
-    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
-    ASSERT_EQ_FLOAT(sp->ship.hull, 88.0f, 0.01f);
+    ASSERT_EQ_INT(sp->ship->hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_FLOAT(sp->ship->hull, 88.0f, 0.01f);
     ASSERT_EQ_INT(hauler->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(hauler->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(hauler->operator_slot, 0);
@@ -785,9 +733,9 @@ TEST(test_player_load_prefers_owned_asset_over_provisional_loaner) {
     saved.connected = true;
     saved.session_ready = true;
     memcpy(saved.session_token, token, sizeof(token));
-    ASSERT(ship_manifest_bootstrap(&saved.ship));
-    saved.ship.hull_class = HULL_CLASS_HAULER;
-    saved.ship.hull = 77.0f;
+    ASSERT(ship_manifest_bootstrap(saved.ship));
+    saved.ship->hull_class = HULL_CLASS_HAULER;
+    saved.ship->hull = 77.0f;
     saved.current_station = 1;
     ASSERT(player_save(&saved, test_tmp_dir(), 0));
 
@@ -820,13 +768,13 @@ TEST(test_player_load_prefers_owned_asset_over_provisional_loaner) {
     ASSERT(player_load_by_token(sp, &w, test_tmp_dir(), token));
 
     ASSERT_EQ_INT(sp->ship_asset_id, owned->asset_id);
-    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_HAULER);
-    ASSERT_EQ_FLOAT(sp->ship.hull, 77.0f, 0.01f);
+    ASSERT_EQ_INT(sp->ship->hull_class, HULL_CLASS_HAULER);
+    ASSERT_EQ_FLOAT(sp->ship->hull, 77.0f, 0.01f);
     ASSERT_EQ_INT(sp->current_station, 1);
     ASSERT_EQ_INT(owned->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(owned->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(owned->operator_slot, 0);
-    ASSERT_EQ_FLOAT(owned->ship.hull, 77.0f, 0.01f);
+    ASSERT_EQ_FLOAT(owned->ship->hull, 77.0f, 0.01f);
     ASSERT_EQ_INT(provisional->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(provisional->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(provisional->operator_slot, -1);
@@ -839,7 +787,8 @@ TEST(test_player_load_prefers_owned_asset_over_provisional_loaner) {
     char path[256];
     ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &saved, 0));
     remove(path);
-    ship_cleanup(&saved.ship);
+    ship_cleanup(saved.ship);
+    saved.ship = NULL;
 }
 
 TEST(test_player_load_mints_owned_asset_instead_of_reusing_loaner) {
@@ -853,9 +802,9 @@ TEST(test_player_load_mints_owned_asset_instead_of_reusing_loaner) {
     saved.connected = true;
     saved.session_ready = true;
     memcpy(saved.session_token, token, sizeof(token));
-    ASSERT(ship_manifest_bootstrap(&saved.ship));
-    saved.ship.hull_class = HULL_CLASS_HAULER;
-    saved.ship.hull = 66.0f;
+    ASSERT(ship_manifest_bootstrap(saved.ship));
+    saved.ship->hull_class = HULL_CLASS_HAULER;
+    saved.ship->hull = 66.0f;
     saved.current_station = 1;
     ASSERT(player_save(&saved, test_tmp_dir(), 0));
 
@@ -890,7 +839,7 @@ TEST(test_player_load_mints_owned_asset_instead_of_reusing_loaner) {
     ASSERT_EQ_INT(owned->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(owned->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(owned->operator_slot, 0);
-    ASSERT_EQ_FLOAT(owned->ship.hull, 66.0f, 0.01f);
+    ASSERT_EQ_FLOAT(owned->ship->hull, 66.0f, 0.01f);
     ASSERT_EQ_INT(provisional->owner_kind, SHIP_ASSET_OWNER_STATION);
     ASSERT(provisional->loaner);
     ASSERT_EQ_INT(provisional->status, SHIP_ASSET_STATUS_STORED);
@@ -904,7 +853,8 @@ TEST(test_player_load_mints_owned_asset_instead_of_reusing_loaner) {
     char path[256];
     ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &saved, 0));
     remove(path);
-    ship_cleanup(&saved.ship);
+    ship_cleanup(saved.ship);
+    saved.ship = NULL;
 }
 
 TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
@@ -925,7 +875,7 @@ TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
     ASSERT(asset != NULL);
     ASSERT(ship_asset_claim_for_player(w, 0, 1));
     ASSERT_EQ_INT(sp->ship_asset_id, asset->asset_id);
-    sp->ship.hull = 55.0f;
+    sp->ship->hull = 55.0f;
     ASSERT(world_ship_asset_sync_from_player(w, sp));
     ASSERT_EQ_INT(asset->custody_station, 1);
 
@@ -944,7 +894,7 @@ TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
     ASSERT_EQ_INT(loaded_asset->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(loaded_asset->operator_slot, -1);
     ASSERT_EQ_INT(loaded_asset->custody_station, 1);
-    ASSERT_EQ_FLOAT(loaded_asset->ship.hull, 55.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded_asset->ship->hull, 55.0f, 0.01f);
 
     server_player_t *reconnect = &loaded->players[2];
     reconnect->id = 2;
@@ -958,7 +908,7 @@ TEST(test_world_load_stores_orphaned_player_ship_asset_for_reclaim) {
         if (loaded->ship_assets[i].active) asset_count_after++;
     ASSERT_EQ_INT(asset_count_after, asset_count_before);
     ASSERT_EQ_INT(reconnect->ship_asset_id, asset_id);
-    ASSERT_EQ_FLOAT(reconnect->ship.hull, 55.0f, 0.01f);
+    ASSERT_EQ_FLOAT(reconnect->ship->hull, 55.0f, 0.01f);
     ASSERT_EQ_INT(loaded_asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(loaded_asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(loaded_asset->operator_slot, 2);
@@ -1016,7 +966,7 @@ TEST(test_player_save_uses_temp_then_atomic_rename) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    sp.ship.hull = 42.0f;
+    sp.ship->hull = 42.0f;
     ASSERT(player_save(&sp, test_tmp_dir(), 91));
 
     char path[256], tmp_path[272];
@@ -1030,16 +980,16 @@ TEST(test_player_save_uses_temp_then_atomic_rename) {
 
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 91));
-    ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship->hull, 42.0f, 0.01f);
 
-    sp.ship.hull = 77.0f;
+    sp.ship->hull = 77.0f;
     ASSERT(player_save(&sp, test_tmp_dir(), 91));
     FILE *leftover = fopen(tmp_path, "rb");
     ASSERT(leftover == NULL);
 
     SERVER_PLAYER_DECL(reloaded);
     ASSERT(player_load(&reloaded, &w, test_tmp_dir(), 91));
-    ASSERT_EQ_FLOAT(reloaded.ship.hull, 77.0f, 0.01f);
+    ASSERT_EQ_FLOAT(reloaded.ship->hull, 77.0f, 0.01f);
     remove(path);
     remove(tmp_path);
 }
@@ -1084,7 +1034,7 @@ TEST(test_world_save_round_trips_station_manifest) {
     remove(TMP("test_manifest_roundtrip.sav"));
 }
 
-TEST(test_world_load_repairs_cache_only_station_finished_goods) {
+TEST(test_world_load_ignores_cache_only_station_finished_goods) {
     WORLD_DECL;
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
@@ -1095,22 +1045,20 @@ TEST(test_world_load_repairs_cache_only_station_finished_goods) {
     ASSERT(test_set_station_finished_units(helios, COMMODITY_TRACTOR_MODULE, 10));
     ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_TRACTOR_MODULE), 10);
 
-    /* Simulate an older live save where the float stock survived but some
-     * cargo_unit_t rows were never minted. This exact shape makes haulers
-     * look paused: UI sees inventory, routing sees no manifest-backed cargo. */
+    /* Current saves must not resurrect a retired finished-goods float cache.
+     * Only the manifest rows survive the round trip. */
     ASSERT_EQ_INT(station_manifest_consume_by_commodity(
                       helios, COMMODITY_TRACTOR_MODULE, 6), 6);
     ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_TRACTOR_MODULE), 4);
-    ASSERT_EQ_FLOAT(helios->_inventory_cache[COMMODITY_TRACTOR_MODULE],
-                    10.0f, 0.001f);
+    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 10.0f;
 
     ASSERT(world_save(&w, TMP("test_manifest_repair.sav")));
     ASSERT(world_load(loaded, TMP("test_manifest_repair.sav")));
 
     ASSERT_EQ_INT(station_finished_count(&loaded->stations[2],
-                                         COMMODITY_TRACTOR_MODULE), 10);
+                                         COMMODITY_TRACTOR_MODULE), 4);
     ASSERT_EQ_FLOAT(loaded->stations[2]._inventory_cache[COMMODITY_TRACTOR_MODULE],
-                    10.0f, 0.001f);
+                    0.0f, 0.001f);
     remove(TMP("test_manifest_repair.sav"));
 }
 
@@ -1147,16 +1095,16 @@ TEST(test_player_save_round_trips_ship_manifest) {
     unit.grade = (uint8_t)MINING_GRADE_FINE;
     unit.pub[0] = 0x5A;
     unit.pub[7] = 0xA5;
-    ASSERT(manifest_push(&sp.ship.manifest, &unit));
-    ASSERT(sp.ship.manifest.count == 1);
+    ASSERT(manifest_push(&sp.ship->manifest, &unit));
+    ASSERT(sp.ship->manifest.count == 1);
     ASSERT(player_save(&sp, test_tmp_dir(), 92));
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 92));
-    ASSERT_EQ_INT(loaded.ship.manifest.count, 1);
-    ASSERT(loaded.ship.manifest.units != NULL);
-    ASSERT_EQ_INT(loaded.ship.manifest.units[0].kind, CARGO_KIND_INGOT);
-    ASSERT_EQ_INT(loaded.ship.manifest.units[0].commodity, COMMODITY_CUPRITE_INGOT);
-    ASSERT_EQ_INT(loaded.ship.manifest.units[0].grade, MINING_GRADE_FINE);
-    ASSERT(memcmp(loaded.ship.manifest.units[0].pub, unit.pub, 32) == 0);
+    ASSERT_EQ_INT(loaded.ship->manifest.count, 1);
+    ASSERT(loaded.ship->manifest.units != NULL);
+    ASSERT_EQ_INT(loaded.ship->manifest.units[0].kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(loaded.ship->manifest.units[0].commodity, COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(loaded.ship->manifest.units[0].grade, MINING_GRADE_FINE);
+    ASSERT(memcmp(loaded.ship->manifest.units[0].pub, unit.pub, 32) == 0);
     remove(TMP("player_92.sav"));
 }
 
@@ -1170,17 +1118,17 @@ TEST(test_player_load_bad_crc_rejects_without_mutating_live_player) {
     player_init_ship(&sp, &w);
     sp.connected = true;
     sp.id = 89;
-    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 12.0f;
+    sp.ship->cargo[COMMODITY_FERRITE_ORE] = 12.0f;
     ASSERT(player_save(&sp, test_tmp_dir(), 89));
     ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &sp, 89));
 
     ASSERT(test_patch_file_byte(path, 16, 0xA5));
     player_init_ship(&loaded, &w);
-    loaded.ship.cargo[COMMODITY_FERRITE_ORE] = 77.0f;
+    loaded.ship->cargo[COMMODITY_FERRITE_ORE] = 77.0f;
     loaded.current_station = 2;
     loaded.docked = false;
     ASSERT(!player_load(&loaded, &w, test_tmp_dir(), 89));
-    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 77.0f, 0.001f);
+    ASSERT_EQ_FLOAT(loaded.ship->cargo[COMMODITY_FERRITE_ORE], 77.0f, 0.001f);
     ASSERT_EQ_INT(loaded.current_station, 2);
     ASSERT(!loaded.docked);
     remove(path);
@@ -1201,7 +1149,7 @@ TEST(test_player_load_bad_receipt_count_rejects_without_mutating_live_player) {
     unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
     unit.grade = (uint8_t)MINING_GRADE_RARE;
     for (int i = 0; i < 32; i++) unit.pub[i] = (uint8_t)(0xC0 + i);
-    ASSERT(manifest_push(&sp.ship.manifest, &unit));
+    ASSERT(manifest_push(&sp.ship->manifest, &unit));
     ASSERT(player_save(&sp, test_tmp_dir(), 88));
     ASSERT(player_save_path(path, sizeof(path), test_tmp_dir(), &sp, 88));
 
@@ -1214,11 +1162,11 @@ TEST(test_player_load_bad_receipt_count_rejects_without_mutating_live_player) {
     ASSERT(test_rewrite_crc32_trailer(path));
 
     player_init_ship(&loaded, &w);
-    loaded.ship.cargo[COMMODITY_CUPRITE_ORE] = 55.0f;
+    loaded.ship->cargo[COMMODITY_CUPRITE_ORE] = 55.0f;
     loaded.current_station = 1;
     ASSERT(!player_load(&loaded, &w, test_tmp_dir(), 88));
-    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_CUPRITE_ORE], 55.0f, 0.001f);
-    ASSERT_EQ_INT(loaded.ship.manifest.count, 0);
+    ASSERT_EQ_FLOAT(loaded.ship->cargo[COMMODITY_CUPRITE_ORE], 55.0f, 0.001f);
+    ASSERT_EQ_INT(loaded.ship->manifest.count, 0);
     ASSERT_EQ_INT(loaded.current_station, 1);
     remove(path);
 }
@@ -1229,12 +1177,12 @@ TEST(test_player_load_clamps_negative_cargo) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    sp.ship.cargo[COMMODITY_FERRITE_ORE] = -50.0f;
+    sp.ship->cargo[COMMODITY_FERRITE_ORE] = -50.0f;
     ASSERT(player_save(&sp, test_tmp_dir(), 97));
 
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 97));
-    ASSERT(loaded.ship.cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
+    ASSERT(loaded.ship->cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
     remove(TMP("player_97.sav"));
 }
 
@@ -1244,12 +1192,12 @@ TEST(test_player_load_clamps_hull_hp) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    sp.ship.hull = 99999.0f;  /* way above max */
+    sp.ship->hull = 99999.0f;  /* way above max */
     ASSERT(player_save(&sp, test_tmp_dir(), 96));
 
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 96));
-    ASSERT(loaded.ship.hull <= ship_max_hull(&loaded.ship));
+    ASSERT(loaded.ship->hull <= ship_max_hull(loaded.ship));
     remove(TMP("player_96.sav"));
 }
 
@@ -1259,14 +1207,14 @@ TEST(test_player_load_clamps_upgrade_levels) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    sp.ship.mining_level = 100;
-    sp.ship.hold_level = -5;
+    sp.ship->mining_level = 100;
+    sp.ship->hold_level = -5;
     ASSERT(player_save(&sp, test_tmp_dir(), 95));
 
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, test_tmp_dir(), 95));
-    ASSERT(loaded.ship.mining_level >= 0 && loaded.ship.mining_level <= SHIP_UPGRADE_MAX_LEVEL);
-    ASSERT(loaded.ship.hold_level >= 0 && loaded.ship.hold_level <= SHIP_UPGRADE_MAX_LEVEL);
+    ASSERT(loaded.ship->mining_level >= 0 && loaded.ship->mining_level <= SHIP_UPGRADE_MAX_LEVEL);
+    ASSERT(loaded.ship->hold_level >= 0 && loaded.ship->hold_level <= SHIP_UPGRADE_MAX_LEVEL);
     remove(TMP("player_95.sav"));
 }
 
@@ -1294,7 +1242,7 @@ TEST(test_player_load_repairs_degenerate_dock_berth) {
     saved.connected = true;
     saved.current_station = 0;
     saved.docked = true;
-    saved.ship.pos = w.stations[0].pos;
+    saved.ship->pos = w.stations[0].pos;
     ASSERT(player_save(&saved, test_tmp_dir(), 87));
 
     station_t *prospect = &w.stations[0];
@@ -1316,19 +1264,19 @@ TEST(test_player_load_repairs_degenerate_dock_berth) {
     memset(loaded->session_token, 0x87, sizeof(loaded->session_token));
     ASSERT(player_load(loaded, &w, test_tmp_dir(), 87));
     ASSERT(loaded->docked);
-    vec2 berth_pos = loaded->ship.pos;
+    vec2 berth_pos = loaded->ship->pos;
     ASSERT(v2_len(v2_sub(berth_pos, prospect->pos)) > prospect->radius + 1.0f);
 
     world_sim_step(&w, SIM_DT);
     ASSERT(loaded->docked);
-    ASSERT(v2_len(v2_sub(loaded->ship.pos, prospect->pos)) > prospect->radius + 1.0f);
-    ASSERT(v2_len(v2_sub(loaded->ship.pos, berth_pos)) < 0.01f);
+    ASSERT(v2_len(v2_sub(loaded->ship->pos, prospect->pos)) > prospect->radius + 1.0f);
+    ASSERT(v2_len(v2_sub(loaded->ship->pos, berth_pos)) < 0.01f);
 
     loaded->input.launch = true;
     world_sim_step(&w, SIM_DT);
     ASSERT(!loaded->docked);
-    ASSERT(v2_len(v2_sub(loaded->ship.pos, berth_pos)) < 2.0f);
-    ASSERT(v2_len(loaded->ship.vel) > 50.0f);
+    ASSERT(v2_len(v2_sub(loaded->ship->pos, berth_pos)) < 2.0f);
+    ASSERT(v2_len(loaded->ship->vel) > 50.0f);
 
     char path[256];
     if (player_save_path(path, sizeof(path), test_tmp_dir(), &saved, 87))
@@ -1583,8 +1531,16 @@ TEST(test_world_save_load_preserves_smelted_ingot_pod) {
     const cargo_pod_t *loaded_pod = &loaded->cargo_pods[loaded_pod_idx];
     ASSERT_EQ_INT(loaded_pod->manifest_count, expected.manifest_count);
     ASSERT_EQ_INT(loaded_pod->quantity, expected.quantity);
-    ASSERT_EQ_INT(loaded_pod->tractor_station, expected.tractor_station);
-    ASSERT_EQ_INT(loaded_pod->tractor_module, expected.tractor_module);
+    int loaded_station = -1;
+    int loaded_module = -1;
+    int expected_station = -1;
+    int expected_module = -1;
+    ASSERT(cargo_pod_module_tractor_indices(
+        loaded_pod, &loaded_station, &loaded_module));
+    ASSERT(cargo_pod_module_tractor_indices(
+        &expected, &expected_station, &expected_module));
+    ASSERT_EQ_INT(loaded_station, expected_station);
+    ASSERT_EQ_INT(loaded_module, expected_module);
     ASSERT(memcmp(loaded_pod->manifest_units[0].pub,
                   expected.manifest_units[0].pub, 32) == 0);
     ASSERT(memcmp(loaded_pod->manifest_units[expected.manifest_count - 1].pub,
@@ -1623,7 +1579,7 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ship_receipts_t *hauler_receipts = ship_get_receipts(hauler_ship);
     ASSERT(hauler_receipts != NULL);
     ship_receipts_clear(hauler_receipts);
-    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler->ship->cargo, 0, sizeof(hauler->ship->cargo));
 
     station_t *home = &w->stations[0];
     station_t *dest = &w->stations[1];
@@ -1649,8 +1605,6 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
                                           (uint64_t)(900 + i), &chains[i]));
         ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }
-    home->_inventory_cache[COMMODITY_FERRITE_INGOT] = (float)stock_units;
-
     memset(w->contracts, 0, sizeof(w->contracts));
     w->contracts[0] = (contract_t){
         .active = true,
@@ -1667,18 +1621,11 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     hauler->home_station = 0;
     hauler->dest_station = 0;
     /* Seed gossip — see comment in test_hauler_preserves_cargo_identity_in_transit. */
-    hauler->known_contract_count = 0;
-    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
+    test_clear_knowledge(&hauler->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active) continue;
-        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
-            .active = true,
-            .action = (uint8_t)w->contracts[k].action,
-            .station_index = w->contracts[k].station_index,
-            .commodity = (uint8_t)w->contracts[k].commodity,
-            .quantity_needed = w->contracts[k].quantity_needed,
-            .base_price = w->contracts[k].base_price,
-            .age_at_copy = w->contracts[k].age,
-        };
+        contract_summary_t summary = contract_summary_make(&w->contracts[k]);
+        ASSERT(test_add_known_contract(&hauler->ship->knowledge, &summary));
     }
 
     step_npc_ships(w, SIM_DT);
@@ -1718,28 +1665,29 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
                   loaded->stations[0].station_pubkey, 32) == 0);
     ASSERT(manifest_find(&loaded_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&loaded_ship->manifest, units[1].pub) >= 0);
-    ASSERT_EQ_FLOAT(loaded_hauler->cargo[COMMODITY_FERRITE_INGOT],
-                    (float)EXPECTED_MOVED, 0.001f);
+    ASSERT_EQ_INT(ship_finished_count(loaded_hauler->ship,
+                                      COMMODITY_FERRITE_INGOT),
+                  EXPECTED_MOVED);
 
     loaded_hauler->state = NPC_STATE_UNLOADING;
     loaded_hauler->state_timer = 0.0f;
     loaded_hauler->role = NPC_ROLE_HAULER;
     loaded_hauler->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
-    loaded_hauler->ship.hull_class = HULL_CLASS_HAULER;
+    loaded_hauler->ship->hull_class = HULL_CLASS_HAULER;
     loaded_hauler->dest_station = 1;
     loaded_hauler->pickup_station = -1;
     loaded_hauler->pickup_commodity = COMMODITY_COUNT;
     loaded_hauler->pickup_action = (uint8_t)CONTRACT_TRACTOR;
-    loaded_hauler->towed_fragment = -1;
-    loaded_hauler->towed_scaffold = -1;
-    loaded_hauler->ship.pos = station_approach_target(&loaded->stations[1],
-                                                       loaded_hauler->ship.pos);
+    npc_clear_towed_fragment(loaded_hauler);
+    loaded_hauler->ship->towed_scaffold = -1;
+    loaded_hauler->ship->pos = station_approach_target(&loaded->stations[1],
+                                                       loaded_hauler->ship->pos);
     loaded_ship->hull_class = HULL_CLASS_HAULER;
-    loaded_ship->pos = loaded_hauler->ship.pos;
+    loaded_ship->pos = loaded_hauler->ship->pos;
     loaded_ship->vel = v2(0.0f, 0.0f);
     loaded_ship->hull = 100.0f;
-    loaded_hauler->ship.vel = v2(0.0f, 0.0f);
-    loaded_hauler->hull = loaded_ship->hull;
+    loaded_hauler->ship->vel = v2(0.0f, 0.0f);
+    loaded_hauler->ship->hull = loaded_ship->hull;
 
     step_npc_ships(loaded, SIM_DT);
 
@@ -1833,8 +1781,11 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
         .rotation = 0.7f,
         .spin = 0.25f,
         .age = 3.0f,
-        .towed_by = 0,
     };
+    w->players[0].id = 0;
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    ASSERT(world_cargo_pod_set_player_tractor(w, 7, 0));
     w->cargo_pods[7].has_shell_frame = true;
     cargo_pod_set_station_custody(&w->cargo_pods[7], 2);
     ASSERT(hash_legacy_migrate_unit((const uint8_t *)"SAVESHEL",
@@ -1867,7 +1818,7 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_INT(pod->commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(pod->quantity, 1);
     ASSERT_EQ_INT(pod->shipment_id, 11);
-    ASSERT_EQ_INT(pod->towed_by, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(pod), 0);
     ASSERT_EQ_INT(cargo_pod_custody_station(pod), 2);
     ASSERT(pod->has_shell_frame);
     ASSERT_EQ_INT(pod->shell_frame.commodity, COMMODITY_FRAME);
@@ -1885,22 +1836,8 @@ TEST(test_world_load_v70_backfills_missing_starter_frame_pods) {
     memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
     ASSERT_EQ_INT(test_count_exact_frame_pod_units(w), 0);
 
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
-                                    TMP("test_v70_missing_starter_frames_cat")));
-    ASSERT(world_save(w, TMP("test_v70_missing_starter_frames.sav")));
-    ASSERT(test_patch_world_save_version(
-        TMP("test_v70_missing_starter_frames.sav"), 70));
-
-    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(loaded != NULL);
-    world_reset(loaded);
-    ASSERT(station_catalog_load_all(
-        loaded->stations, MAX_STATIONS,
-        TMP("test_v70_missing_starter_frames_cat")) > 0);
-    ASSERT(world_load(loaded, TMP("test_v70_missing_starter_frames.sav")));
-    ASSERT_EQ_INT(test_count_exact_frame_pod_units(loaded), 32);
-
-    remove(TMP("test_v70_missing_starter_frames.sav"));
+    world_apply_starter_stock_migrations(w, 70);
+    ASSERT_EQ_INT(test_count_exact_frame_pod_units(w), 32);
 }
 
 TEST(test_world_load_current_does_not_duplicate_starter_frame_pods) {
@@ -1936,23 +1873,9 @@ TEST(test_world_load_v71_backfills_missing_starter_laser_modules) {
     ASSERT_EQ_INT(station_finished_count(&w->stations[1],
                                          COMMODITY_LASER_MODULE), 0);
 
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
-                                    TMP("test_v71_missing_starter_lasers_cat")));
-    ASSERT(world_save(w, TMP("test_v71_missing_starter_lasers.sav")));
-    ASSERT(test_patch_world_save_version(
-        TMP("test_v71_missing_starter_lasers.sav"), 71));
-
-    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(loaded != NULL);
-    world_reset(loaded);
-    ASSERT(station_catalog_load_all(
-        loaded->stations, MAX_STATIONS,
-        TMP("test_v71_missing_starter_lasers_cat")) > 0);
-    ASSERT(world_load(loaded, TMP("test_v71_missing_starter_lasers.sav")));
-    ASSERT_EQ_INT(station_finished_count(&loaded->stations[1],
+    world_apply_starter_stock_migrations(w, 71);
+    ASSERT_EQ_INT(station_finished_count(&w->stations[1],
                                          COMMODITY_LASER_MODULE), 8);
-
-    remove(TMP("test_v71_missing_starter_lasers.sav"));
 }
 
 TEST(test_world_load_v71_does_not_duplicate_starter_laser_modules) {
@@ -1963,23 +1886,9 @@ TEST(test_world_load_v71_does_not_duplicate_starter_laser_modules) {
     ASSERT_EQ_INT(station_finished_count(&w->stations[1],
                                          COMMODITY_LASER_MODULE), 8);
 
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
-                                    TMP("test_v71_existing_starter_lasers_cat")));
-    ASSERT(world_save(w, TMP("test_v71_existing_starter_lasers.sav")));
-    ASSERT(test_patch_world_save_version(
-        TMP("test_v71_existing_starter_lasers.sav"), 71));
-
-    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(loaded != NULL);
-    world_reset(loaded);
-    ASSERT(station_catalog_load_all(
-        loaded->stations, MAX_STATIONS,
-        TMP("test_v71_existing_starter_lasers_cat")) > 0);
-    ASSERT(world_load(loaded, TMP("test_v71_existing_starter_lasers.sav")));
-    ASSERT_EQ_INT(station_finished_count(&loaded->stations[1],
+    world_apply_starter_stock_migrations(w, 71);
+    ASSERT_EQ_INT(station_finished_count(&w->stations[1],
                                          COMMODITY_LASER_MODULE), 8);
-
-    remove(TMP("test_v71_existing_starter_lasers.sav"));
 }
 
 TEST(test_player_load_restores_towed_cargo_pods_from_world) {
@@ -1994,23 +1903,21 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     sp->session_ready = true;
     memset(sp->session_token, 0x72, sizeof(sp->session_token));
     sp->current_station = 0;
-    sp->ship.pos = v2(120.0f, -30.0f);
-    sp->ship.angle = 0.5f;
+    sp->ship->pos = v2(120.0f, -30.0f);
+    sp->ship->angle = 0.5f;
     cargo_unit_t frame_units[8] = {{0}};
     const uint8_t origin[8] = { 'S','A','V','E','P','O','D','1' };
     for (uint16_t i = 0; i < 8; i++) {
         ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i,
                                         &frame_units[i]));
     }
-    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship.pos,
+    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship->pos,
                                                 v2(0.0f, 0.0f),
                                                 COMMODITY_FRAME,
                                                 frame_units, 8,
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
-    w->cargo_pods[pod_idx].towed_by = 0;
-    sp->ship.towed_pods[0] = (int16_t)pod_idx;
-    sp->ship.towed_pod_count = 1;
+    ASSERT(world_cargo_pod_set_player_tractor(w, pod_idx, 0));
 
     ASSERT(player_save(sp, test_tmp_dir(), 0));
     ASSERT(world_save(w, TMP("test_towed_pods_world.sav")));
@@ -2018,17 +1925,23 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     world_reset(loaded);
     ASSERT(world_load(loaded, TMP("test_towed_pods_world.sav")));
+    ASSERT(loaded->cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&loaded->cargo_pods[pod_idx]), 0);
     server_player_t *lp = &loaded->players[0];
     lp->id = 0;
+    lp->connected = true;
     lp->session_ready = true;
     memset(lp->session_token, 0x72, sizeof(lp->session_token));
+    ASSERT(world_entity_ref_is_live(loaded, lp->ship_ref));
     ASSERT(player_load_by_token(lp, loaded, test_tmp_dir(), sp->session_token));
 
-    ASSERT_EQ_INT(lp->ship.towed_pod_count, 1);
-    int restored_idx = lp->ship.towed_pods[0];
+    ASSERT_EQ_INT(lp->ship->towed_pod_count, 1);
+    int restored_idx = lp->ship->towed_pods[0];
     ASSERT_EQ_INT(restored_idx, pod_idx);
     ASSERT(loaded->cargo_pods[restored_idx].active);
-    ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].towed_by, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &loaded->cargo_pods[restored_idx]),
+                  0);
     ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].quantity, 8);
     ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].manifest_count, 8);
     ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[0].pub,
@@ -2036,7 +1949,7 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[7].pub,
                   frame_units[7].pub, 32) == 0);
     ASSERT(v2_dist_sq(loaded->cargo_pods[restored_idx].pos,
-                      lp->ship.pos) < 120.0f * 120.0f);
+                      lp->ship->pos) < 120.0f * 120.0f);
 
     remove(TMP("test_towed_pods_world.sav"));
 }
@@ -2093,7 +2006,7 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
  * world.sav, so EXPECTED_SAVE_SIZE doesn't shift.
  * v48: spoke + drag ring dynamics adds arm_omega[MAX_ARMS] = 4
  * floats × MAX_STATIONS=64 = +1024 bytes.
- * v52: NPC paired ship manifest tail writes uint16 count per
+ * v52: NPC embedded ship manifest tail writes uint16 count per
  * MAX_NPC_SHIPS slot on a fresh world. Active haulers with cargo add
  * variable cargo_unit_t + receipt-chain payloads.
  * v53: station manifest entries gained inline receipt-chain payloads.
@@ -2133,8 +2046,9 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * v73: active cargo pods persist custody_station; fresh worlds
              * have two starter pods, so +2 bytes.
              * v74: each active pod also persists tractor_station and
-             * tractor_module; two starter pods add four bytes. */
-			#define EXPECTED_SAVE_SIZE 767648
+             * tractor_module; two starter pods add four bytes.
+             * v75: 64 station residue arrays add 5,120 bytes. */
+			#define EXPECTED_SAVE_SIZE 772768
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2171,7 +2085,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 74);
+    ASSERT_EQ_INT((int)version, 75);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -2225,7 +2139,8 @@ TEST(test_save_load_preserves_player_outpost) {
     ASSERT(station_exists(&w->stations[slot]));
     ASSERT(w->stations[slot].scaffold);
     /* Deliver some frames to advance progress */
-    w->stations[slot]._inventory_cache[COMMODITY_FRAME] = 30.0f;
+    ASSERT(test_set_station_finished_units(
+        &w->stations[slot], COMMODITY_FRAME, 30));
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
     float progress = w->stations[slot].scaffold_progress;
     int mod_count = w->stations[slot].module_count;
@@ -2375,7 +2290,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_repairs_stale_npc_ship_asset_binding);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
-    RUN(test_world_load_repairs_cache_only_station_finished_goods);
+    RUN(test_world_load_ignores_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_round_trips_ship_manifest);
     RUN(test_player_load_bad_crc_rejects_without_mutating_live_player);

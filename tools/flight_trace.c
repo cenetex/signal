@@ -485,8 +485,8 @@ static void reset_trace_player(world_t *w, server_player_t *sp);
 static bool trace_reverse_allowed(const server_player_t *sp)
 {
     const float reverse_start_speed = 2.0f;
-    vec2 forward = ship_forward(sp->ship.angle);
-    float forward_speed = v2_dot(sp->ship.vel, forward);
+    vec2 forward = ship_forward(sp->ship->angle);
+    float forward_speed = v2_dot(sp->ship->vel, forward);
     return forward_speed <= reverse_start_speed;
 }
 
@@ -606,12 +606,10 @@ static void setup_trace_world(const flight_trace_episode_t *init,
 
     sp = &w->players[0];
     reset_trace_player(w, sp);
-    sp->ship.pos = init->spawn_pos;
-    sp->ship.vel = init->spawn_vel;
-    sp->ship.angle = init->spawn_angle;
-    sp->ship.hull = ship_max_hull(&sp->ship);
-    sp->ship.towed_count = 0;
-    sp->ship.towed_scaffold = -1;
+    sp->ship->pos = init->spawn_pos;
+    sp->ship->vel = init->spawn_vel;
+    sp->ship->angle = init->spawn_angle;
+    sp->ship->hull = ship_max_hull(sp->ship);
     sp->docked = false;
     sp->boost_hold_timer = 0.0f;
     memset(&sp->input, 0, sizeof(sp->input));
@@ -623,9 +621,9 @@ static void setup_trace_world(const flight_trace_episode_t *init,
 
 static int goal_explore_action(const server_player_t *sp, vec2 goal)
 {
-    vec2 to_goal = v2_sub(goal, sp->ship.pos);
+    vec2 to_goal = v2_sub(goal, sp->ship->pos);
     float desired = atan2f(to_goal.y, to_goal.x);
-    float heading_diff = wrap_angle(desired - sp->ship.angle);
+    float heading_diff = wrap_angle(desired - sp->ship->angle);
     int turn = 0;
     int thrust = fabsf(heading_diff) < 0.75f ? 1 : 0;
 
@@ -665,26 +663,26 @@ static void fill_state_row(const flight_trace_config_t *config,
                            int action,
                            flight_trace_row_t *row)
 {
-    const hull_def_t *hull = ship_hull_def(&sp->ship);
+    const hull_def_t *hull = ship_hull_def(sp->ship);
     const flight_trace_action_t *keys = &FLIGHT_TRACE_ACTIONS[action];
-    vec2 to_goal = v2_sub(goal, sp->ship.pos);
+    vec2 to_goal = v2_sub(goal, sp->ship->pos);
     vec2 control_target = goal;
     vec2 to_control;
-    vec2 forward = ship_forward(sp->ship.angle);
+    vec2 forward = ship_forward(sp->ship->angle);
     vec2 right = v2(-forward.y, forward.x);
-    float speed = sqrtf(v2_len_sq(sp->ship.vel));
-    float max_hull = ship_max_hull(&sp->ship);
+    float speed = sqrtf(v2_len_sq(sp->ship->vel));
+    float max_hull = ship_max_hull(sp->ship);
     float goal_angle = atan2f(to_goal.y, to_goal.x);
-    float heading_diff = wrap_angle(goal_angle - sp->ship.angle);
+    float heading_diff = wrap_angle(goal_angle - sp->ship->angle);
     float control_angle;
     float control_heading_diff;
 
     if (path != NULL && path->count > 0 && path->current < path->count) {
         control_target = path->waypoints[path->current];
     }
-    to_control = v2_sub(control_target, sp->ship.pos);
+    to_control = v2_sub(control_target, sp->ship->pos);
     control_angle = atan2f(to_control.y, to_control.x);
-    control_heading_diff = wrap_angle(control_angle - sp->ship.angle);
+    control_heading_diff = wrap_angle(control_angle - sp->ship->angle);
 
     memset(row, 0, sizeof(*row));
     row->episode = episode;
@@ -704,40 +702,40 @@ static void fill_state_row(const flight_trace_config_t *config,
     row->control_heading_cos = cosf(control_heading_diff);
     row->control_heading_sin = sinf(control_heading_diff);
     row->speed = speed;
-    row->forward_speed = v2_dot(sp->ship.vel, forward);
-    row->lateral_speed = v2_dot(sp->ship.vel, right);
+    row->forward_speed = v2_dot(sp->ship->vel, forward);
+    row->lateral_speed = v2_dot(sp->ship->vel, right);
     row->brake_distance = (speed * speed) / (2.0f * SHIP_BRAKE);
     row->fwd_clear = trace_forward_clearance(w,
-                                             sp->ship.pos,
-                                             sp->ship.vel,
+                                             sp->ship->pos,
+                                             sp->ship->vel,
                                              hull->ship_radius,
-                                             sp->ship.angle);
+                                             sp->ship->angle);
     row->left_clear = trace_forward_clearance(w,
-                                              sp->ship.pos,
-                                              sp->ship.vel,
+                                              sp->ship->pos,
+                                              sp->ship->vel,
                                               hull->ship_radius,
-                                              sp->ship.angle + 0.7f);
+                                              sp->ship->angle + 0.7f);
     row->right_clear = trace_forward_clearance(w,
-                                               sp->ship.pos,
-                                               sp->ship.vel,
+                                               sp->ship->pos,
+                                               sp->ship->vel,
                                                hull->ship_radius,
-                                               sp->ship.angle - 0.7f);
+                                               sp->ship->angle - 0.7f);
     row->vel_clear = speed > 0.5f
                    ? trace_forward_clearance(w,
-                                             sp->ship.pos,
-                                             sp->ship.vel,
+                                             sp->ship->pos,
+                                             sp->ship->vel,
                                              hull->ship_radius,
-                                             atan2f(sp->ship.vel.y, sp->ship.vel.x))
+                                             atan2f(sp->ship->vel.y, sp->ship->vel.x))
                    : row->fwd_clear;
-    row->signal = signal_strength_at(w, sp->ship.pos);
-    row->hull_ratio = max_hull > 0.0f ? sp->ship.hull / max_hull : 1.0f;
+    row->signal = signal_strength_at(w, sp->ship->pos);
+    row->hull_ratio = max_hull > 0.0f ? sp->ship->hull / max_hull : 1.0f;
     row->path_count = path != NULL ? path->count : 0;
     row->path_current = path != NULL ? path->current : 0;
-    row->x = sp->ship.pos.x;
-    row->y = sp->ship.pos.y;
-    row->vx = sp->ship.vel.x;
-    row->vy = sp->ship.vel.y;
-    row->angle = sp->ship.angle;
+    row->x = sp->ship->pos.x;
+    row->y = sp->ship->pos.y;
+    row->vx = sp->ship->vel.x;
+    row->vy = sp->ship->vel.y;
+    row->angle = sp->ship->angle;
     row->goal_x = goal.x;
     row->goal_y = goal.y;
     row->control_x = control_target.x;
@@ -963,7 +961,8 @@ static void print_counterfactual_csv_row(FILE *out, const flight_trace_row_t *ro
 
 static void reset_trace_player(world_t *w, server_player_t *sp)
 {
-    ship_cleanup(&sp->ship);
+    world_tow_links_clear_source(w, sp->ship_ref);
+    ship_cleanup(sp->ship);
     memset(sp, 0, sizeof(*sp));
     player_init_ship(sp, w);
     sp->id = 0;
@@ -1002,16 +1001,14 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
         nav_path_t path = {0};
 
         reset_trace_player(&w, sp);
-        sp->ship.pos = random_station_nearby(&rng,
+        sp->ship->pos = random_station_nearby(&rng,
                                              station,
                                              config->spawn_min,
                                              config->spawn_max);
-        sp->ship.vel = v2(rng_range(&rng, -70.0f, 70.0f),
+        sp->ship->vel = v2(rng_range(&rng, -70.0f, 70.0f),
                           rng_range(&rng, -70.0f, 70.0f));
-        sp->ship.angle = rng_range(&rng, -PI_F, PI_F);
-        sp->ship.hull = ship_max_hull(&sp->ship);
-        sp->ship.towed_count = 0;
-        sp->ship.towed_scaffold = -1;
+        sp->ship->angle = rng_range(&rng, -PI_F, PI_F);
+        sp->ship->hull = ship_max_hull(sp->ship);
         sp->docked = false;
         sp->boost_hold_timer = 0.0f;
         memset(&sp->input, 0, sizeof(sp->input));
@@ -1022,8 +1019,8 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
                                      config->goal_max);
 
         for (int tick = 0; tick < config->ticks; tick++) {
-            const hull_def_t *hull = ship_hull_def(&sp->ship);
-            vec2 to_goal = v2_sub(goal, sp->ship.pos);
+            const hull_def_t *hull = ship_hull_def(sp->ship);
+            vec2 to_goal = v2_sub(goal, sp->ship->pos);
             float dist = sqrtf(v2_len_sq(to_goal));
             flight_cmd_t teacher;
             int action;
@@ -1047,12 +1044,12 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
             float next_speed;
             flight_trace_row_t row;
 
-            if (dist < 80.0f || sp->ship.hull <= 0.0f) {
+            if (dist < 80.0f || sp->ship->hull <= 0.0f) {
                 break;
             }
 
             teacher = flight_steer_to(&w,
-                                      &sp->ship,
+                                      sp->ship,
                                       &path,
                                       goal,
                                       config->standoff,
@@ -1065,37 +1062,37 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
             if (path.count > 0 && path.current < path.count) {
                 control_target = path.waypoints[path.current];
             }
-            to_control = v2_sub(control_target, sp->ship.pos);
+            to_control = v2_sub(control_target, sp->ship->pos);
             control_dist = sqrtf(v2_len_sq(to_control));
-            forward = ship_forward(sp->ship.angle);
+            forward = ship_forward(sp->ship->angle);
             right = v2(-forward.y, forward.x);
-            speed = sqrtf(v2_len_sq(sp->ship.vel));
-            max_hull = ship_max_hull(&sp->ship);
+            speed = sqrtf(v2_len_sq(sp->ship->vel));
+            max_hull = ship_max_hull(sp->ship);
             goal_angle = atan2f(to_goal.y, to_goal.x);
-            heading_diff = wrap_angle(goal_angle - sp->ship.angle);
+            heading_diff = wrap_angle(goal_angle - sp->ship->angle);
             control_angle = atan2f(to_control.y, to_control.x);
-            control_heading_diff = wrap_angle(control_angle - sp->ship.angle);
+            control_heading_diff = wrap_angle(control_angle - sp->ship->angle);
             fwd_clear = trace_forward_clearance(&w,
-                                                sp->ship.pos,
-                                                sp->ship.vel,
+                                                sp->ship->pos,
+                                                sp->ship->vel,
                                                 hull->ship_radius,
-                                                sp->ship.angle);
+                                                sp->ship->angle);
             left_clear = trace_forward_clearance(&w,
-                                                 sp->ship.pos,
-                                                 sp->ship.vel,
+                                                 sp->ship->pos,
+                                                 sp->ship->vel,
                                                  hull->ship_radius,
-                                                 sp->ship.angle + 0.7f);
+                                                 sp->ship->angle + 0.7f);
             right_clear = trace_forward_clearance(&w,
-                                                  sp->ship.pos,
-                                                  sp->ship.vel,
+                                                  sp->ship->pos,
+                                                  sp->ship->vel,
                                                   hull->ship_radius,
-                                                  sp->ship.angle - 0.7f);
+                                                  sp->ship->angle - 0.7f);
             vel_clear = speed > 0.5f
                       ? trace_forward_clearance(&w,
-                                                sp->ship.pos,
-                                                sp->ship.vel,
+                                                sp->ship->pos,
+                                                sp->ship->vel,
                                                 hull->ship_radius,
-                                                atan2f(sp->ship.vel.y, sp->ship.vel.x))
+                                                atan2f(sp->ship->vel.y, sp->ship->vel.x))
                       : fwd_clear;
 
             memset(&row, 0, sizeof(row));
@@ -1117,23 +1114,23 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
             row.control_heading_cos = cosf(control_heading_diff);
             row.control_heading_sin = sinf(control_heading_diff);
             row.speed = speed;
-            row.forward_speed = v2_dot(sp->ship.vel, forward);
-            row.lateral_speed = v2_dot(sp->ship.vel, right);
+            row.forward_speed = v2_dot(sp->ship->vel, forward);
+            row.lateral_speed = v2_dot(sp->ship->vel, right);
             row.brake_distance = (speed * speed) / (2.0f * SHIP_BRAKE);
             row.fwd_clear = fwd_clear;
             row.left_clear = left_clear;
             row.right_clear = right_clear;
             row.vel_clear = vel_clear;
-            row.signal = signal_strength_at(&w, sp->ship.pos);
-            row.hull_ratio = max_hull > 0.0f ? sp->ship.hull / max_hull : 1.0f;
+            row.signal = signal_strength_at(&w, sp->ship->pos);
+            row.hull_ratio = max_hull > 0.0f ? sp->ship->hull / max_hull : 1.0f;
             row.path_count = path.count;
             row.path_current = path.current;
             row.candidate_mask = candidate_action_mask();
-            row.x = sp->ship.pos.x;
-            row.y = sp->ship.pos.y;
-            row.vx = sp->ship.vel.x;
-            row.vy = sp->ship.vel.y;
-            row.angle = sp->ship.angle;
+            row.x = sp->ship->pos.x;
+            row.y = sp->ship->pos.y;
+            row.vx = sp->ship->vel.x;
+            row.vy = sp->ship->vel.y;
+            row.angle = sp->ship->angle;
             row.goal_x = goal.x;
             row.goal_y = goal.y;
             row.control_x = control_target.x;
@@ -1142,8 +1139,8 @@ static int run_trace(const flight_trace_config_t *config, FILE *out)
             apply_trace_action(sp, action);
             world_sim_step_player_only(&w, 0, SIM_DT);
 
-            next_dist = sqrtf(v2_dist_sq(sp->ship.pos, goal));
-            next_speed = sqrtf(v2_len_sq(sp->ship.vel));
+            next_dist = sqrtf(v2_dist_sq(sp->ship->pos, goal));
+            next_speed = sqrtf(v2_len_sq(sp->ship->vel));
             row.progress = dist - next_dist;
             row.next_dist = next_dist;
             row.next_speed = next_speed;
@@ -1174,7 +1171,7 @@ static int replay_history(const flight_trace_episode_t *init,
         apply_trace_action(sp, history[i]);
         world_sim_step(w, SIM_DT);
         scan_pain_events(w, &pain);
-        if (pain.death_events > 0 || sp->docked || sp->ship.hull <= 0.0f) {
+        if (pain.death_events > 0 || sp->docked || sp->ship->hull <= 0.0f) {
             if (out_sp != NULL) *out_sp = sp;
             return 0;
         }
@@ -1214,51 +1211,51 @@ static int evaluate_counterfactual_action(const flight_trace_config_t *config,
         return 0;
     }
 
-    hull = ship_hull_def(&sp->ship);
+    hull = ship_hull_def(sp->ship);
     fill_state_row(config, &w, sp, &path, init->goal, episode, tick, action, row);
     start_dist = row->dist;
-    max_hull = ship_max_hull(&sp->ship);
-    start_hull = sp->ship.hull;
+    max_hull = ship_max_hull(sp->ship);
+    start_hull = sp->ship->hull;
 
     for (int h = 0; h < config->horizon_ticks; h++) {
         apply_trace_action(sp, action);
         world_sim_step(&w, SIM_DT);
         scan_pain_events(&w, &pain);
-        if (pain.death_events > 0 || sp->docked || sp->ship.hull <= 0.0f) {
+        if (pain.death_events > 0 || sp->docked || sp->ship->hull <= 0.0f) {
             break;
         }
     }
 
-    row->next_dist = sqrtf(v2_dist_sq(sp->ship.pos, init->goal));
-    row->next_speed = sqrtf(v2_len_sq(sp->ship.vel));
+    row->next_dist = sqrtf(v2_dist_sq(sp->ship->pos, init->goal));
+    row->next_speed = sqrtf(v2_len_sq(sp->ship->vel));
     row->progress = start_dist - row->next_dist;
     row->group_id = group_id;
     row->horizon_ticks = config->horizon_ticks;
     row->damage_events = pain.damage_events;
     row->death_events = pain.death_events;
     row->damage_amount = pain.damage_amount;
-    row->end_hull_ratio = max_hull > 0.0f ? sp->ship.hull / max_hull : 1.0f;
-    row->hull_loss = start_hull - sp->ship.hull;
+    row->end_hull_ratio = max_hull > 0.0f ? sp->ship->hull / max_hull : 1.0f;
+    row->hull_loss = start_hull - sp->ship->hull;
     if (row->hull_loss < 0.0f || pain.death_events > 0) {
         row->hull_loss = pain.death_events > 0 ? start_hull : 0.0f;
     }
     {
-        vec2 end_to_goal = v2_sub(init->goal, sp->ship.pos);
-        vec2 end_forward = ship_forward(sp->ship.angle);
+        vec2 end_to_goal = v2_sub(init->goal, sp->ship->pos);
+        vec2 end_forward = ship_forward(sp->ship->angle);
         float end_dist = sqrtf(v2_len_sq(end_to_goal));
         float goal_dir_x = end_dist > 0.001f ? end_to_goal.x / end_dist : end_forward.x;
         float goal_dir_y = end_dist > 0.001f ? end_to_goal.y / end_dist : end_forward.y;
         float heading_cos = end_forward.x * goal_dir_x + end_forward.y * goal_dir_y;
-        float closing_speed = sp->ship.vel.x * goal_dir_x + sp->ship.vel.y * goal_dir_y;
-        float forward_speed = v2_dot(sp->ship.vel, end_forward);
+        float closing_speed = sp->ship->vel.x * goal_dir_x + sp->ship->vel.y * goal_dir_y;
+        float forward_speed = v2_dot(sp->ship->vel, end_forward);
         float lateral_speed_sq = row->next_speed * row->next_speed - closing_speed * closing_speed;
         float lateral_speed = lateral_speed_sq > 0.0f ? sqrtf(lateral_speed_sq) : 0.0f;
         float positive_progress = row->progress > 0.0f ? row->progress : 0.0f;
         float wall_clearance = trace_wall_clearance(&w,
-                                                    sp->ship.pos,
-                                                    sp->ship.vel,
+                                                    sp->ship->pos,
+                                                    sp->ship->vel,
                                                     hull->ship_radius,
-                                                    sp->ship.angle);
+                                                    sp->ship->angle);
         float speed_ratio = config->max_speed > 0.0f
                           ? fminf(row->next_speed / config->max_speed, 1.5f)
                           : 0.0f;
@@ -1324,11 +1321,11 @@ static int run_counterfactual_trace(const flight_trace_config_t *config, FILE *o
         setup_trace_world(&init, &main_world, &sp);
 
         for (int tick = 0; tick < config->ticks; tick++) {
-            float dist = sqrtf(v2_dist_sq(sp->ship.pos, init.goal));
+            float dist = sqrtf(v2_dist_sq(sp->ship->pos, init.goal));
             flight_trace_pain_t pain = {0};
             int action;
 
-            if (dist < 80.0f || sp->ship.hull <= 0.0f || sp->docked) {
+            if (dist < 80.0f || sp->ship->hull <= 0.0f || sp->docked) {
                 break;
             }
 

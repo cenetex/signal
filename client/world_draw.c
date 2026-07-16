@@ -207,7 +207,7 @@ static float hail_asteroid_relevance(const asteroid_t *a,
     }
     if (a->tier == ASTEROID_TIER_S)
         score += 50000.0f;
-    if (mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship.mining_level, a))
+    if (mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship->mining_level, a))
         score += 30000.0f;
 
     float best_demand = 0.0f;
@@ -1924,7 +1924,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                                   m->type == MODULE_TRACTOR_FAB)) {
                 float fr, fg, fb;
                 module_color(m->type, &fr, &fg, &fb);
-                bool producing = station->module_input[mod_idx[i]] > 0.1f;
+                bool producing = station->modules[mod_idx[i]].input_buffer > 0.1f;
 
                 /* Find nearest module that could supply this fab (furnace or storage) */
                 vec2 supplier = positions[i];
@@ -2107,7 +2107,7 @@ static void draw_tractor_field_spirals(vec2 center, float radius,
 
 void draw_ship_tractor_field(void) {
     if (g.death_cinematic.active) return;
-    float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+    float tr = ship_tractor_range(LOCAL_PLAYER.ship);
 
     float now = g.world.time;
     float field_dt = 0.0f;
@@ -2115,7 +2115,7 @@ void draw_ship_tractor_field(void) {
         field_dt = now - g.tractor_field_last_time;
     if (field_dt > 0.05f) field_dt = 0.05f;
     g.tractor_field_last_time = now;
-    if (LOCAL_PLAYER.ship.tractor_active) {
+    if (LOCAL_PLAYER.ship->tractor_active) {
         g.tractor_field_expand = clampf(g.tractor_field_expand +
                                         field_dt / 0.30f, 0.0f, 1.0f);
     } else {
@@ -2124,27 +2124,27 @@ void draw_ship_tractor_field(void) {
     }
 
     float cue_prev = world_signal_visual_enter_cue();
-    if (LOCAL_PLAYER.ship.tractor_active) {
+    if (LOCAL_PLAYER.ship->tractor_active) {
         float expand = g.tractor_field_expand;
         float ease = expand * expand * (3.0f - 2.0f * expand);
         float radius = 20.0f + (tr - 20.0f) * ease;
         float alpha = (0.6f - 0.25f * ease) * (expand < 1.0f ? 1.0f : 0.5f);
-        draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha * 0.8f);
-        draw_tractor_field_spirals(LOCAL_PLAYER.ship.pos, radius,
+        draw_circle_outline(LOCAL_PLAYER.ship->pos, radius, 40, PAL_F_SIGNAL_MINT, alpha * 0.8f);
+        draw_tractor_field_spirals(LOCAL_PLAYER.ship->pos, radius,
                                    PAL_F_SIGNAL_OPERATIONAL, alpha * 0.55f, 0.0f);
-    } else if (LOCAL_PLAYER.ship.towed_count > 0) {
+    } else if (LOCAL_PLAYER.ship->towed_count > 0) {
         /* LEASHED: beam lines to fragments. Towed fragments are already in
          * custody, so showing rarity here is intentional; brightness still
          * ramps with leash stretch so taut reads as urgent. */
         tractor_beam_t beam = tractor_tow_beam(
             tr, TRACTOR_TOW_BAND_REST_LENGTH);
-        for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
-            int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        for (int t = 0; t < LOCAL_PLAYER.ship->towed_count; t++) {
+            int idx = LOCAL_PLAYER.ship->towed_fragments[t];
             if (idx < 0 || idx >= MAX_ASTEROIDS || !g.world.asteroids[idx].active) continue;
             const asteroid_t *a = &g.world.asteroids[idx];
             vec2 fpos = a->pos;
             float stretch = tractor_beam_tautness(
-                LOCAL_PLAYER.ship.pos, fpos, &beam);
+                LOCAL_PLAYER.ship->pos, fpos, &beam);
             float gr, gg, gb;
             grade_tint(a->grade, &gr, &gg, &gb);
             float boost = 1.0f + 0.5f * stretch;
@@ -2152,7 +2152,7 @@ void draw_ship_tractor_field(void) {
             float beam_g = fminf(1.0f, gg * boost);
             float beam_b = fminf(1.0f, gb * boost);
             float beam_a = 0.20f + 0.55f * stretch;
-            draw_tractor_tether_wave(LOCAL_PLAYER.ship.pos, fpos,
+            draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, fpos,
                                      beam_r, beam_g, beam_b, beam_a,
                                      stretch, (float)t * 1.7f);
         }
@@ -2179,13 +2179,13 @@ static bool throw_preview_for_fragment(const asteroid_t *a,
 {
     if (!a || !out_start || !out_dir || !out_speed || !out_hotness)
         return false;
-    vec2 to_ship = v2_sub(LOCAL_PLAYER.ship.pos, a->pos);
+    vec2 to_ship = v2_sub(LOCAL_PLAYER.ship->pos, a->pos);
     float dist = v2_len(to_ship);
     vec2 release_dir = dist > 0.01f
         ? v2_scale(to_ship, 1.0f / dist)
-        : v2_from_angle(LOCAL_PLAYER.ship.angle);
+        : v2_from_angle(LOCAL_PLAYER.ship->angle);
     vec2 predicted_vel;
-    ship_release_body_tow(&LOCAL_PLAYER.ship, a->pos, &predicted_vel);
+    ship_release_body_tow(LOCAL_PLAYER.ship, a->pos, &predicted_vel);
     float speed = v2_len(predicted_vel);
     vec2 dir = speed > 0.01f ? v2_scale(predicted_vel, 1.0f / speed)
                              : release_dir;
@@ -2287,31 +2287,31 @@ static void draw_throw_locks(vec2 start, vec2 dir, float speed, float hotness) {
         if (i == g.local_player_slot) continue;
         const server_player_t *sp = &g.world.players[i];
         if (!sp->connected || sp->docked) continue;
-        float radius = ship_hull_def(&sp->ship)->ship_radius;
-        if (throw_preview_hits_target(start, dir, sp->ship.pos,
+        float radius = ship_hull_def(sp->ship)->ship_radius;
+        if (throw_preview_hits_target(start, dir, sp->ship->pos,
                                       radius, max_dist))
-            draw_throw_lock_bracket(sp->ship.pos, radius, hotness);
+            draw_throw_lock_bracket(sp->ship->pos, radius, hotness);
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
         float radius = npc_hull_def(npc)->ship_radius;
-        if (throw_preview_hits_target(start, dir, npc->ship.pos,
+        if (throw_preview_hits_target(start, dir, npc->ship->pos,
                                       radius, max_dist))
-            draw_throw_lock_bracket(npc->ship.pos, radius, hotness);
+            draw_throw_lock_bracket(npc->ship->pos, radius, hotness);
     }
 }
 
 static void draw_throw_preview(void) {
-    if (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_count <= 0) return;
+    if (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship->towed_count <= 0) return;
 
     float best_hotness = -1.0f;
     vec2 best_start = v2(0.0f, 0.0f);
     vec2 best_dir = v2(1.0f, 0.0f);
     float best_speed = 0.0f;
 
-    for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+    for (int t = 0; t < LOCAL_PLAYER.ship->towed_count; t++) {
+        int idx = LOCAL_PLAYER.ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
@@ -2343,8 +2343,8 @@ void draw_ship(void) {
     draw_throw_preview();
     float ship_sat_prev = world_signal_visual_enter_player_ship();
     sgl_push_matrix();
-    sgl_translate(LOCAL_PLAYER.ship.pos.x, LOCAL_PLAYER.ship.pos.y, 0.0f);
-    sgl_rotate(LOCAL_PLAYER.ship.angle, 0.0f, 0.0f, 1.0f);
+    sgl_translate(LOCAL_PLAYER.ship->pos.x, LOCAL_PLAYER.ship->pos.y, 0.0f);
+    sgl_rotate(LOCAL_PLAYER.ship->angle, 0.0f, 0.0f, 1.0f);
 
     if (g.thrusting) {
         float flicker = 10.0f + sinf(g.world.time * 42.0f) * 3.0f;
@@ -2356,7 +2356,7 @@ void draw_ship(void) {
          * Boost wins - you can always see it even in a desert. */
         bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
                         || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
         float fr, fg, fb;
         if (boost_on && !LOCAL_PLAYER.docked) {
             fr = 0.35f; fg = 0.80f; fb = 1.00f;
@@ -2383,7 +2383,7 @@ void draw_ship(void) {
     const float hull_base_r = 0.30f, hull_base_g = 0.56f, hull_base_b = 0.64f;
     float tr = hull_base_r, tg = hull_base_g, tb = hull_base_b;
     {
-        const ship_t *s = &LOCAL_PLAYER.ship;
+        const ship_t *s = LOCAL_PLAYER.ship;
         float cap   = ship_cargo_capacity(s);
         float total = ship_total_cargo(s);
         if (cap > 0.0f && total > 0.001f) {
@@ -2393,14 +2393,14 @@ void draw_ship(void) {
                                        &tr, &tg, &tb);
         }
     }
-    render_color4f_at(LOCAL_PLAYER.ship.pos, tr, tg, tb, 1.0f);
+    render_color4f_at(LOCAL_PLAYER.ship->pos, tr, tg, tb, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(22.0f, 0.0f);
     sgl_v2f(-14.0f, 12.0f);
     sgl_v2f(-14.0f, -12.0f);
     sgl_end();
 
-    render_color4f_at(LOCAL_PLAYER.ship.pos, 0.04f, 0.16f, 0.18f, 1.0f);
+    render_color4f_at(LOCAL_PLAYER.ship->pos, 0.04f, 0.16f, 0.18f, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(8.0f, 0.0f);
     sgl_v2f(-5.0f, 5.5f);
@@ -2542,7 +2542,7 @@ void draw_death_wreckage(void) {
 
 void draw_npc_ship(const npc_ship_t* npc) {
     const hull_def_t* hull = npc_hull_def(npc);
-    bool is_hauler = npc->ship.hull_class == HULL_CLASS_HAULER;
+    bool is_hauler = npc->ship->hull_class == HULL_CLASS_HAULER;
     float scale = hull->render_scale;
     /* NPC hulls keep cleaner, colder lines than the player ship while
      * still absorbing manifest rarity/cargo tint from the server. */
@@ -2553,12 +2553,12 @@ void draw_npc_ship(const npc_ship_t* npc) {
     (void)is_hauler;
 
     sgl_push_matrix();
-    sgl_translate(npc->ship.pos.x, npc->ship.pos.y, 0.0f);
-    sgl_rotate(npc->ship.angle, 0.0f, 0.0f, 1.0f);
+    sgl_translate(npc->ship->pos.x, npc->ship->pos.y, 0.0f);
+    sgl_rotate(npc->ship->angle, 0.0f, 0.0f, 1.0f);
     sgl_scale(scale, scale, 1.0f);
 
     if (npc->thrusting) {
-        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->ship.pos.x) * 2.5f;
+        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->ship->pos.x) * 2.5f;
         sgl_c4f(1.0f, 0.6f, 0.15f, 0.9f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
@@ -2594,8 +2594,8 @@ void draw_npc_mining_beam(const npc_ship_t* npc) {
     const asteroid_t* asteroid = &g.world.asteroids[npc->target_asteroid];
     if (!asteroid->active) return;
 
-    vec2 forward = v2_from_angle(npc->ship.angle);
-    vec2 muzzle = v2_add(npc->ship.pos, v2_scale(forward, npc_hull_def(npc)->ship_radius + 5.0f));
+    vec2 forward = v2_from_angle(npc->ship->angle);
+    vec2 muzzle = v2_add(npc->ship->pos, v2_scale(forward, npc_hull_def(npc)->ship_radius + 5.0f));
     vec2 hit;
     if (!sim_mining_target_hit(muzzle, forward, asteroid, &hit, NULL)) return;
 
@@ -2619,7 +2619,7 @@ void draw_npc_ships(void) {
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!g.world.npc_ships[i].active) continue;
-        if (!on_screen(g.world.npc_ships[i].ship.pos.x, g.world.npc_ships[i].ship.pos.y, 50.0f)) continue;
+        if (!on_screen(g.world.npc_ships[i].ship->pos.x, g.world.npc_ships[i].ship->pos.y, 50.0f)) continue;
         draw_npc_ship(&g.world.npc_ships[i]);
         draw_npc_mining_beam(&g.world.npc_ships[i]);
         /* NPC tow tether */
@@ -2627,15 +2627,15 @@ void draw_npc_ships(void) {
         int towed_fragment = npc_towed_fragment_index(tnpc);
         if (tnpc->role == NPC_ROLE_MINER && towed_fragment >= 0) {
             const asteroid_t *ta = &g.world.asteroids[towed_fragment];
-            float tr = ship_tractor_range(&tnpc->ship);
-            float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship.pos)) : 0.0f;
+            float tr = ship_tractor_range(tnpc->ship);
+            float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship->pos)) : 0.0f;
             if (ta->active && tr > 0.0f && d <= tr * 1.5f) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
                 tractor_beam_t beam = tractor_tow_beam(
                     tr, TRACTOR_TOW_BAND_REST_LENGTH);
                 float stretch = tractor_beam_tautness(
-                    tnpc->ship.pos, ta->pos, &beam);
-                draw_tractor_tether_wave(tnpc->ship.pos, ta->pos,
+                    tnpc->ship->pos, ta->pos, &beam);
+                draw_tractor_tether_wave(tnpc->ship->pos, ta->pos,
                                          0.7f, 0.5f, 0.2f, tp,
                                          stretch, (float)i * 2.3f);
             }
@@ -2654,7 +2654,7 @@ void draw_npc_ships(void) {
              * with the panel rather than vanishing abruptly. */
             float decay = g.inspect_snapshot_timer < 1.0f
                           ? g.inspect_snapshot_timer : 1.0f;
-            draw_circle_outline(tnpc->ship.pos, r, 28,
+            draw_circle_outline(tnpc->ship->pos, r, 28,
                                 0.20f, 0.95f, 0.45f, a * decay);
         }
     }
@@ -2840,14 +2840,14 @@ static void local_player_beam_render_line(vec2 *beam_start, vec2 *beam_end) {
     /* The local network-authoritative ship can be drawn with a visual-only
      * reconciliation offset in render_frame(). Anchor the beam to that
      * same render pose while leaving authoritative hit endpoints alone. */
-    *beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
-                              LOCAL_PLAYER.ship.angle,
-                              &LOCAL_PLAYER.ship);
+    *beam_start = ship_muzzle(LOCAL_PLAYER.ship->pos,
+                              LOCAL_PLAYER.ship->angle,
+                              LOCAL_PLAYER.ship);
     if (!LOCAL_PLAYER.beam_hit) {
         float beam_len = v2_len(v2_sub(LOCAL_PLAYER.beam_end,
                                        LOCAL_PLAYER.beam_start));
         if (beam_len < 1.0f) beam_len = MINING_RANGE;
-        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
+        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship->angle);
         *beam_end = v2_add(*beam_start, v2_scale(forward, beam_len));
     }
 }
@@ -2907,9 +2907,9 @@ void draw_beam(void) {
 void draw_collision_sparks(void) {
     if (LOCAL_PLAYER.docked) return;
     float cue_prev = world_signal_visual_enter_cue();
-    vec2 sp = LOCAL_PLAYER.ship.pos;
-    vec2 sv = LOCAL_PLAYER.ship.vel;
-    float ship_r = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius;
+    vec2 sp = LOCAL_PLAYER.ship->pos;
+    vec2 sv = LOCAL_PLAYER.ship->vel;
+    float ship_r = ship_hull_def(LOCAL_PLAYER.ship)->ship_radius;
     /* Only spark on actual hull contact (no slack). */
     const float pad = 0.0f;
 
@@ -2991,7 +2991,7 @@ void draw_autopilot_path(void) {
 
     if (g.autopilot_path_count == 0) return;
     float cue_prev = world_signal_visual_enter_cue();
-    vec2 prev = LOCAL_PLAYER.ship.pos;
+    vec2 prev = LOCAL_PLAYER.ship->pos;
     float total_drawn = 0.0f;
     const float MAX_DRAW_DIST = 1200.0f;
     const float DASH_LEN = 20.0f;
@@ -3032,13 +3032,13 @@ void draw_autopilot_path(void) {
  * rarity because the fragment has already been collected/towed. */
 void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
-    if (LOCAL_PLAYER.ship.towed_count == 0) return;
+    if (LOCAL_PLAYER.ship->towed_count == 0) return;
     float cue_prev = world_signal_visual_enter_cue();
-    float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+    float tr = ship_tractor_range(LOCAL_PLAYER.ship);
     tractor_beam_t beam = tractor_tow_beam(
         tr, TRACTOR_TOW_BAND_REST_LENGTH);
-    for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+    for (int t = 0; t < LOCAL_PLAYER.ship->towed_count; t++) {
+        int idx = LOCAL_PLAYER.ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
@@ -3048,8 +3048,8 @@ void draw_towed_tethers(void) {
         if (a->grade >= (uint8_t)MINING_GRADE_RARE)
             pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
         float stretch = tractor_beam_tautness(
-            LOCAL_PLAYER.ship.pos, a->pos, &beam);
-        draw_tractor_tether_wave(LOCAL_PLAYER.ship.pos, a->pos,
+            LOCAL_PLAYER.ship->pos, a->pos, &beam);
+        draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, a->pos,
                                  r, gg, b, pulse, stretch, (float)t * 1.7f);
     }
     world_signal_visual_leave_cue(cue_prev);
@@ -3108,7 +3108,7 @@ void draw_tracked_contract_highlight(void) {
 void draw_compass_ring(void) {
     if (LOCAL_PLAYER.docked) return;
     float cue_prev = world_signal_visual_enter_cue();
-    vec2 ship = LOCAL_PLAYER.ship.pos;
+    vec2 ship = LOCAL_PLAYER.ship->pos;
     float ring_r = 120.0f;
     float pip_size = 8.0f;
 
@@ -3152,7 +3152,7 @@ void draw_compass_ring(void) {
         bool found = false;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             const asteroid_t *a = &g.world.asteroids[i];
-            if (!mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship.mining_level, a))
+            if (!mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship->mining_level, a))
                 continue;
             float d = v2_dist_sq(a->pos, ship);
             if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
@@ -3232,8 +3232,8 @@ void draw_remote_players(void) {
         if (i == (int)net_local_id()) continue;
         if (i == g.local_player_slot) continue;
         {
-            float dx = players[i].x - LOCAL_PLAYER.ship.pos.x;
-            float dy = players[i].y - LOCAL_PLAYER.ship.pos.y;
+            float dx = players[i].x - LOCAL_PLAYER.ship->pos.x;
+            float dy = players[i].y - LOCAL_PLAYER.ship->pos.y;
             if (dx * dx + dy * dy < 4.0f) continue; /* within 2u = us */
         }
         bool scanned = net_remote_player_scanned(i);
@@ -3532,15 +3532,15 @@ void draw_npc_chatter(void) {
         sdtx_puts(label);
     }
 
-    if (g.hail_player_line[0] && on_screen(LOCAL_PLAYER.ship.pos.x,
-                                           LOCAL_PLAYER.ship.pos.y, 50.0f)) {
+    if (g.hail_player_line[0] && on_screen(LOCAL_PLAYER.ship->pos.x,
+                                           LOCAL_PLAYER.ship->pos.y, 50.0f)) {
         float player_alpha = 0.0f;
         if (hail_conversation_age_active(0.0f, &player_alpha)) {
             int len = (int)strlen(g.hail_player_line);
             uint8_t line_alpha = (uint8_t)(230.0f * player_alpha);
             sdtx_color4b(PAL_WORLD_STATION_CYAN, line_alpha);
-            sdtx_world_pos(LOCAL_PLAYER.ship.pos.x - len * cell * 0.5f,
-                           LOCAL_PLAYER.ship.pos.y - 34.0f, cell);
+            sdtx_world_pos(LOCAL_PLAYER.ship->pos.x - len * cell * 0.5f,
+                           LOCAL_PLAYER.ship->pos.y - 34.0f, cell);
             sdtx_puts(g.hail_player_line);
         }
     }
@@ -3548,9 +3548,9 @@ void draw_npc_chatter(void) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
-        if (!on_screen(npc->ship.pos.x, npc->ship.pos.y, 50.0f)) continue;
-        if (v2_dist_sq(npc->ship.pos, g.hail_ping_origin) > hail_range_sq) continue;
-        float reveal = hail_scan_reveal_alpha(npc->ship.pos);
+        if (!on_screen(npc->ship->pos.x, npc->ship->pos.y, 50.0f)) continue;
+        if (v2_dist_sq(npc->ship->pos, g.hail_ping_origin) > hail_range_sq) continue;
+        float reveal = hail_scan_reveal_alpha(npc->ship->pos);
         if (reveal <= 0.01f) continue;
 
         const hail_conversation_entry_t *entry =
@@ -3594,8 +3594,8 @@ void draw_npc_chatter(void) {
         int ident_len = (int)strlen(ident);
         uint8_t ident_alpha = (uint8_t)(220.0f * reveal);
         sdtx_color4b(PAL_WORLD_STATION_CYAN, ident_alpha);
-        sdtx_world_pos(npc->ship.pos.x - ident_len * cell * 0.5f,
-                       npc->ship.pos.y + 34.0f, cell);
+        sdtx_world_pos(npc->ship->pos.x - ident_len * cell * 0.5f,
+                       npc->ship->pos.y + 34.0f, cell);
         sdtx_puts(ident);
 
         if (!speak_now) continue;
@@ -3608,8 +3608,8 @@ void draw_npc_chatter(void) {
         sdtx_color4b(nr, ng, nb, line_alpha);
         /* Sit chatter just below the NPC sprite. World Y-up: smaller
          * world_y is below on screen. */
-        sdtx_world_pos(npc->ship.pos.x - len * cell * 0.5f,
-                       npc->ship.pos.y - 24.0f, cell);
+        sdtx_world_pos(npc->ship->pos.x - len * cell * 0.5f,
+                       npc->ship->pos.y - 24.0f, cell);
         sdtx_puts(line);
     }
 }
@@ -3869,8 +3869,9 @@ void draw_cargo_pods(void) {
                                gr, gg, gb, 0.82f);
         }
 
-        if (pod->towed_by >= 0 && pod->towed_by < MAX_PLAYERS) {
-            const ship_t *ship = &g.world.players[pod->towed_by].ship;
+        int tractor_player = cargo_pod_player_tractor(pod);
+        if (tractor_player >= 0 && tractor_player < MAX_PLAYERS) {
+            const ship_t *ship = g.world.players[tractor_player].ship;
             draw_segment(ship->pos, pod->pos, r, g0, b, 0.42f);
         }
     }
@@ -3968,14 +3969,14 @@ void draw_scaffolds(void) {
 void draw_scaffold_tether(void) {
     if (g.death_cinematic.active) return;
     /* Tether line from player ship to towed scaffold */
-    int idx = LOCAL_PLAYER.ship.towed_scaffold;
+    int idx = LOCAL_PLAYER.ship->towed_scaffold;
     if (idx < 0 || idx >= MAX_SCAFFOLDS) return;
     const scaffold_t *sc = &g.world.scaffolds[idx];
     if (!sc->active) return;
 
     float pulse = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
     float cue_prev = world_signal_visual_enter_cue();
-    draw_segment(LOCAL_PLAYER.ship.pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
+    draw_segment(LOCAL_PLAYER.ship->pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
     world_signal_visual_leave_cue(cue_prev);
 }
 
@@ -4175,7 +4176,7 @@ void draw_placement_reticle(void) {
      * it does not read as the committed cyan planned-station blueprint. */
     if (g.plan_mode_active && g.plan_target_station == -1) {
         float cue_prev = world_signal_visual_enter_cue();
-        vec2 c = LOCAL_PLAYER.ship.pos;
+        vec2 c = LOCAL_PLAYER.ship->pos;
         float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
         const float ghost_r = 0.78f;
         const float ghost_g = 0.70f;
@@ -4245,7 +4246,7 @@ void draw_placement_reticle(void) {
             sgl_v2f(target.x, target.y + 40.0f); sgl_v2f(target.x, target.y + 40.0f - tick);
             sgl_end();
             /* Tether line from ship to target */
-            draw_segment(LOCAL_PLAYER.ship.pos, target, mr, mg, mb, pulse * 0.5f);
+            draw_segment(LOCAL_PLAYER.ship->pos, target, mr, mg, mb, pulse * 0.5f);
             world_signal_visual_leave_cue(cue_prev);
         }
     }
@@ -4277,7 +4278,7 @@ void draw_placement_reticle(void) {
     } else {
         /* Found-new-outpost preview: show reticle at the scaffold's position.
          * Color it red if signal is too weak / placement is invalid. */
-        int idx = LOCAL_PLAYER.ship.towed_scaffold;
+        int idx = LOCAL_PLAYER.ship->towed_scaffold;
         if (idx < 0 || idx >= MAX_SCAFFOLDS) return;
         const scaffold_t *sc = &g.world.scaffolds[idx];
         if (!sc->active) return;
@@ -4314,7 +4315,7 @@ void draw_placement_reticle(void) {
         sgl_v2f(target.x, target.y - 36.0f); sgl_v2f(target.x, target.y - 36.0f + tick);
         sgl_v2f(target.x, target.y + 36.0f); sgl_v2f(target.x, target.y + 36.0f - tick);
         sgl_end();
-        draw_segment(LOCAL_PLAYER.ship.pos, target, r, g0, b, pulse * 0.5f);
+        draw_segment(LOCAL_PLAYER.ship->pos, target, r, g0, b, pulse * 0.5f);
     } else {
         /* Outpost-founding reticle: larger, dashed circle showing the
          * approximate dock radius of the outpost-to-be. */

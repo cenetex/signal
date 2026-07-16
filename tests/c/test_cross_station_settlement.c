@@ -136,7 +136,7 @@ static bool crs_prepare_player_carrier(world_t *w,
     sp->connected = true;
     sp->pubkey_set = true;
     memcpy(sp->pubkey, player_pk, 32);
-    if (!ship_manifest_bootstrap(&sp->ship)) return false;
+    if (!ship_manifest_bootstrap(sp->ship)) return false;
 
     cargo_unit_t cu = {0};
     cu.kind = CARGO_KIND_INGOT;
@@ -146,7 +146,7 @@ static bool crs_prepare_player_carrier(world_t *w,
     cu.prefix_class = INGOT_PREFIX_M;
     cu.quantity = 1;
     memcpy(cu.pub, cargo_pk, 32);
-    return ship_manifest_push_with_chain(&sp->ship, &cu, chain);
+    return ship_manifest_push_with_chain(sp->ship, &cu, chain);
 }
 
 static void crs_init_foreign_station(station_t *foreign) {
@@ -438,8 +438,8 @@ TEST(test_cross_station_save_load_preserves_receipts) {
     server_player_t *sp = &w->players[0];
     player_init_ship(sp, w);
     sp->connected = true;
-    ASSERT(ship_manifest_bootstrap(&sp->ship));
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ASSERT(ship_manifest_bootstrap(sp->ship));
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
 
     cargo_unit_t cu = {0};
@@ -449,7 +449,7 @@ TEST(test_cross_station_save_load_preserves_receipts) {
     cu.recipe_id = RECIPE_SMELT;
     cu.prefix_class = INGOT_PREFIX_M;
     memcpy(cu.pub, cargo_pk, 32);
-    ASSERT(manifest_push(&sp->ship.manifest, &cu));
+    ASSERT(manifest_push(&sp->ship->manifest, &cu));
 
     cargo_receipt_t r1, r2;
     ASSERT(crs_first_hop(w, helios, player_pk, cargo_pk, &r1));
@@ -458,7 +458,7 @@ TEST(test_cross_station_save_load_preserves_receipts) {
     ASSERT(ship_receipts_push_chain(rcpts, chain, 2));
     /* Parity: receipts.count == manifest.count == 1. */
     ASSERT_EQ_INT((int)rcpts->count, 1);
-    ASSERT_EQ_INT((int)sp->ship.manifest.count, 1);
+    ASSERT_EQ_INT((int)sp->ship->manifest.count, 1);
 
     /* Persist + reload via player_save / player_load. */
     char dir[256];
@@ -489,13 +489,14 @@ TEST(test_cross_station_save_load_preserves_receipts) {
     WORLD_HEAP w2 = calloc(1, sizeof(world_t));
     ASSERT(w2 != NULL);
     ASSERT(world_load(w2, TMP("crs_world.sav")));
-    server_player_t sp2 = {0};
+    ship_t sp2_ship = {0};
+    server_player_t sp2 = {.ship = &sp2_ship};
     memcpy(sp2.session_token, sp->session_token, 8);
     sp2.session_ready = true;
     ASSERT(player_load_by_token(&sp2, w2, dir, sp->session_token));
 
-    ASSERT_EQ_INT((int)sp2.ship.manifest.count, 1);
-    ship_receipts_t *rcpts2 = ship_get_receipts(&sp2.ship);
+    ASSERT_EQ_INT((int)sp2.ship->manifest.count, 1);
+    ship_receipts_t *rcpts2 = ship_get_receipts(sp2.ship);
     ASSERT(rcpts2 != NULL);
     ASSERT_EQ_INT((int)rcpts2->count, 1);
     ASSERT_EQ_INT((int)rcpts2->chains[0].len, 2);
@@ -505,7 +506,7 @@ TEST(test_cross_station_save_load_preserves_receipts) {
            == CARGO_RECEIPT_OK);
 
     /* Cleanup. */
-    ship_cleanup(&sp2.ship);
+    ship_cleanup(sp2.ship);
     remove(TMP("crs_world.sav"));
     crs_teardown();
 }
@@ -571,7 +572,7 @@ TEST(test_present_receipt_chain_to_carried_cargo) {
     ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_OK);
 
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->count, 1);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
@@ -604,7 +605,7 @@ TEST(test_present_receipt_chain_dispatch_attaches) {
     ASSERT(result.evaluated);
     ASSERT_EQ_INT(result.result, CARGO_RECEIPT_PRESENT_OK);
 
-    ship_receipts_t *rcpts = ship_get_receipts(&w->players[0].ship);
+    ship_receipts_t *rcpts = ship_get_receipts(w->players[0].ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->count, 1);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
@@ -639,7 +640,7 @@ TEST(test_present_foreign_authority_receipt_chain) {
     server_player_t *sp = &w->players[0];
     ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_OK);
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
     ASSERT(memcmp(rcpts->chains[0].links[0].authoring_station,
@@ -664,7 +665,7 @@ TEST(test_present_receipt_chain_rejects_wrong_recipient) {
     server_player_t *sp = &w->players[0];
     ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT);
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 0);
 
@@ -693,7 +694,7 @@ TEST(test_present_receipt_chain_rejects_existing_mismatch) {
     server_player_t *sp = &w->players[0];
     ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &alternate, 1)
            == CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH);
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
     ASSERT(memcmp(&rcpts->chains[0].links[0], &original, sizeof(original)) == 0);
@@ -717,22 +718,22 @@ TEST(test_handoff_ticket_roundtrip_verifies_ship_and_cargo) {
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
 
     server_player_t *sp = &w->players[0];
-    sp->ship.pos = (vec2){123.0f, -45.5f};
-    sp->ship.vel = (vec2){1.25f, 2.5f};
-    sp->ship.angle = 0.75f;
-    sp->ship.hull = 91.0f;
+    sp->ship->pos = (vec2){123.0f, -45.5f};
+    sp->ship->vel = (vec2){1.25f, 2.5f};
+    sp->ship->angle = 0.75f;
+    sp->ship->hull = 91.0f;
 
     handoff_ticket_t ticket;
     ASSERT(handoff_ticket_issue_for_ship(
         w->stations[2].station_pubkey, w->stations[2].station_secret,
         w->stations[1].station_pubkey, player_pk,
-        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+        2u, 1u, 100u, 160u, sp->ship, &ticket));
     ASSERT_EQ_INT((int)ticket.cargo_count, 1);
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+        player_pk, sp->ship) == HANDOFF_TICKET_OK);
 
     uint8_t packed[HANDOFF_TICKET_SIZE];
     handoff_ticket_t unpacked;
@@ -742,7 +743,7 @@ TEST(test_handoff_ticket_roundtrip_verifies_ship_and_cargo) {
         &unpacked, 120u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+        player_pk, sp->ship) == HANDOFF_TICKET_OK);
 
     crs_teardown();
 }
@@ -767,13 +768,13 @@ TEST(test_handoff_ticket_rejects_tampered_ship_state) {
     ASSERT(handoff_ticket_issue_for_ship(
         w->stations[2].station_pubkey, w->stations[2].station_secret,
         w->stations[1].station_pubkey, player_pk,
-        2u, 1u, 100u, 160u, &sp->ship, &ticket));
-    sp->ship.hull -= 1.0f;
+        2u, 1u, 100u, 160u, sp->ship, &ticket));
+    sp->ship->hull -= 1.0f;
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_SHIP_STATE);
+        player_pk, sp->ship) == HANDOFF_TICKET_REJECT_SHIP_STATE);
 
     crs_teardown();
 }
@@ -798,16 +799,16 @@ TEST(test_handoff_ticket_rejects_tampered_cargo_root) {
     ASSERT(handoff_ticket_issue_for_ship(
         w->stations[2].station_pubkey, w->stations[2].station_secret,
         w->stations[1].station_pubkey, player_pk,
-        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+        2u, 1u, 100u, 160u, sp->ship, &ticket));
 
-    ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     rcpts->chains[0].links[0].signature[0] ^= 0x01u;
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_CARGO_ROOT);
+        player_pk, sp->ship) == HANDOFF_TICKET_REJECT_CARGO_ROOT);
 
     crs_teardown();
 }
@@ -832,25 +833,25 @@ TEST(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery) {
     ASSERT(handoff_ticket_issue_for_ship(
         w->stations[2].station_pubkey, w->stations[2].station_secret,
         w->stations[1].station_pubkey, player_pk,
-        2u, 1u, 100u, 160u, &sp->ship, &ticket));
+        2u, 1u, 100u, 160u, sp->ship, &ticket));
 
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 161u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_EXPIRED);
+        player_pk, sp->ship) == HANDOFF_TICKET_REJECT_EXPIRED);
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
         w->stations[0].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_DEST);
+        player_pk, sp->ship) == HANDOFF_TICKET_REJECT_DEST);
 
     ticket.dest_zone ^= 0x01u;
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_REJECT_BAD_SIGNATURE);
+        player_pk, sp->ship) == HANDOFF_TICKET_REJECT_BAD_SIGNATURE);
 
     crs_teardown();
 }
@@ -871,22 +872,22 @@ TEST(test_handoff_snapshot_roundtrip_preserves_bound_hashes) {
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &chain));
 
     server_player_t *sp = &w->players[0];
-    sp->ship.pos = (vec2){321.0f, -654.0f};
-    sp->ship.vel = (vec2){7.0f, -3.0f};
-    sp->ship.hull = 88.0f;
-    sp->ship.mining_level = 2;
-    sp->ship.hold_level = 3;
-    sp->ship.unlocked_modules = 0x15u;
+    sp->ship->pos = (vec2){321.0f, -654.0f};
+    sp->ship->vel = (vec2){7.0f, -3.0f};
+    sp->ship->hull = 88.0f;
+    sp->ship->mining_level = 2;
+    sp->ship->hold_level = 3;
+    sp->ship->unlocked_modules = 0x15u;
 
     uint8_t ship_hash_before[32], cargo_root_before[32];
-    handoff_ticket_ship_state_hash(&sp->ship, ship_hash_before);
-    handoff_ticket_cargo_root(&sp->ship, cargo_root_before);
+    handoff_ticket_ship_state_hash(sp->ship, ship_hash_before);
+    handoff_ticket_cargo_root(sp->ship, cargo_root_before);
 
-    size_t len = handoff_ship_snapshot_size(&sp->ship);
+    size_t len = handoff_ship_snapshot_size(sp->ship);
     ASSERT(len > HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE);
     uint8_t *buf = malloc(len); ASSERT(buf != NULL);
     size_t packed = 0;
-    ASSERT(handoff_ship_snapshot_pack(&sp->ship, buf, len, &packed));
+    ASSERT(handoff_ship_snapshot_pack(sp->ship, buf, len, &packed));
     ASSERT_EQ_INT((int)packed, (int)len);
 
     ship_t unpacked = {0};
@@ -923,10 +924,10 @@ TEST(test_handoff_flow_accept_hydrates_destination_ship) {
     ASSERT(crs_prepare_player_carrier(src, player_pk, cargo_pk, &chain));
 
     server_player_t *source_sp = &src->players[0];
-    source_sp->ship.pos = (vec2){900.0f, 100.0f};
-    source_sp->ship.vel = (vec2){5.0f, 6.0f};
-    source_sp->ship.hull = 77.0f;
-    source_sp->ship.tractor_level = 2;
+    source_sp->ship->pos = (vec2){900.0f, 100.0f};
+    source_sp->ship->vel = (vec2){5.0f, 6.0f};
+    source_sp->ship->hull = 77.0f;
+    source_sp->ship->tractor_level = 2;
 
     handoff_ticket_t ticket;
     ASSERT(handoff_issue_ticket_to_station(src, 0, 2, 1, 240u, &ticket));
@@ -936,21 +937,21 @@ TEST(test_handoff_flow_accept_hydrates_destination_ship) {
     dest_sp->connected = true;
     dest_sp->pubkey_set = true;
     memcpy(dest_sp->pubkey, player_pk, 32);
-    ASSERT_EQ_INT((int)dest_sp->ship.manifest.count, 0);
+    ASSERT_EQ_INT((int)dest_sp->ship->manifest.count, 0);
 
     int dest_station = -1;
-    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, source_sp->ship,
                                          &dest_station) == HANDOFF_FLOW_OK);
     ASSERT_EQ_INT(dest_station, 1);
-    ASSERT_EQ_INT((int)dest_sp->ship.manifest.count, 1);
-    ASSERT_EQ_FLOAT(dest_sp->ship.pos.x, source_sp->ship.pos.x, 0.001f);
-    ASSERT_EQ_FLOAT(dest_sp->ship.hull, source_sp->ship.hull, 0.001f);
+    ASSERT_EQ_INT((int)dest_sp->ship->manifest.count, 1);
+    ASSERT_EQ_FLOAT(dest_sp->ship->pos.x, source_sp->ship->pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(dest_sp->ship->hull, source_sp->ship->hull, 0.001f);
     ASSERT(!dest_sp->docked);
-    ASSERT(dest_sp->force_authoritative_resync);
+    ASSERT(dest_sp->replication->force_authoritative_resync);
 
     uint8_t dst_root[32], src_root[32];
-    handoff_ticket_cargo_root(&dest_sp->ship, dst_root);
-    handoff_ticket_cargo_root(&source_sp->ship, src_root);
+    handoff_ticket_cargo_root(dest_sp->ship, dst_root);
+    handoff_ticket_cargo_root(source_sp->ship, src_root);
     ASSERT(memcmp(dst_root, src_root, 32) == 0);
 
     crs_teardown();
@@ -987,7 +988,7 @@ TEST(test_handoff_dispatch_request_emits_ticket) {
         &cap.ticket, (uint64_t)w->tick,
         w->stations[2].station_pubkey,
         w->stations[1].station_pubkey,
-        player_pk, &sp->ship) == HANDOFF_TICKET_OK);
+        player_pk, sp->ship) == HANDOFF_TICKET_OK);
 
     crs_teardown();
 }
@@ -1007,7 +1008,7 @@ TEST(test_handoff_dispatch_present_emits_result) {
 
     handoff_ticket_t ticket;
     ASSERT(handoff_issue_ticket_to_station(w, 0, 2, 1, 240u, &ticket));
-    size_t snapshot_len = handoff_ship_snapshot_size(&sp->ship);
+    size_t snapshot_len = handoff_ship_snapshot_size(sp->ship);
     ASSERT(snapshot_len > 0);
     size_t msg_len = 1u + HANDOFF_TICKET_SIZE + 4u + snapshot_len;
     uint8_t *msg = malloc(msg_len); ASSERT(msg != NULL);
@@ -1016,7 +1017,7 @@ TEST(test_handoff_dispatch_present_emits_result) {
     crs_write_u32_le(&msg[1 + HANDOFF_TICKET_SIZE],
                      (uint32_t)snapshot_len);
     size_t packed = 0;
-    ASSERT(handoff_ship_snapshot_pack(&sp->ship,
+    ASSERT(handoff_ship_snapshot_pack(sp->ship,
                                       &msg[1 + HANDOFF_TICKET_SIZE + 4u],
                                       snapshot_len, &packed));
     ASSERT_EQ_INT((int)packed, (int)snapshot_len);
@@ -1034,7 +1035,7 @@ TEST(test_handoff_dispatch_present_emits_result) {
     ASSERT(memcmp(cap.ticket_hash, expected_hash, 32) == 0);
     ASSERT_EQ_INT(sp->nearby_station, 1);
     ASSERT(!sp->docked);
-    ASSERT(sp->force_authoritative_resync);
+    ASSERT(sp->replication->force_authoritative_resync);
 
     free(msg);
     crs_teardown();
@@ -1067,15 +1068,15 @@ TEST(test_handoff_flow_rejects_replay_and_tamper) {
     memcpy(dest_sp->pubkey, player_pk, 32);
 
     int dest_station = -1;
-    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, source_sp->ship,
                                          &dest_station) == HANDOFF_FLOW_OK);
-    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &source_sp->ship,
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, source_sp->ship,
                                          &dest_station) == HANDOFF_FLOW_REJECT_REPLAY);
 
     handoff_ticket_t fresh;
     ASSERT(handoff_issue_ticket_to_station(src, 0, 2, 1, 240u, &fresh));
     ship_t tampered = {0};
-    ASSERT(ship_copy(&tampered, &source_sp->ship));
+    ASSERT(ship_copy(&tampered, source_sp->ship));
     tampered.hull -= 1.0f;
     ASSERT(handoff_accept_presented_ship(dst, 0, &fresh, &tampered,
                                          &dest_station) == HANDOFF_FLOW_REJECT_VERIFY);
@@ -1107,10 +1108,10 @@ TEST(test_handoff_flow_rejects_unknown_source_authority) {
         777u, dst->stations[1].id,
         (uint64_t)dst->tick,
         (uint64_t)dst->tick + 240u,
-        &sp->ship, &ticket));
+        sp->ship, &ticket));
 
     int dest_station = -1;
-    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, &sp->ship,
+    ASSERT(handoff_accept_presented_ship(dst, 0, &ticket, sp->ship,
                                          &dest_station) == HANDOFF_FLOW_REJECT_SOURCE);
 
     crs_teardown();

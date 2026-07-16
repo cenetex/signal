@@ -57,7 +57,8 @@
  *   drag (`vel *= 1/(1+k*dt)`). Specifically: NPC pickup tow,
  *   blueprint pull, and slot snap keep specialized profiles. Standard
  *   ship, hopper, furnace, and cargo-pod tow bands share the preset below
- *   at axial=1.8 and tangent=1.1. Scaffold tow remains specialized.
+ *   at axial=1.8 and tangent=1.1. Heavy scaffolds use this same profile
+ *   with body-specific drag and tow-speed limits.
  */
 #ifndef SHARED_TRACTOR_H
 #define SHARED_TRACTOR_H

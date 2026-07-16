@@ -630,8 +630,8 @@ static void sr_hash_float_bits(sha256_ctx_t *ctx, float v)
 
 static bool sr_reverse_allowed(const server_player_t *sp)
 {
-    vec2 forward = ship_forward(sp->ship.angle);
-    return v2_dot(sp->ship.vel, forward) <= 2.0f;
+    vec2 forward = ship_forward(sp->ship->angle);
+    return v2_dot(sp->ship->vel, forward) <= 2.0f;
 }
 
 static void sr_apply_action(server_player_t *sp, int action)
@@ -645,7 +645,8 @@ static void sr_apply_action(server_player_t *sp, int action)
 
 static void sr_reset_player(world_t *w, server_player_t *sp)
 {
-    ship_cleanup(&sp->ship);
+    world_tow_links_clear_source(w, sp->ship_ref);
+    ship_cleanup(sp->ship);
     memset(sp, 0, sizeof(*sp));
     player_init_ship(sp, w);
     sp->id = 0;
@@ -705,9 +706,11 @@ static int sr_spawn_station_market_pod(world_t *w,
         w, pos, v2(0.0f, 0.0f), commodity, units, count,
         CARGO_POD_CARGO, 0.0f, 0.0f);
     if (pod_idx < 0) return -1;
-    w->cargo_pods[pod_idx].towed_by = -1;
-    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                 station_idx, dock_idx);
+    if (!world_cargo_pod_set_module_tractor(
+            w, pod_idx, station_idx, dock_idx)) {
+        memset(&w->cargo_pods[pod_idx], 0, sizeof(w->cargo_pods[pod_idx]));
+        return -1;
+    }
     return pod_idx;
 }
 
@@ -761,24 +764,22 @@ static bool sr_setup_world(const sr_config_t *config,
     sp = &w->players[0];
     sr_reset_player(w, sp);
     sp->current_station = station_index;
-    sp->ship.pos = config->spawn_set
+    sp->ship->pos = config->spawn_set
                  ? config->spawn
                  : v2_add(station->pos, v2(1600.0f, 200.0f));
-    sp->ship.vel = config->velocity_set ? config->velocity : v2(0.0f, 0.0f);
+    sp->ship->vel = config->velocity_set ? config->velocity : v2(0.0f, 0.0f);
     if (config->goal_set) {
         *out_goal = config->goal;
     } else {
         *out_goal = v2_add(station->pos, v2(2600.0f, -100.0f));
     }
-    sp->ship.angle = config->angle_set
+    sp->ship->angle = config->angle_set
                    ? config->angle
-                   : fixp_atan2f(out_goal->y - sp->ship.pos.y,
-                                  out_goal->x - sp->ship.pos.x);
-    sp->ship.hull = ship_max_hull(&sp->ship);
-    sp->ship.towed_count = 0;
-    sp->ship.towed_scaffold = -1;
+                   : fixp_atan2f(out_goal->y - sp->ship->pos.y,
+                                  out_goal->x - sp->ship->pos.x);
+    sp->ship->hull = ship_max_hull(sp->ship);
 
-    if (out_spawn) *out_spawn = sp->ship.pos;
+    if (out_spawn) *out_spawn = sp->ship->pos;
     if (out_sp) *out_sp = sp;
     return true;
 }
@@ -790,9 +791,6 @@ static void sr_reset_worker_fixture_state(world_t *w)
     signal_field_init(&w->signal_field);
     w->signal_field_decay_tick = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
-        memset(w->stations[s].known_contracts, 0,
-               sizeof(w->stations[s].known_contracts));
-        w->stations[s].known_contract_count = 0;
         memset(&w->stations[s].knowledge, 0,
                sizeof(w->stations[s].knowledge));
         hnn_memory_init(&w->stations[s].hnn_market_memory);
@@ -800,19 +798,13 @@ static void sr_reset_worker_fixture_state(world_t *w)
         w->stations[s].hnn_market_decay_tick = 0;
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (w->npc_ships[i].active) {
-            ship_cleanup(&w->npc_ships[i].ship);
-        }
+        world_npc_ship_slot_release(w, i);
         memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
-    }
-    for (int i = 0; i < MAX_SHIPS; i++) {
-        ship_cleanup(&w->ships[i]);
-        memset(&w->ships[i], 0, sizeof(w->ships[i]));
     }
     for (int i = 0; i < MAX_PLAYERS + MAX_NPC_SHIPS; i++)
         memset(&w->characters[i], 0, sizeof(w->characters[i]));
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-        ship_cleanup(&w->ship_assets[i].ship);
+        ship_cleanup(&w->ship_assets[i].stored_ship);
         memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
     }
     for (int i = 0; i < MAX_SCAFFOLDS; i++)
@@ -826,7 +818,7 @@ static void sr_reset_worker_fixture_state(world_t *w)
 static int sr_station_remote_market_memory_items(
     const knowledge_view_t *view, int local_station);
 static int sr_station_remote_known_contracts(
-    const contract_summary_t *contracts, int count, int cap, int local_station);
+    const knowledge_view_t *view, int local_station);
 
 static bool sr_setup_provenance_script(const sr_config_t *config,
                                        world_t *w,
@@ -892,9 +884,13 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         sp->in_dock_range = false;
         sp->docking_approach = false;
         sp->dock_berth = 0;
-        sp->ship.pos = v2_add(st->pos, v2(800.0f, 0.0f));
-        sp->ship.vel = v2(0.0f, 0.0f);
-        sp->ship.angle = PI_F;
+        /* Keep the fixture pod outside every station-module acquisition
+         * envelope so this scenario starts with a genuinely loose target.
+         * With target-side tractor authority, a module-owned pod may no
+         * longer also be claimed by a player through a parallel flag. */
+        sp->ship->pos = v2_add(st->pos, v2(1200.0f, 0.0f));
+        sp->ship->vel = v2(0.0f, 0.0f);
+        sp->ship->angle = PI_F;
 
         memset(units, 0, sizeof(units));
         for (uint16_t i = 0; i < 7; i++) {
@@ -904,7 +900,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
             }
         }
         pod_idx = spawn_cargo_pod_with_manifest_deterministic(
-            w, v2_add(sp->ship.pos, v2(28.0f, 0.0f)),
+            w, v2_add(sp->ship->pos, v2(28.0f, 0.0f)),
             v2(0.0f, 0.0f), pod_commodity,
             units, 7, CARGO_POD_CARGO, 0.0f, 0.0f);
         return pod_idx >= 0;
@@ -912,8 +908,8 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
     case SR_PROVENANCE_SCRIPT_MINE_FRACTURE: {
         const int asteroid_idx = 0;
         asteroid_t *a = &w->asteroids[asteroid_idx];
-        vec2 forward = ship_forward(sp->ship.angle);
-        vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
+        vec2 forward = ship_forward(sp->ship->angle);
+        vec2 muzzle = ship_muzzle(sp->ship->pos, sp->ship->angle, sp->ship);
 
         memset(w->asteroids, 0, sizeof(w->asteroids));
         memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
@@ -939,8 +935,8 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         a->phase = ASTEROID_PHASE_SOLID;
         a->net_dirty = true;
 
-        sp->ship.vel = v2(0.0f, 0.0f);
-        sp->ship.mining_level = 0;
+        sp->ship->vel = v2(0.0f, 0.0f);
+        sp->ship->mining_level = 0;
         sp->input.mining_target_hint = asteroid_idx;
         return true;
     }
@@ -948,7 +944,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         const int asteroid_idx = 0;
         asteroid_t *a = &w->asteroids[asteroid_idx];
         const float asteroid_radius = 36.0f;
-        float ship_radius = ship_hull_def(&sp->ship)->ship_radius;
+        float ship_radius = ship_hull_def(sp->ship)->ship_radius;
 
         memset(w->asteroids, 0, sizeof(w->asteroids));
         memset(a, 0, sizeof(*a));
@@ -956,8 +952,8 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         a->fracture_child = false;
         a->tier = ASTEROID_TIER_M;
         a->commodity = COMMODITY_FERRITE_ORE;
-        a->pos = v2(sp->ship.pos.x - (asteroid_radius + ship_radius - 3.0f),
-                    sp->ship.pos.y);
+        a->pos = v2(sp->ship->pos.x - (asteroid_radius + ship_radius - 3.0f),
+                    sp->ship->pos.y);
         a->vel = v2(1800.0f, 0.0f);
         a->radius = asteroid_radius;
         a->hp = 25.0f;
@@ -974,8 +970,8 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         a->phase = ASTEROID_PHASE_SOLID;
         a->net_dirty = true;
 
-        sp->ship.vel = v2(0.0f, 0.0f);
-        sp->ship.hull = 20.0f;
+        sp->ship->vel = v2(0.0f, 0.0f);
+        sp->ship->hull = 20.0f;
         sp->docked = false;
         sp->docking_approach = false;
         sp->in_dock_range = false;
@@ -1035,14 +1031,14 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         other->id = 1;
         memset(other->session_token, 0x52, sizeof(other->session_token));
         memset(other->pubkey, 0xB8, sizeof(other->pubkey));
-        sp->ship.pos = center;
-        other->ship.pos = v2_add(center, v2(30.0f, 0.0f));
-        sp->ship.vel = v2(250.0f, 0.0f);
-        other->ship.vel = v2(-250.0f, 0.0f);
-        sp->ship.angle = 0.0f;
-        other->ship.angle = PI_F;
-        sp->ship.hull = ship_max_hull(&sp->ship);
-        other->ship.hull = ship_max_hull(&other->ship);
+        sp->ship->pos = center;
+        other->ship->pos = v2_add(center, v2(30.0f, 0.0f));
+        sp->ship->vel = v2(250.0f, 0.0f);
+        other->ship->vel = v2(-250.0f, 0.0f);
+        sp->ship->angle = 0.0f;
+        other->ship->angle = PI_F;
+        sp->ship->hull = ship_max_hull(sp->ship);
+        other->ship->hull = ship_max_hull(other->ship);
         sp->docked = false;
         other->docked = false;
         sp->in_dock_range = false;
@@ -1084,18 +1080,14 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         b->target_asteroid = 0;
         a->brain_mode = SERVER_BRAIN_MODE_NONE;
         b->brain_mode = SERVER_BRAIN_MODE_NONE;
-        a->ship.pos = center;
-        b->ship.pos = v2_add(center, v2(30.0f, 0.0f));
-        a->ship.vel = v2(250.0f, 0.0f);
-        b->ship.vel = v2(-250.0f, 0.0f);
-        a->ship.angle = 0.0f;
-        b->ship.angle = PI_F;
-        a->ship.hull = npc_max_hull(a);
-        b->ship.hull = npc_max_hull(b);
-        a->hull = a->ship.hull;
-        b->hull = b->ship.hull;
-        *a_ship = a->ship;
-        *b_ship = b->ship;
+        a->ship->pos = center;
+        b->ship->pos = v2_add(center, v2(30.0f, 0.0f));
+        a->ship->vel = v2(250.0f, 0.0f);
+        b->ship->vel = v2(-250.0f, 0.0f);
+        a->ship->angle = 0.0f;
+        b->ship->angle = PI_F;
+        a->ship->hull = npc_max_hull(a);
+        b->ship->hull = npc_max_hull(b);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_THROWN_ROCK_HIT: {
@@ -1108,17 +1100,17 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         memset(target->session_token, 0x62, sizeof(target->session_token));
         memset(target->pubkey, 0xC2, sizeof(target->pubkey));
 
-        sp->ship.pos = v2_add(center, v2(-360.0f, 0.0f));
-        sp->ship.vel = v2(0.0f, 0.0f);
-        sp->ship.angle = 0.0f;
+        sp->ship->pos = v2_add(center, v2(-360.0f, 0.0f));
+        sp->ship->vel = v2(0.0f, 0.0f);
+        sp->ship->angle = 0.0f;
         sp->docked = false;
         sp->in_dock_range = false;
         sp->nearby_station = -1;
 
-        target->ship.pos = center;
-        target->ship.vel = v2(0.0f, 0.0f);
-        target->ship.angle = PI_F;
-        target->ship.hull = ship_max_hull(&target->ship);
+        target->ship->pos = center;
+        target->ship->vel = v2(0.0f, 0.0f);
+        target->ship->angle = PI_F;
+        target->ship->hull = ship_max_hull(target->ship);
         target->docked = false;
         target->in_dock_range = false;
         target->nearby_station = -1;
@@ -1130,7 +1122,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         a->fracture_child = true;
         a->tier = ASTEROID_TIER_L;
         a->commodity = COMMODITY_FERRITE_ORE;
-        a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
+        a->pos = v2(target->ship->pos.x - 80.0f, target->ship->pos.y);
         a->vel = v2(500.0f, 0.0f);
         a->radius = 50.0f;
         a->hp = 1.0f;
@@ -1160,8 +1152,8 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         memset(a, 0, sizeof(*a));
         memset(state, 0, sizeof(*state));
 
-        sp->ship.pos = w->stations[0].pos;
-        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship->pos = w->stations[0].pos;
+        sp->ship->vel = v2(0.0f, 0.0f);
         sp->docked = false;
         sp->in_dock_range = false;
         sp->nearby_station = -1;
@@ -1201,7 +1193,6 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         int sc_idx;
         int npc_slot;
         npc_ship_t *npc;
-        ship_t *ship;
 
         if (home_station >= w->station_count || plan_slot >= MAX_STATIONS)
             return false;
@@ -1225,7 +1216,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
                                 sp->id);
         if (sc_idx < 0) return false;
         w->scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
-        w->scaffolds[sc_idx].towed_by = -1;
+        world_scaffold_clear_tractor(w, sc_idx);
         w->scaffolds[sc_idx].built_at_station = home_station;
         w->scaffolds[sc_idx].vel = v2(0.0f, 0.0f);
 
@@ -1235,25 +1226,16 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         npc->role = NPC_ROLE_HAULER;
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = 0.0f;
-        npc->known_contract_count = 0;
-        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
-        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
-        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
+        knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         hnn_memory_init(&npc->hnn_market_mem);
         npc->hnn_market_station = 0xffu;
         npc->hnn_market_version = 0;
         npc->hnn_market_decay_tick = 0;
-        npc->ship.pos = w->stations[home_station].pos;
-        npc->ship.vel = v2(0.0f, 0.0f);
-        npc->ship.hull_class = HULL_CLASS_HAULER;
-        npc->ship.hull = hull_max_for_class(HULL_CLASS_HAULER);
-        npc->hull = npc->ship.hull;
-        ship = world_npc_ship_for(w, npc_slot);
-        if (!ship) return false;
-        ship->hull_class = HULL_CLASS_HAULER;
-        ship->hull = npc->ship.hull;
-        ship->pos = npc->ship.pos;
-        ship->vel = npc->ship.vel;
+        npc->ship->pos = w->stations[home_station].pos;
+        npc->ship->vel = v2(0.0f, 0.0f);
+        npc->ship->hull_class = HULL_CLASS_HAULER;
+        npc->ship->hull = hull_max_for_class(HULL_CLASS_HAULER);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN: {
@@ -1262,7 +1244,6 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         int existing_kits;
         int npc_slot;
         npc_ship_t *npc;
-        ship_t *ship;
         market_memory_t supply = {0};
         knowledge_item_t item;
 
@@ -1287,23 +1268,16 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         npc = &w->npc_ships[npc_slot];
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = 0.0f;
-        npc->known_contract_count = 0;
-        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
-        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
-        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
+        knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         hnn_memory_init(&npc->hnn_market_mem);
         npc->hnn_market_station = 0xffu;
         npc->hnn_market_version = 0;
         npc->hnn_market_decay_tick = 0;
 
-        ship = world_npc_ship_for(w, npc_slot);
-        if (!ship) return false;
-        npc->ship.pos = home->pos;
-        npc->ship.vel = v2(0.0f, 0.0f);
-        ship->pos = npc->ship.pos;
-        ship->vel = npc->ship.vel;
-        ship->hull = npc_max_hull(npc) - 12.0f;
-        npc->hull = ship->hull;
+        npc->ship->pos = home->pos;
+        npc->ship->vel = v2(0.0f, 0.0f);
+        npc->ship->hull = npc_max_hull(npc) - 12.0f;
 
         if (!market_memory_from_station_supply(home, home_station,
                                                COMMODITY_REPAIR_KIT,
@@ -1312,7 +1286,7 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         }
         if (!knowledge_item_from_market_memory(&supply, &item))
             return false;
-        knowledge_view_insert(&npc->knowledge, &item);
+        knowledge_view_insert(&npc->ship->knowledge, &item);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN: {
@@ -1324,7 +1298,6 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         int existing_dest;
         int npc_slot;
         npc_ship_t *npc;
-        ship_t *ship;
         contract_summary_t summary;
         market_memory_t demand = {0};
         knowledge_item_t item;
@@ -1376,28 +1349,22 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         npc = &w->npc_ships[npc_slot];
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = 0.0f;
-        npc->known_contract_count = 0;
-        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
-        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
-        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
+        knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         hnn_memory_init(&npc->hnn_market_mem);
         npc->hnn_market_station = 0xffu;
         npc->hnn_market_version = 0;
         npc->hnn_market_decay_tick = 0;
 
-        ship = world_npc_ship_for(w, npc_slot);
-        if (!ship) return false;
-        npc->ship.pos = origin->pos;
-        npc->ship.vel = v2(0.0f, 0.0f);
-        ship->pos = npc->ship.pos;
-        ship->vel = npc->ship.vel;
+        npc->ship->pos = origin->pos;
+        npc->ship->vel = v2(0.0f, 0.0f);
 
         summary = contract_summary_make(&w->contracts[0]);
         if (!market_memory_from_contract_summary(&summary, &demand))
             return false;
         if (!knowledge_item_from_market_memory(&demand, &item))
             return false;
-        knowledge_view_insert(&npc->knowledge, &item);
+        knowledge_view_insert(&npc->ship->knowledge, &item);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER: {
@@ -1405,7 +1372,6 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         const int receiving_station = 0;
         int npc_slot;
         npc_ship_t *npc;
-        ship_t *ship;
 
         if (source_station >= w->station_count ||
             receiving_station >= w->station_count) {
@@ -1428,8 +1394,10 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         };
 
         gossip_bootstrap_world_stations(w);
-        if (w->stations[source_station].known_contract_count <= 0 ||
-            w->stations[receiving_station].known_contract_count != 0 ||
+        if (knowledge_view_contract_count(
+                &w->stations[source_station].knowledge) <= 0 ||
+            knowledge_view_contract_count(
+                &w->stations[receiving_station].knowledge) != 0 ||
             sr_station_remote_market_memory_items(
                 &w->stations[receiving_station].knowledge,
                 receiving_station) != 0) {
@@ -1439,27 +1407,19 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         npc_slot = spawn_npc(w, source_station, NPC_ROLE_HAULER);
         if (npc_slot < 0) return false;
         npc = &w->npc_ships[npc_slot];
-        ship = world_npc_ship_for(w, npc_slot);
-        if (!ship) return false;
 
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = 0.0f;
-        npc->known_contract_count = 0;
-        memset(npc->known_contracts, 0, sizeof(npc->known_contracts));
-        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
-        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
+        knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         hnn_memory_init(&npc->hnn_market_mem);
         npc->hnn_market_station = 0xffu;
         npc->hnn_market_version = 0;
         npc->hnn_market_decay_tick = 0;
 
-        gossip_dock_handshake(w, source_station,
-                              npc->known_contracts,
-                              &npc->known_contract_count,
-                              SHIP_KNOWN_CONTRACT_CAP,
-                              &npc->knowledge);
-        if (npc->known_contract_count <= 0 ||
-            sr_station_remote_market_memory_items(&npc->knowledge,
+        gossip_dock_handshake(w, source_station, &npc->ship->knowledge);
+        if (knowledge_view_contract_count(&npc->ship->knowledge) <= 0 ||
+            sr_station_remote_market_memory_items(&npc->ship->knowledge,
                                                   receiving_station) <= 0) {
             return false;
         }
@@ -1470,14 +1430,10 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
         npc->pickup_action = (uint8_t)CONTRACT_TRACTOR;
         npc->state = NPC_STATE_UNLOADING;
         npc->state_timer = 0.0f;
-        npc->ship.pos = station_approach_target(
-            &w->stations[receiving_station], npc->ship.pos);
-        npc->ship.vel = v2(0.0f, 0.0f);
-        npc->ship.hull = npc_max_hull(npc);
-        npc->hull = npc->ship.hull;
-        ship->pos = npc->ship.pos;
-        ship->vel = npc->ship.vel;
-        ship->hull = npc->ship.hull;
+        npc->ship->pos = station_approach_target(
+            &w->stations[receiving_station], npc->ship->pos);
+        npc->ship->vel = v2(0.0f, 0.0f);
+        npc->ship->hull = npc_max_hull(npc);
         return true;
     }
     case SR_PROVENANCE_SCRIPT_NONE:
@@ -1596,10 +1552,11 @@ static void sr_hash_station_construction(sha256_ctx_t *ctx, const station_t *st)
         sr_hash_u8(ctx, mod->last_smelt_commodity);
         sr_hash_u8(ctx, mod->commodity);
         sr_hash_float_bits(ctx, mod->build_progress);
-        sr_hash_float_bits(ctx, st->module_input[m]);
-        sr_hash_float_bits(ctx, st->module_output[m]);
-        sr_hash_float_bits(ctx, st->module_craft_progress[m]);
-        sr_hash_u8(ctx, st->module_diag[m]);
+        sr_hash_float_bits(ctx, mod->input_buffer);
+        sr_hash_float_bits(ctx, mod->output_buffer);
+        sr_hash_float_bits(ctx, mod->active_pulse);
+        sr_hash_float_bits(ctx, mod->craft_progress);
+        sr_hash_u8(ctx, mod->flow_diag);
     }
 
     sr_hash_i32(ctx, arm_count);
@@ -1706,6 +1663,16 @@ static void sr_hash_ship_body(sha256_ctx_t *ctx, const ship_t *ship)
     sr_hash_i32(ctx, ship->towed_scaffold);
 }
 
+static void sr_hash_tractor_binding(sha256_ctx_t *ctx,
+                                    const tractor_binding_t *binding)
+{
+    sr_hash_u8(ctx, binding ? (uint8_t)binding->kind
+                            : (uint8_t)TRACTOR_SOURCE_NONE);
+    sr_hash_i32(ctx, binding ? binding->source_index : -1);
+    sr_hash_i32(ctx, binding ? binding->source_part : -1);
+    sr_hash_u16(ctx, binding ? binding->source_generation : 0);
+}
+
 static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *player)
 {
     sr_hash_i32(ctx, player->id);
@@ -1727,19 +1694,19 @@ static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *playe
     sr_hash_float_bits(ctx, player->autopilot_timer);
     sr_hash_u8(ctx, player->was_in_signal ? 1u : 0u);
     sr_hash_float_bits(ctx, player->boost_hold_timer);
-    sr_hash_ship_body(ctx, &player->ship);
-    for (int i = 0; i < (int)(sizeof(player->ship.towed_fragments) /
-                              sizeof(player->ship.towed_fragments[0])); i++) {
-        sr_hash_i32(ctx, player->ship.towed_fragments[i]);
+    sr_hash_ship_body(ctx, player->ship);
+    for (int i = 0; i < (int)(sizeof(player->ship->towed_fragments) /
+                              sizeof(player->ship->towed_fragments[0])); i++) {
+        sr_hash_i32(ctx, player->ship->towed_fragments[i]);
     }
-    for (int i = 0; i < (int)(sizeof(player->ship.towed_pods) /
-                              sizeof(player->ship.towed_pods[0])); i++) {
-        sr_hash_i32(ctx, player->ship.towed_pods[i]);
+    for (int i = 0; i < (int)(sizeof(player->ship->towed_pods) /
+                              sizeof(player->ship->towed_pods[0])); i++) {
+        sr_hash_i32(ctx, player->ship->towed_pods[i]);
     }
     for (int c = 0; c < COMMODITY_COUNT; c++) {
-        sr_hash_float_bits(ctx, player->ship.cargo[c]);
+        sr_hash_float_bits(ctx, player->ship->cargo[c]);
     }
-    sr_hash_ship_cargo_identity(ctx, &player->ship);
+    sr_hash_ship_cargo_identity(ctx, player->ship);
 }
 
 static void sr_hash_contract_summary(sha256_ctx_t *ctx,
@@ -1774,6 +1741,16 @@ static void sr_hash_known_contracts(sha256_ctx_t *ctx,
     for (int i = 0; i < count; i++) {
         sr_hash_contract_summary(ctx, &contracts[i]);
     }
+}
+
+static void sr_hash_known_contract_view(sha256_ctx_t *ctx,
+                                        const knowledge_view_t *view,
+                                        uint8_t cap)
+{
+    contract_summary_t contracts[KNOWLEDGE_VIEW_MAX_CAP];
+    if (cap > KNOWLEDGE_VIEW_MAX_CAP) cap = KNOWLEDGE_VIEW_MAX_CAP;
+    uint8_t count = knowledge_view_collect_contracts(view, contracts, cap);
+    sr_hash_known_contracts(ctx, contracts, count, cap);
 }
 
 static void sr_hash_knowledge_view(sha256_ctx_t *ctx,
@@ -1842,19 +1819,6 @@ static void sr_hash_signal_field(sha256_ctx_t *ctx,
             sr_hash_u16(ctx, cell->observations[kind]);
         }
     }
-}
-
-static const ship_t *sr_npc_paired_ship_const(const world_t *w, int npc_slot)
-{
-    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
-    if (!w->npc_ships[npc_slot].active) return NULL;
-    for (int c = 0; c < MAX_PLAYERS + MAX_NPC_SHIPS; c++) {
-        const character_t *ch = &w->characters[c];
-        if (!ch->active || ch->npc_slot != npc_slot) continue;
-        if (ch->ship_idx < 0 || ch->ship_idx >= MAX_SHIPS) return NULL;
-        return &w->ships[ch->ship_idx];
-    }
-    return NULL;
 }
 
 static void sr_hash_fracture_claims(sha256_ctx_t *ctx, const world_t *w)
@@ -1936,16 +1900,16 @@ static void sr_state_hash(const world_t *w,
         sr_hash_manifest(&ctx, &st->manifest);
         sr_hash_receipts(&ctx, &st->manifest, station_get_receipts_const(st));
         for (int c = 0; c < COMMODITY_COUNT; c++) {
-            sr_hash_float_bits(&ctx, st->_inventory_cache[c]);
+            sr_hash_float_bits(
+                &ctx, station_inventory_amount(st, (commodity_t)c));
         }
         sr_hash_station_ledger(&ctx, st);
         sr_hash_float_bits(&ctx, ledger_balance(st, sp->session_token));
         sr_hash_float_bits(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
-        sr_hash_known_contracts(&ctx, st->known_contracts,
-                                st->known_contract_count,
-                                STATION_KNOWN_CONTRACT_CAP);
+        sr_hash_known_contract_view(&ctx, &st->knowledge,
+                                    STATION_KNOWN_CONTRACT_CAP);
         sr_hash_knowledge_view(&ctx, &st->knowledge);
         sr_hash_u32(&ctx, st->hnn_market_version);
         sr_hash_u32(&ctx, st->hnn_market_decay_tick);
@@ -1984,6 +1948,7 @@ static void sr_state_hash(const world_t *w,
         sr_hash_float_bits(&ctx, a->rotation);
         sr_hash_float_bits(&ctx, a->spin);
         sr_hash_float_bits(&ctx, a->smelt_progress);
+        sr_hash_tractor_binding(&ctx, &a->tractor);
         sr_hash_i32(&ctx, a->last_towed_by);
         sr_hash_i32(&ctx, a->last_fractured_by);
         sr_hash_u8(&ctx, a->thrown_timer_q);
@@ -2003,33 +1968,24 @@ static void sr_state_hash(const world_t *w,
     sr_hash_i32(&ctx, active_npcs);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &w->npc_ships[i];
-        const ship_t *paired_ship;
         if (!npc->active) continue;
         sr_hash_i32(&ctx, i);
         sr_hash_u8(&ctx, (uint8_t)npc->role);
         sr_hash_u8(&ctx, (uint8_t)npc->state);
-        sr_hash_ship_body(&ctx, &npc->ship);
-        paired_ship = sr_npc_paired_ship_const(w, i);
-        sr_hash_u8(&ctx, paired_ship ? 1u : 0u);
-        if (paired_ship) {
-            sr_hash_ship_body(&ctx, paired_ship);
-            sr_hash_ship_cargo_identity(&ctx, paired_ship);
-        }
+        sr_hash_ship_body(&ctx, npc->ship);
+        sr_hash_ship_cargo_identity(&ctx, npc->ship);
         for (int c = 0; c < COMMODITY_COUNT; c++)
-            sr_hash_float_bits(&ctx, npc->cargo[c]);
+            sr_hash_float_bits(&ctx, npc->ship->cargo[c]);
         sr_hash_i32(&ctx, npc->target_asteroid);
         sr_hash_i32(&ctx, npc->home_station);
         sr_hash_i32(&ctx, npc->dest_station);
         sr_hash_float_bits(&ctx, npc->state_timer);
         sr_hash_u8(&ctx, npc->thrusting ? 1u : 0u);
-        sr_hash_i32(&ctx, npc->towed_fragment);
-        sr_hash_i32(&ctx, npc->towed_scaffold);
-        sr_hash_float_bits(&ctx, npc->hull);
+        sr_hash_i32(&ctx, npc_towed_fragment_index(npc));
         sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
-        sr_hash_known_contracts(&ctx, npc->known_contracts,
-                                npc->known_contract_count,
-                                SHIP_KNOWN_CONTRACT_CAP);
-        sr_hash_knowledge_view(&ctx, &npc->knowledge);
+        sr_hash_known_contract_view(&ctx, &npc->ship->knowledge,
+                                    SHIP_KNOWN_CONTRACT_CAP);
+        sr_hash_knowledge_view(&ctx, &npc->ship->knowledge);
         sr_hash_u8(&ctx, npc->job_diag_count);
         for (int j = 0; j < 4; j++) {
             sr_hash_u8(&ctx, npc->job_diag_kind[j]);
@@ -2093,7 +2049,7 @@ static void sr_state_hash(const world_t *w,
         sr_hash_i32(&ctx, sc->placed_station);
         sr_hash_i32(&ctx, sc->placed_ring);
         sr_hash_i32(&ctx, sc->placed_slot);
-        sr_hash_i32(&ctx, sc->towed_by);
+        sr_hash_tractor_binding(&ctx, &sc->tractor);
         sr_hash_i32(&ctx, sc->built_at_station);
         sr_hash_float_bits(&ctx, sc->build_amount);
     }
@@ -2116,7 +2072,7 @@ static void sr_state_hash(const world_t *w,
         sr_hash_float_bits(&ctx, pod->rotation);
         sr_hash_float_bits(&ctx, pod->spin);
         sr_hash_float_bits(&ctx, pod->age);
-        sr_hash_i32(&ctx, pod->towed_by);
+        sr_hash_tractor_binding(&ctx, &pod->tractor);
     }
     sha256_final(&ctx, out);
 }
@@ -2250,7 +2206,7 @@ static bool sr_run_provenance_script(const sr_config_t *config,
     case SR_PROVENANCE_SCRIPT_BUY_SELL: {
         int buy_before = counts->buy_events;
         int sell_before = counts->sell_events;
-        int start_towed_pods = sp->ship.towed_pod_count;
+        int start_towed_pods = sp->ship->towed_pod_count;
         int pod_idx = -1;
 
         sp->input.buy_product = true;
@@ -2259,13 +2215,13 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
         sp->input.buy_product = false;
-        if (sp->ship.towed_pod_count <= start_towed_pods) {
+        if (sp->ship->towed_pod_count <= start_towed_pods) {
             return false;
         }
-        pod_idx = sp->ship.towed_pods[start_towed_pods];
+        pod_idx = sp->ship->towed_pods[start_towed_pods];
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
             !w->cargo_pods[pod_idx].active ||
-            w->cargo_pods[pod_idx].towed_by != (int8_t)sp->id ||
+            cargo_pod_player_tractor(&w->cargo_pods[pod_idx]) != sp->id ||
             w->cargo_pods[pod_idx].commodity != COMMODITY_FRAME ||
             w->cargo_pods[pod_idx].manifest_count == 0) {
             return false;
@@ -2291,9 +2247,9 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
         if (counts->sell_events <= sell_before ||
-            sp->ship.towed_pod_count != start_towed_pods ||
+            sp->ship->towed_pod_count != start_towed_pods ||
             !w->cargo_pods[pod_idx].active ||
-            w->cargo_pods[pod_idx].towed_by != -1) {
+            !cargo_pod_has_module_tractor(&w->cargo_pods[pod_idx])) {
             return false;
         }
         return true;
@@ -2309,14 +2265,14 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
         if (counts->pickup_events <= pickup_before ||
-            sp->ship.towed_pod_count <= 0) {
+            sp->ship->towed_pod_count <= 0) {
             return false;
         }
 
-        pod_idx = sp->ship.towed_pods[0];
+        pod_idx = sp->ship->towed_pods[0];
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
             !w->cargo_pods[pod_idx].active ||
-            w->cargo_pods[pod_idx].towed_by != (int8_t)sp->id) {
+            cargo_pod_player_tractor(&w->cargo_pods[pod_idx]) != sp->id) {
             return false;
         }
         int hopper_idx = station_find_hopper_for(
@@ -2331,9 +2287,8 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         step_station_cargo_pod_tractors(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
         if (counts->sell_events <= sell_before ||
-            sp->ship.towed_pod_count != 0 ||
+            sp->ship->towed_pod_count != 0 ||
             !w->cargo_pods[pod_idx].active ||
-            w->cargo_pods[pod_idx].towed_by != -1 ||
             !cargo_pod_has_module_tractor(&w->cargo_pods[pod_idx])) {
             return false;
         }
@@ -2355,7 +2310,7 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             counts->fracture_events <= fracture_before ||
             !w->asteroids[0].active ||
             !w->asteroids[0].fracture_child ||
-            sp->ship.stat_asteroids_fractured <= 0) {
+            sp->ship->stat_asteroids_fractured <= 0) {
             return false;
         }
         return true;
@@ -2370,7 +2325,7 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         if (counts->damage_events <= damage_before ||
             counts->death_events <= death_before ||
             !sp->docked ||
-            sp->ship.hull <= 0.0f) {
+            sp->ship->hull <= 0.0f) {
             return false;
         }
         return true;
@@ -2419,16 +2374,16 @@ static bool sr_run_provenance_script(const sr_config_t *config,
     case SR_PROVENANCE_SCRIPT_PLAYER_RAM: {
         server_player_t *other = &w->players[1];
         int damage_before = counts->damage_events;
-        float primary_hull = sp->ship.hull;
-        float other_hull = other->ship.hull;
+        float primary_hull = sp->ship->hull;
+        float other_hull = other->ship->hull;
 
         world_sim_step(w, SIM_DT);
         sr_accumulate_events(w, counts, event_hash);
 
         if (counts->damage_events <= damage_before ||
-            sp->ship.hull >= primary_hull ||
-            other->ship.hull >= other_hull ||
-            v2_dist_sq(sp->ship.pos, other->ship.pos) <= 0.0f) {
+            sp->ship->hull >= primary_hull ||
+            other->ship->hull >= other_hull ||
+            v2_dist_sq(sp->ship->pos, other->ship->pos) <= 0.0f) {
             return false;
         }
         return true;
@@ -2449,8 +2404,8 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             !w->npc_ships[1].active ||
             left->hull >= left_hull ||
             right->hull >= right_hull ||
-            v2_dist_sq(w->npc_ships[0].ship.pos,
-                       w->npc_ships[1].ship.pos) <= 0.0f) {
+            v2_dist_sq(w->npc_ships[0].ship->pos,
+                       w->npc_ships[1].ship->pos) <= 0.0f) {
             return false;
         }
         return true;
@@ -2459,19 +2414,19 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         server_player_t *target = &w->players[1];
         asteroid_t *a = &w->asteroids[0];
         int damage_before = counts->damage_events;
-        float target_hull = target->ship.hull;
+        float target_hull = target->ship->hull;
         bool hit = false;
 
         for (int i = 0; i < 60 && !hit; i++) {
             world_sim_step(w, SIM_DT);
             sr_accumulate_events(w, counts, event_hash);
             hit = counts->damage_events > damage_before ||
-                  target->ship.hull < target_hull ||
+                  target->ship->hull < target_hull ||
                   !asteroid_is_ballistic(a);
         }
 
         if (counts->damage_events <= damage_before ||
-            target->ship.hull >= target_hull ||
+            target->ship->hull >= target_hull ||
             asteroid_is_ballistic(a)) {
             return false;
         }
@@ -2556,11 +2511,11 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         ship_t *ship = world_npc_ship_for(w, tow_npc_slot);
         if (!npc->active || !sc->active || sc->state != SCAFFOLD_LOOSE)
             return false;
-        npc->ship.pos = sc->pos;
-        npc->ship.vel = v2(0.0f, 0.0f);
+        npc->ship->pos = sc->pos;
+        npc->ship->vel = v2(0.0f, 0.0f);
         if (ship) {
-            ship->pos = npc->ship.pos;
-            ship->vel = npc->ship.vel;
+            ship->pos = npc->ship->pos;
+            ship->vel = npc->ship->vel;
         }
 
         w->events.count = 0;
@@ -2568,9 +2523,9 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         sr_accumulate_events(w, counts, event_hash);
 
         worker_pickup =
-            npc->towed_scaffold == tow_scaffold_slot &&
+            npc->ship->towed_scaffold == tow_scaffold_slot &&
             sc->state == SCAFFOLD_TOWING &&
-            sc->towed_by == -2 - tow_npc_slot;
+            scaffold_tractor_npc(sc) == tow_npc_slot;
         return worker_pickup;
     }
     case SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN: {
@@ -2718,9 +2673,7 @@ static bool sr_run_provenance_script(const sr_config_t *config,
         sr_accumulate_events(w, counts, event_hash);
 
         return sr_station_remote_known_contracts(
-                   w->stations[receiving_station].known_contracts,
-                   w->stations[receiving_station].known_contract_count,
-                   STATION_KNOWN_CONTRACT_CAP,
+                   &w->stations[receiving_station].knowledge,
                    receiving_station) > 0 &&
                sr_station_remote_market_memory_items(
                    &w->stations[receiving_station].knowledge,
@@ -2751,18 +2704,18 @@ static void sr_track_hnn_load(float *max_load, const hnn_memory_t *mem)
     if (isfinite(load) && load > *max_load) *max_load = load;
 }
 
-static float sr_npc_finished_cargo_total(const npc_ship_t *npc,
-                                         const ship_t *ship)
+static float sr_npc_finished_cargo_total(const npc_ship_t *npc)
 {
     float total = 0.0f;
-    if (ship && ship->manifest.count > 0) {
+    if (!npc) return 0.0f;
+    const ship_t *ship = npc->ship;
+    if (ship->manifest.count > 0) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
             total += (float)ship_finished_count(ship, (commodity_t)c);
         return total;
     }
-    if (!npc) return 0.0f;
     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-        total += npc->cargo[c];
+        total += ship->cargo[c];
     return total;
 }
 
@@ -2885,12 +2838,14 @@ static void sr_ai_branch_observe(sr_ai_summary_t *out,
 }
 
 static int sr_station_remote_known_contracts(
-    const contract_summary_t *contracts, int count, int cap, int local_station)
+    const knowledge_view_t *view, int local_station)
 {
+    contract_summary_t contracts[KNOWLEDGE_VIEW_MAX_CAP];
     int total = 0;
-    count = sr_clamped_u8_count(count, cap);
-    if (!contracts || local_station < 0 || local_station >= MAX_STATIONS)
+    if (!view || local_station < 0 || local_station >= MAX_STATIONS)
         return 0;
+    int count = knowledge_view_collect_contracts(
+        view, contracts, KNOWLEDGE_VIEW_MAX_CAP);
     for (int i = 0; i < count; i++) {
         const contract_summary_t *summary = &contracts[i];
         if (!summary->active) continue;
@@ -2962,15 +2917,12 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
                 out->signal_field_min_snr = field.recall_snr_estimate;
             }
         }
-        out->station_known_contracts += sr_clamped_u8_count(
-            st->known_contract_count, STATION_KNOWN_CONTRACT_CAP);
+        out->station_known_contracts +=
+            knowledge_view_contract_count(&st->knowledge);
         out->station_knowledge_items += sr_clamped_u8_count(
             st->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
         out->station_remote_known_contracts +=
-            sr_station_remote_known_contracts(st->known_contracts,
-                                              st->known_contract_count,
-                                              STATION_KNOWN_CONTRACT_CAP,
-                                              s);
+            sr_station_remote_known_contracts(&st->knowledge, s);
         out->station_remote_market_memory_items +=
             sr_station_remote_market_memory_items(&st->knowledge, s);
         if (st->hnn_market_memory.experience_count > 0) {
@@ -2999,7 +2951,7 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
             break;
         case SCAFFOLD_TOWING:
             out->scaffolds_towing++;
-            if (sc->towed_by <= -2)
+            if (scaffold_tractor_npc(sc) >= 0)
                 out->scaffolds_towed_by_worker++;
             break;
         case SCAFFOLD_SNAPPING:
@@ -3071,18 +3023,17 @@ static void sr_collect_ai_summary(const world_t *w, sr_ai_summary_t *out)
         default:
             break;
         }
-        if (npc->towed_scaffold >= 0)
+        if (npc->ship->towed_scaffold >= 0)
             out->workers_towing_scaffold++;
-        finished_cargo = sr_npc_finished_cargo_total(
-            npc, sr_npc_paired_ship_const(w, i));
+        finished_cargo = sr_npc_finished_cargo_total(npc);
         if (finished_cargo > 0.01f) {
             out->workers_with_finished_cargo++;
             out->worker_finished_cargo_units += finished_cargo;
         }
-        out->npc_known_contracts += sr_clamped_u8_count(
-            npc->known_contract_count, SHIP_KNOWN_CONTRACT_CAP);
+        out->npc_known_contracts +=
+            knowledge_view_contract_count(&npc->ship->knowledge);
         out->npc_knowledge_items += sr_clamped_u8_count(
-            npc->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
+            npc->ship->knowledge.count, KNOWLEDGE_VIEW_MAX_CAP);
         if (npc->hnn_market_mem.experience_count > 0) {
             out->npc_hnn_market_stored += npc->hnn_market_mem.experience_count;
         }
@@ -3143,7 +3094,7 @@ static void sr_hnn_fill_features(const world_t *w,
     float target_dist;
 
     if (!w || !sp || !out) return;
-    ship = &sp->ship;
+    ship = sp->ship;
     def = (action >= 0 && action < SR_ACTION_COUNT)
         ? &SR_ACTIONS[action]
         : &SR_ACTIONS[0];
@@ -3416,7 +3367,7 @@ static bool sr_replay_prefix(const sr_config_t *config,
                 return false;
             }
         }
-        if (sp->ship.hull <= 0.0f) return false;
+        if (sp->ship->hull <= 0.0f) return false;
     }
     return true;
 }
@@ -3474,10 +3425,10 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     }
 
     out->start_station = sp->current_station;
-    out->start_pos = sp->ship.pos;
-    out->start_dist = v2_len(v2_sub(goal, sp->ship.pos));
-    out->start_hull = sp->ship.hull;
-    out->start_cargo = ship_total_cargo(&sp->ship);
+    out->start_pos = sp->ship->pos;
+    out->start_dist = v2_len(v2_sub(goal, sp->ship->pos));
+    out->start_hull = sp->ship->hull;
+    out->start_cargo = ship_total_cargo(sp->ship);
     out->start_balance = sr_player_station_balance(w, sp);
     sr_state_hash(w, sp, out->prefix_state_hash);
 
@@ -3508,26 +3459,26 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
             sr_collect_ai_summary(w, &sample);
             sr_ai_branch_observe(&out->ai, &sample);
         }
-        if (out->events.death_events > 0 || sp->ship.hull <= 0.0f) {
+        if (out->events.death_events > 0 || sp->ship->hull <= 0.0f) {
             break;
         }
     }
     sha256_final(&event_hash, out->event_hash);
 
-    out->end_pos = sp->ship.pos;
-    out->end_vel = sp->ship.vel;
-    out->end_angle = sp->ship.angle;
-    out->end_speed = v2_len(sp->ship.vel);
-    out->end_hull = sp->ship.hull;
-    out->end_dist = v2_len(v2_sub(goal, sp->ship.pos));
+    out->end_pos = sp->ship->pos;
+    out->end_vel = sp->ship->vel;
+    out->end_angle = sp->ship->angle;
+    out->end_speed = v2_len(sp->ship->vel);
+    out->end_hull = sp->ship->hull;
+    out->end_dist = v2_len(v2_sub(goal, sp->ship->pos));
     out->progress = out->start_dist - out->end_dist;
     out->hull_loss = out->start_hull - out->end_hull;
     if (out->hull_loss < 0.0f) out->hull_loss = 0.0f;
-    out->end_cargo = ship_total_cargo(&sp->ship);
+    out->end_cargo = ship_total_cargo(sp->ship);
     out->end_balance = sr_player_station_balance(w, sp);
     out->end_docked = sp->docked;
     out->end_current_station = sp->current_station;
-    out->end_manifest_count = sp->ship.manifest.count;
+    out->end_manifest_count = sp->ship->manifest.count;
     out->utility = ((double)out->progress / 1000.0) -
                    ((double)out->hull_loss * 0.45) -
                    ((double)out->events.damage_amount * 0.25) -

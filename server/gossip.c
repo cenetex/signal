@@ -646,6 +646,38 @@ bool contract_summary_from_knowledge_item(const knowledge_item_t *item,
     return out->active;
 }
 
+bool knowledge_view_insert_contract(knowledge_view_t *view,
+                                    const contract_summary_t *summary) {
+    knowledge_item_t item;
+    if (!view || !knowledge_item_from_contract_summary(summary, &item))
+        return false;
+    knowledge_view_insert(view, &item);
+    return true;
+}
+
+uint8_t knowledge_view_collect_contracts(const knowledge_view_t *view,
+                                         contract_summary_t *out,
+                                         uint8_t out_cap) {
+    if (!view || !out || out_cap == 0) return 0;
+    uint8_t count = 0;
+    uint8_t cap = view->capacity;
+    if (cap == 0 || cap > KNOWLEDGE_VIEW_MAX_CAP)
+        cap = KNOWLEDGE_VIEW_MAX_CAP;
+    uint8_t n = view->count < cap ? view->count : cap;
+    for (uint8_t i = 0; i < n && count < out_cap; i++) {
+        contract_summary_t summary;
+        if (contract_summary_from_knowledge_item(&view->items[i], &summary))
+            out[count++] = summary;
+    }
+    return count;
+}
+
+uint8_t knowledge_view_contract_count(const knowledge_view_t *view) {
+    contract_summary_t summaries[KNOWLEDGE_VIEW_MAX_CAP];
+    return knowledge_view_collect_contracts(
+        view, summaries, KNOWLEDGE_VIEW_MAX_CAP);
+}
+
 bool market_memory_from_knowledge_item(const knowledge_item_t *item,
                                        market_memory_t *out) {
     if (!item || !out) return false;
@@ -1011,25 +1043,6 @@ void knowledge_view_decay(knowledge_view_t *view,
     view->count = (uint8_t)out;
 }
 
-static void knowledge_seed_contract_pool(knowledge_view_t *view,
-                                         const contract_summary_t *list,
-                                         uint8_t count, int cap) {
-    if (!view || !list || cap <= 0) return;
-    int n = count < cap ? count : cap;
-    for (int i = 0; i < n; i++) {
-        if (!list[i].active) continue;
-        knowledge_item_t item;
-        if (knowledge_item_from_contract_summary(&list[i], &item))
-            knowledge_view_insert(view, &item);
-        market_memory_t memory;
-        if (market_memory_from_contract_summary(&list[i], &memory) &&
-            knowledge_item_from_market_memory(&memory, &item)) {
-            knowledge_view_insert(view, &item);
-        }
-        knowledge_seed_stale_contract_risk(view, &list[i]);
-    }
-}
-
 static void knowledge_seed_station_supply(knowledge_view_t *view,
                                           const station_t *st,
                                           int station_index,
@@ -1097,7 +1110,7 @@ static void knowledge_seed_station_scaffold_pressure(knowledge_view_t *view,
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         const scaffold_t *sc = &w->scaffolds[i];
         if (!sc->active || sc->state != SCAFFOLD_LOOSE) continue;
-        if (sc->towed_by >= 0) continue;
+        if (scaffold_has_tractor(sc)) continue;
         if (!gossip_station_accepts_scaffold_type(dest, sc->module_type))
             continue;
         market_memory_t memory;
@@ -1183,9 +1196,6 @@ static void gossip_seed_station_local_pressure(world_t *w, int station_index,
     if (decay)
         knowledge_view_decay(&st->knowledge, 1, 1);
 
-    knowledge_seed_contract_pool(&st->knowledge, st->known_contracts,
-                                 st->known_contract_count,
-                                 STATION_KNOWN_CONTRACT_CAP);
     knowledge_seed_station_supply(&st->knowledge, st, station_index, w->tick);
     knowledge_seed_station_ore_pressure(&st->knowledge, st, station_index,
                                         w->tick);
@@ -1205,11 +1215,8 @@ static void gossip_seed_station_local_pressure(world_t *w, int station_index,
             continue;
         }
         contract_summary_t s = contract_summary_make(ct);
-        contract_pool_insert(st->known_contracts, &st->known_contract_count,
-                             STATION_KNOWN_CONTRACT_CAP, &s);
+        (void)knowledge_view_insert_contract(&st->knowledge, &s);
         knowledge_item_t item;
-        if (knowledge_item_from_contract_summary(&s, &item))
-            knowledge_view_insert(&st->knowledge, &item);
         market_memory_t memory;
         if (market_memory_from_contract_summary(&s, &memory) &&
             knowledge_item_from_market_memory(&memory, &item)) {
@@ -1222,55 +1229,22 @@ static void gossip_seed_station_local_pressure(world_t *w, int station_index,
 }
 
 void gossip_dock_handshake(world_t *w, int station_index,
-                           contract_summary_t *ship_pool,
-                           uint8_t *ship_count, int ship_cap,
                            knowledge_view_t *ship_knowledge) {
-    if (!w || !ship_pool || !ship_count) return;
+    if (!w || !ship_knowledge) return;
     if (station_index < 0 || station_index >= MAX_STATIONS) return;
     station_t *st = &w->stations[station_index];
-    if (ship_knowledge)
-        knowledge_view_configure(ship_knowledge, SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_configure(ship_knowledge, SHIP_KNOWN_ITEM_CAP);
 
     /* Dock contact is the natural cadence for v0 situated-memory decay:
      * memories fade as they are carried between stations, while the
      * local exact contract pass below immediately refreshes active
      * station-authored pressure. */
     gossip_seed_station_local_pressure(w, station_index, true);
-    if (ship_knowledge)
-        knowledge_view_decay(ship_knowledge, 1, 2);
-
-    if (ship_knowledge) {
-        knowledge_seed_contract_pool(ship_knowledge, ship_pool, *ship_count,
-                                     ship_cap);
-    }
-
-    /* Bidirectional copy. Snapshot ship's pre-handshake set so we
-     *    don't double-pump after station-side merges back into ship. */
-    contract_summary_t ship_pre[SHIP_KNOWN_CONTRACT_CAP];
-    int max_ship_pre = ship_cap < SHIP_KNOWN_CONTRACT_CAP ? ship_cap : SHIP_KNOWN_CONTRACT_CAP;
-    uint8_t ship_pre_count = *ship_count < max_ship_pre ? *ship_count : (uint8_t)max_ship_pre;
-    for (int i = 0; i < ship_pre_count; i++)
-        ship_pre[i] = ship_pool[i];
-
-    /* Station → ship */
-    for (int i = 0; i < st->known_contract_count; i++) {
-        if (!st->known_contracts[i].active) continue;
-        contract_pool_insert(ship_pool, ship_count, ship_cap,
-                             &st->known_contracts[i]);
-    }
-    /* Ship → station */
-    for (int i = 0; i < ship_pre_count; i++) {
-        if (!ship_pre[i].active) continue;
-        contract_pool_insert(st->known_contracts, &st->known_contract_count,
-                             STATION_KNOWN_CONTRACT_CAP, &ship_pre[i]);
-    }
-
-    if (ship_knowledge)
-        knowledge_view_exchange_internal(&st->knowledge, ship_knowledge,
-                                         w, st, NULL);
+    knowledge_view_decay(ship_knowledge, 1, 2);
+    knowledge_view_exchange_internal(&st->knowledge, ship_knowledge,
+                                     w, st, NULL);
     (void)gossip_signal_field_observe_view(w, &st->knowledge, st->pos);
-    if (ship_knowledge)
-        (void)gossip_signal_field_observe_view(w, ship_knowledge, st->pos);
+    (void)gossip_signal_field_observe_view(w, ship_knowledge, st->pos);
 }
 
 void gossip_bootstrap_world_stations(world_t *w) {
@@ -1379,35 +1353,10 @@ static bool gossip_npc_contact_in_range(const npc_ship_t *a,
     if (!a || !b || !a->active || !b->active) return false;
     if (a->state == NPC_STATE_DOCKED || b->state == NPC_STATE_DOCKED)
         return false;
-    float dx = a->ship.pos.x - b->ship.pos.x;
-    float dy = a->ship.pos.y - b->ship.pos.y;
+    float dx = a->ship->pos.x - b->ship->pos.x;
+    float dy = a->ship->pos.y - b->ship->pos.y;
     float range = (float)GOSSIP_SHIP_CONTACT_RANGE;
     return dx * dx + dy * dy <= range * range;
-}
-
-static void gossip_contract_pool_exchange(contract_summary_t *a_pool,
-                                          uint8_t *a_count,
-                                          contract_summary_t *b_pool,
-                                          uint8_t *b_count) {
-    if (!a_pool || !a_count || !b_pool || !b_count) return;
-    uint8_t a_pre_count = *a_count;
-    uint8_t b_pre_count = *b_count;
-    if (a_pre_count > SHIP_KNOWN_CONTRACT_CAP)
-        a_pre_count = SHIP_KNOWN_CONTRACT_CAP;
-    if (b_pre_count > SHIP_KNOWN_CONTRACT_CAP)
-        b_pre_count = SHIP_KNOWN_CONTRACT_CAP;
-
-    contract_summary_t a_pre[SHIP_KNOWN_CONTRACT_CAP];
-    contract_summary_t b_pre[SHIP_KNOWN_CONTRACT_CAP];
-    for (int i = 0; i < a_pre_count; i++) a_pre[i] = a_pool[i];
-    for (int i = 0; i < b_pre_count; i++) b_pre[i] = b_pool[i];
-
-    for (int i = 0; i < a_pre_count; i++)
-        contract_pool_insert(b_pool, b_count, SHIP_KNOWN_CONTRACT_CAP,
-                             &a_pre[i]);
-    for (int i = 0; i < b_pre_count; i++)
-        contract_pool_insert(a_pool, a_count, SHIP_KNOWN_CONTRACT_CAP,
-                             &b_pre[i]);
 }
 
 static void gossip_hnn_ship_contact_exchange(npc_ship_t *a, npc_ship_t *b) {
@@ -1443,22 +1392,18 @@ int gossip_ship_contact_exchange(world_t *w) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         npc_ship_t *a = &w->npc_ships[i];
         if (!a->active) continue;
-        knowledge_view_configure(&a->knowledge, SHIP_KNOWN_ITEM_CAP);
+        knowledge_view_configure(&a->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         for (int j = i + 1; j < MAX_NPC_SHIPS; j++) {
             npc_ship_t *b = &w->npc_ships[j];
             if (!gossip_npc_contact_in_range(a, b)) continue;
-            knowledge_view_configure(&b->knowledge, SHIP_KNOWN_ITEM_CAP);
-            gossip_contract_pool_exchange(a->known_contracts,
-                                          &a->known_contract_count,
-                                          b->known_contracts,
-                                          &b->known_contract_count);
-            knowledge_view_exchange(&a->knowledge, &b->knowledge);
+            knowledge_view_configure(&b->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+            knowledge_view_exchange(&a->ship->knowledge, &b->ship->knowledge);
             gossip_hnn_ship_contact_exchange(a, b);
-            vec2 contact_pos = v2_scale(v2_add(a->ship.pos, b->ship.pos),
+            vec2 contact_pos = v2_scale(v2_add(a->ship->pos, b->ship->pos),
                                         0.5f);
-            (void)gossip_signal_field_observe_view(w, &a->knowledge,
+            (void)gossip_signal_field_observe_view(w, &a->ship->knowledge,
                                                    contact_pos);
-            (void)gossip_signal_field_observe_view(w, &b->knowledge,
+            (void)gossip_signal_field_observe_view(w, &b->ship->knowledge,
                                                    contact_pos);
             if (a->hnn_market_mem.experience_count > 0 ||
                 b->hnn_market_mem.experience_count > 0) {
@@ -1607,7 +1552,7 @@ void gossip_hnn_exchange(world_t *w, int station_idx, npc_ship_t *npc) {
         gossip_hnn_decay_market_memory(&npc->hnn_market_mem,
                                        &npc->hnn_market_decay_tick, w->tick);
         (void)gossip_hnn_store_market_view(&npc->hnn_market_mem,
-                                           &npc->knowledge);
+                                           &npc->ship->knowledge);
         if (npc->hnn_market_mem.experience_count > 0 &&
             (st->hnn_market_memory.experience_count <= 0 ||
              npc->hnn_market_station != (uint8_t)station_idx ||

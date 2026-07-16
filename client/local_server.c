@@ -157,7 +157,7 @@ static void local_server_handle_input(local_server_t *ls, int pid,
                                         result.action);
         local_server_send_to_client(ack, alen);
         if (result.force_authoritative_resync) {
-            sp->force_authoritative_resync = true;
+            sp->replication->force_authoritative_resync = true;
             local_server_send_action_result(result.action_id,
                                             result.input_seq,
                                             NET_ACTION_RESULT_REJECTED,
@@ -370,7 +370,7 @@ static void local_server_emit_pending_action_results(local_server_t *ls,
         if (!sp->pending_action_result_valid) continue;
         uint8_t status = server_pending_action_result_status(&ls->world,
                                                              sp, events);
-        sp->force_authoritative_resync = true;
+        sp->replication->force_authoritative_resync = true;
         if (sp->connected) {
             local_server_send_action_result(sp->pending_action_result_id,
                                             sp->pending_action_result_input_seq,
@@ -470,12 +470,12 @@ static void local_server_emit_private_snapshots(local_server_t *ls,
                                                 int player_slot) {
     if (!ls || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &ls->world.players[player_slot];
-    if (sp->force_authoritative_resync)
+    if (sp->replication->force_authoritative_resync)
         server_player_reset_authoritative_ack_state(sp);
     server_emit_private_snapshot_for_player(
         &ls->world, player_slot, local_server_send_packet, NULL,
         &local_server_private_snapshot_scratch);
-    sp->force_authoritative_resync = false;
+    sp->replication->force_authoritative_resync = false;
     ls->private_snapshot_dirty = false;
 }
 
@@ -537,7 +537,7 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
         local_server_emit_world_snapshots(ls, player_slot, false);
     if (ls->private_snapshot_dirty ||
         (tick % LOCAL_SERVER_PRIVATE_TICKS) == 0u ||
-        ls->world.players[player_slot].force_authoritative_resync) {
+        ls->world.players[player_slot].replication->force_authoritative_resync) {
         local_server_emit_private_snapshots(ls, player_slot);
     }
     if (ls->station_snapshot_dirty ||
@@ -588,7 +588,7 @@ void local_server_step_loopback(local_server_t *ls, int player_slot, float dt) {
         server_player_t *sp = &ls->world.players[player_slot];
         (void)server_emit_pending_input_ack_adaptive(
             &pending, sp, (uint8_t)player_slot,
-            sp->force_authoritative_resync,
+            sp->replication->force_authoritative_resync,
             local_server_send_packet, NULL);
     }
     local_server_emit_frame(ls, player_slot);

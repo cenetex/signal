@@ -163,7 +163,9 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 74  /* v74: cargo pods persist their active module tractor
+#define SAVE_VERSION 75  /* v75: station finished-goods residue is persisted
+                          * separately; whole stock exists only in manifests.
+                          * v74: cargo pods persist their active module tractor
                           * owner so parking/handoff continuity survives restart.
                           * v73: active cargo pods persist station custody so
                           * market theft/debt survives restart.
@@ -324,7 +326,7 @@ static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
 #define MIN_SAVE_VERSION 49 /* v49 → v50 is layout-preserving (npc fields
                               * moved into embedded ship_t at the same
                               * byte offsets); read_npc lands them in
-                              * n->ship.* identically for both versions. */
+                              * n->ship->* identically for both versions. */
 
 /* Legacy named-ingot block layout — preserved here only so v25..v34
  * saves can be migrated forward. The original named_ingot_t was
@@ -491,12 +493,31 @@ static bool read_station(FILE *f, station_t *s) {
     if (s->module_count < 0) s->module_count = 0;
     if (s->module_count > MAX_MODULES_PER_STATION) s->module_count = MAX_MODULES_PER_STATION;
     for (int m = 0; m < s->module_count; m++) {
-        READ_FIELD(f, s->modules[m]);
-        /* Sanitize bool — old saves may have non-0/1 byte values, and
-         * reading those as _Bool is undefined behavior. Read the raw
-         * byte to avoid UB on the load itself. */
-        { uint8_t raw; memcpy(&raw, &s->modules[m].scaffold, 1);
-          s->modules[m].scaffold = (raw != 0); }
+        /* v23 and earlier wrote the original 16-byte module record as a
+         * blob. Keep that exact disk shape even though runtime state now
+         * lives beside the identity in station_module_t. */
+        struct legacy_station_module_v23 {
+            module_type_t type;
+            uint8_t ring;
+            uint8_t slot;
+            uint8_t scaffold;
+            uint8_t last_smelt_commodity;
+            uint8_t commodity;
+            uint8_t pad[2];
+            float build_progress;
+        } disk_module;
+        _Static_assert(sizeof(disk_module) == 16,
+                       "legacy station module disk layout changed");
+        READ_FIELD(f, disk_module);
+        station_module_t *module = &s->modules[m];
+        memset(module, 0, sizeof(*module));
+        module->type = disk_module.type;
+        module->ring = disk_module.ring;
+        module->slot = disk_module.slot;
+        module->scaffold = disk_module.scaffold != 0;
+        module->last_smelt_commodity = disk_module.last_smelt_commodity;
+        module->commodity = disk_module.commodity;
+        module->build_progress = disk_module.build_progress;
     }
     /* Ring rotation */
     READ_FIELD(f, s->arm_count);
@@ -514,18 +535,19 @@ static bool read_station(FILE *f, station_t *s) {
     for (int p = 0; p < 4; p++) {
         READ_FIELD(f, s->pending_scaffolds[p]);
     }
-    /* v20: single module_buffer[] → migrate to module_input[].
+    /* v20: single module_buffer[] → migrate to per-module input_buffer.
      * v21+: explicit input + output. */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        READ_FIELD(f, s->module_input[m]);
+        READ_FIELD(f, s->modules[m].input_buffer);
     }
     if (g_loaded_save_version >= 21) {
         for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-            READ_FIELD(f, s->module_output[m]);
+            READ_FIELD(f, s->modules[m].output_buffer);
         }
     } else {
         /* v20: no output buffers — initialize to 0 */
-        memset(s->module_output, 0, sizeof(s->module_output));
+        for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+            s->modules[m].output_buffer = 0.0f;
     }
     /* Placement plans + planned-station fields (v20+) */
     READ_FIELD(f, s->placement_plan_count);
@@ -556,13 +578,14 @@ static bool read_station(FILE *f, station_t *s) {
 /* ================================================================== */
 
 static bool write_station_session(FILE *f, const station_t *s) {
-    /* Inventory */
+    /* Raw hopper inventory plus sub-unit finished-production residue. */
     WRITE_FIELD(f, s->_inventory_cache);
+    WRITE_FIELD(f, s->_finished_residue);
     /* Per-module production buffers */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
-        WRITE_FIELD(f, s->module_input[m]);
+        WRITE_FIELD(f, s->modules[m].input_buffer);
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
-        WRITE_FIELD(f, s->module_output[m]);
+        WRITE_FIELD(f, s->modules[m].output_buffer);
     /* (credit_pool field removed in v43 — derived from ledger now.) */
     /* Economy ledger */
     WRITE_FIELD(f, s->ledger_count);
@@ -661,11 +684,15 @@ static bool write_station_session(FILE *f, const station_t *s) {
 static bool read_station_session(FILE *f, station_t *s) {
     /* Inventory */
     READ_FIELD(f, s->_inventory_cache);
+    if (g_loaded_save_version >= 75)
+        READ_FIELD(f, s->_finished_residue);
+    else
+        memset(s->_finished_residue, 0, sizeof(s->_finished_residue));
     /* Per-module production buffers */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
-        READ_FIELD(f, s->module_input[m]);
+        READ_FIELD(f, s->modules[m].input_buffer);
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
-        READ_FIELD(f, s->module_output[m]);
+        READ_FIELD(f, s->modules[m].output_buffer);
     /* credit_pool was stored v23..v42; dropped in v43 (derived field).
      * For older saves, read and discard; the value is recoverable from
      * the ledger entries below. */
@@ -926,22 +953,34 @@ static bool read_station_session(FILE *f, station_t *s) {
     }
     chain_log_health_set(s, CHAIN_HEALTH_UNKNOWN, false, 0, NULL,
                          "chain not verified this boot");
-    /* Repair saves produced while finished-good code was still being
-     * migrated to manifest-as-truth. Those builds could leave visible
-     * inventory in _inventory_cache without matching cargo_unit_t rows,
-     * which made trade IDs show as "------" and made haulers treat the
-     * stock as immovable. Keep real saved units, synthesize only the
-     * missing whole-unit tail, and preserve fractional production residue. */
+    /* Migrate the retired finished slots. Old saves used them as a mirror;
+     * v75+ stores only raw hopper amounts there. Keep real manifest units,
+     * synthesize a missing whole-unit tail for old saves, and move the
+     * fractional production residue into its dedicated component. */
     {
         uint8_t origin[8] = { 'R','E','P','A','I','R','v','1' };
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
             commodity_t commodity = (commodity_t)c;
-            int cache_units = (int)floorf(s->_inventory_cache[c] + 0.0001f);
-            int manifest_units = manifest_count_by_commodity(&s->manifest,
-                                                             commodity);
-            int missing = cache_units - manifest_units;
-            if (missing <= 0) continue;
-            (void)station_finished_mint(s, commodity, missing, origin);
+            float legacy_amount = s->_inventory_cache[c];
+            s->_inventory_cache[c] = 0.0f;
+            if (g_loaded_save_version < 75) {
+                if (!isfinite(legacy_amount) || legacy_amount < 0.0f)
+                    legacy_amount = 0.0f;
+                if (legacy_amount > 1000000.0f)
+                    legacy_amount = 1000000.0f;
+                int cache_units = (int)floorf(legacy_amount + 0.0001f);
+                float residue = legacy_amount - (float)cache_units;
+                if (residue < 0.0f || residue >= 1.0f) residue = 0.0f;
+                s->_finished_residue[c] = residue;
+                int manifest_units = manifest_count_by_commodity(&s->manifest,
+                                                                 commodity);
+                int missing = cache_units - manifest_units;
+                if (missing > 0)
+                    (void)station_finished_mint(s, commodity, missing, origin);
+            } else if (s->_finished_residue[c] < 0.0f ||
+                       s->_finished_residue[c] >= 1.0f) {
+                s->_finished_residue[c] = 0.0f;
+            }
         }
     }
     /* station_secret is rederived by the world loader, not persisted. */
@@ -1127,20 +1166,32 @@ static bool read_fracture_child(FILE *f, world_t *w) {
  *
  * v50: pos/vel/angle/hull_class moved into the embedded ship_t. The
  * on-disk record format is unchanged (same field order, same widths) —
- * the read path just lands the bytes in n->ship.* and the write path
+ * the read path just lands the bytes in n->ship->* and the write path
  * reads them back from there. v49 saves load identically since the
  * struct layout used to put pos/vel/angle/hull_class right where the
  * embedded ship_t now lives.
  */
 static bool write_npc(FILE *f, const npc_ship_t *n) {
+    ship_t empty_ship = {0};
+    npc_ship_t empty_npc = {0};
+    float cargo_snapshot[COMMODITY_COUNT];
+    if (!n) {
+        empty_npc.ship = &empty_ship;
+        n = &empty_npc;
+    } else if (!n->ship) {
+        empty_npc = *n;
+        empty_npc.ship = &empty_ship;
+        n = &empty_npc;
+    }
     WRITE_FIELD(f, n->active);
     WRITE_FIELD(f, n->role);
-    WRITE_FIELD(f, n->ship.hull_class);
+    WRITE_FIELD(f, n->ship->hull_class);
     WRITE_FIELD(f, n->state);
-    WRITE_FIELD(f, n->ship.pos);
-    WRITE_FIELD(f, n->ship.vel);
-    WRITE_FIELD(f, n->ship.angle);
-    WRITE_FIELD(f, n->cargo);
+    WRITE_FIELD(f, n->ship->pos);
+    WRITE_FIELD(f, n->ship->vel);
+    WRITE_FIELD(f, n->ship->angle);
+    ship_cargo_snapshot(n->ship, cargo_snapshot);
+    WRITE_FIELD(f, cargo_snapshot);
     WRITE_FIELD(f, n->target_asteroid);
     WRITE_FIELD(f, n->home_station);
     WRITE_FIELD(f, n->dest_station);
@@ -1149,7 +1200,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->tint_r);
     WRITE_FIELD(f, n->tint_g);
     WRITE_FIELD(f, n->tint_b);
-    WRITE_FIELD(f, n->hull); /* v32+ */
+    WRITE_FIELD(f, n->ship->hull); /* v32+; authoritative ship component */
     WRITE_FIELD(f, n->session_token); /* v33+ */
     WRITE_FIELD(f, n->ship_asset_id); /* v64+ */
     return true;
@@ -1158,12 +1209,12 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
 static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->active);
     READ_FIELD(f, n->role);
-    READ_FIELD(f, n->ship.hull_class);
+    READ_FIELD(f, n->ship->hull_class);
     READ_FIELD(f, n->state);
-    READ_FIELD(f, n->ship.pos);
-    READ_FIELD(f, n->ship.vel);
-    READ_FIELD(f, n->ship.angle);
-    READ_FIELD(f, n->cargo);
+    READ_FIELD(f, n->ship->pos);
+    READ_FIELD(f, n->ship->vel);
+    READ_FIELD(f, n->ship->angle);
+    READ_FIELD(f, n->ship->cargo);
     READ_FIELD(f, n->target_asteroid);
     READ_FIELD(f, n->home_station);
     READ_FIELD(f, n->dest_station);
@@ -1173,9 +1224,9 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->tint_g);
     READ_FIELD(f, n->tint_b);
     if (g_loaded_save_version >= 32) {
-        READ_FIELD(f, n->hull);
+        READ_FIELD(f, n->ship->hull);
     } else {
-        n->hull = npc_max_hull(n);
+        n->ship->hull = npc_max_hull(n);
     }
     if (g_loaded_save_version >= 33) {
         READ_FIELD(f, n->session_token);
@@ -1206,42 +1257,21 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
      * fired with an invalid role through character_free_for_npc).
      * Drop the slot quietly; the spawn loop will refill it. */
     if (n->active && ((int)n->role < 0 || (int)n->role > (int)NPC_ROLE_TOW)) {
-        memset(n, 0, sizeof(*n));
+        n->active = false;
     }
     return true;
 }
 
 static const ship_t *world_save_npc_ship_for(const world_t *w, int npc_slot) {
     if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
-    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
-    for (int i = 0; i < cap; i++) {
-        const character_t *ch = &w->characters[i];
-        if (!ch->active) continue;
-        if (ch->npc_slot != npc_slot) continue;
-        if (ch->kind != CHARACTER_KIND_NPC_MINER &&
-            ch->kind != CHARACTER_KIND_NPC_HAULER &&
-            ch->kind != CHARACTER_KIND_NPC_TOW) continue;
-        if (ch->ship_idx < 0 || ch->ship_idx >= MAX_SHIPS) return NULL;
-        return &w->ships[ch->ship_idx];
-    }
-    return NULL;
+    if (!w->npc_ships[npc_slot].active) return NULL;
+    return w->npc_ships[npc_slot].ship;
 }
 
-static void npc_ship_manifest_sync_cargo(npc_ship_t *npc, ship_t *ship) {
-    if (!npc || !ship || ship->manifest.count == 0) return;
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-        npc->cargo[c] = 0.0f;
+static void ship_retire_finished_cargo_slots(ship_t *ship) {
+    if (!ship) return;
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
         ship->cargo[c] = 0.0f;
-    }
-    for (uint16_t i = 0; i < ship->manifest.count; i++) {
-        const cargo_unit_t *u = &ship->manifest.units[i];
-        if (u->commodity < COMMODITY_RAW_ORE_COUNT ||
-            u->commodity >= COMMODITY_COUNT) {
-            continue;
-        }
-        npc->cargo[u->commodity] += 1.0f;
-        ship->cargo[u->commodity] += 1.0f;
-    }
 }
 
 static bool write_npc_ship_manifest_payload(FILE *f, const ship_t *ship) {
@@ -1319,12 +1349,14 @@ static bool read_npc_ship_manifest_payload(FILE *f, ship_t *ship) {
 
 static bool write_asset_ship_payload(FILE *f, const ship_t *ship) {
     ship_t empty = {0};
+    float cargo_snapshot[COMMODITY_COUNT];
     if (!ship) ship = &empty;
     WRITE_FIELD(f, ship->pos);
     WRITE_FIELD(f, ship->vel);
     WRITE_FIELD(f, ship->angle);
     WRITE_FIELD(f, ship->hull);
-    WRITE_FIELD(f, ship->cargo);
+    ship_cargo_snapshot(ship, cargo_snapshot);
+    WRITE_FIELD(f, cargo_snapshot);
     WRITE_FIELD(f, ship->hull_class);
     WRITE_FIELD(f, ship->mining_level);
     WRITE_FIELD(f, ship->hold_level);
@@ -1372,10 +1404,13 @@ static bool read_asset_ship_payload(FILE *f, ship_t *ship) {
         ship->hull = ship_max_hull(ship);
     if (ship->comm_range <= 0.0f) ship->comm_range = 1500.0f;
     if (ship->towed_count > 10) ship->towed_count = 0;
-    return read_npc_ship_manifest_payload(f, ship);
+    if (!read_npc_ship_manifest_payload(f, ship)) return false;
+    ship_retire_finished_cargo_slots(ship);
+    return true;
 }
 
-static bool write_ship_asset(FILE *f, const ship_asset_t *asset) {
+static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
+                             const ship_t *live_ship) {
     ship_asset_t empty = {0};
     if (!asset) asset = &empty;
     WRITE_FIELD(f, asset->active);
@@ -1393,12 +1428,13 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset) {
     WRITE_FIELD(f, asset->destroyed);
     WRITE_FIELD(f, asset->owner_pubkey);
     WRITE_FIELD(f, asset->owner_session);
-    return write_asset_ship_payload(f, asset->active ? &asset->ship : NULL);
+    const ship_t *ship = live_ship ? live_ship : &asset->stored_ship;
+    return write_asset_ship_payload(f, asset->active ? ship : NULL);
 }
 
 static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
     if (!asset) return false;
-    ship_cleanup(&asset->ship);
+    ship_cleanup(&asset->stored_ship);
     memset(asset, 0, sizeof(*asset));
     READ_FIELD(f, asset->active);
     READ_FIELD(f, asset->asset_id);
@@ -1415,16 +1451,18 @@ static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
     READ_FIELD(f, asset->destroyed);
     READ_FIELD(f, asset->owner_pubkey);
     READ_FIELD(f, asset->owner_session);
-    if (!read_asset_ship_payload(f, &asset->ship)) return false;
+    if (!read_asset_ship_payload(f, &asset->stored_ship)) return false;
+    asset->live_ship_ref = entity_ref_none();
+    asset->ship = &asset->stored_ship;
     if (!asset->active) {
-        ship_cleanup(&asset->ship);
+        ship_cleanup(&asset->stored_ship);
         memset(asset, 0, sizeof(*asset));
         return true;
     }
     if (asset->asset_id == SHIP_ASSET_ID_NONE)
         asset->active = false;
     if (asset->hull_class < 0 || asset->hull_class >= HULL_CLASS_COUNT)
-        asset->hull_class = asset->ship.hull_class;
+        asset->hull_class = asset->stored_ship.hull_class;
     if (asset->status > SHIP_ASSET_STATUS_DESTROYED)
         asset->status = asset->destroyed
             ? SHIP_ASSET_STATUS_DESTROYED
@@ -1572,7 +1610,9 @@ static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s,
 static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
     uint8_t kind = (uint8_t)pod->kind;
     uint8_t commodity = (uint8_t)pod->commodity;
-    int8_t towed_by = pod->towed_by;
+    int player_tractor = cargo_pod_player_tractor(pod);
+    int8_t towed_by = (player_tractor >= 0 && player_tractor < MAX_PLAYERS)
+        ? (int8_t)player_tractor : -1;
     WRITE_FIELD(f, index);
     WRITE_FIELD(f, kind);
     WRITE_FIELD(f, commodity);
@@ -1604,8 +1644,16 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
         }
     }
     WRITE_FIELD(f, pod->custody_station);
-    WRITE_FIELD(f, pod->tractor_station);
-    WRITE_FIELD(f, pod->tractor_module);
+    int tractor_station = -1;
+    int tractor_module = -1;
+    (void)cargo_pod_module_tractor_indices(
+        pod, &tractor_station, &tractor_module);
+    uint8_t tractor_station_tag = tractor_station >= 0
+        ? (uint8_t)(tractor_station + 1) : 0;
+    uint8_t tractor_module_tag = tractor_module >= 0
+        ? (uint8_t)(tractor_module + 1) : 0;
+    WRITE_FIELD(f, tractor_station_tag);
+    WRITE_FIELD(f, tractor_module_tag);
     return true;
 }
 
@@ -1653,17 +1701,17 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
         if (pod.custody_station > MAX_STATIONS) pod.custody_station = 0;
     }
     if (version >= 74) {
-        READ_FIELD(f, pod.tractor_station);
-        READ_FIELD(f, pod.tractor_module);
-        bool partial_owner = (pod.tractor_station == 0) !=
-                             (pod.tractor_module == 0);
-        int tractor_station = -1;
-        int tractor_module = -1;
-        if (partial_owner ||
-            (pod.tractor_station != 0 &&
-             !cargo_pod_module_tractor_indices(
-                 &pod, &tractor_station, &tractor_module))) {
-            cargo_pod_clear_module_tractor(&pod);
+        uint8_t tractor_station_tag = 0;
+        uint8_t tractor_module_tag = 0;
+        READ_FIELD(f, tractor_station_tag);
+        READ_FIELD(f, tractor_module_tag);
+        if (tractor_station_tag > 0 &&
+            tractor_station_tag <= MAX_STATIONS &&
+            tractor_module_tag > 0 &&
+            tractor_module_tag <= MAX_MODULES_PER_STATION) {
+            cargo_pod_set_module_tractor(
+                &pod, (int)tractor_station_tag - 1,
+                (int)tractor_module_tag - 1);
         }
     }
     if (index >= MAX_CARGO_PODS) return false;
@@ -1678,7 +1726,8 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     pod.active = true;
     pod.kind = (cargo_pod_kind_t)kind;
     pod.commodity = (commodity_t)commodity;
-    pod.towed_by = (towed_by >= 0 && towed_by < MAX_PLAYERS) ? towed_by : -1;
+    if (towed_by >= 0 && towed_by < MAX_PLAYERS)
+        cargo_pod_set_player_tractor(&pod, towed_by);
     w->cargo_pods[index] = pod;
     return true;
 }
@@ -1785,10 +1834,30 @@ static bool world_save_payload(const world_t *w, FILE *f) {
         }
     }
 
-    /* v64: durable contract-origin ship asset registry. */
+    /* v64: durable contract-origin ship asset registry. Assigned assets
+     * serialize their operator's authoritative live ship directly; the
+     * embedded asset ship is a stored/persistence snapshot, not a second
+     * live component that must be copied every simulation tick. */
     WRITE_FIELD(f, w->next_ship_asset_id);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-        if (!write_ship_asset(f, &w->ship_assets[i])) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        const ship_t *live_ship = NULL;
+        if (asset->active && !asset->destroyed &&
+            asset->status == SHIP_ASSET_STATUS_ASSIGNED) {
+            if (asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+                asset->operator_slot >= 0 && asset->operator_slot < MAX_PLAYERS) {
+                const server_player_t *sp = &w->players[asset->operator_slot];
+                if (sp->connected && sp->ship_asset_id == asset->asset_id)
+                    live_ship = sp->ship;
+            } else if (asset->operator_kind == SHIP_ASSET_OPERATOR_NPC &&
+                       asset->operator_slot >= 0 &&
+                       asset->operator_slot < MAX_NPC_SHIPS) {
+                const npc_ship_t *npc = &w->npc_ships[asset->operator_slot];
+                if (npc->active && npc->ship_asset_id == asset->asset_id)
+                    live_ship = npc->ship;
+            }
+        }
+        if (!write_ship_asset(f, asset, live_ship)) {
             return false;
         }
     }
@@ -1809,6 +1878,24 @@ static bool world_save_payload(const world_t *w, FILE *f) {
     }
 
     return true;
+}
+
+void world_apply_starter_stock_migrations(world_t *w, uint32_t version) {
+    if (!w) return;
+    if (version < 71) {
+        int seeded = world_ensure_starter_frame_pods(w);
+        if (seeded > 0) {
+            printf("[save] migrated v%d -> v71: restored %d starter frame pod%s\n",
+                   (int)version, seeded, seeded == 1 ? "" : "s");
+        }
+    }
+    if (version < 72) {
+        int seeded = world_ensure_starter_laser_module_reserve(w);
+        if (seeded > 0) {
+            printf("[save] migrated v%d -> v72: restored %d starter laser module%s\n",
+                   (int)version, seeded, seeded == 1 ? "" : "s");
+        }
+    }
 }
 
 bool world_save(const world_t *w, const char *path) {
@@ -1972,7 +2059,12 @@ static bool world_load_payload(world_t *w, FILE *f) {
     }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        world_npc_ship_slot_release(w, i);
+        memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
+        if (!world_npc_ship_slot_activate(w, i)) return false;
         if (!read_npc(f, &w->npc_ships[i])) return false;
+        if (!w->npc_ships[i].active)
+            world_npc_ship_slot_release(w, i);
     }
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
@@ -2021,9 +2113,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
 
     bool characters_rebuilt = false;
     if (version >= 52) {
-        /* The v52 NPC manifest tail belongs to paired ships[] entries,
-         * which are runtime-derived from npc_ships[]. Build that pool
-         * before consuming the tail, then skip the final rebuild. */
+        /* The v52 NPC manifest tail belongs to each NPC's embedded ship.
+         * Rebuild transient character registrations before consuming the
+         * tail, then skip the final rebuild. */
         rebuild_characters_from_npcs(w);
         characters_rebuilt = true;
         for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -2033,13 +2125,12 @@ static bool world_load_payload(world_t *w, FILE *f) {
             if (!read_npc_ship_manifest_payload(f, ship)) {
                 return false;
             }
-            if (ship && ship->manifest.count > 0)
-                npc_ship_manifest_sync_cargo(&w->npc_ships[i], ship);
+            ship_retire_finished_cargo_slots(ship);
         }
     }
 
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-        ship_cleanup(&w->ship_assets[i].ship);
+        ship_cleanup(&w->ship_assets[i].stored_ship);
         memset(&w->ship_assets[i], 0, sizeof(w->ship_assets[i]));
     }
     w->next_ship_asset_id = 1;
@@ -2111,21 +2202,7 @@ static bool world_load_payload(world_t *w, FILE *f) {
         }
     }
 
-    if (version < 71) {
-        int seeded = world_ensure_starter_frame_pods(w);
-        if (seeded > 0) {
-            printf("[save] migrated v%d -> v71: restored %d starter frame pod%s\n",
-                   (int)version, seeded, seeded == 1 ? "" : "s");
-        }
-    }
-
-    if (version < 72) {
-        int seeded = world_ensure_starter_laser_module_reserve(w);
-        if (seeded > 0) {
-            printf("[save] migrated v%d -> v72: restored %d starter laser module%s\n",
-                   (int)version, seeded, seeded == 1 ? "" : "s");
-        }
-    }
+    world_apply_starter_stock_migrations(w, version);
 
     /* v22: dead module enum entries removed (INGOT_SELLER, CONTRACT_BOARD,
      * BLUEPRINT_DESK, RING). Remap surviving module type IDs and drop
@@ -2162,16 +2239,12 @@ static bool world_load_payload(world_t *w, FILE *f) {
                 if (new_t < 0) continue;
                 if (kept != m) {
                     st->modules[kept] = st->modules[m];
-                    st->module_input[kept] = st->module_input[m];
-                    st->module_output[kept] = st->module_output[m];
                 }
                 st->modules[kept].type = (module_type_t)new_t;
                 kept++;
             }
             for (int m = kept; m < st->module_count; m++) {
                 memset(&st->modules[m], 0, sizeof(st->modules[m]));
-                st->module_input[m] = 0.0f;
-                st->module_output[m] = 0.0f;
             }
             st->module_count = kept;
             /* Drop pending shipyard orders for dropped types. */
@@ -2331,8 +2404,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
     w->events.count = 0;
     w->player_only_mode = false;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        ship_cleanup(&w->players[i].ship);
-        memset(&w->players[i], 0, sizeof(w->players[i]));
+        world_player_ship_slot_release(w, i);
+        world_player_runtime_slot_reset(w, i);
+        if (!world_player_ship_slot_activate(w, i)) return false;
     }
 
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
@@ -2593,7 +2667,7 @@ static void encode_v4_ship(ship_v4_t *dst, const ship_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    ship_cargo_snapshot(src, dst->cargo);
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -2908,23 +2982,23 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
     FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
-    encode_v4_ship(&ship_disk, &sp->ship);
+    encode_v4_ship(&ship_disk, sp->ship);
     player_save_data_t data = {
         .magic = PLAYER_MAGIC,
         .ship = ship_disk,
         .last_station = sp->current_station,
-        .last_pos = sp->ship.pos,
-        .last_angle = sp->ship.angle,
+        .last_pos = sp->ship->pos,
+        .last_angle = sp->ship->angle,
     };
     bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
     uint32_t crc = ok ? crc32_update(0, &data, sizeof(data)) : 0;
     /* Manifest tail (PLY5). Count + entries; CRC accumulates both. */
     if (ok) {
-        uint16_t manifest_count = sp->ship.manifest.count;
+        uint16_t manifest_count = sp->ship->manifest.count;
         ok = fwrite(&manifest_count, sizeof(manifest_count), 1, f) == 1;
         if (ok) crc = crc32_update(crc, &manifest_count, sizeof(manifest_count));
         for (uint16_t u = 0; ok && u < manifest_count; u++) {
-            const cargo_unit_t *cu = &sp->ship.manifest.units[u];
+            const cargo_unit_t *cu = &sp->ship->manifest.units[u];
             ok = fwrite(cu, sizeof(*cu), 1, f) == 1;
             if (ok) crc = crc32_update(crc, cu, sizeof(*cu));
         }
@@ -2944,8 +3018,8 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
      * a receipt attached" (e.g. legacy migration) so the next transfer
      * mints a fresh origin-attested receipt. */
     if (ok) {
-        const ship_receipts_t *rcpts = ship_get_receipts_const(&sp->ship);
-        uint16_t mc = sp->ship.manifest.count;
+        const ship_receipts_t *rcpts = ship_get_receipts_const(sp->ship);
+        uint16_t mc = sp->ship->manifest.count;
         for (uint16_t u = 0; ok && u < mc; u++) {
             uint8_t len = 0;
             if (rcpts && u < rcpts->count) {
@@ -3059,24 +3133,24 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     bool is_v1 = false;
     bool manifest_already_loaded = false;
 
-    ship_cleanup(&sp->ship);
+    ship_cleanup(sp->ship);
 
     if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6 || magic == PLAYER_MAGIC_V5) {
         /* PLY5 (manifest tail), PLY6 (manifest + last_signed_nonce),
          * PLY7 (manifest + last_signed_nonce + receipt chains). */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
-        migrate_v4_ship(&sp->ship, &data.ship);
+        migrate_v4_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
-        sp->ship.pos = data.last_pos;
-        sp->ship.angle = data.last_angle;
+        sp->ship->pos = data.last_pos;
+        sp->ship->angle = data.last_angle;
         /* Read manifest tail. Bootstrap was called by migrate_v4_ship. */
         uint16_t manifest_count = 0;
         if (fread(&manifest_count, sizeof(manifest_count), 1, f) != 1) {
             fclose(f); return false;
         }
         if (manifest_count > 0) {
-            if (!manifest_reserve(&sp->ship.manifest, manifest_count)) {
+            if (!manifest_reserve(&sp->ship->manifest, manifest_count)) {
                 fclose(f); return false;
             }
             for (uint16_t u = 0; u < manifest_count; u++) {
@@ -3084,13 +3158,13 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
                 if (fread(&cu, sizeof(cu), 1, f) != 1) {
                     fclose(f); return false;
                 }
-                sp->ship.manifest.units[u] = cu;
+                sp->ship->manifest.units[u] = cu;
             }
-            sp->ship.manifest.count = manifest_count;
+            sp->ship->manifest.count = manifest_count;
             /* Cargo_unit_t byte 7 was _pad in pre-v45 saves and is now
              * `quantity`. Idempotent rewrite: 0 → 1 leaves v45+ saves
              * untouched and migrates the legacy zero to a valid count. */
-            manifest_migrate_quantity(&sp->ship.manifest);
+            manifest_migrate_quantity(&sp->ship->manifest);
         }
         /* PLY6+ last_signed_nonce. PLY5 saves end here; the nonce stays
          * at zero, which lets the first signed action after the migration
@@ -3103,14 +3177,14 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
             }
             sp->last_signed_nonce = nonce;
         }
-        /* PLY7 (#479 D): per-ship cargo_receipt_t chains. The store
-         * mirrors ship.manifest, so we expect exactly manifest_count
-         * chains. Each chain is [len:u8] + len × CARGO_RECEIPT_SIZE.
+        /* PLY7 (#479 D): per-manifest-entry cargo receipt chains. We
+         * expect exactly manifest_count chains. Each chain is [len:u8]
+         * + len × CARGO_RECEIPT_SIZE.
          * v6 saves stop short here — the receipt store stays empty;
          * the next BUY/DELIVER for that cargo will sign a fresh
          * origin-attested receipt (one-time migration cost). */
         if (magic == PLAYER_MAGIC) {
-            ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+            ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
             if (!rcpts) { fclose(f); return false; }
             ship_receipts_clear(rcpts);
             if (manifest_count > 0) {
@@ -3151,30 +3225,30 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);
-        migrate_v4_ship(&sp->ship, &data.ship);
+        migrate_v4_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
-        sp->ship.pos = data.last_pos;
-        sp->ship.angle = data.last_angle;
+        sp->ship->pos = data.last_pos;
+        sp->ship->angle = data.last_angle;
     } else if (magic == PLAYER_MAGIC_V3) {
         /* PLY3 → PLY4: migrate ship_v3_t → ship_t, zero-init hold_ingots. */
         player_save_v3_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);
-        migrate_v3_ship(&sp->ship, &data.ship);
+        migrate_v3_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
-        sp->ship.pos = data.last_pos;
-        sp->ship.angle = data.last_angle;
+        sp->ship->pos = data.last_pos;
+        sp->ship->angle = data.last_angle;
     } else if (magic == PLAYER_MAGIC_V2 || magic == PLAYER_MAGIC_V1) {
         /* PLY2 or PLY1 — old ship_t with global credits */
         player_save_v2_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);
         is_v1 = (magic == PLAYER_MAGIC_V1);
-        migrate_v2_ship(&sp->ship, &data.ship);
+        migrate_v2_ship(sp->ship, &data.ship);
         migrated_credits = data.ship.credits;
         sp->current_station = data.last_station;
-        sp->ship.pos = data.last_pos;
-        sp->ship.angle = data.last_angle;
+        sp->ship->pos = data.last_pos;
+        sp->ship->angle = data.last_angle;
     } else {
         fclose(f);
         return false;
@@ -3185,33 +3259,33 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         static const int REMAP[17] = {
             0, 1, 2, 3, 4, -1, 5, 6, 7, 8, 9, -1, 10, -1, -1, 11, 12,
         };
-        uint32_t old_mask = sp->ship.unlocked_modules;
+        uint32_t old_mask = sp->ship->unlocked_modules;
         uint32_t new_mask = 0;
         for (int b = 0; b < 17; b++) {
             if (!(old_mask & (1u << b))) continue;
             int new_t = REMAP[b];
             if (new_t >= 0) new_mask |= (1u << (uint32_t)new_t);
         }
-        sp->ship.unlocked_modules = new_mask;
+        sp->ship->unlocked_modules = new_mask;
     }
     /* Validate hull class */
-    if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
-        sp->ship.hull_class = HULL_CLASS_MINER;
+    if (sp->ship->hull_class < 0 || sp->ship->hull_class >= HULL_CLASS_COUNT)
+        sp->ship->hull_class = HULL_CLASS_MINER;
     /* Validate station index */
     if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
         !station_exists(&w->stations[sp->current_station]))
         sp->current_station = 0;
     /* Clamp upgrade levels */
-    if (sp->ship.mining_level < 0 || sp->ship.mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.mining_level = 0;
-    if (sp->ship.hold_level < 0 || sp->ship.hold_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.hold_level = 0;
-    if (sp->ship.tractor_level < 0 || sp->ship.tractor_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.tractor_level = 0;
+    if (sp->ship->mining_level < 0 || sp->ship->mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship->mining_level = 0;
+    if (sp->ship->hold_level < 0 || sp->ship->hold_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship->hold_level = 0;
+    if (sp->ship->tractor_level < 0 || sp->ship->tractor_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship->tractor_level = 0;
     /* Clamp hull HP */
-    float max_hull = ship_max_hull(&sp->ship);
-    if (!(sp->ship.hull > 0.0f)) sp->ship.hull = max_hull;
-    if (sp->ship.hull > max_hull) sp->ship.hull = max_hull;
+    float max_hull = ship_max_hull(sp->ship);
+    if (!(sp->ship->hull > 0.0f)) sp->ship->hull = max_hull;
+    if (sp->ship->hull > max_hull) sp->ship->hull = max_hull;
     /* Clamp cargo (no negative, no NaN, no exceeding capacity) */
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        if (!(sp->ship.cargo[i] >= 0.0f)) sp->ship.cargo[i] = 0.0f;
+        if (!(sp->ship->cargo[i] >= 0.0f)) sp->ship->cargo[i] = 0.0f;
     }
     /* Slice D: pre-PLY5 saves had no ship manifest. Synthesize
      * RECIPE_LEGACY_MIGRATE units from the float-held finished goods
@@ -3222,10 +3296,11 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     if (!manifest_already_loaded) {
         uint8_t origin[8] = {0};
         if (sp->session_ready) memcpy(origin, sp->session_token, 8);
-        (void)manifest_migrate_legacy_inventory(&sp->ship.manifest,
-                                                sp->ship.cargo,
+        (void)manifest_migrate_legacy_inventory(&sp->ship->manifest,
+                                                sp->ship->cargo,
                                                 COMMODITY_COUNT, origin);
     }
+    ship_retire_finished_cargo_slots(sp->ship);
     /* Dock the player at their last station for safety */
     sp->docked = true;
     sp->nearby_station = sp->current_station;
@@ -3313,7 +3388,7 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
     }
     if (!asset) {
         asset = world_ship_asset_mint(
-            w, sp->ship.hull_class, owner_kind, -1, sp->current_station,
+            w, sp->ship->hull_class, owner_kind, -1, sp->current_station,
             SHIP_ASSET_PROVENANCE_LEGACY, false, -1,
             owner_pubkey, owner_session);
     }
@@ -3323,53 +3398,92 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
     if (!asset) return;
     if (prior && prior != asset)
         ship_asset_release_loaded_provisional(prior, slot);
-    (void)ship_copy(&asset->ship, &sp->ship);
-    asset->hull_class = sp->ship.hull_class;
+    asset->hull_class = sp->ship->hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;
     asset->operator_slot = (int16_t)slot;
+    asset->live_ship_ref = sp->ship_ref;
+    asset->ship = sp->ship;
     asset->custody_station = (int16_t)sp->current_station;
+    ship_cleanup(&asset->stored_ship);
+    memset(&asset->stored_ship, 0, sizeof(asset->stored_ship));
     sp->ship_asset_id = asset->asset_id;
 }
 
-static void player_restore_towed_cargo_pods(server_player_t *sp,
-                                            world_t *w,
-                                            int slot) {
+static void player_restore_tow_links(server_player_t *sp,
+                                     world_t *w,
+                                     int slot) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
-    sp->ship.towed_pod_count = 0;
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+    int16_t saved_fragments[10];
+    int saved_fragment_count = ship_towed_fragment_count(sp->ship);
+    memcpy(saved_fragments, sp->ship->towed_fragments,
+           (size_t)saved_fragment_count * sizeof(saved_fragments[0]));
+    int16_t saved_pods[10];
+    int saved_pod_count = ship_towed_pod_count(sp->ship);
+    memcpy(saved_pods, sp->ship->towed_pods,
+           (size_t)saved_pod_count * sizeof(saved_pods[0]));
+    int saved_scaffold = sp->ship->towed_scaffold;
 
-    for (int i = 0; i < MAX_CARGO_PODS; i++) {
-        cargo_pod_t *pod = &w->cargo_pods[i];
-        if (!pod->active || pod->towed_by != slot) continue;
-        if (ship_tow_body_space(&sp->ship) <= 0) {
-            pod->towed_by = -1;
+    /* World saves decode historical target bindings and player saves decode
+     * historical ship arrays. Reconcile the target side into authoritative
+     * links, then import any remaining player-only projection rows once. */
+    world_tow_links_reconcile(w);
+    for (int t = 0; t < saved_fragment_count; t++) {
+        int idx = saved_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active ||
+            asteroid_has_tractor(&w->asteroids[idx])) {
             continue;
         }
-        int tow_slot = sp->ship.towed_pod_count++;
-        sp->ship.towed_pods[tow_slot] = (int16_t)i;
-        float angle = sp->ship.angle + PI_F + 0.18f * (float)(tow_slot - 1);
+        (void)world_asteroid_set_player_tractor(w, idx, slot);
+    }
+    for (int t = 0; t < saved_pod_count; t++) {
+        int idx = saved_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active ||
+            w->cargo_pods[idx].tractor.kind != TRACTOR_SOURCE_NONE) {
+            continue;
+        }
+        (void)world_cargo_pod_set_player_tractor(w, idx, slot);
+    }
+    if (saved_scaffold >= 0 && saved_scaffold < MAX_SCAFFOLDS &&
+        w->scaffolds[saved_scaffold].active &&
+        !scaffold_has_tractor(&w->scaffolds[saved_scaffold])) {
+        (void)world_scaffold_set_player_tractor(w, saved_scaffold, slot);
+    }
+
+    for (int tow_slot = 0; tow_slot < sp->ship->towed_pod_count; tow_slot++) {
+        int i = sp->ship->towed_pods[tow_slot];
+        if (i < 0 || i >= MAX_CARGO_PODS || !w->cargo_pods[i].active)
+            continue;
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        float angle = sp->ship->angle + PI_F + 0.18f * (float)(tow_slot - 1);
         float dist = 52.0f + 24.0f * (float)tow_slot;
-        pod->pos = v2_add(sp->ship.pos, v2_scale(v2_from_angle(angle), dist));
-        pod->vel = sp->ship.vel;
-        pod->towed_by = (int8_t)slot;
+        pod->pos = v2_add(sp->ship->pos, v2_scale(v2_from_angle(angle), dist));
+        pod->vel = sp->ship->vel;
     }
 }
 
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
     if (!sp || !w || !path) return false;
+    ship_t *live_ship = sp->ship;
+    entity_ref_t live_ship_ref = sp->ship_ref;
+    if (!live_ship) return false;
+    ship_t staged_ship = {0};
     server_player_t staged = *sp;
-    memset(&staged.ship, 0, sizeof(staged.ship));
+    staged.ship = &staged_ship;
     bool ok = player_load_from_path_decode(&staged, w, path, slot);
     if (!ok) {
-        ship_cleanup(&staged.ship);
+        ship_cleanup(staged.ship);
         return false;
     }
-    ship_cleanup(&sp->ship);
+    ship_cleanup(live_ship);
+    *live_ship = staged_ship;
+    memset(&staged_ship, 0, sizeof(staged_ship));
     *sp = staged;
+    sp->ship = live_ship;
+    sp->ship_ref = live_ship_ref;
     server_player_clear_transient_input(sp);
     player_bind_loaded_ship_asset(sp, w, slot);
-    player_restore_towed_cargo_pods(sp, w, slot);
+    player_restore_tow_links(sp, w, slot);
     return true;
 }
 

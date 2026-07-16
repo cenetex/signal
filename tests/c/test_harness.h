@@ -16,6 +16,7 @@
 #include "ship.h"
 #include "economy.h"
 #include "game_sim.h"
+#include "gossip.h"
 #include "sim_asteroid.h"
 #include "sim_production.h"
 #include "sim_catalog.h"
@@ -82,7 +83,35 @@ extern int g_only_soak;
 #define WORLD_HEAP world_t *
 #define SHIP_DECL(name) ship_t name = {0}
 #define STATION_DECL(name) station_t name = {0}
-#define SERVER_PLAYER_DECL(name) server_player_t name = {0}
+#define SERVER_PLAYER_DECL(name) \
+    ship_t name##_ship_backing = {0}; \
+    server_connection_t name##_connection_backing = {0}; \
+    server_replication_t name##_replication_backing = {0}; \
+    server_player_t name = { \
+        .connection = &name##_connection_backing, \
+        .replication = &name##_replication_backing, \
+        .ship = &name##_ship_backing \
+    }
+#define NPC_SHIP_DECL(name) \
+    ship_t name##_ship_backing = {0}; \
+    npc_ship_t name = {.ship = &name##_ship_backing}
+#define SERVER_PLAYER_ARRAY(name, count) \
+    ship_t name##_ship_backing[(count)] = {{0}}; \
+    server_connection_t name##_connection_backing[(count)] = {{0}}; \
+    server_replication_t name##_replication_backing[(count)] = {{0}}; \
+    server_player_t name[(count)] = {{0}}; \
+    for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) { \
+        name[name##_bind_i].connection = \
+            &name##_connection_backing[name##_bind_i]; \
+        name[name##_bind_i].replication = \
+            &name##_replication_backing[name##_bind_i]; \
+        name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]; \
+    }
+#define NPC_SHIP_ARRAY(name, count) \
+    ship_t name##_ship_backing[(count)] = {{0}}; \
+    npc_ship_t name[(count)] = {{0}}; \
+    for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) \
+        name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]
 #else
 static inline void world_auto_cleanup(world_t *w) { world_cleanup(w); }
 static inline void world_ptr_auto_cleanup(world_t **wp) {
@@ -90,15 +119,60 @@ static inline void world_ptr_auto_cleanup(world_t **wp) {
 }
 static inline void ship_auto_cleanup(ship_t *ship) { ship_cleanup(ship); }
 static inline void station_auto_cleanup(station_t *station) { station_cleanup(station); }
-static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanup(&sp->ship); }
+static inline void server_player_auto_cleanup(server_player_t *sp) {
+    if (sp && sp->ship) ship_cleanup(sp->ship);
+}
+static inline void npc_ship_auto_cleanup(npc_ship_t *npc) {
+    if (npc && npc->ship) ship_cleanup(npc->ship);
+}
 #define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
 #define WORLD_DECL_NAME(name) world_t __attribute__((cleanup(world_auto_cleanup))) name = {0}
 #define WORLD_HEAP __attribute__((cleanup(world_ptr_auto_cleanup))) world_t *
 #define SHIP_DECL(name) ship_t __attribute__((cleanup(ship_auto_cleanup))) name = {0}
 #define STATION_DECL(name) station_t __attribute__((cleanup(station_auto_cleanup))) name = {0}
 #define SERVER_PLAYER_DECL(name) \
-    server_player_t __attribute__((cleanup(server_player_auto_cleanup))) name = {0}
+    ship_t name##_ship_backing = {0}; \
+    server_connection_t name##_connection_backing = {0}; \
+    server_replication_t name##_replication_backing = {0}; \
+    server_player_t __attribute__((cleanup(server_player_auto_cleanup))) name = \
+        { \
+            .connection = &name##_connection_backing, \
+            .replication = &name##_replication_backing, \
+            .ship = &name##_ship_backing \
+        }
+#define NPC_SHIP_DECL(name) \
+    ship_t name##_ship_backing = {0}; \
+    npc_ship_t __attribute__((cleanup(npc_ship_auto_cleanup))) name = \
+        {.ship = &name##_ship_backing}
+#define SERVER_PLAYER_ARRAY(name, count) \
+    ship_t name##_ship_backing[(count)] = {{0}}; \
+    server_connection_t name##_connection_backing[(count)] = {{0}}; \
+    server_replication_t name##_replication_backing[(count)] = {{0}}; \
+    server_player_t name[(count)] = {{0}}; \
+    for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) { \
+        name[name##_bind_i].connection = \
+            &name##_connection_backing[name##_bind_i]; \
+        name[name##_bind_i].replication = \
+            &name##_replication_backing[name##_bind_i]; \
+        name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]; \
+    }
+#define NPC_SHIP_ARRAY(name, count) \
+    ship_t name##_ship_backing[(count)] = {{0}}; \
+    npc_ship_t name[(count)] = {{0}}; \
+    for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) \
+        name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]
 #endif
+
+static inline void test_world_bind_ship_slots(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        w->players[i].connection = &w->connections[i];
+        w->players[i].replication = &w->replications[i];
+        (void)world_player_ship_slot_activate(w, i);
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        (void)world_npc_ship_slot_activate(w, i);
+}
 
 #if defined(_MSC_VER)
 #define TEST_NOINLINE __declspec(noinline)
@@ -232,6 +306,13 @@ double econ_total_credits(const world_t *w);
 bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
                                   mining_grade_t grade);
 bool test_set_station_finished_units(station_t *st, commodity_t c, int count);
+bool test_set_station_finished_amount(station_t *st, commodity_t c,
+                                      float amount);
+void test_clear_knowledge(knowledge_view_t *view, uint8_t capacity);
+bool test_add_known_contract(knowledge_view_t *view,
+                             const contract_summary_t *summary);
+uint8_t test_known_contracts(const knowledge_view_t *view,
+                             contract_summary_t *out, uint8_t cap);
 
 /* Per-process scratch path helper for tests that touch the filesystem.
  * Returns a pointer into a small ring of static buffers, so multiple

@@ -13,8 +13,8 @@ static void undock_at(world_t *w, server_player_t *sp, vec2 pos) {
     (void)w;
     sp->docked = false;
     sp->current_station = -1;
-    sp->ship.pos = pos;
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->pos = pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
 }
 
 TEST(test_respawn_debits_station_ledger) {
@@ -63,7 +63,7 @@ TEST(test_respawn_fee_persists_negative_balance) {
     int fee = station_spawn_fee(&w->stations[s0]);
 
     /* Pre-existing debt of 100. */
-    ledger_force_debit(&w->stations[s0], sp->session_token, 100.0f, &sp->ship);
+    ledger_force_debit(&w->stations[s0], sp->session_token, 100.0f, sp->ship);
     ASSERT_EQ_FLOAT(ledger_balance(&w->stations[s0], sp->session_token), -100.0f, 0.5f);
 
     vec2 near = w->stations[s0].pos;

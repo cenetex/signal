@@ -2342,7 +2342,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].index = p[0];
                 pods[i].kind = p[1];
                 pods[i].commodity = p[2];
-                pods[i].towed_by = (p[3] == 0xFF) ? -1 : (int8_t)p[3];
+                pods[i].tractor_player =
+                    (p[3] == 0xFF) ? -1 : (int8_t)p[3];
                 pods[i].pos_x = read_f32_le(&p[4]);
                 pods[i].pos_y = read_f32_le(&p[8]);
                 pods[i].vel_x = read_f32_le(&p[12]);
@@ -2379,7 +2380,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].index = p[0];
                 pods[i].kind = p[1];
                 pods[i].commodity = p[2];
-                pods[i].towed_by = (p[3] == 0xFF) ? -1 : (int8_t)p[3];
+                pods[i].tractor_player =
+                    (p[3] == 0xFF) ? -1 : (int8_t)p[3];
                 pods[i].pos_x = (float)qx * CARGO_POD_MOTION_Q_POS_SCALE;
                 pods[i].pos_y = (float)qy * CARGO_POD_MOTION_Q_POS_SCALE;
                 pods[i].vel_x = (float)qvx * CARGO_POD_MOTION_Q_VEL_SCALE;

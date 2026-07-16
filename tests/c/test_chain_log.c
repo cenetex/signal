@@ -422,14 +422,16 @@ TEST(test_chain_log_hopper_smelt_path_retired) {
     memset(w->stations[0].chain_last_hash, 0, 32);
 
     int manifest_before = w->stations[0].manifest.count;
-    float ingots_before = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    float ingots_before = station_inventory_amount(
+        &w->stations[0], COMMODITY_FERRITE_INGOT);
     w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 5.0f;
 
     sim_step_refinery_production(w, 30.0f);
 
     ASSERT_EQ_FLOAT(w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
                     5.0f, 0.001f);
-    ASSERT_EQ_FLOAT(w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        &w->stations[0], COMMODITY_FERRITE_INGOT),
                     ingots_before, 0.001f);
     ASSERT_EQ_INT(w->stations[0].manifest.count, manifest_before);
     ASSERT_EQ_INT((int)w->stations[0].chain_event_count, 0);
@@ -1150,8 +1152,8 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
      * with the player 30 units away (well within tractor range). */
     a->pos = v2(w->stations[0].pos.x + 50.0f, w->stations[0].pos.y);
     a->vel = v2(0, 0);
-    w->players[0].ship.pos = v2(a->pos.x + 30.0f, a->pos.y);
-    w->players[0].ship.vel = v2(0, 0);
+    w->players[0].ship->pos = v2(a->pos.x + 30.0f, a->pos.y);
+    w->players[0].ship->vel = v2(0, 0);
     /* Tractor is gated by input.tractor_hold (synced into ship.tractor_active
      * each tick from sample_input_intent). Set the input directly — setting
      * the cached ship flag would be clobbered on the next sim step. */
@@ -1168,7 +1170,7 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
     /* Now yank the player far past tractor range to force a band snap.
      * Tractor range scales with tractor_level; default ship is well
      * under 1000 units so a 5000-unit jump is unambiguous. */
-    w->players[0].ship.pos = v2(a->pos.x + 5000.0f, a->pos.y);
+    w->players[0].ship->pos = v2(a->pos.x + 5000.0f, a->pos.y);
 
     uint64_t mid = w->stations[0].chain_event_count;
     /* step_leashed_fragments runs when tractor_hold is off. The

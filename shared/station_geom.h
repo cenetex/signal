@@ -123,10 +123,10 @@ static inline float station_geom_spoke_pulse(const station_t *st, int module_ind
     if (!st || module_index < 0 || module_index >= MAX_MODULES_PER_STATION)
         return 0.0f;
 
-    float pulse = st->module_active_pulse[module_index];
+    float pulse = st->modules[module_index].active_pulse;
     if (pulse > 0.01f) return pulse;
 
-    switch ((station_flow_diag_t)st->module_diag[module_index]) {
+    switch ((station_flow_diag_t)st->modules[module_index].flow_diag) {
     case STATION_FLOW_DIAG_RUNNING:
     case STATION_FLOW_DIAG_SLOW_FEED:
         return 0.65f;

@@ -314,7 +314,7 @@ typedef struct {
     uint8_t index;
     uint8_t kind;       /* cargo_pod_kind_t */
     uint8_t commodity;  /* commodity_t */
-    int8_t towed_by;    /* -1 loose */
+    int8_t tractor_player; /* legacy wire byte projected into a typed binding */
     float pos_x, pos_y;
     float vel_x, vel_y;
     float radius;

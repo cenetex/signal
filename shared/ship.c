@@ -14,7 +14,7 @@ const hull_def_t* ship_hull_def(const ship_t* ship) {
 }
 
 const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
-    return hull_def_for_class(npc->ship.hull_class);
+    return hull_def_for_class(npc->ship->hull_class);
 }
 
 uint8_t ship_module_socket_count(const ship_t *ship) {
@@ -47,7 +47,7 @@ float ship_max_hull(const ship_t* ship) {
 }
 
 float npc_max_hull(const npc_ship_t* npc) {
-    return hull_max_for_class(npc->ship.hull_class);
+    return hull_max_for_class(npc->ship->hull_class);
 }
 
 float ship_cargo_capacity(const ship_t* ship) {

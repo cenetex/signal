@@ -6,18 +6,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* In debug builds, every finished-good accessor exit must leave
- * floor(inventory[c]) == manifest_count_by_commodity(c). The +0.0001
- * tolerance matches station_finished_accumulate's rounding. Raw-ore
- * commodities (< COMMODITY_RAW_ORE_COUNT) are stored only in the float
- * and have no manifest representation, so we skip them. */
+/* Whole finished goods live only in the manifest. The separate residue is
+ * constrained to the fractional interval and can never become a second
+ * whole-unit authority. */
 static void assert_finished_invariant(const station_t *st, commodity_t c) {
     (void)st; (void)c;
 #ifndef NDEBUG
     if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return;
     if ((int)c >= (int)COMMODITY_COUNT) return;
-    assert((int)floorf(st->_inventory_cache[c] + 0.0001f) ==
-           manifest_count_by_commodity(&st->manifest, c));
+    assert(st->_finished_residue[c] >= 0.0f);
+    assert(st->_finished_residue[c] < 1.0f);
 #endif
 }
 
@@ -284,23 +282,20 @@ static void ship_receipts_destroy(ship_receipts_t *r) {
 }
 
 ship_receipts_t *ship_get_receipts(ship_t *ship) {
-    if (!ship) return NULL;
-    return (ship_receipts_t *)ship->receipts_opaque;
+    return ship ? cargo_store_receipts(&ship->cargo_store) : NULL;
 }
 
 const ship_receipts_t *ship_get_receipts_const(const ship_t *ship) {
-    if (!ship) return NULL;
-    return (const ship_receipts_t *)ship->receipts_opaque;
+    return ship ? cargo_store_receipts_const(&ship->cargo_store) : NULL;
 }
 
 ship_receipts_t *station_get_receipts(station_t *station) {
-    if (!station) return NULL;
-    return (ship_receipts_t *)station->receipts_opaque;
+    return station ? cargo_store_receipts(&station->cargo_store) : NULL;
 }
 
 const ship_receipts_t *station_get_receipts_const(const station_t *station) {
-    if (!station) return NULL;
-    return (const ship_receipts_t *)station->receipts_opaque;
+    return station
+        ? cargo_store_receipts_const(&station->cargo_store) : NULL;
 }
 
 static bool receipt_store_reconcile(ship_receipts_t *r, const manifest_t *m) {
@@ -383,61 +378,105 @@ static int holder_manifest_consume_by_commodity(manifest_t *manifest,
     return removed;
 }
 
-void ship_cleanup(ship_t *ship) {
-    if (!ship) return;
-    manifest_free(&ship->manifest);
-    if (ship->receipts_opaque) {
-        ship_receipts_destroy((ship_receipts_t *)ship->receipts_opaque);
-        ship->receipts_opaque = NULL;
+ship_receipts_t *cargo_store_receipts(cargo_store_t *store) {
+    return store ? (ship_receipts_t *)store->receipts_opaque : NULL;
+}
+
+const ship_receipts_t *cargo_store_receipts_const(const cargo_store_t *store) {
+    return store ? (const ship_receipts_t *)store->receipts_opaque : NULL;
+}
+
+bool cargo_store_bootstrap(cargo_store_t *store, uint16_t default_cap) {
+    if (!store || default_cap == 0) return false;
+    bool manifest_ok = store->manifest.cap > 0 && store->manifest.units;
+    if (!manifest_ok) {
+        manifest_free(&store->manifest);
+        if (!manifest_init(&store->manifest, default_cap)) return false;
+    }
+    if (!store->receipts_opaque) {
+        store->receipts_opaque = ship_receipts_alloc();
+        if (!store->receipts_opaque) return false;
+    }
+    return receipt_store_reconcile(cargo_store_receipts(store),
+                                   &store->manifest);
+}
+
+void cargo_store_cleanup(cargo_store_t *store) {
+    if (!store) return;
+    manifest_free(&store->manifest);
+    if (store->receipts_opaque) {
+        ship_receipts_destroy(cargo_store_receipts(store));
+        store->receipts_opaque = NULL;
     }
 }
 
-bool ship_manifest_bootstrap(ship_t *ship) {
-    if (!ship) return false;
-    bool manifest_ok = (ship->manifest.cap > 0 && ship->manifest.units);
-    if (!manifest_ok) {
-        manifest_free(&ship->manifest);
-        if (!manifest_init(&ship->manifest, SHIP_MANIFEST_DEFAULT_CAP))
+bool cargo_store_clone(cargo_store_t *dst, const cargo_store_t *src) {
+    if (!dst || !src) return false;
+    if (dst == src) return true;
+    cargo_store_t cloned = {0};
+    if (!manifest_clone(&cloned.manifest, &src->manifest)) return false;
+    if (src->receipts_opaque) {
+        cloned.receipts_opaque = calloc(1, sizeof(ship_receipts_t));
+        if (!cloned.receipts_opaque ||
+            !ship_receipts_clone(cargo_store_receipts(&cloned),
+                                 cargo_store_receipts_const(src))) {
+            if (cloned.receipts_opaque) free(cloned.receipts_opaque);
+            manifest_free(&cloned.manifest);
             return false;
+        }
     }
-    /* Bootstrap the parallel receipt store. Idempotent. */
-    if (!ship->receipts_opaque) {
-        ship->receipts_opaque = ship_receipts_alloc();
-        if (!ship->receipts_opaque) return false;
-    }
-    if (!receipt_store_reconcile((ship_receipts_t *)ship->receipts_opaque,
-                                 &ship->manifest)) {
-        return false;
-    }
+    cargo_store_cleanup(dst);
+    *dst = cloned;
     return true;
 }
 
+bool cargo_store_push_with_chain(cargo_store_t *store,
+                                 const cargo_unit_t *unit,
+                                 const cargo_receipt_chain_t *chain) {
+    if (!store || !unit) return false;
+    if (chain && chain->len > 0 &&
+        cargo_receipt_chain_verify(chain->links, chain->len, unit->pub) !=
+            CARGO_RECEIPT_OK) return false;
+    if (!store->receipts_opaque) return false;
+    return holder_manifest_push_with_chain(
+        &store->manifest, cargo_store_receipts(store), unit, chain);
+}
+
+bool cargo_store_remove_with_chain(cargo_store_t *store, uint16_t index,
+                                   cargo_unit_t *out_unit,
+                                   cargo_receipt_chain_t *out_chain) {
+    if (!store || !store->receipts_opaque) return false;
+    return holder_manifest_remove_with_chain(
+        &store->manifest, cargo_store_receipts(store), index,
+        out_unit, out_chain);
+}
+
+int cargo_store_consume_by_commodity(cargo_store_t *store,
+                                     commodity_t commodity, int n) {
+    if (!store || !store->receipts_opaque || n <= 0) return 0;
+    return holder_manifest_consume_by_commodity(
+        &store->manifest, cargo_store_receipts(store), commodity, n);
+}
+
+void ship_cleanup(ship_t *ship) {
+    if (!ship) return;
+    cargo_store_cleanup(&ship->cargo_store);
+}
+
+bool ship_manifest_bootstrap(ship_t *ship) {
+    return ship && cargo_store_bootstrap(
+        &ship->cargo_store, SHIP_MANIFEST_DEFAULT_CAP);
+}
+
 bool ship_copy(ship_t *dst, const ship_t *src) {
-    manifest_t manifest = {0};
-    ship_receipts_t *receipts_dup = NULL;
+    cargo_store_t cargo_store = {0};
 
     if (!dst || !src) return false;
     if (dst == src) return true;
-    if (!manifest_clone(&manifest, &src->manifest)) return false;
-    /* Clone receipts if the source has any. Failure to clone is fatal
-     * for the copy because we must keep manifest+receipt parity. */
-    if (src->receipts_opaque) {
-        receipts_dup = (ship_receipts_t *)calloc(1, sizeof(*receipts_dup));
-        if (!receipts_dup) {
-            manifest_free(&manifest);
-            return false;
-        }
-        if (!ship_receipts_clone(receipts_dup,
-                                 (const ship_receipts_t *)src->receipts_opaque)) {
-            free(receipts_dup);
-            manifest_free(&manifest);
-            return false;
-        }
-    }
+    if (!cargo_store_clone(&cargo_store, &src->cargo_store)) return false;
     ship_cleanup(dst);
     *dst = *src;
-    dst->manifest = manifest;
-    dst->receipts_opaque = receipts_dup;
+    dst->cargo_store = cargo_store;
     return true;
 }
 
@@ -445,9 +484,7 @@ bool ship_manifest_push_with_chain(ship_t *ship, const cargo_unit_t *unit,
                                    const cargo_receipt_chain_t *chain) {
     if (!ship || !unit) return false;
     if (!ship_manifest_bootstrap(ship)) return false;
-    return holder_manifest_push_with_chain(&ship->manifest,
-                                           ship_get_receipts(ship),
-                                           unit, chain);
+    return cargo_store_push_with_chain(&ship->cargo_store, unit, chain);
 }
 
 bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
@@ -455,68 +492,35 @@ bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
                                      cargo_receipt_chain_t *out_chain) {
     if (!ship) return false;
     if (!ship_manifest_bootstrap(ship)) return false;
-    return holder_manifest_remove_with_chain(&ship->manifest,
-                                             ship_get_receipts(ship),
-                                             index, out_unit, out_chain);
+    return cargo_store_remove_with_chain(
+        &ship->cargo_store, index, out_unit, out_chain);
 }
 
 int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n) {
     if (!ship || n <= 0) return 0;
     if (!ship_manifest_bootstrap(ship)) return 0;
-    return holder_manifest_consume_by_commodity(&ship->manifest,
-                                                ship_get_receipts(ship),
-                                                c, n);
+    return cargo_store_consume_by_commodity(&ship->cargo_store, c, n);
 }
 
 void station_cleanup(station_t *station) {
     if (!station) return;
-    manifest_free(&station->manifest);
-    if (station->receipts_opaque) {
-        ship_receipts_destroy((ship_receipts_t *)station->receipts_opaque);
-        station->receipts_opaque = NULL;
-    }
+    cargo_store_cleanup(&station->cargo_store);
 }
 
 bool station_manifest_bootstrap(station_t *station) {
-    if (!station) return false;
-    bool manifest_ok = (station->manifest.cap > 0 && station->manifest.units);
-    if (!manifest_ok) {
-        manifest_free(&station->manifest);
-        if (!manifest_init(&station->manifest, STATION_MANIFEST_DEFAULT_CAP))
-            return false;
-    }
-    if (!station->receipts_opaque) {
-        station->receipts_opaque = ship_receipts_alloc();
-        if (!station->receipts_opaque) return false;
-    }
-    return receipt_store_reconcile((ship_receipts_t *)station->receipts_opaque,
-                                   &station->manifest);
+    return station && cargo_store_bootstrap(
+        &station->cargo_store, STATION_MANIFEST_DEFAULT_CAP);
 }
 
 bool station_copy(station_t *dst, const station_t *src) {
-    manifest_t manifest = {0};
-    ship_receipts_t *receipts_dup = NULL;
+    cargo_store_t cargo_store = {0};
 
     if (!dst || !src) return false;
     if (dst == src) return true;
-    if (!manifest_clone(&manifest, &src->manifest)) return false;
-    if (src->receipts_opaque) {
-        receipts_dup = (ship_receipts_t *)calloc(1, sizeof(*receipts_dup));
-        if (!receipts_dup) {
-            manifest_free(&manifest);
-            return false;
-        }
-        if (!ship_receipts_clone(receipts_dup,
-                                 (const ship_receipts_t *)src->receipts_opaque)) {
-            free(receipts_dup);
-            manifest_free(&manifest);
-            return false;
-        }
-    }
+    if (!cargo_store_clone(&cargo_store, &src->cargo_store)) return false;
     station_cleanup(dst);
     *dst = *src;
-    dst->manifest = manifest;
-    dst->receipts_opaque = receipts_dup;
+    dst->cargo_store = cargo_store;
     return true;
 }
 
@@ -524,15 +528,8 @@ bool station_manifest_push_with_chain(station_t *station,
                                       const cargo_unit_t *unit,
                                       const cargo_receipt_chain_t *chain) {
     if (!station || !unit) return false;
-    if (chain && chain->len > 0 &&
-        cargo_receipt_chain_verify(chain->links, chain->len, unit->pub) !=
-            CARGO_RECEIPT_OK) {
-        return false;
-    }
     if (!station_manifest_bootstrap(station)) return false;
-    if (!holder_manifest_push_with_chain(&station->manifest,
-                                         station_get_receipts(station),
-                                         unit, chain)) {
+    if (!cargo_store_push_with_chain(&station->cargo_store, unit, chain)) {
         return false;
     }
     station->manifest_dirty = true;
@@ -544,9 +541,8 @@ bool station_manifest_remove_with_chain(station_t *station, uint16_t index,
                                         cargo_receipt_chain_t *out_chain) {
     if (!station) return false;
     if (!station_manifest_bootstrap(station)) return false;
-    if (!holder_manifest_remove_with_chain(&station->manifest,
-                                           station_get_receipts(station),
-                                           index, out_unit, out_chain)) {
+    if (!cargo_store_remove_with_chain(
+            &station->cargo_store, index, out_unit, out_chain)) {
         return false;
     }
     station->manifest_dirty = true;
@@ -557,9 +553,8 @@ int station_manifest_consume_by_commodity(station_t *station,
                                           commodity_t c, int n) {
     if (!station || n <= 0) return 0;
     if (!station_manifest_bootstrap(station)) return 0;
-    int removed = holder_manifest_consume_by_commodity(&station->manifest,
-                                                       station_get_receipts(station),
-                                                       c, n);
+    int removed = cargo_store_consume_by_commodity(
+        &station->cargo_store, c, n);
     if (removed > 0) station->manifest_dirty = true;
     return removed;
 }
@@ -862,7 +857,7 @@ void manifest_migrate_quantity(manifest_t *manifest) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Manifest-as-truth helpers — keep float[] in sync with manifest    */
+/* Manifest-as-truth helpers                                         */
 /* ---------------------------------------------------------------- */
 
 /* Default 8-byte origin tag when caller passes NULL. */
@@ -890,19 +885,6 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
         minted++;
     }
     if (minted > 0) {
-        /* Sync float to the new manifest count, preserving any fractional
-         * residue (production accumulator) below 1.0. Use the same +0.0001
-         * epsilon as station_finished_accumulate's int_before/int_after
-         * snap — without it, when accumulate rounds 0.9999...→1 to trigger
-         * this mint, frac would be computed as ~0.9999 (not ~0), and the
-         * float would jump to manifest_count + 0.9999, breaking the
-         * invariant by one whole unit. */
-        float v = st->_inventory_cache[c];
-        float floor_v = floorf(v + 0.0001f);
-        float frac = v - floor_v;
-        if (frac < 0.0f) frac = 0.0f;     /* clamp tiny negative residue */
-        if (frac >= 1.0f) frac = 0.0f;    /* belt-and-suspenders */
-        st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
         st->manifest_dirty = true;
     }
     assert_finished_invariant(st, c);
@@ -915,15 +897,16 @@ int ship_finished_count(const ship_t *ship, commodity_t c) {
 }
 
 void ship_finished_sync(ship_t *ship, commodity_t c) {
-    if (!ship || !finished_good_commodity(c)) return;
-    ship->cargo[c] = (float)manifest_count_by_commodity(&ship->manifest, c);
+    /* Finished counts are queried from cargo_store.manifest. This function
+     * remains as a source-compatible no-op while old callers are retired;
+     * writing a second float authority here would recreate drift. */
+    (void)ship;
+    (void)c;
 }
 
 int ship_finished_drain(ship_t *ship, commodity_t c, int n) {
     if (!ship || n <= 0 || !finished_good_commodity(c)) return 0;
-    int drained = ship_manifest_consume_by_commodity(ship, c, n);
-    if (drained > 0) ship_finished_sync(ship, c);
-    return drained;
+    return ship_manifest_consume_by_commodity(ship, c, n);
 }
 
 int station_finished_count(const station_t *st, commodity_t c) {
@@ -933,12 +916,6 @@ int station_finished_count(const station_t *st, commodity_t c) {
 
 void station_finished_sync(station_t *st, commodity_t c) {
     if (!st || !finished_good_commodity(c)) return;
-    float v = st->_inventory_cache[c];
-    float floor_v = floorf(v + 0.0001f);
-    float frac = v - floor_v;
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac >= 1.0f) frac = 0.0f;
-    st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
     st->manifest_dirty = true;
     assert_finished_invariant(st, c);
 }
@@ -947,7 +924,7 @@ int station_finished_drain(station_t *st, commodity_t c, int n) {
     if (!st || n <= 0) return 0;
     if (!finished_good_commodity(c)) return 0;
     int drained = station_manifest_consume_by_commodity(st, c, n);
-    if (drained > 0) station_finished_sync(st, c);
+    if (drained > 0) st->manifest_dirty = true;
     assert_finished_invariant(st, c);
     return drained;
 }
@@ -957,26 +934,20 @@ int station_finished_accumulate(station_t *st, commodity_t c, float amount,
     if (!st || amount <= 0.0f) return 0;
     if (!finished_good_commodity(c)) return 0;
 
-    /* Compute how many integer crossings this addition triggers. The
-     * float currently holds: (manifest count) + (fractional residue).
-     * After adding `amount`, the new int count is floor(old + amount). */
-    float before = st->_inventory_cache[c];
-    float after  = before + amount;
-    int int_before = (int)floorf(before + 0.0001f);
-    int int_after  = (int)floorf(after + 0.0001f);
-    int delta = int_after - int_before;
-
-    /* Update float first so any partial residue is preserved even if
-     * minting partially fails (manifest cap). */
-    st->_inventory_cache[c] = after;
-
+    float total = st->_finished_residue[c] + amount;
+    int delta = (int)floorf(total + 0.0001f);
+    float residue = total - (float)delta;
+    if (residue < 0.0f) residue = 0.0f;
+    if (residue >= 1.0f) residue = 0.0f;
+    st->_finished_residue[c] = residue;
     if (delta <= 0) {
         assert_finished_invariant(st, c);
         return 0;
     }
     int minted = station_finished_mint(st, c, delta, origin);
-    /* mint sets inventory[c] = manifest_count + frac; that already
-     * captures any cap-induced shortfall. */
+    /* Preserve any units that could not be materialized because the store
+     * is full as fractional work only up to the representable interval. */
+    if (minted < delta) st->_finished_residue[c] = 0.0f;
     assert_finished_invariant(st, c);
     return minted;
 }
@@ -985,20 +956,22 @@ int station_finished_consume(station_t *st, commodity_t c, float amount) {
     if (!st || amount <= 0.0f) return 0;
     if (!finished_good_commodity(c)) return 0;
 
-    float before = st->_inventory_cache[c];
-    float after  = before - amount;
-    int int_before = (int)floorf(before + 0.0001f);
-    int int_after  = (int)floorf(after + 0.0001f);
-    int delta = int_before - int_after;
-
-    st->_inventory_cache[c] = after;
-
+    int whole = station_finished_count(st, c);
+    float total = (float)whole + st->_finished_residue[c];
+    float after = total - amount;
+    if (after < 0.0f) after = 0.0f;
+    int target_whole = (int)floorf(after + 0.0001f);
+    float residue = after - (float)target_whole;
+    if (residue < 0.0f) residue = 0.0f;
+    if (residue >= 1.0f) residue = 0.0f;
+    int delta = whole - target_whole;
+    st->_finished_residue[c] = residue;
     if (delta <= 0) {
         assert_finished_invariant(st, c);
         return 0;
     }
     int drained = station_manifest_consume_by_commodity(st, c, delta);
-    station_finished_sync(st, c);
+    if (drained > 0) st->manifest_dirty = true;
     assert_finished_invariant(st, c);
     return drained;
 }

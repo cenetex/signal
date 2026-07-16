@@ -72,22 +72,19 @@ void step_station_production(station_t* stations, int count, float dt) {
             if (!producer_recipe_for_module(mt, &recipe)) continue;
 
             schema = module_schema(mt);
-            room = (MAX_PRODUCT_STOCK - station->_inventory_cache[recipe.output]) /
+            room = (MAX_PRODUCT_STOCK - station_inventory_amount(station, recipe.output)) /
                    recipe.output_units_per_batch;
             if (room <= FLOAT_EPSILON) continue;
 
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
 
-            /* The manifest helpers keep this cache as whole manifest units
-             * plus fractional residue, so use it here to avoid stranding
-             * half-consumed inputs between partial production batches. */
-            primary_avail = station->_inventory_cache[recipe.primary_input] /
+            primary_avail = station_inventory_amount(station, recipe.primary_input) /
                             recipe.primary_units_per_batch;
             produce = fminf(produce, primary_avail);
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 secondary_avail =
-                    station->_inventory_cache[recipe.secondary_input] /
+                    station_inventory_amount(station, recipe.secondary_input) /
                     recipe.secondary_units_per_batch;
                 produce = fminf(produce, secondary_avail);
             }

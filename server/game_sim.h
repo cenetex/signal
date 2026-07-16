@@ -29,9 +29,6 @@
 
 enum {
     MAX_PLAYERS = 32,
-    /* #294 Slice 8: unified NPC ship_t pool. Sized for NPCs only today;
-     * widening to include players is a later slice. */
-    MAX_SHIPS = MAX_NPC_SHIPS,
     MAX_SHIP_ASSETS = 128,
     MAX_DELIVERY_SHIPMENTS = 24,
     MAX_DELIVERY_BOUND_CARGO = 16,
@@ -242,82 +239,32 @@ typedef struct {
     uint64_t hash;
 } net_payload_cache_t;
 
+/* Runtime transport state is not part of the gameplay controller. Headless
+ * controllers deliberately have a bound component whose conn is NULL. */
 typedef struct {
-    bool connected;
-    uint8_t id;
     void *conn;
-    uint64_t client_addr_key; /* per-IP connection limit key; not persisted */
+    uint64_t client_addr_key;
     bool client_addr_key_valid;
-    uint8_t session_token[8]; /* stable identity for save persistence */
-    bool session_ready;       /* true once client sends SESSION message */
-    bool grace_period;        /* true while waiting for reconnect after disconnect */
-    float grace_timer;        /* seconds remaining in grace window */
-    uint32_t ship_asset_id;   /* SHIP_ASSET_ID_NONE until bound to a hull asset */
-    ship_t ship;
-    input_intent_t input;
-    float boost_hold_timer;    /* seconds SHIFT has been held — drives "takeoff" burst */
-    int current_station;
-    int nearby_station;
-    bool docked;
-    bool in_dock_range;
-    bool docking_approach;  /* tractor pulling ship toward core berth */
-    int dock_berth;         /* berth slot (0-3) when docked */
-    bool beam_active;
-    bool beam_hit;
-    bool beam_ineffective; /* hitting a rock too tough for current laser level */
-    bool scan_active;      /* laser scanning a non-asteroid target */
-    int scan_target_type;  /* 0=none, 1=station_module, 2=npc, 3=player, 4=cargo_pod */
-    int scan_target_index; /* index into stations/npc_ships/players array */
-    int scan_module_index; /* module index within station (for type=1) */
-    int hover_asteroid;
-    vec2 beam_start;
-    vec2 beam_end;
-    float cargo_sale_value;
-    int nearby_fragments;
-    int tractor_fragments;
-    bool was_in_signal;     /* previous frame's signal state, for edge detection */
-    char callsign[8];       /* e.g. "KRX-472" */
-    /* Autopilot — server-side AI driving the player's ship.
-     * 0 = off (manual control)
-     * 1 = mining loop: mine → tow → dock → sell → undock → repeat
-     * Manual input (turn/thrust/mine) cancels the autopilot. */
-    bool actual_thrusting;      /* true if the ship thrusted this tick (survives input restore) */
-    uint8_t autopilot_mode;
-    int autopilot_target;       /* asteroid idx or -1 */
-    int autopilot_station_target; /* logistics destination station or -1 */
-    commodity_t autopilot_cargo;  /* logistics commodity, COMMODITY_COUNT when idle */
-    int autopilot_state;        /* internal state machine cursor */
-    float autopilot_timer;
-    vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
-    float autopilot_stuck_timer;/* seconds since meaningful movement */
-    uint8_t autopilot_teacher_valid;
-    uint8_t autopilot_teacher_forward_blocked;
-    uint16_t autopilot_teacher_allowed_mask;
-    uint32_t autopilot_teacher_tick;
-    int8_t autopilot_teacher_action;
-    int8_t autopilot_teacher_turn;
-    int8_t autopilot_teacher_thrust;
-    float autopilot_teacher_features[
-        SIGNAL_BRAIN_FLIGHT_ACTION_COUNT * SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT];
-    uint8_t autopilot_decision_valid;
-    uint8_t autopilot_decision_action;
-    uint8_t autopilot_decision_candidate_count;
-    uint8_t autopilot_decision_reserved;
-    uint32_t autopilot_decision_flags;
-    float autopilot_decision_score;
-    float autopilot_decision_neural_score;
-    float autopilot_decision_route_risk;
-    float autopilot_decision_signal_quality;
-    uint8_t hail_decision_valid;
-    int8_t hail_decision_station;
-    uint8_t hail_decision_candidate_count;
-    uint8_t hail_decision_reserved;
-    uint32_t hail_decision_flags;
-    float hail_decision_score;
-    float hail_decision_signal_quality;
-    uint64_t hail_decision_source_id;
-    uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
-    /* Per-player relevance: tracks which asteroids this player has received */
+    uint64_t analytics_connected_ms;
+    uint64_t analytics_last_activity_ms;
+    uint64_t analytics_metrics_last_ms;
+    uint32_t analytics_metrics_seq;
+    uint32_t analytics_metrics_samples;
+    uint16_t analytics_ping_ms;
+    uint16_t analytics_ack_ms;
+    uint16_t analytics_ack_gap_ms;
+    uint16_t analytics_server_turnaround_ms;
+    uint16_t analytics_player_interval_ms;
+    uint16_t analytics_unacked_inputs;
+    uint16_t analytics_replay_depth;
+    uint8_t analytics_action_queue_depth;
+    uint8_t analytics_recovery_flags;
+} server_connection_t;
+
+/* Per-recipient replication baselines and payload suppression caches. This is
+ * transport-owned derived state: clearing it may resend data but must never
+ * change authoritative gameplay. */
+typedef struct {
     bool asteroid_sent[MAX_ASTEROIDS];
     uint32_t asteroid_motion_sent_tick[MAX_ASTEROIDS];
     vec2 asteroid_motion_sent_pos[MAX_ASTEROIDS];
@@ -394,9 +341,6 @@ typedef struct {
     uint32_t world_interactions_last_sent_tick;
     uint32_t world_interaction_drift_last_sent_tick;
     uint32_t world_interaction_drift_block_tick;
-    /* Set when an action result is sent. The next player payload broadcast
-     * bypasses hash suppression so rejected/no-op actions also reconcile
-     * any optimistic client state. */
     bool force_authoritative_resync;
     bool input_ack_state_valid;
     uint32_t input_ack_state_tick;
@@ -407,6 +351,83 @@ typedef struct {
     uint8_t input_ack_state_tractor_level;
     uint8_t input_ack_state_towed_count;
     uint16_t input_ack_state_towed_fragments[10];
+} server_replication_t;
+
+typedef struct {
+    bool connected;
+    uint8_t id;
+    server_connection_t *connection; /* non-owning runtime component */
+    server_replication_t *replication; /* non-owning derived component */
+    uint8_t session_token[8]; /* stable identity for save persistence */
+    bool session_ready;       /* true once client sends SESSION message */
+    bool grace_period;        /* true while waiting for reconnect after disconnect */
+    float grace_timer;        /* seconds remaining in grace window */
+    uint32_t ship_asset_id;   /* SHIP_ASSET_ID_NONE until bound to a hull asset */
+    entity_ref_t ship_ref;
+    ship_t *ship; /* non-owning view of the authoritative world.ships slot */
+    input_intent_t input;
+    float boost_hold_timer;    /* seconds SHIFT has been held — drives "takeoff" burst */
+    int current_station;
+    int nearby_station;
+    bool docked;
+    bool in_dock_range;
+    bool docking_approach;  /* tractor pulling ship toward core berth */
+    int dock_berth;         /* berth slot (0-3) when docked */
+    bool beam_active;
+    bool beam_hit;
+    bool beam_ineffective; /* hitting a rock too tough for current laser level */
+    bool scan_active;      /* laser scanning a non-asteroid target */
+    int scan_target_type;  /* 0=none, 1=station_module, 2=npc, 3=player, 4=cargo_pod */
+    int scan_target_index; /* index into stations/npc_ships/players array */
+    int scan_module_index; /* module index within station (for type=1) */
+    int hover_asteroid;
+    vec2 beam_start;
+    vec2 beam_end;
+    float cargo_sale_value;
+    int nearby_fragments;
+    int tractor_fragments;
+    bool was_in_signal;     /* previous frame's signal state, for edge detection */
+    char callsign[8];       /* e.g. "KRX-472" */
+    /* Autopilot — server-side AI driving the player's ship.
+     * 0 = off (manual control)
+     * 1 = mining loop: mine → tow → dock → sell → undock → repeat
+     * Manual input (turn/thrust/mine) cancels the autopilot. */
+    bool actual_thrusting;      /* true if the ship thrusted this tick (survives input restore) */
+    uint8_t autopilot_mode;
+    int autopilot_target;       /* asteroid idx or -1 */
+    int autopilot_station_target; /* logistics destination station or -1 */
+    commodity_t autopilot_cargo;  /* logistics commodity, COMMODITY_COUNT when idle */
+    int autopilot_state;        /* internal state machine cursor */
+    float autopilot_timer;
+    vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
+    float autopilot_stuck_timer;/* seconds since meaningful movement */
+    uint8_t autopilot_teacher_valid;
+    uint8_t autopilot_teacher_forward_blocked;
+    uint16_t autopilot_teacher_allowed_mask;
+    uint32_t autopilot_teacher_tick;
+    int8_t autopilot_teacher_action;
+    int8_t autopilot_teacher_turn;
+    int8_t autopilot_teacher_thrust;
+    float autopilot_teacher_features[
+        SIGNAL_BRAIN_FLIGHT_ACTION_COUNT * SIGNAL_BRAIN_FLIGHT_FEATURE_COUNT];
+    uint8_t autopilot_decision_valid;
+    uint8_t autopilot_decision_action;
+    uint8_t autopilot_decision_candidate_count;
+    uint8_t autopilot_decision_reserved;
+    uint32_t autopilot_decision_flags;
+    float autopilot_decision_score;
+    float autopilot_decision_neural_score;
+    float autopilot_decision_route_risk;
+    float autopilot_decision_signal_quality;
+    uint8_t hail_decision_valid;
+    int8_t hail_decision_station;
+    uint8_t hail_decision_candidate_count;
+    uint8_t hail_decision_reserved;
+    uint32_t hail_decision_flags;
+    float hail_decision_score;
+    float hail_decision_signal_quality;
+    uint64_t hail_decision_source_id;
+    uint8_t server_brain_mode;  /* SERVER_BRAIN_MODE_* for headless pilots */
     movement_input_cmd_t movement_queue[PLAYER_MOVEMENT_QUEUE_CAP];
     uint8_t movement_queue_count;
     /* Last movement/control input sequence accepted from this client. Private
@@ -415,22 +436,6 @@ typedef struct {
     uint32_t last_input_tick;
     uint32_t last_input_client_sent_ms;
     uint32_t last_input_server_recv_ms;
-    /* Runtime-only analytics state. Persisted identity remains session_token
-     * / pubkey; these fields only drive stdout JSON and CloudWatch EMF. */
-    uint64_t analytics_connected_ms;
-    uint64_t analytics_last_activity_ms;
-    uint64_t analytics_metrics_last_ms;
-    uint32_t analytics_metrics_seq;
-    uint32_t analytics_metrics_samples;
-    uint16_t analytics_ping_ms;
-    uint16_t analytics_ack_ms;
-    uint16_t analytics_ack_gap_ms;
-    uint16_t analytics_server_turnaround_ms;
-    uint16_t analytics_player_interval_ms;
-    uint16_t analytics_unacked_inputs;
-    uint16_t analytics_replay_depth;
-    uint8_t analytics_action_queue_depth;
-    uint8_t analytics_recovery_flags;
     /* Last one-shot action id accepted on NET_MSG_INPUT. Retransmitted
      * action frames keep the same id, so the server can ignore duplicates
      * without discarding the packet's current movement flags. */
@@ -481,6 +486,10 @@ typedef struct {
      * any non-zero nonce. */
     uint64_t last_signed_nonce;
 } server_player_t;
+
+enum {
+    MAX_TOW_LINKS = 512,
+};
 
 typedef struct {
     bool active;
@@ -635,28 +644,36 @@ typedef struct {
         uint64_t destroyed_at_ms;
     } destroyed_rocks[MAX_DESTROYED_ROCKS];
     uint16_t destroyed_rock_count;
+    ship_slot_t ships[MAX_PLAYERS + MAX_NPC_SHIPS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
     /* Contract-origin hull assets. These are the durable economic
-     * records that say a physical hull exists; player/NPC ship fields
-     * mirror the assigned asset for protocol compatibility in v1. */
+     * records that say a physical hull exists. Assigned actors own live
+     * ship state; the asset carries a persistence snapshot refreshed only
+     * at explicit claim, release, destruction, and save boundaries. */
     ship_asset_t ship_assets[MAX_SHIP_ASSETS];
     uint32_t next_ship_asset_id;
     /* Runtime-only ship birth choreography. Pending ship builds stay
      * save-stable; this sidecar reclaims three live ore fragments when
      * one is available and drives them to their centroid before mint. */
     ship_birth_assembly_t ship_birth_assemblies[MAX_STATIONS][4];
-    /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
-     * here; the paired character_t.ship_idx points to it. Players still
-     * carry an inline ship_t in server_player_t — converging is a later
-     * slice. Manifest lifecycle: bootstrap on alloc, ship_cleanup on
-     * free and on world_cleanup/world_reset. */
-    ship_t ships[MAX_SHIPS];
-    /* Controller pool. Each entry pairs an active NPC (today) or a
-     * player (later) to a ship slot via ship_idx. Sized to the
-     * NPC + player union so later slices don't need a flag-day resize. */
+    /* Controller registry. Ship state stays on the actor record rather
+     * than being copied into a second pool. */
     character_t characters[MAX_PLAYERS + MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];
     cargo_pod_t cargo_pods[MAX_CARGO_PODS];
+    /* Live tractor ownership. Target bindings and ship tow arrays are
+     * compatibility projections rebuilt from this relationship pool. */
+    tow_link_t tow_links[MAX_TOW_LINKS];
+    uint16_t asteroid_generation[MAX_ASTEROIDS];
+    uint16_t cargo_pod_generation[MAX_CARGO_PODS];
+    uint16_t scaffold_generation[MAX_SCAFFOLDS];
+    uint16_t station_module_generation[MAX_STATIONS][MAX_MODULES_PER_STATION];
+    bool asteroid_generation_live[MAX_ASTEROIDS];
+    bool cargo_pod_generation_live[MAX_CARGO_PODS];
+    bool scaffold_generation_live[MAX_SCAFFOLDS];
+    bool station_module_generation_live[MAX_STATIONS][MAX_MODULES_PER_STATION];
+    server_connection_t connections[MAX_PLAYERS];
+    server_replication_t replications[MAX_PLAYERS];
     server_player_t players[MAX_PLAYERS];
     uint32_t rng;
     /* belt_seed: the rng value at world_reset time — the deterministic
@@ -744,6 +761,58 @@ typedef struct {
     uint16_t handoff_consumed_ticket_count;
     uint16_t handoff_consumed_ticket_next;
 } world_t;
+
+enum {
+    WORLD_PLAYER_SHIP_BASE = 0,
+    WORLD_NPC_SHIP_BASE = MAX_PLAYERS,
+    WORLD_SHIP_CAP = MAX_PLAYERS + MAX_NPC_SHIPS,
+};
+
+entity_ref_t world_ship_ref_for_slot(const world_t *w, int ship_slot);
+ship_t *world_ship_resolve(world_t *w, entity_ref_t ref);
+const ship_t *world_ship_resolve_const(const world_t *w, entity_ref_t ref);
+entity_ref_t world_entity_ref_for_slot(world_t *w, entity_kind_t kind,
+                                       int index, int part);
+bool world_entity_ref_is_live(const world_t *w, entity_ref_t ref);
+tow_link_t *world_tow_link_for_target(world_t *w, entity_ref_t target);
+const tow_link_t *world_tow_link_for_target_const(const world_t *w,
+                                                  entity_ref_t target);
+bool world_tow_link_set(world_t *w, entity_ref_t source,
+                        entity_ref_t target, tow_profile_t profile,
+                        int slot, tow_link_state_t state);
+bool world_tow_link_clear_target(world_t *w, entity_ref_t target);
+void world_tow_links_clear_source(world_t *w, entity_ref_t source);
+void world_tow_links_reconcile(world_t *w);
+bool world_asteroid_set_player_tractor(world_t *w, int asteroid_idx,
+                                       int player_idx);
+bool world_asteroid_set_npc_tractor(world_t *w, int asteroid_idx,
+                                    int npc_idx);
+void world_asteroid_clear_tractor(world_t *w, int asteroid_idx);
+bool world_cargo_pod_set_player_tractor(world_t *w, int pod_idx,
+                                        int player_idx);
+bool world_cargo_pod_set_module_tractor(world_t *w, int pod_idx,
+                                        int station_idx, int module_idx);
+void world_cargo_pod_clear_tractor(world_t *w, int pod_idx);
+void world_cargo_pod_clear_module_tractor(world_t *w, int pod_idx);
+bool world_scaffold_set_player_tractor(world_t *w, int scaffold_idx,
+                                       int player_idx);
+bool world_scaffold_set_npc_tractor(world_t *w, int scaffold_idx,
+                                    int npc_idx);
+void world_scaffold_clear_tractor(world_t *w, int scaffold_idx);
+ship_t *world_player_ship_for(world_t *w, int player_slot);
+const ship_t *world_player_ship_for_const(const world_t *w, int player_slot);
+ship_t *world_npc_ship_for(world_t *w, int npc_slot);
+const ship_t *world_npc_ship_for_const(const world_t *w, int npc_slot);
+bool world_player_ship_slot_activate(world_t *w, int player_slot);
+bool world_npc_ship_slot_activate(world_t *w, int npc_slot);
+void world_player_ship_slot_release(world_t *w, int player_slot);
+void world_npc_ship_slot_release(world_t *w, int npc_slot);
+void world_rebind_ship_controllers(world_t *w);
+bool world_character_bind_player(world_t *w, int player_slot);
+void world_character_unbind_player(world_t *w, int player_slot);
+ship_t *world_ship_asset_state(world_t *w, ship_asset_t *asset);
+const ship_t *world_ship_asset_state_const(const world_t *w,
+                                            const ship_asset_t *asset);
 
 /* ------------------------------------------------------------------ */
 /* Hull definitions (declared in shared/types.h, defined in game_sim.c) */
@@ -913,6 +982,7 @@ bool server_dispatch_handoff_present(
     server_handoff_result_sink_fn result_sink,
     void *result_user);
 void player_init_ship(server_player_t *sp, world_t *w);
+void world_player_runtime_slot_reset(world_t *w, int player_slot);
 bool server_player_has_live_session(const server_player_t *sp);
 bool server_player_is_gameplay_ready(const server_player_t *sp);
 void server_player_clear_live_session_identity(server_player_t *sp);
@@ -1123,6 +1193,10 @@ bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
                                         cargo_unit_t *out_unit);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
+/* Apply stock migrations that are keyed only by the decoded save version.
+ * Kept separate from binary decoding so compatibility policy is directly
+ * testable without forging a current payload under an older schema tag. */
+void world_apply_starter_stock_migrations(world_t *w, uint32_t version);
 /* v51 cargo-in-space schema migration: tag untagged furnaces by
  * station-furnace-count heuristic and auto-spawn missing output
  * hoppers in free outer-ring slots. Run automatically by world_load

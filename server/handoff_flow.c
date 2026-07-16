@@ -88,7 +88,7 @@ bool handoff_issue_ticket_to_station(world_t *w, int player_idx,
         src->id, dst->id,
         (uint64_t)w->tick,
         (uint64_t)w->tick + ttl_ticks,
-        &sp->ship, out);
+        sp->ship, out);
 }
 
 handoff_flow_result_t handoff_accept_presented_ship(world_t *w, int player_idx,
@@ -132,7 +132,7 @@ handoff_flow_result_t handoff_accept_presented_ship(world_t *w, int player_idx,
     if (handoff_ticket_hash_seen(w, ticket_hash))
         return HANDOFF_FLOW_REJECT_REPLAY;
 
-    if (presented_ship != &sp->ship && !ship_copy(&sp->ship, presented_ship))
+    if (presented_ship != sp->ship && !ship_copy(sp->ship, presented_ship))
         return HANDOFF_FLOW_REJECT_HYDRATE;
 
     sp->docked = false;
@@ -140,7 +140,7 @@ handoff_flow_result_t handoff_accept_presented_ship(world_t *w, int player_idx,
     sp->in_dock_range = false;
     sp->current_station = -1;
     sp->nearby_station = dest_idx;
-    sp->force_authoritative_resync = true;
+    sp->replication->force_authoritative_resync = true;
     handoff_ticket_hash_remember(w, ticket_hash);
     return HANDOFF_FLOW_OK;
 }

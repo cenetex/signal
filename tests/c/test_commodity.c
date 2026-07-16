@@ -102,16 +102,24 @@ TEST(test_commodity_color_u8_all_branches) {
 
 TEST(test_ship_total_cargo) {
     ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
+    uint8_t origin[8] = {0};
+    float legacy[COMMODITY_COUNT] = {0};
+    legacy[COMMODITY_FERRITE_INGOT] = 5.0f;
+    ASSERT(manifest_migrate_legacy_inventory(
+        &ship.manifest, legacy, COMMODITY_COUNT, origin));
     ASSERT_EQ_FLOAT(ship_total_cargo(&ship), 15.0f, 0.01f);
+    ship_cleanup(&ship);
 }
 
 TEST(test_ship_cargo_amount) {
     ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
     ship.cargo[COMMODITY_CUPRITE_ORE] = 42.0f;
     ASSERT_EQ_FLOAT(ship_cargo_amount(&ship, COMMODITY_CUPRITE_ORE), 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(ship_cargo_amount(&ship, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
+    ship_cleanup(&ship);
 }
 
 TEST(test_station_buy_price) {
@@ -135,8 +143,9 @@ TEST(test_station_buy_price) {
 }
 
 TEST(test_station_inventory_amount) {
-    station_t station = {0};
-    station._inventory_cache[COMMODITY_FERRITE_INGOT] = 25.0f;
+    STATION_DECL(station);
+    ASSERT(test_set_station_finished_units(&station,
+                                           COMMODITY_FERRITE_INGOT, 25));
     ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FERRITE_INGOT), 25.0f, 0.01f);
     ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FERRITE_INGOT), 0.0f, 0.01f);
 }

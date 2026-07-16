@@ -427,8 +427,6 @@ static void reset_world(void) {
     /* Seed interp buffers so first frame has valid data */
     memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
     memcpy(g.asteroid_interp.prev, g.world.asteroids, sizeof(g.asteroid_interp.prev));
-    memcpy(g.npc_interp.curr, g.world.npc_ships, sizeof(g.npc_interp.curr));
-    memcpy(g.npc_interp.prev, g.world.npc_ships, sizeof(g.npc_interp.prev));
     memcpy(g.scaffold_interp.curr, g.world.scaffolds, sizeof(g.scaffold_interp.curr));
     memcpy(g.scaffold_interp.prev, g.world.scaffolds, sizeof(g.scaffold_interp.prev));
     memcpy(g.cargo_pod_interp.curr, g.world.cargo_pods, sizeof(g.cargo_pod_interp.curr));
@@ -487,8 +485,8 @@ static void reset_step_feedback(void) {
     if (g.net_authority_enabled) {
         /* Only predict the muzzle — server owns everything else */
         if (LOCAL_PLAYER.beam_active) {
-            LOCAL_PLAYER.beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
-                LOCAL_PLAYER.ship.angle, &LOCAL_PLAYER.ship);
+            LOCAL_PLAYER.beam_start = ship_muzzle(LOCAL_PLAYER.ship->pos,
+                LOCAL_PLAYER.ship->angle, LOCAL_PLAYER.ship);
         }
     } else {
         LOCAL_PLAYER.beam_active = false;
@@ -748,14 +746,14 @@ static void sim_on_damage(const sim_event_t *ev) {
     /* Hit feedback: floating "-N" popup near the receiver's ship + red
      * vignette pulse on the HUD. Both decay independently of the audio. */
     int amount = (int)lroundf(ev->damage.amount);
-    if (amount > 0) spawn_damage_fx(&LOCAL_PLAYER.ship.pos, amount);
+    if (amount > 0) spawn_damage_fx(&LOCAL_PLAYER.ship->pos, amount);
     g.damage_flash_timer = 0.4f;
     /* Directional indicator — chevron at the screen edge pointing at
      * the threat. Source = (0,0) means "unknown" (legacy / environmental);
      * skip the indicator for those so it doesn't flicker at world origin. */
     if (ev->damage.source_x != 0.0f || ev->damage.source_y != 0.0f) {
-        float dx = ev->damage.source_x - LOCAL_PLAYER.ship.pos.x;
-        float dy = ev->damage.source_y - LOCAL_PLAYER.ship.pos.y;
+        float dx = ev->damage.source_x - LOCAL_PLAYER.ship->pos.x;
+        float dy = ev->damage.source_y - LOCAL_PLAYER.ship->pos.y;
         float d = sqrtf(dx * dx + dy * dy);
         if (d > 1.0f) {
             g.damage_dir_x = dx / d;
@@ -886,7 +884,7 @@ static void death_cinematic_spawn(const sim_event_t *ev) {
     g.thrusting = false;
     LOCAL_PLAYER.beam_active = false;
     LOCAL_PLAYER.beam_hit = false;
-    LOCAL_PLAYER.ship.tractor_active = false;
+    LOCAL_PLAYER.ship->tractor_active = false;
     g.screen_shake = fmaxf(g.screen_shake, clampf(26.0f + impact_speed * 0.12f, 38.0f, 82.0f));
     for (int s = 0; s < 8; s++) {
         float ang = ((float)s / 8.0f) * 2.0f * PI_F + (float)(s * 13 % 7) * 0.15f;
@@ -1273,7 +1271,7 @@ void process_sim_events(const sim_events_t *events) {
 static void onboarding_per_frame(void) {
     if (g.onboarding.complete) return;
     /* Tractor milestone: detect fragment pickup via towed_count */
-    if (!g.onboarding.tractored && LOCAL_PLAYER.ship.towed_count > 0)
+    if (!g.onboarding.tractored && LOCAL_PLAYER.ship->towed_count > 0)
         onboarding_mark_tractored();
     if (LOCAL_PLAYER.docked && g.onboarding.earned)
         onboarding_mark_docked_after_earning();
@@ -1305,7 +1303,7 @@ static void episode_per_frame(float dt) {
     if (episode_is_active(&g.episode)) return;
 
     /* Ep 3: Scaffold — currently towing a scaffold */
-    if (!g.episode.watched[3] && LOCAL_PLAYER.ship.towed_scaffold >= 0)
+    if (!g.episode.watched[3] && LOCAL_PLAYER.ship->towed_scaffold >= 0)
         episode_trigger(&g.episode, 3);
 
     /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
@@ -1356,7 +1354,7 @@ static void sim_step(float dt) {
         if (g.hail_ping_timer > 8.00f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
     }
     {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
         float target = signal_visual_saturation(sig);
         if (!g.signal_visual_saturation_initialized) {
             g.signal_visual_saturation = target;
@@ -1374,7 +1372,7 @@ static void sim_step(float dt) {
      * (slow ramp up) and out (faster ramp down) so the vignette rolls
      * cinematically. Forced to 1.0 while the death cinematic is active. */
     {
-        float frac = LOCAL_PLAYER.ship.hull / fmaxf(1.0f, ship_max_hull(&LOCAL_PLAYER.ship));
+        float frac = LOCAL_PLAYER.ship->hull / fmaxf(1.0f, ship_max_hull(LOCAL_PLAYER.ship));
         if (frac < 0.0f) frac = 0.0f;
         if (frac > 1.0f) frac = 1.0f;
         float target = 1.0f - frac;
@@ -1401,7 +1399,7 @@ static void sim_step(float dt) {
         g.thrusting = false;
         LOCAL_PLAYER.beam_active = false;
         LOCAL_PLAYER.beam_hit = false;
-        LOCAL_PLAYER.ship.tractor_active = false;
+        LOCAL_PLAYER.ship->tractor_active = false;
         if (g.death_cinematic.phase == 0 &&
             g.death_cinematic.age >= DEATH_CINEMATIC_WORLD_PHASE_SEC) {
             g.death_cinematic.phase = 1;
@@ -1449,7 +1447,7 @@ static void sim_step(float dt) {
         /* Force-stop the ship at the station so it doesn't drift while
          * we're showing the wreckage. (Server has it docked but cargo /
          * hull updates may still arrive — we keep velocity zero locally.) */
-        LOCAL_PLAYER.ship.vel = v2(0.0f, 0.0f);
+        LOCAL_PLAYER.ship->vel = v2(0.0f, 0.0f);
 
         /* Keep episode video and music running during death cinematic */
         episode_update(&g.episode, dt);
@@ -1558,7 +1556,7 @@ static void sim_step(float dt) {
         LOCAL_PLAYER.in_dock_range = false;
         LOCAL_PLAYER.docking_approach = false;
         LOCAL_PLAYER.nearby_station = -1;
-        g.camera_pos = LOCAL_PLAYER.ship.pos;
+        g.camera_pos = LOCAL_PLAYER.ship->pos;
         g.camera_initialized = true;
         g.camera_station_index = -1;
         g.camera_station_side = 0;
@@ -1584,7 +1582,7 @@ static void sim_step(float dt) {
 
     /* Autopilot disengage detection — notify player why it stopped */
     if (g.was_autopilot && !LOCAL_PLAYER.autopilot_mode) {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
         if (sig < SIGNAL_BAND_OPERATIONAL)
             set_notice("Autopilot disengaged -- weak signal.");
     }
@@ -1602,7 +1600,7 @@ static void sim_step(float dt) {
     episode_update(&g.episode, dt);
     music_update(&g.music, dt);
     {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
         music_update_signal(&g.music, sig);
     }
 
@@ -1649,7 +1647,7 @@ static void sim_step(float dt) {
      * "lock" tone so the player has audio feedback the grab took. */
     {
         static int prev_towed = 0;
-        int now_towed = LOCAL_PLAYER.ship.towed_count;
+        int now_towed = LOCAL_PLAYER.ship->towed_count;
         if (now_towed > prev_towed) audio_play_tractor_lock(&g.audio);
         prev_towed = now_towed;
     }
@@ -1806,7 +1804,7 @@ static void render_world(void) {
      *      camera latches to that edge and follows. Sustained high-speed
      *      motion lazily recenters the camera onto the ship. */
     if (!g.camera_initialized) {
-        g.camera_pos = LOCAL_PLAYER.ship.pos;
+        g.camera_pos = LOCAL_PLAYER.ship->pos;
         g.camera_initialized = true;
         g.boost_zoom = 1.0f;
         g.boost_center_blend = 0.0f;
@@ -1868,8 +1866,8 @@ static void render_world(void) {
                 /* Snapshot side based on the ship→station vector at first
                  * sight. If ship is left of station, station goes on the
                  * right side of the screen (1/4 from right edge). */
-                g.camera_station_side = (LOCAL_PLAYER.ship.pos.x <= anchor_station->pos.x) ? +1 : -1;
-                g.camera_station_v_side = (LOCAL_PLAYER.ship.pos.y <= anchor_station->pos.y) ? +1 : -1;
+                g.camera_station_side = (LOCAL_PLAYER.ship->pos.x <= anchor_station->pos.x) ? +1 : -1;
+                g.camera_station_v_side = (LOCAL_PLAYER.ship->pos.y <= anchor_station->pos.y) ? +1 : -1;
             }
             /* Position station ~25% from the chosen edge. Target camera
              * is shifted away from the station by that offset. */
@@ -1884,7 +1882,7 @@ static void render_world(void) {
         } else {
             /* (3) FREE FLIGHT — deadzone camera. */
             g.camera_station_index = -1;
-            vec2 ship = LOCAL_PLAYER.ship.pos;
+            vec2 ship = LOCAL_PLAYER.ship->pos;
             float dz_x = half_w * camera_deadzone_x_scale(narrow_focus);
             float dz_y = half_h * camera_deadzone_y_scale(narrow_focus);
             float dx = ship.x - g.camera_pos.x;
@@ -1923,8 +1921,8 @@ static void render_world(void) {
              * for >1.5s while moving fast, slowly drift the camera
              * toward the ship so the framing eventually catches up. */
             bool outside_dz = fabsf(dx) >= dz_x * 0.98f || fabsf(dy) >= dz_y * 0.98f;
-            float speed_sq = LOCAL_PLAYER.ship.vel.x * LOCAL_PLAYER.ship.vel.x
-                           + LOCAL_PLAYER.ship.vel.y * LOCAL_PLAYER.ship.vel.y;
+            float speed_sq = LOCAL_PLAYER.ship->vel.x * LOCAL_PLAYER.ship->vel.x
+                           + LOCAL_PLAYER.ship->vel.y * LOCAL_PLAYER.ship->vel.y;
             if (outside_dz && speed_sq > 90.0f * 90.0f) {
                 g.camera_drift_timer += dt;
             } else {
@@ -1959,8 +1957,8 @@ static void render_world(void) {
             int idx = (int)g.inspect_snapshot.target_index;
             const npc_ship_t *tn = &g.world.npc_ships[idx];
             if (tn->active) {
-                vec2 mid = v2(0.5f * (LOCAL_PLAYER.ship.pos.x + tn->ship.pos.x),
-                              0.5f * (LOCAL_PLAYER.ship.pos.y + tn->ship.pos.y));
+                vec2 mid = v2(0.5f * (LOCAL_PLAYER.ship->pos.x + tn->ship->pos.x),
+                              0.5f * (LOCAL_PLAYER.ship->pos.y + tn->ship->pos.y));
                 float strength = g.inspect_was_active
                                  ? 1.0f
                                  : (g.inspect_snapshot_timer < 1.0f
@@ -1974,7 +1972,7 @@ static void render_world(void) {
         if (!g.death_cinematic.active && narrow_focus > 0.001f) {
             float strength = camera_narrow_center_strength(narrow_focus);
             float k = (1.0f - expf(-4.0f * dt)) * strength;
-            vec2 ship = LOCAL_PLAYER.ship.pos;
+            vec2 ship = LOCAL_PLAYER.ship->pos;
             g.camera_pos.x += (ship.x - g.camera_pos.x) * k;
             g.camera_pos.y += (ship.y - g.camera_pos.y) * k;
         }
@@ -2086,14 +2084,14 @@ static void render_world(void) {
             draw_circle_outline(mp, 50.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.7f);
             draw_circle_outline(mp, 52.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.3f);
             /* Tractor line from ship to target */
-            draw_segment(LOCAL_PLAYER.ship.pos, mp, 0.2f, 0.8f, 1.0f, tp * 0.3f);
+            draw_segment(LOCAL_PLAYER.ship->pos, mp, 0.2f, 0.8f, 1.0f, tp * 0.3f);
             /* Info text near module (world-space debugtext) */
             float screen_w = ui_screen_width();
             float screen_h = ui_screen_height();
             sdtx_canvas(screen_w, screen_h);
             sdtx_origin(0, 0);
             /* Convert world pos to screen pos */
-            vec2 cam = LOCAL_PLAYER.ship.pos;
+            vec2 cam = LOCAL_PLAYER.ship->pos;
             float sx = (mp.x - cam.x) + screen_w * 0.5f;
             float sy = (mp.y - cam.y) + screen_h * 0.5f;
             float cell = 8.0f;
@@ -2293,11 +2291,11 @@ static int apply_local_towed_asteroid_render_pose(
     float render_ahead)
 {
     int count = 0;
-    int tow_count = LOCAL_PLAYER.ship.towed_count;
+    int tow_count = LOCAL_PLAYER.ship->towed_count;
     if (tow_count > 10) tow_count = 10;
 
     for (int t = 0; t < tow_count; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        int idx = LOCAL_PLAYER.ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS || count >= 10) continue;
         asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
@@ -2324,11 +2322,11 @@ static int apply_local_towed_cargo_pod_render_pose(
     float render_ahead)
 {
     int count = 0;
-    int tow_count = LOCAL_PLAYER.ship.towed_pod_count;
+    int tow_count = LOCAL_PLAYER.ship->towed_pod_count;
     if (tow_count > 10) tow_count = 10;
 
     for (int t = 0; t < tow_count; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_pods[t];
+        int idx = LOCAL_PLAYER.ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS || count >= 10) continue;
         cargo_pod_t *pod = &g.world.cargo_pods[idx];
         if (!pod->active) continue;
@@ -2354,7 +2352,7 @@ static bool apply_local_towed_scaffold_render_pose(
     vec2 shared_offset,
     float render_ahead)
 {
-    int idx = LOCAL_PLAYER.ship.towed_scaffold;
+    int idx = LOCAL_PLAYER.ship->towed_scaffold;
     if (idx < 0 || idx >= MAX_SCAFFOLDS || !save) return false;
     scaffold_t *sc = &g.world.scaffolds[idx];
     if (!sc->active) return false;
@@ -2430,8 +2428,8 @@ static void render_frame(void) {
         draw_hull_fog_back();
     }
 
-    vec2 saved_ship_pos = LOCAL_PLAYER.ship.pos;
-    float saved_ship_angle = LOCAL_PLAYER.ship.angle;
+    vec2 saved_ship_pos = LOCAL_PLAYER.ship->pos;
+    float saved_ship_angle = LOCAL_PLAYER.ship->angle;
     local_asteroid_render_pose_t saved_asteroids[10];
     local_cargo_pod_render_pose_t saved_pods[10];
     local_scaffold_render_pose_t saved_scaffold = { .index = -1 };
@@ -2444,11 +2442,11 @@ static void render_frame(void) {
     if (apply_visual_pose) {
         vec2 render_pos = v2_add(saved_ship_pos, g.local_player_render_offset);
         render_pos = v2_add(render_pos,
-                            v2_scale(LOCAL_PLAYER.ship.vel, render_ahead));
-        LOCAL_PLAYER.ship.pos = render_pos;
+                            v2_scale(LOCAL_PLAYER.ship->vel, render_ahead));
+        LOCAL_PLAYER.ship->pos = render_pos;
         if (fabsf(LOCAL_PLAYER.input.turn) > 0.0001f) {
-            const hull_def_t *hull = ship_hull_def(&LOCAL_PLAYER.ship);
-            LOCAL_PLAYER.ship.angle = wrap_angle(
+            const hull_def_t *hull = ship_hull_def(LOCAL_PLAYER.ship);
+            LOCAL_PLAYER.ship->angle = wrap_angle(
                 saved_ship_angle +
                 LOCAL_PLAYER.input.turn * hull->turn_speed * render_ahead);
         }
@@ -2467,8 +2465,8 @@ static void render_frame(void) {
                                                   saved_pod_count);
         if (saved_scaffold_active)
             restore_local_towed_scaffold_render_pose(&saved_scaffold);
-        LOCAL_PLAYER.ship.pos = saved_ship_pos;
-        LOCAL_PLAYER.ship.angle = saved_ship_angle;
+        LOCAL_PLAYER.ship->pos = saved_ship_pos;
+        LOCAL_PLAYER.ship->angle = saved_ship_angle;
     }
     render_ui();
 
@@ -2503,7 +2501,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_signal_strength(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    return signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2541,7 +2539,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_camera_offset_x(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.pos.x - g.camera_pos.x;
+    return LOCAL_PLAYER.ship->pos.x - g.camera_pos.x;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2549,7 +2547,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_camera_offset_y(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.pos.y - g.camera_pos.y;
+    return LOCAL_PLAYER.ship->pos.y - g.camera_pos.y;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2557,7 +2555,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_pos_x(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.pos.x;
+    return LOCAL_PLAYER.ship->pos.x;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2565,7 +2563,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_pos_y(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.pos.y;
+    return LOCAL_PLAYER.ship->pos.y;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2573,7 +2571,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_vel_x(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.vel.x;
+    return LOCAL_PLAYER.ship->vel.x;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2581,7 +2579,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_vel_y(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.vel.y;
+    return LOCAL_PLAYER.ship->vel.y;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -2589,7 +2587,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 float get_player_angle(void) {
     if (g.local_player_slot < 0) return 0.0f;
-    return LOCAL_PLAYER.ship.angle;
+    return LOCAL_PLAYER.ship->angle;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -3104,7 +3102,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     int saved_local_player_slot = g.local_player_slot;
     bool saved_player0_connected = g.world.players[0].connected;
     bool saved_player0_docked = g.world.players[0].docked;
-    uint8_t saved_player0_towed_count = g.world.players[0].ship.towed_count;
+    uint8_t saved_player0_towed_count = g.world.players[0].ship->towed_count;
     int16_t saved_player0_towed_fragments[10];
     asteroid_t saved_world_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_local_server_asteroids[MAX_ASTEROIDS];
@@ -3123,7 +3121,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     float saved_cargo_pod_interval = g.cargo_pod_interp.interval;
 
     memcpy(saved_player0_towed_fragments,
-           g.world.players[0].ship.towed_fragments,
+           g.world.players[0].ship->towed_fragments,
            sizeof(saved_player0_towed_fragments));
     memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
     memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
@@ -3140,7 +3138,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
 
     g.local_server.active = false;
-    g.world.players[0].ship.towed_count = 0;
+    g.world.players[0].ship->towed_count = 0;
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
@@ -3177,7 +3175,7 @@ int signal_smoke_remote_towable_interp_check(void) {
         .index = 5,
         .kind = CARGO_POD_CARGO,
         .commodity = COMMODITY_FERRITE_INGOT,
-        .towed_by = -1,
+        .tractor_player = -1,
         .pos_x = 0.0f,
         .pos_y = 0.0f,
         .vel_x = 100.0f,
@@ -3317,10 +3315,10 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.local_player_slot = 0;
     g.world.players[0].connected = true;
     g.world.players[0].docked = false;
-    memset(g.world.players[0].ship.towed_fragments, -1,
-           sizeof(g.world.players[0].ship.towed_fragments));
-    g.world.players[0].ship.towed_fragments[0] = 7;
-    g.world.players[0].ship.towed_count = 1;
+    memset(g.world.players[0].ship->towed_fragments, -1,
+           sizeof(g.world.players[0].ship->towed_fragments));
+    g.world.players[0].ship->towed_fragments[0] = 7;
+    g.world.players[0].ship->towed_count = 1;
 
     asteroid_t predicted_asteroid = {0};
     predicted_asteroid.active = true;
@@ -3483,8 +3481,8 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.local_player_slot = saved_local_player_slot;
     g.world.players[0].connected = saved_player0_connected;
     g.world.players[0].docked = saved_player0_docked;
-    g.world.players[0].ship.towed_count = saved_player0_towed_count;
-    memcpy(g.world.players[0].ship.towed_fragments,
+    g.world.players[0].ship->towed_count = saved_player0_towed_count;
+    memcpy(g.world.players[0].ship->towed_fragments,
            saved_player0_towed_fragments,
            sizeof(saved_player0_towed_fragments));
     return ok ? 1 : 0;
@@ -3756,7 +3754,7 @@ static void net_present_receipt_chains_for_action(uint8_t action,
 
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
         return;
-    ship_t *ship = &g.world.players[g.local_player_slot].ship;
+    ship_t *ship = g.world.players[g.local_player_slot].ship;
     if (!ship || !ship->manifest.units) return;
     const ship_receipts_t *receipts = ship_get_receipts_const(ship);
     if (!receipts || !receipts->chains) return;
@@ -4198,13 +4196,13 @@ int signal_mobile_control_flags(void) {
         if (!g.plan_mode_active) {
             flags |= MOBILE_CTRL_CAN_MINE | MOBILE_CTRL_CAN_TRACTOR;
         }
-        if (!g.plan_mode_active && LOCAL_PLAYER.ship.towed_scaffold < 0)
+        if (!g.plan_mode_active && LOCAL_PLAYER.ship->towed_scaffold < 0)
             flags |= MOBILE_CTRL_CAN_PLAN;
     }
 
     if (LOCAL_PLAYER.in_dock_range) flags |= MOBILE_CTRL_IN_DOCK_RANGE;
     if (LOCAL_PLAYER.docking_approach) flags |= MOBILE_CTRL_DOCKING_APPROACH;
-    if (ship_total_cargo(&LOCAL_PLAYER.ship) > 0.0f)
+    if (ship_total_cargo(LOCAL_PLAYER.ship) > 0.0f)
         flags |= MOBILE_CTRL_HAS_CARGO;
 
     if (g.plan_mode_active) {
@@ -4213,7 +4211,7 @@ int signal_mobile_control_flags(void) {
         if (g.plan_target_station < 0) flags |= MOBILE_CTRL_PLAN_GHOST;
     }
 
-    if (!docked && LOCAL_PLAYER.ship.towed_scaffold >= 0)
+    if (!docked && LOCAL_PLAYER.ship->towed_scaffold >= 0)
         flags |= MOBILE_CTRL_TOWING_SCAFFOLD | MOBILE_CTRL_CAN_USE;
 
     if (!docked && LOCAL_PLAYER.in_dock_range)
@@ -4234,7 +4232,7 @@ int signal_mobile_control_flags(void) {
 
     if (LOCAL_PLAYER.autopilot_mode) {
         flags |= MOBILE_CTRL_AUTOPILOT_ON | MOBILE_CTRL_AUTOPILOT_READY;
-    } else if (signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos) >=
+    } else if (signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos) >=
                SIGNAL_BAND_OPERATIONAL) {
         flags |= MOBILE_CTRL_AUTOPILOT_READY;
     }
@@ -4299,7 +4297,7 @@ int signal_station_panel_digit_slot_count(void) {
     switch (g.station_view) {
     case STATION_VIEW_TRADE: {
         trade_row_t rows[TRADE_MAX_ROWS];
-        int row_count = build_trade_rows(st, &LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
+        int row_count = build_trade_rows(st, LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
         int page_first = 0, page_last = 0, total_pages = 1;
         trade_page_range(rows, row_count, (int)g.trade_page,
                          &page_first, &page_last, &total_pages);
@@ -4327,7 +4325,7 @@ int signal_station_panel_digit_slot_count(void) {
             module_type_t kit = (module_type_t)t;
             if (module_kind(kit) == MODULE_KIND_NONE) continue;
             if (!station_has_module(st, kit)) continue;
-            if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit))
+            if (!module_unlocked_for_player(LOCAL_PLAYER.ship->unlocked_modules, kit))
                 continue;
             shown++;
         }
@@ -4354,7 +4352,7 @@ int signal_mobile_digit_mask(void) {
     switch (g.station_view) {
     case STATION_VIEW_TRADE: {
         trade_row_t rows[TRADE_MAX_ROWS];
-        int row_count = build_trade_rows(st, &LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
+        int row_count = build_trade_rows(st, LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
         int page_first = 0, page_last = 0, total_pages = 1;
         trade_page_range(rows, row_count, (int)g.trade_page,
                          &page_first, &page_last, &total_pages);
@@ -4386,7 +4384,7 @@ int signal_mobile_digit_mask(void) {
             module_type_t kit = (module_type_t)t;
             if (module_kind(kit) == MODULE_KIND_NONE) continue;
             if (!station_has_module(st, kit)) continue;
-            if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit))
+            if (!module_unlocked_for_player(LOCAL_PLAYER.ship->unlocked_modules, kit))
                 continue;
             mask |= (1 << shown);
             shown++;

@@ -124,7 +124,7 @@ bool onboarding_autopilot_unlocked(void) {
     /* Persisted ship history also unlocks assist mode. This avoids making a
      * returning native player replay the browser-local guide state. */
     return g.onboarding.complete ||
-           LOCAL_PLAYER.ship.stat_credits_earned > 0.01f;
+           LOCAL_PLAYER.ship->stat_credits_earned > 0.01f;
 }
 
 /* ------------------------------------------------------------------ */
@@ -188,7 +188,7 @@ static int guide_nearest_smelt_station(commodity_t ore) {
     for (int s = 0; s < station_count; s++) {
         const station_t *st = &g.world.stations[s];
         if (!station_exists(st) || !station_can_smelt(st, ore)) continue;
-        float dist_sq = v2_dist_sq(LOCAL_PLAYER.ship.pos, st->pos);
+        float dist_sq = v2_dist_sq(LOCAL_PLAYER.ship->pos, st->pos);
         if (dist_sq < best_dist_sq) {
             best_dist_sq = dist_sq;
             best = s;
@@ -198,9 +198,9 @@ static int guide_nearest_smelt_station(commodity_t ore) {
 }
 
 static int guide_first_towed_fragment(void) {
-    int count = ship_towed_fragment_count(&LOCAL_PLAYER.ship);
+    int count = ship_towed_fragment_count(LOCAL_PLAYER.ship);
     for (int t = 0; t < count; t++) {
-        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        int idx = LOCAL_PLAYER.ship->towed_fragments[t];
         if (idx >= 0 && idx < MAX_ASTEROIDS && g.world.asteroids[idx].active)
             return idx;
     }
@@ -210,7 +210,7 @@ static int guide_first_towed_fragment(void) {
 static bool guide_scan(char *message, size_t message_size) {
     if (!g.onboarding.moved || g.onboarding.hailed || LOCAL_PLAYER.docked)
         return false;
-    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
     if (sig > 0.0f) {
         snprintf(message, message_size,
                  "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]");
@@ -224,7 +224,7 @@ static bool guide_scan(char *message, size_t message_size) {
 static bool guide_deliver(char *message, size_t message_size) {
     if (!g.onboarding.tractored || g.onboarding.earned || LOCAL_PLAYER.docked)
         return false;
-    if (LOCAL_PLAYER.ship.towed_count > 0) {
+    if (LOCAL_PLAYER.ship->towed_count > 0) {
         int fragment_idx = guide_first_towed_fragment();
         commodity_t ore = fragment_idx >= 0
             ? g.world.asteroids[fragment_idx].commodity
@@ -255,7 +255,7 @@ static bool guide_return_to_dock(char *message, size_t message_size) {
     for (int s = 0; s < station_count; s++) {
         if (!station_exists(&g.world.stations[s])) continue;
         float dist_sq = v2_dist_sq(
-            LOCAL_PLAYER.ship.pos, g.world.stations[s].pos);
+            LOCAL_PLAYER.ship->pos, g.world.stations[s].pos);
         if (dist_sq < best_dist_sq) {
             best_dist_sq = dist_sq;
             best = s;
@@ -361,7 +361,7 @@ bool onboarding_hint(char *label, size_t label_size,
                                             message, message_size))
             return true;
         if (!g.onboarding.threw && !LOCAL_PLAYER.docked &&
-            LOCAL_PLAYER.ship.towed_count > 0) {
+            LOCAL_PLAYER.ship->towed_count > 0) {
             snprintf(message, message_size,
                      "SIGNAL // OPTIONAL // ROCK THROW ::::: STRETCH TETHER, TAP [SPACE]");
             return true;
@@ -377,7 +377,7 @@ bool onboarding_hint(char *label, size_t label_size,
     /* Contextual, optional: boost is useful, but not part of completing the
      * first economy loop. Show it only when the weak-signal context exists. */
     if (!LOCAL_PLAYER.docked && g.onboarding.moved && !g.onboarding.boosted) {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
         if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
             snprintf(message, message_size,
                      "SIGNAL // GUIDE // LOW SIGNAL ::::: [SHIFT] BOOST TOWARD LINK");

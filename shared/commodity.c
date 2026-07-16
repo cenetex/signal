@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include "commodity.h"
+#include "manifest.h"
 
 commodity_t commodity_ore_form(commodity_t commodity) {
     switch (commodity) {
@@ -151,15 +152,25 @@ float commodity_volume(commodity_t commodity) {
 }
 
 float ship_total_cargo(const ship_t* ship) {
+    if (!ship) return 0.0f;
     float total = 0.0f;
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        total += ship->cargo[i] * commodity_volume((commodity_t)i);
+        total += ship_cargo_amount(ship, (commodity_t)i) *
+                 commodity_volume((commodity_t)i);
     }
     return total;
 }
 
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity) {
-    return ship->cargo[commodity];
+    if (!ship || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
+    if (commodity < COMMODITY_RAW_ORE_COUNT) return ship->cargo[commodity];
+    return (float)manifest_count_by_commodity(&ship->manifest, commodity);
+}
+
+void ship_cargo_snapshot(const ship_t* ship, float out[COMMODITY_COUNT]) {
+    if (!out) return;
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        out[c] = ship_cargo_amount(ship, (commodity_t)c);
 }
 
 /* Price the station pays when BUYING from the player (ore, deliveries).
@@ -171,7 +182,7 @@ float station_buy_price(const station_t* station, commodity_t commodity) {
     if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-    float fill = station->_inventory_cache[commodity] / capacity;
+    float fill = station_inventory_amount(station, commodity) / capacity;
     if (fill > 1.0f) fill = 1.0f;
     /* Buy cheaper when overstocked: 1.0× at empty, 0.5× at full */
     return base * (1.0f - fill * 0.5f);
@@ -186,7 +197,7 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
     if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-    float fill = station->_inventory_cache[commodity] / capacity;
+    float fill = station_inventory_amount(station, commodity) / capacity;
     if (fill > 1.0f) fill = 1.0f;
     float deficit = 1.0f - fill;
     /* Sell expensive when scarce: 1× at full, 2× at empty */
@@ -194,7 +205,11 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
 }
 
 float station_inventory_amount(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->_inventory_cache[commodity] : 0.0f;
+    if (!station || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
+    if (commodity < COMMODITY_RAW_ORE_COUNT)
+        return station->_inventory_cache[commodity];
+    return (float)manifest_count_by_commodity(&station->manifest, commodity) +
+           station->_finished_residue[commodity];
 }
 
 /* Unit-aware variants: same dynamic stock curve as above, scaled by

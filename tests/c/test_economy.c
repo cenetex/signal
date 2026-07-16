@@ -160,8 +160,8 @@ static int test_find_delivery_shipment_pod(const world_t *w,
                                            const server_player_t *sp,
                                            const delivery_shipment_t *shipment) {
     if (!w || !sp || !shipment) return -1;
-    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
-        int idx = sp->ship.towed_pods[t];
+    for (int t = 0; t < sp->ship->towed_pod_count && t < 10; t++) {
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &w->cargo_pods[idx];
         if (pod->active &&
@@ -177,8 +177,8 @@ static int test_find_towed_exact_cargo_pod(const world_t *w,
                                            const server_player_t *sp,
                                            commodity_t commodity) {
     if (!w || !sp) return -1;
-    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
-        int idx = sp->ship.towed_pods[t];
+    for (int t = 0; t < sp->ship->towed_pod_count && t < 10; t++) {
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
@@ -203,7 +203,7 @@ static int test_spawn_towed_exact_cargo_pod(world_t *w,
                                             uint16_t count) {
     if (!w || !sp || commodity >= COMMODITY_COUNT ||
         count == 0 || count > CARGO_POD_MANIFEST_CAP ||
-        sp->ship.towed_pod_count >= 10) {
+        sp->ship->towed_pod_count >= 10) {
         return -1;
     }
     cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
@@ -213,12 +213,14 @@ static int test_spawn_towed_exact_cargo_pod(world_t *w,
         if (!hash_legacy_migrate_unit(origin, commodity, i, &units[i]))
             return -1;
     }
-    vec2 pos = v2_add(sp->ship.pos, v2(-44.0f, 20.0f));
+    vec2 pos = v2_add(sp->ship->pos, v2(-44.0f, 20.0f));
     int pod_idx = spawn_cargo_pod_with_manifest(
-        w, pos, sp->ship.vel, commodity, units, count, CARGO_POD_CARGO);
+        w, pos, sp->ship->vel, commodity, units, count, CARGO_POD_CARGO);
     if (pod_idx < 0) return -1;
-    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
-    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
+    if (!world_cargo_pod_set_player_tractor(w, pod_idx, (int)sp->id)) {
+        memset(&w->cargo_pods[pod_idx], 0, sizeof(w->cargo_pods[pod_idx]));
+        return -1;
+    }
     return pod_idx;
 }
 
@@ -285,10 +287,8 @@ static int test_spawn_station_market_exact_cargo_pod(world_t *w,
     const uint8_t shell_origin[8] = { 'T','E','S','T','S','H','E','L' };
     if (hash_legacy_migrate_unit(shell_origin, COMMODITY_FRAME, 0, &shell))
         cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx], &shell);
-    w->cargo_pods[pod_idx].towed_by = -1;
-    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                 station_idx, dock_idx);
-    return pod_idx;
+    return world_cargo_pod_set_module_tractor(
+               w, pod_idx, station_idx, dock_idx) ? pod_idx : -1;
 }
 
 static float test_station_market_pod_sell_quote(const station_t *st,
@@ -391,8 +391,11 @@ TEST(test_station_production_yard_makes_frames) {
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FERRITE_INGOT, 5));
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FERRITE_INGOT], 4.0f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 2.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station,
+                                              COMMODITY_FERRITE_INGOT),
+                    4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FRAME),
+                    2.0f, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FERRITE_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 2);
 }
@@ -405,11 +408,20 @@ TEST(test_station_production_beamworks_makes_modules) {
     ASSERT(test_set_station_finished_units(&station, COMMODITY_CRYSTAL_INGOT, 5));
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 1));
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CUPRITE_INGOT], 4.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station,
+                                              COMMODITY_CUPRITE_INGOT),
+                    4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station,
+                                              COMMODITY_CRYSTAL_INGOT),
+                    4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FRAME),
+                    0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station,
+                                              COMMODITY_LASER_MODULE),
+                    0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station,
+                                              COMMODITY_TRACTOR_MODULE),
+                    0.5f, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_CUPRITE_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_CRYSTAL_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 0);
@@ -656,7 +668,7 @@ TEST(test_contract_delivery_requires_required_grade) {
     w.players[0].session_ready = true;
     memset(w.players[0].session_token, 0x01, 8);
 
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship,
                                         COMMODITY_TRACTOR_MODULE, 5,
                                         MINING_GRADE_COMMON));
     w.contracts[0] = (contract_t){
@@ -677,7 +689,8 @@ TEST(test_contract_delivery_requires_required_grade) {
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE],
+    ASSERT_EQ_FLOAT(ship_cargo_amount(w.players[0].ship,
+                                      COMMODITY_TRACTOR_MODULE),
                     5.0f, 0.01f);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 2.0f, 0.01f);
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0],
@@ -715,14 +728,14 @@ TEST(test_contract_delivery_requires_heritage_recipe) {
 
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 1);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 2.0f, 0.01f);
 
     w.cargo_pods[pod_idx].manifest_units[0].recipe_id =
         (uint16_t)RECIPE_FRAME_BASIC;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.01f);
 }
 
@@ -762,14 +775,14 @@ TEST(test_contract_delivery_bans_enemy_origin_station) {
 
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 1);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 2.0f, 0.01f);
 
     unit = &w.cargo_pods[pod_idx].manifest_units[0];
     unit->origin_station = 1;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
     ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 1.0f, 0.01f);
 }
 
@@ -812,7 +825,9 @@ TEST(test_raw_ore_contract_retires_when_refined_output_full) {
     memset(w.contracts, 0, sizeof(w.contracts));
 
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)MAX_PRODUCT_STOCK));
     w.contracts[0] = (contract_t){
         .active = true,
         .action = CONTRACT_TRACTOR,
@@ -837,7 +852,8 @@ TEST(test_kit_input_contract_closes_at_kit_target) {
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
 
-    w.stations[2]._inventory_cache[COMMODITY_FRAME] = 20.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[2],
+                                           COMMODITY_FRAME, 20));
     w.contracts[0] = (contract_t){
         .active = true,
         .action = CONTRACT_TRACTOR,
@@ -863,13 +879,16 @@ TEST(test_generated_heritage_contracts_require_source_recipe) {
     memset(w.contracts, 0, sizeof(w.contracts));
 
     station_t *kepler = &w.stations[1];
-    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
-    kepler->_inventory_cache[COMMODITY_FRAME] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FRAME, 0));
 
     station_t *helios = &w.stations[2];
-    helios->_inventory_cache[COMMODITY_FRAME] = 0.0f;
-    helios->_inventory_cache[COMMODITY_LASER_MODULE] = 100.0f;
-    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 100.0f;
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_LASER_MODULE, 100));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_TRACTOR_MODULE, 100));
 
     world_sim_step(&w, SIM_DT);
 
@@ -914,7 +933,8 @@ TEST(test_station_policy_cards_rank_under_domain_budgets) {
     WORLD_DECL;
     world_reset(&w);
     station_t *prospect = &w.stations[0];
-    prospect->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        prospect, COMMODITY_REPAIR_KIT, 0));
 
     station_policy_selection_t selection;
     station_policy_select_cards(prospect, 0, &selection);
@@ -1005,7 +1025,8 @@ TEST(test_station_policy_cache_drives_trade_price_modifier) {
     world_reset(&w);
     station_t *prospect = &w.stations[0];
     prospect->_inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
-    prospect->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        prospect, COMMODITY_REPAIR_KIT, 0));
 
     station_policy_refresh(prospect, 0, 7);
 
@@ -1120,8 +1141,8 @@ TEST(test_bulk_sell_refuses_black_market_origin_at_lawful_station) {
     economy_force_black_market(&w, 0);
     economy_force_provenance_screening(&w, 1);
     ASSERT(economy_issue_single_receipt(&w, 0, player_pk, cargo_pk, &chain));
-    ASSERT(ship_manifest_push_with_chain(&sp->ship, &unit, &chain));
-    ship_finished_sync(&sp->ship, COMMODITY_FERRITE_INGOT);
+    ASSERT(ship_manifest_push_with_chain(sp->ship, &unit, &chain));
+    ship_finished_sync(sp->ship, COMMODITY_FERRITE_INGOT);
 
     sp->docked = true;
     sp->current_station = 1;
@@ -1135,7 +1156,7 @@ TEST(test_bulk_sell_refuses_black_market_origin_at_lawful_station) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 1);
     ASSERT_EQ_INT(station_finished_count(&w.stations[1],
                                          COMMODITY_FERRITE_INGOT),
                   kepler_before);
@@ -1173,7 +1194,7 @@ TEST(test_black_market_buys_unwanted_towed_pod_at_markdown) {
     sp->current_station = blackglass_idx;
     sp->nearby_station = blackglass_idx;
     sp->in_dock_range = true;
-    sp->ship.pos = blackglass->pos;
+    sp->ship->pos = blackglass->pos;
 
     int pod_idx = test_spawn_towed_exact_cargo_pod(
         &w, sp, COMMODITY_LASER_MODULE, 2);
@@ -1202,12 +1223,12 @@ TEST(test_black_market_buys_unwanted_towed_pod_at_markdown) {
 
     ASSERT_EQ_FLOAT(ledger_balance(blackglass, sp->session_token) - before,
                     expected, 0.01f);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(w.cargo_pods[pod_idx].active);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].commodity, COMMODITY_LASER_MODULE);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].quantity, 2);
     ASSERT_EQ_INT(w.cargo_pods[pod_idx].manifest_count, 2);
-    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
                                             blackglass_idx, dock_idx));
     ASSERT_EQ_INT(station_finished_count(blackglass, COMMODITY_LASER_MODULE),
@@ -1222,10 +1243,14 @@ TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
     station_t *helios = &w.stations[2];
     helios->_inventory_cache[COMMODITY_CUPRITE_ORE] = 0.0f;
     helios->_inventory_cache[COMMODITY_CRYSTAL_ORE] = 0.0f;
-    helios->_inventory_cache[COMMODITY_CUPRITE_INGOT] = 0.0f;
-    helios->_inventory_cache[COMMODITY_LASER_MODULE] = 0.0f;
-    helios->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = 12.0f;
-    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 12.0f;
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CUPRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CRYSTAL_INGOT, 12));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_TRACTOR_MODULE, 12));
 
     world_sim_step(&w, SIM_DT);
 
@@ -1274,7 +1299,7 @@ TEST(test_sell_price_uses_contract_price) {
     float earned = ledger_balance(&w.stations[1], w.players[0].session_token) - init_bal;
     ASSERT(earned > 10.0f * 10.0f); /* more than base */
     ASSERT_EQ_FLOAT(earned, 10.0f * expected_price, 1.0f);
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
 }
 
 TEST(test_hauler_fills_highest_value_contract) {
@@ -1312,24 +1337,17 @@ TEST(test_hauler_fills_highest_value_contract) {
     hauler->state_timer = 0.0f; /* ready to act */
     hauler->home_station = 0;
     hauler->dest_station = 1; /* default dest */
-    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler->ship->cargo, 0, sizeof(hauler->ship->cargo));
     /* Seed known_contracts to simulate prior gossip — under the
      * gossip-contract model the hauler only acts on contracts it has
      * heard about via dock contact. The test is exercising the picker
      * scoring, not the gossip propagation, so we inject knowledge
      * directly. */
-    hauler->known_contract_count = 0;
-    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
+    test_clear_knowledge(&hauler->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w.contracts[k].active) continue;
-        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
-            .active = true,
-            .action = (uint8_t)w.contracts[k].action,
-            .station_index = w.contracts[k].station_index,
-            .commodity = (uint8_t)w.contracts[k].commodity,
-            .quantity_needed = w.contracts[k].quantity_needed,
-            .base_price = w.contracts[k].base_price,
-            .age_at_copy = w.contracts[k].age,
-        };
+        contract_summary_t summary = contract_summary_make(&w.contracts[k]);
+        ASSERT(test_add_known_contract(&hauler->ship->knowledge, &summary));
     }
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
@@ -1393,20 +1411,13 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
     hauler->state_timer = 0.0f;
     hauler->home_station = 0;
     hauler->dest_station = 1;
-    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler->ship->cargo, 0, sizeof(hauler->ship->cargo));
     /* Seed known_contracts (see comment in test_hauler_fills_highest_value_contract) */
-    hauler->known_contract_count = 0;
-    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
+    test_clear_knowledge(&hauler->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w.contracts[k].active) continue;
-        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
-            .active = true,
-            .action = (uint8_t)w.contracts[k].action,
-            .station_index = w.contracts[k].station_index,
-            .commodity = (uint8_t)w.contracts[k].commodity,
-            .quantity_needed = w.contracts[k].quantity_needed,
-            .base_price = w.contracts[k].base_price,
-            .age_at_copy = w.contracts[k].age,
-        };
+        contract_summary_t summary = contract_summary_make(&w.contracts[k]);
+        ASSERT(test_add_known_contract(&hauler->ship->knowledge, &summary));
     }
 
     step_npc_ships(&w, SIM_DT);
@@ -1416,8 +1427,9 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
      * module. The mismatch will surface at unloading; for the picker,
      * the gossiped contract is the source of truth. */
     ASSERT_EQ_INT(hauler->dest_station, 1);
-    ASSERT(hauler->cargo[COMMODITY_CRYSTAL_INGOT] > 0.0f);
-    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_CUPRITE_INGOT], 0.0f, 0.001f);
+    ASSERT(ship_finished_count(hauler->ship, COMMODITY_CRYSTAL_INGOT) > 0);
+    ASSERT_EQ_INT(ship_finished_count(hauler->ship,
+                                      COMMODITY_CUPRITE_INGOT), 0);
 
     int dest_stock_before = station_finished_count(&w.stations[1],
                                                    COMMODITY_CRYSTAL_INGOT);
@@ -1477,11 +1489,11 @@ TEST(test_hauler_ignores_float_only_finished_stock) {
     hauler->state_timer = 0.0f;
     hauler->home_station = 0;
     hauler->dest_station = 1;
-    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler->ship->cargo, 0, sizeof(hauler->ship->cargo));
 
     step_npc_ships(&w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(hauler->ship->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&w.stations[0],
                                          COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
@@ -1612,9 +1624,11 @@ TEST(test_product_price_tracks_ore) {
     st.base_price[COMMODITY_FRAME] = 20.0f;
     /* Sell price: empty=2× base, full=1× base */
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
-    st._inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
+    ASSERT(test_set_station_finished_units(
+        &st, COMMODITY_FRAME, (int)MAX_PRODUCT_STOCK));
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 20.0f, 0.1f);
-    st._inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK * 0.5f;
+    ASSERT(test_set_station_finished_units(
+        &st, COMMODITY_FRAME, (int)(MAX_PRODUCT_STOCK * 0.5f)));
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 25.0f, 0.1f);
 }
 
@@ -1643,7 +1657,7 @@ TEST(test_deliver_ingots_to_contract) {
                                             COMMODITY_FERRITE_INGOT, NULL));
     world_sim_step(&w, SIM_DT);
     /* Ingot crate delivered, credits gained at station 1 */
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
     ASSERT(ledger_balance(&w.stations[1], w.players[0].session_token) > credits_before);
     /* Contract quantity reduced */
     ASSERT(w.contracts[0].quantity_needed < 20.0f || !w.contracts[0].active);
@@ -1706,7 +1720,7 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     int bought_ingot_pod = test_find_towed_exact_cargo_pod(
         &w, sp, COMMODITY_FERRITE_INGOT);
     ASSERT(bought_ingot_pod >= 0);
@@ -1744,8 +1758,8 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[bought_ingot_pod]),
                   -1);
     float prospect_after_buy = ledger_balance(prospect, sp->session_token);
-    ASSERT_EQ_INT(w.cargo_pods[bought_ingot_pod].towed_by, sp->id);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[bought_ingot_pod]), sp->id);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
 
     int kepler_ingots_before = station_finished_count(kepler,
                                                       COMMODITY_FERRITE_INGOT);
@@ -1756,12 +1770,12 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT(w.cargo_pods[bought_ingot_pod].active);
-    ASSERT_EQ_INT(w.cargo_pods[bought_ingot_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[bought_ingot_pod]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[bought_ingot_pod],
                                             1, kepler_hopper_idx));
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FERRITE_INGOT),
                   kepler_ingots_before);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
@@ -1783,7 +1797,7 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FRAME), 0);
     int bought_frame_pod = test_find_towed_exact_cargo_pod(
         &w, sp, COMMODITY_FRAME);
     ASSERT(bought_frame_pod >= 0);
@@ -1857,7 +1871,7 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
     ASSERT(shipment != NULL);
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 1);
     int shipment_pod = test_find_delivery_shipment_pod(&w, sp, shipment);
     ASSERT(shipment_pod >= 0);
@@ -1878,16 +1892,16 @@ TEST(test_delivery_credit_contract_pickup_deliver_and_clear) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
     ASSERT_EQ_INT(shipment->quantity_delivered, 2);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(w.cargo_pods[shipment_pod].active);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].quantity, 2);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].manifest_count, 2);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].shipment_id, 0);
-    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[shipment_pod]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
                                             2, helios_dock));
     ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
@@ -1985,9 +1999,9 @@ TEST(test_delivery_credit_dock_custody_does_not_teleport_far_pod) {
     memset(&sp->input, 0, sizeof(sp->input));
 
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(w.cargo_pods[shipment_pod].active);
-    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[shipment_pod]), -1);
     ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[shipment_pod]));
     ASSERT_EQ_INT(cargo_pod_custody_station(
                       &w.cargo_pods[shipment_pod]), 2);
@@ -2035,7 +2049,7 @@ TEST(test_delivery_credit_requires_exact_bound_cargo) {
     delivery_shipment_t *shipment = test_find_delivery_shipment(&w, 0);
     ASSERT(shipment != NULL);
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     int shipment_pod = test_find_delivery_shipment_pod(&w, sp, shipment);
     ASSERT(shipment_pod >= 0);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].quantity, 2);
@@ -2050,9 +2064,7 @@ TEST(test_delivery_credit_requires_exact_bound_cargo) {
     ASSERT(memcmp(shipment->cargo_units[0].pub, first_exact_pub, 32) == 0);
     ASSERT(memcmp(shipment->cargo_units[1].pub, second_exact_pub, 32) == 0);
 
-    sp->ship.towed_pod_count = 0;
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-    w.cargo_pods[shipment_pod].towed_by = -1;
+    world_cargo_pod_clear_tractor(&w, shipment_pod);
 
     sp->docked = true;
     sp->current_station = 2;
@@ -2066,14 +2078,13 @@ TEST(test_delivery_credit_requires_exact_bound_cargo) {
 
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_PICKED_UP);
     ASSERT_EQ_INT(shipment->quantity_delivered, 0);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_FLOAT(ledger_balance(helios, sp->session_token),
                     helios_before, 0.001f);
 
-    sp->ship.towed_pods[0] = (int16_t)shipment_pod;
-    sp->ship.towed_pod_count = 1;
-    w.cargo_pods[shipment_pod].towed_by = (int8_t)sp->id;
+    ASSERT(world_cargo_pod_set_player_tractor(
+        &w, shipment_pod, (int)sp->id));
     sp->input.service_sell = true;
     sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
     int helios_dock = test_first_dock_module_idx(helios);
@@ -2084,14 +2095,14 @@ TEST(test_delivery_credit_requires_exact_bound_cargo) {
 
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
     ASSERT_EQ_INT(shipment->quantity_delivered, 2);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(w.cargo_pods[shipment_pod].active);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].shipment_id, 0);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].quantity, 2);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].manifest_count, 2);
-    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[shipment_pod]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
                                             2, helios_dock));
     ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FERRITE_INGOT), 0);
@@ -2162,10 +2173,10 @@ TEST(test_delivery_credit_row_sell_unloads_bound_pod) {
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].quantity, 2);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].manifest_count, 2);
     ASSERT(w.cargo_pods[shipment_pod].has_shell_frame);
-    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[shipment_pod]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
                                             2, helios_dock));
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_FERRITE_INGOT), 0);
     ASSERT(ledger_balance(helios, sp->session_token) > helios_before);
 }
@@ -2204,7 +2215,7 @@ TEST(test_delivery_credit_hail_ignores_empty_origin) {
 
     ASSERT(test_find_delivery_shipment(&w, 0) == NULL);
     ASSERT_EQ_INT(w.contracts[0].claimed_by, -1);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token), 0.0f, 0.001f);
 
     bool found_hail = false;
@@ -2247,14 +2258,14 @@ TEST(test_delivery_credit_hail_requires_docking_to_pick_up) {
     sp->current_station = -1;
     sp->nearby_station = 0;
     sp->in_dock_range = true;
-    sp->ship.pos = prospect->pos;
+    sp->ship->pos = prospect->pos;
     sp->input.hail = true;
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
     ASSERT(test_find_delivery_shipment(&w, 0) == NULL);
     ASSERT_EQ_INT(w.contracts[0].claimed_by, -1);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT), 3);
 
     bool found_hail = false;
@@ -2354,7 +2365,7 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     world_sim_step(&w, SIM_DT);
     memset(&sp->input, 0, sizeof(sp->input));
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_BLACK_MARKET_SOLD);
     ASSERT_EQ_INT(shipment->quantity_black_market_sold, 2);
     ASSERT(w.cargo_pods[shipment_pod].active);
@@ -2363,10 +2374,10 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].quantity, 2);
     ASSERT_EQ_INT(w.cargo_pods[shipment_pod].manifest_count, 2);
     ASSERT(w.cargo_pods[shipment_pod].has_shell_frame);
-    ASSERT_EQ_INT(w.cargo_pods[shipment_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[shipment_pod]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[shipment_pod],
                                             3, pirate_dock));
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(ledger_balance(pirate, sp->session_token) > pirate_before);
     ASSERT_EQ_FLOAT(ledger_balance(prospect, sp->session_token),
                     prospect_after_pickup, 0.001f);
@@ -2385,7 +2396,7 @@ TEST(test_delivery_credit_black_market_sale_defaults_origin_debt) {
                                        2, 0xff,
                                        (uint8_t)COMMODITY_FERRITE_INGOT,
                                        NULL));
-    ASSERT(test_view_has_market_memory(&sp->ship.knowledge,
+    ASSERT(test_view_has_market_memory(&sp->ship->knowledge,
                                        (uint8_t)MARKET_MEMORY_STATION_RISK,
                                        2, 0xff,
                                        (uint8_t)COMMODITY_FERRITE_INGOT,
@@ -2461,7 +2472,7 @@ TEST(test_delivery_credit_timeout_emits_station_risk_memory) {
                                        2, 0xff,
                                        (uint8_t)COMMODITY_FERRITE_INGOT,
                                        NULL));
-    ASSERT(test_view_has_market_memory(&sp->ship.knowledge,
+    ASSERT(test_view_has_market_memory(&sp->ship->knowledge,
                                        (uint8_t)MARKET_MEMORY_STATION_RISK,
                                        2, 0xff,
                                        (uint8_t)COMMODITY_FERRITE_INGOT,
@@ -2509,7 +2520,7 @@ TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT), 0);
     int bought_pod = test_find_towed_exact_cargo_pod(
         &w, sp, COMMODITY_FERRITE_INGOT);
     ASSERT(bought_pod >= 0);
@@ -2573,7 +2584,7 @@ TEST(test_market_buy_requires_station_held_pod) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(test_find_towed_exact_cargo_pod(
                       &w, sp, COMMODITY_FERRITE_INGOT), -1);
     ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
@@ -2628,7 +2639,7 @@ TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
     float gained = bal_after - bal_before;
     ASSERT(gained > 199.0f);
     ASSERT(gained < 201.0f);
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
                                             1, hopper_idx));
 }
@@ -2661,7 +2672,7 @@ TEST(test_deliver_ingots_pending_pubkey_uses_session_ledger) {
     ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[1],
                                              w.players[0].pubkey),
                     pubkey_before, 0.001f);
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
 }
 
 TEST(test_mixed_cargo_sell_and_deliver) {
@@ -2689,7 +2700,7 @@ TEST(test_mixed_cargo_sell_and_deliver) {
                                             COMMODITY_FERRITE_INGOT, NULL));
     world_sim_step(&w, SIM_DT);
     /* Ingot crate delivered via contract */
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
     ASSERT(ledger_balance(&w.stations[1], w.players[0].session_token) > credits_before);
 }
 
@@ -2701,7 +2712,7 @@ TEST(test_no_delivery_without_matching_contract) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE] = 20.0f;
+    w.players[0].ship->cargo[COMMODITY_TRACTOR_MODULE] = 20.0f;
     for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
     /* Prospect Refinery (station 0): DOCK + SIGNAL_RELAY + FURNACE +
      * ORE_SILO. No SHIPYARD, no TRACTOR_FAB → station_consumes returns
@@ -2710,7 +2721,7 @@ TEST(test_no_delivery_without_matching_contract) {
     w.players[0].current_station = 0;
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE], 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_TRACTOR_MODULE], 20.0f, 0.01f);
 }
 
 TEST(test_no_passive_heal_without_kits) {
@@ -2721,13 +2732,16 @@ TEST(test_no_passive_heal_without_kits) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].ship.hull = 50.0f;
+    w.players[0].ship->hull = 50.0f;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_ship_finished_units(
+        w.players[0].ship, COMMODITY_REPAIR_KIT, 0,
+        MINING_GRADE_COMMON));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, 50.0f, 0.01f);
 }
 
 static bool economy_test_smelt_target_for_ore(const station_t *st,
@@ -2813,11 +2827,10 @@ TEST(test_refinery_smelts_fragment_into_ingot_pod) {
     memcpy(w.asteroids[frag].last_towed_token,
            w.players[0].session_token,
            sizeof(w.asteroids[frag].last_towed_token));
-    w.players[0].ship.towed_fragments[0] = (int16_t)frag;
-    w.players[0].ship.towed_count = 1;
+    ASSERT(world_asteroid_set_player_tractor(&w, frag, 0));
 
-    float station_ingots_before =
-        w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    float station_ingots_before = station_inventory_amount(
+        &w.stations[0], COMMODITY_FERRITE_INGOT);
     int station_frames_before =
         station_finished_count(&w.stations[0], COMMODITY_FRAME);
     int frame_pod_units_before =
@@ -2828,8 +2841,9 @@ TEST(test_refinery_smelts_fragment_into_ingot_pod) {
     for (int i = 0; i < (int)(10.0f / SIM_DT) && w.asteroids[frag].active; i++)
         world_sim_step(&w, SIM_DT);
     ASSERT(!w.asteroids[frag].active);
-    ASSERT_EQ_INT(w.players[0].ship.towed_count, 0);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_INT(w.players[0].ship->towed_count, 0);
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        &w.stations[0], COMMODITY_FERRITE_INGOT),
                     station_ingots_before, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&w.stations[0], COMMODITY_FRAME),
                   station_frames_before);
@@ -2849,7 +2863,7 @@ TEST(test_refinery_smelts_fragment_into_ingot_pod) {
     ASSERT_EQ_INT(pod_station, 0);
     ASSERT(pod_module >= 0 && pod_module < w.stations[0].module_count);
     ASSERT_EQ_INT(w.stations[0].modules[pod_module].type, MODULE_DOCK);
-    ASSERT_EQ_INT(pod->towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(pod), -1);
     ASSERT_EQ_INT(pod->manifest_count, 10);
     ASSERT_EQ_INT(pod->quantity, 10);
     ASSERT(economy_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT) >=
@@ -2881,9 +2895,13 @@ TEST(test_kit_fab_requires_shipyard) {
     for (int i = 0; i < (int)(35.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
     /* Shipyard station produces kits; dock-only station does not. */
-    ASSERT(w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] > 0.0f);
-    ASSERT(w.stations[2]._inventory_cache[COMMODITY_REPAIR_KIT] > 0.0f);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.01f);
+    ASSERT(station_inventory_amount(&w.stations[1],
+                                    COMMODITY_REPAIR_KIT) > 0.0f);
+    ASSERT(station_inventory_amount(&w.stations[2],
+                                    COMMODITY_REPAIR_KIT) > 0.0f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&w.stations[0],
+                                              COMMODITY_REPAIR_KIT),
+                    0.0f, 0.01f);
 }
 
 TEST(test_kit_import_contract_at_consumer_station) {
@@ -2896,7 +2914,8 @@ TEST(test_kit_import_contract_at_consumer_station) {
     ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
     ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
     /* Drain Prospect's kit inventory to force the deficit. */
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_REPAIR_KIT, 0));
     /* Run a few seconds for the contract step to fire. */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     bool found = false;
@@ -2924,8 +2943,10 @@ TEST(test_kit_import_contract_skips_shipyard_stations) {
     world_reset(&w);
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
     ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
-    w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-    w.stations[2]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_station_finished_units(
+        &w.stations[2], COMMODITY_REPAIR_KIT, 0));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *c = &w.contracts[k];
@@ -2955,10 +2976,10 @@ TEST(test_repair_drains_ship_cargo_first) {
     /* Force the repair service (default Prospect lacks REPAIR_BAY). */
     w.stations[0].services |= STATION_SERVICE_REPAIR;
     ASSERT(test_set_station_finished_units(&w.stations[0], COMMODITY_REPAIR_KIT, 100));
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship, COMMODITY_REPAIR_KIT,
                                         50, MINING_GRADE_COMMON));
-    float max_hull = ship_max_hull(&w.players[0].ship);
-    w.players[0].ship.hull = max_hull - 30.0f; /* 30 HP missing */
+    float max_hull = ship_max_hull(w.players[0].ship);
+    w.players[0].ship->hull = max_hull - 30.0f; /* 30 HP missing */
 
     float bal_before = ledger_balance(&w.stations[0],
                                       w.players[0].session_token);
@@ -2966,9 +2987,11 @@ TEST(test_repair_drains_ship_cargo_first) {
     world_sim_step(&w, SIM_DT);
 
     /* Hull restored, ship cargo drained, station inventory untouched. */
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT], 20.0f, 0.5f);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT], 100.0f, 0.5f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, max_hull, 0.5f);
+    ASSERT_EQ_INT(ship_finished_count(w.players[0].ship,
+                                      COMMODITY_REPAIR_KIT), 20);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT), 100);
 
     /* Charge: only labor (no station retail). 30 HP * 1 cr/HP. */
     float bal_after = ledger_balance(&w.stations[0],
@@ -2993,10 +3016,10 @@ TEST(test_repair_falls_back_to_station_inventory) {
     w.stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     ASSERT(test_set_station_finished_units(&w.stations[0], COMMODITY_REPAIR_KIT,
                                            (int)MAX_PRODUCT_STOCK)); /* full → 1× */
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship, COMMODITY_REPAIR_KIT,
                                         0, MINING_GRADE_COMMON));
-    float max_hull = ship_max_hull(&w.players[0].ship);
-    w.players[0].ship.hull = max_hull - 10.0f;
+    float max_hull = ship_max_hull(w.players[0].ship);
+    w.players[0].ship->hull = max_hull - 10.0f;
 
     float bal_before = ledger_balance(&w.stations[0],
                                       w.players[0].session_token);
@@ -3004,8 +3027,9 @@ TEST(test_repair_falls_back_to_station_inventory) {
     world_sim_step(&w, SIM_DT);
 
     /* 10 HP from station: 10 kits drained, charge = 10 * (6 + 1) = 70 cr. */
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT],
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, max_hull, 0.5f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(&w.stations[0],
+                                              COMMODITY_REPAIR_KIT),
                     MAX_PRODUCT_STOCK - 10.0f, 0.5f);
     float charged = bal_before - ledger_balance(&w.stations[0],
                                                 w.players[0].session_token);
@@ -3029,10 +3053,10 @@ TEST(test_repair_at_shipyard_no_labor_fee) {
     w.stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     ASSERT(test_set_station_finished_units(&w.stations[1], COMMODITY_REPAIR_KIT,
                                            (int)MAX_PRODUCT_STOCK));
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship, COMMODITY_REPAIR_KIT,
                                         0, MINING_GRADE_COMMON));
-    float max_hull = ship_max_hull(&w.players[0].ship);
-    w.players[0].ship.hull = max_hull - 10.0f;
+    float max_hull = ship_max_hull(w.players[0].ship);
+    w.players[0].ship->hull = max_hull - 10.0f;
 
     float bal_before = ledger_balance(&w.stations[1],
                                       w.players[0].session_token);
@@ -3057,16 +3081,19 @@ TEST(test_repair_partial_when_kits_short) {
     w.players[0].docked = true;
     w.players[0].current_station = 0;
 
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
-    float max_hull = ship_max_hull(&w.players[0].ship);
-    w.players[0].ship.hull = max_hull - 20.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_ship_finished_units(
+        w.players[0].ship, COMMODITY_REPAIR_KIT, 0,
+        MINING_GRADE_COMMON));
+    float max_hull = ship_max_hull(w.players[0].ship);
+    w.players[0].ship->hull = max_hull - 20.0f;
 
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
 
     /* No kits anywhere = no heal at all (passive heal removed). */
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, max_hull - 20.0f, 0.01f);
 }
 
 TEST(test_repair_rejects_float_only_kits) {
@@ -3081,19 +3108,19 @@ TEST(test_repair_rejects_float_only_kits) {
 
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_REPAIR_KIT, 0));
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship,
                                         COMMODITY_REPAIR_KIT, 0,
                                         MINING_GRADE_COMMON));
     w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 100.0f;
+    w.players[0].ship->cargo[COMMODITY_REPAIR_KIT] = 100.0f;
 
-    float max_hull = ship_max_hull(&w.players[0].ship);
-    w.players[0].ship.hull = max_hull - 20.0f;
+    float max_hull = ship_max_hull(w.players[0].ship);
+    w.players[0].ship->hull = max_hull - 20.0f;
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT],
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, max_hull - 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_REPAIR_KIT],
                     100.0f, 0.001f);
 }
 
@@ -3226,7 +3253,8 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
         .build_progress = 1.0f
     };
     w.stations[0].module_count = 1;
-    float initial_ingots = w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    float initial_ingots = station_inventory_amount(
+        &w.stations[0], COMMODITY_FERRITE_INGOT);
     int initial_pod_units =
         economy_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
     vec2 furnace_only_pos = module_world_pos_ring(&w.stations[0], 2, 0);
@@ -3236,7 +3264,8 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
     ASSERT(w.asteroids[frag].active);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        &w.stations[0], COMMODITY_FERRITE_INGOT),
                     initial_ingots, 0.001f);
     ASSERT_EQ_INT(economy_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT),
                   initial_pod_units);
@@ -3263,7 +3292,8 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
     for (int i = 0; i < (int)(5.0f / SIM_DT) && w.asteroids[frag].active; i++)
         world_sim_step(&w, SIM_DT);
     ASSERT(!w.asteroids[frag].active);
-    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        &w.stations[0], COMMODITY_FERRITE_INGOT),
                     initial_ingots, 0.001f);
     ASSERT(economy_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT) >=
            initial_pod_units + 8);
@@ -3282,10 +3312,16 @@ TEST(test_commodity_volume_kit_dense) {
 TEST(test_ship_total_cargo_kit_density) {
     /* 100 kits + 5 frames = 100 * 0.1 + 5 * 1.0 = 15 cargo units. */
     ship_t ship = {0};
-    ship.cargo[COMMODITY_REPAIR_KIT] = 100.0f;
-    ship.cargo[COMMODITY_FRAME] = 5.0f;
+    ASSERT(ship_manifest_bootstrap(&ship));
+    uint8_t origin[8] = {0};
+    float legacy[COMMODITY_COUNT] = {0};
+    legacy[COMMODITY_REPAIR_KIT] = 100.0f;
+    legacy[COMMODITY_FRAME] = 5.0f;
+    ASSERT(manifest_migrate_legacy_inventory(
+        &ship.manifest, legacy, COMMODITY_COUNT, origin));
     ASSERT_EQ_FLOAT(ship_total_cargo(&ship),
                     100.0f * REPAIR_KIT_CARGO_DENSITY + 5.0f, 0.001f);
+    ship_cleanup(&ship);
 }
 
 TEST(test_sell_legacy_manifest_requires_pod) {
@@ -3306,7 +3342,8 @@ TEST(test_sell_legacy_manifest_requires_pod) {
                                          COMMODITY_FERRITE_INGOT,
                                          manifest_count_by_commodity(&st->manifest,
                                                                      COMMODITY_FERRITE_INGOT));
-    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        st, COMMODITY_FERRITE_INGOT, 0));
 
     server_player_t *sp = &w->players[0];
     player_init_ship(sp, w);
@@ -3315,7 +3352,7 @@ TEST(test_sell_legacy_manifest_requires_pod) {
     memset(sp->session_token, 0xD1, 8);
     sp->docked = true;
     sp->current_station = (uint8_t)consumer;
-    sp->ship.pos = st->pos;
+    sp->ship->pos = st->pos;
 
     cargo_unit_t anon = {0};
     anon.kind = (uint8_t)CARGO_KIND_INGOT;
@@ -3327,9 +3364,9 @@ TEST(test_sell_legacy_manifest_requires_pod) {
     cargo_unit_t premium = anon;
     premium.prefix_class = (uint8_t)INGOT_PREFIX_M;
     premium.pub[0] = 0x22;
-    ASSERT(manifest_push(&sp->ship.manifest, &anon));
-    ASSERT(manifest_push(&sp->ship.manifest, &premium));
-    sp->ship.cargo[COMMODITY_FERRITE_INGOT] = 2.0f;
+    ASSERT(manifest_push(&sp->ship->manifest, &anon));
+    ASSERT(manifest_push(&sp->ship->manifest, &premium));
+    sp->ship->cargo[COMMODITY_FERRITE_INGOT] = 2.0f;
 
     float before = ledger_balance(st, sp->session_token);
 
@@ -3340,9 +3377,9 @@ TEST(test_sell_legacy_manifest_requires_pod) {
     world_sim_step(w, SIM_DT);
 
     ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.01f);
-    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FERRITE_INGOT], 2.0f, 0.001f);
-    ASSERT_EQ_INT(sp->ship.manifest.count, 2);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_FLOAT(sp->ship->cargo[COMMODITY_FERRITE_INGOT], 2.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship->manifest.count, 2);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
 }
 
 TEST(test_market_buy_ignores_legacy_manifest_ingots) {
@@ -3377,7 +3414,6 @@ TEST(test_market_buy_ignores_legacy_manifest_ingots) {
     anon.pub[0] = 0x32;
     ASSERT(manifest_push(&st->manifest, &premium));
     ASSERT(manifest_push(&st->manifest, &anon));
-    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 2.0f;
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
     int market_pod = test_spawn_station_market_exact_cargo_pod(
         w, producer, COMMODITY_FERRITE_INGOT, 1);
@@ -3392,7 +3428,7 @@ TEST(test_market_buy_ignores_legacy_manifest_ingots) {
     memset(sp->session_token, 0xD2, 8);
     sp->docked = true;
     sp->current_station = (uint8_t)producer;
-    sp->ship.pos = st->pos;
+    sp->ship->pos = st->pos;
     ledger_earn(st, sp->session_token, 100000.0f);
     float before = ledger_balance(st, sp->session_token);
     float expected_cost = test_station_market_pod_sell_quote(
@@ -3405,8 +3441,8 @@ TEST(test_market_buy_ignores_legacy_manifest_ingots) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
-    ASSERT_EQ_INT(sp->ship.manifest.count, 0);
+    ASSERT_EQ_FLOAT(sp->ship->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship->manifest.count, 0);
     int bought_pod = test_find_towed_exact_cargo_pod(
         w, sp, COMMODITY_FERRITE_INGOT);
     ASSERT(bought_pod >= 0);
@@ -3453,7 +3489,7 @@ TEST(test_sell_towed_pod_transfers_whole_pod) {
     ASSERT(hopper_idx >= 0);
     vec2 hopper_pos = module_world_pos_ring(
         st, st->modules[hopper_idx].ring, st->modules[hopper_idx].slot);
-    sp->ship.pos = hopper_pos;
+    sp->ship->pos = hopper_pos;
     float before = ledger_balance(st, sp->session_token);
 
     int pod_idx = test_spawn_towed_exact_cargo_pod(
@@ -3463,13 +3499,13 @@ TEST(test_sell_towed_pod_transfers_whole_pod) {
 
     world_sim_step(w, SIM_DT);
 
-    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FRAME], 0.0f, 0.001f);
-    ASSERT_EQ_INT(sp->ship.manifest.count, 0);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_FLOAT(sp->ship->cargo[COMMODITY_FRAME], 0.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship->manifest.count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(w->cargo_pods[pod_idx].active);
     ASSERT_EQ_INT(w->cargo_pods[pod_idx].quantity, 3);
     ASSERT_EQ_INT(w->cargo_pods[pod_idx].manifest_count, 3);
-    ASSERT_EQ_INT(w->cargo_pods[pod_idx].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w->cargo_pods[pod_idx]), -1);
     ASSERT(cargo_pod_is_tractored_by_module(&w->cargo_pods[pod_idx],
                                             kepler, hopper_idx));
     ASSERT(ledger_balance(st, sp->session_token) > before);
@@ -3688,10 +3724,14 @@ TEST(test_top_demand_no_shortage_returns_none) {
     /* Top up Kepler's frame_press input commodity to its target — the
      * station has no shortage, so top demand should be empty. */
     station_t *kepler = &w.stations[1];
-    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
-    kepler->_inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
-    kepler->_inventory_cache[COMMODITY_LASER_MODULE] = 100.0f;
-    kepler->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 100.0f;
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_FERRITE_INGOT, (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_FRAME, (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_LASER_MODULE, 100));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_TRACTOR_MODULE, 100));
     station_demand_t d = station_top_demand(kepler);
     ASSERT_EQ_INT((int)d.commodity, (int)COMMODITY_COUNT);
     ASSERT_EQ_FLOAT(d.severity, 0.0f, 0.001f);
@@ -3708,10 +3748,13 @@ TEST(test_top_demand_picks_starving_commodity) {
      * frames at 12.0, ferrite ingots at MAX_PRODUCT_STOCK*0.9 = 108.
      * Set frames to 6 (mild, severity ~0.5) and ingots to 0 (full
      * starvation). */
-    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
-    kepler->_inventory_cache[COMMODITY_FRAME]         = 6.0f;
-    kepler->_inventory_cache[COMMODITY_LASER_MODULE]  = 100.0f;
-    kepler->_inventory_cache[COMMODITY_TRACTOR_MODULE]= 100.0f;
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_FERRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FRAME, 6));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_LASER_MODULE, 100));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_TRACTOR_MODULE, 100));
     station_demand_t d = station_top_demand(kepler);
     ASSERT_EQ_INT((int)d.commodity, (int)COMMODITY_FERRITE_INGOT);
     ASSERT(d.severity > 0.95f);
@@ -3732,11 +3775,16 @@ TEST(test_top_demand_skips_self_produced_commodities) {
     station_t *helios = &w.stations[2];
     /* Knock out everything else so cuprite is the only candidate
      * (besides things Helios produces). */
-    helios->_inventory_cache[COMMODITY_CUPRITE_INGOT] = 0.0f;
-    helios->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = MAX_PRODUCT_STOCK;
-    helios->_inventory_cache[COMMODITY_FRAME]         = MAX_PRODUCT_STOCK;
-    helios->_inventory_cache[COMMODITY_LASER_MODULE]  = MAX_PRODUCT_STOCK;
-    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE]= MAX_PRODUCT_STOCK;
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CUPRITE_INGOT, 0));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CRYSTAL_INGOT, (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_FRAME, (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_LASER_MODULE, (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_TRACTOR_MODULE, (int)MAX_PRODUCT_STOCK));
     helios->_inventory_cache[COMMODITY_CUPRITE_ORE]   = REFINERY_HOPPER_CAPACITY;
     helios->_inventory_cache[COMMODITY_CRYSTAL_ORE]   = REFINERY_HOPPER_CAPACITY;
     helios->_inventory_cache[COMMODITY_FERRITE_ORE]   = REFINERY_HOPPER_CAPACITY;
@@ -3780,13 +3828,16 @@ TEST(test_contract_price_scales_with_demand) {
     world_reset(stocked);
     /* Top up Kepler's ferrite ingot inventory to its target so demand
      * mult is 1.0 — i.e. the existing pricing path. */
-    stocked->stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    ASSERT(test_set_station_finished_units(&stocked->stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)MAX_PRODUCT_STOCK));
     /* Run a few seconds for contract step to fire. */
     for (int i = 0; i < 240; i++) world_sim_step(stocked, SIM_DT);
 
     world_reset(starved);
     /* Starve Kepler completely for ferrite ingots — demand mult ~1.5. */
-    starved->stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        &starved->stations[1], COMMODITY_FERRITE_INGOT, 0));
     for (int i = 0; i < 240; i++) world_sim_step(starved, SIM_DT);
 
     /* Find the (Kepler, FERRITE_INGOT) contract in each world. The

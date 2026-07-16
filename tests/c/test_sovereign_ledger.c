@@ -115,7 +115,7 @@ TEST(test_sovereign_player_cannot_overspend_on_buy) {
     ASSERT_EQ_FLOAT(ledger_balance(st, token), 0.0f, 0.001f);
 
     st->_inventory_cache[COMMODITY_FRAME] = 10.0f;
-    float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
+    float cargo_before = w.players[0].ship->cargo[COMMODITY_FRAME];
     float bal_before = ledger_balance(st, token);
 
     w.players[0].input.buy_product = true;
@@ -125,7 +125,7 @@ TEST(test_sovereign_player_cannot_overspend_on_buy) {
 
     /* Refused: no cargo, no balance change. The station's pool sign
      * is irrelevant — the gate is the *player's* purse. */
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_FRAME], cargo_before, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
 }
 

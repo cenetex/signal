@@ -64,16 +64,16 @@ static bool market_memory_from_item(const knowledge_item_t *item,
 static bool best_market_memory(const npc_ship_t *npc,
                                market_memory_t *out) {
     if (!npc || !out) return false;
-    uint8_t count = npc->knowledge.count;
-    if (count > npc->knowledge.capacity && npc->knowledge.capacity > 0)
-        count = npc->knowledge.capacity;
+    uint8_t count = npc->ship->knowledge.count;
+    if (count > npc->ship->knowledge.capacity && npc->ship->knowledge.capacity > 0)
+        count = npc->ship->knowledge.capacity;
     if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
 
     int best_score = -1;
     market_memory_t best = {0};
     for (uint8_t i = 0; i < count; i++) {
         market_memory_t memory;
-        if (!market_memory_from_item(&npc->knowledge.items[i], &memory))
+        if (!market_memory_from_item(&npc->ship->knowledge.items[i], &memory))
             continue;
         if (memory.commodity >= (uint8_t)COMMODITY_COUNT &&
             memory.memory_kind != (uint8_t)MARKET_MEMORY_SCAFFOLD_PRESSURE)
@@ -93,17 +93,21 @@ static bool best_market_memory(const npc_ship_t *npc,
     return true;
 }
 
-static const contract_summary_t *first_contract(const npc_ship_t *npc) {
-    if (!npc) return NULL;
-    uint8_t count = npc->known_contract_count;
-    if (count > SHIP_KNOWN_CONTRACT_CAP) count = SHIP_KNOWN_CONTRACT_CAP;
+static bool first_contract(const npc_ship_t *npc,
+                           contract_summary_t *out) {
+    if (!npc || !npc->ship || !out) return false;
+    uint8_t count = npc->ship->knowledge.count;
+    if (count > KNOWLEDGE_VIEW_MAX_CAP) count = KNOWLEDGE_VIEW_MAX_CAP;
     for (uint8_t i = 0; i < count; i++) {
-        if (npc->known_contracts[i].active &&
-            npc->known_contracts[i].commodity < (uint8_t)COMMODITY_COUNT) {
-            return &npc->known_contracts[i];
-        }
+        const knowledge_item_t *item = &npc->ship->knowledge.items[i];
+        if (item->kind != (uint8_t)KNOW_CONTRACT ||
+            item->payload_kind != (uint8_t)KNOW_PAYLOAD_CONTRACT_SUMMARY)
+            continue;
+        memcpy(out, item->payload, sizeof(*out));
+        if (out->active && out->commodity < (uint8_t)COMMODITY_COUNT)
+            return true;
     }
-    return NULL;
+    return false;
 }
 
 static bool station_index_valid(int station_idx) {
@@ -411,7 +415,9 @@ uint8_t npc_radio_choice_candidates_for_hail(
     market_memory_t memory;
     market_memory_t *memory_ptr = NULL;
     if (best_market_memory(npc, &memory)) memory_ptr = &memory;
-    const contract_summary_t *contract = first_contract(npc);
+    contract_summary_t contract_value;
+    const contract_summary_t *contract =
+        first_contract(npc, &contract_value) ? &contract_value : NULL;
 
     uint8_t count = 0;
     if (npc->role == NPC_ROLE_HAULER) {
@@ -719,7 +725,7 @@ uint8_t npc_radio_build_hail_conversation(
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &npcs[i];
         if (!npc->active) continue;
-        float dist_sq = v2_dist_sq(npc->ship.pos, origin);
+        float dist_sq = v2_dist_sq(npc->ship->pos, origin);
         if (dist_sq > range_sq) continue;
 
         if (pick_count < NPC_RADIO_HAIL_CONVERSATION_LIMIT) {

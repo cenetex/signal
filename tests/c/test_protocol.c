@@ -1,14 +1,15 @@
 #include "test_harness.h"
 #include "cargo_receipt_issue.h"
+#include "station_authority.h"
+#include "cargo_receipt_issue.h"
 #include "faction.h"
 #include "station_policy.h"
 
 TEST(test_roundtrip_player_state) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.ship.pos = v2(123.45f, -678.9f);
-    sp.ship.vel = v2(1.5f, -2.5f);
-    sp.ship.angle = 2.34f;
+    SERVER_PLAYER_DECL(sp);
+    sp.ship->pos = v2(123.45f, -678.9f);
+    sp.ship->vel = v2(1.5f, -2.5f);
+    sp.ship->angle = 2.34f;
     sp.docked = true;
     sp.actual_thrusting = true;
     sp.beam_active = true;
@@ -37,11 +38,10 @@ TEST(test_roundtrip_player_state) {
 }
 
 TEST(test_authoritative_player_state_includes_ack_tail) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.ship.pos = v2(10.0f, 20.0f);
-    sp.ship.vel = v2(3.0f, 4.0f);
-    sp.ship.angle = 1.25f;
+    SERVER_PLAYER_DECL(sp);
+    sp.ship->pos = v2(10.0f, 20.0f);
+    sp.ship->vel = v2(3.0f, 4.0f);
+    sp.ship->angle = 1.25f;
     sp.last_input_seq = 0x1234u;
     sp.last_input_tick = 0x01020304u;
     sp.last_input_client_sent_ms = 0x11223344u;
@@ -72,29 +72,28 @@ TEST(test_authoritative_player_state_includes_ack_tail) {
 }
 
 TEST(test_roundtrip_batched_player_states) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
 
     /* Two connected players */
     players[0].connected = true;
-    players[0].ship.pos = v2(100.0f, 200.0f);
-    players[0].ship.vel = v2(1.0f, -1.0f);
-    players[0].ship.angle = 1.5f;
+    players[0].ship->pos = v2(100.0f, 200.0f);
+    players[0].ship->vel = v2(1.0f, -1.0f);
+    players[0].ship->angle = 1.5f;
     players[0].actual_thrusting = true;
     players[0].docked = false;
     players[0].last_input_seq = 321;
     players[0].last_input_tick = 12340u;
 
     players[3].connected = true;
-    players[3].ship.pos = v2(-50.0f, 300.0f);
-    players[3].ship.vel = v2(0.0f, 2.0f);
-    players[3].ship.angle = 3.14f;
+    players[3].ship->pos = v2(-50.0f, 300.0f);
+    players[3].ship->vel = v2(0.0f, 2.0f);
+    players[3].ship->angle = 3.14f;
     players[3].docked = true;
-    players[3].ship.tractor_active = true;
-    players[3].ship.tractor_level = 2;
-    players[3].ship.towed_count = 2;
-    players[3].ship.towed_fragments[0] = 301;
-    players[3].ship.towed_fragments[1] = 1024;
+    players[3].ship->tractor_active = true;
+    players[3].ship->tractor_level = 2;
+    players[3].ship->towed_count = 2;
+    players[3].ship->towed_fragments[0] = 301;
+    players[3].ship->towed_fragments[1] = 1024;
 
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
     int len = serialize_all_player_states(buf, players, 12345u);
@@ -128,16 +127,15 @@ TEST(test_roundtrip_batched_player_states) {
 }
 
 TEST(test_player_states_for_recipient_excludes_self) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
 
     players[0].connected = true;
-    players[0].ship.pos = v2(100.0f, 200.0f);
+    players[0].ship->pos = v2(100.0f, 200.0f);
     players[0].last_input_seq = 12;
     players[0].last_input_tick = 1200u;
 
     players[3].connected = true;
-    players[3].ship.pos = v2(-50.0f, 300.0f);
+    players[3].ship->pos = v2(-50.0f, 300.0f);
     players[3].last_input_seq = 34;
     players[3].last_input_tick = 3400u;
 
@@ -172,25 +170,24 @@ TEST(test_player_states_for_recipient_excludes_self) {
 }
 
 TEST(test_player_motion_stream_excludes_recipient_and_docked_players) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
 
     players[0].connected = true;
     players[0].session_ready = true;
-    players[0].ship.pos = v2(10.0f, 20.0f);
-    players[0].ship.vel = v2(1.0f, 2.0f);
-    players[0].ship.angle = 0.25f;
+    players[0].ship->pos = v2(10.0f, 20.0f);
+    players[0].ship->vel = v2(1.0f, 2.0f);
+    players[0].ship->angle = 0.25f;
 
     players[1].connected = true;
     players[1].session_ready = true;
-    players[1].ship.pos = v2(100.0f, 200.0f);
-    players[1].ship.vel = v2(-1.0f, 3.0f);
-    players[1].ship.angle = 1.5f;
+    players[1].ship->pos = v2(100.0f, 200.0f);
+    players[1].ship->vel = v2(-1.0f, 3.0f);
+    players[1].ship->angle = 1.5f;
 
     players[3].connected = true;
     players[3].session_ready = true;
     players[3].docked = true;
-    players[3].ship.pos = v2(300.0f, 400.0f);
+    players[3].ship->pos = v2(300.0f, 400.0f);
 
     uint8_t buf[PLAYER_MOTION_MSG_HEADER +
                 MAX_PLAYERS * PLAYER_MOTION_RECORD_SIZE];
@@ -209,25 +206,24 @@ TEST(test_player_motion_stream_excludes_recipient_and_docked_players) {
 }
 
 TEST(test_player_motion_q_stream_quantizes_remote_players) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
 
     players[0].connected = true;
     players[0].session_ready = true;
-    players[0].ship.pos = v2(10.0f, 20.0f);
-    players[0].ship.vel = v2(1.0f, 2.0f);
-    players[0].ship.angle = 0.25f;
+    players[0].ship->pos = v2(10.0f, 20.0f);
+    players[0].ship->vel = v2(1.0f, 2.0f);
+    players[0].ship->angle = 0.25f;
 
     players[1].connected = true;
     players[1].session_ready = true;
-    players[1].ship.pos = v2(101.0f, -202.0f);
-    players[1].ship.vel = v2(-1.25f, 3.5f);
-    players[1].ship.angle = 1.57079632679f;
+    players[1].ship->pos = v2(101.0f, -202.0f);
+    players[1].ship->vel = v2(-1.25f, 3.5f);
+    players[1].ship->angle = 1.57079632679f;
 
     players[3].connected = true;
     players[3].session_ready = true;
     players[3].docked = true;
-    players[3].ship.pos = v2(300.0f, 400.0f);
+    players[3].ship->pos = v2(300.0f, 400.0f);
 
     uint8_t buf[PLAYER_MOTION_Q_MSG_HEADER +
                 MAX_PLAYERS * PLAYER_MOTION_Q_RECORD_SIZE];
@@ -247,17 +243,15 @@ TEST(test_player_motion_q_stream_quantizes_remote_players) {
 }
 
 TEST(test_player_motion_delta_q_stream_uses_baseline) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
-    server_player_t recipient;
-    memset(&recipient, 0, sizeof(recipient));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
+    SERVER_PLAYER_DECL(recipient);
 
     players[1].connected = true;
     players[1].session_ready = true;
     players[1].docked = false;
-    players[1].ship.pos = v2(108.0f, -192.0f);
-    players[1].ship.vel = v2(64.0f, -32.0f);
-    players[1].ship.angle = PI_F * 0.5f;
+    players[1].ship->pos = v2(108.0f, -192.0f);
+    players[1].ship->vel = v2(64.0f, -32.0f);
+    players[1].ship->angle = PI_F * 0.5f;
 
     uint8_t abs_buf[PLAYER_MOTION_Q_MSG_HEADER +
                     MAX_PLAYERS * PLAYER_MOTION_Q_RECORD_SIZE];
@@ -286,16 +280,16 @@ TEST(test_player_motion_delta_q_stream_uses_baseline) {
     ASSERT_EQ_INT(posed_len, PLAYER_POSED_Q_MSG_HEADER);
     server_player_motion_delta_note_abs_msg(
         &recipient, abs_buf, (size_t)abs_len, 100u);
-    ASSERT(recipient.player_motion_delta_valid[1]);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qx[1], 27);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qy[1], -48);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].x, 64.0f, 0.01f);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].y, -32.0f, 0.01f);
-    ASSERT_EQ_INT(recipient.player_motion_delta_angle[1], 64);
-    ASSERT_EQ_INT((int)recipient.player_motion_delta_tick[1], 100);
+    ASSERT(recipient.replication->player_motion_delta_valid[1]);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qx[1], 27);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[1], -48);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].x, 64.0f, 0.01f);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].y, -32.0f, 0.01f);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_angle[1], 64);
+    ASSERT_EQ_INT((int)recipient.replication->player_motion_delta_tick[1], 100);
 
-    players[1].ship.pos = v2(116.0f, -184.0f);
-    players[1].ship.vel = v2(66.0f, -34.0f);
+    players[1].ship->pos = v2(116.0f, -184.0f);
+    players[1].ship->vel = v2(66.0f, -34.0f);
     records = serialize_player_motion_split_q_for_recipient(
         abs_buf, &abs_len, delta_buf, &delta_len,
         posed_buf, &posed_len,
@@ -323,28 +317,26 @@ TEST(test_player_motion_delta_q_stream_uses_baseline) {
     server_player_motion_delta_note_delta_msg(
         &recipient, delta_buf, (size_t)delta_len,
         100u + PLAYER_MOTION_NET_MIN_REPEAT_TICKS);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qx[1], 29);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qy[1], -46);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].x, 68.0f, 0.01f);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].y, -36.0f, 0.01f);
-    ASSERT_EQ_INT((int)recipient.player_motion_delta_tick[1],
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qx[1], 29);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[1], -46);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].x, 68.0f, 0.01f);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].y, -36.0f, 0.01f);
+    ASSERT_EQ_INT((int)recipient.replication->player_motion_delta_tick[1],
                   100 + (int)PLAYER_MOTION_NET_MIN_REPEAT_TICKS);
 }
 
 TEST(test_player_motion_delta_q_skips_predicted_motion_until_heartbeat) {
     ASSERT_EQ_INT((int)PLAYER_MOTION_NET_HEARTBEAT_TICKS, 240);
 
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
-    server_player_t recipient;
-    memset(&recipient, 0, sizeof(recipient));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
+    SERVER_PLAYER_DECL(recipient);
 
     players[1].connected = true;
     players[1].session_ready = true;
     players[1].docked = false;
-    players[1].ship.pos = v2(108.0f, -192.0f);
-    players[1].ship.vel = v2(64.0f, -32.0f);
-    players[1].ship.angle = PI_F * 0.5f;
+    players[1].ship->pos = v2(108.0f, -192.0f);
+    players[1].ship->vel = v2(64.0f, -32.0f);
+    players[1].ship->angle = PI_F * 0.5f;
 
     uint8_t abs_buf[PLAYER_MOTION_Q_MSG_HEADER +
                     MAX_PLAYERS * PLAYER_MOTION_Q_RECORD_SIZE];
@@ -364,7 +356,7 @@ TEST(test_player_motion_delta_q_skips_predicted_motion_until_heartbeat) {
         &recipient, abs_buf, (size_t)abs_len, 100u);
 
     float dt = (float)PLAYER_MOTION_NET_MIN_REPEAT_TICKS * SIM_DT;
-    players[1].ship.pos = v2(108.0f + 64.0f * dt,
+    players[1].ship->pos = v2(108.0f + 64.0f * dt,
                              -192.0f - 32.0f * dt);
     records = serialize_player_motion_split_q_for_recipient(
         abs_buf, &abs_len, delta_buf, &delta_len,
@@ -380,9 +372,9 @@ TEST(test_player_motion_delta_q_skips_predicted_motion_until_heartbeat) {
     ASSERT_EQ_INT(posed_buf[1], 0);
 
     dt = (float)PLAYER_MOTION_NET_HEARTBEAT_TICKS * SIM_DT;
-    players[1].ship.pos = v2(108.0f + 64.0f * dt,
+    players[1].ship->pos = v2(108.0f + 64.0f * dt,
                              -192.0f - 32.0f * dt);
-    players[1].ship.angle = PI_F * 0.5f + 0.1f;
+    players[1].ship->angle = PI_F * 0.5f + 0.1f;
     records = serialize_player_motion_split_q_for_recipient(
         abs_buf, &abs_len, delta_buf, &delta_len,
         posed_buf, &posed_len,
@@ -398,42 +390,40 @@ TEST(test_player_motion_delta_q_skips_predicted_motion_until_heartbeat) {
     const uint8_t *p = &posed_buf[PLAYER_POSED_Q_MSG_HEADER];
     ASSERT_EQ_INT(p[0], 1);
     ASSERT_EQ_INT((int)(int8_t)p[1],
-                  (int)player_motion_q_encode(players[1].ship.pos.x,
+                  (int)player_motion_q_encode(players[1].ship->pos.x,
                                                PLAYER_MOTION_Q_POS_SCALE) -
-                  (int)recipient.player_motion_delta_qx[1]);
+                  (int)recipient.replication->player_motion_delta_qx[1]);
     ASSERT_EQ_INT((int)(int8_t)p[2],
-                  (int)player_motion_q_encode(players[1].ship.pos.y,
+                  (int)player_motion_q_encode(players[1].ship->pos.y,
                                                PLAYER_MOTION_Q_POS_SCALE) -
-                  (int)recipient.player_motion_delta_qy[1]);
-    ASSERT_EQ_INT(p[3], player_motion_q_angle(players[1].ship.angle));
+                  (int)recipient.replication->player_motion_delta_qy[1]);
+    ASSERT_EQ_INT(p[3], player_motion_q_angle(players[1].ship->angle));
 
     server_player_motion_delta_note_posed_msg(
         &recipient, posed_buf, (size_t)posed_len,
         100u + PLAYER_MOTION_NET_HEARTBEAT_TICKS);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].x, 64.0f, 0.01f);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].y, -32.0f, 0.01f);
-    ASSERT_EQ_INT(recipient.player_motion_delta_angle[1], p[3]);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].x, 64.0f, 0.01f);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].y, -32.0f, 0.01f);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_angle[1], p[3]);
 }
 
 TEST(test_player_motion_mixed_q_combines_delta_and_pose_records) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
-    server_player_t recipient;
-    memset(&recipient, 0, sizeof(recipient));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
+    SERVER_PLAYER_DECL(recipient);
 
     players[1].connected = true;
     players[1].session_ready = true;
     players[1].docked = false;
-    players[1].ship.pos = v2(408.0f, -792.0f);
-    players[1].ship.vel = v2(68.0f, -36.0f);
-    players[1].ship.angle = PI_F * 0.5f;
+    players[1].ship->pos = v2(408.0f, -792.0f);
+    players[1].ship->vel = v2(68.0f, -36.0f);
+    players[1].ship->angle = PI_F * 0.5f;
 
     players[2].connected = true;
     players[2].session_ready = true;
     players[2].docked = false;
-    players[2].ship.pos = v2(168.0f, 328.0f);
-    players[2].ship.vel = v2(79.5f, 52.0f);
-    players[2].ship.angle = 0.35f;
+    players[2].ship->pos = v2(168.0f, 328.0f);
+    players[2].ship->vel = v2(79.5f, 52.0f);
+    players[2].ship->angle = 0.35f;
 
     server_player_motion_delta_note_q(
         &recipient, 1, 100, -200, v2(64.0f, -32.0f), 64, 100u);
@@ -471,7 +461,7 @@ TEST(test_player_motion_mixed_q_combines_delta_and_pose_records) {
     ASSERT_EQ_INT((int)(int8_t)vel[2], 2);
     ASSERT_EQ_INT((int)(int8_t)vel[3], 17);
     ASSERT_EQ_INT((int)(int8_t)vel[4], -9);
-    ASSERT_EQ_INT(vel[5], player_motion_q_angle(players[1].ship.angle));
+    ASSERT_EQ_INT(vel[5], player_motion_q_angle(players[1].ship->angle));
 
     const uint8_t *pose =
         &mixed_buf[PLAYER_MOTIONM_Q_MSG_HEADER +
@@ -480,39 +470,37 @@ TEST(test_player_motion_mixed_q_combines_delta_and_pose_records) {
     ASSERT_EQ_INT((pose[0] & PLAYER_MOTIONM_Q_FLAG_VEL), 0);
     ASSERT_EQ_INT((int)(int8_t)pose[1], 2);
     ASSERT_EQ_INT((int)(int8_t)pose[2], 2);
-    ASSERT_EQ_INT(pose[3], player_motion_q_angle(players[2].ship.angle));
+    ASSERT_EQ_INT(pose[3], player_motion_q_angle(players[2].ship->angle));
 
     server_player_motion_delta_note_mixed_msg(
         &recipient, mixed_buf, (size_t)mixed_len,
         100u + PLAYER_MOTION_NET_HEARTBEAT_TICKS);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qx[1], 102);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qy[1], -198);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].x, 68.0f, 0.01f);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[1].y, -36.0f, 0.01f);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qx[2], 42);
-    ASSERT_EQ_INT(recipient.player_motion_delta_qy[2], 82);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[2].x, 79.5f, 0.01f);
-    ASSERT_EQ_FLOAT(recipient.player_motion_delta_vel[2].y, 52.0f, 0.01f);
-    ASSERT_EQ_INT(recipient.player_motion_delta_angle[2], pose[3]);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qx[1], 102);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[1], -198);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].x, 68.0f, 0.01f);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].y, -36.0f, 0.01f);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qx[2], 42);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[2], 82);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[2].x, 79.5f, 0.01f);
+    ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[2].y, 52.0f, 0.01f);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_angle[2], pose[3]);
 }
 
 TEST(test_player_motion_mixed_q_coalesces_clean_heartbeats) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
-    server_player_t recipient;
-    memset(&recipient, 0, sizeof(recipient));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
+    SERVER_PLAYER_DECL(recipient);
 
     players[1].connected = true;
     players[1].session_ready = true;
     players[1].docked = false;
-    players[1].ship.pos = v2(108.0f, -192.0f);
-    players[1].ship.vel = v2(64.0f, -32.0f);
-    players[1].ship.angle = PI_F * 0.5f;
+    players[1].ship->pos = v2(108.0f, -192.0f);
+    players[1].ship->vel = v2(64.0f, -32.0f);
+    players[1].ship->angle = PI_F * 0.5f;
 
     server_player_motion_delta_note_q(
-        &recipient, 1, 27, -48, players[1].ship.vel,
-        player_motion_q_angle(players[1].ship.angle), 100u);
-    recipient.player_motion_delta_heartbeat_tick = 100u;
+        &recipient, 1, 27, -48, players[1].ship->vel,
+        player_motion_q_angle(players[1].ship->angle), 100u);
+    recipient.replication->player_motion_delta_heartbeat_tick = 100u;
 
     uint8_t abs_buf[PLAYER_MOTION_Q_MSG_HEADER +
                     MAX_PLAYERS * PLAYER_MOTION_Q_RECORD_SIZE];
@@ -523,7 +511,7 @@ TEST(test_player_motion_mixed_q_coalesces_clean_heartbeats) {
     bool heartbeat_due = false;
 
     float dt = (float)PLAYER_MOTION_NET_MIN_REPEAT_TICKS * SIM_DT;
-    players[1].ship.pos = v2(108.0f + 64.0f * dt,
+    players[1].ship->pos = v2(108.0f + 64.0f * dt,
                              -192.0f - 32.0f * dt);
     int records = serialize_player_motion_mixed_q_for_recipient(
         abs_buf, &abs_len, mixed_buf, &mixed_len,
@@ -535,17 +523,17 @@ TEST(test_player_motion_mixed_q_coalesces_clean_heartbeats) {
     ASSERT_EQ_INT(abs_len, PLAYER_MOTION_Q_MSG_HEADER);
     ASSERT_EQ_INT(mixed_len, PLAYER_MOTIONM_Q_MSG_HEADER);
 
-    vec2 recent_pos = players[1].ship.pos;
+    vec2 recent_pos = players[1].ship->pos;
     server_player_motion_delta_note_q(
         &recipient, 1,
         player_motion_q_encode(recent_pos.x, PLAYER_MOTION_Q_POS_SCALE),
         player_motion_q_encode(recent_pos.y, PLAYER_MOTION_Q_POS_SCALE),
-        players[1].ship.vel,
-        player_motion_q_angle(players[1].ship.angle),
+        players[1].ship->vel,
+        player_motion_q_angle(players[1].ship->angle),
         100u + PLAYER_MOTION_NET_MIN_REPEAT_TICKS);
     dt = (float)(PLAYER_MOTION_NET_HEARTBEAT_TICKS -
                  PLAYER_MOTION_NET_MIN_REPEAT_TICKS) * SIM_DT;
-    players[1].ship.pos = v2(recent_pos.x + 64.0f * dt,
+    players[1].ship->pos = v2(recent_pos.x + 64.0f * dt,
                              recent_pos.y - 32.0f * dt);
     records = serialize_player_motion_mixed_q_for_recipient(
         abs_buf, &abs_len, mixed_buf, &mixed_len,
@@ -558,11 +546,11 @@ TEST(test_player_motion_mixed_q_coalesces_clean_heartbeats) {
     ASSERT_EQ_INT(mixed_len, PLAYER_MOTIONM_Q_MSG_HEADER);
 
     server_player_motion_delta_note_q(
-        &recipient, 1, 27, -48, players[1].ship.vel,
-        player_motion_q_angle(players[1].ship.angle), 100u);
-    recipient.player_motion_delta_heartbeat_tick = 100u;
+        &recipient, 1, 27, -48, players[1].ship->vel,
+        player_motion_q_angle(players[1].ship->angle), 100u);
+    recipient.replication->player_motion_delta_heartbeat_tick = 100u;
     dt = (float)PLAYER_MOTION_NET_HEARTBEAT_TICKS * SIM_DT;
-    players[1].ship.pos = v2(108.0f + 64.0f * dt,
+    players[1].ship->pos = v2(108.0f + 64.0f * dt,
                              -192.0f - 32.0f * dt);
     records = serialize_player_motion_mixed_q_for_recipient(
         abs_buf, &abs_len, mixed_buf, &mixed_len,
@@ -580,15 +568,13 @@ TEST(test_player_motion_mixed_q_coalesces_clean_heartbeats) {
 }
 
 TEST(test_player_motion_delta_q_falls_back_when_delta_exceeds_i8) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
-    server_player_t recipient;
-    memset(&recipient, 0, sizeof(recipient));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
+    SERVER_PLAYER_DECL(recipient);
 
     players[1].connected = true;
     players[1].session_ready = true;
-    players[1].ship.pos = v2(800.0f, 0.0f);
-    players[1].ship.vel = v2(400.0f, 0.0f);
+    players[1].ship->pos = v2(800.0f, 0.0f);
+    players[1].ship->vel = v2(400.0f, 0.0f);
     server_player_motion_delta_note_q(
         &recipient, 1, 0, 0, v2(0.0f, 0.0f), 0, 100u);
 
@@ -616,8 +602,7 @@ TEST(test_player_motion_delta_q_falls_back_when_delta_exceeds_i8) {
 }
 
 TEST(test_player_dock_stream_excludes_recipient_and_updates_status_flags) {
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
 
     players[0].connected = true;
     players[0].session_ready = true;
@@ -657,12 +642,11 @@ TEST(test_world_players_semantic_hash_ignores_pose_and_input_ack_tail) {
     ASSERT(world_players_semantic_heartbeat_due(
         1000ull, 1000ull + WORLD_PLAYERS_SEMANTIC_HEARTBEAT_MS));
 
-    server_player_t players[MAX_PLAYERS];
-    memset(players, 0, sizeof(players));
+    SERVER_PLAYER_ARRAY(players, MAX_PLAYERS);
     players[0].connected = true;
-    players[0].ship.pos = v2(10.0f, 20.0f);
-    players[0].ship.vel = v2(1.0f, 2.0f);
-    players[0].ship.angle = 0.5f;
+    players[0].ship->pos = v2(10.0f, 20.0f);
+    players[0].ship->vel = v2(1.0f, 2.0f);
+    players[0].ship->angle = 0.5f;
     players[0].last_input_seq = 7;
     players[0].last_input_tick = 111u;
 
@@ -690,7 +674,7 @@ TEST(test_world_players_semantic_hash_ignores_pose_and_input_ack_tail) {
     ASSERT(ahash == bhash);
 
     players[0].last_input_tick = 111u;
-    players[0].ship.pos.x += 1.0f;
+    players[0].ship->pos.x += 1.0f;
     blen = serialize_all_player_states(b, players, 1001u);
     bhash = net_world_players_semantic_hash(b, blen);
     ASSERT(ahash == bhash);
@@ -701,15 +685,15 @@ TEST(test_world_players_semantic_hash_ignores_pose_and_input_ack_tail) {
     ASSERT(ahash == bhash);
 
     players[0].actual_thrusting = false;
-    players[0].ship.pos.x = 10.0f;
+    players[0].ship->pos.x = 10.0f;
     players[0].docked = true;
     alen = serialize_all_player_states(a, players, 1000u);
     ahash = net_world_players_semantic_hash(a, alen);
 
-    players[0].ship.pos.x += 100.0f;
-    players[0].ship.pos.y -= 25.0f;
-    players[0].ship.vel = v2(3.0f, -4.0f);
-    players[0].ship.angle += 0.75f;
+    players[0].ship->pos.x += 100.0f;
+    players[0].ship->pos.y -= 25.0f;
+    players[0].ship->vel = v2(3.0f, -4.0f);
+    players[0].ship->angle += 0.75f;
     blen = serialize_all_player_states(b, players, 1001u);
     bhash = net_world_players_semantic_hash(b, blen);
     ASSERT(ahash == bhash);
@@ -1004,7 +988,7 @@ TEST(test_asteroid_delta_towed_fragments_use_tighter_motion_gate) {
     asteroids[6].active = true;
     asteroids[6].tier = ASTEROID_TIER_S;
     asteroids[6].fracture_child = true;
-    asteroids[6].last_towed_by = 0;
+    asteroid_set_player_tractor(&asteroids[6], 0);
     asteroids[6].pos = v2(6.0f, 0.0f);
     asteroids[6].radius = 10.0f;
     asteroids[6].hp = 10.0f;
@@ -2410,29 +2394,32 @@ TEST(test_asteroid_identity_change_forces_full_upsert) {
 
 TEST(test_asteroid_cache_invalidation_preserves_pending_removal) {
     static server_player_t sp;
+    static server_replication_t replication;
     static asteroid_t asteroids[MAX_ASTEROIDS];
     static uint8_t full[ASTEROID_MSG_HEADER +
                         MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     static uint8_t remove_buf[ASTEROID_REMOVE_MSG_HEADER +
                               MAX_ASTEROIDS * ASTEROID_REMOVE_RECORD_SIZE];
     memset(&sp, 0, sizeof(sp));
+    memset(&replication, 0, sizeof(replication));
+    sp.replication = &replication;
     memset(asteroids, 0, sizeof(asteroids));
 
-    sp.asteroid_sent[7] = true;
-    sp.asteroid_motion_sent_tick[7] = 90u;
-    sp.asteroid_motion_sent_pos[7] = v2(10.0f, 20.0f);
-    sp.asteroid_motion_sent_vel[7] = v2(3.0f, 4.0f);
-    sp.asteroid_identity_sent_sig[7] = 123u;
-    sp.asteroid_state_sent_tick[7] = 90u;
-    sp.asteroid_state_sent_sig[7] = 456u;
-    sp.asteroid_state_sent_semantic_sig[7] = 789u;
+    sp.replication->asteroid_sent[7] = true;
+    sp.replication->asteroid_motion_sent_tick[7] = 90u;
+    sp.replication->asteroid_motion_sent_pos[7] = v2(10.0f, 20.0f);
+    sp.replication->asteroid_motion_sent_vel[7] = v2(3.0f, 4.0f);
+    sp.replication->asteroid_identity_sent_sig[7] = 123u;
+    sp.replication->asteroid_state_sent_tick[7] = 90u;
+    sp.replication->asteroid_state_sent_sig[7] = 456u;
+    sp.replication->asteroid_state_sent_semantic_sig[7] = 789u;
 
     server_player_invalidate_asteroid_stream_caches(&sp);
 
-    ASSERT(sp.asteroid_sent[7]);
-    ASSERT_EQ_INT((int)sp.asteroid_motion_sent_tick[7], 0);
-    ASSERT_EQ_INT((int)sp.asteroid_identity_sent_sig[7], 0);
-    ASSERT_EQ_INT((int)sp.asteroid_state_sent_tick[7], 0);
+    ASSERT(sp.replication->asteroid_sent[7]);
+    ASSERT_EQ_INT((int)sp.replication->asteroid_motion_sent_tick[7], 0);
+    ASSERT_EQ_INT((int)sp.replication->asteroid_identity_sent_sig[7], 0);
+    ASSERT_EQ_INT((int)sp.replication->asteroid_state_sent_tick[7], 0);
 
     int remove_len = 0;
     int full_len = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
@@ -2440,11 +2427,11 @@ TEST(test_asteroid_cache_invalidation_preserves_pending_removal) {
         NULL, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         NULL, NULL, remove_buf, &remove_len,
-        asteroids, v2(0.0f, 0.0f), sp.asteroid_sent,
-        sp.asteroid_motion_sent_tick, sp.asteroid_motion_sent_pos,
-        sp.asteroid_motion_sent_vel, sp.asteroid_identity_sent_sig,
-        sp.asteroid_state_sent_tick, sp.asteroid_state_sent_sig,
-        sp.asteroid_state_sent_semantic_sig, 100u, -1);
+        asteroids, v2(0.0f, 0.0f), sp.replication->asteroid_sent,
+        sp.replication->asteroid_motion_sent_tick, sp.replication->asteroid_motion_sent_pos,
+        sp.replication->asteroid_motion_sent_vel, sp.replication->asteroid_identity_sent_sig,
+        sp.replication->asteroid_state_sent_tick, sp.replication->asteroid_state_sent_sig,
+        sp.replication->asteroid_state_sent_semantic_sig, 100u, -1);
 
     ASSERT_EQ_INT(full_len, ASTEROID_MSG_HEADER);
     ASSERT_EQ_INT(remove_len,
@@ -2452,7 +2439,7 @@ TEST(test_asteroid_cache_invalidation_preserves_pending_removal) {
     ASSERT_EQ_INT(remove_buf[0], NET_MSG_WORLD_ASTEROID_REMOVE);
     ASSERT_EQ_INT(remove_buf[1] | (remove_buf[2] << 8), 1);
     ASSERT_EQ_INT(remove_buf[3] | (remove_buf[4] << 8), 7);
-    ASSERT(!sp.asteroid_sent[7]);
+    ASSERT(!sp.replication->asteroid_sent[7]);
 }
 
 TEST(test_asteroid_delta_coalesces_dirty_state_stream_per_player) {
@@ -2738,7 +2725,7 @@ TEST(test_roundtrip_cargo_pods) {
     pods[3].vel = v2(1.5f, -2.0f);
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
-    pods[3].towed_by = 2;
+    cargo_pod_set_player_tractor(&pods[3], 2);
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2748,7 +2735,7 @@ TEST(test_roundtrip_cargo_pods) {
     for (uint16_t i = 0; i < pods[4].manifest_count; i++)
         pods[4].manifest_units[i].commodity = COMMODITY_FRAME;
     pods[4].pos = v2(7.0f, 8.0f);
-    pods[4].towed_by = -1;
+    cargo_pod_clear_tractor(&pods[4]);
     cargo_pod_set_module_tractor(&pods[4], 2, 5);
 
     uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
@@ -2801,7 +2788,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     pods[3].vel = v2(1.5f, -2.0f);
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
-    pods[3].towed_by = 2;
+    cargo_pod_set_player_tractor(&pods[3], 2);
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2811,7 +2798,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     for (uint16_t i = 0; i < pods[4].manifest_count; i++)
         pods[4].manifest_units[i].commodity = COMMODITY_FRAME;
     pods[4].pos = v2(8.0f, 8.0f);
-    pods[4].towed_by = -1;
+    cargo_pod_clear_tractor(&pods[4]);
     cargo_pod_set_module_tractor(&pods[4], 2, 5);
 
     uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_Q_RECORD_SIZE];
@@ -2865,7 +2852,7 @@ TEST(test_world_cargo_pods_semantic_hash_ignores_pose_drift) {
     pods[3].vel = v2(1.5f, -2.0f);
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
-    pods[3].towed_by = 2;
+    cargo_pod_set_player_tractor(&pods[3], 2);
     cargo_pod_set_module_tractor(&pods[3], 2, 5);
 
     uint8_t a[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
@@ -2887,7 +2874,7 @@ TEST(test_world_cargo_pods_semantic_hash_ignores_pose_drift) {
     ASSERT(ahash != bhash);
 
     pods[3].quantity = 20;
-    pods[3].towed_by = -1;
+    cargo_pod_clear_tractor(&pods[3]);
     blen = serialize_cargo_pods(b, pods);
     bhash = net_world_cargo_pods_semantic_hash(b, blen);
     ASSERT(ahash != bhash);
@@ -2906,7 +2893,7 @@ TEST(test_world_cargo_pods_q_semantic_hash_ignores_pose_drift) {
     pods[3].vel = v2(1.5f, -2.0f);
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
-    pods[3].towed_by = 2;
+    cargo_pod_set_player_tractor(&pods[3], 2);
     cargo_pod_set_module_tractor(&pods[3], 2, 5);
 
     uint8_t a[2 + MAX_CARGO_PODS * CARGO_POD_Q_RECORD_SIZE];
@@ -2959,7 +2946,7 @@ TEST(test_cargo_pod_delta_uses_compact_removal_stream_when_available) {
     pods[5].quantity = 3;
     pods[5].pos = v2(10.0f, 20.0f);
     pods[5].radius = 12.0f;
-    pods[5].towed_by = -1;
+    cargo_pod_clear_tractor(&pods[5]);
     pods[6] = pods[5];
     pods[6].commodity = COMMODITY_CUPRITE_INGOT;
     pods[6].quantity = 5;
@@ -3022,7 +3009,7 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
     pods[5].quantity = 3;
     pods[5].pos = v2(12.0f, 20.0f);
     pods[5].radius = 12.0f;
-    pods[5].towed_by = -1;
+    cargo_pod_clear_tractor(&pods[5]);
     pods[6] = pods[5];
     pods[6].commodity = COMMODITY_CUPRITE_INGOT;
     pods[6].quantity = 5;
@@ -3241,8 +3228,7 @@ TEST(test_cargo_pod_motion_q_stream_quantizes_pose) {
 }
 
 TEST(test_cargo_pod_motion_linear_q_uses_position_velocity_when_rotation_matches) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     cargo_pod_motion_note_sent(&sp,
                                5,
@@ -3286,8 +3272,7 @@ TEST(test_cargo_pod_motion_linear_q_uses_position_velocity_when_rotation_matches
 }
 
 TEST(test_cargo_pod_motion_prediction_gate_skips_predicted_pose) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     ASSERT_EQ_INT((int)CARGO_POD_MOTION_NET_REPEAT_TICKS, 240);
     ASSERT_EQ_FLOAT(CARGO_POD_MOTION_VEL_ERROR_SQ, 64.0f, 0.001f);
@@ -3328,8 +3313,7 @@ TEST(test_cargo_pod_motion_prediction_gate_skips_predicted_pose) {
 }
 
 TEST(test_cargo_pod_motion_prediction_gate_sends_divergence) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     cargo_pod_motion_note_sent(&sp,
                                5,
@@ -3675,18 +3659,17 @@ TEST(test_interaction_streams_use_relevance_filter) {
 }
 
 TEST(test_roundtrip_npcs) {
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
 
     npcs[0].active = true;
     npcs[0].role = NPC_ROLE_MINER;
     npcs[0].state = NPC_STATE_MINING;
     npcs[0].thrusting = true;
-    npcs[0].ship.pos = v2(800.0f, 400.0f);
-    npcs[0].ship.vel = v2(10.0f, -5.0f);
-    npcs[0].ship.angle = 1.57f;
+    npcs[0].ship->pos = v2(800.0f, 400.0f);
+    npcs[0].ship->vel = v2(10.0f, -5.0f);
+    npcs[0].ship->angle = 1.57f;
     npcs[0].target_asteroid = 512;
-    npcs[0].towed_fragment = 1024;
+    npc_set_towed_fragment_index(&npcs[0], 1024);
     npcs[0].home_station = 2;
     memcpy(npcs[0].session_token, "NPC\002\000\005\064\022", 8);
 
@@ -3717,15 +3700,14 @@ TEST(test_roundtrip_npcs) {
 }
 
 TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
 
     npcs[0].active = true;
     npcs[0].role = NPC_ROLE_MINER;
     npcs[0].state = NPC_STATE_RETURN_TO_STATION;
-    npcs[0].towed_fragment = -1;
-    npcs[0].ship.towed_fragments[0] = 77;
-    npcs[0].ship.towed_count = 1;
+    npc_clear_towed_fragment(&npcs[0]);
+    npcs[0].ship->towed_fragments[0] = 77;
+    npcs[0].ship->towed_count = 1;
 
     uint8_t buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int len = serialize_npcs(buf, npcs);
@@ -3735,18 +3717,17 @@ TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
 }
 
 TEST(test_world_npcs_semantic_hash_ignores_pose_drift) {
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
 
     npcs[2].active = true;
     npcs[2].role = NPC_ROLE_HAULER;
     npcs[2].state = NPC_STATE_TRAVEL_TO_DEST;
     npcs[2].thrusting = true;
-    npcs[2].ship.pos = v2(100.0f, 200.0f);
-    npcs[2].ship.vel = v2(8.0f, -3.0f);
-    npcs[2].ship.angle = 0.5f;
+    npcs[2].ship->pos = v2(100.0f, 200.0f);
+    npcs[2].ship->vel = v2(8.0f, -3.0f);
+    npcs[2].ship->angle = 0.5f;
     npcs[2].target_asteroid = 12;
-    npcs[2].towed_fragment = 33;
+    npc_set_towed_fragment_index(&npcs[2], 33);
     npcs[2].home_station = 1;
     memcpy(npcs[2].session_token, "NPCPOSE1", 8);
     npcs[2].tint_r = 0.4f;
@@ -3757,9 +3738,9 @@ TEST(test_world_npcs_semantic_hash_ignores_pose_drift) {
     uint8_t b[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int alen = serialize_npcs(a, npcs);
 
-    npcs[2].ship.pos = v2(125.0f, 190.0f);
-    npcs[2].ship.vel = v2(9.0f, -4.0f);
-    npcs[2].ship.angle = 0.7f;
+    npcs[2].ship->pos = v2(125.0f, 190.0f);
+    npcs[2].ship->vel = v2(9.0f, -4.0f);
+    npcs[2].ship->angle = 0.7f;
     int blen = serialize_npcs(b, npcs);
 
     ASSERT_EQ_INT(alen, blen);
@@ -3779,12 +3760,12 @@ TEST(test_world_npcs_semantic_hash_ignores_pose_drift) {
     ASSERT(ahash == bhash);
 
     npcs[2].target_asteroid = 12;
-    npcs[2].towed_fragment = 34;
+    npc_set_towed_fragment_index(&npcs[2], 34);
     blen = serialize_npcs(b, npcs);
     bhash = net_world_npcs_semantic_hash(b, blen);
     ASSERT(ahash == bhash);
 
-    npcs[2].towed_fragment = 33;
+    npc_set_towed_fragment_index(&npcs[2], 33);
     npcs[2].thrusting = false;
     blen = serialize_npcs(b, npcs);
     bhash = net_world_npcs_semantic_hash(b, blen);
@@ -3828,13 +3809,12 @@ TEST(test_world_npcs_metadata_refresh_uses_sparse_safety_heartbeat) {
 TEST(test_world_npc_status_semantic_hash_ignores_thrust_only) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
     npcs[1].role = NPC_ROLE_HAULER;
     npcs[1].state = NPC_STATE_TRAVEL_TO_DEST;
     npcs[1].thrusting = true;
-    npcs[1].ship.pos = v2(100.0f, 0.0f);
+    npcs[1].ship->pos = v2(100.0f, 0.0f);
     npcs[1].target_asteroid = 44;
     npc_set_towed_fragment_index(&npcs[1], 12);
 
@@ -3872,12 +3852,11 @@ TEST(test_world_npc_status_semantic_hash_ignores_thrust_only) {
 
 TEST(test_world_npc_status8_semantic_hash_ignores_thrust_only) {
     vec2 player_pos = v2(0.0f, 0.0f);
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
     npcs[1].role = NPC_ROLE_MINER;
     npcs[1].state = NPC_STATE_TRAVEL_TO_DEST;
-    npcs[1].ship.pos = v2(20.0f, 0.0f);
+    npcs[1].ship->pos = v2(20.0f, 0.0f);
     npcs[1].target_asteroid = 44;
     npc_set_towed_fragment_index(&npcs[1], 13);
 
@@ -3904,15 +3883,14 @@ TEST(test_world_npc_status8_semantic_hash_ignores_thrust_only) {
 TEST(test_npc_motion_stream_uses_relevance_filter) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
-    npcs[1].ship.pos = v2(120.0f, -80.0f);
-    npcs[1].ship.vel = v2(4.0f, 5.0f);
-    npcs[1].ship.angle = 0.75f;
+    npcs[1].ship->pos = v2(120.0f, -80.0f);
+    npcs[1].ship->vel = v2(4.0f, 5.0f);
+    npcs[1].ship->angle = 0.75f;
     npcs[1].thrusting = true;
     npcs[2].active = true;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
 
     uint8_t buf[NPC_MOTION_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION_RECORD_SIZE];
@@ -3935,15 +3913,14 @@ TEST(test_npc_motion_stream_uses_relevance_filter) {
 TEST(test_npc_motion_q_stream_quantizes_pose) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
-    npcs[1].ship.pos = v2(120.0f, -80.0f);
-    npcs[1].ship.vel = v2(4.0f, 5.0f);
-    npcs[1].ship.angle = 0.75f;
+    npcs[1].ship->pos = v2(120.0f, -80.0f);
+    npcs[1].ship->vel = v2(4.0f, 5.0f);
+    npcs[1].ship->angle = 0.75f;
     npcs[1].thrusting = true;
     npcs[2].active = true;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
 
     uint8_t buf[NPC_MOTION_Q_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION_Q_RECORD_SIZE];
@@ -3972,15 +3949,14 @@ TEST(test_npc_motion_q_stream_quantizes_pose) {
 TEST(test_npc_motion8_q_stream_uses_byte_velocity_and_angle) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
-    npcs[1].ship.pos = v2(120.0f, -80.0f);
-    npcs[1].ship.vel = v2(4.0f, -6.0f);
-    npcs[1].ship.angle = 0.75f;
+    npcs[1].ship->pos = v2(120.0f, -80.0f);
+    npcs[1].ship->vel = v2(4.0f, -6.0f);
+    npcs[1].ship->angle = 0.75f;
     npcs[1].thrusting = true;
     npcs[2].active = true;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
 
     uint8_t buf[NPC_MOTION8_Q_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION8_Q_RECORD_SIZE];
@@ -4007,8 +3983,7 @@ TEST(test_npc_motion8_q_stream_uses_byte_velocity_and_angle) {
 }
 
 TEST(test_npc_motion_pos_q_uses_position_only_when_baseline_matches) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     npc_motion_note_sent(&sp,
                          2,
@@ -4065,8 +4040,7 @@ TEST(test_npc_motion_pos_q_uses_position_only_when_baseline_matches) {
 }
 
 TEST(test_npc_motion_pose_q_uses_pose_when_angle_changes_only) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     npc_motion_note_sent(&sp,
                          2,
@@ -4121,8 +4095,7 @@ TEST(test_npc_motion_pose_q_uses_pose_when_angle_changes_only) {
 }
 
 TEST(test_npc_motion_linear_q_uses_position_velocity_when_angle_matches) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     npc_motion_note_sent(&sp,
                          2,
@@ -4190,8 +4163,7 @@ TEST(test_npc_motion_linear_q_uses_position_velocity_when_angle_matches) {
 }
 
 TEST(test_npc_motion_prediction_gate_skips_predicted_pose) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     ASSERT_EQ_INT((int)NPC_MOTION_NET_REPEAT_TICKS, 240);
     ASSERT_EQ_INT((int)NPC_STATUS_NET_REPEAT_TICKS, 240);
@@ -4247,8 +4219,7 @@ TEST(test_npc_motion_prediction_gate_skips_predicted_pose) {
 }
 
 TEST(test_npc_motion_prediction_gate_sends_divergence) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     uint8_t flags = (uint8_t)(1u | (1u << 6));
 
@@ -4286,17 +4257,16 @@ TEST(test_npc_motion_prediction_gate_sends_divergence) {
 TEST(test_npc_status_stream_serializes_visual_status) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
     npcs[1].role = NPC_ROLE_MINER;
     npcs[1].state = NPC_STATE_MINING;
     npcs[1].thrusting = true;
-    npcs[1].ship.pos = v2(120.0f, -80.0f);
+    npcs[1].ship->pos = v2(120.0f, -80.0f);
     npcs[1].target_asteroid = 123;
     npc_set_towed_fragment_index(&npcs[1], 77);
     npcs[2].active = true;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
     npcs[2].target_asteroid = 88;
 
     uint8_t buf[NPC_STATUS_MSG_HEADER +
@@ -4319,17 +4289,16 @@ TEST(test_npc_status_stream_serializes_visual_status) {
 TEST(test_npc_status8_stream_serializes_low_refs_and_rejects_high_refs) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
     npcs[1].role = NPC_ROLE_MINER;
     npcs[1].state = NPC_STATE_MINING;
     npcs[1].thrusting = true;
-    npcs[1].ship.pos = v2(120.0f, -80.0f);
+    npcs[1].ship->pos = v2(120.0f, -80.0f);
     npcs[1].target_asteroid = 123;
     npc_set_towed_fragment_index(&npcs[1], 77);
     npcs[2].active = true;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
     npcs[2].target_asteroid = 88;
 
     uint8_t buf[NPC_STATUS8_MSG_HEADER +
@@ -4356,14 +4325,13 @@ TEST(test_npc_status8_stream_serializes_low_refs_and_rejects_high_refs) {
 TEST(test_relevance_filtered_world_snapshots) {
     vec2 player_pos = v2(0.0f, 0.0f);
 
-    npc_ship_t npcs[MAX_NPC_SHIPS];
-    memset(npcs, 0, sizeof(npcs));
+    NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
     npcs[1].active = true;
     npcs[1].role = NPC_ROLE_HAULER;
-    npcs[1].ship.pos = v2(200.0f, 0.0f);
+    npcs[1].ship->pos = v2(200.0f, 0.0f);
     npcs[2].active = true;
     npcs[2].role = NPC_ROLE_MINER;
-    npcs[2].ship.pos = v2(4000.0f, 0.0f);
+    npcs[2].ship->pos = v2(4000.0f, 0.0f);
 
     uint8_t npc_buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int npc_len = serialize_npcs_for_player(npc_buf, npcs, player_pos);
@@ -4486,8 +4454,7 @@ static void auth_state_capture_sink(void *user,
 }
 
 TEST(test_input_applied_emitter_sends_only_on_sequence_change) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.last_input_seq = 0;
     sp.last_input_tick = 0;
 
@@ -4515,8 +4482,7 @@ TEST(test_input_applied_emitter_sends_only_on_sequence_change) {
 }
 
 TEST(test_pending_input_ack_coalesces_to_latest_sequence) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
 
@@ -4554,8 +4520,7 @@ TEST(test_pending_input_ack_coalesces_to_latest_sequence) {
 }
 
 TEST(test_authoritative_player_state_emitter_sends_only_on_sequence_change) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
 
     packet_capture_t cap;
     memset(&cap, 0, sizeof(cap));
@@ -4578,8 +4543,7 @@ TEST(test_authoritative_player_state_emitter_sends_only_on_sequence_change) {
 }
 
 TEST(test_pending_input_ack_emits_single_authoritative_state) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
 
@@ -4627,18 +4591,17 @@ TEST(test_pending_input_ack_emits_single_authoritative_state) {
 }
 
 TEST(test_pending_input_ack_adaptive_prefers_tiny_clean_ack) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.id = 2;
-    sp.ship.pos = v2(100.0f, -20.0f);
-    sp.ship.vel = v2(12.0f, 0.0f);
-    sp.ship.angle = 0.25f;
-    sp.ship.tractor_level = 1;
-    memset(sp.ship.towed_fragments, -1, sizeof(sp.ship.towed_fragments));
+    sp.ship->pos = v2(100.0f, -20.0f);
+    sp.ship->vel = v2(12.0f, 0.0f);
+    sp.ship->angle = 0.25f;
+    sp.ship->tractor_level = 1;
+    memset(sp.ship->towed_fragments, -1, sizeof(sp.ship->towed_fragments));
     server_player_note_authoritative_ack_state(&sp, 100);
     sp.last_input_seq = 45;
     sp.last_input_tick = 112;
-    sp.ship.pos.x += 8.0f;
+    sp.ship->pos.x += 8.0f;
 
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
@@ -4655,13 +4618,12 @@ TEST(test_pending_input_ack_adaptive_prefers_tiny_clean_ack) {
 }
 
 TEST(test_pending_input_ack_adaptive_promotes_first_or_forced_state) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.id = 2;
     sp.last_input_seq = 45;
     sp.last_input_tick = 112;
-    sp.ship.pos = v2(100.0f, -20.0f);
-    memset(sp.ship.towed_fragments, -1, sizeof(sp.ship.towed_fragments));
+    sp.ship->pos = v2(100.0f, -20.0f);
+    memset(sp.ship->towed_fragments, -1, sizeof(sp.ship->towed_fragments));
 
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
@@ -4674,7 +4636,7 @@ TEST(test_pending_input_ack_adaptive_promotes_first_or_forced_state) {
     ASSERT_EQ_INT(cap.count, 1);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
-    ASSERT(sp.input_ack_state_valid);
+    ASSERT(sp.replication->input_ack_state_valid);
 
     sp.last_input_seq = 46;
     sp.last_input_tick = 120;
@@ -4688,15 +4650,14 @@ TEST(test_pending_input_ack_adaptive_promotes_first_or_forced_state) {
 }
 
 TEST(test_pending_input_ack_adaptive_promotes_drifted_state) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.id = 2;
-    sp.ship.pos = v2(0.0f, 0.0f);
-    memset(sp.ship.towed_fragments, -1, sizeof(sp.ship.towed_fragments));
+    sp.ship->pos = v2(0.0f, 0.0f);
+    memset(sp.ship->towed_fragments, -1, sizeof(sp.ship->towed_fragments));
     server_player_note_authoritative_ack_state(&sp, 100);
     sp.last_input_seq = 45;
     sp.last_input_tick = 112;
-    sp.ship.pos.x = 96.0f;
+    sp.ship->pos.x = 96.0f;
 
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
@@ -4709,17 +4670,16 @@ TEST(test_pending_input_ack_adaptive_promotes_drifted_state) {
     ASSERT_EQ_INT(cap.count, 1);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
-    ASSERT_EQ_INT((int)sp.input_ack_state_tick, 112);
+    ASSERT_EQ_INT((int)sp.replication->input_ack_state_tick, 112);
 }
 
 TEST(test_pending_input_ack_adaptive_promotes_heartbeat_state) {
     ASSERT_EQ_INT((int)INPUT_ACK_STATE_HEARTBEAT_TICKS, 960);
 
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.id = 2;
-    sp.ship.pos = v2(0.0f, 0.0f);
-    memset(sp.ship.towed_fragments, -1, sizeof(sp.ship.towed_fragments));
+    sp.ship->pos = v2(0.0f, 0.0f);
+    memset(sp.ship->towed_fragments, -1, sizeof(sp.ship->towed_fragments));
     server_player_note_authoritative_ack_state(&sp, 100);
 
     packet_capture_t cap;
@@ -4750,11 +4710,11 @@ TEST(test_pending_input_ack_adaptive_promotes_heartbeat_state) {
 }
 
 TEST(test_world_snapshot_emitter_sequence_shared) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.asteroids[2].active = true;
     w.asteroids[2].pos = v2(100.0f, 0.0f);
     w.asteroids[2].net_dirty = true;
@@ -4788,21 +4748,21 @@ TEST(test_world_snapshot_emitter_sequence_shared) {
 }
 
 TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
-    w.players[0].asteroid_sent[2] = true;
-    w.players[0].asteroid_motion_sent_tick[2] = 100u;
-    w.players[0].asteroid_motion_sent_pos[2] = v2(0.0f, 0.0f);
-    w.players[0].asteroid_motion_sent_vel[2] = v2(2.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
+    w.players[0].replication->asteroid_sent[2] = true;
+    w.players[0].replication->asteroid_motion_sent_tick[2] = 100u;
+    w.players[0].replication->asteroid_motion_sent_pos[2] = v2(0.0f, 0.0f);
+    w.players[0].replication->asteroid_motion_sent_vel[2] = v2(2.0f, 0.0f);
     w.asteroids[2].active = true;
     w.asteroids[2].pos = v2(50.0f, 60.0f);
     w.asteroids[2].vel = v2(2.0f, 0.0f);
     w.asteroids[2].radius = 12.0f;
     w.asteroids[2].hp = 20.0f;
-    w.players[0].asteroid_identity_sent_sig[2] =
+    w.players[0].replication->asteroid_identity_sent_sig[2] =
         asteroid_identity_signature(&w.asteroids[2]);
     w.tick = 100u + ASTEROID_NET_MOVING_REPEAT_TICKS;
     w.time = 12.5f;
@@ -4819,24 +4779,24 @@ TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROID_POSD8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID_POSD8_Q_MSG_HEADER + ASTEROID_POSD8_Q_RECORD_SIZE);
-    ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
+    ASSERT_EQ_INT((int)w.players[0].replication->asteroid_motion_sent_tick[2],
                   100 + ASTEROID_NET_MOVING_REPEAT_TICKS);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
 }
 
 TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
-    w.players[0].ship.towed_fragments[0] = 2;
-    w.players[0].ship.towed_count = 1;
-    w.players[0].asteroid_sent[2] = true;
-    w.players[0].asteroid_motion_sent_tick[2] = 100u;
-    w.players[0].asteroid_motion_sent_pos[2] = v2(40.0f, 0.0f);
-    w.players[0].asteroid_motion_sent_vel[2] = v2(2.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
+    w.players[0].ship->towed_fragments[0] = 2;
+    w.players[0].ship->towed_count = 1;
+    w.players[0].replication->asteroid_sent[2] = true;
+    w.players[0].replication->asteroid_motion_sent_tick[2] = 100u;
+    w.players[0].replication->asteroid_motion_sent_pos[2] = v2(40.0f, 0.0f);
+    w.players[0].replication->asteroid_motion_sent_vel[2] = v2(2.0f, 0.0f);
 
     w.asteroids[2].active = true;
     w.asteroids[2].tier = ASTEROID_TIER_S;
@@ -4860,8 +4820,8 @@ TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
-    ASSERT(w.players[0].asteroid_sent[2]);
-    ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
+    ASSERT(w.players[0].replication->asteroid_sent[2]);
+    ASSERT_EQ_INT((int)w.players[0].replication->asteroid_motion_sent_tick[2],
                   (int)w.tick);
 
     memset(&cap, 0, sizeof(cap));
@@ -4881,18 +4841,18 @@ TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
            packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POS8_Q) ||
            packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POSD_Q) ||
            packet_capture_has_type(&cap, NET_MSG_WORLD_ASTEROID_POSD8_Q));
-    ASSERT(w.players[0].asteroid_sent[2]);
-    ASSERT_EQ_INT((int)w.players[0].asteroid_motion_sent_tick[2],
+    ASSERT(w.players[0].replication->asteroid_sent[2]);
+    ASSERT_EQ_INT((int)w.players[0].replication->asteroid_motion_sent_tick[2],
                   (int)w.tick);
 }
 
 TEST(test_world_snapshot_defers_asteroids_while_docked) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
     w.players[0].docked = true;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.asteroids[2].active = true;
     w.asteroids[2].pos = v2(100.0f, 0.0f);
     w.asteroids[2].net_dirty = true;
@@ -4916,7 +4876,7 @@ TEST(test_world_snapshot_defers_asteroids_while_docked) {
         ASSERT(cap.type[i] != NET_MSG_WORLD_ASTEROID_POS_Q);
         ASSERT(cap.type[i] != NET_MSG_WORLD_ASTEROID_POS8_Q);
     }
-    ASSERT(!w.players[0].asteroid_sent[2]);
+    ASSERT(!w.players[0].replication->asteroid_sent[2]);
 
     memset(&cap, 0, sizeof(cap));
     w.players[0].docked = false;
@@ -4928,25 +4888,25 @@ TEST(test_world_snapshot_defers_asteroids_while_docked) {
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
-    ASSERT(w.players[0].asteroid_sent[2]);
+    ASSERT(w.players[0].replication->asteroid_sent[2]);
 }
 
 TEST(test_world_snapshot_defers_live_drift_while_docked) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
     w.players[0].docked = true;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.tick = 120;
     w.time = 12.5f;
 
     w.npc_ships[1].active = true;
     w.npc_ships[1].role = NPC_ROLE_MINER;
     w.npc_ships[1].state = NPC_STATE_MINING;
-    w.npc_ships[1].ship.pos = v2(120.0f, -80.0f);
-    w.npc_ships[1].ship.vel = v2(4.0f, -6.0f);
-    w.npc_ships[1].ship.angle = 0.75f;
+    w.npc_ships[1].ship->pos = v2(120.0f, -80.0f);
+    w.npc_ships[1].ship->vel = v2(4.0f, -6.0f);
+    w.npc_ships[1].ship->angle = 0.75f;
     w.npc_ships[1].thrusting = true;
     w.npc_ships[1].target_asteroid = 7;
 
@@ -5011,8 +4971,8 @@ TEST(test_world_snapshot_defers_live_drift_while_docked) {
 TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     ASSERT_EQ_INT((int)WORLD_TIME_REPEAT_TICKS, 240);
 
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
     w.tick = 100u;
@@ -5027,8 +4987,8 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
                                           &scratch);
     ASSERT_EQ_INT(cap.count, 3);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
-    ASSERT(w.players[0].world_time_sent);
-    ASSERT_EQ_INT((int)w.players[0].world_time_last_sent_tick, 100);
+    ASSERT(w.players[0].replication->world_time_sent);
+    ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
 
     memset(&cap, 0, sizeof(cap));
     w.tick = 100u + WORLD_TIME_REPEAT_TICKS - 1u;
@@ -5039,7 +4999,7 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     ASSERT_EQ_INT(cap.count, 2);
     for (int i = 0; i < cap.count; i++)
         ASSERT(cap.type[i] != NET_MSG_WORLD_TIME);
-    ASSERT_EQ_INT((int)w.players[0].world_time_last_sent_tick, 100);
+    ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
 
     memset(&cap, 0, sizeof(cap));
     w.tick = 100u + WORLD_TIME_REPEAT_TICKS;
@@ -5049,18 +5009,18 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
                                           &scratch);
     ASSERT_EQ_INT(cap.count, 3);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
-    ASSERT_EQ_INT((int)w.players[0].world_time_last_sent_tick,
+    ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick,
                   100 + WORLD_TIME_REPEAT_TICKS);
 }
 
 TEST(test_private_snapshot_emitter_sequence_shared) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].id = 0;
-    w.players[0].ship.hull = 88.0f;
-    w.players[0].input_ack_state_valid = true;
-    ASSERT(ship_manifest_bootstrap(&w.players[0].ship));
+    w.players[0].ship->hull = 88.0f;
+    w.players[0].replication->input_ack_state_valid = true;
+    ASSERT(ship_manifest_bootstrap(w.players[0].ship));
 
     static server_private_snapshot_scratch_t scratch;
     packet_capture_t cap;
@@ -5088,18 +5048,18 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
 }
 
 TEST(test_private_snapshot_emits_local_authoritative_baseline) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.players[0].connected = true;
     w.players[0].session_ready = true;
     w.players[0].id = 0;
-    w.players[0].ship.pos = v2(10.0f, 20.0f);
-    w.players[0].ship.vel = v2(1.0f, 2.0f);
-    w.players[0].ship.angle = 0.5f;
+    w.players[0].ship->pos = v2(10.0f, 20.0f);
+    w.players[0].ship->vel = v2(1.0f, 2.0f);
+    w.players[0].ship->angle = 0.5f;
     w.players[0].last_input_seq = 77;
     w.players[0].last_input_tick = 1001u;
     w.tick = 1234u;
-    ASSERT(ship_manifest_bootstrap(&w.players[0].ship));
+    ASSERT(ship_manifest_bootstrap(w.players[0].ship));
 
     static server_private_snapshot_scratch_t scratch;
     packet_capture_t cap;
@@ -5113,13 +5073,13 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_SHIP);
-    ASSERT(w.players[0].input_ack_state_valid);
-    ASSERT_EQ_INT((int)w.players[0].input_ack_state_tick, 1234);
+    ASSERT(w.players[0].replication->input_ack_state_valid);
+    ASSERT_EQ_INT((int)w.players[0].replication->input_ack_state_tick, 1234);
 }
 
 TEST(test_station_snapshot_emitter_sequence_shared) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.station_count = 1;
     w.stations[0].id = 1;
     snprintf(w.stations[0].name, sizeof(w.stations[0].name), "Test Station");
@@ -5148,16 +5108,16 @@ TEST(test_station_snapshot_emitter_sequence_shared) {
 }
 
 TEST(test_fracture_update_emitter_shared) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.stations[0].signal_range = 1000.0f;
     w.stations[0].signal_connected = true;
     w.players[0].connected = true;
     w.players[0].session_ready = true;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.players[1].connected = true;
     w.players[1].session_ready = true;
-    w.players[1].ship.pos = v2(100000.0f, 0.0f);
+    w.players[1].ship->pos = v2(100000.0f, 0.0f);
     w.asteroids[3].active = true;
     w.asteroids[3].pos = v2(100.0f, 0.0f);
     w.asteroids[3].hp = 50.0f;
@@ -5209,16 +5169,16 @@ TEST(test_fracture_update_emitter_shared) {
 }
 
 TEST(test_fracture_challenge_rebroadcast_suppresses_seen_players) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.stations[0].signal_range = 1000.0f;
     w.stations[0].signal_connected = true;
     w.players[0].connected = true;
     w.players[0].session_ready = true;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.players[1].connected = true;
     w.players[1].session_ready = true;
-    w.players[1].ship.pos = v2(0.0f, 0.0f);
+    w.players[1].ship->pos = v2(0.0f, 0.0f);
     w.asteroids[3].active = true;
     w.asteroids[3].pos = v2(100.0f, 0.0f);
     w.fracture_claims[3].challenge_dirty = true;
@@ -5235,8 +5195,8 @@ TEST(test_fracture_challenge_rebroadcast_suppresses_seen_players) {
     ASSERT_EQ_INT(cap.type[0], NET_MSG_FRACTURE_CHALLENGE);
     ASSERT_EQ_INT(cap.slot[1], 1);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_FRACTURE_CHALLENGE);
-    ASSERT_EQ_INT((int)w.players[0].fracture_challenge_sent_id[3], 9001);
-    ASSERT_EQ_INT((int)w.players[1].fracture_challenge_sent_id[3], 9001);
+    ASSERT_EQ_INT((int)w.players[0].replication->fracture_challenge_sent_id[3], 9001);
+    ASSERT_EQ_INT((int)w.players[1].replication->fracture_challenge_sent_id[3], 9001);
 
     w.fracture_claims[3].challenge_dirty = true;
     memset(&cap, 0, sizeof(cap));
@@ -5245,27 +5205,27 @@ TEST(test_fracture_challenge_rebroadcast_suppresses_seen_players) {
 
     w.players[2].connected = true;
     w.players[2].session_ready = true;
-    w.players[2].ship.pos = v2(0.0f, 0.0f);
+    w.players[2].ship->pos = v2(0.0f, 0.0f);
     w.fracture_claims[3].challenge_dirty = true;
     server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
 
     ASSERT_EQ_INT(cap.count, 1);
     ASSERT_EQ_INT(cap.slot[0], 2);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_FRACTURE_CHALLENGE);
-    ASSERT_EQ_INT((int)w.players[2].fracture_challenge_sent_id[3], 9001);
+    ASSERT_EQ_INT((int)w.players[2].replication->fracture_challenge_sent_id[3], 9001);
 }
 
 TEST(test_fracture_resolve_retry_suppresses_seen_players) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     w.stations[0].signal_range = 1000.0f;
     w.stations[0].signal_connected = true;
     w.players[0].connected = true;
     w.players[0].session_ready = true;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
     w.players[1].connected = true;
     w.players[1].session_ready = true;
-    w.players[1].ship.pos = v2(0.0f, 0.0f);
+    w.players[1].ship->pos = v2(0.0f, 0.0f);
     w.asteroids[3].active = true;
     w.asteroids[3].pos = v2(100.0f, 0.0f);
     w.fracture_claims[3].resolved_dirty = true;
@@ -5305,7 +5265,7 @@ TEST(test_fracture_resolve_retry_suppresses_seen_players) {
 
     w.players[2].connected = true;
     w.players[2].session_ready = true;
-    w.players[2].ship.pos = v2(100000.0f, 0.0f);
+    w.players[2].ship->pos = v2(100000.0f, 0.0f);
     w.time = 0.4f;
     server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
 
@@ -5436,7 +5396,7 @@ TEST(test_pending_action_result_status_shared) {
     sp->connected = true;
     sp->nearby_station = 0;
     sp->current_station = 0;
-    sp->ship.hull = 50.0f;
+    sp->ship->hull = 50.0f;
 
     sim_events_t events;
     memset(&events, 0, sizeof(events));
@@ -5509,8 +5469,7 @@ TEST(test_npc_role_default_hull_mapping_covers_tow) {
 }
 
 TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_TRAVEL_TO_DEST;
@@ -5538,7 +5497,8 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     memset(chain.links[1].authoring_station, 0xB2, 32);
     chain.links[0].event_id = 7001;
     chain.links[1].event_id = 7002;
-    ASSERT(ship_manifest_push_with_chain(&ship, &unit, &chain));
+    ASSERT(ship_manifest_push_with_chain(&ship, &unit, NULL));
+    ship_get_receipts(&ship)->chains[0] = chain;
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
     int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
@@ -5575,8 +5535,7 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
 }
 
 TEST(test_inspect_snapshot_npc_expands_matching_receipt_chain) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_DOCKED;
@@ -5598,14 +5557,22 @@ TEST(test_inspect_snapshot_npc_expands_matching_receipt_chain) {
     cargo_receipt_chain_t chain;
     memset(&chain, 0, sizeof(chain));
     chain.len = 2;
-    memcpy(chain.links[0].cargo_pub, unit.pub, 32);
-    memcpy(chain.links[1].cargo_pub, unit.pub, 32);
-    memset(chain.links[0].authoring_station, 0xA4, 32);
-    memset(chain.links[1].authoring_station, 0xB5, 32);
-    memset(chain.links[0].recipient_pubkey, 0xC6, 32);
-    memset(chain.links[1].recipient_pubkey, 0xD7, 32);
-    chain.links[0].event_id = 7101;
-    chain.links[1].event_id = 7102;
+    STATION_DECL(author_a);
+    STATION_DECL(author_b);
+    station_authority_init_seeded(&author_a, 0x7101u, 0);
+    station_authority_init_seeded(&author_b, 0x7102u, 1);
+    uint8_t recipient_a[32];
+    uint8_t recipient_b[32];
+    uint8_t origin_pin[32];
+    memset(recipient_a, 0xC6, sizeof(recipient_a));
+    memset(recipient_b, 0xD7, sizeof(recipient_b));
+    memset(origin_pin, 0xA4, sizeof(origin_pin));
+    ASSERT(cargo_receipt_issue(&author_a, 1, 7101, unit.pub,
+                               recipient_a, origin_pin, &chain.links[0]));
+    uint8_t first_hash[32];
+    cargo_receipt_hash(&chain.links[0], first_hash);
+    ASSERT(cargo_receipt_issue(&author_b, 2, 7102, unit.pub,
+                               recipient_b, first_hash, &chain.links[1]));
     ASSERT(ship_manifest_push_with_chain(&ship, &unit, &chain));
 
     uint8_t expected_head[32];
@@ -5678,8 +5645,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_receipt_chain) {
 }
 
 TEST(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_DOCKED;
@@ -5766,13 +5732,15 @@ TEST(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain) {
 
 TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     server_player_t player;
+    ship_t player_ship = {0};
     memset(&player, 0, sizeof(player));
+    player.ship = &player_ship;
     player.connected = true;
     player.current_station = 2;
     player.nearby_station = 1;
-    player.ship.hull_class = HULL_CLASS_HAULER;
-    player.ship.hull = 149.6f;
-    ASSERT(ship_manifest_bootstrap(&player.ship));
+    player.ship->hull_class = HULL_CLASS_HAULER;
+    player.ship->hull = 149.6f;
+    ASSERT(ship_manifest_bootstrap(player.ship));
 
     cargo_unit_t unit;
     memset(&unit, 0, sizeof(unit));
@@ -5788,7 +5756,8 @@ TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     memcpy(chain.links[0].cargo_pub, unit.pub, 32);
     memset(chain.links[0].authoring_station, 0xC3, 32);
     chain.links[0].event_id = 8001;
-    ASSERT(ship_manifest_push_with_chain(&player.ship, &unit, &chain));
+    ASSERT(ship_manifest_push_with_chain(player.ship, &unit, NULL));
+    ship_get_receipts(player.ship)->chains[0] = chain;
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
     int len = serialize_inspect_snapshot_player(buf, 5, &player);
@@ -5813,19 +5782,21 @@ TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     ASSERT_EQ_INT(read_u16_le(&p[12]), 1);
     ASSERT(memcmp(&p[14], unit.pub, 32) == 0);
 
-    ship_cleanup(&player.ship);
+    ship_cleanup(player.ship);
 }
 
 TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
     npc_ship_t npc;
+    ship_t npc_ship = {0};
     memset(&npc, 0, sizeof(npc));
+    npc.ship = &npc_ship;
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_DOCKED;
     npc.home_station = 0;
     npc.dest_station = 1;
-    npc.knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
-    npc.knowledge.count = 1;
+    npc.ship->knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
+    npc.ship->knowledge.count = 1;
 
     market_memory_t memory;
     memset(&memory, 0, sizeof(memory));
@@ -5840,7 +5811,7 @@ TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
     memory.quantity_hint = 2;
     memory.value_hint = 77;
 
-    knowledge_item_t *item = &npc.knowledge.items[0];
+    knowledge_item_t *item = &npc.ship->knowledge.items[0];
     memset(item, 0, sizeof(*item));
     item->kind = (uint8_t)KNOW_MARKET;
     item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
@@ -5889,8 +5860,7 @@ TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
 }
 
 TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_DOCKED;
@@ -5909,8 +5879,8 @@ TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
     for (int b = 0; b < 32; b++)
         npc.job_diag_proof_hash[0][b] = (uint8_t)(0xC0 + b);
 
-    npc.knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
-    npc.knowledge.count = 2;
+    npc.ship->knowledge.capacity = SHIP_KNOWN_ITEM_CAP;
+    npc.ship->knowledge.count = 2;
     market_memory_t first;
     memset(&first, 0, sizeof(first));
     first.active = true;
@@ -5922,7 +5892,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
     first.confidence = 120;
     first.salience = 90;
     first.value_hint = 11;
-    knowledge_item_t *item = &npc.knowledge.items[0];
+    knowledge_item_t *item = &npc.ship->knowledge.items[0];
     memset(item, 0, sizeof(*item));
     item->kind = (uint8_t)KNOW_MARKET;
     item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
@@ -5942,7 +5912,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
     route.salience = 210;
     route.quantity_hint = 3;
     route.value_hint = 88;
-    item = &npc.knowledge.items[1];
+    item = &npc.ship->knowledge.items[1];
     memset(item, 0, sizeof(*item));
     item->kind = (uint8_t)KNOW_MARKET;
     item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
@@ -5991,8 +5961,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
 }
 
 TEST(test_inspect_snapshot_npc_includes_job_offer_diagnostics) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_DOCKED;
@@ -6096,8 +6065,7 @@ TEST(test_inspect_snapshot_npc_includes_job_offer_diagnostics) {
 }
 
 TEST(test_inspect_snapshot_npc_includes_hnn_trace_diagnostics) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_MINER;
     npc.state = NPC_STATE_TRAVEL_TO_ASTEROID;
@@ -6158,8 +6126,7 @@ TEST(test_inspect_snapshot_npc_includes_hnn_trace_diagnostics) {
 }
 
 TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_TRAVEL_TO_DEST;
@@ -6230,8 +6197,7 @@ TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
 }
 
 TEST(test_inspect_snapshot_groups_finished_goods_by_grade) {
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_TRAVEL_TO_DEST;
@@ -6298,8 +6264,7 @@ TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
     /* Hauler scan should group common anonymous bulk, but every named
      * / prefix-class ingot stays per-unit so the hash and provenance can
      * be inspected. */
-    npc_ship_t npc;
-    memset(&npc, 0, sizeof(npc));
+    NPC_SHIP_DECL(npc);
     npc.active = true;
     npc.role = NPC_ROLE_HAULER;
     npc.state = NPC_STATE_TRAVEL_TO_DEST;
@@ -6369,8 +6334,11 @@ TEST(test_roundtrip_stations) {
     stations[0]._inventory_cache[0] = 45.5f;
     stations[0]._inventory_cache[1] = 12.3f;
     stations[0]._inventory_cache[2] = 78.9f;
-    stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
-    stations[0]._inventory_cache[COMMODITY_FRAME] = 15.5f;
+    ASSERT(station_manifest_bootstrap(&stations[0]));
+    ASSERT(station_finished_mint(&stations[0], COMMODITY_FERRITE_INGOT,
+                                 20, NULL) == 20);
+    ASSERT(station_finished_accumulate(&stations[0], COMMODITY_FRAME,
+                                       15.5f, NULL) == 15);
 
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
@@ -6394,7 +6362,9 @@ TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
     memset(stations, 0, sizeof(stations));
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
-    stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
+    ASSERT(station_manifest_bootstrap(&stations[0]));
+    ASSERT(station_finished_mint(&stations[0], COMMODITY_FERRITE_INGOT,
+                                 20, NULL) == 20);
 
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
@@ -6411,7 +6381,8 @@ TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
     ASSERT(net_payload_cache_should_send(&cache, &conn_b, buf, (size_t)len));
     ASSERT(!net_payload_cache_should_send(&cache, &conn_b, buf, (size_t)len));
 
-    stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 21.0f;
+    ASSERT(station_finished_mint(&stations[0], COMMODITY_FERRITE_INGOT,
+                                 1, NULL) == 1);
     len = serialize_stations(buf, stations);
     ASSERT(net_payload_cache_should_send(&cache, &conn_b, buf, (size_t)len));
     ASSERT(!net_payload_cache_should_send(&cache, &conn_b, buf, (size_t)len));
@@ -6422,7 +6393,9 @@ TEST(test_world_stations_q_omits_zero_inventory_slots) {
     memset(stations, 0, sizeof(stations));
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
-    stations[0]._inventory_cache[COMMODITY_FRAME] = 15.5f;
+    ASSERT(station_manifest_bootstrap(&stations[0]));
+    ASSERT(station_finished_accumulate(&stations[0], COMMODITY_FRAME,
+                                       15.5f, NULL) == 15);
     stations[1].signal_range = 1800.0f;
 
     uint8_t full[2 + MAX_STATIONS * STATION_RECORD_SIZE];
@@ -6952,8 +6925,8 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
 
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
-    ship.known_contract_count = 1;
-    ship.known_contracts[0] = (contract_summary_t){
+    test_clear_knowledge(&ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+    contract_summary_t known = {
         .active = true,
         .action = (uint8_t)CONTRACT_TRACTOR,
         .station_index = 2,
@@ -6966,7 +6939,8 @@ TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
         .quantity_needed = 8.0f,
         .base_price = 20.0f,
     };
-    memcpy(ship.known_contracts[0].target_pub, contracts[7].target_pub, 32);
+    memcpy(known.target_pub, contracts[7].target_pub, 32);
+    ASSERT(test_add_known_contract(&ship.knowledge, &known));
 
     uint8_t kbuf[5];
     int klen = serialize_player_known_contracts(kbuf, contracts, &ship);
@@ -7181,16 +7155,16 @@ TEST(test_delivery_ledger_serializes_player_shipments) {
         .status = DELIVERY_SHIPMENT_PICKED_UP,
     };
 
-    w.players[1].ship.towed_pods[0] = 5;
-    w.players[1].ship.towed_pod_count = 1;
+    w.players[1].ship->towed_pods[0] = 5;
+    w.players[1].ship->towed_pod_count = 1;
     w.cargo_pods[5] = (cargo_pod_t){
         .active = true,
         .kind = CARGO_POD_CARGO,
         .commodity = COMMODITY_FERRITE_INGOT,
         .quantity = 2,
         .shipment_id = 77,
-        .towed_by = 1,
     };
+    cargo_pod_set_player_tractor(&w.cargo_pods[5], 1);
 
     uint8_t buf[DELIVERY_LEDGER_HEADER +
                 DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE];
@@ -7227,10 +7201,10 @@ TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
     w.players[0].docked = false;
     w.players[0].in_dock_range = false;
     w.players[0].nearby_station = -1;
-    w.players[0].ship.pos = v2(0.0f, 0.0f);
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
-    w.players[0].ship.angle = 0.0f;
-    w.players[0].ship.mining_level = 0;
+    w.players[0].ship->pos = v2(0.0f, 0.0f);
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
+    w.players[0].ship->angle = 0.0f;
+    w.players[0].ship->mining_level = 0;
     w.players[0].input.mine = true;
     w.players[0].input.mining_target_hint = 0;
 
@@ -7256,18 +7230,18 @@ TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
 }
 
 TEST(test_roundtrip_player_ship) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.ship.hull = 85.5f;
+    SERVER_PLAYER_DECL(sp);
+    sp.ship->hull = 85.5f;
     sp.docked = true;
     sp.current_station = 2;
-    sp.ship.mining_level = 3;
-    sp.ship.hold_level = 2;
-    sp.ship.tractor_level = 1;
-    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
-    sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 12.5f;
-    sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
-    sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
+    sp.ship->mining_level = 3;
+    sp.ship->hold_level = 2;
+    sp.ship->tractor_level = 1;
+    sp.ship->cargo[COMMODITY_FERRITE_ORE] = 45.0f;
+    sp.ship->cargo[COMMODITY_CUPRITE_ORE] = 12.5f;
+    sp.ship->cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
+    ASSERT(test_set_ship_finished_units(sp.ship, COMMODITY_FERRITE_INGOT,
+                                        20, MINING_GRADE_COMMON));
 
     uint8_t buf[PLAYER_SHIP_SIZE];
     int len = serialize_player_ship_bal(buf, 3, &sp, 1234.0f);
@@ -7463,17 +7437,17 @@ TEST(test_socket_player_requires_session_for_gameplay) {
     player_init_ship(sp, &w);
     sp->connected = true;
     sp->id = 0;
-    sp->conn = (void *)(uintptr_t)1;
+    sp->connection->conn = (void *)(uintptr_t)1;
     sp->session_ready = false;
     sp->docked = false;
-    sp->ship.hull = ship_max_hull(&sp->ship);
-    sp->ship.pos = v2(0.0f, 0.0f);
+    sp->ship->hull = ship_max_hull(sp->ship);
+    sp->ship->pos = v2(0.0f, 0.0f);
     sp->input.thrust = 1.0f;
 
     world_sim_step(&w, SIM_DT);
     ASSERT(!sp->actual_thrusting);
-    ASSERT_EQ_FLOAT(sp->ship.pos.x, 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(sp->ship.pos.y, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->ship->pos.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp->ship->pos.y, 0.0f, 0.001f);
 
     uint8_t input_msg[10] = {
         NET_MSG_INPUT,
@@ -7508,8 +7482,8 @@ TEST(test_socket_player_requires_session_for_gameplay) {
 }
 
 TEST(test_ticked_movement_input_applies_on_sim_tick) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     world_reset(&w);
     server_player_t *sp = &w.players[0];
     sp->connected = true;
@@ -7541,8 +7515,8 @@ TEST(test_ticked_movement_input_applies_on_sim_tick) {
 }
 
 TEST(test_input_applied_carries_input_transport_timestamps) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     world_reset(&w);
     server_player_t *sp = &w.players[0];
     sp->connected = true;
@@ -7589,8 +7563,8 @@ TEST(test_input_applied_carries_input_transport_timestamps) {
 }
 
 TEST(test_latency_pong_can_arrive_before_authoritative_input_ack) {
-    world_t w;
-    memset(&w, 0, sizeof(w));
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
     world_reset(&w);
     server_player_t *sp = &w.players[0];
     sp->connected = true;

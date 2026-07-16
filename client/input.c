@@ -270,7 +270,7 @@ void input_sample_movement(input_intent_t *intent) {
         g.input.brake_stop_latched = false;
         g.input.reverse_thrust_active = false;
     } else {
-        bool stopped = v2_len_sq(LOCAL_PLAYER.ship.vel) <= reverse_start_speed * reverse_start_speed;
+        bool stopped = v2_len_sq(LOCAL_PLAYER.ship->vel) <= reverse_start_speed * reverse_start_speed;
         if (brake_pressed) {
             g.input.reverse_thrust_active = stopped;
             g.input.brake_stop_latched = !stopped;
@@ -351,8 +351,8 @@ static void sample_tractor(input_intent_t *intent) {
         float held = g.world.time - g.input.tractor_press_time;
         if (held < 0.2f) intent->release_tow = true;
         if (intent->release_tow &&
-            (LOCAL_PLAYER.ship.towed_count > 0 ||
-             LOCAL_PLAYER.ship.towed_pod_count > 0) &&
+            (LOCAL_PLAYER.ship->towed_count > 0 ||
+             LOCAL_PLAYER.ship->towed_pod_count > 0) &&
             !g.onboarding.threw) {
             onboarding_mark_threw();
             set_notice("Throw calibrated. Band line predicts impact; tow another body to haul or fight.");
@@ -388,7 +388,7 @@ static void sample_self_destruct(input_intent_t *intent) {
 static void sample_ui_safety(void) {
     /* Clear placement reticle if no longer towing or now docked. */
     if (g.placement_reticle_active &&
-        (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_scaffold < 0)) {
+        (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship->towed_scaffold < 0)) {
         g.placement_reticle_active = false;
     }
     /* Close inspect pane when docked. */
@@ -406,16 +406,16 @@ static void sample_targeting(const input_intent_t *intent) {
             g.target_module = -1;
             return;
         }
-        vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
-        float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+        vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship->angle);
+        float tr = ship_tractor_range(LOCAL_PLAYER.ship);
         float tr_sq = tr * tr;
         float best_dot = -1.0f;
         int best_mod = -1;
         for (int idx = 0; idx < st->module_count; idx++) {
             if (st->modules[idx].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[idx].ring, st->modules[idx].slot);
-            if (v2_dist_sq(LOCAL_PLAYER.ship.pos, mp) > tr_sq) continue;
-            vec2 to_mod = v2_sub(mp, LOCAL_PLAYER.ship.pos);
+            if (v2_dist_sq(LOCAL_PLAYER.ship->pos, mp) > tr_sq) continue;
+            vec2 to_mod = v2_sub(mp, LOCAL_PLAYER.ship->pos);
             float len = v2_len(to_mod);
             if (len < 1.0f) continue;
             float d = v2_dot(fwd, v2_scale(to_mod, 1.0f / len));
@@ -442,8 +442,8 @@ static void sample_targeting(const input_intent_t *intent) {
         if (g.target_module < tst->module_count) {
             vec2 mp = module_world_pos_ring(tst, tst->modules[g.target_module].ring,
                                              tst->modules[g.target_module].slot);
-            float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
-            if (v2_dist_sq(LOCAL_PLAYER.ship.pos, mp) > tr * tr * 1.5f) {
+            float tr = ship_tractor_range(LOCAL_PLAYER.ship);
+            if (v2_dist_sq(LOCAL_PLAYER.ship->pos, mp) > tr * tr * 1.5f) {
                 g.target_station = -1;
                 g.target_module = -1;
             }
@@ -457,7 +457,7 @@ static void sample_targeting(const input_intent_t *intent) {
 static void sample_e_interact(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_E)) return;
     if (LOCAL_PLAYER.docked) { intent->interact = true; return; }
-    if (LOCAL_PLAYER.ship.towed_scaffold >= 0 || g.plan_mode_active) return;
+    if (LOCAL_PLAYER.ship->towed_scaffold >= 0 || g.plan_mode_active) return;
     if (LOCAL_PLAYER.in_dock_range) {
         intent->interact = true;
         g.target_station = -1;
@@ -530,7 +530,7 @@ void station_panel_input_yard(input_intent_t *intent) {
         module_type_t kit = (module_type_t)t;
         if (module_kind(kit) == MODULE_KIND_NONE) continue;
         if (!station_can_order_scaffold(st, kit)) continue;
-        if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit)) continue;
+        if (!module_unlocked_for_player(LOCAL_PLAYER.ship->unlocked_modules, kit)) continue;
         if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
             if (st->pending_scaffold_count >= 4) {
                 set_notice("Shipyard queue full.");
@@ -665,7 +665,7 @@ void station_panel_input_work(input_intent_t *intent) {
             /* Selected contract was completed/cancelled; fall back. */
             intent->service_sell = true;
             intent->service_sell_only = COMMODITY_COUNT;
-            set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+            set_notice(LOCAL_PLAYER.ship->towed_pod_count > 0
                 ? "Tow cargo crates to matching intakes."
                 : "Selling accepted cargo...");
         }
@@ -674,7 +674,7 @@ void station_panel_input_work(input_intent_t *intent) {
     }
     intent->service_sell = true;
     intent->service_sell_only = COMMODITY_COUNT;
-    set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+    set_notice(LOCAL_PLAYER.ship->towed_pod_count > 0
         ? "Tow cargo crates to matching intakes."
         : "Selling accepted cargo...");
 }
@@ -689,12 +689,12 @@ void station_panel_input_dock(input_intent_t *intent) {
     if (is_key_pressed(SAPP_KEYCODE_R)) {
         const station_t *st = current_station_ptr();
         int kits_avail =
-            input_ship_manifest_count_c(&LOCAL_PLAYER.ship, COMMODITY_REPAIR_KIT) +
+            input_ship_manifest_count_c(LOCAL_PLAYER.ship, COMMODITY_REPAIR_KIT) +
             input_station_manifest_count_c(st, COMMODITY_REPAIR_KIT);
-        float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
-        bool needs_repair = LOCAL_PLAYER.ship.hull < max_hull;
+        float max_hull = ship_max_hull(LOCAL_PLAYER.ship);
+        bool needs_repair = LOCAL_PLAYER.ship->hull < max_hull;
         if (needs_repair && kits_avail <= 0) {
-            int hp_needed = (int)ceilf(max_hull - LOCAL_PLAYER.ship.hull);
+            int hp_needed = (int)ceilf(max_hull - LOCAL_PLAYER.ship->hull);
             if (hp_needed < 1) hp_needed = 1;
             set_notice("%d repair kit%s needed.",
                        hp_needed, hp_needed == 1 ? "" : "s");
@@ -711,7 +711,7 @@ static void sample_trade_sell_all(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_S)) return;
     intent->service_sell = true;
     intent->service_sell_only = COMMODITY_COUNT;
-    set_notice(LOCAL_PLAYER.ship.towed_pod_count > 0
+    set_notice(LOCAL_PLAYER.ship->towed_pod_count > 0
         ? "Tow cargo crates to matching intakes."
         : "Selling accepted cargo...");
 }
@@ -768,7 +768,7 @@ static void sample_trade_picker(input_intent_t *intent) {
         if (is_key_pressed(SAPP_KEYCODE_1 + i)) digit_pick = i;
     if (digit_pick < 0 || !st) return;
 
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
     int page_first = 0, page_last = 0, total_pages = 1;
@@ -832,10 +832,10 @@ static void sample_placement_tow(input_intent_t *intent) {
     g.placement_reticle_active = false;
     if (!is_key_pressed(SAPP_KEYCODE_E)) return;
     reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
     intent->place_outpost = true;
     const char *scaffold_name = "scaffold";
-    int sc_idx = LOCAL_PLAYER.ship.towed_scaffold;
+    int sc_idx = LOCAL_PLAYER.ship->towed_scaffold;
     if (sc_idx >= 0 && sc_idx < MAX_SCAFFOLDS && g.world.scaffolds[sc_idx].active)
         scaffold_name = module_type_name(g.world.scaffolds[sc_idx].module_type);
     if (n > 0) {
@@ -857,7 +857,7 @@ static void sample_placement_tow(input_intent_t *intent) {
  * grace_until expiry, exit plan mode. */
 static void plan_mode_real_track(void) {
     reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
     if (n == 0) {
         if (g.world.time >= g.plan_mode_grace_until) g.plan_mode_active = false;
         return;
@@ -872,7 +872,7 @@ static void plan_mode_real_track(void) {
  * forward direction. Ghost preview rings draw around the player's
  * ship, no server message until E. */
 static void plan_mode_ghost_track(void) {
-    vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
+    vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship->angle);
     float best_dot = -2.0f;
     int best_ring = 1, best_slot = 0;
     for (int ring = 1; ring <= 1; ring++) { /* ghost starts with ring 1 only */
@@ -923,7 +923,7 @@ static void plan_mode_handle_cycle_type(input_intent_t *intent) {
     int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
     module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
     int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
-    uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
+    uint32_t mask = LOCAL_PLAYER.ship->unlocked_modules;
     int cur = 0;
     for (int i = 0; i < count; i++)
         if ((int)plannable[i] == g.plan_type) { cur = i; break; }
@@ -947,7 +947,7 @@ static void plan_mode_handle_cycle_type(input_intent_t *intent) {
 
 /* Plan mode E in ghost preview mode: lock the outpost. */
 static void plan_mode_handle_ghost_lock(input_intent_t *intent) {
-    vec2 pos = LOCAL_PLAYER.ship.pos;
+    vec2 pos = LOCAL_PLAYER.ship->pos;
     bool too_close = false;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
@@ -1022,7 +1022,7 @@ static void plan_mode_handle_e(input_intent_t *intent, bool ghost_mode) {
     bool already = false;
     for (int k = 0; k < planned_n; k++)
         if (planned[k] == (module_type_t)g.plan_type) { already = true; break; }
-    if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules,
+    if (!module_unlocked_for_player(LOCAL_PLAYER.ship->unlocked_modules,
                                     (module_type_t)g.plan_type)) {
         set_notice("%s is locked.", module_type_name((module_type_t)g.plan_type));
         return;
@@ -1051,8 +1051,8 @@ static void sample_plan_mode(input_intent_t *intent) {
 static void sample_b_enter_plan(void) {
     if (!is_key_pressed(SAPP_KEYCODE_B) || LOCAL_PLAYER.docked) return;
     reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
-    uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
+    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
+    uint32_t mask = LOCAL_PLAYER.ship->unlocked_modules;
     if (g.plan_type == 0 || g.plan_type == MODULE_DOCK ||
         !module_unlocked_for_player(mask, (module_type_t)g.plan_type)) {
         g.plan_type = MODULE_SIGNAL_RELAY;
@@ -1080,7 +1080,7 @@ static void sample_b_enter_plan(void) {
 
 /* B / R / E: placement (tow mode), planning (plan mode), or enter-plan. */
 static void sample_placement(input_intent_t *intent) {
-    if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+    if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship->towed_scaffold >= 0) {
         sample_placement_tow(intent);
         return;
     }
@@ -1120,9 +1120,9 @@ static void sample_hail(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_H)) return;
     intent->hail = true;
     g.hail_ping_timer  = 0.001f; /* any nonzero = active */
-    g.hail_ping_origin = LOCAL_PLAYER.ship.pos;
-    g.hail_ping_range  = (LOCAL_PLAYER.ship.comm_range > 0.0f)
-                         ? LOCAL_PLAYER.ship.comm_range : 1500.0f;
+    g.hail_ping_origin = LOCAL_PLAYER.ship->pos;
+    g.hail_ping_range  = (LOCAL_PLAYER.ship->comm_range > 0.0f)
+                         ? LOCAL_PLAYER.ship->comm_range : 1500.0f;
     g.hail_conversation_count = npc_radio_build_hail_conversation(
         g.world.stations, g.world.npc_ships,
         g.hail_ping_origin, g.hail_ping_range,
@@ -1157,7 +1157,7 @@ static void sample_autopilot(input_intent_t *intent) {
         set_notice("Finish one manual ore delivery before enabling autopilot.");
         return;
     }
-    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
     if (sig < SIGNAL_BAND_OPERATIONAL) {
         set_notice("Signal too weak for autopilot.");
         return;

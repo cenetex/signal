@@ -145,7 +145,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     sp->pubkey_proof_ok = true;
     sp->last_signed_nonce = 12345;
     /* Stamp something on the ship so we know we loaded the right file. */
-    sp->ship.cargo[COMMODITY_FERRITE_ORE] = 7.0f;
+    sp->ship->cargo[COMMODITY_FERRITE_ORE] = 7.0f;
 
     ASSERT(player_save(sp, dir, 0));
 
@@ -167,7 +167,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     sp2->pubkey_set = true;
     sp2->pubkey_proof_ok = true;
     ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
-    ASSERT_EQ_FLOAT(sp2->ship.cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.001f);
+    ASSERT_EQ_FLOAT(sp2->ship->cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.001f);
     ASSERT(sp2->last_signed_nonce == 12345);
 
     /* Cleanup */
@@ -311,7 +311,7 @@ TEST(test_pubkey_persistence_gate_requires_verified_proof) {
     signal_crypto_keypair(pk, sk);
     (void)sk;
 
-    server_player_t sp = {0};
+    SERVER_PLAYER_DECL(sp);
     sp.id = 7;
     fill_token(sp.session_token, 16);
     ASSERT(!server_player_can_use_pubkey_persistence(&sp));
@@ -435,7 +435,7 @@ TEST(test_save_anonymous_fallback_legacy_path) {
     sp->session_ready = true;
     /* No pubkey registered. */
     sp->pubkey_set = false;
-    sp->ship.cargo[COMMODITY_CUPRITE_ORE] = 4.5f;
+    sp->ship->cargo[COMMODITY_CUPRITE_ORE] = 4.5f;
 
     ASSERT(player_save(sp, dir, 2));
 
@@ -455,7 +455,7 @@ TEST(test_save_anonymous_fallback_legacy_path) {
     memcpy(sp2->session_token, sp->session_token, 8);
     sp2->session_ready = true;
     ASSERT(player_load_by_token(sp2, w2, dir, sp2->session_token));
-    ASSERT_EQ_FLOAT(sp2->ship.cargo[COMMODITY_CUPRITE_ORE], 4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(sp2->ship->cargo[COMMODITY_CUPRITE_ORE], 4.5f, 0.001f);
 
     remove(path);
 }

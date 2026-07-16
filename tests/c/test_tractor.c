@@ -52,6 +52,94 @@ TEST(test_tractor_tow_profile_is_shared_across_anchor_types) {
     ASSERT_EQ_FLOAT(target_vel.y, 0.0f, 0.001f);
 }
 
+TEST(test_tractor_binding_has_one_source_at_a_time) {
+    cargo_pod_t pod = {0};
+    cargo_pod_clear_tractor(&pod);
+    cargo_pod_set_module_tractor(&pod, 2, 5);
+    ASSERT(cargo_pod_is_tractored_by_module(&pod, 2, 5));
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&pod), -1);
+
+    cargo_pod_set_player_tractor(&pod, 3);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&pod), 3);
+    ASSERT(!cargo_pod_has_module_tractor(&pod));
+
+    scaffold_t scaffold = {0};
+    scaffold_clear_tractor(&scaffold);
+    scaffold_set_npc_tractor(&scaffold, 4);
+    ASSERT_EQ_INT(scaffold_tractor_npc(&scaffold), 4);
+    scaffold_set_player_tractor(&scaffold, 1);
+    ASSERT_EQ_INT(scaffold_tractor_player(&scaffold), 1);
+    ASSERT_EQ_INT(scaffold_tractor_npc(&scaffold), -1);
+
+    asteroid_t fragment = {0};
+    asteroid_clear_tractor(&fragment);
+    asteroid_set_npc_tractor(&fragment, 6);
+    ASSERT_EQ_INT(asteroid_tractor_npc(&fragment), 6);
+    ASSERT_EQ_INT(asteroid_tractor_player(&fragment), -1);
+    asteroid_set_player_tractor(&fragment, 2);
+    ASSERT_EQ_INT(asteroid_tractor_player(&fragment), 2);
+    ASSERT_EQ_INT(asteroid_tractor_npc(&fragment), -1);
+}
+
+TEST(test_tow_link_pool_is_authority_for_ship_projections) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    int fragment = MAX_ASTEROIDS - 1;
+    w.asteroids[fragment] = (asteroid_t){
+        .active = true,
+        .fracture_child = true,
+        .radius = 8.0f,
+    };
+    asteroid_set_player_tractor(&w.asteroids[fragment], 0);
+    sp->ship->towed_fragments[0] = (int16_t)fragment;
+    sp->ship->towed_count = 1;
+
+    world_tow_links_reconcile(&w);
+
+    entity_ref_t target = world_entity_ref_for_slot(
+        &w, ENTITY_KIND_ASTEROID, fragment, -1);
+    const tow_link_t *link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    ASSERT(entity_ref_equal(link->source, sp->ship_ref));
+    ASSERT_EQ_INT(link->profile, TOW_PROFILE_SHIP_FRAGMENT);
+    ASSERT_EQ_INT(link->state, TOW_LINK_HELD);
+    ASSERT_EQ_INT(sp->ship->towed_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_fragments[0], fragment);
+    ASSERT_EQ_INT(asteroid_tractor_player(&w.asteroids[fragment]), 0);
+    ASSERT_EQ_INT(w.asteroids[fragment].tractor.source_generation,
+                  sp->ship_ref.generation);
+
+    asteroid_clear_tractor(&w.asteroids[fragment]);
+    world_tow_links_reconcile(&w);
+    ASSERT(world_tow_link_for_target_const(&w, target) == NULL);
+    ASSERT_EQ_INT(sp->ship->towed_count, 0);
+}
+
+TEST(test_tow_target_generation_changes_after_recycle) {
+    WORLD_DECL;
+    world_reset(&w);
+    int pod = MAX_CARGO_PODS - 1;
+    w.cargo_pods[pod].active = true;
+    entity_ref_t first = world_entity_ref_for_slot(
+        &w, ENTITY_KIND_CARGO_POD, pod, -1);
+    ASSERT(!entity_ref_is_none(first));
+
+    w.cargo_pods[pod].active = false;
+    world_tow_links_reconcile(&w);
+    ASSERT(!world_entity_ref_is_live(&w, first));
+    w.cargo_pods[pod].active = true;
+    entity_ref_t second = world_entity_ref_for_slot(
+        &w, ENTITY_KIND_CARGO_POD, pod, -1);
+    ASSERT(!entity_ref_equal(first, second));
+    ASSERT(second.generation != first.generation);
+}
+
 TEST(test_tractor_pull_engages_beyond_rest) {
     /* Body at d=10 along +X from origin. rest=5, pull=2, push=0.
      * stretch = 5; spring_mag = -2 * 5 = -10 (toward source, i.e. -X).
@@ -329,6 +417,9 @@ TEST(test_tractor_diagonal_pull_deterministic_reference) {
 void register_tractor_tests(void) {
     TEST_SECTION("\nTractor primitive (R1):\n");
     RUN(test_tractor_tow_profile_is_shared_across_anchor_types);
+    RUN(test_tractor_binding_has_one_source_at_a_time);
+    RUN(test_tow_link_pool_is_authority_for_ship_projections);
+    RUN(test_tow_target_generation_changes_after_recycle);
     RUN(test_tractor_pull_engages_beyond_rest);
     RUN(test_tractor_push_engages_below_rest);
     RUN(test_tractor_constant_pull_independent_of_stretch);

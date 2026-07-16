@@ -8,7 +8,7 @@ static bool bug_test_spawn_towed_exact_pod(world_t *w,
                                            commodity_t c,
                                            uint16_t count) {
     if (!w || !sp || c >= COMMODITY_COUNT || count == 0 ||
-        count > CARGO_POD_MANIFEST_CAP || sp->ship.towed_pod_count >= 10) {
+        count > CARGO_POD_MANIFEST_CAP || sp->ship->towed_pod_count >= 10) {
         return false;
     }
     cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
@@ -19,11 +19,9 @@ static bool bug_test_spawn_towed_exact_pod(world_t *w,
             return false;
     }
     int pod_idx = spawn_cargo_pod_with_manifest(
-        w, sp->ship.pos, v2(0.0f, 0.0f), c, units, count, CARGO_POD_CARGO);
+        w, sp->ship->pos, v2(0.0f, 0.0f), c, units, count, CARGO_POD_CARGO);
     if (pod_idx < 0) return false;
-    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
-    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
-    return true;
+    return world_cargo_pod_set_player_tractor(w, pod_idx, (int)sp->id);
 }
 
 TEST(test_bug2_angle_lerp_wraparound) {
@@ -74,8 +72,8 @@ TEST(test_bug7_player_slot_mismatch) {
     player_init_ship(&w.players[server_id], &w);
     w.players[server_id].connected = true;
     /* Client should use server-assigned slot, not hardcoded 0 */
-    ASSERT(w.players[server_id].ship.hull > 0.0f);
-    ASSERT_EQ_FLOAT(w.players[server_id].ship.hull, 100.0f, 0.01f);
+    ASSERT(w.players[server_id].ship->hull > 0.0f);
+    ASSERT_EQ_FLOAT(w.players[server_id].ship->hull, 100.0f, 0.01f);
 }
 
 TEST(test_bug9_repair_cost_consistent) {
@@ -88,11 +86,11 @@ TEST(test_bug9_repair_cost_consistent) {
     memset(&ship, 0, sizeof(ship));
     ship.hull_class = HULL_CLASS_MINER;
     ship.hull = 80.0f;
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     st.modules[st.module_count++] = (station_module_t){ .type = MODULE_DOCK };
     st.base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    st._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× base */
+    ASSERT(test_set_station_finished_units(&st, COMMODITY_REPAIR_KIT,
+                                           (int)MAX_PRODUCT_STOCK));
     float cost = station_repair_cost(&ship, &st);
     ASSERT_EQ_FLOAT(cost, 20.0f * (6.0f + LABOR_FEE_PER_HP), 0.01f);
 }
@@ -106,12 +104,12 @@ TEST(test_bug10_damage_event_has_amount) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.stat_ore_mined = 1.0f; /* prevent 94% hull first-launch */
+    w.players[0].ship->stat_ore_mined = 1.0f; /* prevent 94% hull first-launch */
     /* Place ship near a ring 1 module and moving fast into it.
      * Target signal relay at slot 1 (slot 0 is dock — no collision). */
     vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
-    w.players[0].ship.pos = v2(mod_pos.x + 60.0f, mod_pos.y);
-    w.players[0].ship.vel = v2(-2000.0f, 0.0f);
+    w.players[0].ship->pos = v2(mod_pos.x + 60.0f, mod_pos.y);
+    w.players[0].ship->vel = v2(-2000.0f, 0.0f);
     /* Damage happens on first collision tick — check events immediately */
     bool found = false;
     for (int tick = 0; tick < 10; tick++) {
@@ -152,13 +150,14 @@ TEST(test_bug13_buy_price_correct_size) {
 
 TEST(test_bug14_player_ship_syncs_all_cargo) {
     /* Player ship message syncs ALL cargo including ingots. */
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 20.0f;
-    sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 30.0f;
-    sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
-    sp.ship.cargo[COMMODITY_CUPRITE_INGOT] = 3.0f;
+    SERVER_PLAYER_DECL(sp);
+    sp.ship->cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    sp.ship->cargo[COMMODITY_CUPRITE_ORE] = 20.0f;
+    sp.ship->cargo[COMMODITY_CRYSTAL_ORE] = 30.0f;
+    ASSERT(test_set_ship_finished_units(sp.ship, COMMODITY_FERRITE_INGOT,
+                                        5, MINING_GRADE_COMMON));
+    ASSERT(test_set_ship_finished_units(sp.ship, COMMODITY_CUPRITE_INGOT,
+                                        3, MINING_GRADE_COMMON));
     uint8_t buf[PLAYER_SHIP_SIZE];
     int len = serialize_player_ship_bal(buf, 0, &sp, 0.0f);
     ASSERT(len <= PLAYER_SHIP_SIZE);
@@ -168,8 +167,7 @@ TEST(test_bug14_player_ship_syncs_all_cargo) {
 }
 
 TEST(test_bug15_state_size_symmetric) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     uint8_t buf[64];
     int server_len = serialize_player_state(buf, 0, &sp);
     ASSERT_EQ_INT(server_len, 45);  /* 1+1+5*f32+1+1+1+20 = 45 bytes (uint16 towed_frags) */
@@ -186,8 +184,8 @@ TEST(test_bug16_npc_target_bounds_checked) {
     w.npc_ships[0].role = NPC_ROLE_MINER;
     w.npc_ships[0].state = NPC_STATE_TRAVEL_TO_ASTEROID;
     w.npc_ships[0].target_asteroid = MAX_ASTEROIDS;  /* OOB */
-    w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
-    w.npc_ships[0].ship.pos = v2(500.0f, 500.0f);
+    w.npc_ships[0].ship->hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].ship->pos = v2(500.0f, 500.0f);
     /* After fix: sim should handle this gracefully (reset target to -1).
      * FAILS now if the NPC tries to access asteroids[48]. */
     world_sim_step(&w, SIM_DT);
@@ -204,11 +202,11 @@ TEST(test_bug18_emergency_recover_nearest_station) {
     world_sim_step(&w, SIM_DT);
     w.players[0].input.interact = false;
     /* Position near station 2 (Helios Works), far from station 0 */
-    w.players[0].ship.pos = v2_add(w.stations[2].pos, v2(0.0f, -100.0f));
+    w.players[0].ship->pos = v2_add(w.stations[2].pos, v2(0.0f, -100.0f));
     w.players[0].nearby_station = 2;
     w.players[0].current_station = 0;  /* last docked at 0, but 2 is closer */
-    w.players[0].ship.hull = 0.5f;
-    w.players[0].ship.vel = v2(0.0f, 500.0f);
+    w.players[0].ship->hull = 0.5f;
+    w.players[0].ship->vel = v2(0.0f, 500.0f);
     for (int i = 0; i < 120; i++)
         world_sim_step(&w, SIM_DT);
     /* After fix: should recover at station 2 (nearest), not station 0 (last docked).
@@ -222,19 +220,18 @@ TEST(test_bug19_feedback_in_world) {
     /* Collection feedback is client-side UI state — it belongs in game_t,
      * not in server_player_t.  Verify server_player_t has the core fields
      * needed for sim (ship, input, docking state). */
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     sp.connected = true;
-    sp.ship.hull = 100.0f;
-    ASSERT(sizeof(server_player_t) >= sizeof(ship_t));
+    sp.ship->hull = 100.0f;
+    ASSERT(sp.ship != NULL);
+    ASSERT(sp.replication != NULL);
 }
 
 TEST(test_bug20_player_ship_checks_id) {
     /* Verify serialize_player_ship encodes the player ID at buf[1]
      * so the client handler can filter on it (net.c checks
      * id != net_state.local_id). */
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     uint8_t buf[128];
     serialize_player_ship_bal(buf, 7, &sp, 500.0f);
     ASSERT_EQ_INT(buf[1], 7);
@@ -253,13 +250,17 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
     WORLD_DECL;
     world_reset(&w);
     /* Empty the refinery inventory so haulers can't load from home */
-    for (int i = 0; i < COMMODITY_COUNT; i++)
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0]._inventory_cache[i] = 0.0f;
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++)
+        ASSERT(test_set_station_finished_units(
+            &w.stations[0], (commodity_t)i, 0));
     /* Put enough ingots at station 1 to exceed the hauler reserve, so
      * relocation can actually result in a load. */
     ASSERT(test_set_station_finished_units(&w.stations[1],
                                            COMMODITY_FERRITE_INGOT, 40));
-    float initial_stock = w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    float initial_stock = station_inventory_amount(
+        &w.stations[1], COMMODITY_FERRITE_INGOT);
     /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
     for (int i = 0; i < 7200; i++)
         world_sim_step(&w, SIM_DT);
@@ -271,7 +272,8 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
             hauler_relocated = true;
         }
     }
-    ASSERT(hauler_relocated || w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] < initial_stock);
+    ASSERT(hauler_relocated || station_inventory_amount(
+        &w.stations[1], COMMODITY_FERRITE_INGOT) < initial_stock);
 }
 
 TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
@@ -281,9 +283,9 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0]._inventory_cache[i] = REFINERY_HOPPER_CAPACITY;
     /* Give miner some cargo and send it home */
-    w.npc_ships[0].cargo[0] = 30.0f;
+    w.npc_ships[0].ship->cargo[0] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].ship.pos = w.stations[0].pos;
+    w.npc_ships[0].ship->pos = w.stations[0].pos;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, SIM_DT);
     /* NPC should have attempted to deposit but hopper was full.
@@ -292,7 +294,7 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
      * on top of it. The cargo silently accumulates past capacity. */
     float npc_cargo = 0.0f;
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        npc_cargo += w.npc_ships[0].cargo[i];
+        npc_cargo += w.npc_ships[0].ship->cargo[i];
     /* NPC retains cargo it couldn't deposit (hopper full).
      * It will try again next dock cycle. Cargo should be at least
      * the original 30 (it may have mined more in subsequent cycles). */
@@ -304,14 +306,16 @@ TEST(test_bug24_ingot_buffer_no_cap) {
     WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer near capacity */
-    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 40.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_FERRITE_INGOT, 40));
     /* Hauler arrives with 40 more ingots — should be capped */
-    w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
+    w.npc_ships[3].ship->cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
-    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <= 50.0f);
+    ASSERT(station_inventory_amount(
+        &w.stations[1], COMMODITY_FERRITE_INGOT) <= 50.0f);
 }
 
 TEST(test_bug25_rng_deterministic_every_reset) {
@@ -334,16 +338,18 @@ TEST(test_bug26_hauler_unload_no_cap) {
     WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer */
-    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 100.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_FERRITE_INGOT, 100));
     /* Hauler arrives with 40 more */
-    w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
+    w.npc_ships[3].ship->cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
     /* After fix: ingot_buffer should not exceed a cap.
      * FAILS because unloading has no cap — buffer becomes 140. */
-    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <= 100.0f);
+    ASSERT(station_inventory_amount(
+        &w.stations[1], COMMODITY_FERRITE_INGOT) <= 100.0f);
 }
 
 TEST(test_bug27_cargo_negative_after_sell) {
@@ -352,13 +358,13 @@ TEST(test_bug27_cargo_negative_after_sell) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     /* Set cargo to a value that might cause float issues */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 0.011f;  /* just above threshold */
+    w.players[0].ship->cargo[COMMODITY_FERRITE_ORE] = 0.011f;  /* just above threshold */
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
     /* After fix: cargo should never go negative.
      * Check that all cargo values >= 0 after any transaction. */
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        ASSERT(w.players[0].ship.cargo[i] >= 0.0f);
+        ASSERT(w.players[0].ship->cargo[i] >= 0.0f);
     }
 }
 
@@ -406,17 +412,25 @@ TEST(test_bug30_double_collect_fragment) {
     w.players[1].connected = true;
     w.players[0].docked = false;
     w.players[1].docked = false;
-    w.players[0].ship.pos = v2(500.0f, 500.0f);
-    w.players[1].ship.pos = v2(500.0f, 500.0f);
-    w.players[0].ship.tractor_level = 4;
-    w.players[1].ship.tractor_level = 4;
+    w.players[0].ship->pos = v2(500.0f, 500.0f);
+    w.players[1].ship->pos = v2(500.0f, 500.0f);
+    w.players[0].ship->tractor_level = 4;
+    w.players[1].ship->tractor_level = 4;
+    w.players[0].input.tractor_hold = true;
+    w.players[1].input.tractor_hold = true;
     world_sim_step(&w, SIM_DT);
     /* Both players should get at most 10 ore total (not 10 each) */
-    float total = w.players[0].ship.cargo[COMMODITY_FERRITE_ORE]
-                + w.players[1].ship.cargo[COMMODITY_FERRITE_ORE];
+    float total = w.players[0].ship->cargo[COMMODITY_FERRITE_ORE]
+                + w.players[1].ship->cargo[COMMODITY_FERRITE_ORE];
     /* After fix: total should be <= 10.0.
      * FAILS if both players collect the full 10 before the ore is decremented. */
     ASSERT(total <= 10.5f);  /* small epsilon for float */
+    int tow_owners = (w.players[0].ship->towed_count > 0 ? 1 : 0) +
+                     (w.players[1].ship->towed_count > 0 ? 1 : 0);
+    ASSERT_EQ_INT(tow_owners, 1);
+    int owner = asteroid_tractor_player(&w.asteroids[0]);
+    ASSERT(owner == 0 || owner == 1);
+    ASSERT_EQ_INT(w.players[owner].ship->towed_fragments[0], 0);
 }
 
 TEST(test_bug31_no_server_reconciliation) {
@@ -425,9 +439,8 @@ TEST(test_bug31_no_server_reconciliation) {
      * - dock-state prediction guard prevents stale overwrites
      * - Input sent every frame for tight server sync
      * Verify the server sends position in player state messages. */
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.ship.pos = v2(100.0f, 200.0f);
+    SERVER_PLAYER_DECL(sp);
+    sp.ship->pos = v2(100.0f, 200.0f);
     uint8_t buf[64];
     int len = serialize_player_state(buf, 0, &sp);
     ASSERT(len >= 22);
@@ -445,12 +458,12 @@ TEST(test_bug32_collision_adds_energy) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     /* Aim ship at station 0 at high speed */
-    w.players[0].ship.pos = v2(200.0f, -240.0f);
-    w.players[0].ship.vel = v2(-300.0f, 0.0f);
-    w.players[0].ship.hull = 1000.0f;  /* prevent death */
-    float speed_before = v2_len(w.players[0].ship.vel);
+    w.players[0].ship->pos = v2(200.0f, -240.0f);
+    w.players[0].ship->vel = v2(-300.0f, 0.0f);
+    w.players[0].ship->hull = 1000.0f;  /* prevent death */
+    float speed_before = v2_len(w.players[0].ship->vel);
     world_sim_step(&w, SIM_DT);
-    float speed_after = v2_len(w.players[0].ship.vel);
+    float speed_after = v2_len(w.players[0].ship->vel);
     /* After fix: speed after bounce should be <= speed before (energy conserved or lost).
      * FAILS because 1.2x restitution adds energy on bounce. */
     ASSERT(speed_after <= speed_before);
@@ -460,15 +473,15 @@ TEST(test_bug33_npc_no_world_boundary) {
     WORLD_DECL;
     world_reset(&w);
     /* Place NPC outside all station signal ranges with outward velocity */
-    w.npc_ships[0].ship.pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
-    w.npc_ships[0].ship.vel = v2(200.0f, 0.0f);  /* flying outward */
+    w.npc_ships[0].ship->pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
+    w.npc_ships[0].ship->vel = v2(200.0f, 0.0f);  /* flying outward */
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
-    float start_dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.stations[0].pos));
+    float start_dist = v2_len(v2_sub(w.npc_ships[0].ship->pos, w.stations[0].pos));
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, SIM_DT);
-    float end_dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.stations[0].pos));
+    float end_dist = v2_len(v2_sub(w.npc_ships[0].ship->pos, w.stations[0].pos));
     /* After fix: NPC should be pushed back toward station (closer than start). */
     ASSERT(end_dist < start_dist);
 }
@@ -479,13 +492,13 @@ TEST(test_bug34_npc_no_collision) {
     /* Place NPC on top of a station MODULE (the station center is now
      * empty space — construction yard — so we test against a real module). */
     vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
-    w.npc_ships[0].ship.pos = mod_pos;
-    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship->pos = mod_pos;
+    w.npc_ships[0].ship->vel = v2(0.0f, 0.0f);
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, mod_pos));
+    float dist = v2_len(v2_sub(w.npc_ships[0].ship->pos, mod_pos));
     /* NPC should be pushed out of the module collision circle */
     ASSERT(dist > 0.0f);
 }
@@ -817,7 +830,7 @@ TEST(test_bug37_mine_inactive_asteroid) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
+    w.players[0].ship->mining_level = SHIP_UPGRADE_MAX_LEVEL;
     /* Find an asteroid and position player to mine it */
     int target = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -826,8 +839,8 @@ TEST(test_bug37_mine_inactive_asteroid) {
         }
     }
     ASSERT(target >= 0);
-    w.players[0].ship.pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
-    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship->pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
+    w.players[0].ship->angle = 0.0f;
     w.players[0].input.mine = true;
     /* Start mining */
     world_sim_step(&w, SIM_DT);
@@ -875,8 +888,8 @@ TEST(test_bug39_launch_immediate_redock) {
      * because interact is cleared after step_player. But let's verify: */
     ASSERT(!w.players[0].docked);
     /* Dock directly for test */
-    w.players[0].ship.pos = w.stations[0].pos;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = w.stations[0].pos;
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
     w.players[0].docked = true;
     w.players[0].in_dock_range = true;
     w.players[0].current_station = 0;
@@ -921,13 +934,13 @@ TEST(test_launch_clears_dock_berth_under_thrust) {
     w.players[0].connected = true;
     ASSERT(w.players[0].docked);
 
-    vec2 start = w.players[0].ship.pos;
+    vec2 start = w.players[0].ship->pos;
     float start_center_dist = v2_len(v2_sub(start, w.stations[0].pos));
     w.players[0].input.launch = true;
     world_sim_step(&w, SIM_DT);
     ASSERT(!w.players[0].docked);
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull,
-                    ship_max_hull(&w.players[0].ship), 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull,
+                    ship_max_hull(w.players[0].ship), 0.001f);
 
     w.players[0].input.thrust = 1.0f;
     for (int i = 0; i < 180; i++) {
@@ -935,8 +948,8 @@ TEST(test_launch_clears_dock_berth_under_thrust) {
         ASSERT(!w.players[0].docked);
     }
 
-    float moved = v2_len(v2_sub(w.players[0].ship.pos, start));
-    float end_center_dist = v2_len(v2_sub(w.players[0].ship.pos, w.stations[0].pos));
+    float moved = v2_len(v2_sub(w.players[0].ship->pos, start));
+    float end_center_dist = v2_len(v2_sub(w.players[0].ship->pos, w.stations[0].pos));
     ASSERT(moved > 80.0f);
     ASSERT(end_center_dist > start_center_dist + 50.0f);
 }
@@ -949,27 +962,27 @@ TEST(test_launch_stays_at_docked_berth_when_actor_blocks_exit) {
     ASSERT(w.players[0].docked);
 
     station_t *st = &w.stations[0];
-    vec2 berth = w.players[0].ship.pos;
+    vec2 berth = w.players[0].ship->pos;
     vec2 away = v2_sub(berth, st->pos);
     float away_len = v2_len(away);
     ASSERT(away_len > 1.0f);
     away = v2_scale(away, 1.0f / away_len);
 
-    float ship_r = ship_hull_def(&w.players[0].ship)->ship_radius;
+    float ship_r = ship_hull_def(w.players[0].ship)->ship_radius;
     vec2 blocked_exit = v2_add(berth, v2_scale(away, ship_r + 36.0f));
 
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
-    w.npc_ships[0].ship.pos = blocked_exit;
-    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship->pos = blocked_exit;
+    w.npc_ships[0].ship->vel = v2(0.0f, 0.0f);
 
     w.players[0].input.launch = true;
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!w.players[0].docked);
-    float moved_from_berth = v2_len(v2_sub(w.players[0].ship.pos, berth));
+    float moved_from_berth = v2_len(v2_sub(w.players[0].ship->pos, berth));
     ASSERT(moved_from_berth < 2.0f);
-    ASSERT(signal_strength_at(&w, w.players[0].ship.pos) > 0.01f);
+    ASSERT(signal_strength_at(&w, w.players[0].ship->pos) > 0.01f);
 }
 
 TEST(test_launch_carries_towed_pod_to_docked_berth) {
@@ -981,26 +994,26 @@ TEST(test_launch_carries_towed_pod_to_docked_berth) {
     ASSERT(bug_test_spawn_towed_exact_pod(
         &w, &w.players[0], COMMODITY_FERRITE_INGOT, 1));
 
-    int pod_idx = w.players[0].ship.towed_pods[0];
+    int pod_idx = w.players[0].ship->towed_pods[0];
     ASSERT(pod_idx >= 0 && pod_idx < MAX_CARGO_PODS);
-    vec2 docked_ship_pos = w.players[0].ship.pos;
+    vec2 docked_ship_pos = w.players[0].ship->pos;
     vec2 docked_pod_pos = w.cargo_pods[pod_idx].pos;
 
     w.players[0].input.launch = true;
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!w.players[0].docked);
-    ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
-    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
-    vec2 ship_delta = v2_sub(w.players[0].ship.pos, docked_ship_pos);
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), 0);
+    vec2 ship_delta = v2_sub(w.players[0].ship->pos, docked_ship_pos);
     ASSERT(v2_len(ship_delta) < 2.0f);
     vec2 expected_pod_pos = v2_add(docked_pod_pos, ship_delta);
     ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, expected_pod_pos) < 1.0f);
 
     for (int i = 0; i < 20; i++) {
         world_sim_step(&w, SIM_DT);
-        ASSERT_EQ_INT(w.players[0].ship.towed_pod_count, 1);
-        ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, 0);
+        ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 1);
+        ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), 0);
     }
 }
 
@@ -1018,7 +1031,7 @@ TEST(test_launch_preserves_flight_controls) {
     sp->input.reverse_thrust = false;
     sp->input.boost = true;
     sp->input.tractor_hold = true;
-    sp->ship.tractor_active = true;
+    sp->ship->tractor_active = true;
     sp->boost_hold_timer = 1.0f;
     sp->last_input_seq = 77;
     sp->last_input_tick = 1234;
@@ -1029,27 +1042,27 @@ TEST(test_launch_preserves_flight_controls) {
         .intent = { .thrust = 1.0f, .turn = 1.0f },
     };
 
-    vec2 docked_pos = sp->ship.pos;
+    vec2 docked_pos = sp->ship->pos;
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!sp->docked);
-    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 2.0f);
+    ASSERT(v2_len(v2_sub(sp->ship->pos, docked_pos)) < 2.0f);
     ASSERT_EQ_FLOAT(sp->input.thrust, 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
     ASSERT(!sp->input.reverse_thrust);
     ASSERT(sp->input.boost);
     ASSERT(sp->input.tractor_hold);
-    ASSERT(!sp->ship.tractor_active);
+    ASSERT(!sp->ship->tractor_active);
     ASSERT_EQ_FLOAT(sp->boost_hold_timer, 0.0f, 0.001f);
     ASSERT_EQ_INT(sp->movement_queue_count, 1);
     ASSERT_EQ_INT(sp->last_input_seq, 77);
     ASSERT_EQ_INT((int)sp->last_input_tick, 1234);
 
-    vec2 away = v2_sub(sp->ship.pos, w.stations[sp->current_station].pos);
+    vec2 away = v2_sub(sp->ship->pos, w.stations[sp->current_station].pos);
     float away_len = v2_len(away);
     ASSERT(away_len > 1.0f);
     away = v2_scale(away, 1.0f / away_len);
-    ASSERT(v2_dot(sp->ship.vel, away) > 50.0f);
+    ASSERT(v2_dot(sp->ship->vel, away) > 50.0f);
 }
 
 TEST(test_launch_does_not_reanchor_docked_position) {
@@ -1061,12 +1074,12 @@ TEST(test_launch_does_not_reanchor_docked_position) {
     ASSERT(sp->docked);
 
     station_t *st = &w.stations[sp->current_station];
-    vec2 berth_pos = sp->ship.pos;
+    vec2 berth_pos = sp->ship->pos;
     vec2 docked_pos = v2_add(st->pos, v2(180.0f, -240.0f));
     ASSERT(v2_dist_sq(docked_pos, berth_pos) > 100.0f * 100.0f);
 
-    sp->ship.pos = docked_pos;
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->pos = docked_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
     sp->docked = true;
     sp->in_dock_range = true;
     sp->nearby_station = sp->current_station;
@@ -1075,8 +1088,8 @@ TEST(test_launch_does_not_reanchor_docked_position) {
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!sp->docked);
-    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 0.01f);
-    ASSERT(v2_len(sp->ship.vel) > 50.0f);
+    ASSERT(v2_len(v2_sub(sp->ship->pos, docked_pos)) < 0.01f);
+    ASSERT(v2_len(sp->ship->vel) > 50.0f);
 }
 
 TEST(test_launch_applies_queued_thrust_through_physics) {
@@ -1087,7 +1100,7 @@ TEST(test_launch_applies_queued_thrust_through_physics) {
     sp->connected = true;
     ASSERT(sp->docked);
 
-    vec2 docked_pos = sp->ship.pos;
+    vec2 docked_pos = sp->ship->pos;
     int station_idx = sp->current_station;
     float start_center_dist = v2_len(v2_sub(docked_pos, w.stations[station_idx].pos));
 
@@ -1097,7 +1110,7 @@ TEST(test_launch_applies_queued_thrust_through_physics) {
 
     world_sim_step(&w, SIM_DT);
     ASSERT(!sp->docked);
-    ASSERT(v2_len(v2_sub(sp->ship.pos, docked_pos)) < 2.0f);
+    ASSERT(v2_len(v2_sub(sp->ship->pos, docked_pos)) < 2.0f);
     ASSERT_EQ_FLOAT(sp->input.thrust, 0.0f, 0.001f);
     ASSERT_EQ_INT(sp->movement_queue_count, 1);
 
@@ -1111,11 +1124,11 @@ TEST(test_launch_applies_queued_thrust_through_physics) {
         ASSERT(!sp->docked);
     }
 
-    vec2 station_delta = v2_sub(sp->ship.pos, w.stations[station_idx].pos);
+    vec2 station_delta = v2_sub(sp->ship->pos, w.stations[station_idx].pos);
     float end_center_dist = v2_len(station_delta);
     ASSERT(end_center_dist > start_center_dist + 25.0f);
     vec2 away = v2_scale(station_delta, 1.0f / end_center_dist);
-    ASSERT(v2_dot(sp->ship.vel, away) > 20.0f);
+    ASSERT(v2_dot(sp->ship->vel, away) > 20.0f);
 }
 
 TEST(test_launch_from_freeport_retains_control_authority) {
@@ -1130,9 +1143,9 @@ TEST(test_launch_from_freeport_retains_control_authority) {
     sp->dock_berth = -1;
     anchor_ship_in_station(sp, &w);
 
-    vec2 start = sp->ship.pos;
+    vec2 start = sp->ship->pos;
     float launch_control =
-        signal_control_scale(signal_strength_at(&w, sp->ship.pos));
+        signal_control_scale(signal_strength_at(&w, sp->ship->pos));
     ASSERT(launch_control > 0.35f);
 
     sp->input.launch = true;
@@ -1145,7 +1158,7 @@ TEST(test_launch_from_freeport_retains_control_authority) {
         ASSERT(!sp->docked);
     }
 
-    ASSERT(v2_len(v2_sub(sp->ship.pos, start)) > 60.0f);
+    ASSERT(v2_len(v2_sub(sp->ship->pos, start)) > 60.0f);
 }
 
 TEST(test_movement_queue_rejects_late_older_sequence) {
@@ -1156,9 +1169,9 @@ TEST(test_movement_queue_rejects_late_older_sequence) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(5000.0f, 5000.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(5000.0f, 5000.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     input_intent_t thrust = { .thrust = 1.0f };
     input_intent_t stale_zero = { 0 };
@@ -1187,9 +1200,9 @@ TEST(test_same_tick_movement_inputs_apply_on_separate_ticks) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(0.0f, -2400.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(0.0f, -2400.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     input_intent_t thrust = { .thrust = 1.0f };
     input_intent_t release = { 0 };
@@ -1225,9 +1238,9 @@ TEST(test_ticked_same_tick_movement_inputs_preserve_apply_tick) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(0.0f, -2400.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(0.0f, -2400.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     input_intent_t thrust = { .thrust = 1.0f };
     input_intent_t release = { 0 };
@@ -1258,9 +1271,9 @@ TEST(test_ticked_turn_release_preserves_authoritative_heading) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(0.0f, -2400.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(0.0f, -2400.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     input_intent_t turn = { .turn = 1.0f };
     server_player_queue_ticked_movement_input(sp, &turn, 1, w.tick + 1u);
@@ -1268,7 +1281,7 @@ TEST(test_ticked_turn_release_preserves_authoritative_heading) {
     for (int i = 0; i < 20; i++)
         world_sim_step(&w, SIM_DT);
 
-    float turned_angle = sp->ship.angle;
+    float turned_angle = sp->ship->angle;
     ASSERT(turned_angle > 0.01f);
     ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
 
@@ -1279,7 +1292,7 @@ TEST(test_ticked_turn_release_preserves_authoritative_heading) {
     ASSERT_EQ_FLOAT(sp->input.turn, 0.0f, 0.001f);
     ASSERT_EQ_INT((int)sp->last_input_seq, 2);
     ASSERT_EQ_INT((int)sp->last_input_tick, (int)w.tick);
-    ASSERT_EQ_FLOAT(sp->ship.angle, turned_angle, 0.001f);
+    ASSERT_EQ_FLOAT(sp->ship->angle, turned_angle, 0.001f);
 }
 
 TEST(test_dispatch_ticked_left_input_rotates_authoritative_ship) {
@@ -1290,9 +1303,9 @@ TEST(test_dispatch_ticked_left_input_rotates_authoritative_ship) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(0.0f, -2400.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(0.0f, -2400.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     uint8_t input[NET_INPUT_MSG_SIZE] = {0};
     input[0] = NET_MSG_INPUT;
@@ -1317,7 +1330,7 @@ TEST(test_dispatch_ticked_left_input_rotates_authoritative_ship) {
         world_sim_step(&w, SIM_DT);
 
     ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
-    ASSERT(sp->ship.angle > 0.01f);
+    ASSERT(sp->ship->angle > 0.01f);
     ASSERT_EQ_INT((int)sp->last_input_seq, 1);
 }
 
@@ -1329,9 +1342,9 @@ TEST(test_reset_input_stream_accepts_reconnected_low_sequence) {
     sp->connected = true;
     sp->docked = false;
     sp->in_dock_range = false;
-    sp->ship.pos = v2(0.0f, -2400.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = v2(0.0f, -2400.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
     sp->last_input_seq = 77;
     sp->last_input_tick = 9001;
 
@@ -1344,7 +1357,7 @@ TEST(test_reset_input_stream_accepts_reconnected_low_sequence) {
 
     ASSERT_EQ_INT(sp->last_input_seq, 1);
     ASSERT_EQ_FLOAT(sp->input.turn, 1.0f, 0.001f);
-    ASSERT(sp->ship.angle > 0.001f);
+    ASSERT(sp->ship->angle > 0.001f);
 }
 
 TEST(test_bug40_no_player_player_collision) {
@@ -1357,10 +1370,10 @@ TEST(test_bug40_no_player_player_collision) {
     w.players[0].docked = false;
     w.players[1].docked = false;
     /* Place two players on top of each other */
-    w.players[0].ship.pos = v2(500.0f, 500.0f);
-    w.players[1].ship.pos = v2(500.0f, 500.0f);
+    w.players[0].ship->pos = v2(500.0f, 500.0f);
+    w.players[1].ship->pos = v2(500.0f, 500.0f);
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.players[0].ship.pos, w.players[1].ship.pos));
+    float dist = v2_len(v2_sub(w.players[0].ship->pos, w.players[1].ship->pos));
     /* After fix: players should collide and push apart.
      * FAILS because there's no player-player collision resolution. */
     ASSERT(dist > 10.0f);
@@ -1544,8 +1557,8 @@ TEST(test_bug45_player_only_still_mines) {
         }
     }
     ASSERT(target >= 0);
-    w.players[0].ship.pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
-    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship->pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
+    w.players[0].ship->angle = 0.0f;
     w.players[0].input.mine = true;
     float hp_before = w.asteroids[target].hp;
     /* Use player-only step (what multiplayer client should use) */
@@ -1575,12 +1588,12 @@ TEST(test_bug47_interference_uses_world_rng) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.pos = v2(100.0f, 0.0f);
+    w.players[0].ship->pos = v2(100.0f, 0.0f);
     /* Place another player nearby to trigger interference */
     player_init_ship(&w.players[1], &w);
     w.players[1].connected = true;
     w.players[1].docked = false;
-    w.players[1].ship.pos = v2(120.0f, 0.0f);
+    w.players[1].ship->pos = v2(120.0f, 0.0f);
     uint32_t rng_before = w.rng;
     w.players[0].input.thrust = 1.0f;
     world_sim_step_player_only(&w, 0, SIM_DT);
@@ -1597,9 +1610,9 @@ TEST(test_player_only_predicts_asteroid_collision_geometry) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.hull = 100.0f;
-    w.players[0].ship.pos = v2(1000.0f, 1000.0f);
-    w.players[0].ship.vel = v2(160.0f, 0.0f);
+    w.players[0].ship->hull = 100.0f;
+    w.players[0].ship->pos = v2(1000.0f, 1000.0f);
+    w.players[0].ship->vel = v2(160.0f, 0.0f);
 
     w.asteroids[0].active = true;
     w.asteroids[0].tier = ASTEROID_TIER_L;
@@ -1614,10 +1627,10 @@ TEST(test_player_only_predicts_asteroid_collision_geometry) {
     world_sim_step_player_only(&w, 0, SIM_DT);
 
     float min_dist = w.asteroids[0].radius +
-        ship_hull_def(&w.players[0].ship)->ship_radius;
-    float dist = sqrtf(v2_dist_sq(w.players[0].ship.pos, w.asteroids[0].pos));
+        ship_hull_def(w.players[0].ship)->ship_radius;
+    float dist = sqrtf(v2_dist_sq(w.players[0].ship->pos, w.asteroids[0].pos));
     ASSERT(dist >= min_dist);
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, 100.0f, 0.001f);
     ASSERT_EQ_FLOAT(w.asteroids[0].vel.x, asteroid_vel_before.x, 0.001f);
     ASSERT_EQ_FLOAT(w.asteroids[0].vel.y, asteroid_vel_before.y, 0.001f);
     ASSERT(w.asteroids[0].net_dirty == asteroid_dirty_before);
@@ -1629,19 +1642,19 @@ TEST(test_player_only_predicts_station_collision_geometry) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.hull = 100.0f;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship->hull = 100.0f;
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
 
     vec2 module_pos = module_world_pos_ring(&w.stations[0], 1, 1);
-    w.players[0].ship.pos = module_pos;
+    w.players[0].ship->pos = module_pos;
 
     world_sim_step_player_only(&w, 0, SIM_DT);
 
     float min_dist = STATION_MODULE_COL_RADIUS +
-        ship_hull_def(&w.players[0].ship)->ship_radius;
-    float dist = sqrtf(v2_dist_sq(w.players[0].ship.pos, module_pos));
+        ship_hull_def(w.players[0].ship)->ship_radius;
+    float dist = sqrtf(v2_dist_sq(w.players[0].ship->pos, module_pos));
     ASSERT(dist >= min_dist);
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, 100.0f, 0.001f);
 }
 
 TEST(test_player_only_predicts_tow_band_reaction) {
@@ -1652,22 +1665,22 @@ TEST(test_player_only_predicts_tow_band_reaction) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.pos = v2(5000.0f, 0.0f);
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
-    w.players[0].ship.towed_fragments[0] = 0;
-    w.players[0].ship.towed_count = 1;
+    w.players[0].ship->pos = v2(5000.0f, 0.0f);
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
 
     w.asteroids[0].active = true;
     w.asteroids[0].tier = ASTEROID_TIER_S;
     w.asteroids[0].radius = 8.0f;
     w.asteroids[0].pos = v2(5200.0f, 0.0f);
     w.asteroids[0].vel = v2(0.0f, 0.0f);
+    ASSERT(world_asteroid_set_player_tractor(&w, 0, 0));
+    world_tow_links_reconcile(&w);
 
     world_sim_step_player_only(&w, 0, SIM_DT);
 
-    ASSERT(w.players[0].ship.vel.x > 0.0f);
+    ASSERT(w.players[0].ship->vel.x > 0.0f);
     ASSERT(w.asteroids[0].vel.x < 0.0f);
-    ASSERT_EQ_INT(w.players[0].ship.towed_count, 1);
+    ASSERT_EQ_INT(w.players[0].ship->towed_count, 1);
 }
 
 static void setup_towed_fragment_drift_prediction_world(world_t *w) {
@@ -1680,10 +1693,8 @@ static void setup_towed_fragment_drift_prediction_world(world_t *w) {
     sp->id = 0;
     sp->connected = true;
     sp->docked = false;
-    sp->ship.pos = v2(5000.0f, 0.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.towed_fragments[0] = 0;
-    sp->ship.towed_count = 1;
+    sp->ship->pos = v2(5000.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
 
     asteroid_t *a = &w->asteroids[0];
     a->active = true;
@@ -1694,6 +1705,8 @@ static void setup_towed_fragment_drift_prediction_world(world_t *w) {
     a->rotation = 0.4f;
     a->spin = 0.75f;
     a->age = 3.0f;
+    ASSERT(world_asteroid_set_player_tractor(w, 0, 0));
+    world_tow_links_reconcile(w);
 }
 
 TEST(test_player_only_predicts_towed_fragment_drift) {
@@ -1728,12 +1741,9 @@ static void setup_two_towed_fragment_prediction_world(world_t *w) {
     sp->id = 0;
     sp->connected = true;
     sp->docked = false;
-    sp->ship.pos = v2(5000.0f, 0.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->pos = v2(5000.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
     sp->input.tractor_hold = true;
-    sp->ship.towed_fragments[0] = 0;
-    sp->ship.towed_fragments[1] = 1;
-    sp->ship.towed_count = 2;
 
     w->asteroids[0].active = true;
     w->asteroids[0].tier = ASTEROID_TIER_S;
@@ -1746,6 +1756,9 @@ static void setup_two_towed_fragment_prediction_world(world_t *w) {
     w->asteroids[1].radius = 20.0f;
     w->asteroids[1].pos = v2(5130.0f, 0.0f);
     w->asteroids[1].vel = v2(0.0f, 0.0f);
+    ASSERT(world_asteroid_set_player_tractor(w, 0, 0));
+    ASSERT(world_asteroid_set_player_tractor(w, 1, 0));
+    world_tow_links_reconcile(w);
 }
 
 TEST(test_player_only_predicts_towed_fragment_separation) {
@@ -1783,9 +1796,8 @@ TEST(test_player_only_predicts_towed_scaffold_motion) {
     sp->id = 0;
     sp->connected = true;
     sp->docked = false;
-    sp->ship.pos = v2(5000.0f, 0.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.towed_scaffold = 0;
+    sp->ship->pos = v2(5000.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
 
     scaffold_t *sc = &w.scaffolds[0];
     sc->active = true;
@@ -1795,17 +1807,18 @@ TEST(test_player_only_predicts_towed_scaffold_motion) {
     sc->pos = v2(5180.0f, 0.0f);
     sc->vel = v2(0.0f, 0.0f);
     sc->radius = 30.0f;
-    sc->towed_by = 0;
+    ASSERT(world_scaffold_set_player_tractor(&w, 0, 0));
+    world_tow_links_reconcile(&w);
 
     world_sim_step_player_only(&w, 0, SIM_DT);
 
-    ASSERT(sp->ship.towed_scaffold == 0);
+    ASSERT(sp->ship->towed_scaffold == 0);
     ASSERT(sc->state == SCAFFOLD_TOWING);
     ASSERT(sc->vel.x < 0.0f);
     ASSERT(sc->pos.x < 5180.0f);
 }
 
-TEST(test_player_only_does_not_sync_ship_asset_registry) {
+TEST(test_player_only_ship_asset_references_live_component) {
     WORLD_DECL;
     world_reset(&w);
     server_player_t *sp = &w.players[0];
@@ -1813,18 +1826,19 @@ TEST(test_player_only_does_not_sync_ship_asset_registry) {
     player_init_ship(sp, &w);
     sp->connected = true;
     sp->docked = false;
-    sp->ship.pos = v2(5000.0f, 5000.0f);
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->pos = v2(5000.0f, 5000.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
     sp->input.thrust = 1.0f;
 
     ship_asset_t *asset = world_ship_asset_by_id(&w, sp->ship_asset_id);
     ASSERT(asset != NULL);
-    asset->ship.hull = 12.0f;
-    sp->ship.hull = 77.0f;
+    ASSERT(asset->ship == sp->ship);
+    ASSERT(world_ship_resolve(&w, asset->live_ship_ref) == sp->ship);
+    sp->ship->hull = 77.0f;
 
     world_sim_step_player_only(&w, 0, SIM_DT);
 
-    ASSERT_EQ_FLOAT(asset->ship.hull, 12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(asset->ship->hull, 77.0f, 0.001f);
 }
 
 TEST(test_player_only_ignores_authoritative_one_shots) {
@@ -1886,13 +1900,13 @@ TEST(test_bug50_ship_collision_energy_gain) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.hull = 10000.0f; /* won't die */
+    w.players[0].ship->hull = 10000.0f; /* won't die */
     /* Aim at station at high speed */
-    w.players[0].ship.pos = v2(200.0f, -240.0f);
-    w.players[0].ship.vel = v2(-400.0f, 0.0f);
-    float ke_before = v2_len_sq(w.players[0].ship.vel);
+    w.players[0].ship->pos = v2(200.0f, -240.0f);
+    w.players[0].ship->vel = v2(-400.0f, 0.0f);
+    float ke_before = v2_len_sq(w.players[0].ship->vel);
     world_sim_step(&w, SIM_DT);
-    float ke_after = v2_len_sq(w.players[0].ship.vel);
+    float ke_after = v2_len_sq(w.players[0].ship->vel);
     /* After fix: kinetic energy should decrease on collision (restitution <= 1.0).
      * FAILS because ship-station collision uses 1.2x multiplier, adding energy. */
     ASSERT(ke_after <= ke_before);
@@ -1934,7 +1948,7 @@ TEST(test_bug62_sell_event_no_payout) {
     int hopper_idx = station_find_hopper_for(&w.stations[1],
                                              COMMODITY_FERRITE_INGOT);
     ASSERT(hopper_idx >= 0);
-    int pod_idx = w.players[0].ship.towed_pods[0];
+    int pod_idx = w.players[0].ship->towed_pods[0];
     w.cargo_pods[pod_idx].pos = module_world_pos_ring(
         &w.stations[1], w.stations[1].modules[hopper_idx].ring,
         w.stations[1].modules[hopper_idx].slot);
@@ -1960,11 +1974,11 @@ TEST(test_bug63_npc_asteroid_collision) {
         }
     }
     ASSERT(target >= 0);
-    w.npc_ships[0].ship.pos = w.asteroids[target].pos;
+    w.npc_ships[0].ship->pos = w.asteroids[target].pos;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.asteroids[target].pos));
+    float dist = v2_len(v2_sub(w.npc_ships[0].ship->pos, w.asteroids[target].pos));
     /* After fix: NPC should be pushed out of the asteroid.
      * FAILS because there's no NPC-asteroid collision. */
     ASSERT(dist > w.asteroids[target].radius * 0.5f);
@@ -1993,16 +2007,16 @@ TEST(test_bug65_emergency_recover_no_repair_station) {
     for (int i = 0; i < MAX_STATIONS; i++)
         w.stations[i].services &= ~STATION_SERVICE_REPAIR;
     /* Position near station 1 and die */
-    w.players[0].ship.pos = w.stations[1].pos;
+    w.players[0].ship->pos = w.stations[1].pos;
     w.players[0].nearby_station = 1;
-    w.players[0].ship.hull = 0.5f;
-    w.players[0].ship.vel = v2(0.0f, 500.0f);
+    w.players[0].ship->hull = 0.5f;
+    w.players[0].ship->vel = v2(0.0f, 500.0f);
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* Player docks via emergency_recover. But station has no REPAIR.
      * Player is at full hull (emergency_recover restores hull) but can't
      * repair in the future if they take damage. This is OK but document. */
     if (w.players[0].docked) {
-        ASSERT_EQ_FLOAT(w.players[0].ship.hull, ship_max_hull(&w.players[0].ship), 0.01f);
+        ASSERT_EQ_FLOAT(w.players[0].ship->hull, ship_max_hull(w.players[0].ship), 0.01f);
     }
 }
 
@@ -2079,14 +2093,14 @@ TEST(test_bug69_npc_idle_no_boundary) {
     WORLD_DECL;
     world_reset(&w);
     /* Place NPC at world edge in idle state with outward velocity */
-    w.npc_ships[0].ship.pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
-    w.npc_ships[0].ship.vel = v2(100.0f, 0.0f);
+    w.npc_ships[0].ship->pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
+    w.npc_ships[0].ship->vel = v2(100.0f, 0.0f);
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
     /* NPC should be pushed back by world boundary.
      * Bug 33 was fixed for general NPC boundary, but check IDLE specifically. */
-    float dist = v2_len(w.npc_ships[0].ship.pos);
+    float dist = v2_len(w.npc_ships[0].ship->pos);
     ASSERT(dist <= WORLD_RADIUS + 100.0f);
 }
 
@@ -2110,14 +2124,14 @@ TEST(test_bug51_npc_cargo_zeroed_on_dock) {
     /* Fill hopper so only 5 units can be deposited */
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
     /* Give NPC 30 ferrite and send it home */
-    w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 30.0f;
+    w.npc_ships[0].ship->cargo[COMMODITY_FERRITE_ORE] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].ship.pos = w.stations[0].pos;
+    w.npc_ships[0].ship->pos = w.stations[0].pos;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* After fix: NPC should retain the 25 units it couldn't deposit.
      * FAILS because line 819 sets cargo[i] = 0.0f unconditionally. */
     if (w.npc_ships[0].state == NPC_STATE_DOCKED) {
-        ASSERT(w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] > 20.0f);
+        ASSERT(w.npc_ships[0].ship->cargo[COMMODITY_FERRITE_ORE] > 20.0f);
     }
 }
 
@@ -2133,25 +2147,28 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.players[0].ship.hull = 50.0f;
+    w.players[0].ship->hull = 50.0f;
     /* Drain any seeded kits to be sure both sources are empty. */
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_ship_finished_units(
+        w.players[0].ship, COMMODITY_REPAIR_KIT, 0,
+        MINING_GRADE_COMMON));
     ledger_earn(&w.stations[0], w.players[0].session_token, 1000.0f);
     float bal_before = ledger_balance(&w.stations[0],
                                       w.players[0].session_token);
-    w.players[0].ship.hull = 50.0f;
+    w.players[0].ship->hull = 50.0f;
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
     /* No kits = no heal, no charge. Passive heal was removed. */
     float bal_after = ledger_balance(&w.stations[0],
                                      w.players[0].session_token);
     ASSERT_EQ_FLOAT(bal_after, bal_before, 0.01f);
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, 50.0f, 0.01f);
 }
 
 TEST(test_bug53_npc_cargo_commodity_bounds) {
-    /* npc.cargo is now sized [COMMODITY_COUNT] (unified with player ship_t).
+    /* npc.ship->cargo is now sized [COMMODITY_COUNT] (unified with player ship_t).
      * Asteroids should only have raw ore commodities, but verify. */
     WORLD_DECL;
     world_reset(&w);
@@ -2180,7 +2197,7 @@ TEST(test_bug54_multiple_players_same_dock_position) {
     /* Both docked at station 0 */
     ASSERT(w.players[0].docked);
     ASSERT(w.players[1].docked);
-    float dist = v2_len(v2_sub(w.players[0].ship.pos, w.players[1].ship.pos));
+    float dist = v2_len(v2_sub(w.players[0].ship->pos, w.players[1].ship->pos));
     /* After fix: docked players should be offset so they don't overlap.
      * FAILS because both use the same dock_anchor position. */
     ASSERT(dist > 5.0f);
@@ -2191,9 +2208,9 @@ TEST(test_bug55_npc_deposits_at_non_refinery) {
     world_reset(&w);
     /* Reassign a miner's home to station 1 (Yard) */
     w.npc_ships[0].home_station = 1;
-    w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 20.0f;
+    w.npc_ships[0].ship->cargo[COMMODITY_FERRITE_ORE] = 20.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].ship.pos = w.stations[1].pos;
+    w.npc_ships[0].ship->pos = w.stations[1].pos;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* NPC docked at Yard and deposited ore into Yard's ore_buffer.
      * Yard doesn't smelt. The ore sits forever. */
@@ -2227,7 +2244,7 @@ TEST(test_bug57_ship_collision_restitution_energy) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.hull = 10000.0f;
+    w.players[0].ship->hull = 10000.0f;
     /* Place near an asteroid and ram it */
     int target = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2237,11 +2254,11 @@ TEST(test_bug57_ship_collision_restitution_energy) {
     }
     if (target < 0) { ASSERT(0); return; }
     vec2 toward = v2_norm(v2_sub(w.asteroids[target].pos, v2(0.0f, 0.0f)));
-    w.players[0].ship.pos = v2_sub(w.asteroids[target].pos, v2_scale(toward, w.asteroids[target].radius + 20.0f));
-    w.players[0].ship.vel = v2_scale(toward, 300.0f);
-    float ke_before = v2_len_sq(w.players[0].ship.vel);
+    w.players[0].ship->pos = v2_sub(w.asteroids[target].pos, v2_scale(toward, w.asteroids[target].radius + 20.0f));
+    w.players[0].ship->vel = v2_scale(toward, 300.0f);
+    float ke_before = v2_len_sq(w.players[0].ship->vel);
     world_sim_step(&w, SIM_DT);
-    float ke_after = v2_len_sq(w.players[0].ship.vel);
+    float ke_after = v2_len_sq(w.players[0].ship->vel);
     /* After fix: KE should decrease (restitution ≤ 1.0).
      * FAILS if the 1.2x multiplier adds energy. */
     ASSERT(ke_after <= ke_before * 1.01f); /* small epsilon */
@@ -2286,7 +2303,7 @@ TEST(test_bug59_emergency_recover_teleports) {
     world_sim_step(&w, SIM_DT);
     w.players[0].input.interact = false;
     w.players[0].docked = false;
-    w.players[0].ship.pos = v2_add(w.stations[2].pos, v2(80.0f, 0.0f)); /* inside dock ring of station 2 */
+    w.players[0].ship->pos = v2_add(w.stations[2].pos, v2(80.0f, 0.0f)); /* inside dock ring of station 2 */
     w.players[0].nearby_station = 2;
     w.players[0].current_station = 0; /* last docked at 0 */
     /* Place an asteroid just ahead for a head-on collision */
@@ -2297,10 +2314,10 @@ TEST(test_bug59_emergency_recover_teleports) {
     w.asteroids[0].hp = 100.0f;
     w.asteroids[0].max_hp = 100.0f;
     w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
-    w.asteroids[0].pos = v2_add(w.players[0].ship.pos, v2(50.0f, 0.0f));
+    w.asteroids[0].pos = v2_add(w.players[0].ship->pos, v2(50.0f, 0.0f));
     w.asteroids[0].vel = v2(-400.0f, 0.0f);
-    w.players[0].ship.hull = 0.1f;
-    w.players[0].ship.vel = v2(400.0f, 0.0f);
+    w.players[0].ship->hull = 0.1f;
+    w.players[0].ship->vel = v2(400.0f, 0.0f);
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* Player should recover at station 2 (nearest), not station 0 (last docked).
      * dock_ship uses nearby_station if >= 0, which is 2 here. So this should work. */
@@ -2325,8 +2342,8 @@ TEST(test_bug60_cannot_mine_fragment) {
     w.asteroids[0].max_ore = 10.0f;
     w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
     w.asteroids[0].pos = v2(100.0f, 0.0f);
-    w.players[0].ship.pos = v2(50.0f, 0.0f);
-    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship->pos = v2(50.0f, 0.0f);
+    w.players[0].ship->angle = 0.0f;
     w.players[0].input.mine = true;
     world_sim_step(&w, SIM_DT);
     /* sim_find_mining_target should skip TIER_S (collectible, not mineable).
@@ -2346,11 +2363,11 @@ TEST(test_bug88_interference_seed_no_world_time) {
     player_init_ship(&w2->players[0], w2);
     w1->players[0].connected = true; w2->players[0].connected = true;
     w1->players[0].docked = false; w2->players[0].docked = false;
-    w1->players[0].ship.pos = v2(500.0f, 0.0f);
-    w2->players[0].ship.pos = v2(500.0f, 0.0f);
-    w1->players[0].ship.angle = 0.0f; w2->players[0].ship.angle = 0.0f;
-    w1->players[0].ship.vel = v2(0.0f, 0.0f);
-    w2->players[0].ship.vel = v2(0.0f, 0.0f);
+    w1->players[0].ship->pos = v2(500.0f, 0.0f);
+    w2->players[0].ship->pos = v2(500.0f, 0.0f);
+    w1->players[0].ship->angle = 0.0f; w2->players[0].ship->angle = 0.0f;
+    w1->players[0].ship->vel = v2(0.0f, 0.0f);
+    w2->players[0].ship->vel = v2(0.0f, 0.0f);
     w1->players[0].input.turn = 1.0f; w2->players[0].input.turn = 1.0f;
     /* Place a large asteroid nearby to trigger interference */
     for (int i = 0; i < MAX_ASTEROIDS; i++) { w1->asteroids[i].active = false; w2->asteroids[i].active = false; }
@@ -2363,7 +2380,7 @@ TEST(test_bug88_interference_seed_no_world_time) {
     world_sim_step_player_only(w1, 0, SIM_DT);
     world_sim_step_player_only(w2, 0, SIM_DT);
     /* Ship angles should be identical despite different w->time */
-    ASSERT_EQ_FLOAT(w1->players[0].ship.angle, w2->players[0].ship.angle, 0.0001f);
+    ASSERT_EQ_FLOAT(w1->players[0].ship->angle, w2->players[0].ship->angle, 0.0001f);
 }
 
 TEST(test_bug89_gravity_symmetric) {
@@ -2518,7 +2535,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_towed_fragment_drift);
     RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
-    RUN(test_player_only_does_not_sync_ship_asset_registry);
+    RUN(test_player_only_ship_asset_references_live_component);
     RUN(test_player_only_ignores_authoritative_one_shots);
     RUN(test_bug48_titan_fracture_overflow);
     RUN(test_bug49_asteroid_sticks_to_station);

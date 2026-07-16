@@ -843,8 +843,8 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    int held = ship_finished_count(&sp->ship, COMMODITY_FRAME) +
-               ship_towed_pods_manifest_count(w, &sp->ship, COMMODITY_FRAME);
+    int held = ship_finished_count(sp->ship, COMMODITY_FRAME) +
+               ship_towed_pods_manifest_count(w, sp->ship, COMMODITY_FRAME);
     if (held <= 0) return;
     float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
     int needed = (int)ceilf(needed_f - 0.0001f);
@@ -853,13 +853,13 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     int accepted = 0;
     while (accepted < request) {
         int idx = -1;
-        for (uint16_t i = 0; i < sp->ship.manifest.count; i++) {
-            const cargo_unit_t *unit = &sp->ship.manifest.units[i];
+        for (uint16_t i = 0; i < sp->ship->manifest.count; i++) {
+            const cargo_unit_t *unit = &sp->ship->manifest.units[i];
             if (!unit || unit->commodity != (uint8_t)COMMODITY_FRAME)
                 continue;
             cargo_legality_result_t legality =
                 classify_ship_manifest_unit_at_station(
-                    w, &sp->ship, i, sp->current_station);
+                    w, sp->ship, i, sp->current_station);
             if (legality.status == CARGO_LEGALITY_CONTRABAND)
                 continue;
             idx = (int)i;
@@ -867,7 +867,7 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)idx,
+        if (!ship_manifest_remove_with_chain(sp->ship, (uint16_t)idx,
                                              &unit, NULL)) {
             break;
         }
@@ -880,7 +880,7 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     }
     while (accepted < request) {
         cargo_unit_t unit = {0};
-        if (!ship_towed_pods_take_manifest_unit(w, &sp->ship,
+        if (!ship_towed_pods_take_manifest_unit(w, sp->ship,
                                                 COMMODITY_FRAME, &unit)) {
             break;
         }
@@ -892,7 +892,7 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
         accepted++;
     }
     if (accepted > 0)
-        ship_finished_sync(&sp->ship, COMMODITY_FRAME);
+        ship_finished_sync(sp->ship, COMMODITY_FRAME);
     if (accepted <= 0) return;
     st->scaffold_progress += (float)accepted / SCAFFOLD_MATERIAL_NEEDED;
     SIM_LOG("[sim] player %d delivered %d frames to scaffold %d (progress %.0f%%)\n",
@@ -962,16 +962,10 @@ static void generate_outpost_name(char *out, size_t out_size, vec2 pos, int slot
 /* ================================================================== */
 
 static void clear_ship_cargo(ship_t *s) {
-    /* Wipe both the float side and the manifest. Without the manifest
-     * reset, an emergency-recover would leave phantom cargo_unit_t
-     * entries on the ship — the TRADE picker reads the manifest and
-     * would still surface "SELL Iron ingot" rows even though cargo[]
-     * was zero, so [3]/[4] would resolve to a row that produced
-     * nothing on the server. */
+    if (!s) return;
     memset(s->cargo, 0, sizeof(s->cargo));
-    s->manifest.count = 0;
-    if (s->manifest.units && s->manifest.cap > 0)
-        memset(s->manifest.units, 0, s->manifest.cap * sizeof(cargo_unit_t));
+    cargo_store_cleanup(&s->cargo_store);
+    (void)ship_manifest_bootstrap(s);
 }
 
 /* ================================================================== */
@@ -1083,7 +1077,7 @@ void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     if (!w || sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
         !station_exists(&w->stations[sp->current_station])) {
         sp->dock_berth = 0;
-        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship->vel = v2(0.0f, 0.0f);
         return;
     }
     const station_t *st = &w->stations[sp->current_station];
@@ -1092,19 +1086,19 @@ void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     if (nberths > 0) {
         if (sp->dock_berth < 0 || sp->dock_berth >= nberths)
             sp->dock_berth = sp->id % nberths;
-        sp->ship.pos = dock_berth_pos(st, sp->dock_berth);
-        sp->ship.angle = dock_berth_angle(st, sp->dock_berth);
+        sp->ship->pos = dock_berth_pos(st, sp->dock_berth);
+        sp->ship->angle = dock_berth_angle(st, sp->dock_berth);
     } else {
         /* Fallback: no dock modules, park near center */
-        const hull_def_t *hull = ship_hull_def(&sp->ship);
-        sp->ship.pos = v2_add(st->pos, v2(0.0f, -(st->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
+        const hull_def_t *hull = ship_hull_def(sp->ship);
+        sp->ship->pos = v2_add(st->pos, v2(0.0f, -(st->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
     }
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
 static void release_towed_scaffold(world_t *w, server_player_t *sp);
-static void remove_towed_pod_slot(ship_t *ship, int tow_slot);
+static void player_detach_all_tow_targets(world_t *w, server_player_t *sp);
 static void sync_docked_towed_pods(world_t *w, server_player_t *sp);
 static float apply_scaffold_tow_physics(server_player_t *sp,
                                         scaffold_t *sc,
@@ -1146,9 +1140,9 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     sp->docked = true;
     sp->in_dock_range = true;
     /* Release towed scaffold on dock — can't tow while docked */
-    if (sp->ship.towed_scaffold >= 0) release_towed_scaffold(w, sp);
+    if (sp->ship->towed_scaffold >= 0) release_towed_scaffold(w, sp);
     /* Keep ship at its current position (already in dock range) — just stop it */
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
     sync_docked_towed_pods(w, sp);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
     /* Track dock event for relationship data (#257). w->time is a
@@ -1160,13 +1154,10 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     /* Gossip-contract dock handshake: bidirectional set-union with the
      * station's known pool. Player ships are couriers in the gossip
      * protocol exactly like NPC haulers. The contract menu the player
-     * sees post-dock is sourced from the player's own known_contracts. */
+     * sees post-dock is sourced from the player's own knowledge view. */
     if (sp->current_station >= 0) {
         gossip_dock_handshake(w, sp->current_station,
-                              sp->ship.known_contracts,
-                              &sp->ship.known_contract_count,
-                              SHIP_KNOWN_CONTRACT_CAP,
-                              &sp->ship.knowledge);
+                              &sp->ship->knowledge);
         emit_dock_balance_response(w, sp, sp->current_station);
     }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
@@ -1186,6 +1177,521 @@ static bool ship_asset_pubkey_nonzero(const uint8_t pubkey[32]) {
     if (!pubkey) return false;
     for (int i = 0; i < 32; i++) if (pubkey[i]) return true;
     return false;
+}
+
+static uint16_t ship_slot_next_generation(uint16_t generation) {
+    generation++;
+    if (generation == 0) generation = 1;
+    return generation;
+}
+
+entity_ref_t world_ship_ref_for_slot(const world_t *w, int ship_slot) {
+    if (!w || ship_slot < 0 || ship_slot >= WORLD_SHIP_CAP ||
+        !w->ships[ship_slot].active || w->ships[ship_slot].generation == 0) {
+        return entity_ref_none();
+    }
+    return (entity_ref_t){
+        .kind = ENTITY_KIND_SHIP,
+        .index = (int16_t)ship_slot,
+        .part = -1,
+        .generation = w->ships[ship_slot].generation,
+    };
+}
+
+ship_t *world_ship_resolve(world_t *w, entity_ref_t ref) {
+    if (!w || ref.kind != ENTITY_KIND_SHIP || ref.index < 0 ||
+        ref.index >= WORLD_SHIP_CAP || ref.generation == 0) {
+        return NULL;
+    }
+    ship_slot_t *slot = &w->ships[ref.index];
+    return slot->active && slot->generation == ref.generation
+        ? &slot->component : NULL;
+}
+
+const ship_t *world_ship_resolve_const(const world_t *w, entity_ref_t ref) {
+    if (!w || ref.kind != ENTITY_KIND_SHIP || ref.part != -1 ||
+        ref.index < 0 || ref.index >= WORLD_SHIP_CAP ||
+        ref.generation == 0) {
+        return NULL;
+    }
+    const ship_slot_t *slot = &w->ships[ref.index];
+    if (!slot->active || slot->generation != ref.generation) return NULL;
+    return &slot->component;
+}
+
+static bool world_nonship_entity_active(const world_t *w, entity_kind_t kind,
+                                        int index, int part) {
+    if (!w) return false;
+    switch (kind) {
+    case ENTITY_KIND_ASTEROID:
+        return index >= 0 && index < MAX_ASTEROIDS && part == -1 &&
+               w->asteroids[index].active;
+    case ENTITY_KIND_CARGO_POD:
+        return index >= 0 && index < MAX_CARGO_PODS && part == -1 &&
+               w->cargo_pods[index].active;
+    case ENTITY_KIND_SCAFFOLD:
+        return index >= 0 && index < MAX_SCAFFOLDS && part == -1 &&
+               w->scaffolds[index].active;
+    case ENTITY_KIND_STATION_MODULE:
+        return index >= 0 && index < MAX_STATIONS && part >= 0 &&
+               part < w->stations[index].module_count &&
+               part < MAX_MODULES_PER_STATION &&
+               station_exists(&w->stations[index]);
+    default:
+        return false;
+    }
+}
+
+static bool world_nonship_generation_storage(
+    world_t *w, entity_kind_t kind, int index, int part,
+    uint16_t **out_generation, bool **out_live) {
+    if (!w || !out_generation || !out_live) return false;
+    switch (kind) {
+    case ENTITY_KIND_ASTEROID:
+        if (index < 0 || index >= MAX_ASTEROIDS || part != -1) return false;
+        *out_generation = &w->asteroid_generation[index];
+        *out_live = &w->asteroid_generation_live[index];
+        return true;
+    case ENTITY_KIND_CARGO_POD:
+        if (index < 0 || index >= MAX_CARGO_PODS || part != -1) return false;
+        *out_generation = &w->cargo_pod_generation[index];
+        *out_live = &w->cargo_pod_generation_live[index];
+        return true;
+    case ENTITY_KIND_SCAFFOLD:
+        if (index < 0 || index >= MAX_SCAFFOLDS || part != -1) return false;
+        *out_generation = &w->scaffold_generation[index];
+        *out_live = &w->scaffold_generation_live[index];
+        return true;
+    case ENTITY_KIND_STATION_MODULE:
+        if (index < 0 || index >= MAX_STATIONS || part < 0 ||
+            part >= MAX_MODULES_PER_STATION) return false;
+        *out_generation = &w->station_module_generation[index][part];
+        *out_live = &w->station_module_generation_live[index][part];
+        return true;
+    default:
+        return false;
+    }
+}
+
+entity_ref_t world_entity_ref_for_slot(world_t *w, entity_kind_t kind,
+                                       int index, int part) {
+    if (!w) return entity_ref_none();
+    if (kind == ENTITY_KIND_SHIP) return world_ship_ref_for_slot(w, index);
+    uint16_t *generation = NULL;
+    bool *generation_live = NULL;
+    if (!world_nonship_generation_storage(
+            w, kind, index, part, &generation, &generation_live) ||
+        !world_nonship_entity_active(w, kind, index, part)) {
+        if (generation_live) *generation_live = false;
+        return entity_ref_none();
+    }
+    if (!*generation_live) {
+        *generation = ship_slot_next_generation(*generation);
+        *generation_live = true;
+    }
+    return (entity_ref_t){
+        .kind = (uint8_t)kind,
+        .index = (int16_t)index,
+        .part = (int16_t)part,
+        .generation = *generation,
+    };
+}
+
+bool world_entity_ref_is_live(const world_t *w, entity_ref_t ref) {
+    if (!w || entity_ref_is_none(ref)) return false;
+    if (ref.kind == ENTITY_KIND_SHIP)
+        return world_ship_resolve_const(w, ref) != NULL;
+    if (!world_nonship_entity_active(
+            w, (entity_kind_t)ref.kind, ref.index, ref.part)) return false;
+    world_t *mutable_world = (world_t *)w;
+    uint16_t *generation = NULL;
+    bool *generation_live = NULL;
+    if (!world_nonship_generation_storage(
+            mutable_world, (entity_kind_t)ref.kind, ref.index, ref.part,
+            &generation, &generation_live)) return false;
+    return *generation_live && *generation == ref.generation;
+}
+
+static tractor_binding_t tractor_binding_for_source(entity_ref_t source) {
+    tractor_binding_t binding;
+    tractor_binding_clear(&binding);
+    if (source.kind == ENTITY_KIND_SHIP) {
+        if (source.index >= WORLD_PLAYER_SHIP_BASE &&
+            source.index < WORLD_NPC_SHIP_BASE) {
+            binding.kind = TRACTOR_SOURCE_PLAYER;
+            binding.source_index =
+                (int16_t)(source.index - WORLD_PLAYER_SHIP_BASE);
+        } else if (source.index >= WORLD_NPC_SHIP_BASE &&
+                   source.index < WORLD_SHIP_CAP) {
+            binding.kind = TRACTOR_SOURCE_NPC;
+            binding.source_index =
+                (int16_t)(source.index - WORLD_NPC_SHIP_BASE);
+        }
+        binding.source_generation = source.generation;
+    } else if (source.kind == ENTITY_KIND_STATION_MODULE) {
+        binding.kind = TRACTOR_SOURCE_STATION_MODULE;
+        binding.source_index = source.index;
+        binding.source_part = source.part;
+        binding.source_generation = source.generation;
+    }
+    return binding;
+}
+
+static void world_tow_project_target_binding(world_t *w,
+                                             entity_ref_t target,
+                                             tractor_binding_t binding) {
+    if (!w) return;
+    switch ((entity_kind_t)target.kind) {
+    case ENTITY_KIND_ASTEROID:
+        if (target.index >= 0 && target.index < MAX_ASTEROIDS)
+            w->asteroids[target.index].tractor = binding;
+        break;
+    case ENTITY_KIND_CARGO_POD:
+        if (target.index >= 0 && target.index < MAX_CARGO_PODS)
+            w->cargo_pods[target.index].tractor = binding;
+        break;
+    case ENTITY_KIND_SCAFFOLD:
+        if (target.index >= 0 && target.index < MAX_SCAFFOLDS)
+            w->scaffolds[target.index].tractor = binding;
+        break;
+    default:
+        break;
+    }
+}
+
+static void world_tow_rebuild_projections(world_t *w);
+static bool world_tow_source_is_live(const world_t *w, entity_ref_t source);
+
+tow_link_t *world_tow_link_for_target(world_t *w, entity_ref_t target) {
+    if (!w || entity_ref_is_none(target)) return NULL;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (link->active && entity_ref_equal(link->target, target)) return link;
+    }
+    return NULL;
+}
+
+const tow_link_t *world_tow_link_for_target_const(const world_t *w,
+                                                  entity_ref_t target) {
+    return world_tow_link_for_target((world_t *)w, target);
+}
+
+static bool world_tow_link_store(world_t *w, entity_ref_t source,
+                                 entity_ref_t target, tow_profile_t profile,
+                                 int slot, tow_link_state_t state) {
+    if (!w || !world_tow_source_is_live(w, source) ||
+        !world_entity_ref_is_live(w, target) || profile <= TOW_PROFILE_NONE ||
+        profile > TOW_PROFILE_MODULE_POD || slot < 0 || slot > UINT8_MAX ||
+        state <= TOW_LINK_INACTIVE || state > TOW_LINK_RELEASING) {
+        return false;
+    }
+    tow_link_t *link = world_tow_link_for_target(w, target);
+    if (!link) {
+        for (int i = 0; i < MAX_TOW_LINKS; i++) {
+            if (!w->tow_links[i].active) {
+                link = &w->tow_links[i];
+                break;
+            }
+        }
+    }
+    if (!link) return false;
+    *link = (tow_link_t){
+        .active = true,
+        .source = source,
+        .target = target,
+        .profile = (uint8_t)profile,
+        .slot = (uint8_t)slot,
+        .state = (uint8_t)state,
+    };
+    return true;
+}
+
+bool world_tow_link_set(world_t *w, entity_ref_t source,
+                        entity_ref_t target, tow_profile_t profile,
+                        int slot, tow_link_state_t state) {
+    if (!world_tow_link_store(w, source, target, profile, slot, state))
+        return false;
+    world_tow_rebuild_projections(w);
+    const tow_link_t *stored = world_tow_link_for_target_const(w, target);
+    return stored && entity_ref_equal(stored->source, source) &&
+           stored->profile == (uint8_t)profile;
+}
+
+bool world_tow_link_clear_target(world_t *w, entity_ref_t target) {
+    if (!w || entity_ref_is_none(target)) return false;
+    tow_link_t *link = world_tow_link_for_target(w, target);
+    bool found = link != NULL;
+    if (link) memset(link, 0, sizeof(*link));
+    world_tow_rebuild_projections(w);
+    return found;
+}
+
+void world_tow_links_clear_source(world_t *w, entity_ref_t source) {
+    if (!w || entity_ref_is_none(source)) return;
+    bool cleared = false;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (link->active && entity_ref_equal(link->source, source)) {
+            memset(link, 0, sizeof(*link));
+            cleared = true;
+        }
+    }
+    if (cleared) world_tow_rebuild_projections(w);
+}
+
+static void world_tow_links_clear_target_slot(world_t *w,
+                                              entity_kind_t kind,
+                                              int index,
+                                              int part) {
+    if (!w) return;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (link->active && link->target.kind == (uint8_t)kind &&
+            link->target.index == index && link->target.part == part) {
+            memset(link, 0, sizeof(*link));
+        }
+    }
+    world_tow_rebuild_projections(w);
+}
+
+bool world_asteroid_set_player_tractor(world_t *w, int asteroid_idx,
+                                       int player_idx) {
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS) return false;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+    return world_tow_link_set(
+        w, w->players[player_idx].ship_ref, target,
+        TOW_PROFILE_SHIP_FRAGMENT, 0, TOW_LINK_HELD);
+}
+
+bool world_asteroid_set_npc_tractor(world_t *w, int asteroid_idx,
+                                    int npc_idx) {
+    if (!w || npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) return false;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+    return world_tow_link_set(
+        w, w->npc_ships[npc_idx].ship_ref, target,
+        TOW_PROFILE_SHIP_FRAGMENT, 0, TOW_LINK_HELD);
+}
+
+void world_asteroid_clear_tractor(world_t *w, int asteroid_idx) {
+    if (!w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) return;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+    if (entity_ref_is_none(target)) {
+        world_tow_links_clear_target_slot(
+            w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+        asteroid_clear_tractor(&w->asteroids[asteroid_idx]);
+        return;
+    }
+    (void)world_tow_link_clear_target(w, target);
+}
+
+bool world_cargo_pod_set_player_tractor(world_t *w, int pod_idx,
+                                        int player_idx) {
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS) return false;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    return world_tow_link_set(
+        w, w->players[player_idx].ship_ref, target,
+        TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD);
+}
+
+bool world_cargo_pod_set_module_tractor(world_t *w, int pod_idx,
+                                        int station_idx, int module_idx) {
+    if (!w) return false;
+    entity_ref_t source = world_entity_ref_for_slot(
+        w, ENTITY_KIND_STATION_MODULE, station_idx, module_idx);
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    return world_tow_link_set(
+        w, source, target, TOW_PROFILE_MODULE_POD, 0, TOW_LINK_HELD);
+}
+
+void world_cargo_pod_clear_tractor(world_t *w, int pod_idx) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    if (entity_ref_is_none(target)) {
+        world_tow_links_clear_target_slot(
+            w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+        cargo_pod_clear_tractor(&w->cargo_pods[pod_idx]);
+        return;
+    }
+    (void)world_tow_link_clear_target(w, target);
+}
+
+void world_cargo_pod_clear_module_tractor(world_t *w, int pod_idx) {
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+        !cargo_pod_has_module_tractor(&w->cargo_pods[pod_idx])) return;
+    world_cargo_pod_clear_tractor(w, pod_idx);
+}
+
+bool world_scaffold_set_player_tractor(world_t *w, int scaffold_idx,
+                                       int player_idx) {
+    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS) return false;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_SCAFFOLD, scaffold_idx, -1);
+    return world_tow_link_set(
+        w, w->players[player_idx].ship_ref, target,
+        TOW_PROFILE_SHIP_SCAFFOLD, 0, TOW_LINK_HELD);
+}
+
+bool world_scaffold_set_npc_tractor(world_t *w, int scaffold_idx,
+                                    int npc_idx) {
+    if (!w || npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) return false;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_SCAFFOLD, scaffold_idx, -1);
+    return world_tow_link_set(
+        w, w->npc_ships[npc_idx].ship_ref, target,
+        TOW_PROFILE_SHIP_SCAFFOLD, 0, TOW_LINK_HELD);
+}
+
+void world_scaffold_clear_tractor(world_t *w, int scaffold_idx) {
+    if (!w || scaffold_idx < 0 || scaffold_idx >= MAX_SCAFFOLDS) return;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_SCAFFOLD, scaffold_idx, -1);
+    if (entity_ref_is_none(target)) {
+        world_tow_links_clear_target_slot(
+            w, ENTITY_KIND_SCAFFOLD, scaffold_idx, -1);
+        scaffold_clear_tractor(&w->scaffolds[scaffold_idx]);
+        return;
+    }
+    (void)world_tow_link_clear_target(w, target);
+}
+
+static bool world_ship_slot_activate(world_t *w, int ship_slot) {
+    if (!w || ship_slot < 0 || ship_slot >= WORLD_SHIP_CAP) return false;
+    ship_slot_t *slot = &w->ships[ship_slot];
+    if (slot->active) return true;
+    uint16_t generation = ship_slot_next_generation(slot->generation);
+    ship_cleanup(&slot->component);
+    memset(&slot->component, 0, sizeof(slot->component));
+    if (!ship_manifest_bootstrap(&slot->component)) return false;
+    slot->generation = generation;
+    slot->active = true;
+    return true;
+}
+
+static void world_ship_slot_release(world_t *w, int ship_slot) {
+    if (!w || ship_slot < 0 || ship_slot >= WORLD_SHIP_CAP) return;
+    ship_slot_t *slot = &w->ships[ship_slot];
+    if (slot->active)
+        world_tow_links_clear_source(w, world_ship_ref_for_slot(w, ship_slot));
+    if (slot->active) ship_cleanup(&slot->component);
+    memset(&slot->component, 0, sizeof(slot->component));
+    slot->active = false;
+}
+
+bool world_player_ship_slot_activate(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+    int ship_slot = WORLD_PLAYER_SHIP_BASE + player_slot;
+    if (!world_ship_slot_activate(w, ship_slot)) return false;
+    server_player_t *sp = &w->players[player_slot];
+    sp->ship_ref = world_ship_ref_for_slot(w, ship_slot);
+    sp->ship = world_ship_resolve(w, sp->ship_ref);
+    return sp->ship != NULL;
+}
+
+bool world_npc_ship_slot_activate(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return false;
+    int ship_slot = WORLD_NPC_SHIP_BASE + npc_slot;
+    if (!world_ship_slot_activate(w, ship_slot)) return false;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    npc->ship_ref = world_ship_ref_for_slot(w, ship_slot);
+    npc->ship = world_ship_resolve(w, npc->ship_ref);
+    return npc->ship != NULL;
+}
+
+void world_player_ship_slot_release(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    world_character_unbind_player(w, player_slot);
+    world_ship_slot_release(w, WORLD_PLAYER_SHIP_BASE + player_slot);
+    w->players[player_slot].ship_ref = entity_ref_none();
+    w->players[player_slot].ship = NULL;
+}
+
+void world_npc_ship_slot_release(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return;
+    int character_slot = MAX_PLAYERS + npc_slot;
+    if (w->characters[character_slot].actor_slot == npc_slot)
+        memset(&w->characters[character_slot], 0,
+               sizeof(w->characters[character_slot]));
+    world_ship_slot_release(w, WORLD_NPC_SHIP_BASE + npc_slot);
+    w->npc_ships[npc_slot].ship_ref = entity_ref_none();
+    w->npc_ships[npc_slot].ship = NULL;
+}
+
+ship_t *world_player_ship_for(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return NULL;
+    server_player_t *sp = &w->players[player_slot];
+    ship_t *ship = world_ship_resolve(w, sp->ship_ref);
+    if (ship) sp->ship = ship;
+    return ship;
+}
+
+const ship_t *world_player_ship_for_const(const world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return NULL;
+    return world_ship_resolve_const(w, w->players[player_slot].ship_ref);
+}
+
+ship_t *world_npc_ship_for(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active) return NULL;
+    ship_t *ship = world_ship_resolve(w, npc->ship_ref);
+    if (ship) npc->ship = ship;
+    return ship;
+}
+
+const ship_t *world_npc_ship_for_const(const world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
+    if (!w->npc_ships[npc_slot].active) return NULL;
+    return world_ship_resolve_const(w, w->npc_ships[npc_slot].ship_ref);
+}
+
+bool world_character_bind_player(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+    entity_ref_t ship_ref = w->players[player_slot].ship_ref;
+    if (!world_ship_resolve(w, ship_ref)) return false;
+    character_t *character = &w->characters[player_slot];
+    *character = (character_t){
+        .active = true,
+        .kind = CHARACTER_KIND_PLAYER,
+        .actor_slot = player_slot,
+        .ship_ref = ship_ref,
+    };
+    return true;
+}
+
+void world_character_unbind_player(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    character_t *character = &w->characters[player_slot];
+    if (character->kind == CHARACTER_KIND_PLAYER &&
+        character->actor_slot == player_slot) {
+        memset(character, 0, sizeof(*character));
+    }
+}
+
+void world_rebind_ship_controllers(world_t *w) {
+    if (!w) return;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        w->players[p].ship = world_ship_resolve(w, w->players[p].ship_ref);
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        w->npc_ships[n].ship =
+            world_ship_resolve(w, w->npc_ships[n].ship_ref);
+    }
+    for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
+        ship_asset_t *asset = &w->ship_assets[a];
+        if (!asset->active) {
+            asset->ship = NULL;
+        } else if (asset->status == SHIP_ASSET_STATUS_ASSIGNED) {
+            asset->ship = world_ship_resolve(w, asset->live_ship_ref);
+        } else {
+            asset->ship = &asset->stored_ship;
+        }
+    }
 }
 
 static int player_slot_for_ptr(const world_t *w, const server_player_t *sp) {
@@ -1245,6 +1751,25 @@ const ship_asset_t *world_ship_asset_by_id_const(const world_t *w, uint32_t asse
     return NULL;
 }
 
+ship_t *world_ship_asset_state(world_t *w, ship_asset_t *asset) {
+    if (!w || !asset || !asset->active) return NULL;
+    if (asset->status == SHIP_ASSET_STATUS_ASSIGNED) {
+        asset->ship = world_ship_resolve(w, asset->live_ship_ref);
+        return asset->ship;
+    }
+    asset->ship = &asset->stored_ship;
+    return asset->ship;
+}
+
+const ship_t *world_ship_asset_state_const(const world_t *w,
+                                            const ship_asset_t *asset) {
+    if (!w || !asset || !asset->active) return NULL;
+    if (asset->status == SHIP_ASSET_STATUS_ASSIGNED) {
+        return world_ship_resolve_const(w, asset->live_ship_ref);
+    }
+    return &asset->stored_ship;
+}
+
 static ship_asset_t *world_ship_asset_free_slot(world_t *w) {
     if (!w) return NULL;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
@@ -1295,7 +1820,7 @@ ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
                                     const uint8_t owner_session[8]) {
     ship_asset_t *asset = world_ship_asset_free_slot(w);
     if (!asset) return NULL;
-    ship_cleanup(&asset->ship);
+    ship_cleanup(&asset->stored_ship);
     memset(asset, 0, sizeof(*asset));
     asset->active = true;
     asset->asset_id = world_ship_asset_next_id(w);
@@ -1314,7 +1839,9 @@ ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
     asset->destroyed = false;
     if (owner_pubkey) memcpy(asset->owner_pubkey, owner_pubkey, 32);
     if (owner_session) memcpy(asset->owner_session, owner_session, 8);
-    ship_asset_init_ship(&asset->ship, asset->hull_class);
+    asset->live_ship_ref = entity_ref_none();
+    ship_asset_init_ship(&asset->stored_ship, asset->hull_class);
+    asset->ship = &asset->stored_ship;
     world_refresh_station_hull_inventories(w);
     return asset;
 }
@@ -1375,8 +1902,11 @@ bool world_player_release_ship_asset(world_t *w, int player_slot) {
         asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
         asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
         asset->operator_slot == player_slot) {
-        (void)ship_asset_copy_ship(&asset->ship, &sp->ship);
+        if (!sp->ship || !ship_asset_copy_ship(&asset->stored_ship, sp->ship))
+            return false;
         asset->status = SHIP_ASSET_STATUS_STORED;
+        asset->live_ship_ref = entity_ref_none();
+        asset->ship = &asset->stored_ship;
         asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
         asset->operator_slot = -1;
         int custody = sp->docked ? sp->current_station : sp->nearby_station;
@@ -1407,8 +1937,9 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
         return false;
     }
 
+    if (!src->ship || !world_player_ship_slot_activate(w, dst_slot)) return false;
     ship_t copied = {0};
-    if (!ship_copy(&copied, &src->ship)) return false;
+    if (!ship_copy(&copied, src->ship)) return false;
 
     uint32_t src_asset_id = src->ship_asset_id;
     if (dst->ship_asset_id != SHIP_ASSET_ID_NONE &&
@@ -1416,8 +1947,10 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
         (void)world_player_release_ship_asset(w, dst_slot);
     }
 
-    ship_cleanup(&dst->ship);
-    dst->ship = copied;
+    entity_ref_t src_ship_ref = src->ship_ref;
+    entity_ref_t dst_ship_ref = dst->ship_ref;
+    ship_cleanup(dst->ship);
+    *dst->ship = copied;
     dst->ship_asset_id = src_asset_id;
     dst->current_station = src->current_station;
     dst->nearby_station = src->nearby_station;
@@ -1430,11 +1963,21 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
         anchor_ship_in_station(dst, w);
 
     asset->operator_slot = (int16_t)dst_slot;
+    asset->live_ship_ref = dst->ship_ref;
+    asset->ship = dst->ship;
     (void)world_ship_asset_sync_from_player(w, dst);
 
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (link->active && entity_ref_equal(link->source, src_ship_ref))
+            link->source = dst_ship_ref;
+    }
+
     src->ship_asset_id = SHIP_ASSET_ID_NONE;
-    ship_cleanup(&src->ship);
-    memset(&src->ship, 0, sizeof(src->ship));
+    ship_cleanup(src->ship);
+    memset(src->ship, 0, sizeof(*src->ship));
+    (void)ship_manifest_bootstrap(src->ship);
+    world_tow_rebuild_projections(w);
     world_refresh_station_hull_inventories(w);
     return true;
 }
@@ -1455,9 +1998,13 @@ bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp) {
         w->players[asset->operator_slot].ship_asset_id == asset->asset_id) {
         return false;
     }
-    if (!ship_asset_copy_ship(&asset->ship, &sp->ship)) return false;
-    asset->hull_class = sp->ship.hull_class;
+    if (!sp->ship ||
+        (!entity_ref_is_none(asset->live_ship_ref) &&
+         !world_ship_resolve(w, asset->live_ship_ref))) return false;
+    asset->hull_class = sp->ship->hull_class;
     asset->operator_slot = (int16_t)player_slot;
+    asset->live_ship_ref = sp->ship_ref;
+    asset->ship = sp->ship;
     if (sp->docked && sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
         asset->custody_station = (int16_t)sp->current_station;
     return true;
@@ -1474,10 +2021,11 @@ bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot) {
         return false;
     }
     const ship_t *src = world_npc_ship_for(w, npc_slot);
-    if (!src) src = &npc->ship;
-    if (!ship_asset_copy_ship(&asset->ship, src)) return false;
-    asset->hull_class = asset->ship.hull_class;
+    if (!src) return false;
+    asset->hull_class = src->hull_class;
     asset->operator_slot = (int16_t)npc_slot;
+    asset->live_ship_ref = npc->ship_ref;
+    asset->ship = npc->ship;
     if (npc->state == NPC_STATE_DOCKED &&
         npc->home_station >= 0 && npc->home_station < MAX_STATIONS) {
         asset->custody_station = (int16_t)npc->home_station;
@@ -1525,6 +2073,8 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
           asset->operator_slot == player_slot)) {
         return false;
     }
+    if (!world_player_ship_slot_activate(w, player_slot)) return false;
+    player_detach_all_tow_targets(w, sp);
     if (sp->ship_asset_id != SHIP_ASSET_ID_NONE &&
         sp->ship_asset_id != asset->asset_id) {
         ship_asset_t *old_asset = world_ship_asset_by_id(w, sp->ship_asset_id);
@@ -1532,28 +2082,37 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
             old_asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
             old_asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
             old_asset->operator_slot == player_slot) {
-            (void)ship_asset_copy_ship(&old_asset->ship, &sp->ship);
+            if (!ship_asset_copy_ship(&old_asset->stored_ship, sp->ship))
+                return false;
             old_asset->status = SHIP_ASSET_STATUS_STORED;
+            old_asset->live_ship_ref = entity_ref_none();
+            old_asset->ship = &old_asset->stored_ship;
             old_asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
             old_asset->operator_slot = -1;
             if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
                 old_asset->custody_station = (int16_t)sp->current_station;
         }
     }
-    if (!ship_asset_copy_ship(&sp->ship, &asset->ship)) return false;
+    bool already_live =
+        asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+        asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+        asset->operator_slot == player_slot &&
+        world_ship_resolve(w, asset->live_ship_ref) == sp->ship;
+    if (!already_live &&
+        !ship_asset_copy_ship(sp->ship, &asset->stored_ship)) return false;
     sp->ship_asset_id = asset->asset_id;
-    if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
-        sp->ship.hull_class = asset->hull_class;
-    if (!(sp->ship.hull > 0.0f))
-        sp->ship.hull = ship_max_hull(&sp->ship);
-    if (sp->ship.comm_range <= 0.0f)
-        sp->ship.comm_range = 1500.0f;
-    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-    sp->ship.towed_count = 0;
-    sp->ship.towed_pod_count = 0;
-    sp->ship.towed_scaffold = -1;
-    sp->ship.tractor_active = false;
+    if (sp->ship->hull_class < 0 || sp->ship->hull_class >= HULL_CLASS_COUNT)
+        sp->ship->hull_class = asset->hull_class;
+    if (!(sp->ship->hull > 0.0f))
+        sp->ship->hull = ship_max_hull(sp->ship);
+    if (sp->ship->comm_range <= 0.0f)
+        sp->ship->comm_range = 1500.0f;
+    memset(sp->ship->towed_fragments, -1, sizeof(sp->ship->towed_fragments));
+    memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+    sp->ship->towed_count = 0;
+    sp->ship->towed_pod_count = 0;
+    sp->ship->towed_scaffold = -1;
+    sp->ship->tractor_active = false;
     sp->current_station = (station_idx >= 0 && station_idx < MAX_STATIONS)
         ? station_idx
         : asset->custody_station;
@@ -1567,17 +2126,20 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
     sp->docking_approach = false;
     sp->dock_berth = -1;
     anchor_ship_in_station(sp, w);
-    asset->hull_class = sp->ship.hull_class;
+    asset->hull_class = sp->ship->hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;
     asset->operator_slot = (int16_t)player_slot;
+    asset->live_ship_ref = sp->ship_ref;
+    asset->ship = sp->ship;
     asset->custody_station = (int16_t)sp->current_station;
+    if (!already_live) {
+        ship_cleanup(&asset->stored_ship);
+        memset(&asset->stored_ship, 0, sizeof(asset->stored_ship));
+    }
     (void)world_ship_asset_sync_from_player(w, sp);
     gossip_dock_handshake(w, sp->current_station,
-                          sp->ship.known_contracts,
-                          &sp->ship.known_contract_count,
-                          SHIP_KNOWN_CONTRACT_CAP,
-                          &sp->ship.knowledge);
+                          &sp->ship->knowledge);
     world_refresh_station_hull_inventories(w);
     return true;
 }
@@ -1664,9 +2226,12 @@ static void ship_asset_retire_player_asset(world_t *w, server_player_t *sp) {
     if (!w || !sp || sp->ship_asset_id == SHIP_ASSET_ID_NONE) return;
     ship_asset_t *asset = world_ship_asset_by_id(w, sp->ship_asset_id);
     if (!asset) return;
-    (void)ship_asset_copy_ship(&asset->ship, &sp->ship);
+    if (sp->ship)
+        (void)ship_asset_copy_ship(&asset->stored_ship, sp->ship);
     asset->destroyed = true;
     asset->status = SHIP_ASSET_STATUS_DESTROYED;
+    asset->live_ship_ref = entity_ref_none();
+    asset->ship = &asset->stored_ship;
     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
     asset->operator_slot = -1;
     sp->ship_asset_id = SHIP_ASSET_ID_NONE;
@@ -1685,6 +2250,8 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
             asset->status = SHIP_ASSET_STATUS_DESTROYED;
             asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
             asset->operator_slot = -1;
+            asset->live_ship_ref = entity_ref_none();
+            asset->ship = &asset->stored_ship;
             continue;
         }
         if (asset->status != SHIP_ASSET_STATUS_ASSIGNED) continue;
@@ -1702,11 +2269,20 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
                 w->npc_ships[slot].active &&
                 w->npc_ships[slot].ship_asset_id == asset->asset_id;
         }
-        if (valid_operator) continue;
+        if (valid_operator) {
+            asset->live_ship_ref =
+                asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER
+                    ? w->players[slot].ship_ref
+                    : w->npc_ships[slot].ship_ref;
+            asset->ship = world_ship_resolve(w, asset->live_ship_ref);
+            continue;
+        }
 
         asset->status = SHIP_ASSET_STATUS_STORED;
         asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
         asset->operator_slot = -1;
+        asset->live_ship_ref = entity_ref_none();
+        asset->ship = &asset->stored_ship;
         if (asset->custody_station < 0 ||
             asset->custody_station >= MAX_STATIONS) {
             if (asset->owner_station >= 0 &&
@@ -1735,12 +2311,13 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
             asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
             !asset->loaner) {
             const ship_t *src = world_npc_ship_for(w, n);
-            if (!src) src = &npc->ship;
-            (void)ship_asset_copy_ship(&asset->ship, src);
-            asset->hull_class = asset->ship.hull_class;
+            if (!src) { ok = false; continue; }
+            asset->hull_class = src->hull_class;
             asset->status = SHIP_ASSET_STATUS_ASSIGNED;
             asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
             asset->operator_slot = (int16_t)n;
+            asset->live_ship_ref = npc->ship_ref;
+            asset->ship = npc->ship;
             if (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                 asset->custody_station = (int16_t)npc->home_station;
             continue;
@@ -1751,16 +2328,23 @@ bool world_ship_assets_ensure_legacy_bindings(world_t *w) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active || npc->ship_asset_id != SHIP_ASSET_ID_NONE) continue;
         ship_asset_t *asset = world_ship_asset_mint(
-            w, npc->ship.hull_class, SHIP_ASSET_OWNER_STATION,
+            w, npc->ship->hull_class, SHIP_ASSET_OWNER_STATION,
             npc->home_station, npc->home_station,
             SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
         if (!asset) { ok = false; continue; }
         const ship_t *src = world_npc_ship_for(w, n);
-        if (!src) src = &npc->ship;
-        (void)ship_asset_copy_ship(&asset->ship, src);
+        if (!src) { ok = false; continue; }
+        if (!ship_asset_copy_ship(&asset->stored_ship, src)) {
+            ok = false;
+            continue;
+        }
         asset->status = SHIP_ASSET_STATUS_ASSIGNED;
         asset->operator_kind = SHIP_ASSET_OPERATOR_NPC;
         asset->operator_slot = (int16_t)n;
+        asset->live_ship_ref = npc->ship_ref;
+        asset->ship = npc->ship;
+        ship_cleanup(&asset->stored_ship);
+        memset(&asset->stored_ship, 0, sizeof(asset->stored_ship));
         npc->ship_asset_id = asset->asset_id;
     }
     world_refresh_station_hull_inventories(w);
@@ -1785,9 +2369,9 @@ static bool launch_candidate_clear(const world_t *w, int player_slot,
         if (p == player_slot) continue;
         const server_player_t *other = &w->players[p];
         if (!server_player_is_gameplay_ready(other) || other->docked) continue;
-        const hull_def_t *hull = ship_hull_def(&other->ship);
+        const hull_def_t *hull = ship_hull_def(other->ship);
         float min_d = radius + hull->ship_radius + 32.0f;
-        if (v2_dist_sq(pos, other->ship.pos) < min_d * min_d)
+        if (v2_dist_sq(pos, other->ship->pos) < min_d * min_d)
             return false;
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -1795,7 +2379,7 @@ static bool launch_candidate_clear(const world_t *w, int player_slot,
         if (!npc->active || npc->state == NPC_STATE_DOCKED) continue;
         const hull_def_t *hull = npc_hull_def(npc);
         float min_d = radius + hull->ship_radius + 32.0f;
-        if (v2_dist_sq(pos, npc->ship.pos) < min_d * min_d)
+        if (v2_dist_sq(pos, npc->ship->pos) < min_d * min_d)
             return false;
     }
     return true;
@@ -1874,14 +2458,14 @@ static void launch_ship(world_t *w, server_player_t *sp) {
             ? sp->nearby_station
             : 0;
     }
-    vec2 launch_pos = sp->ship.pos;
+    vec2 launch_pos = sp->ship->pos;
     int player_slot = player_slot_for_ptr(w, sp);
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
     sp->nearby_station = -1;
     sp->boost_hold_timer = 0.0f;
-    sp->ship.tractor_active = false;
+    sp->ship->tractor_active = false;
     /* Launch from the current docked position: no relocation, just an outward kick.
      * Preserve continuous flight input so controls respond immediately after
      * undock; one-shot launch/dock flags are cleared at the end of step_player. */
@@ -1893,52 +2477,398 @@ static void launch_ship(world_t *w, server_player_t *sp) {
         away = v2(0.0f, -1.0f);
         len = 1.0f;
     }
-    sp->ship.angle = fixp_atan2f(away.y, away.x);
-    sp->ship.vel = v2_scale(away, 95.0f / len);
+    sp->ship->angle = fixp_atan2f(away.y, away.x);
+    sp->ship->vel = v2_scale(away, 95.0f / len);
     SIM_LOG("[sim] player %d launched station=%d berth=%d pos=(%.1f,%.1f) vel=(%.1f,%.1f)\n",
             sp->id, sp->current_station, sp->dock_berth,
-            sp->ship.pos.x, sp->ship.pos.y,
-            sp->ship.vel.x, sp->ship.vel.y);
+            sp->ship->pos.x, sp->ship->pos.y,
+            sp->ship->vel.x, sp->ship->vel.y);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
 
-static void remove_towed_pod_slot(ship_t *ship, int tow_slot) {
-    if (!ship || tow_slot < 0 || tow_slot >= ship->towed_pod_count) return;
-    ship->towed_pod_count--;
-    ship->towed_pods[tow_slot] = ship->towed_pods[ship->towed_pod_count];
-    ship->towed_pods[ship->towed_pod_count] = -1;
+static int ship_towed_fragment_slot(const ship_t *ship, int asteroid_idx) {
+    if (!ship || asteroid_idx < 0) return -1;
+    int count = ship_towed_fragment_count(ship);
+    for (int t = 0; t < count; t++) {
+        if (ship->towed_fragments[t] == asteroid_idx) return t;
+    }
+    return -1;
+}
+
+/* Target bindings own live fragment custody. Ship arrays are projections
+ * used by tow physics, capacity, saves, and the existing wire protocol. */
+static bool player_attach_fragment(world_t *w, server_player_t *sp,
+                                   int asteroid_idx) {
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (!w || !sp || player_idx < 0 || asteroid_idx < 0 ||
+        asteroid_idx >= MAX_ASTEROIDS || !w->asteroids[asteroid_idx].active) {
+        return false;
+    }
+    asteroid_t *asteroid = &w->asteroids[asteroid_idx];
+    int owner = asteroid_tractor_player(asteroid);
+    if (asteroid_has_tractor(asteroid) && owner != player_idx) return false;
+
+    ship_t *ship = sp->ship;
+    int slot = ship_towed_fragment_slot(ship, asteroid_idx);
+    if (slot < 0) {
+        int cap = (int)(sizeof(ship->towed_fragments) /
+                        sizeof(ship->towed_fragments[0]));
+        if (ship->towed_count >= cap || ship_tow_body_space(ship) <= 0)
+            return false;
+        slot = ship->towed_count;
+    }
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+    return world_tow_link_set(
+        w, sp->ship_ref, target, TOW_PROFILE_SHIP_FRAGMENT,
+        slot, TOW_LINK_HELD);
+}
+
+static bool player_detach_fragment(world_t *w, server_player_t *sp,
+                                   int asteroid_idx) {
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (!w || !sp || player_idx < 0 || asteroid_idx < 0 ||
+        asteroid_idx >= MAX_ASTEROIDS) {
+        return false;
+    }
+    int slot = ship_towed_fragment_slot(sp->ship, asteroid_idx);
+    if (slot < 0) return false;
+    asteroid_t *asteroid = &w->asteroids[asteroid_idx];
+    if (asteroid_tractor_player(asteroid) == player_idx) {
+        entity_ref_t target = world_entity_ref_for_slot(
+            w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+        (void)world_tow_link_clear_target(w, target);
+    }
+    return true;
+}
+
+static int ship_towed_pod_slot(const ship_t *ship, int pod_idx) {
+    if (!ship || pod_idx < 0) return -1;
+    int count = ship->towed_pod_count;
+    int cap = (int)(sizeof(ship->towed_pods) / sizeof(ship->towed_pods[0]));
+    if (count > cap) count = cap;
+    for (int t = 0; t < count; t++) {
+        if (ship->towed_pods[t] == pod_idx) return t;
+    }
+    return -1;
+}
+
+/* Mutate both sides of a player/pod tractor relationship together. The
+ * target binding is authoritative; ship lists are compact source projections
+ * retained for capacity, save, and wire compatibility. */
+static bool player_attach_cargo_pod(world_t *w, server_player_t *sp,
+                                    int pod_idx) {
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (!w || !sp || player_idx < 0 ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+        !w->cargo_pods[pod_idx].active) {
+        return false;
+    }
+    ship_t *ship = sp->ship;
+    int slot = ship_towed_pod_slot(ship, pod_idx);
+    int cap = (int)(sizeof(ship->towed_pods) / sizeof(ship->towed_pods[0]));
+    if (slot < 0) {
+        if (ship->towed_pod_count >= cap || ship_tow_body_space(ship) <= 0)
+            return false;
+        slot = ship->towed_pod_count;
+    }
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    return world_tow_link_set(
+        w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD,
+        slot, TOW_LINK_HELD);
+}
+
+static bool player_detach_cargo_pod(world_t *w, server_player_t *sp,
+                                    int pod_idx) {
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (!w || !sp || player_idx < 0 ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
+    int slot = ship_towed_pod_slot(sp->ship, pod_idx);
+    if (slot < 0) return false;
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (cargo_pod_player_tractor(pod) == player_idx) {
+        entity_ref_t target = world_entity_ref_for_slot(
+            w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+        (void)world_tow_link_clear_target(w, target);
+    }
+    return true;
+}
+
+static void player_detach_all_tow_targets(world_t *w, server_player_t *sp) {
+    if (!w || !sp) return;
+    world_tow_links_clear_source(w, sp->ship_ref);
+}
+
+static tractor_binding_t *world_tow_target_binding(world_t *w,
+                                                   entity_kind_t kind,
+                                                   int index) {
+    if (!w) return NULL;
+    switch (kind) {
+    case ENTITY_KIND_ASTEROID:
+        return index >= 0 && index < MAX_ASTEROIDS
+            ? &w->asteroids[index].tractor : NULL;
+    case ENTITY_KIND_CARGO_POD:
+        return index >= 0 && index < MAX_CARGO_PODS
+            ? &w->cargo_pods[index].tractor : NULL;
+    case ENTITY_KIND_SCAFFOLD:
+        return index >= 0 && index < MAX_SCAFFOLDS
+            ? &w->scaffolds[index].tractor : NULL;
+    default:
+        return NULL;
+    }
+}
+
+static entity_ref_t world_tow_source_ref_from_binding(
+    world_t *w, tractor_binding_t binding) {
+    entity_ref_t source = entity_ref_none();
+    switch (binding.kind) {
+    case TRACTOR_SOURCE_PLAYER:
+        if (binding.source_index >= 0 && binding.source_index < MAX_PLAYERS &&
+            w->players[binding.source_index].connected) {
+            source = w->players[binding.source_index].ship_ref;
+        }
+        break;
+    case TRACTOR_SOURCE_NPC:
+        if (binding.source_index >= 0 &&
+            binding.source_index < MAX_NPC_SHIPS &&
+            w->npc_ships[binding.source_index].active) {
+            source = w->npc_ships[binding.source_index].ship_ref;
+        }
+        break;
+    case TRACTOR_SOURCE_STATION_MODULE:
+        source = world_entity_ref_for_slot(
+            w, ENTITY_KIND_STATION_MODULE, binding.source_index,
+            binding.source_part);
+        break;
+    default:
+        break;
+    }
+    if (!entity_ref_is_none(source) && binding.source_generation != 0 &&
+        binding.source_generation != source.generation) {
+        return entity_ref_none();
+    }
+    return source;
+}
+
+static bool world_tow_source_is_live(const world_t *w, entity_ref_t source) {
+    if (!world_entity_ref_is_live(w, source)) return false;
+    if (source.kind == ENTITY_KIND_SHIP) {
+        if (source.index >= WORLD_PLAYER_SHIP_BASE &&
+            source.index < WORLD_NPC_SHIP_BASE) {
+            return w->players[source.index - WORLD_PLAYER_SHIP_BASE].connected;
+        }
+        if (source.index >= WORLD_NPC_SHIP_BASE &&
+            source.index < WORLD_SHIP_CAP) {
+            return w->npc_ships[source.index - WORLD_NPC_SHIP_BASE].active;
+        }
+        return false;
+    }
+    return source.kind == ENTITY_KIND_STATION_MODULE;
+}
+
+static tow_profile_t world_tow_profile_for(entity_ref_t source,
+                                           entity_ref_t target) {
+    if (source.kind == ENTITY_KIND_STATION_MODULE &&
+        target.kind == ENTITY_KIND_CARGO_POD)
+        return TOW_PROFILE_MODULE_POD;
+    if (source.kind != ENTITY_KIND_SHIP) return TOW_PROFILE_NONE;
+    switch ((entity_kind_t)target.kind) {
+    case ENTITY_KIND_ASTEROID: return TOW_PROFILE_SHIP_FRAGMENT;
+    case ENTITY_KIND_CARGO_POD: return TOW_PROFILE_SHIP_POD;
+    case ENTITY_KIND_SCAFFOLD: return TOW_PROFILE_SHIP_SCAFFOLD;
+    default: return TOW_PROFILE_NONE;
+    }
+}
+
+static int world_tow_projection_slot(const world_t *w, entity_ref_t source,
+                                     entity_ref_t target) {
+    if (!w || source.kind != ENTITY_KIND_SHIP) return 0;
+    const ship_t *ship = world_ship_resolve_const(w, source);
+    if (!ship) return 0;
+    if (target.kind == ENTITY_KIND_ASTEROID) {
+        for (int i = 0; i < ship_towed_fragment_count(ship); i++)
+            if (ship->towed_fragments[i] == target.index) return i;
+    } else if (target.kind == ENTITY_KIND_CARGO_POD) {
+        int count = ship->towed_pod_count;
+        int cap = (int)(sizeof(ship->towed_pods) / sizeof(ship->towed_pods[0]));
+        if (count > cap) count = cap;
+        for (int i = 0; i < count; i++)
+            if (ship->towed_pods[i] == target.index) return i;
+    }
+    return 0;
+}
+
+static void world_tow_refresh_generation_liveness(world_t *w) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (!w->asteroids[i].active) w->asteroid_generation_live[i] = false;
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        if (!w->cargo_pods[i].active) w->cargo_pod_generation_live[i] = false;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        if (!w->scaffolds[i].active) w->scaffold_generation_live[i] = false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+            if (!station_exists(&w->stations[s]) ||
+                m >= w->stations[s].module_count) {
+                w->station_module_generation_live[s][m] = false;
+            }
+        }
+    }
+}
+
+static void world_tow_import_target_projection(world_t *w,
+                                               entity_kind_t target_kind,
+                                               int target_index) {
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, target_kind, target_index, -1);
+    if (entity_ref_is_none(target)) return;
+    tractor_binding_t *binding = world_tow_target_binding(
+        w, target_kind, target_index);
+    if (!binding) return;
+    tow_link_t *existing = world_tow_link_for_target(w, target);
+    if (binding->kind == TRACTOR_SOURCE_NONE) {
+        if (existing) memset(existing, 0, sizeof(*existing));
+        return;
+    }
+    entity_ref_t source = world_tow_source_ref_from_binding(w, *binding);
+    tow_profile_t profile = world_tow_profile_for(source, target);
+    if (entity_ref_is_none(source) || profile == TOW_PROFILE_NONE) {
+        if (existing) memset(existing, 0, sizeof(*existing));
+        tractor_binding_clear(binding);
+        return;
+    }
+    if (existing && entity_ref_equal(existing->source, source) &&
+        existing->profile == profile) return;
+    int slot = world_tow_projection_slot(w, source, target);
+    (void)world_tow_link_store(
+        w, source, target, profile, slot, TOW_LINK_HELD);
+}
+
+static bool world_tow_project_link(world_t *w, tow_link_t *link) {
+    if (!w || !link || !link->active ||
+        !world_tow_source_is_live(w, link->source) ||
+        !world_entity_ref_is_live(w, link->target) ||
+        world_tow_profile_for(link->source, link->target) != link->profile) {
+        return false;
+    }
+    tractor_binding_t binding = tractor_binding_for_source(link->source);
+    ship_t *ship = link->source.kind == ENTITY_KIND_SHIP
+        ? world_ship_resolve(w, link->source) : NULL;
+    switch ((tow_profile_t)link->profile) {
+    case TOW_PROFILE_SHIP_FRAGMENT:
+        if (!ship) return false;
+        if (link->source.index >= WORLD_NPC_SHIP_BASE) {
+            if (ship->towed_count > 0) return false;
+            link->slot = 0;
+        } else {
+            int cap = (int)(sizeof(ship->towed_fragments) /
+                            sizeof(ship->towed_fragments[0]));
+            if (ship->towed_count >= cap || ship_tow_body_space(ship) <= 0)
+                return false;
+            link->slot = ship->towed_count;
+        }
+        ship->towed_fragments[ship->towed_count++] = link->target.index;
+        break;
+    case TOW_PROFILE_SHIP_POD: {
+        if (!ship || link->source.index >= WORLD_NPC_SHIP_BASE) return false;
+        int cap = (int)(sizeof(ship->towed_pods) /
+                        sizeof(ship->towed_pods[0]));
+        if (ship->towed_pod_count >= cap || ship_tow_body_space(ship) <= 0)
+            return false;
+        link->slot = ship->towed_pod_count;
+        ship->towed_pods[ship->towed_pod_count++] = link->target.index;
+        break;
+    }
+    case TOW_PROFILE_SHIP_SCAFFOLD:
+        if (!ship || ship->towed_scaffold >= 0) return false;
+        link->slot = 0;
+        ship->towed_scaffold = link->target.index;
+        break;
+    case TOW_PROFILE_MODULE_POD:
+        link->slot = 0;
+        break;
+    default:
+        return false;
+    }
+    world_tow_project_target_binding(w, link->target, binding);
+    return true;
+}
+
+static void world_tow_rebuild_projections(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        tractor_binding_clear(&w->asteroids[i].tractor);
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        tractor_binding_clear(&w->cargo_pods[i].tractor);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        tractor_binding_clear(&w->scaffolds[i].tractor);
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        if (!w->ships[i].active) continue;
+        ship_t *ship = &w->ships[i].component;
+        ship->towed_count = 0;
+        ship->towed_pod_count = 0;
+        ship->towed_scaffold = -1;
+        memset(ship->towed_fragments, -1, sizeof(ship->towed_fragments));
+        memset(ship->towed_pods, -1, sizeof(ship->towed_pods));
+    }
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (link->active && !world_tow_project_link(w, link))
+            memset(link, 0, sizeof(*link));
+    }
+}
+
+void world_tow_links_reconcile(world_t *w) {
+    if (!w) return;
+    world_tow_refresh_generation_liveness(w);
+
+    /* Target-side fields are accepted only as compatibility commands from
+     * save readers, tests, and older subsystem call sites. They are imported
+     * once, then all live projections are cleared and rebuilt from links. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (w->asteroids[i].active)
+            world_tow_import_target_projection(w, ENTITY_KIND_ASTEROID, i);
+    for (int i = 0; i < MAX_CARGO_PODS; i++)
+        if (w->cargo_pods[i].active)
+            world_tow_import_target_projection(w, ENTITY_KIND_CARGO_POD, i);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        if (w->scaffolds[i].active)
+            world_tow_import_target_projection(w, ENTITY_KIND_SCAFFOLD, i);
+
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (!link->active) continue;
+        if (!world_tow_source_is_live(w, link->source) ||
+            !world_entity_ref_is_live(w, link->target)) {
+            memset(link, 0, sizeof(*link));
+        }
+    }
+
+    world_tow_rebuild_projections(w);
+}
+
+static void reconcile_tractor_relationships(world_t *w) {
+    world_tow_links_reconcile(w);
 }
 
 static void sync_docked_towed_pods(world_t *w, server_player_t *sp) {
     if (!w || !sp) return;
-    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
-                        sizeof(sp->ship.towed_pods[0]));
-    if (sp->ship.towed_pod_count > pod_cap)
-        sp->ship.towed_pod_count = (uint8_t)pod_cap;
-
-    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
-    float sync_range = fmaxf(180.0f, ship_tractor_range(&sp->ship) * 1.5f);
+    vec2 pod_dir = v2_from_angle(sp->ship->angle + PI_F);
+    float sync_range = fmaxf(180.0f, ship_tractor_range(sp->ship) * 1.5f);
     float sync_range_sq = sync_range * sync_range;
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
-            remove_towed_pod_slot(&sp->ship, t);
-            t--;
+    for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active)
             continue;
-        }
         cargo_pod_t *pod = &w->cargo_pods[idx];
-        if (cargo_pod_has_module_tractor(pod)) {
-            remove_towed_pod_slot(&sp->ship, t);
-            t--;
-            continue;
-        }
-        if (v2_dist_sq(pod->pos, sp->ship.pos) > sync_range_sq)
+        if (cargo_pod_has_module_tractor(pod)) continue;
+        int player_idx = player_slot_for_ptr(w, sp);
+        if (cargo_pod_player_tractor(pod) != player_idx) continue;
+        if (v2_dist_sq(pod->pos, sp->ship->pos) > sync_range_sq)
             continue;
         float spacing = 46.0f + 8.0f * (float)t;
-        pod->towed_by = (int8_t)sp->id;
-        cargo_pod_clear_module_tractor(pod);
-        pod->pos = v2_add(sp->ship.pos, v2_scale(pod_dir, spacing));
-        pod->vel = sp->ship.vel;
+        pod->pos = v2_add(sp->ship->pos, v2_scale(pod_dir, spacing));
+        pod->vel = sp->ship->vel;
     }
 }
 
@@ -1956,7 +2886,7 @@ static bool station_dock_can_tractor_trade_pod(const station_t *st,
                                                int module_idx,
                                                const cargo_pod_t *pod) {
     if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
-        pod->towed_by >= 0 || module_idx < 0 ||
+        cargo_pod_has_player_tractor(pod) || module_idx < 0 ||
         module_idx >= st->module_count ||
         module_idx >= MAX_MODULES_PER_STATION) {
         return false;
@@ -2008,11 +2938,12 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
     int dock_idx = station_first_dock_module(st);
     if (dock_idx < 0) return false;
 
-    pod->towed_by = -1;
+    world_cargo_pod_clear_tractor(w, pod_idx);
     cargo_pod_set_station_custody(pod, station_idx);
-    cargo_pod_set_module_tractor(pod, station_idx, dock_idx);
+    if (!world_cargo_pod_set_module_tractor(
+            w, pod_idx, station_idx, dock_idx)) return false;
 
-    st->module_active_pulse[dock_idx] = 1.0f;
+    st->modules[dock_idx].active_pulse = 1.0f;
     return true;
 }
 
@@ -2052,7 +2983,7 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     float rotation = pod->rotation;
     float spin = pod->spin;
     float age = pod->age;
-    int8_t towed_by = pod->towed_by;
+    tractor_binding_t tractor = pod->tractor;
 
     memset(pod, 0, sizeof(*pod));
     pod->active = true;
@@ -2067,7 +2998,7 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     pod->rotation = rotation;
     pod->spin = spin;
     pod->age = age;
-    pod->towed_by = towed_by;
+    pod->tractor = tractor;
     return true;
 }
 
@@ -2103,9 +3034,8 @@ bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
         pod->quantity--;
         if (pod->manifest_count == 0) {
             if (!cargo_pod_fold_shell_to_frame(pod)) {
+                world_cargo_pod_clear_tractor(w, idx);
                 memset(pod, 0, sizeof(*pod));
-                pod->towed_by = -1;
-                remove_towed_pod_slot(ship, t);
             }
         }
         return true;
@@ -2133,7 +3063,7 @@ int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
         pod->rotation = rand_range(&w->rng, 0.0f, TWO_PI_F);
         pod->spin = rand_range(&w->rng, -1.4f, 1.4f);
         pod->age = 0.0f;
-        pod->towed_by = -1;
+        world_cargo_pod_clear_tractor(w, i);
         return i;
     }
     return -1;
@@ -2182,7 +3112,7 @@ static int spawn_cargo_pod_with_manifest_internal(world_t *w, vec2 pos,
         pod->rotation = rotation;
         pod->spin = spin;
         pod->age = 0.0f;
-        pod->towed_by = -1;
+        world_cargo_pod_clear_tractor(w, i);
         return i;
     }
     return -1;
@@ -2217,19 +3147,52 @@ int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
 
 static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
     if (!w || !sp) return;
-    for (int c = 0; c < COMMODITY_COUNT; c++) {
-        int units = (int)floorf(sp->ship.cargo[c] + 0.0001f);
+    /* Raw ore exists only in the explicit compatibility hopper. */
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+        int units = (int)floorf(ship_cargo_amount(sp->ship,
+                                                 (commodity_t)c) + 0.0001f);
         while (units > 0) {
             int q = units > 20 ? 20 : units;
             float angle = ((float)c * 1.618f) + (float)units * 0.37f;
-            float dist = ship_hull_def(&sp->ship)->ship_radius + 32.0f +
+            float dist = ship_hull_def(sp->ship)->ship_radius + 32.0f +
                          (float)(units % 5) * 7.0f;
             vec2 dir = v2_from_angle(angle);
-            vec2 pos = v2_add(sp->ship.pos, v2_scale(dir, dist));
-            vec2 vel = v2_add(sp->ship.vel, v2_scale(dir, 35.0f));
+            vec2 pos = v2_add(sp->ship->pos, v2_scale(dir, dist));
+            vec2 vel = v2_add(sp->ship->vel, v2_scale(dir, 35.0f));
             (void)spawn_cargo_pod(w, pos, vel, (commodity_t)c, (uint16_t)q,
                                   CARGO_POD_CARGO);
             units -= q;
+        }
+    }
+    /* Finished cargo keeps its exact unit identity in physical death-drop
+     * pods; no synthetic quantity can replace manifest provenance. */
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+        cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
+        uint16_t count = 0;
+        for (uint16_t i = 0; i < sp->ship->manifest.count; i++) {
+            const cargo_unit_t *unit = &sp->ship->manifest.units[i];
+            if (unit->commodity != (uint8_t)c) continue;
+            units[count++] = *unit;
+            if (count < CARGO_POD_MANIFEST_CAP) continue;
+            float angle = ((float)c * 1.618f) + (float)i * 0.37f;
+            vec2 dir = v2_from_angle(angle);
+            vec2 pos = v2_add(sp->ship->pos, v2_scale(dir,
+                ship_hull_def(sp->ship)->ship_radius + 32.0f));
+            vec2 vel = v2_add(sp->ship->vel, v2_scale(dir, 35.0f));
+            (void)spawn_cargo_pod_with_manifest(
+                w, pos, vel, (commodity_t)c, units, count,
+                CARGO_POD_CARGO);
+            count = 0;
+        }
+        if (count > 0) {
+            float angle = ((float)c * 1.618f) + (float)count * 0.37f;
+            vec2 dir = v2_from_angle(angle);
+            vec2 pos = v2_add(sp->ship->pos, v2_scale(dir,
+                ship_hull_def(sp->ship)->ship_radius + 32.0f));
+            vec2 vel = v2_add(sp->ship->vel, v2_scale(dir, 35.0f));
+            (void)spawn_cargo_pod_with_manifest(
+                w, pos, vel, (commodity_t)c, units, count,
+                CARGO_POD_CARGO);
         }
     }
 }
@@ -2280,7 +3243,7 @@ static int world_seed_frame_pod_near(world_t *w,
         pod->radius = 18.0f;
         pod->rotation = rotation;
         pod->spin = 0.0f;
-        pod->towed_by = -1;
+        world_cargo_pod_clear_tractor(w, i);
         return i;
     }
     return -1;
@@ -2354,15 +3317,19 @@ static bool world_has_starter_frame_unit(const world_t *w,
                 return true;
         }
     }
-    for (int n = 0; n < MAX_SHIPS; n++) {
-        const ship_t *ship = &w->ships[n];
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        const ship_t *ship = w->npc_ships[n].ship;
         for (uint16_t u = 0; u < ship->manifest.count; u++) {
             if (starter_frame_unit_matches(&ship->manifest.units[u], origin))
                 return true;
         }
     }
     for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
-        const ship_t *ship = &w->ship_assets[a].ship;
+        if (!w->ship_assets[a].active) continue;
+        const ship_t *ship =
+            world_ship_asset_state_const(w, &w->ship_assets[a]);
+        if (!ship) continue;
         for (uint16_t u = 0; u < ship->manifest.count; u++) {
             if (starter_frame_unit_matches(&ship->manifest.units[u], origin))
                 return true;
@@ -2429,8 +3396,9 @@ static bool world_has_starter_laser_module_index(const world_t *w,
             }
         }
     }
-    for (int n = 0; n < MAX_SHIPS; n++) {
-        const ship_t *ship = &w->ships[n];
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        const ship_t *ship = w->npc_ships[n].ship;
         for (uint16_t u = 0; u < ship->manifest.count; u++) {
             if (starter_laser_module_unit_matches(&ship->manifest.units[u],
                                                   index)) {
@@ -2439,7 +3407,10 @@ static bool world_has_starter_laser_module_index(const world_t *w,
         }
     }
     for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
-        const ship_t *ship = &w->ship_assets[a].ship;
+        if (!w->ship_assets[a].active) continue;
+        const ship_t *ship =
+            world_ship_asset_state_const(w, &w->ship_assets[a]);
+        if (!ship) continue;
         for (uint16_t u = 0; u < ship->manifest.count; u++) {
             if (starter_laser_module_unit_matches(&ship->manifest.units[u],
                                                   index)) {
@@ -2597,7 +3568,7 @@ static bool station_intake_pay_for_pod(world_t *w,
     } else {
         ledger_earn(st, sp->session_token, value);
     }
-    sp->ship.stat_credits_earned += value;
+    sp->ship->stat_credits_earned += value;
     cargo_pod_set_station_custody(pod, station_idx);
 
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -2639,12 +3610,10 @@ try_sell_towed_pods(world_t *w, server_player_t *sp,
         return 0.0f;
     }
 
-    for (int t = sp->ship.towed_pod_count - 1; t >= 0; t--) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
-            remove_towed_pod_slot(&sp->ship, t);
+    for (int t = sp->ship->towed_pod_count - 1; t >= 0; t--) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active)
             continue;
-        }
         cargo_pod_t *pod = &w->cargo_pods[idx];
         if (pod->shipment_id != 0) continue;
         commodity_t c = pod->commodity;
@@ -2653,9 +3622,8 @@ try_sell_towed_pods(world_t *w, server_player_t *sp,
 
         int units = (int)pod->quantity;
         if (units <= 0) {
+            world_cargo_pod_clear_tractor(w, idx);
             memset(pod, 0, sizeof(*pod));
-            pod->towed_by = -1;
-            remove_towed_pod_slot(&sp->ship, t);
             continue;
         }
         int contract_idx = -1;
@@ -2706,7 +3674,7 @@ try_sell_towed_pods(world_t *w, server_player_t *sp,
         if (value <= FLOAT_EPSILON) continue;
         if (!cargo_pod_set_station_dock_custody(w, idx, station_idx))
             continue;
-        remove_towed_pod_slot(&sp->ship, t);
+        (void)player_detach_cargo_pod(w, sp, idx);
 
         if (server_player_can_use_pubkey_persistence(sp)) {
             ledger_earn_by_pubkey(st, sp->pubkey, value);
@@ -2714,7 +3682,7 @@ try_sell_towed_pods(world_t *w, server_player_t *sp,
         } else {
             ledger_earn(st, sp->session_token, value);
         }
-        sp->ship.stat_credits_earned += value;
+        sp->ship->stat_credits_earned += value;
         payout += value;
         if (matched_contract) {
             matched_contract->quantity_needed -= (float)sell_units;
@@ -2824,7 +3792,7 @@ static int try_buy_station_market_pod(world_t *w,
     }
     if (best_idx < 0) return 0;
 
-    int tow_space = ship_tow_body_space(&sp->ship);
+    int tow_space = ship_tow_body_space(sp->ship);
     if (tow_space <= 0) {
         SIM_LOG("[buy-pod] REJECT: tow slots full for c=%d\n", (int)commodity);
         return -1;
@@ -2832,13 +3800,11 @@ static int try_buy_station_market_pod(world_t *w,
 
     cargo_pod_t *pod = &w->cargo_pods[best_idx];
     cargo_pod_set_station_custody(pod, station_idx);
-    cargo_pod_clear_module_tractor(pod);
-    pod->towed_by = (int8_t)sp->id;
-    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
-    float spacing = 46.0f + 8.0f * (float)sp->ship.towed_pod_count;
-    pod->pos = v2_add(sp->ship.pos, v2_scale(pod_dir, spacing));
-    pod->vel = sp->ship.vel;
-    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)best_idx;
+    if (!player_attach_cargo_pod(w, sp, best_idx)) return -1;
+    vec2 pod_dir = v2_from_angle(sp->ship->angle + PI_F);
+    float spacing = 46.0f + 8.0f * (float)sp->ship->towed_pod_count;
+    pod->pos = v2_add(sp->ship->pos, v2_scale(pod_dir, spacing));
+    pod->vel = sp->ship->vel;
 
     SIM_LOG("[buy-pod] OK player %d released station-held %s pod (%u units, charge on exit) at %s\n",
             sp->id, commodity_short_name(commodity),
@@ -2893,23 +3859,24 @@ static bool charge_station_owned_pod_if_due(world_t *w,
                                             cargo_pod_t *pod) {
     (void)pod_idx;
     int station_idx = cargo_pod_custody_station(pod);
-    if (!w || !pod || station_idx < 0 || pod->towed_by < 0 ||
-        pod->towed_by >= MAX_PLAYERS) {
+    int player_idx = cargo_pod_player_tractor(pod);
+    if (!w || !pod || station_idx < 0 || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS) {
         return false;
     }
     if (station_owned_pod_inside_charge_boundary(w, station_idx, pod))
         return false;
 
-    server_player_t *sp = &w->players[pod->towed_by];
+    server_player_t *sp = &w->players[player_idx];
     if (!sp->connected) return false;
     station_t *st = &w->stations[station_idx];
     float cost = station_market_pod_sell_quote(st, pod);
     if (cost <= FLOAT_EPSILON) return false;
 
     if (server_player_can_use_pubkey_persistence(sp)) {
-        ledger_force_debit_by_pubkey(st, sp->pubkey, cost, &sp->ship);
+        ledger_force_debit_by_pubkey(st, sp->pubkey, cost, sp->ship);
     } else {
-        ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+        ledger_force_debit(st, sp->session_token, cost, sp->ship);
     }
     cargo_pod_clear_station_custody(pod);
 
@@ -2952,7 +3919,7 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     float best_d = 1e18f;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_exists(&w->stations[i])) continue;
-        float d = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
+        float d = v2_dist_sq(sp->ship->pos, w->stations[i].pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     /* Charge the spawn fee against THAT station's ledger. Force-debit so
@@ -2965,24 +3932,24 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     int fee = station_spawn_fee(&w->stations[best]);
     if (server_player_can_use_pubkey_persistence(sp)) {
         ledger_force_debit_by_pubkey(&w->stations[best], sp->pubkey,
-                                     (float)fee, &sp->ship);
+                                     (float)fee, sp->ship);
     } else {
         ledger_force_debit(&w->stations[best], sp->session_token,
-                           (float)fee, &sp->ship);
+                           (float)fee, sp->ship);
     }
 
     sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
         .death = {
-            .ore_mined = sp->ship.stat_ore_mined,
-            .credits_earned = sp->ship.stat_credits_earned,
-            .credits_spent = sp->ship.stat_credits_spent,
-            .asteroids_fractured = sp->ship.stat_asteroids_fractured,
-            .pos_x = sp->ship.pos.x,
-            .pos_y = sp->ship.pos.y,
-            .vel_x = sp->ship.vel.x,
-            .vel_y = sp->ship.vel.y,
-            .angle = sp->ship.angle,
+            .ore_mined = sp->ship->stat_ore_mined,
+            .credits_earned = sp->ship->stat_credits_earned,
+            .credits_spent = sp->ship->stat_credits_spent,
+            .asteroids_fractured = sp->ship->stat_asteroids_fractured,
+            .pos_x = sp->ship->pos.x,
+            .pos_y = sp->ship->pos.y,
+            .vel_x = sp->ship->vel.x,
+            .vel_y = sp->ship->vel.y,
+            .angle = sp->ship->angle,
             .cause = sp->last_damage_cause,
             .respawn_station = (uint8_t)best,
             .respawn_fee = (float)fee,
@@ -2995,17 +3962,8 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     /* Reset attribution for next life. */
     memset(sp->last_damage_killer_token, 0, 8);
     sp->last_damage_cause = DEATH_CAUSE_UNKNOWN;
-    clear_ship_cargo(&sp->ship);
-    /* Release towed fragments */
-    sp->ship.towed_count = 0;
-    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx >= 0 && idx < MAX_CARGO_PODS && w->cargo_pods[idx].active)
-            w->cargo_pods[idx].towed_by = -1;
-    }
-    sp->ship.towed_pod_count = 0;
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
+    clear_ship_cargo(sp->ship);
+    player_detach_all_tow_targets(w, sp);
     sp->current_station = best;
     sp->nearby_station = best;
     sp->dock_berth = 0;
@@ -3013,18 +3971,18 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = true;
     sp->docking_approach = false;
     if (!ship_asset_claim_for_player(w, sp->id, best)) {
-        ship_cleanup(&sp->ship);
-        memset(&sp->ship, 0, sizeof(sp->ship));
-        (void)ship_manifest_bootstrap(&sp->ship);
-        sp->ship.hull_class = HULL_CLASS_MINER;
-        sp->ship.hull = 0.0f;
-        sp->ship.angle = PI_F * 0.5f;
-        sp->ship.comm_range = 1500.0f;
-        memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-        memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-        sp->ship.towed_scaffold = -1;
-        sp->ship.pos = dock_berth_pos(&w->stations[best], 0);
-        sp->ship.vel = v2(0.0f, 0.0f);
+        ship_cleanup(sp->ship);
+        memset(sp->ship, 0, sizeof(*sp->ship));
+        (void)ship_manifest_bootstrap(sp->ship);
+        sp->ship->hull_class = HULL_CLASS_MINER;
+        sp->ship->hull = 0.0f;
+        sp->ship->angle = PI_F * 0.5f;
+        sp->ship->comm_range = 1500.0f;
+        memset(sp->ship->towed_fragments, -1, sizeof(sp->ship->towed_fragments));
+        memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+        sp->ship->towed_scaffold = -1;
+        sp->ship->pos = dock_berth_pos(&w->stations[best], 0);
+        sp->ship->vel = v2(0.0f, 0.0f);
     }
     SIM_LOG("[sim] player %d emergency recovered at station %d (fee %d, asset %u)\n",
             sp->id, best, fee, sp->ship_asset_id);
@@ -3040,7 +3998,7 @@ static void apply_ship_damage_attributed(world_t *w, server_player_t *sp, float 
                                           const uint8_t killer_token[8], uint8_t cause,
                                           vec2 source) {
     if (damage <= 0.0f) return;
-    sp->ship.hull = fmaxf(0.0f, sp->ship.hull - damage);
+    sp->ship->hull = fmaxf(0.0f, sp->ship->hull - damage);
     /* Record attribution if this hit is non-environmental, OR if no
      * prior attribution exists (so the FIRST cause sticks). Don't
      * overwrite an already-attributed killer. */
@@ -3057,7 +4015,7 @@ static void apply_ship_damage_attributed(world_t *w, server_player_t *sp, float 
         .type = SIM_EVENT_DAMAGE, .player_id = sp->id,
         .damage = { .amount = damage, .source_x = source.x, .source_y = source.y },
     });
-    if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
+    if (sp->ship->hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
@@ -3074,7 +4032,7 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 static int ship_collision_count; /* per-frame overlap counter for crush detection */
 
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
-    float impact = resolve_ship_circle_pushback(&sp->ship, center, radius);
+    float impact = resolve_ship_circle_pushback(sp->ship, center, radius);
     if (impact > 0.0f) ship_collision_count++;
     if (impact <= 0.0f || sp->docked || w->player_only_mode) return;
     float dmg = collision_damage_for(impact, 1.0f);
@@ -3100,7 +4058,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
      * player-only attribution / self-damage suppression sits on top. */
     vec2 asteroid_vel_before = a->vel;
     bool asteroid_dirty_before = a->net_dirty;
-    float impact = resolve_ship_asteroid_pushback(&sp->ship, a);
+    float impact = resolve_ship_asteroid_pushback(sp->ship, a);
     if (w->player_only_mode) {
         a->vel = asteroid_vel_before;
         a->net_dirty = asteroid_dirty_before;
@@ -3142,7 +4100,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
 static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
                                          vec2 center, float ring_r,
                                          float angle_a, float arc_delta) {
-    float impact = resolve_ship_annular_pushback(&sp->ship, center, ring_r,
+    float impact = resolve_ship_annular_pushback(sp->ship, center, ring_r,
                                                   angle_a, arc_delta);
     if (impact <= 0.0f) return;
     if (sp->docked || w->player_only_mode) return;
@@ -3365,21 +4323,8 @@ static bool is_finished_good(commodity_t c) {
     return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
 }
 
-static float station_finished_fraction(const station_t *st, commodity_t c) {
-    if (!st || !is_finished_good(c)) return 0.0f;
-    float v = st->_inventory_cache[c];
-    float floor_v = floorf(v + 0.0001f);
-    float frac = v - floor_v;
-    if (frac < 0.0f || frac >= 1.0f) frac = 0.0f;
-    return frac;
-}
-
 static void sync_station_finished_inventory(station_t *st, commodity_t c) {
-    if (!st || !is_finished_good(c)) return;
-    st->_inventory_cache[c] =
-        (float)manifest_count_by_commodity(&st->manifest, c) +
-        station_finished_fraction(st, c);
-    st->manifest_dirty = true;
+    station_finished_sync(st, c);
 }
 
 /* ================================================================== */
@@ -3396,16 +4341,16 @@ static void player_ledger_earn_at(server_player_t *sp, station_t *st,
         ledger_earn_by_pubkey(st, sp->pubkey, amount);
     else
         ledger_earn(st, sp->session_token, amount);
-    sp->ship.stat_credits_earned += amount;
+    sp->ship->stat_credits_earned += amount;
 }
 
 static void player_ledger_force_debit_at(server_player_t *sp, station_t *st,
                                          float amount) {
     if (!sp || !st || amount <= 0.0f) return;
     if (server_player_can_use_pubkey_persistence(sp))
-        ledger_force_debit_by_pubkey(st, sp->pubkey, amount, &sp->ship);
+        ledger_force_debit_by_pubkey(st, sp->pubkey, amount, sp->ship);
     else
-        ledger_force_debit(st, sp->session_token, amount, &sp->ship);
+        ledger_force_debit(st, sp->session_token, amount, sp->ship);
 }
 
 static bool delivery_shipment_pod_active(const world_t *w,
@@ -3423,14 +4368,15 @@ static int delivery_towed_pod_slot_for_shipment(const world_t *w,
                                                 const server_player_t *sp,
                                                 const delivery_shipment_t *shipment) {
     if (!w || !sp || !shipment || shipment->shipment_id == 0) return -1;
-    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
-        int idx = sp->ship.towed_pods[t];
+    for (int t = 0; t < sp->ship->towed_pod_count && t < 10; t++) {
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
         if (pod->shipment_id != shipment->shipment_id) continue;
         if (pod->commodity != (commodity_t)shipment->commodity) continue;
-        if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
+        int player_idx = cargo_pod_player_tractor(pod);
+        if (player_idx >= 0 && player_idx != sp->id) continue;
         return t;
     }
     return -1;
@@ -3492,14 +4438,14 @@ static bool delivery_transfer_towed_pod_to_station_custody(
         station_first_dock_module(&w->stations[station_idx]) < 0) {
         return false;
     }
-    int pod_idx = sp->ship.towed_pods[tow_slot];
+    int pod_idx = sp->ship->towed_pods[tow_slot];
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (!delivery_materialize_pod_manifest(pod, shipment, cargo_offset,
                                            expected_quantity)) {
         return false;
     }
     pod->shipment_id = 0;
-    remove_towed_pod_slot(&sp->ship, tow_slot);
+    if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
     return cargo_pod_set_station_dock_custody(w, pod_idx, station_idx);
 }
 
@@ -3600,13 +4546,13 @@ static void delivery_emit_receipt_memory(world_t *w,
                                    shipment->destination_station,
                                    (commodity_t)shipment->commodity);
 
-    knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
-    knowledge_view_insert(&sp->ship.knowledge, &item);
+    knowledge_view_configure(&sp->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_insert(&sp->ship->knowledge, &item);
     if (reputation.active)
-        knowledge_view_reinforce_route_reputation(&sp->ship.knowledge, &reputation);
+        knowledge_view_reinforce_route_reputation(&sp->ship->knowledge, &reputation);
     if (trust.active)
-        knowledge_view_reinforce_station_trust(&sp->ship.knowledge, &trust);
-    knowledge_view_forget_contract(&sp->ship.knowledge,
+        knowledge_view_reinforce_station_trust(&sp->ship->knowledge, &trust);
+    knowledge_view_forget_contract(&sp->ship->knowledge,
                                    (uint8_t)CONTRACT_DELIVERY,
                                    shipment->destination_station,
                                    (commodity_t)shipment->commodity);
@@ -3659,9 +4605,9 @@ static void delivery_emit_default_memory(world_t *w,
                                        commodity);
     }
     if (sp) {
-        knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
-        knowledge_view_reinforce_station_trust(&sp->ship.knowledge, &risk);
-        knowledge_view_forget_contract(&sp->ship.knowledge,
+        knowledge_view_configure(&sp->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+        knowledge_view_reinforce_station_trust(&sp->ship->knowledge, &risk);
+        knowledge_view_forget_contract(&sp->ship->knowledge,
                                        (uint8_t)CONTRACT_DELIVERY,
                                        shipment->destination_station,
                                        commodity);
@@ -3772,7 +4718,7 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     if (!station_manifest_bootstrap(origin)) {
         return 0;
     }
-    if (ship_tow_body_space(&sp->ship) <= 0) return 0;
+    if (ship_tow_body_space(sp->ship) <= 0) return 0;
     int stock = delivery_source_stock_count(origin, ct);
     if (stock <= 0) return 0;
     int needed = (int)ceilf(ct->quantity_needed);
@@ -3837,12 +4783,12 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     shipment->debt_principal = debt;
     shipment->destination_payout = contract_price(ct) * (float)moved;
     shipment->origin_completion_credit = debt * DELIVERY_ORIGIN_CREDIT_RATE;
-    vec2 pod_dir = v2_from_angle(sp->ship.angle + PI_F);
-    vec2 pod_pos = v2_add(sp->ship.pos, v2_scale(pod_dir, 46.0f));
+    vec2 pod_dir = v2_from_angle(sp->ship->angle + PI_F);
+    vec2 pod_pos = v2_add(sp->ship->pos, v2_scale(pod_dir, 46.0f));
     int pod_idx = spawn_cargo_pod_with_manifest(
-        w, pod_pos, sp->ship.vel, ct->commodity,
+        w, pod_pos, sp->ship->vel, ct->commodity,
         scratch.cargo_units, (uint16_t)moved, CARGO_POD_CARGO);
-    if (pod_idx < 0 || ship_tow_body_space(&sp->ship) <= 0) {
+    if (pod_idx < 0 || ship_tow_body_space(sp->ship) <= 0) {
         station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
         delivery_restore_shipment_to_origin(origin, shipment, moved);
         sync_station_finished_inventory(origin, ct->commodity);
@@ -3851,8 +4797,15 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     }
     w->cargo_pods[pod_idx].shipment_id = shipment->shipment_id;
     cargo_pod_set_shell_frame(&w->cargo_pods[pod_idx], &shell_frame);
-    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
-    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
+    if (!player_attach_cargo_pod(w, sp, pod_idx)) {
+        station_restore_pod_shell_frame(origin, &shell_frame, &shell_chain);
+        delivery_restore_shipment_to_origin(origin, shipment, moved);
+        sync_station_finished_inventory(origin, ct->commodity);
+        world_cargo_pod_clear_tractor(w, pod_idx);
+        memset(&w->cargo_pods[pod_idx], 0, sizeof(w->cargo_pods[pod_idx]));
+        memset(shipment, 0, sizeof(*shipment));
+        return 0;
+    }
     player_ledger_force_debit_at(sp, origin, debt);
     ct->claimed_by = (int8_t)sp->id;
     sync_station_finished_inventory(origin, ct->commodity);
@@ -3885,7 +4838,7 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
         if (remaining == 0) continue;
         int tow_slot = delivery_towed_pod_slot_for_shipment(w, sp, shipment);
         if (tow_slot < 0) continue;
-        int pod_idx = sp->ship.towed_pods[tow_slot];
+        int pod_idx = sp->ship->towed_pods[tow_slot];
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[pod_idx];
         if (pod->quantity != remaining) continue;
@@ -3976,7 +4929,7 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
         if (remaining == 0) continue;
         int tow_slot = delivery_towed_pod_slot_for_shipment(w, sp, shipment);
         if (tow_slot < 0) continue;
-        int pod_idx = sp->ship.towed_pods[tow_slot];
+        int pod_idx = sp->ship->towed_pods[tow_slot];
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[pod_idx];
         if (pod->quantity != remaining) continue;
@@ -4119,15 +5072,10 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
         return 0.0f;
 
     float payout = 0.0f;
-    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
-        int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] =
-                sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+    for (int t = sp->ship->towed_count - 1; t >= 0; t--) {
+        int idx = sp->ship->towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
             continue;
-        }
 
         asteroid_t *a = &w->asteroids[idx];
         if (a->commodity >= COMMODITY_RAW_ORE_COUNT) continue;
@@ -4171,7 +5119,7 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
             credited = ledger_credit_supply_amount(st, sp->session_token,
                                                    graded_value);
         }
-        sp->ship.stat_credits_earned += credited;
+        sp->ship->stat_credits_earned += credited;
         payout += credited;
 
         ct->quantity_needed -= ore_units;
@@ -4180,11 +5128,6 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
                 .contract_complete.action = CONTRACT_TRACTOR});
         }
-
-        sp->ship.towed_count--;
-        sp->ship.towed_fragments[t] =
-            sp->ship.towed_fragments[sp->ship.towed_count];
-        sp->ship.towed_fragments[sp->ship.towed_count] = -1;
 
         SIM_LOG("[sim] player %d loaded towed %s fragment (%.0f ore) for %.0f cr at %s\n",
                 sp->id, commodity_short_name(a->commodity), ore_units,
@@ -4197,6 +5140,7 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
                       .bonus_cr = (int)lroundf(graded_value - ore_value),
                       .by_contract = 1 }});
 
+        world_asteroid_clear_tractor(w, idx);
         memset(a, 0, sizeof(*a));
         if (idx >= 0 && idx < MAX_ASTEROIDS)
             memset(&w->asteroid_origin[idx], 0, sizeof(w->asteroid_origin[idx]));
@@ -4256,8 +5200,8 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     /* Any dock can install kits — the kits themselves are the gate.
      * No kits in cargo or station inventory = hp_apply==0 below and
      * we early-return without charging anything. */
-    float max_hull = ship_max_hull(&sp->ship);
-    float missing = fmaxf(0.0f, max_hull - sp->ship.hull);
+    float max_hull = ship_max_hull(sp->ship);
+    float missing = fmaxf(0.0f, max_hull - sp->ship->hull);
     if (missing <= 0.0f) return;
 
     /* 1 kit = 1 HP. Source priority: ship cargo first (kits the player
@@ -4266,7 +5210,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
      * retail already if buying here); any other dock charges
      * LABOR_FEE_PER_HP for the install. Partial repair is allowed if
      * neither source has enough kits. */
-    int kits_in_cargo  = ship_finished_count(&sp->ship, COMMODITY_REPAIR_KIT);
+    int kits_in_cargo  = ship_finished_count(sp->ship, COMMODITY_REPAIR_KIT);
     int kits_at_station = station_finished_count(st, COMMODITY_REPAIR_KIT);
     int hp_needed       = (int)ceilf(missing);
     int hp_apply        = hp_needed;
@@ -4277,7 +5221,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     int from_cargo   = (hp_apply < kits_in_cargo) ? hp_apply : kits_in_cargo;
     int from_station = hp_apply - from_cargo;
 
-    int drained_cargo = ship_finished_drain(&sp->ship, COMMODITY_REPAIR_KIT, from_cargo);
+    int drained_cargo = ship_finished_drain(sp->ship, COMMODITY_REPAIR_KIT, from_cargo);
     int drained_station = station_finished_drain(st, COMMODITY_REPAIR_KIT, from_station);
     int actual_apply = drained_cargo + drained_station;
     if (actual_apply <= 0) return;
@@ -4290,13 +5234,13 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     float cost = ceilf(station_kit_cost + labor_cost);
     if (cost > 0.0f) {
         if (server_player_can_use_pubkey_persistence(sp)) {
-            ledger_force_debit_by_pubkey(st, sp->pubkey, cost, &sp->ship);
+            ledger_force_debit_by_pubkey(st, sp->pubkey, cost, sp->ship);
         } else {
-            ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+            ledger_force_debit(st, sp->session_token, cost, sp->ship);
         }
     }
 
-    sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)actual_apply);
+    sp->ship->hull = fminf(max_hull, sp->ship->hull + (float)actual_apply);
     SIM_LOG("[sim] player %d repaired %d HP (%d cargo + %d station kits, %.0f cr)\n",
             sp->id, actual_apply, drained_cargo, drained_station, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
@@ -4309,7 +5253,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
      * (frame/laser/tractor) has to come from cargo or the dock's
      * inventory and that's what limits the action. Mirrors the
      * repair-kit "any dock" model from #373. */
-    if (ship_upgrade_maxed(&sp->ship, upgrade)) return;
+    if (ship_upgrade_maxed(sp->ship, upgrade)) return;
 
     /* Real cost = the modules themselves (frames / lasers / tractors).
      * Cargo first; if short, dock fills the gap from station inventory
@@ -4318,35 +5262,35 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
      * try_repair_ship's cargo-first / dock-fallback pattern. */
     product_t required = upgrade_required_product(upgrade);
     commodity_t comm = (commodity_t)(COMMODITY_FRAME + required);
-    int units_needed = (int)ceilf(upgrade_product_cost(&sp->ship, upgrade));
-    int in_cargo  = ship_finished_count(&sp->ship, comm);
+    int units_needed = (int)ceilf(upgrade_product_cost(sp->ship, upgrade));
+    int in_cargo  = ship_finished_count(sp->ship, comm);
     int at_station = station_finished_count(st, comm);
     if (in_cargo + at_station < units_needed) return;
 
     int from_cargo   = (units_needed < in_cargo) ? units_needed : in_cargo;
     int from_station = units_needed - from_cargo;
 
-    float credit_cost = upgrade_station_credit_cost(st, &sp->ship, upgrade,
+    float credit_cost = upgrade_station_credit_cost(st, sp->ship, upgrade,
                                                     from_station);
     if (credit_cost > 0.0f) {
         bool can_afford = server_player_can_use_pubkey_persistence(sp) ?
-            ledger_spend_by_pubkey(st, sp->pubkey, credit_cost, &sp->ship) :
-            ledger_spend(st, sp->session_token, credit_cost, &sp->ship);
+            ledger_spend_by_pubkey(st, sp->pubkey, credit_cost, sp->ship) :
+            ledger_spend(st, sp->session_token, credit_cost, sp->ship);
         if (!can_afford) return;
     }
 
-    int drained_cargo = ship_finished_drain(&sp->ship, comm, from_cargo);
+    int drained_cargo = ship_finished_drain(sp->ship, comm, from_cargo);
     int drained_station = station_finished_drain(st, comm, from_station);
     if (drained_cargo + drained_station < units_needed) return;
 
     switch (upgrade) {
-    case SHIP_UPGRADE_MINING:  sp->ship.mining_level++;  break;
-    case SHIP_UPGRADE_HOLD:    sp->ship.hold_level++;    break;
-    case SHIP_UPGRADE_TRACTOR: sp->ship.tractor_level++; break;
+    case SHIP_UPGRADE_MINING:  sp->ship->mining_level++;  break;
+    case SHIP_UPGRADE_HOLD:    sp->ship->hold_level++;    break;
+    case SHIP_UPGRADE_TRACTOR: sp->ship->tractor_level++; break;
     default: break;
     }
     SIM_LOG("[sim] player %d upgraded %d to level %d (%d cargo + %d dock kits, %.0f cr)\n",
-            sp->id, (int)upgrade, ship_upgrade_level(&sp->ship, upgrade),
+            sp->id, (int)upgrade, ship_upgrade_level(sp->ship, upgrade),
             drained_cargo, drained_station, credit_cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
 }
@@ -4368,11 +5312,11 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
  * the hull, route through emergency_recover_ship so the usual
  * death/respawn UX fires. */
 static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, bool boost, float turn_input) {
-    if (!boost || sp->ship.hull <= 0.0f) return;
+    if (!boost || sp->ship->hull <= 0.0f) return;
     float turn_abs = turn_input < 0.0f ? -turn_input : turn_input;
     float drain = (0.02f + 1.4f * turn_abs) * dt;
-    sp->ship.hull = fmaxf(0.0f, sp->ship.hull - drain);
-    if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
+    sp->ship->hull = fmaxf(0.0f, sp->ship->hull - drain);
+    if (sp->ship->hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 
 /* step_ship_motion moved to server/sim_ship.c (#294 Slice 2). */
@@ -4380,15 +5324,15 @@ static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, boo
 /* Resolve ship vs station using shared geometry emitter. */
 static bool ship_near_station_collision_envelope(const server_player_t *sp,
                                                  const station_t *st) {
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+    float ship_r = ship_hull_def(sp->ship)->ship_radius;
     float reach = station_collision_envelope_radius(st) + ship_r;
-    return v2_dist_sq(sp->ship.pos, st->pos) <= reach * reach;
+    return v2_dist_sq(sp->ship->pos, st->pos) <= reach * reach;
 }
 
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
     station_geom_t geom;
     station_build_geom(st, &geom);
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+    float ship_r = ship_hull_def(sp->ship)->ship_radius;
 
     /* Core: station center is empty space (construction yard).
      * Modules and corridors form the structure; the center is fly-through. */
@@ -4400,8 +5344,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     /* Near-module suppression: if ship is angularly close to any module
      * on a corridor's ring, skip corridor tests (module circle takes priority,
      * prevents junction jitter). */
-    float ship_dist = v2_len(v2_sub(sp->ship.pos, st->pos));
-    vec2 ship_delta = v2_sub(sp->ship.pos, st->pos);
+    float ship_dist = v2_len(v2_sub(sp->ship->pos, st->pos));
+    vec2 ship_delta = v2_sub(sp->ship->pos, st->pos);
     float ship_ang = fixp_atan2f(ship_delta.y, ship_delta.x);
 
     for (int ci = 0; ci < geom.corridor_count; ci++) {
@@ -4622,9 +5566,9 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
         /* Hold ship at dock module berth — rotates with the ring */
-        sp->ship.pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
-        sp->ship.angle = dock_berth_angle(&w->stations[sp->current_station], sp->dock_berth);
-        sp->ship.vel = v2(0.0f, 0.0f);
+        sp->ship->pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
+        sp->ship->angle = dock_berth_angle(&w->stations[sp->current_station], sp->dock_berth);
+        sp->ship->vel = v2(0.0f, 0.0f);
         /* No passive heal: all repair goes through kits via try_repair_ship.
          * Press R to spend kits + credits, or carry kits in cargo and let
          * the autopilot trigger the repair on dock. */
@@ -4640,7 +5584,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         const station_t *st = &w->stations[i];
         if (!station_exists(st)) continue;
         if (!station_has_module(st, MODULE_DOCK)) continue;
-        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        float d_sq = v2_dist_sq(sp->ship->pos, st->pos);
         if (d_sq > approach_sq) continue;
         if (d_sq < best_d) {
             best_d = d_sq;
@@ -4656,22 +5600,22 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
         vec2 target = dock_berth_pos(dock_st, sp->dock_berth);
-        float dist = v2_len(v2_sub(target, sp->ship.pos));
+        float dist = v2_len(v2_sub(target, sp->ship->pos));
 
         /* Decelerate: approach speed scales with distance for smooth arrival */
         float approach_speed = fminf(160.0f, 40.0f + dist * 0.8f);
         float damping = 1.0f / (1.0f + 8.0f * dt);
-        sp->ship.vel = v2_scale(sp->ship.vel, damping);
+        sp->ship->vel = v2_scale(sp->ship->vel, damping);
         float step = fminf(approach_speed * dt, dist);
         if (dist > 0.5f) {
-            vec2 dir = v2_scale(v2_sub(target, sp->ship.pos), step / dist);
-            sp->ship.pos = v2_add(sp->ship.pos, dir);
+            vec2 dir = v2_scale(v2_sub(target, sp->ship->pos), step / dist);
+            sp->ship->pos = v2_add(sp->ship->pos, dir);
         }
 
         /* Rotate toward berth angle */
         float desired = dock_berth_angle(dock_st, sp->dock_berth);
         float rot_speed = fminf(8.0f, 3.0f + (1.0f - fminf(dist, 100.0f) / 100.0f) * 5.0f);
-        sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * rot_speed * dt);
+        sp->ship->angle = wrap_angle(sp->ship->angle + wrap_angle(desired - sp->ship->angle) * rot_speed * dt);
 
         /* Snap when close — berth was locked at approach start */
         if (dist < 20.0f) {
@@ -4682,7 +5626,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
-    vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
+    vec2 muzzle = ship_muzzle(sp->ship->pos, sp->ship->angle, sp->ship);
     /* Prefer client's mining target hint if valid, in range, and in front.
      * Server re-validates: must be active, minable, within mining range,
      * and inside the forward cone. Prevents desynced hints from steering. */
@@ -4697,14 +5641,12 @@ static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward
             return;
         }
     }
-    sp->hover_asteroid = sim_find_mining_target(w, muzzle, forward, sp->ship.mining_level);
+    sp->hover_asteroid = sim_find_mining_target(w, muzzle, forward, sp->ship->mining_level);
 }
 
 /* Check if a fragment is already towed by this player */
 static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
-    for (int i = 0; i < ship->towed_count; i++)
-        if (ship->towed_fragments[i] == asteroid_idx) return true;
-    return false;
+    return ship_towed_fragment_slot(ship, asteroid_idx) >= 0;
 }
 
 static commodity_t autopilot_tow_collection_filter(const world_t *w,
@@ -4712,8 +5654,8 @@ static commodity_t autopilot_tow_collection_filter(const world_t *w,
     if (!w || !sp || sp->autopilot_mode == 0)
         return COMMODITY_COUNT;
 
-    for (int t = 0; t < sp->ship.towed_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+    for (int t = 0; t < sp->ship->towed_count; t++) {
+        int idx = sp->ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &w->asteroids[idx];
         if (!a->active || a->commodity >= COMMODITY_RAW_ORE_COUNT) continue;
@@ -4743,7 +5685,7 @@ static commodity_t autopilot_tow_collection_filter(const world_t *w,
  *   F_spring = K * stretch * dir_rock_to_ship    (pulls rock toward ship)
  *   F_damp   = D * dot(rel_vel, dir) * dir       (kills oscillation)
  *
- * The active-tractor flag (sp->ship.tractor_active) only enables the
+ * The active-tractor flag (sp->ship->tractor_active) only enables the
  * GRAB step (auto-attach a new fragment). Once attached, the band
  * physics runs every tick. No artificial "two-zone" force, no hard
  * brake — rocks naturally trail at REST_LEN while the ship cruises,
@@ -4755,7 +5697,7 @@ static commodity_t autopilot_tow_collection_filter(const world_t *w,
  *   - 200 u stretch ≈ near-elastic-limit, hauling feels heavy
  *   - tractor_range * 1.5 ≈ snap-out (band breaks). */
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
-    ship_apply_fragment_tow(&sp->ship, a, dt);
+    ship_apply_fragment_tow(sp->ship, a, dt);
 }
 
 static void resolve_towed_body_ship_overlap(const ship_t *ship, vec2 *pos,
@@ -4889,7 +5831,7 @@ static void resolve_towed_fragment_neighbors(world_t *w,
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
     float nearby_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
-    float tr = ship_tractor_range(&sp->ship);
+    float tr = ship_tractor_range(sp->ship);
     float tr_sq = tr * tr;
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;
@@ -4897,23 +5839,20 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     /* Update towed fragments via the unified band physics. Same code
      * runs whether the tractor is held or released — release just
      * stops auto-grabbing new rocks. */
-    for (int t = 0; t < sp->ship.towed_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-            t--;
+    for (int t = 0; t < sp->ship->towed_count; t++) {
+        int idx = sp->ship->towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
             continue;
-        }
         asteroid_t *a = &w->asteroids[idx];
+        int player_idx = player_slot_for_ptr(w, sp);
+        if (asteroid_tractor_player(a) != player_idx) continue;
         apply_band_force(sp, a, dt);
         sp->tractor_fragments++;
 
-        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &a->pos, &a->vel,
                                         a->radius, 4.0f);
 
-        resolve_towed_fragment_neighbors(w, &sp->ship, t, a);
+        resolve_towed_fragment_neighbors(w, sp->ship, t, a);
     }
 
     commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
@@ -4924,10 +5863,10 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
         if (tow_filter != COMMODITY_COUNT && a->commodity != tow_filter) continue;
         /* Cheap axis-aligned pre-check before expensive distance calc */
-        float dx = sp->ship.pos.x - a->pos.x;
-        float dy = sp->ship.pos.y - a->pos.y;
+        float dx = sp->ship->pos.x - a->pos.x;
+        float dy = sp->ship->pos.y - a->pos.y;
         if (dx * dx > broad_sq || dy * dy > broad_sq) continue;
-        if (is_already_towed(&sp->ship, i)) continue;
+        if (is_already_towed(sp->ship, i) || asteroid_has_tractor(a)) continue;
         float d_sq = dx * dx + dy * dy;
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
@@ -4936,14 +5875,12 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
              * No drift phase — if it's in range and there's room, grab it.
              * The fracture claim window owns rarity; tow ownership only
              * matters for the later smelt-time payout split. */
-            if (ship_tow_body_space(&sp->ship) > 0) {
-                sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
-                sp->ship.towed_count++;
+            if (player_attach_fragment(w, sp, i)) {
                 a->last_towed_by = (int8_t)sp->id;
                 if (sp->session_ready)
                     memcpy(a->last_towed_token, sp->session_token,
                            sizeof(a->last_towed_token));
-                sp->ship.stat_ore_mined += a->ore;
+                sp->ship->stat_ore_mined += a->ore;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                             .pickup = {.ore = a->ore, .fragments = 1}});
                 /* Layer C of #479: chain-log the start of this tow so
@@ -4966,30 +5903,26 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
  * because the active path lives inside step_fragment_collection
  * which we don't run when tractor is off. */
 static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
-    float tractor_r = ship_tractor_range(&sp->ship);
+    float tractor_r = ship_tractor_range(sp->ship);
+    int player_idx = player_slot_for_ptr(w, sp);
     /* Walk backward so removal-by-swap doesn't skip elements. */
-    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
-        int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+    for (int t = sp->ship->towed_count - 1; t >= 0; t--) {
+        int idx = sp->ship->towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
             continue;
-        }
         asteroid_t *a = &w->asteroids[idx];
-        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+        if (asteroid_tractor_player(a) != player_idx) continue;
+        vec2 to_ship = v2_sub(sp->ship->pos, a->pos);
         float dist = v2_len(to_ship);
 
         /* Elastic limit: band snaps past 1.5 × tractor_range. */
         if (dist > tractor_r * 1.5f) {
             emit_fragment_release_event(w, a, sp, FRAGMENT_RELEASE_BAND_SNAP);
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            (void)player_detach_fragment(w, sp, idx);
             continue;
         }
         apply_band_force(sp, a, dt);
-        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &a->pos, &a->vel,
                                         a->radius, 4.0f);
     }
 }
@@ -5004,15 +5937,8 @@ static void release_towed_fragments(world_t *w, server_player_t *sp);
 
 /* Clean up dead refs AND auto-detach ALL towed fragments when ship is near a hopper. */
 static void step_towed_cleanup(world_t *w, server_player_t *sp) {
-    /* Clean dead refs */
-    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
-        int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-        }
-    }
+    (void)w;
+    (void)sp;
     /* Auto-release removed — player must manually release with R key.
      * Furnace smelting (step_furnace_smelting) consumes S-tier fragments held by 2+ tractors
      * directly, crediting the towing player. */
@@ -5040,8 +5966,12 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
  * last_towed_token stays set for smelt provenance. thrown_by_token is the
  * short-lived combat owner used for damage and kill credit. */
 static void release_towed_fragments(world_t *w, server_player_t *sp) {
-    for (int t = 0; t < sp->ship.towed_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+    int16_t targets[10];
+    int count = ship_towed_fragment_count(sp->ship);
+    memcpy(targets, sp->ship->towed_fragments,
+           (size_t)count * sizeof(targets[0]));
+    for (int t = 0; t < count; t++) {
+        int idx = targets[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         if (!w->asteroids[idx].active) continue;
         asteroid_t *a = &w->asteroids[idx];
@@ -5050,14 +5980,13 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
          * the rock flying) — both are tow terminations from the chain
          * log's perspective. */
         emit_fragment_release_event(w, a, sp, FRAGMENT_RELEASE_MANUAL);
-        ship_release_body_tow(&sp->ship, a->pos, &a->vel);
+        ship_release_body_tow(sp->ship, a->pos, &a->vel);
         asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
         a->net_dirty = true;
+        world_asteroid_clear_tractor(w, idx);
         /* last_towed_by / last_towed_token already set when the
          * tractor pulled the fragment in — leave them for smelt credit. */
     }
-    sp->ship.towed_count = 0;
-    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
 }
 
 static void apply_pod_band_force(server_player_t *sp, cargo_pod_t *pod, float dt) {
@@ -5066,7 +5995,7 @@ static void apply_pod_band_force(server_player_t *sp, cargo_pod_t *pod, float dt
         .vel = &pod->vel,
         .inv_mass = (pod->kind == CARGO_POD_GAS) ? 1.2f : 0.8f,
     };
-    ship_apply_body_tow(&sp->ship, &body, dt);
+    ship_apply_body_tow(sp->ship, &body, dt);
 }
 
 static bool ship_is_towing_pod(const ship_t *ship, int pod_idx) {
@@ -5077,19 +6006,16 @@ static bool ship_is_towing_pod(const ship_t *ship, int pod_idx) {
 }
 
 static void step_towed_pod_forces(world_t *w, server_player_t *sp, float dt) {
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
-            remove_towed_pod_slot(&sp->ship, t);
-            t--;
+    for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active)
             continue;
-        }
         cargo_pod_t *pod = &w->cargo_pods[idx];
-        pod->towed_by = (int8_t)sp->id;
-        cargo_pod_clear_module_tractor(pod);
+        if (cargo_pod_player_tractor(pod) != player_slot_for_ptr(w, sp))
+            continue;
         apply_pod_band_force(sp, pod, dt);
 
-        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &pod->pos, &pod->vel,
                                         pod->radius, 5.0f);
     }
 }
@@ -5100,50 +6026,47 @@ static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
 static void step_cargo_pod_collection(world_t *w, server_player_t *sp, float dt) {
     step_towed_pod_forces(w, sp, dt);
 
-    if (!sp->ship.tractor_active || ship_tow_body_space(&sp->ship) <= 0) return;
+    if (!sp->ship->tractor_active || ship_tow_body_space(sp->ship) <= 0) return;
 
-    float tr = ship_tractor_range(&sp->ship);
+    float tr = ship_tractor_range(sp->ship);
     float tr_sq = tr * tr;
     commodity_t tow_filter = autopilot_tow_collection_filter(w, sp);
-    for (int i = 0; i < MAX_CARGO_PODS && ship_tow_body_space(&sp->ship) > 0; i++) {
+    int player_idx = player_slot_for_ptr(w, sp);
+    for (int i = 0; i < MAX_CARGO_PODS && ship_tow_body_space(sp->ship) > 0; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
-        if (pod->towed_by >= 0 && pod->towed_by != sp->id) continue;
+        int tractor_player = cargo_pod_player_tractor(pod);
+        if (tractor_player >= 0 && tractor_player != player_idx) continue;
         int trade_owner = cargo_pod_station_trade_owner(w, pod);
         if (!cargo_pod_module_tractor_player_collectible(w, pod) &&
             trade_owner < 0) {
             continue;
         }
         if (tow_filter != COMMODITY_COUNT && pod->commodity != tow_filter) continue;
-        if (ship_is_towing_pod(&sp->ship, i)) continue;
-        if (v2_dist_sq(sp->ship.pos, pod->pos) > tr_sq) continue;
+        if (ship_is_towing_pod(sp->ship, i)) continue;
+        if (v2_dist_sq(sp->ship->pos, pod->pos) > tr_sq) continue;
         if (trade_owner >= 0)
             cargo_pod_set_station_custody(pod, trade_owner);
-        sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)i;
-        pod->towed_by = (int8_t)sp->id;
-        cargo_pod_clear_module_tractor(pod);
+        if (!player_attach_cargo_pod(w, sp, i)) continue;
         emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                     .pickup = {.ore = (float)pod->quantity, .fragments = 1}});
     }
 }
 
 static void step_leashed_cargo_pods(world_t *w, server_player_t *sp, float dt) {
-    float tractor_r = ship_tractor_range(&sp->ship);
-    for (int t = sp->ship.towed_pod_count - 1; t >= 0; t--) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) {
-            remove_towed_pod_slot(&sp->ship, t);
+    float tractor_r = ship_tractor_range(sp->ship);
+    for (int t = sp->ship->towed_pod_count - 1; t >= 0; t--) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active)
             continue;
-        }
         cargo_pod_t *pod = &w->cargo_pods[idx];
-        float dist = v2_len(v2_sub(sp->ship.pos, pod->pos));
+        float dist = v2_len(v2_sub(sp->ship->pos, pod->pos));
         if (dist > tractor_r * 1.5f) {
-            pod->towed_by = -1;
-            remove_towed_pod_slot(&sp->ship, t);
+            (void)player_detach_cargo_pod(w, sp, idx);
             continue;
         }
         apply_pod_band_force(sp, pod, dt);
-        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &pod->pos, &pod->vel,
                                         pod->radius, 5.0f);
     }
 }
@@ -5153,29 +6076,29 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
     if (!w || !sp) return;
 
     bool separate_fragments = sp->input.tractor_hold;
-    for (int t = 0; t < sp->ship.towed_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+    for (int t = 0; t < sp->ship->towed_count; t++) {
+        int idx = sp->ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         asteroid_t *a = &w->asteroids[idx];
         if (!a->active) continue;
         apply_band_force(sp, a, dt);
-        resolve_towed_body_ship_overlap(&sp->ship, &a->pos, &a->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &a->pos, &a->vel,
                                         a->radius, 4.0f);
         if (separate_fragments)
-            resolve_towed_fragment_neighbors(w, &sp->ship, t, a);
+            resolve_towed_fragment_neighbors(w, sp->ship, t, a);
     }
 
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
+    for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!pod->active) continue;
         apply_pod_band_force(sp, pod, dt);
-        resolve_towed_body_ship_overlap(&sp->ship, &pod->pos, &pod->vel,
+        resolve_towed_body_ship_overlap(sp->ship, &pod->pos, &pod->vel,
                                         pod->radius, 5.0f);
     }
 
-    int sc_idx = sp->ship.towed_scaffold;
+    int sc_idx = sp->ship->towed_scaffold;
     if (sc_idx >= 0 && sc_idx < MAX_SCAFFOLDS) {
         scaffold_t *sc = &w->scaffolds[sc_idx];
         if (sc->active && sc->state == SCAFFOLD_TOWING)
@@ -5184,15 +6107,17 @@ static void step_predicted_towed_body_forces(world_t *w, server_player_t *sp,
 }
 
 static void release_towed_pods(world_t *w, server_player_t *sp) {
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active) continue;
-        cargo_pod_t *pod = &w->cargo_pods[idx];
-        ship_release_body_tow(&sp->ship, pod->pos, &pod->vel);
-        pod->towed_by = -1;
+    while (sp->ship->towed_pod_count > 0) {
+        int idx = sp->ship->towed_pods[sp->ship->towed_pod_count - 1];
+        if (idx >= 0 && idx < MAX_CARGO_PODS && w->cargo_pods[idx].active) {
+            cargo_pod_t *pod = &w->cargo_pods[idx];
+            ship_release_body_tow(sp->ship, pod->pos, &pod->vel);
+            (void)player_detach_cargo_pod(w, sp, idx);
+        } else {
+            world_tow_links_reconcile(w);
+            break;
+        }
     }
-    sp->ship.towed_pod_count = 0;
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
 }
 
 static bool station_hopper_matches_pod(const station_t *st,
@@ -5250,7 +6175,7 @@ static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
 static bool station_hopper_can_tractor_pod(const station_t *st,
                                            int module_idx,
                                            const cargo_pod_t *pod) {
-    return pod && pod->towed_by < 0 &&
+    return pod && !cargo_pod_has_player_tractor(pod) &&
            station_hopper_matches_pod(st, module_idx, pod);
 }
 
@@ -6191,9 +7116,9 @@ bool cargo_pod_module_tractor_anchor(const world_t *w,
     return true;
 }
 
-static bool cargo_pod_try_acquire_module_tractor(world_t *w,
+static bool cargo_pod_try_acquire_module_tractor(world_t *w, int pod_idx,
                                                  cargo_pod_t *pod) {
-    if (!w || !pod || !pod->active || pod->towed_by >= 0 ||
+    if (!w || !pod || !pod->active || cargo_pod_has_player_tractor(pod) ||
         cargo_pod_has_module_tractor(pod)) {
         return false;
     }
@@ -6250,8 +7175,8 @@ static bool cargo_pod_try_acquire_module_tractor(world_t *w,
             }
         }
     }
-    cargo_pod_set_module_tractor(pod, best_station, best_module);
-    return true;
+    return world_cargo_pod_set_module_tractor(
+        w, pod_idx, best_station, best_module);
 }
 
 static bool station_player_buy_intent_targets_pod(const world_t *w,
@@ -6290,7 +7215,7 @@ static bool cargo_pod_try_handoff_from_station_module(world_t *w,
     int module_idx = -1;
     int best_module = -1;
     if (!w || !pod || !pod->active || pod_idx < 0 ||
-        pod_idx >= MAX_CARGO_PODS || pod->towed_by >= 0 ||
+        pod_idx >= MAX_CARGO_PODS || cargo_pod_has_player_tractor(pod) ||
         !cargo_pod_module_tractor_indices(pod, &station_idx, &module_idx)) {
         return false;
     }
@@ -6317,18 +7242,20 @@ static bool cargo_pod_try_handoff_from_station_module(world_t *w,
         return false;
     }
 
-    cargo_pod_set_module_tractor(pod, station_idx, best_module);
-    st->module_active_pulse[module_idx] = 1.0f;
-    st->module_active_pulse[best_module] = 1.0f;
+    if (!world_cargo_pod_set_module_tractor(
+            w, pod_idx, station_idx, best_module)) return false;
+    st->modules[module_idx].active_pulse = 1.0f;
+    st->modules[best_module].active_pulse = 1.0f;
     return true;
 }
 
 static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
                                                      int pod_idx,
                                                      cargo_pod_t *pod) {
+    int tractor_player = cargo_pod_player_tractor(pod);
     if (!w || !pod || !pod->active || pod_idx < 0 ||
-        pod_idx >= MAX_CARGO_PODS || pod->towed_by < 0 ||
-        pod->towed_by >= MAX_PLAYERS) {
+        pod_idx >= MAX_CARGO_PODS || tractor_player < 0 ||
+        tractor_player >= MAX_PLAYERS) {
         return false;
     }
 
@@ -6383,26 +7310,17 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
         }
     }
 
-    server_player_t *sp = &w->players[pod->towed_by];
+    server_player_t *sp = &w->players[tractor_player];
     station_t *st = &w->stations[best_station];
     int owner_station = cargo_pod_custody_station(pod);
     if (local_output_handoff ||
         (owner_station == best_station &&
          station_owned_pod_inside_charge_boundary(w, owner_station, pod))) {
-        bool removed = false;
-        for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-            if (sp->ship.towed_pods[t] == pod_idx) {
-                remove_towed_pod_slot(&sp->ship, t);
-                removed = true;
-                break;
-            }
-        }
-        if (!removed) return false;
-
-        pod->towed_by = -1;
-        cargo_pod_set_module_tractor(pod, best_station, best_module);
+        if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
+        (void)world_cargo_pod_set_module_tractor(
+            w, pod_idx, best_station, best_module);
         if (best_module >= 0 && best_module < MAX_MODULES_PER_STATION)
-            st->module_active_pulse[best_module] = 1.0f;
+            st->modules[best_module].active_pulse = 1.0f;
         return true;
     }
     if (owner_station >= 0) {
@@ -6413,21 +7331,12 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
     if (!station_intake_pay_for_pod(w, sp, st, best_station, pod))
         return false;
 
-    bool removed = false;
-    for (int t = 0; t < sp->ship.towed_pod_count; t++) {
-        if (sp->ship.towed_pods[t] == pod_idx) {
-            remove_towed_pod_slot(&sp->ship, t);
-            removed = true;
-            break;
-        }
-    }
-    if (!removed) return false;
-
-    pod->towed_by = -1;
-    cargo_pod_set_module_tractor(pod, best_station, best_module);
+    if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
+    (void)world_cargo_pod_set_module_tractor(
+        w, pod_idx, best_station, best_module);
     if (best_station >= 0 && best_station < MAX_STATIONS &&
         best_module >= 0 && best_module < MAX_MODULES_PER_STATION) {
-        w->stations[best_station].module_active_pulse[best_module] = 1.0f;
+        w->stations[best_station].modules[best_module].active_pulse = 1.0f;
     }
     return true;
 }
@@ -6438,21 +7347,21 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
-        if (pod->towed_by >= 0) {
+        if (cargo_pod_has_player_tractor(pod)) {
             (void)charge_station_owned_pod_if_due(w, i, pod);
             if (!cargo_pod_try_handoff_to_matching_hopper(w, i, pod)) {
-                cargo_pod_clear_module_tractor(pod);
+                world_cargo_pod_clear_module_tractor(w, i);
                 continue;
             }
         }
         if (!cargo_pod_has_module_tractor(pod))
-            (void)cargo_pod_try_acquire_module_tractor(w, pod);
+            (void)cargo_pod_try_acquire_module_tractor(w, i, pod);
         else
             (void)cargo_pod_try_handoff_from_station_module(w, i, pod);
 
         cargo_pod_module_tractor_link_t resolved;
         if (!cargo_pod_current_module_tractor_link(w, pod, &resolved)) {
-            cargo_pod_clear_module_tractor(pod);
+            world_cargo_pod_clear_module_tractor(w, i);
             continue;
         }
         if (dt > 0.0f) {
@@ -6476,16 +7385,17 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
                 resolved.pulse_module >= 0 &&
                 resolved.pulse_module < MAX_MODULES_PER_STATION) {
                 w->stations[resolved.station_idx]
-                    .module_active_pulse[resolved.pulse_module] = 1.0f;
+                    .modules[resolved.pulse_module].active_pulse = 1.0f;
             }
         }
     }
 }
 
-static void cargo_pod_revalidate_module_tractor(world_t *w, cargo_pod_t *pod) {
+static void cargo_pod_revalidate_module_tractor(world_t *w, int pod_idx,
+                                                cargo_pod_t *pod) {
     if (!cargo_pod_has_module_tractor(pod)) return;
     if (!cargo_pod_current_module_tractor_link(w, pod, NULL))
-        cargo_pod_clear_module_tractor(pod);
+        world_cargo_pod_clear_module_tractor(w, pod_idx);
 }
 
 static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
@@ -6496,7 +7406,7 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
 
         cargo_pod_module_tractor_link_t resolved;
         if (!cargo_pod_current_module_tractor_link(w, pod, &resolved)) {
-            cargo_pod_clear_module_tractor(pod);
+            world_cargo_pod_clear_module_tractor(w, i);
             continue;
         }
         int station_idx = resolved.station_idx;
@@ -6538,15 +7448,8 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
 
 static void clear_cargo_pod_and_tow_refs(world_t *w, int pod_idx) {
     if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return;
-    for (int p = 0; p < MAX_PLAYERS; p++) {
-        ship_t *ship = &w->players[p].ship;
-        for (int t = ship->towed_pod_count - 1; t >= 0; t--) {
-            if (ship->towed_pods[t] == pod_idx)
-                remove_towed_pod_slot(ship, t);
-        }
-    }
+    world_cargo_pod_clear_tractor(w, pod_idx);
     memset(&w->cargo_pods[pod_idx], 0, sizeof(w->cargo_pods[pod_idx]));
-    w->cargo_pods[pod_idx].towed_by = -1;
 }
 
 static bool resolve_cargo_pod_circle_collision(world_t *w,
@@ -6558,29 +7461,15 @@ static bool resolve_cargo_pod_circle_collision(world_t *w,
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (!pod->active) return false;
 
-    float min_dist = pod->radius + radius;
-    vec2 delta = v2_sub(pod->pos, center);
-    float dist_sq = v2_len_sq(delta);
-    if (dist_sq >= min_dist * min_dist) return false;
-
-    float dist = v2_len(delta);
-    if (dist < 0.001f) {
-        dist = 0.001f;
-        delta = v2(1.0f, 0.0f);
-    }
-    vec2 normal = v2_scale(delta, 1.0f / dist);
-    float closing = -v2_dot(v2_sub(pod->vel, obstacle_vel), normal);
-    if (closing > CARGO_POD_BREAK_SPEED) {
+    sim_body_contact_t contact = sim_body_resolve_static_circle(
+        (sim_body_t){
+            .pos = &pod->pos, .vel = &pod->vel, .radius = pod->radius,
+        }, center, radius, obstacle_vel, CARGO_POD_BOUNCE_SCALE, 1.0f);
+    if (!contact.collided) return false;
+    if (contact.closing_speed > CARGO_POD_BREAK_SPEED) {
         clear_cargo_pod_and_tow_refs(w, pod_idx);
         return true;
     }
-
-    float overlap = min_dist - dist;
-    pod->pos = v2_add(pod->pos, v2_scale(normal, overlap + 1.0f));
-    float vel_along = v2_dot(v2_sub(pod->vel, obstacle_vel), normal);
-    if (vel_along < 0.0f)
-        pod->vel = v2_sub(pod->vel, v2_scale(normal,
-                                             vel_along * CARGO_POD_BOUNCE_SCALE));
     return false;
 }
 
@@ -6769,13 +7658,10 @@ static void resolve_cargo_pod_pair_collisions(world_t *w) {
 }
 
 static void step_cargo_pods(world_t *w, float dt) {
+    sim_world_integrate_bodies(w, SIM_BODY_PHASE_CARGO_PODS, dt);
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
-        pod->pos = v2_add(pod->pos, v2_scale(pod->vel, dt));
-        pod->vel = v2_scale(pod->vel, 1.0f / (1.0f + 0.35f * dt));
-        pod->rotation += pod->spin * dt;
-        pod->age += dt;
         if (pod->quantity == 0) {
             if (!cargo_pod_fold_shell_to_frame(pod))
                 clear_cargo_pod_and_tow_refs(w, i);
@@ -6793,7 +7679,7 @@ static void step_cargo_pods(world_t *w, float dt) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
-        cargo_pod_revalidate_module_tractor(w, pod);
+        cargo_pod_revalidate_module_tractor(w, i, pod);
     }
 }
 
@@ -6820,61 +7706,54 @@ static float apply_scaffold_tow_physics(server_player_t *sp,
                                         scaffold_t *sc,
                                         float dt) {
     if (!sp || !sc) return 0.0f;
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-    float safe_dist = sc->radius + ship_r + 20.0f;
-    vec2 to_ship = v2_sub(sp->ship.pos, sc->pos);
-    float dist = v2_len(to_ship);
+    float dist = v2_len(v2_sub(sp->ship->pos, sc->pos));
 
-    /* Pull toward ship if too far */
-    float tractor_r = ship_tractor_range(&sp->ship);
-    if (dist > tractor_r * 0.8f) {
-        /* Strong pull to catch up */
-        vec2 pull = v2_scale(to_ship, 3.0f);
-        sc->vel = v2_add(sc->vel, v2_scale(pull, dt));
-    } else if (dist > safe_dist) {
-        /* Gentle pull */
-        vec2 pull = v2_scale(to_ship, 1.2f);
-        sc->vel = v2_add(sc->vel, v2_scale(pull, dt));
-    }
+    /* Scaffolds use the same elastic ship tractor as fragments and cargo
+     * pods. Their heavy feel comes from body drag and tow-speed limits,
+     * not a second beam formula. */
+    towable_body_t body = {
+        .pos = &sc->pos,
+        .vel = &sc->vel,
+        .inv_mass = 1.0f,
+    };
+    ship_apply_body_tow(sp->ship, &body, dt);
 
-    /* Push away if too close */
-    if (dist < safe_dist && dist > 0.1f) {
-        vec2 push = v2_scale(to_ship, -(safe_dist - dist) * 6.0f);
-        sc->vel = v2_add(sc->vel, v2_scale(push, dt));
-    }
-
-    /* Heavy drag — scaffolds feel massive */
+    /* Body-specific drag and speed limit remain scaffold properties. */
     sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt));
 
     /* Speed cap scaled by engine power. A miner (accel 300) tows
      * faster than a hauler (accel 140). Multiple ships pulling
      * the same scaffold can each contribute, but in practice the
      * primary tower's cap dominates. */
-    float tow_cap = scaffold_tow_speed_cap(ship_hull_def(&sp->ship));
+    float tow_cap = scaffold_tow_speed_cap(ship_hull_def(sp->ship));
     float spd = v2_len(sc->vel);
     if (spd > tow_cap)
         sc->vel = v2_scale(sc->vel, tow_cap / spd);
 
     /* Move scaffold */
-    sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
+    sim_body_integrate((sim_body_t){
+        .pos = &sc->pos, .vel = &sc->vel, .radius = sc->radius,
+    }, dt, 1.0f);
     return dist;
 }
 
 /* Simple release — scaffold floats loose. */
 static void release_towed_scaffold(world_t *w, server_player_t *sp) {
-    int idx = sp->ship.towed_scaffold;
-    if (idx >= 0 && idx < MAX_SCAFFOLDS && w->scaffolds[idx].active) {
+    int idx = sp->ship->towed_scaffold;
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (player_idx >= 0 && idx >= 0 && idx < MAX_SCAFFOLDS &&
+        w->scaffolds[idx].active &&
+        scaffold_tractor_player(&w->scaffolds[idx]) == player_idx) {
         w->scaffolds[idx].state = SCAFFOLD_LOOSE;
-        w->scaffolds[idx].towed_by = -1;
+        world_scaffold_clear_tractor(w, idx);
     }
-    sp->ship.towed_scaffold = -1;
 }
 
 /* Intentional placement — snap to outpost or found new station.
  * If the player chose an explicit target via the placement reticle
  * (place_target_station >= 0), use that. Otherwise auto-snap. */
 static void place_towed_scaffold(world_t *w, server_player_t *sp) {
-    int idx = sp->ship.towed_scaffold;
+    int idx = sp->ship->towed_scaffold;
     if (idx < 0 || idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active) return;
     scaffold_t *sc = &w->scaffolds[idx];
 
@@ -6897,8 +7776,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
                 sc->placed_ring = ring;
                 sc->placed_slot = slot;
                 sc->vel = v2(0.0f, 0.0f);
-                sc->towed_by = -1;
-                sp->ship.towed_scaffold = -1;
+                world_scaffold_clear_tractor(w, idx);
                 return;
             }
         }
@@ -6961,18 +7839,12 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             if (st->module_count < MAX_MODULES_PER_STATION) {
                 commodity_t commodity = station_default_module_commodity(
                     st, sc->module_type);
-                station_module_t *m = &st->modules[st->module_count++];
-                m->type = sc->module_type;
-                m->ring = (uint8_t)chosen_ring;
-                m->slot = (uint8_t)chosen_slot;
-                m->scaffold = true;
-                m->build_progress = 0.0f; /* needs supply after outpost activates */
-                m->last_smelt_commodity = LAST_SMELT_NONE;
-                m->commodity = (uint8_t)commodity;
-                m->_pad[0] = 0; m->_pad[1] = 0;
+                (void)station_module_append(
+                    st, sc->module_type, (uint8_t)chosen_ring,
+                    (uint8_t)chosen_slot, true, 0.0f, commodity);
             }
+            world_scaffold_clear_tractor(w, idx);
             sc->active = false;
-            sp->ship.towed_scaffold = -1;
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_OUTPOST_PLACED,
                 .player_id = sp->id,
@@ -6993,8 +7865,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             sc->placed_ring = ring;
             sc->placed_slot = slot;
             sc->vel = v2(0.0f, 0.0f);
-            sc->towed_by = -1;
-            sp->ship.towed_scaffold = -1;
+            world_scaffold_clear_tractor(w, idx);
             return;
         }
     }
@@ -7056,22 +7927,15 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             if (st->module_count < MAX_MODULES_PER_STATION) {
                 commodity_t commodity = station_default_module_commodity(
                     st, sc->module_type);
-                station_module_t *m = &st->modules[st->module_count++];
-                m->type = sc->module_type;
-                m->ring = 1;
-                m->slot = 0;
-                m->scaffold = true;
-                m->build_progress = 0.0f; /* needs supply after outpost activates */
-                m->last_smelt_commodity = LAST_SMELT_NONE;
-                m->commodity = (uint8_t)commodity;
-                m->_pad[0] = 0; m->_pad[1] = 0;
+                (void)station_module_append(
+                    st, sc->module_type, 1, 0, true, 0.0f, commodity);
             }
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_OUTPOST_PLACED,
                 .outpost_placed = { .slot = slot },
             });
+            world_scaffold_clear_tractor(w, idx);
             sc->active = false;
-            sp->ship.towed_scaffold = -1;
             return;
         }
     }
@@ -7102,13 +7966,13 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
 }
 
 static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
-    int idx = sp->ship.towed_scaffold;
+    int idx = sp->ship->towed_scaffold;
 
     /* Validate existing tow */
     if (idx >= 0) {
         if (idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active ||
             w->scaffolds[idx].state != SCAFFOLD_TOWING) {
-            sp->ship.towed_scaffold = -1;
+            world_tow_links_reconcile(w);
             idx = -1;
         }
     }
@@ -7116,7 +7980,7 @@ static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
     /* If towing a scaffold, apply spring physics */
     if (idx >= 0) {
         scaffold_t *sc = &w->scaffolds[idx];
-        float tractor_r = ship_tractor_range(&sp->ship);
+        float tractor_r = ship_tractor_range(sp->ship);
         float dist = apply_scaffold_tow_physics(sp, sc, dt);
 
         /* If scaffold drifts too far (tractor broke), release */
@@ -7127,19 +7991,20 @@ static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
     }
 
     /* Not towing — check if we can pick one up */
-    if (!sp->ship.tractor_active) return;
+    if (!sp->ship->tractor_active) return;
 
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         scaffold_t *sc = &w->scaffolds[i];
         if (!sc->active || sc->state != SCAFFOLD_LOOSE) continue;
-        float d_sq = v2_dist_sq(sp->ship.pos, sc->pos);
+        float d_sq = v2_dist_sq(sp->ship->pos, sc->pos);
         if (d_sq > SCAFFOLD_PICKUP_RANGE * SCAFFOLD_PICKUP_RANGE) continue;
 
         /* Attach */
-        sp->ship.towed_scaffold = (int16_t)i;
         sc->state = SCAFFOLD_TOWING;
-        sc->towed_by = sp->id;
-        return; /* one scaffold at a time */
+        if (world_scaffold_set_player_tractor(
+                w, i, player_slot_for_ptr(w, sp)))
+            return; /* one scaffold at a time */
+        sc->state = SCAFFOLD_LOOSE;
     }
 }
 
@@ -7246,7 +8111,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         if (!npc->active) continue;
         float npc_r = npc_hull_def(npc)->render_scale * 16.0f;
         vec2 hit; float along;
-        if (laser_target_in_beam(&ray, npc->ship.pos, npc_r, &hit, &along)
+        if (laser_target_in_beam(&ray, npc->ship->pos, npc_r, &hit, &along)
             && along < best_dist) {
             best_dist = along;
             sp->scan_target_type = 2;
@@ -7260,9 +8125,9 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int pi = 0; pi < MAX_PLAYERS; pi++) {
         const server_player_t *other = &w->players[pi];
         if (!server_player_is_gameplay_ready(other) || other->id == sp->id) continue;
-        float pr = ship_hull_def(&other->ship)->ship_radius;
+        float pr = ship_hull_def(other->ship)->ship_radius;
         vec2 hit; float along;
-        if (laser_target_in_beam(&ray, other->ship.pos, pr, &hit, &along)
+        if (laser_target_in_beam(&ray, other->ship->pos, pr, &hit, &along)
             && along < best_dist) {
             best_dist = along;
             sp->scan_target_type = 3;
@@ -7288,7 +8153,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
     sp->scan_active = false;
     if (!mining) return;
 
-    vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
+    vec2 muzzle = ship_muzzle(sp->ship->pos, sp->ship->angle, sp->ship);
     sp->beam_active = true;
     sp->beam_start = muzzle;
 
@@ -7317,8 +8182,8 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
             aim_slack = 12.0f;
         }
         mining_beam_t mb = sim_mining_beam_step_with_aim_slack(w, muzzle, forward,
-            sp->hover_asteroid, sp->ship.mining_level,
-            ship_mining_rate(&sp->ship), signal_mining_efficiency(cached_signal),
+            sp->hover_asteroid, sp->ship->mining_level,
+            ship_mining_rate(sp->ship), signal_mining_efficiency(cached_signal),
             (int8_t)sp->id, dt, aim_slack);
         sp->beam_end = mb.beam_end;
         sp->beam_hit = mb.hit;
@@ -7326,7 +8191,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         if (mb.fired)
             emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
         if (mb.fractured)
-            sp->ship.stat_asteroids_fractured++;
+            sp->ship->stat_asteroids_fractured++;
     } else {
         /* No asteroid target — check for scan targets */
         if (find_scan_target(w, sp, muzzle, forward)) {
@@ -7457,15 +8322,15 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
         if (c->action == CONTRACT_TRACTOR) {
             commodity_t commodity = c->commodity;
             if (commodity < COMMODITY_RAW_ORE_COUNT) {
-                for (int t = 0; t < sp->ship.towed_count; t++) {
-                    int fi = sp->ship.towed_fragments[t];
+                for (int t = 0; t < sp->ship->towed_count; t++) {
+                    int fi = sp->ship->towed_fragments[t];
                     if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
                     asteroid_t *a = &w->asteroids[fi];
                     if (contract_fit_is_ok(contract_fit_fragment(c, a)))
                         score += 500.0f;
                 }
             } else {
-                int held = contract_fit_manifest_count(c, &sp->ship.manifest);
+                int held = contract_fit_manifest_count(c, &sp->ship->manifest);
                 if (held > 0) score += 700.0f + (float)held * 10.0f;
                 else          score += 100.0f;
             }
@@ -7473,7 +8338,7 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
             int idx = c->target_index;
             if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
                 continue;
-            float d = v2_len(v2_sub(w->asteroids[idx].pos, sp->ship.pos));
+            float d = v2_len(v2_sub(w->asteroids[idx].pos, sp->ship->pos));
             score += 250.0f / fmaxf(1.0f, d / 1000.0f);
         } else if (c->action == CONTRACT_DELIVERY) {
             if (!delivery_contract_has_source(c)) continue;
@@ -7516,14 +8381,8 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
             ct->claimed_by = (int8_t)sp->id;
         }
         contract_summary_t summary = contract_summary_make(ct);
-        contract_pool_insert(sp->ship.known_contracts,
-                             &sp->ship.known_contract_count,
-                             SHIP_KNOWN_CONTRACT_CAP,
-                             &summary);
-        knowledge_view_configure(&sp->ship.knowledge, SHIP_KNOWN_ITEM_CAP);
-        knowledge_item_t item;
-        if (knowledge_item_from_contract_summary(&summary, &item))
-            knowledge_view_insert(&sp->ship.knowledge, &item);
+        knowledge_view_configure(&sp->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+        (void)knowledge_view_insert_contract(&sp->ship->knowledge, &summary);
     }
     return best_contract;
 }
@@ -7622,10 +8481,10 @@ static bool try_dock_from_range(world_t *w, server_player_t *sp) {
     }
 
     const station_t *dock_st = &w->stations[sp->nearby_station];
-    int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+    int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship->pos);
     sp->dock_berth = berth;
     vec2 bp = dock_berth_pos(dock_st, berth);
-    float d = v2_len(v2_sub(sp->ship.pos, bp));
+    float d = v2_len(v2_sub(sp->ship->pos, bp));
     if (d <= DOCK_SNAP_DISTANCE) {
         dock_ship(w, sp);
     } else {
@@ -7649,22 +8508,22 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         } else if (st->pending_scaffold_count >= 4) {
             emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
                 .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_QUEUE_FULL }});
-        } else if (!module_unlocked_for_player(sp->ship.unlocked_modules, kit_type)) {
+        } else if (!module_unlocked_for_player(sp->ship->unlocked_modules, kit_type)) {
             /* Tech tree gate: prereq not yet unlocked */
             emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
                 .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_LOCKED }});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
             bool can_afford = server_player_can_use_pubkey_persistence(sp) ?
-                ledger_spend_by_pubkey(st, sp->pubkey, fee, &sp->ship) :
-                ledger_spend(st, sp->session_token, fee, &sp->ship);
+                ledger_spend_by_pubkey(st, sp->pubkey, fee, sp->ship) :
+                ledger_spend(st, sp->session_token, fee, sp->ship);
             if (!can_afford) {
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
                     .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_NO_FUNDS }});
             } else {
                 /* Tech tree: ordering this type unlocks any module that
                  * lists it as prerequisite. */
-                sp->ship.unlocked_modules |= (1u << (uint32_t)kit_type);
+                sp->ship->unlocked_modules |= (1u << (uint32_t)kit_type);
                 /* Queue pending scaffold */
                 int idx = st->pending_scaffold_count++;
                 st->pending_scaffolds[idx].type = kit_type;
@@ -7695,7 +8554,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                                              intent->commission_hull_class);
     }
     /* Outpost / module placement via towed scaffold + reticle. */
-    if (intent->place_outpost && !sp->docked && sp->ship.towed_scaffold >= 0) {
+    if (intent->place_outpost && !sp->docked && sp->ship->towed_scaffold >= 0) {
         place_towed_scaffold(w, sp);
         return;
     }
@@ -7725,14 +8584,14 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         if (deliver_frames) step_scaffold_delivery(w, sp);
         float build_payout = step_module_delivery(w, docked_st,
                                                   sp->current_station,
-                                                  &sp->ship, filter);
+                                                  sp->ship, filter);
         if (build_payout > 0.01f) {
             if (server_player_can_use_pubkey_persistence(sp)) {
                 ledger_earn_by_pubkey(docked_st, sp->pubkey, build_payout);
             } else {
                 ledger_earn(docked_st, sp->session_token, build_payout);
             }
-            sp->ship.stat_credits_earned += build_payout;
+            sp->ship->stat_credits_earned += build_payout;
             int base_cr = (int)lroundf(build_payout);
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_SELL, .player_id = sp->id,
@@ -7777,14 +8636,14 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
  * where 0 = clean signal, 1 = maximum interference. */
 static float calc_signal_interference(const world_t *w, const server_player_t *sp) {
     float interference = 0.0f;
-    vec2 pos = sp->ship.pos;
+    vec2 pos = sp->ship->pos;
 
     /* Other players — strong interference at close range */
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!server_player_is_gameplay_ready(&w->players[i]) ||
             w->players[i].docked) continue;
         if (&w->players[i] == sp) continue;
-        float dist_sq = v2_dist_sq(pos, w->players[i].ship.pos);
+        float dist_sq = v2_dist_sq(pos, w->players[i].ship->pos);
         if (dist_sq < 200.0f * 200.0f) {
             float d = fixp_sqrtf(dist_sq);
             float strength = (200.0f - d) / 200.0f;
@@ -7907,10 +8766,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_mode = 0;
         } else {
             /* Turning ON — requires 80%+ signal. */
-            float sig = signal_strength_at(w, sp->ship.pos);
+            float sig = signal_strength_at(w, sp->ship->pos);
             if (sig >= 0.80f) {
                 sp->autopilot_mode = 1;
-                if (ship_has_towed_fragments(&sp->ship)) {
+                if (ship_has_towed_fragments(sp->ship)) {
                     sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
                 } else {
                     sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
@@ -7939,7 +8798,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* Autopilot requires 80%+ signal strength. If signal drops below
      * that threshold, disengage — the ship is too far from a relay. */
     if (sp->autopilot_mode && !w->player_only_mode) {
-        float ap_sig = signal_strength_at(w, sp->ship.pos);
+        float ap_sig = signal_strength_at(w, sp->ship->pos);
         if (ap_sig < 0.80f) {
             sp->autopilot_mode = 0;
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
@@ -7974,7 +8833,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 
     /* Self-destruct: X key */
     if (sp->input.reset && !sp->docked) {
-        sp->ship.hull = 0.0f;
+        sp->ship->hull = 0.0f;
         emergency_recover_ship(w, sp);
         return;
     }
@@ -7996,7 +8855,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 
     if (!sp->docked) {
         /* Signal attenuation: scale controls by station signal strength */
-        float sig = signal_strength_at(w, sp->ship.pos);
+        float sig = signal_strength_at(w, sp->ship->pos);
         bool in_signal = sig > 0.01f;
         if (sp->was_in_signal && !in_signal) {
             emit_event(w, (sim_event_t){
@@ -8015,7 +8874,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
              * Use a local RNG seeded from player position to avoid
              * mutating world RNG state (bug 47). */
             /* Bit-cast floats to uint32 to avoid UB from negative float→uint. */
-            float rx = sp->ship.pos.x * 1000.0f, ry = sp->ship.pos.y * 1000.0f;
+            float rx = sp->ship->pos.x * 1000.0f, ry = sp->ship->pos.y * 1000.0f;
             uint32_t ux, uy;
             memcpy(&ux, &rx, sizeof(ux));
             memcpy(&uy, &ry, sizeof(uy));
@@ -8031,36 +8890,36 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             thrust_input = clampf(thrust_input + noise_thrust, -1.0f, 1.0f);
         }
 
-        vec2 forward = ship_forward(sp->ship.angle);
-        step_ship_rotation(&sp->ship, dt, turn_input);
-        forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
+        vec2 forward = ship_forward(sp->ship->angle);
+        step_ship_rotation(sp->ship, dt, turn_input);
+        forward = ship_forward(sp->ship->angle);           /* refresh after rotation */
         bool boost = sp->input.boost && !sp->docked;
         if (boost) sp->boost_hold_timer += dt;
         else       sp->boost_hold_timer  = 0.0f;
-        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost, sp->boost_hold_timer,
+        step_ship_thrust(sp->ship, dt, thrust_input, forward, boost, sp->boost_hold_timer,
                          sp->input.reverse_thrust);
         step_ship_boost_drain(w, sp, dt, boost, turn_input);
-        step_ship_motion(&sp->ship, dt, w, sig);
+        step_ship_motion(sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */
-        int towed_fragments = ship_towed_fragment_count(&sp->ship);
+        int towed_fragments = ship_towed_fragment_count(sp->ship);
         if (towed_fragments > 0) {
             float tow_drag = 0.15f * (float)towed_fragments;
-            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
+            sp->ship->vel = v2_scale(sp->ship->vel, 1.0f / (1.0f + tow_drag * dt));
         }
-        int towed_pods = ship_towed_pod_count(&sp->ship);
+        int towed_pods = ship_towed_pod_count(sp->ship);
         if (towed_pods > 0) {
             float tow_drag = 0.22f * (float)towed_pods;
-            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
+            sp->ship->vel = v2_scale(sp->ship->vel, 1.0f / (1.0f + tow_drag * dt));
         }
         /* Scaffold tow drag: heavy — ship feels the mass. Speed cap
          * scales with engine accel (so the ship and the scaffold are
          * limited by the same engine-coupled cap). */
-        if (sp->ship.towed_scaffold >= 0) {
-            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + 0.8f * dt));
-            float tow_cap = scaffold_tow_speed_cap(ship_hull_def(&sp->ship));
-            float spd = v2_len(sp->ship.vel);
+        if (sp->ship->towed_scaffold >= 0) {
+            sp->ship->vel = v2_scale(sp->ship->vel, 1.0f / (1.0f + 0.8f * dt));
+            float tow_cap = scaffold_tow_speed_cap(ship_hull_def(sp->ship));
+            float spd = v2_len(sp->ship->vel);
             if (spd > tow_cap)
-                sp->ship.vel = v2_scale(sp->ship.vel, tow_cap / spd);
+                sp->ship->vel = v2_scale(sp->ship->vel, tow_cap / spd);
         }
         /* Prediction and server both run the same collision geometry so
          * obstacles feel solid immediately. The collision handlers suppress
@@ -8095,26 +8954,26 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 step_predicted_towed_body_forces(w, sp, dt);
             } else {
                 /* Hold Space = tractor active; tap Space = release towed bodies. */
-                sp->ship.tractor_active = sp->input.tractor_hold;
+                sp->ship->tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
                     release_towed_fragments(w, sp);
                     release_towed_pods(w, sp);
                     release_towed_scaffold(w, sp);
                 }
                 step_towed_cleanup(w, sp);
-                if (sp->ship.tractor_active) {
+                if (sp->ship->tractor_active) {
                     step_fragment_collection(w, sp, dt);
                     step_cargo_pod_collection(w, sp, dt);
                 } else {
-                    if (ship_has_towed_pods(&sp->ship))
+                    if (ship_has_towed_pods(sp->ship))
                         step_leashed_cargo_pods(w, sp, dt);
                 }
-                if (!sp->ship.tractor_active && ship_has_towed_fragments(&sp->ship))
+                if (!sp->ship->tractor_active && ship_has_towed_fragments(sp->ship))
                     step_leashed_fragments(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
 
                 /* B while towing scaffold = place it (snap to outpost or found station) */
-                if (sp->input.place_outpost && sp->ship.towed_scaffold >= 0) {
+                if (sp->input.place_outpost && sp->ship->towed_scaffold >= 0) {
                     place_towed_scaffold(w, sp);
                     sp->input.place_outpost = false; /* consume the intent */
                 }
@@ -8138,8 +8997,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                                 sc->placed_slot = slot;
                                 sc->vel = v2(0.0f, 0.0f);
                                 /* Release from tow if we were towing it */
-                                if (sp->ship.towed_scaffold == si)
-                                    sp->ship.towed_scaffold = -1;
+                                if (sp->ship->towed_scaffold == si)
+                                    world_scaffold_clear_tractor(w, si);
                                 break;
                             }
                         }
@@ -8676,7 +9535,7 @@ static void step_contracts(world_t *w, float dt) {
                  * MAX_PRODUCT_STOCK hysteresis, kit inputs use the
                  * 12-unit shipyard target, and repair kits use their
                  * larger dock buffer. */
-                float current = st->_inventory_cache[c];
+                float current = station_inventory_amount(st, c);
                 float threshold = MAX_PRODUCT_STOCK * 0.95f;
                 if (c < COMMODITY_RAW_ORE_COUNT) {
                     threshold = REFINERY_HOPPER_CAPACITY * 0.95f;
@@ -8878,7 +9737,8 @@ static void step_contracts(world_t *w, float dt) {
                  * filled past cap before Kepler dropped low enough to
                  * trigger a contract. 90% keeps haulers moving while
                  * still gating contracts on actual demand. */
-                float deficit = MAX_PRODUCT_STOCK * 0.9f - st->_inventory_cache[checks[j].ingot];
+                float deficit = MAX_PRODUCT_STOCK * 0.9f -
+                                station_inventory_amount(st, checks[j].ingot);
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
@@ -8926,7 +9786,8 @@ static void step_contracts(world_t *w, float dt) {
             const float kit_input_target = 12.0f; /* keep ~3 batches' worth on hand */
             for (int j = 0; j < 3; j++) {
                 if (station_has_module(st, kit_inputs[j].producer)) continue;
-                float deficit = kit_input_target - st->_inventory_cache[kit_inputs[j].c];
+                float deficit = kit_input_target -
+                                station_inventory_amount(st, kit_inputs[j].c);
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
@@ -9005,7 +9866,6 @@ static void step_contracts(world_t *w, float dt) {
 /* ================================================================== */
 
 static const float SCAFFOLD_RADIUS = 32.0f;
-static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 
 /* What commodity does a producer module output? Exposed (rather than
  * static) so tests can pin the mapping directly — driving it through
@@ -9066,7 +9926,7 @@ static int find_nascent_scaffold(const world_t *w, int station_idx) {
 static void clear_loose_cargo_pod(cargo_pod_t *pod) {
     if (!pod) return;
     memset(pod, 0, sizeof(*pod));
-    pod->towed_by = -1;
+    cargo_pod_clear_tractor(pod);
 }
 
 bool cargo_pod_take_manifest_unit(cargo_pod_t *pod,
@@ -9135,7 +9995,7 @@ static int shipyard_feed_nascent_from_loose_pods(world_t *w,
     for (int i = 0; i < MAX_CARGO_PODS && accepted < max_units; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, material)) continue;
-        if (pod->towed_by >= 0) continue;
+        if (cargo_pod_has_player_tractor(pod)) continue;
         bool staged = false;
         for (int h = 0; h < st->module_count; h++) {
             const station_module_t *hopper = &st->modules[h];
@@ -9156,6 +10016,7 @@ static int shipyard_feed_nascent_from_loose_pods(world_t *w,
                 break;
             accepted++;
         }
+        if (!pod->active) world_cargo_pod_clear_tractor(w, i);
     }
     return accepted;
 }
@@ -9174,7 +10035,7 @@ static bool shipyard_material_pod_staged_at_hopper(const station_t *st,
         if (!shipyard_hopper_serves_yard(st, i, material, yard_idx)) continue;
         if (cargo_pod_is_tractored_by_module(pod, station_idx, i))
             return true;
-        if (allow_player_tow && pod->towed_by >= 0) {
+        if (allow_player_tow && cargo_pod_has_player_tractor(pod)) {
             vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
                                                     hopper->slot);
             if (v2_dist_sq(pod->pos, hopper_pos) <=
@@ -9206,9 +10067,10 @@ static int shipyard_staged_material_count(const world_t *w,
         const cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, c)) continue;
         int tow_slot = shipyard_ship_tow_slot_for_pod(ship, i);
-        bool allow_player_tow = pod->towed_by >= 0 && include_towed_pods &&
+        bool allow_player_tow = cargo_pod_has_player_tractor(pod) &&
+                                include_towed_pods &&
                                 tow_slot >= 0;
-        if (pod->towed_by >= 0 &&
+        if (cargo_pod_has_player_tractor(pod) &&
             (!include_towed_pods ||
              tow_slot < 0)) {
             continue;
@@ -9236,9 +10098,10 @@ static int shipyard_take_staged_material_units(world_t *w,
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, c)) continue;
         int tow_slot = shipyard_ship_tow_slot_for_pod(ship, i);
-        bool allow_player_tow = pod->towed_by >= 0 && include_towed_pods &&
+        bool allow_player_tow = cargo_pod_has_player_tractor(pod) &&
+                                include_towed_pods &&
                                 tow_slot >= 0;
-        if (pod->towed_by >= 0 &&
+        if (cargo_pod_has_player_tractor(pod) &&
             (!include_towed_pods || tow_slot < 0)) {
             continue;
         }
@@ -9251,8 +10114,8 @@ static int shipyard_take_staged_material_units(world_t *w,
             if (!cargo_pod_take_manifest_unit(pod, c, &unit))
                 break;
             taken++;
-            if (!pod->active && tow_slot >= 0) {
-                remove_towed_pod_slot(ship, tow_slot);
+            if (!pod->active) {
+                world_cargo_pod_clear_tractor(w, i);
                 break;
             }
         }
@@ -9374,18 +10237,14 @@ static bool ship_birth_fragment_busy(const world_t *w, int idx) {
     const fracture_claim_state_t *claim = &w->fracture_claims[idx];
     if (claim->active && !claim->resolved) return true;
     for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (ship_birth_ship_tows_fragment(&w->players[p].ship, idx))
+        if (ship_birth_ship_tows_fragment(w->players[p].ship, idx))
             return true;
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         const npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
         if (npc_towed_fragment_index(npc) == idx) return true;
-        if (ship_birth_ship_tows_fragment(&npc->ship, idx)) return true;
-    }
-    for (int c = 0; c < MAX_PLAYERS + MAX_NPC_SHIPS; c++) {
-        const character_t *ch = &w->characters[c];
-        if (ch->active && ch->towed_fragment == idx) return true;
+        if (ship_birth_ship_tows_fragment(npc->ship, idx)) return true;
     }
     return false;
 }
@@ -9863,7 +10722,7 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     int yard_idx = -1;
     bool use_birth_assembly = false;
     if (!shipyard_find_ready_yard_for_hull(
-            w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+            w, st, station_idx, include_towed_pods ? sp->ship : NULL,
             hull_class, include_towed_pods, &yard_idx)) {
         if (station_active_shipyard_count(st) < 1 ||
             !ship_birth_station_has_fragments(w, station_idx)) {
@@ -9887,12 +10746,12 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
     int station_tractors = 0;
     if (!use_birth_assembly) {
         station_frames = shipyard_consume_material_for_build(
-            w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+            w, st, station_idx, include_towed_pods ? sp->ship : NULL,
             COMMODITY_FRAME,
             frames, include_towed_pods, yard_idx);
         if (station_frames < 0) return false;
         station_lasers = shipyard_consume_material_for_build(
-            w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+            w, st, station_idx, include_towed_pods ? sp->ship : NULL,
             COMMODITY_LASER_MODULE,
             lasers, include_towed_pods, yard_idx);
         if (station_lasers < 0) {
@@ -9900,7 +10759,7 @@ static bool shipyard_queue_hull_build(world_t *w, int station_idx, int owner,
             return false;
         }
         station_tractors = shipyard_consume_material_for_build(
-            w, st, station_idx, include_towed_pods ? &sp->ship : NULL,
+            w, st, station_idx, include_towed_pods ? sp->ship : NULL,
             COMMODITY_TRACTOR_MODULE, tractors, include_towed_pods, yard_idx);
         if (station_tractors < 0) {
             (void)station_finished_mint(st, COMMODITY_FRAME, station_frames, NULL);
@@ -10140,10 +10999,11 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
             if (room > 0.01f) {
                 float rate = shipyard_intake_rate(st, yard_idx, mat);
                 float pull = rate * dt;
-                if (pull > st->_inventory_cache[mat]) pull = st->_inventory_cache[mat];
+                float stored = station_inventory_amount(st, mat);
+                if (pull > stored) pull = stored;
                 if (pull > room) pull = room;
                 if (pull > 0.0f) {
-                    st->_inventory_cache[mat] -= pull;
+                    (void)station_finished_consume(st, mat, pull);
                     nascent->build_amount += pull;
                 }
             }
@@ -10194,7 +11054,7 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
         sc->placed_station = -1;
         sc->placed_ring = -1;
         sc->placed_slot = -1;
-        sc->towed_by = -1;
+        world_scaffold_clear_tractor(w, i);
         sc->built_at_station = -1;
         sc->build_amount = 0.0f;
         return i;
@@ -10283,15 +11143,13 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
         return;
     }
     commodity_t commodity = station_default_module_commodity(st, sc->module_type);
-    station_module_t *m = &st->modules[st->module_count++];
-    m->type = sc->module_type;
-    m->ring = (uint8_t)sc->placed_ring;
-    m->slot = (uint8_t)sc->placed_slot;
-    m->scaffold = true;
-    m->build_progress = 0.0f; /* enter post-placement supply phase */
-    m->last_smelt_commodity = LAST_SMELT_NONE;
-    m->commodity = (uint8_t)commodity;
-    m->_pad[0] = 0; m->_pad[1] = 0;
+    station_module_t *m = station_module_append(
+        st, sc->module_type, (uint8_t)sc->placed_ring,
+        (uint8_t)sc->placed_slot, true, 0.0f, commodity);
+    if (!m) {
+        sc->active = false;
+        return;
+    }
     /* If this slot was planned, fulfill the plan (remove it). */
     for (int p = 0; p < st->placement_plan_count; p++) {
         if (st->placement_plans[p].ring == sc->placed_ring &&
@@ -10327,11 +11185,10 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
 
 static void step_scaffolds(world_t *w, float dt) {
     step_shipyard_manufacture(w, dt);
+    sim_world_integrate_bodies(w, SIM_BODY_PHASE_SCAFFOLD_AMBIENT, dt);
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         scaffold_t *sc = &w->scaffolds[i];
         if (!sc->active) continue;
-        sc->age += dt;
-        sc->rotation += sc->spin * dt;
 
         /* Nascent scaffolds: anchored at station center, no movement */
         if (sc->state == SCAFFOLD_NASCENT) {
@@ -10342,10 +11199,6 @@ static void step_scaffolds(world_t *w, float dt) {
         }
 
         if (sc->state == SCAFFOLD_LOOSE) {
-            /* Apply drag so loose scaffolds settle near where they spawned */
-            sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
-            sc->vel = v2_scale(sc->vel, SCAFFOLD_DRAG);
-
             /* Station vortex: loose scaffolds near active stations orbit */
             for (int s = 0; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
@@ -10428,15 +11281,9 @@ static void step_scaffolds(world_t *w, float dt) {
                     if (st->module_count < MAX_MODULES_PER_STATION) {
                         commodity_t commodity = station_default_module_commodity(
                             st, sc->module_type);
-                        station_module_t *m = &st->modules[st->module_count++];
-                        m->type = sc->module_type;
-                        m->ring = (uint8_t)chosen_ring;
-                        m->slot = (uint8_t)chosen_slot;
-                        m->scaffold = true;
-                        m->build_progress = 0.0f;
-                        m->last_smelt_commodity = LAST_SMELT_NONE;
-                        m->commodity = (uint8_t)commodity;
-                        m->_pad[0] = 0; m->_pad[1] = 0;
+                        (void)station_module_append(
+                            st, sc->module_type, (uint8_t)chosen_ring,
+                            (uint8_t)chosen_slot, true, 0.0f, commodity);
                     }
                     sc->active = false;
                     emit_event(w, (sim_event_t){
@@ -10510,7 +11357,6 @@ static void step_scaffolds(world_t *w, float dt) {
             tractor_anchor_t snap_src = { .pos = target,  .vel = NULL,     .inv_mass = 0.0f };
             tractor_anchor_t snap_tgt = { .pos = sc->pos, .vel = &sc->vel, .inv_mass = 1.0f };
             (void)tractor_apply(&snap_src, &snap_tgt, &SCAFFOLD_SNAP, dt);
-            sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
             /* Safety: if station was destroyed or slot got taken, release back to LOOSE */
             if (!station_is_active(st)) {
@@ -10522,6 +11368,7 @@ static void step_scaffolds(world_t *w, float dt) {
         /* SCAFFOLD_TOWING: position controlled by tow physics in step_player */
         /* SCAFFOLD_PLACED: static, owned by station module system */
     }
+    sim_world_integrate_bodies(w, SIM_BODY_PHASE_SCAFFOLD_SNAPPING, dt);
 }
 
 /* ================================================================== */
@@ -10867,8 +11714,8 @@ void step_station_ring_dynamics(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         for (int m = 0; m < st->module_count; m++) {
-            float p = st->module_active_pulse[m] - decay;
-            st->module_active_pulse[m] = (p < 0.0f) ? 0.0f : p;
+            float p = st->modules[m].active_pulse - decay;
+            st->modules[m].active_pulse = (p < 0.0f) ? 0.0f : p;
         }
     }
 
@@ -10894,7 +11741,7 @@ void step_station_ring_dynamics(world_t *w, float dt) {
         for (int m = 0; m < st->module_count; m++) {
             const station_module_t *prod = &st->modules[m];
             if (prod->scaffold) continue;
-            float pulse = st->module_active_pulse[m];
+            float pulse = st->modules[m].active_pulse;
             if (pulse <= 0.0f) continue;
 
             int ra = (int)prod->ring;
@@ -10937,18 +11784,6 @@ void step_station_ring_dynamics(world_t *w, float dt) {
              * at typical drift rates (~0.04 rad/s). */
         }
     }
-}
-
-static void sync_npc_paired_ship_physics(world_t *w, int npc_slot) {
-    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return;
-    npc_ship_t *npc = &w->npc_ships[npc_slot];
-    if (!npc->active) return;
-    ship_t *ship = world_npc_ship_for(w, npc_slot);
-    if (!ship) return;
-    ship->pos = npc->ship.pos;
-    ship->vel = npc->ship.vel;
-    ship->angle = npc->ship.angle;
-    ship->hull_class = npc->ship.hull_class;
 }
 
 static bool sim_tick_after(uint32_t a, uint32_t b) {
@@ -11319,7 +12154,7 @@ static void server_dispatch_buy_named_ingot(
     int sidx = sp->current_station;
     if (sidx < 0 || sidx >= MAX_STATIONS) return;
     station_t *st = &w->stations[sidx];
-    ship_t *ship = &sp->ship;
+    ship_t *ship = sp->ship;
     int slot = manifest_find(&st->manifest, pubkey);
     if (slot < 0) return;
     cargo_unit_t *src = &st->manifest.units[slot];
@@ -11402,7 +12237,7 @@ static void server_dispatch_deliver_named_ingot(
     int sidx = sp->current_station;
     if (sidx < 0 || sidx >= MAX_STATIONS) return;
     station_t *st = &w->stations[sidx];
-    ship_t *ship = &sp->ship;
+    ship_t *ship = sp->ship;
     int hidx = -1;
     int seen = 0;
     for (uint16_t u = 0; u < ship->manifest.count; u++) {
@@ -12073,6 +12908,119 @@ static void sim_profile_maybe_dump(const world_t *w) {
 #define sim_profile_maybe_dump(w) ((void)0)
 #endif
 
+typedef enum {
+    SHIP_ACTOR_PLAYER = 0,
+    SHIP_ACTOR_NPC = 1,
+} ship_actor_kind_t;
+
+typedef struct {
+    ship_t *ship;
+    const uint8_t *session_token;
+    int actor_slot;
+    ship_actor_kind_t kind;
+} ship_collision_actor_t;
+
+/* Project a live controller from the authoritative ship component slot.
+ * Controller state only decides liveness/docking and damage attribution;
+ * position, velocity, hull class, and collision response stay in ships[]. */
+static bool world_ship_collision_actor(world_t *w, int ship_slot,
+                                       ship_collision_actor_t *out) {
+    if (!w || !out || ship_slot < 0 || ship_slot >= WORLD_SHIP_CAP ||
+        !w->ships[ship_slot].active) {
+        return false;
+    }
+    if (ship_slot < MAX_PLAYERS) {
+        int player_slot = ship_slot - WORLD_PLAYER_SHIP_BASE;
+        server_player_t *sp = &w->players[player_slot];
+        if (!server_player_is_gameplay_ready(sp) || sp->docked ||
+            world_ship_resolve(w, sp->ship_ref) !=
+                &w->ships[ship_slot].component) {
+            return false;
+        }
+        *out = (ship_collision_actor_t){
+            .ship = &w->ships[ship_slot].component,
+            .session_token = sp->session_token,
+            .actor_slot = player_slot,
+            .kind = SHIP_ACTOR_PLAYER,
+        };
+        return true;
+    }
+
+    int npc_slot = ship_slot - WORLD_NPC_SHIP_BASE;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active || npc->state == NPC_STATE_DOCKED ||
+        world_ship_resolve(w, npc->ship_ref) !=
+            &w->ships[ship_slot].component) {
+        return false;
+    }
+    *out = (ship_collision_actor_t){
+        .ship = &w->ships[ship_slot].component,
+        .session_token = npc->session_token,
+        .actor_slot = npc_slot,
+        .kind = SHIP_ACTOR_NPC,
+    };
+    return true;
+}
+
+static void apply_ship_actor_ram_damage(world_t *w,
+                                        const ship_collision_actor_t *target,
+                                        float damage,
+                                        const uint8_t source_token[8],
+                                        vec2 source_pos) {
+    if (!w || !target || damage <= 0.0f) return;
+    if (target->kind == SHIP_ACTOR_PLAYER) {
+        apply_ship_damage_attributed(
+            w, &w->players[target->actor_slot], damage, source_token,
+            DEATH_CAUSE_RAM, source_pos);
+    } else {
+        apply_npc_ship_damage_attributed(
+            w, target->actor_slot, damage, source_token, DEATH_CAUSE_RAM);
+    }
+}
+
+static void resolve_world_ship_collisions(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        ship_collision_actor_t a;
+        if (!world_ship_collision_actor(w, i, &a)) continue;
+        for (int j = i + 1; j < WORLD_SHIP_CAP; j++) {
+            ship_collision_actor_t b;
+            if (!world_ship_collision_actor(w, j, &b)) continue;
+
+            float minimum = ship_hull_def(a.ship)->ship_radius +
+                            ship_hull_def(b.ship)->ship_radius;
+            vec2 delta = v2_sub(a.ship->pos, b.ship->pos);
+            float d_sq = v2_len_sq(delta);
+            if (d_sq >= minimum * minimum) continue;
+            float d = fixp_sqrtf(d_sq);
+            vec2 normal = d > 0.00001f
+                ? v2_scale(delta, 1.0f / d)
+                : actor_stack_normal(i, j);
+            float overlap = minimum - d;
+            a.ship->pos = v2_add(
+                a.ship->pos, v2_scale(normal, overlap * 0.5f));
+            b.ship->pos = v2_sub(
+                b.ship->pos, v2_scale(normal, overlap * 0.5f));
+
+            float rel_vel = v2_dot(v2_sub(a.ship->vel, b.ship->vel), normal);
+            if (rel_vel >= 0.0f) continue;
+            float impact = -rel_vel;
+            vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
+            a.ship->vel = v2_sub(a.ship->vel, impulse);
+            b.ship->vel = v2_add(b.ship->vel, impulse);
+
+            float damage = collision_damage_for(impact, 0.7f);
+            if (damage <= 0.0f) continue;
+            vec2 a_pos = a.ship->pos;
+            vec2 b_pos = b.ship->pos;
+            apply_ship_actor_ram_damage(
+                w, &a, damage, b.session_token, b_pos);
+            apply_ship_actor_ram_damage(
+                w, &b, damage, a.session_token, a_pos);
+        }
+    }
+}
+
 void world_sim_step(world_t *w, float dt) {
     sim_profile_begin_step();
 
@@ -12122,38 +13070,6 @@ void world_sim_step(world_t *w, float dt) {
     SIM_PROFILE_END(SIM_PROF_PRODUCTION, prof_production);
 
     SIM_PROFILE_BEGIN(prof_manifest);
-    /* Manifest-as-truth reconciliation: snap floor(inventory[c]) ==
-     * manifest_count(c) for every finished commodity at every station.
-     * Now bidirectional — production paths mint manifest in lockstep
-     * with float increments, NPC unload + delivery + trade sales drain
-     * both, so the only remaining sources of drift are legacy float-only
-     * test fixtures (which the SELL/upgrade path can still consume). For
-     * the LIVE simulation, manifest is the source of truth.
-     *
-     * The fractional residue under inventory[c] is preserved (production
-     * accumulator state mid-cycle). Any drift over the integer-unit
-     * boundary surfaces as a [drift] log line so future regressions are
-     * caught immediately. */
-    /* One-directional: only snap UP when manifest exceeds float (the
-     * orphan-manifest case that was making BUY rows reject silently).
-     * Don't snap DOWN — production/construction/upgrade tests still
-     * depend on legacy float-only fixtures that have no manifest, and
-     * snapping them to 0 breaks every chain that consumes from float
-     * without first minting matching manifest. The two-directional
-     * path is gated on cleaning those up site-by-site (#339 slice C). */
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (!station_exists(st)) continue;
-        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-            int mc = manifest_count_by_commodity(&st->manifest, (commodity_t)c);
-            if (mc <= 0) continue;
-            int fc = (int)floorf(st->_inventory_cache[c] + 0.0001f);
-            if (mc <= fc) continue;
-            float frac = st->_inventory_cache[c] - (float)fc;
-            if (frac < 0.0f) frac = 0.0f;
-            st->_inventory_cache[c] = (float)mc + frac;
-        }
-    }
     SIM_PROFILE_END(SIM_PROF_MANIFEST, prof_manifest);
 
     SIM_PROFILE_BEGIN(prof_world_objects);
@@ -12179,147 +13095,11 @@ void world_sim_step(world_t *w, float dt) {
     SIM_PROFILE_END(SIM_PROF_PLAYERS, prof_players);
 
     SIM_PROFILE_BEGIN(prof_collisions);
-    /* Player-player collision: ramming damage + signal interference */
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!server_player_is_gameplay_ready(&w->players[i]) ||
-            w->players[i].docked) continue;
-        for (int j = i + 1; j < MAX_PLAYERS; j++) {
-            if (!server_player_is_gameplay_ready(&w->players[j]) ||
-                w->players[j].docked) continue;
-            float ri = ship_hull_def(&w->players[i].ship)->ship_radius;
-            float rj = ship_hull_def(&w->players[j].ship)->ship_radius;
-            float minimum = ri + rj;
-            vec2 delta = v2_sub(w->players[i].ship.pos, w->players[j].ship.pos);
-            float d_sq = v2_len_sq(delta);
-            if (d_sq >= minimum * minimum) continue;
-            float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f
-                ? v2_scale(delta, 1.0f / d)
-                : actor_stack_normal(i, j);
-            float overlap = minimum - d;
-            w->players[i].ship.pos = v2_add(w->players[i].ship.pos, v2_scale(normal, overlap * 0.5f));
-            w->players[j].ship.pos = v2_sub(w->players[j].ship.pos, v2_scale(normal, overlap * 0.5f));
-            float rel_vel = v2_dot(v2_sub(w->players[i].ship.vel, w->players[j].ship.vel), normal);
-            if (rel_vel < 0.0f) {
-                float impact = -rel_vel;
-                vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
-                w->players[i].ship.vel = v2_sub(w->players[i].ship.vel, impulse);
-                w->players[j].ship.vel = v2_add(w->players[j].ship.vel, impulse);
-                /* Ramming damage — both ships take damage based on impact speed.
-                 * Threshold mult 0.7× makes deliberate rams sting at speeds
-                 * that wouldn't bruise a static collision. */
-                float dmg = collision_damage_for(impact, 0.7f);
-                if (dmg > 0.0f) {
-                    /* Each player's directional indicator points at
-                     * the OTHER ship — the rammer they collided with. */
-                    apply_ship_damage_attributed(w, &w->players[i], dmg,
-                        w->players[j].session_token, DEATH_CAUSE_RAM,
-                        w->players[j].ship.pos);
-                    apply_ship_damage_attributed(w, &w->players[j], dmg,
-                        w->players[i].session_token, DEATH_CAUSE_RAM,
-                        w->players[i].ship.pos);
-                }
-            }
-        }
-    }
-
-    /* NPC-NPC collision: same mass-symmetric resolution as player-player.
-     * Without this, AI ships happily phase through each other — most
-     * visibly when haulers stack on the same berth approach lane. Damage
-     * is attributed both ways so a careless rammer eats hull too. */
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        npc_ship_t *a = &w->npc_ships[i];
-        if (!a->active || a->state == NPC_STATE_DOCKED) continue;
-        const hull_def_t *adef = npc_hull_def(a);
-        for (int j = i + 1; j < MAX_NPC_SHIPS; j++) {
-            npc_ship_t *b = &w->npc_ships[j];
-            if (!b->active || b->state == NPC_STATE_DOCKED) continue;
-            const hull_def_t *bdef = npc_hull_def(b);
-            float minimum = adef->ship_radius + bdef->ship_radius;
-            vec2 delta = v2_sub(a->ship.pos, b->ship.pos);
-            float d_sq = v2_len_sq(delta);
-            if (d_sq >= minimum * minimum) continue;
-            float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f
-                ? v2_scale(delta, 1.0f / d)
-                : actor_stack_normal(i, j);
-            float overlap = minimum - d;
-            a->ship.pos = v2_add(a->ship.pos, v2_scale(normal, overlap * 0.5f));
-            b->ship.pos = v2_sub(b->ship.pos, v2_scale(normal, overlap * 0.5f));
-            float rel_vel = v2_dot(v2_sub(a->ship.vel, b->ship.vel), normal);
-            if (rel_vel < 0.0f) {
-                float impact = -rel_vel;
-                vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
-                a->ship.vel = v2_sub(a->ship.vel, impulse);
-                b->ship.vel = v2_add(b->ship.vel, impulse);
-                float dmg = collision_damage_for(impact, 0.7f);
-                if (dmg > 0.0f) {
-                    apply_npc_ship_damage_attributed(w, i, dmg,
-                        b->session_token, DEATH_CAUSE_RAM);
-                    apply_npc_ship_damage_attributed(w, j, dmg,
-                        a->session_token, DEATH_CAUSE_RAM);
-                }
-            }
-            sync_npc_paired_ship_physics(w, i);
-            sync_npc_paired_ship_physics(w, j);
-        }
-    }
-
-    /* Player-NPC collision: same shape as player-player. Players push
-     * NPCs around at full force (mass-symmetric), and ramming a hauler
-     * costs both sides hull. Collision writes land on npc_ship_t first,
-     * then sync_npc_paired_ship_physics keeps the paired ship_t from
-     * lagging one tick behind. */
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        server_player_t *sp = &w->players[i];
-        if (!server_player_is_gameplay_ready(sp) || sp->docked) continue;
-        float pr = ship_hull_def(&sp->ship)->ship_radius;
-        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-            npc_ship_t *npc = &w->npc_ships[n];
-            if (!npc->active) continue;
-            if (npc->state == NPC_STATE_DOCKED) continue;
-            const hull_def_t *npcdef = npc_hull_def(npc);
-            float nr = npcdef->ship_radius;
-            float minimum = pr + nr;
-            vec2 delta = v2_sub(sp->ship.pos, npc->ship.pos);
-            float d_sq = v2_len_sq(delta);
-            if (d_sq >= minimum * minimum) continue;
-            float d = fixp_sqrtf(d_sq);
-            vec2 normal = d > 0.00001f
-                ? v2_scale(delta, 1.0f / d)
-                : actor_stack_normal(i, n + MAX_PLAYERS);
-            float overlap = minimum - d;
-            sp->ship.pos = v2_add(sp->ship.pos, v2_scale(normal, overlap * 0.5f));
-            npc->ship.pos     = v2_sub(npc->ship.pos,    v2_scale(normal, overlap * 0.5f));
-            float rel_vel = v2_dot(v2_sub(sp->ship.vel, npc->ship.vel), normal);
-            if (rel_vel < 0.0f) {
-                float impact = -rel_vel;
-                vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
-                sp->ship.vel = v2_sub(sp->ship.vel, impulse);
-                npc->ship.vel     = v2_add(npc->ship.vel,    impulse);
-                float dmg = collision_damage_for(impact, 0.7f);
-                if (dmg > 0.0f) {
-                    apply_ship_damage_attributed(w, sp, dmg,
-                        npc->session_token, DEATH_CAUSE_RAM,
-                        npc->ship.pos);
-                    apply_npc_ship_damage_attributed(w, n, dmg,
-                        sp->session_token, DEATH_CAUSE_RAM);
-                }
-            }
-            sync_npc_paired_ship_physics(w, n);
-        }
-    }
+    resolve_world_ship_collisions(w);
     SIM_PROFILE_END(SIM_PROF_COLLISIONS, prof_collisions);
 
     SIM_PROFILE_BEGIN(prof_sync);
-    for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (server_player_is_gameplay_ready(&w->players[p]))
-            (void)world_ship_asset_sync_from_player(w, &w->players[p]);
-    }
-    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-        if (w->npc_ships[n].active)
-            (void)world_ship_asset_sync_from_npc(w, n);
-    }
+    reconcile_tractor_relationships(w);
     publish_cargo_pod_module_tractor_interactions(w);
     world_refresh_station_hull_inventories(w);
     SIM_PROFILE_END(SIM_PROF_SYNC, prof_sync);
@@ -12361,33 +13141,33 @@ static void step_player_only_towed_body_drift(world_t *w,
                                               float dt) {
     if (!w || !sp) return;
 
-    int frag_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                         sizeof(sp->ship.towed_fragments[0]));
-    int frag_count = sp->ship.towed_count;
+    int frag_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                         sizeof(sp->ship->towed_fragments[0]));
+    int frag_count = sp->ship->towed_count;
     if (frag_count > frag_cap) frag_count = frag_cap;
     for (int t = 0; t < frag_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+        int idx = sp->ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         asteroid_t *a = &w->asteroids[idx];
         if (!a->active) continue;
-        a->rotation += a->spin * dt;
-        a->pos = v2_add(a->pos, v2_scale(a->vel, dt));
-        a->age += dt;
+        sim_body_t body = sim_body_from_asteroid(a);
+        body.flags |= SIM_BODY_FLAG_TOWED;
+        sim_body_advance(body, dt);
     }
 
-    int pod_cap = (int)(sizeof(sp->ship.towed_pods) /
-                        sizeof(sp->ship.towed_pods[0]));
-    int pod_count = sp->ship.towed_pod_count;
+    int pod_cap = (int)(sizeof(sp->ship->towed_pods) /
+                        sizeof(sp->ship->towed_pods[0]));
+    int pod_count = sp->ship->towed_pod_count;
     if (pod_count > pod_cap) pod_count = pod_cap;
     for (int t = 0; t < pod_count; t++) {
-        int idx = sp->ship.towed_pods[t];
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!pod->active) continue;
-        pod->pos = v2_add(pod->pos, v2_scale(pod->vel, dt));
-        pod->vel = v2_scale(pod->vel, 1.0f / (1.0f + 0.35f * dt));
-        pod->rotation += pod->spin * dt;
-        pod->age += dt;
+        sim_body_t body = sim_body_from_cargo_pod(pod);
+        body.flags |= SIM_BODY_FLAG_TOWED | SIM_BODY_FLAG_DRAG;
+        body.velocity_multiplier = 1.0f / (1.0f + 0.35f * dt);
+        sim_body_advance(body, dt);
     }
 }
 
@@ -12412,12 +13192,11 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 /* ================================================================== */
 
 void world_cleanup(world_t *w) {
-    for (int i = 0; i < MAX_PLAYERS; i++)
-        ship_cleanup(&w->players[i].ship);
+    if (!w) return;
+    for (int i = 0; i < WORLD_SHIP_CAP; i++)
+        if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
-        ship_cleanup(&w->ship_assets[i].ship);
-    for (int i = 0; i < MAX_SHIPS; i++)
-        ship_cleanup(&w->ships[i]);
+        ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
     free(w->signal_cache.strength);
@@ -12435,24 +13214,21 @@ void world_seed_station_manifests(world_t *w) {
         if (!station_exists(&w->stations[i])) continue;
         uint8_t origin[8] = { 'S','E','E','D','0','0','0','0' };
         origin[7] = (uint8_t)('0' + (i % 10));
-        float missing[COMMODITY_COUNT] = {0};
-        bool has_missing = false;
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-            int inventory_units =
-                (int)floorf(w->stations[i]._inventory_cache[c] + 0.0001f);
+            float legacy = w->stations[i]._inventory_cache[c];
+            int inventory_units = (int)floorf(legacy + 0.0001f);
+            float residue = legacy - (float)inventory_units;
+            if (residue < 0.0f || residue >= 1.0f) residue = 0.0f;
+            w->stations[i]._inventory_cache[c] = 0.0f;
+            w->stations[i]._finished_residue[c] = residue;
             int manifest_units =
                 manifest_count_by_commodity(&w->stations[i].manifest,
                                             (commodity_t)c);
             if (inventory_units > manifest_units) {
-                missing[c] = (float)(inventory_units - manifest_units);
-                has_missing = true;
+                (void)station_finished_mint(&w->stations[i], (commodity_t)c,
+                                            inventory_units - manifest_units,
+                                            origin);
             }
-        }
-        if (has_missing) {
-            manifest_migrate_legacy_inventory(&w->stations[i].manifest,
-                                              missing, COMMODITY_COUNT,
-                                              origin);
-            w->stations[i].manifest_dirty = true;
         }
     }
 }
@@ -12649,12 +13425,10 @@ void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
     sparse_cell_entry_t *grid_entries = w->asteroid_grid.entries;
-    for (int i = 0; i < MAX_PLAYERS; i++)
-        ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < WORLD_SHIP_CAP; i++)
+        if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
-        ship_cleanup(&w->ship_assets[i].ship);
-    for (int i = 0; i < MAX_SHIPS; i++)
-        ship_cleanup(&w->ships[i]);
+        ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
     free(grid_entries);
@@ -12680,6 +13454,14 @@ void world_reset(world_t *w) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         (void)station_manifest_bootstrap(&w->stations[i]);
         w->stations[i].hnn_experience_last_source_station = 0xffu;
+    }
+    /* Fixed player slots stay allocated even while disconnected. This keeps
+     * controller views non-null without making them authoritative; connected
+     * remains the actor-liveness gate and the component still lives only in
+     * world.ships. NPC slots are allocated on spawn and recycled by generation. */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        world_player_runtime_slot_reset(w, i);
+        (void)world_player_ship_slot_activate(w, i);
     }
 
     /* --- Seeded-station identity (Layer B of #479) ---
@@ -13265,7 +14047,19 @@ bool server_player_is_gameplay_ready(const server_player_t *sp) {
     if (!sp || !sp->connected || sp->grace_period) return false;
     /* Test/local harness players do not carry a WebSocket connection. Real
      * socket clients must complete SESSION before entering the live sim. */
-    return sp->session_ready || sp->conn == NULL;
+    return sp->session_ready || !sp->connection ||
+           sp->connection->conn == NULL;
+}
+
+void world_player_runtime_slot_reset(world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    memset(&w->connections[player_slot], 0,
+           sizeof(w->connections[player_slot]));
+    memset(&w->replications[player_slot], 0,
+           sizeof(w->replications[player_slot]));
+    memset(&w->players[player_slot], 0, sizeof(w->players[player_slot]));
+    w->players[player_slot].connection = &w->connections[player_slot];
+    w->players[player_slot].replication = &w->replications[player_slot];
 }
 
 void server_player_clear_live_session_identity(server_player_t *sp) {
@@ -13322,16 +14116,22 @@ void server_player_clear_transient_input(server_player_t *sp) {
     sp->scan_target_type = 0;
     sp->scan_target_index = -1;
     sp->scan_module_index = -1;
-    sp->ship.tractor_active = false;
+    if (sp->ship) sp->ship->tractor_active = false;
 }
 
 void player_init_ship(server_player_t *sp, world_t *w) {
     if (!sp) return;
     int player_slot = player_slot_for_ptr(w, sp);
+    if (player_slot >= 0 && !world_player_ship_slot_activate(w, player_slot))
+        return;
+    if (!sp->ship) return;
+    if (player_slot >= 0 && !world_character_bind_player(w, player_slot))
+        return;
     uint32_t prior_asset_id = sp->ship_asset_id;
-    ship_cleanup(&sp->ship);
-    memset(&sp->ship, 0, sizeof(sp->ship));
-    (void)ship_manifest_bootstrap(&sp->ship);
+    if (player_slot >= 0) player_detach_all_tow_targets(w, sp);
+    ship_cleanup(sp->ship);
+    memset(sp->ship, 0, sizeof(*sp->ship));
+    (void)ship_manifest_bootstrap(sp->ship);
     server_player_clear_transient_input(sp);
     sp->ship_asset_id = prior_asset_id;
     sp->docked          = true;
@@ -13359,25 +14159,25 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     }
 
     if (player_slot >= 0) {
-        sp->ship.hull_class = HULL_CLASS_MINER;
-        sp->ship.hull = 0.0f;
-        sp->ship.angle = PI_F * 0.5f;
-        sp->ship.comm_range = 1500.0f;
-        memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-        memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-        sp->ship.towed_scaffold = -1;
+        sp->ship->hull_class = HULL_CLASS_MINER;
+        sp->ship->hull = 0.0f;
+        sp->ship->angle = PI_F * 0.5f;
+        sp->ship->comm_range = 1500.0f;
+        memset(sp->ship->towed_fragments, -1, sizeof(sp->ship->towed_fragments));
+        memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+        sp->ship->towed_scaffold = -1;
         anchor_ship_in_station(sp, w);
         return;
     }
 
-    sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull       = hull_max_for_class(HULL_CLASS_MINER);
-    sp->ship.angle      = PI_F * 0.5f;
-    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
-    memset(sp->ship.towed_pods, -1, sizeof(sp->ship.towed_pods));
-    sp->ship.towed_scaffold = -1;
-    sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
-    sp->ship.comm_range     = 1500.0f; /* H-ping reach — roughly one screen */
+    sp->ship->hull_class = HULL_CLASS_MINER;
+    sp->ship->hull       = hull_max_for_class(HULL_CLASS_MINER);
+    sp->ship->angle      = PI_F * 0.5f;
+    memset(sp->ship->towed_fragments, -1, sizeof(sp->ship->towed_fragments));
+    memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+    sp->ship->towed_scaffold = -1;
+    sp->ship->tractor_active = false;  /* driven by tractor_hold each frame */
+    sp->ship->comm_range     = 1500.0f; /* H-ping reach — roughly one screen */
     anchor_ship_in_station(sp, w);
     /* Stack-only harness players are not backed by world player slots,
      * so they keep the old direct bootstrap. Real players must bind a
@@ -13385,10 +14185,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     if (w && sp->docked && sp->current_station >= 0 &&
         sp->current_station < MAX_STATIONS) {
         gossip_dock_handshake(w, sp->current_station,
-                              sp->ship.known_contracts,
-                              &sp->ship.known_contract_count,
-                              SHIP_KNOWN_CONTRACT_CAP,
-                              &sp->ship.knowledge);
+                              &sp->ship->knowledge);
     }
 }
 
@@ -13422,7 +14219,7 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
         }
         int fee = station_spawn_fee(&w->stations[st]);
         ledger_force_debit_by_pubkey(&w->stations[st], sp->pubkey,
-                                     (float)fee, &sp->ship);
+                                     (float)fee, sp->ship);
         return;
     }
     /* Legacy: derive the pseudokey via the same helper ledger_balance
@@ -13437,5 +14234,5 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
         }
     }
     int fee = station_spawn_fee(&w->stations[st]);
-    ledger_force_debit(&w->stations[st], sp->session_token, (float)fee, &sp->ship);
+    ledger_force_debit(&w->stations[st], sp->session_token, (float)fee, sp->ship);
 }

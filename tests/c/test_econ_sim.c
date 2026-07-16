@@ -17,8 +17,8 @@ static int test_find_towed_exact_pod(const world_t *w,
                                      const server_player_t *sp,
                                      commodity_t commodity) {
     if (!w || !sp) return -1;
-    for (int t = 0; t < sp->ship.towed_pod_count && t < 10; t++) {
-        int idx = sp->ship.towed_pods[t];
+    for (int t = 0; t < sp->ship->towed_pod_count && t < 10; t++) {
+        int idx = sp->ship->towed_pods[t];
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         const cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!pod->active || pod->kind != CARGO_POD_CARGO) continue;
@@ -65,10 +65,8 @@ static int test_spawn_station_market_exact_pod(world_t *w,
     int pod_idx = spawn_cargo_pod_with_manifest(
         w, pos, v2(0.0f, 0.0f), commodity, units, count, CARGO_POD_CARGO);
     if (pod_idx < 0) return -1;
-    w->cargo_pods[pod_idx].towed_by = -1;
-    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                 station_idx, dock_idx);
-    return pod_idx;
+    return world_cargo_pod_set_module_tractor(
+               w, pod_idx, station_idx, dock_idx) ? pod_idx : -1;
 }
 
 static float test_station_market_pod_sell_quote(const station_t *st,
@@ -136,10 +134,10 @@ TEST(test_econ_sim_npc_only_5min) {
             printf("    t=%.0fs: pools [%.0f, %.0f, %.0f]  ingots [FE=%.0f CU=%.0f CR=%.0f]  frames=%.0f\n",
                 t,
                 station_credit_pool(&w->stations[0]), station_credit_pool(&w->stations[1]), station_credit_pool(&w->stations[2]),
-                w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
-                w->stations[2]._inventory_cache[COMMODITY_CUPRITE_INGOT],
-                w->stations[2]._inventory_cache[COMMODITY_CRYSTAL_INGOT],
-                w->stations[1]._inventory_cache[COMMODITY_FRAME]);
+                station_inventory_amount(&w->stations[0], COMMODITY_FERRITE_INGOT),
+                station_inventory_amount(&w->stations[2], COMMODITY_CUPRITE_INGOT),
+                station_inventory_amount(&w->stations[2], COMMODITY_CRYSTAL_INGOT),
+                station_inventory_amount(&w->stations[1], COMMODITY_FRAME));
             /* Diagnostic: contracts open per station, by commodity */
             int active = 0, claimed = 0;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -166,7 +164,7 @@ TEST(test_econ_sim_npc_only_5min) {
             for (int n = 0; n < MAX_NPC_SHIPS; n++) {
                 if (!w->npc_ships[n].active) continue;
                 float total_cargo = 0.0f;
-                for (int c = 0; c < COMMODITY_COUNT; c++) total_cargo += w->npc_ships[n].cargo[c];
+                for (int c = 0; c < COMMODITY_COUNT; c++) total_cargo += w->npc_ships[n].ship->cargo[c];
                 const char *role = w->npc_ships[n].role == NPC_ROLE_MINER ? "miner"
                                   : w->npc_ships[n].role == NPC_ROLE_HAULER ? "hauler"
                                   : w->npc_ships[n].role == NPC_ROLE_TOW ? "tow" : "?";
@@ -229,7 +227,7 @@ TEST(test_econ_sim_credit_circulation) {
         station_credit_pool(&w.stations[0]));
 
     /* Hail at Prospect — informational only, no withdrawal */
-    w.players[0].ship.pos = w.stations[0].pos;
+    w.players[0].ship->pos = w.stations[0].pos;
     w.players[0].input.hail = true;
     w.players[0].docked = false;
     world_sim_step(&w, SIM_DT);
@@ -254,7 +252,7 @@ TEST(test_econ_sim_credit_circulation) {
     bal0 = ledger_balance(&w.stations[0], token);
     printf("    after buy at prospect: bal@prospect=%.0f  prospect pool=%.0f  cargo FE=%0.f\n",
         bal0, station_credit_pool(&w.stations[0]),
-        w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT]);
+        w.players[0].ship->cargo[COMMODITY_FERRITE_INGOT]);
 
     /* Deliver ingots to Kepler via contract */
     w.contracts[0] = (contract_t){
@@ -286,7 +284,7 @@ TEST(test_econ_sim_credit_circulation) {
     bal1 = ledger_balance(&w.stations[1], token);
     printf("    after buy frames: bal@kepler=%.0f  kepler pool=%.0f  cargo frames=%.0f\n",
         bal1, station_credit_pool(&w.stations[1]),
-        w.players[0].ship.cargo[COMMODITY_FRAME]);
+        w.players[0].ship->cargo[COMMODITY_FRAME]);
 
     /* Total system credits = all station pools + all player ledger balances */
     float total_credits = bal0 + bal1
@@ -324,7 +322,7 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     ASSERT(sp->docked);
     ASSERT_EQ_INT(sp->current_station, 0);
 
-    vec2 start = sp->ship.pos;
+    vec2 start = sp->ship->pos;
     float start_center_dist = v2_len(v2_sub(start, w.stations[0].pos));
     apply_scripted_input(sp, 0, NET_ACTION_LAUNCH, MINING_GRADE_COUNT);
     world_sim_step(&w, SIM_DT);
@@ -339,8 +337,8 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
         ASSERT(!sp->docking_approach);
     }
 
-    float moved = v2_len(v2_sub(sp->ship.pos, start));
-    float end_center_dist = v2_len(v2_sub(sp->ship.pos, w.stations[0].pos));
+    float moved = v2_len(v2_sub(sp->ship->pos, start));
+    float end_center_dist = v2_len(v2_sub(sp->ship->pos, w.stations[0].pos));
     ASSERT(moved > 80.0f);
     ASSERT(end_center_dist > start_center_dist + 50.0f);
 
@@ -356,15 +354,15 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     ledger_earn_by_pubkey(prospect, sp->pubkey, 1000.0f);
     ledger_earn(prospect, sp->session_token, 333.0f);
 
-    sp->ship.pos = w.stations[0].pos;
-    sp->ship.vel = v2(0.0f, 0.0f);
+    sp->ship->pos = w.stations[0].pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
     sp->docked = true;
     sp->in_dock_range = true;
     sp->current_station = 0;
     sp->nearby_station = 0;
 
-    int ship_before = ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT);
-    int tow_before = sp->ship.towed_pod_count;
+    int ship_before = ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT);
+    int tow_before = sp->ship->towed_pod_count;
     int station_before = station_finished_count(prospect,
                                                 COMMODITY_FERRITE_INGOT);
     int frames_before = station_finished_count(prospect,
@@ -382,9 +380,9 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     world_sim_step(&w, SIM_DT);
 
     ASSERT(sp->docked);
-    ASSERT_EQ_INT(ship_finished_count(&sp->ship, COMMODITY_FERRITE_INGOT),
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT),
                   ship_before);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, tow_before + 1);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, tow_before + 1);
     int bought_pod = test_find_towed_exact_pod(&w, sp, COMMODITY_FERRITE_INGOT);
     ASSERT(bought_pod >= 0);
     ASSERT_EQ_INT(bought_pod, market_pod);
@@ -440,7 +438,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     w.players[0].current_station = kepler;
     ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 10));
     float pool_before = station_credit_pool(st);
-    float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
+    float cargo_before = w.players[0].ship->cargo[COMMODITY_FRAME];
 
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
@@ -453,7 +451,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
      * fully prove the exploit (pre-fix: cargo would rise, pool unchanged
      * because ledger_spend still returns false — the whole point is
      * "cargo moved without payment"). */
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_FRAME], cargo_before, 0.001f);
     ASSERT_EQ_FLOAT(station_credit_pool(st), pool_before, 0.001f);
 }
 
@@ -593,7 +591,7 @@ TEST(test_buy_finished_good_requires_manifest_unit) {
     ledger_earn(st, token, 100000.0f);
 
     float bal_before = ledger_balance(st, token);
-    float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
+    float cargo_before = w.players[0].ship->cargo[COMMODITY_FRAME];
 
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
@@ -602,7 +600,7 @@ TEST(test_buy_finished_good_requires_manifest_unit) {
     w.players[0].input.buy_product = false;
 
     /* The buy must have rejected: no cargo, no charge. */
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_FRAME], cargo_before, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
 }
 
@@ -632,8 +630,8 @@ TEST(test_sell_finished_good_requires_manifest_unit) {
     w.players[0].docked = true;
     w.players[0].current_station = consumer;
 
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
-    ASSERT_EQ_INT(manifest_count_by_commodity(&w.players[0].ship.manifest,
+    w.players[0].ship->cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
+    ASSERT_EQ_INT(manifest_count_by_commodity(&w.players[0].ship->manifest,
                                               COMMODITY_FERRITE_INGOT), 0);
     float bal_before = ledger_balance(st, token);
     int station_units_before = manifest_count_by_commodity(&st->manifest,
@@ -644,7 +642,7 @@ TEST(test_sell_finished_good_requires_manifest_unit) {
     world_sim_step(&w, SIM_DT);
     w.players[0].input.service_sell = false;
 
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.players[0].ship->cargo[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
     ASSERT_EQ_INT(manifest_count_by_commodity(&st->manifest,
                                               COMMODITY_FERRITE_INGOT),
@@ -789,7 +787,7 @@ TEST(test_econ_invariant_player_session_conservation) {
     };
     w.players[0].docked = true;
     w.players[0].current_station = 1;
-    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+    ASSERT(test_set_ship_finished_units(w.players[0].ship,
                                         COMMODITY_FERRITE_INGOT, 5,
                                         MINING_GRADE_COMMON));
     w.players[0].input.service_sell = true;
@@ -809,7 +807,7 @@ TEST(test_econ_invariant_player_session_conservation) {
      * station, trigger service_repair. Passive repair also runs, but
      * the invariant holds either way (repair fee is pool->ledger only
      * if the ledger had enough; otherwise it's a no-op). */
-    w.players[0].ship.hull = 50.0f;
+    w.players[0].ship->hull = 50.0f;
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
     w.players[0].input.service_repair = false;
@@ -854,7 +852,8 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     }
     if (kepler < 0) return -1.0f; /* WORLD_HEAP cleanup frees w. */
     station_t *st = &w->stations[kepler];
-    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    if (!test_set_station_finished_units(
+            st, COMMODITY_FERRITE_INGOT, 0)) return -1.0f;
 
     uint8_t token[8] = {7,7,7,7,7,7,7,7};
     memcpy(w->players[0].session_token, token, 8);
@@ -881,9 +880,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
         w, hopper_pos, v2(0.0f, 0.0f), COMMODITY_FERRITE_INGOT,
         units, 3, CARGO_POD_CARGO);
     if (pod_idx < 0) return -1.0f;
-    w->cargo_pods[pod_idx].towed_by = 0;
-    w->players[0].ship.towed_pods[0] = (int16_t)pod_idx;
-    w->players[0].ship.towed_pod_count = 1;
+    if (!world_cargo_pod_set_player_tractor(w, pod_idx, 0)) return -1.0f;
 
     float bal_before = ledger_balance(st, token);
     world_sim_step(w, SIM_DT);
@@ -891,7 +888,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
 
     int common = 0, rare = 0;
     const cargo_pod_t *pod = &w->cargo_pods[pod_idx];
-    if (pod->active && pod->towed_by < 0 &&
+    if (pod->active && !cargo_pod_has_player_tractor(pod) &&
         cargo_pod_has_module_tractor(pod)) {
         for (uint16_t i = 0; i < pod->manifest_count; i++) {
             if (pod->manifest_units[i].commodity != COMMODITY_FERRITE_INGOT) continue;
@@ -903,9 +900,9 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     if (out_rare)   *out_rare   = rare;
     if (out_ship_inventory_remaining)
         *out_ship_inventory_remaining =
-            w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT] +
+            w->players[0].ship->cargo[COMMODITY_FERRITE_INGOT] +
             (float)ship_towed_pods_manifest_count(
-                w, &w->players[0].ship, COMMODITY_FERRITE_INGOT);
+                w, w->players[0].ship, COMMODITY_FERRITE_INGOT);
     return earned;
     /* WORLD_HEAP cleanup attribute frees w on scope exit. */
 }
@@ -990,7 +987,8 @@ TEST(test_e2e_kit_chain_converges) {
     int ticks = (int)(300.0f / SIM_DT);
     for (int i = 0; i < ticks; i++) world_sim_step(w, SIM_DT);
 
-    float kits_now = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
+    float kits_now = station_inventory_amount(
+        &w->stations[shipyard], COMMODITY_REPAIR_KIT);
     printf("    shipyard %d kits after 300s: %.0f (expect > 0)\n",
            shipyard, kits_now);
     ASSERT(kits_now > 0.0f);
@@ -1051,11 +1049,9 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     vec2 dock_lane = station_approach_target(&w->stations[shipyard],
                                              v2_add(w->stations[shipyard].pos,
                                                     v2(900.0f, 0.0f)));
-    hauler->ship.pos = dock_lane;
-    hauler->ship.vel = v2(0.0f, 0.0f);
-    /* Slice 13: physics is ship-authoritative going into the tick — write
-     * the paired ship_t too so the pre-mirror doesn't overwrite the npc
-     * fields with a stale ship snapshot. */
+    hauler->ship->pos = dock_lane;
+    hauler->ship->vel = v2(0.0f, 0.0f);
+    /* Resolve through the public actor lookup and seed its ship physics. */
     {
         ship_t *hauler_ship = world_npc_ship_for(w, hauler_slot);
         ASSERT(hauler_ship != NULL);
@@ -1063,17 +1059,19 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
         hauler_ship->vel = v2(0.0f, 0.0f);
     }
 
-    float kits_before = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
+    float kits_before = station_inventory_amount(
+        &w->stations[shipyard], COMMODITY_REPAIR_KIT);
     /* A handful of ticks — first one should land it at the berth and
      * fire the repair branch; subsequent ticks just sit at DOCKED. */
     for (int i = 0; i < 5; i++) world_sim_step(w, SIM_DT);
 
-    float kits_after = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
+    float kits_after = station_inventory_amount(
+        &w->stations[shipyard], COMMODITY_REPAIR_KIT);
     printf("    hauler hull: %.1f -> %.1f (max %.1f), station kits %.0f -> %.0f\n",
-           max_h - 20.0f, hauler->hull, max_h, kits_before, kits_after);
+           max_h - 20.0f, hauler->ship->hull, max_h, kits_before, kits_after);
     /* Healed — could be partial if repaired tick fell short, but should be
      * visibly higher than the starting wound. */
-    ASSERT(hauler->hull > max_h - 20.0f);
+    ASSERT(hauler->ship->hull > max_h - 20.0f);
     /* Station drained kits to do the repair. */
     ASSERT(kits_after < kits_before);
 }

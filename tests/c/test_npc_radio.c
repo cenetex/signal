@@ -9,8 +9,8 @@ static void add_memory(npc_ship_t *npc,
                        uint8_t station_b,
                        commodity_t commodity,
                        uint16_t quantity_hint) {
-    knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
-    ASSERT(npc->knowledge.count < SHIP_KNOWN_ITEM_CAP);
+    knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    ASSERT(npc->ship->knowledge.count < SHIP_KNOWN_ITEM_CAP);
 
     market_memory_t memory = {0};
     memory.active = true;
@@ -23,7 +23,7 @@ static void add_memory(npc_ship_t *npc,
     memory.salience = 210;
     memory.quantity_hint = quantity_hint;
 
-    knowledge_item_t *item = &npc->knowledge.items[npc->knowledge.count++];
+    knowledge_item_t *item = &npc->ship->knowledge.items[npc->ship->knowledge.count++];
     memset(item, 0, sizeof(*item));
     item->kind = (uint8_t)KNOW_MARKET;
     item->confidence = memory.confidence;
@@ -36,15 +36,14 @@ static void add_haul_contract(npc_ship_t *npc,
                               uint8_t station_index,
                               commodity_t commodity,
                               float quantity_needed) {
-    ASSERT(npc->known_contract_count < SHIP_KNOWN_CONTRACT_CAP);
-    contract_summary_t *contract =
-        &npc->known_contracts[npc->known_contract_count++];
-    memset(contract, 0, sizeof(*contract));
-    contract->active = true;
-    contract->action = (uint8_t)CONTRACT_TRACTOR;
-    contract->station_index = station_index;
-    contract->commodity = (uint8_t)commodity;
-    contract->quantity_needed = quantity_needed;
+    contract_summary_t contract = {
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = station_index,
+        .commodity = (uint8_t)commodity,
+        .quantity_needed = quantity_needed,
+    };
+    ASSERT(test_add_known_contract(&npc->ship->knowledge, &contract));
 }
 
 static npc_ship_t *place_npc(world_t *w,
@@ -54,9 +53,10 @@ static npc_ship_t *place_npc(world_t *w,
     if (!w || index < 0 || index >= MAX_NPC_SHIPS) return NULL;
     npc_ship_t *npc = &w->npc_ships[index];
     memset(npc, 0, sizeof(*npc));
+    if (!world_npc_ship_slot_activate(w, index)) return NULL;
     npc->active = true;
     npc->role = role;
-    npc->ship.pos = pos;
+    npc->ship->pos = pos;
     npc->home_station = 0;
     npc->dest_station = 2;
     return npc;
@@ -75,7 +75,7 @@ TEST(test_npc_radio_miner_uses_ore_pressure_memory) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t npc = {0};
+    NPC_SHIP_DECL(npc);
     npc.role = NPC_ROLE_MINER;
     npc.home_station = 0;
     add_memory(&npc, MARKET_MEMORY_ORE_PRESSURE, 0, 0xff,
@@ -93,7 +93,7 @@ TEST(test_npc_radio_hauler_uses_contract_and_destination) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t npc = {0};
+    NPC_SHIP_DECL(npc);
     npc.role = NPC_ROLE_HAULER;
     npc.home_station = 1;
     npc.dest_station = 2;
@@ -113,7 +113,7 @@ TEST(test_npc_radio_returns_false_without_grounding) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t npc = {0};
+    NPC_SHIP_DECL(npc);
     npc.role = NPC_ROLE_HAULER;
     npc.home_station = 1;
     npc.dest_station = 2;
@@ -127,7 +127,7 @@ TEST(test_npc_radio_choice_candidates_rotate_by_slot) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t hauler = {0};
+    NPC_SHIP_DECL(hauler);
     hauler.role = NPC_ROLE_HAULER;
     hauler.home_station = 1;
     hauler.dest_station = 2;
@@ -143,7 +143,7 @@ TEST(test_npc_radio_choice_candidates_rotate_by_slot) {
     ASSERT_STR_EQ(choices[1], "108 FR tagged Kepler Yard>Helios Works.");
     ASSERT_STR_EQ(choices[2], "FR board at Kepler Yard; Helios Works wants it.");
 
-    npc_ship_t miner = {0};
+    NPC_SHIP_DECL(miner);
     miner.role = NPC_ROLE_MINER;
     miner.home_station = 0;
     add_memory(&miner, MARKET_MEMORY_ORE_PRESSURE, 0, 0xff,
@@ -161,7 +161,7 @@ TEST(test_npc_radio_formats_supply_route_and_scaffold_memories) {
 
     char choices[NPC_RADIO_CHOICE_COUNT][NPC_RADIO_LINE_LEN];
 
-    npc_ship_t supply = {0};
+    NPC_SHIP_DECL(supply);
     supply.role = NPC_ROLE_HAULER;
     supply.home_station = 1;
     supply.dest_station = 2;
@@ -174,7 +174,7 @@ TEST(test_npc_radio_formats_supply_route_and_scaffold_memories) {
     ASSERT_STR_EQ(choices[1], "Kepler Yard FR stock is moving.");
     ASSERT_STR_EQ(choices[2], "FR supply glows at Kepler Yard.");
 
-    npc_ship_t risk = {0};
+    NPC_SHIP_DECL(risk);
     risk.role = NPC_ROLE_HAULER;
     risk.home_station = 0;
     risk.dest_station = 0;
@@ -186,7 +186,7 @@ TEST(test_npc_radio_formats_supply_route_and_scaffold_memories) {
     ASSERT_STR_EQ(choices[1], "Kepler Yard>Helios Works reads rough.");
     ASSERT_STR_EQ(choices[2], "FR lane hazard near Helios Works.");
 
-    npc_ship_t scaffold = {0};
+    NPC_SHIP_DECL(scaffold);
     scaffold.role = NPC_ROLE_MINER;
     scaffold.home_station = 0;
     scaffold.dest_station = 0;
@@ -441,8 +441,8 @@ TEST(test_npc_radio_formats_real_simulated_npc_memories) {
         npc_ship_t *npc = &w.npc_ships[slots[i]];
         npc->state = NPC_STATE_DOCKED;
         npc->state_timer = 0.0f;
-        memset(&npc->knowledge, 0, sizeof(npc->knowledge));
-        knowledge_view_configure(&npc->knowledge, SHIP_KNOWN_ITEM_CAP);
+        memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
+        knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
         add_memory(npc,
                    i == 0 ? MARKET_MEMORY_ORE_PRESSURE :
                    i == 1 ? MARKET_MEMORY_DEMAND :
@@ -463,12 +463,12 @@ TEST(test_npc_radio_formats_real_simulated_npc_memories) {
         if (!npc->active) continue;
 
         bool has_market_memory = false;
-        uint8_t knowledge_count = npc->knowledge.count;
+        uint8_t knowledge_count = npc->ship->knowledge.count;
         if (knowledge_count > KNOWLEDGE_VIEW_MAX_CAP)
             knowledge_count = KNOWLEDGE_VIEW_MAX_CAP;
         for (uint8_t k = 0; k < knowledge_count; k++) {
             market_memory_t memory;
-            if (market_memory_from_knowledge_item(&npc->knowledge.items[k],
+            if (market_memory_from_knowledge_item(&npc->ship->knowledge.items[k],
                                                   &memory)) {
                 has_market_memory = true;
                 break;

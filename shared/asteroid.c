@@ -102,6 +102,7 @@ float asteroid_hp_max(asteroid_tier_t tier) {
 void clear_asteroid(asteroid_t* asteroid) {
     bool was_active = asteroid->active;
     memset(asteroid, 0, sizeof(*asteroid));
+    asteroid_clear_tractor(asteroid);
     asteroid->last_towed_by = -1;
     asteroid->last_fractured_by = -1;
     asteroid->crystal_stage_station = 0xFFu;
@@ -111,6 +112,7 @@ void clear_asteroid(asteroid_t* asteroid) {
 
 void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, uint32_t* rng) {
     float spin_limit = asteroid_spin_limit(tier);
+    asteroid_clear_tractor(asteroid);
     asteroid->active = true;
     asteroid->tier = tier;
     asteroid->commodity = commodity;

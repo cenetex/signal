@@ -43,6 +43,69 @@ enum {
     AUDIO_MIX_FRAMES = 512,
 };
 
+/* Generation-safe references for relationships between recyclable ECS
+ * slots. Persistent identity (pubkeys, asset ids, cargo pubs) remains a
+ * separate concern; this handle is strictly for live in-memory entities. */
+typedef enum {
+    ENTITY_KIND_NONE = 0,
+    ENTITY_KIND_SHIP,
+    ENTITY_KIND_ASTEROID,
+    ENTITY_KIND_CARGO_POD,
+    ENTITY_KIND_SCAFFOLD,
+    ENTITY_KIND_STATION_MODULE,
+} entity_kind_t;
+
+typedef struct {
+    uint8_t kind;       /* entity_kind_t */
+    int16_t index;      /* pool slot; -1 when null */
+    int16_t part;       /* module/attachment sub-slot; -1 when unused */
+    uint16_t generation;
+} entity_ref_t;
+
+typedef enum {
+    TOW_PROFILE_NONE = 0,
+    TOW_PROFILE_SHIP_FRAGMENT,
+    TOW_PROFILE_SHIP_POD,
+    TOW_PROFILE_SHIP_SCAFFOLD,
+    TOW_PROFILE_MODULE_POD,
+} tow_profile_t;
+
+typedef enum {
+    TOW_LINK_INACTIVE = 0,
+    TOW_LINK_CAPTURE,
+    TOW_LINK_HELD,
+    TOW_LINK_RELEASING,
+} tow_link_state_t;
+
+typedef struct {
+    bool active;
+    entity_ref_t source;
+    entity_ref_t target;
+    uint8_t profile;    /* tow_profile_t */
+    uint8_t slot;       /* source-local formation/hold slot */
+    uint8_t state;      /* tow_link_state_t */
+    uint8_t _pad;
+} tow_link_t;
+
+static inline entity_ref_t entity_ref_none(void) {
+    return (entity_ref_t){
+        .kind = ENTITY_KIND_NONE,
+        .index = -1,
+        .part = -1,
+        .generation = 0,
+    };
+}
+
+static inline bool entity_ref_is_none(entity_ref_t ref) {
+    return ref.kind == ENTITY_KIND_NONE || ref.index < 0 ||
+           ref.generation == 0;
+}
+
+static inline bool entity_ref_equal(entity_ref_t a, entity_ref_t b) {
+    return a.kind == b.kind && a.index == b.index && a.part == b.part &&
+           a.generation == b.generation;
+}
+
 enum {
     SIGNAL_ROOT_STATION_COUNT = 3,
     SIGNAL_FREEPORT_STATION_INDEX = 3,
@@ -220,6 +283,15 @@ typedef struct {
     uint16_t cap;
     cargo_unit_t *units;
 } manifest_t;
+
+/* Transactional cargo ownership. A manifest row and its receipt chain are
+ * one component and must be inserted, removed, cloned, and destroyed
+ * together. receipts_opaque is a ship_receipts_t* (kept opaque here to
+ * avoid the types.h <-> cargo_receipt.h cycle). */
+typedef struct {
+    manifest_t manifest;
+    void *receipts_opaque;
+} cargo_store_t;
 
 typedef enum {
     RECIPE_SMELT = 0,
@@ -399,7 +471,10 @@ typedef struct {
      * Named ingots and bulk finished goods both live here; the legacy
      * hold_ingots[] / named_ingot_t dual store was collapsed in the
      * "unify ingot identity" PR. */
-    manifest_t    manifest;
+    union {
+        cargo_store_t cargo_store;
+        struct {
+            manifest_t manifest; /* compatibility view of cargo_store */
     /* Layer D of #479 — portable cargo receipts.
      *
      * Parallel to `manifest`: receipts.chains[i] is the per-cargo-unit
@@ -413,23 +488,23 @@ typedef struct {
      * defines the ship_receipts_t shape and shared/manifest.c casts
      * through it. The on-disk save format (v42+) round-trips through
      * the cargo_receipt_t wire layout. */
-    void          *receipts_opaque; /* ship_receipts_t* — see cargo_receipt.h */
+            void *receipts_opaque; /* compatibility view of cargo_store */
+        };
+    };
 
-    /* Gossip-contract bounded memory. Same shape as npc_ship_t's pool —
-     * both NPC and player ships are couriers in the gossip protocol.
-     * Refreshed via dock-contact handshake; ephemeral (not serialized);
-     * FIFO eviction on overflow. Player UI selecting contracts at a
-     * dock reads from THIS pool — what the player can choose from is
-     * what the player's ship already knows about, refreshed by the
-     * dock handshake on arrival. */
-    contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
-    uint8_t known_contract_count;
-
-    /* General bounded situated knowledge. Slice 1 mirrors contract
-     * gossip into KNOW_CONTRACT payloads while behavior still reads
-     * known_contracts[]; later slices move actor queries here. */
+    /* Authoritative bounded situated knowledge for contract gossip,
+     * market observations, and route memories. */
     knowledge_view_t knowledge;
 } ship_t;
+
+/* The authoritative ship component pool stores one component per live actor.
+ * Player/NPC records are controllers and keep only a non-owning reference to
+ * these stable slots. Generation zero is reserved for an inactive slot. */
+typedef struct {
+    bool active;
+    uint16_t generation;
+    ship_t component;
+} ship_slot_t;
 
 enum {
     SHIP_ASSET_ID_NONE = 0,
@@ -465,7 +540,13 @@ typedef struct {
     bool active;
     uint32_t asset_id;
     hull_class_t hull_class;
-    ship_t ship;
+    /* A hull asset is either dormant or live, never both. Stored assets own
+     * their durable ship snapshot here. Assigned assets reference the single
+     * authoritative component in world.ships; stored_ship is only refreshed
+     * at the explicit assigned -> stored/destroyed lifecycle boundary. */
+    ship_t stored_ship;
+    entity_ref_t live_ship_ref;
+    ship_t *ship; /* transient non-owning view; rebuild after load/world copy */
     uint8_t owner_kind;      /* ship_asset_owner_kind_t */
     uint8_t status;          /* ship_asset_status_t */
     uint8_t operator_kind;   /* ship_asset_operator_kind_t */
@@ -578,6 +659,17 @@ typedef struct {
     uint8_t commodity;      /* 1 byte */
     uint8_t _pad[2];        /* explicit pad to 4-byte alignment */
     float   build_progress; /* 0.0 to 1.0 */
+    /* Runtime/flow state belongs to the module slot. Keeping these fields
+     * beside the module identity makes append/remove/compaction atomic and
+     * prevents an old buffer or diagnostic from being inherited when an
+     * array slot is reused. Save and wire formats still serialize the
+     * compatible fields explicitly; transient fields remain transient. */
+    float   input_buffer;
+    float   output_buffer;
+    float   active_pulse;
+    float   craft_progress;
+    uint8_t flow_diag;      /* station_flow_diag_t */
+    uint8_t _runtime_pad[3];
 } station_module_t;
 
 enum {
@@ -605,29 +697,18 @@ typedef struct {
     int8_t planned_owner;    /* player id who created the plan, -1 = system */
     float scaffold_progress; /* 0.0 to 1.0 */
     float base_price[COMMODITY_COUNT];
-    /* Unified storage for all commodities. Treat as the float cache of
-     * the manifest for finished goods (c >= COMMODITY_RAW_ORE_COUNT) —
-     * direct writes to those slots silently break the manifest invariant.
-     * Use station_finished_{mint,drain,accumulate} (see shared/manifest.h)
-     * instead. Raw ore slots (c < COMMODITY_RAW_ORE_COUNT) live only here
-     * and may be read/written directly. The leading underscore signals
-     * "private — go through the accessors". */
+    /* Explicit hopper buffers for raw ore. Finished-good slots are retired
+     * compatibility storage and remain zero during live simulation; finished
+     * stock is derived from cargo_store.manifest. */
     float _inventory_cache[COMMODITY_COUNT];
+    /* Fractional production/consumption below one addressable cargo unit.
+     * Whole finished units always live in cargo_store.manifest. */
+    float _finished_residue[COMMODITY_COUNT];
     uint32_t services;
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
     /* Ring rotation — all rings share one speed, each has a fixed angular offset */
-    /* Per-module activity pulse — set to 1.0 each tick a producer
-     * actually consumes input + emits output, decays linearly toward
-     * 0 over RING_PULSE_LINGER_SEC. The geom emitter reads this to
-     * mark spokes as active (visible tractor beam) and the ring
-     * dynamics scales spring stiffness by it: when a hopper drains
-     * dry and the producer idles, the spoke "turns off" and the
-     * passive ring re-equilibriums. Transient runtime state — not
-     * persisted in saves. */
-    float module_active_pulse[MAX_MODULES_PER_STATION];
-
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
     float arm_speed[MAX_ARMS];        /* DRIVER ring nominal angular velocity
@@ -697,22 +778,6 @@ typedef struct {
         int8_t owner; /* player id who planned it */
     } placement_plans[8];
     int placement_plan_count;
-    /* Production layer v2: per-module input + output buffers.
-     * Indexed parallel to modules[]. Producers fill output_buffer from
-     * their inputs; the flow graph (step_module_flow) drains output_buffer
-     * into downstream consumers' input_buffer. Storage modules use input
-     * only (drains to downstream). Shipyards use input only (drains to
-     * manufacture). Service modules leave both at 0. */
-    float module_input[MAX_MODULES_PER_STATION];
-    float module_output[MAX_MODULES_PER_STATION];
-    /* Transient/client-mirrored production diagnosis. Server derives
-     * this from module buffers when serializing STATION_DIAG; clients
-     * render it in the dock UI. Not persisted. */
-    uint8_t module_diag[MAX_MODULES_PER_STATION];
-    /* Runtime-only production accumulator. Producer recipes advance in
-     * whole batches so identity can consume one input set and mint every
-     * output unit from that same parent set. Not persisted in saves. */
-    float module_craft_progress[MAX_MODULES_PER_STATION];
     /* Runtime-only station policy cache. The deterministic policy scorer
      * refreshes this once per sim tick; future neural scorers should write
      * the same card ids/scores so downstream contract logic stays auditable.
@@ -740,7 +805,10 @@ typedef struct {
      * pub identity. The legacy named_ingots[] dual store was collapsed
      * in the "unify ingot identity" PR. `manifest_dirty` drives the
      * wire-push (server-only). */
-    manifest_t    manifest;
+    union {
+        cargo_store_t cargo_store;
+        struct {
+            manifest_t manifest; /* compatibility view of cargo_store */
     /* Portable cargo receipt chains held by this station.
      *
      * Parallel to `manifest`: receipts.chains[i] is the receipt chain
@@ -748,7 +816,9 @@ typedef struct {
      * Stored as void* to keep types.h independent of cargo_receipt.h.
      * Mutate through station_manifest_* helpers so station inventory can
      * later dispatch cargo by extending the exact incoming chain head. */
-    void          *receipts_opaque; /* ship_receipts_t* -- see cargo_receipt.h */
+            void *receipts_opaque; /* compatibility view of cargo_store */
+        };
+    };
     bool          manifest_dirty;
     /* Shipyard repair-kit fab cadence: server-only countdown. When it
      * reaches the period and the station has 1 frame + 1 laser + 1
@@ -801,17 +871,8 @@ typedef struct {
      * The chain_health_* fields are runtime-only startup verification
      * state. They deliberately are not serialized: the next boot must
      * re-walk the chain logs and make a fresh append/no-append decision. */
-    /* Gossip-contract pool. Holds summaries of contracts this station
-     * knows about, both its own locally-issued ones and snapshots
-     * brought by visiting ships. Refreshed on dock contact (bidirectional
-     * set-union with FIFO eviction). Ephemeral — not serialized; rebuilt
-     * from w->contracts[] (locally-issued) on first dock cycle after
-     * load. */
-    contract_summary_t known_contracts[STATION_KNOWN_CONTRACT_CAP];
-    uint8_t known_contract_count;
-
-    /* Station-local situated knowledge. Ephemeral, not serialized; station
-     * contract gossip is mirrored into this view at dock/bootstrap. */
+    /* Station-local authoritative situated knowledge. Ephemeral and rebuilt
+     * from local contracts/state at bootstrap; visiting ships exchange it. */
     knowledge_view_t knowledge;
 
     uint8_t  chain_last_hash[32];
@@ -873,6 +934,32 @@ typedef enum {
     SCAFFOLD_PLACED,    /* locked to ring slot, awaiting supply → becomes module */
 } scaffold_state_t;
 
+/* Target-side tractor relationship shared by ship, NPC, and station-module
+ * beams. source_generation is reserved for stable actor/module handles;
+ * zero denotes the current wire/save compatibility generation. */
+typedef enum {
+    TRACTOR_SOURCE_NONE = 0,
+    TRACTOR_SOURCE_PLAYER,
+    TRACTOR_SOURCE_NPC,
+    TRACTOR_SOURCE_STATION_MODULE,
+} tractor_source_kind_t;
+
+typedef struct {
+    tractor_source_kind_t kind;
+    int16_t source_index;
+    int16_t source_part;
+    uint16_t source_generation;
+} tractor_binding_t;
+
+static inline void tractor_binding_clear(tractor_binding_t *binding) {
+    if (!binding) return;
+    *binding = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_NONE,
+        .source_index = -1,
+        .source_part = -1,
+    };
+}
+
 typedef struct {
     bool active;
     module_type_t module_type;  /* what module this scaffold becomes */
@@ -887,11 +974,50 @@ typedef struct {
     int placed_station;         /* station index when PLACED, -1 otherwise */
     int placed_ring;
     int placed_slot;
-    int towed_by;               /* player index towing this, -1 = none */
+    tractor_binding_t tractor;
     /* Nascent state: built at station center while NASCENT */
     int built_at_station;       /* station building this scaffold (-1 if not nascent) */
     float build_amount;         /* material accumulated, complete at module_build_cost() */
 } scaffold_t;
+
+static inline int scaffold_tractor_player(const scaffold_t *scaffold) {
+    return scaffold && scaffold->tractor.kind == TRACTOR_SOURCE_PLAYER
+        ? scaffold->tractor.source_index : -1;
+}
+
+static inline int scaffold_tractor_npc(const scaffold_t *scaffold) {
+    return scaffold && scaffold->tractor.kind == TRACTOR_SOURCE_NPC
+        ? scaffold->tractor.source_index : -1;
+}
+
+static inline bool scaffold_has_tractor(const scaffold_t *scaffold) {
+    return scaffold && scaffold->tractor.kind != TRACTOR_SOURCE_NONE;
+}
+
+static inline void scaffold_set_player_tractor(scaffold_t *scaffold,
+                                                int player_idx) {
+    if (!scaffold || player_idx < 0) return;
+    scaffold->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_PLAYER,
+        .source_index = (int16_t)player_idx,
+        .source_part = -1,
+    };
+}
+
+static inline void scaffold_set_npc_tractor(scaffold_t *scaffold,
+                                             int npc_idx) {
+    if (!scaffold || npc_idx < 0) return;
+    scaffold->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_NPC,
+        .source_index = (int16_t)npc_idx,
+        .source_part = -1,
+    };
+}
+
+static inline void scaffold_clear_tractor(scaffold_t *scaffold) {
+    if (!scaffold) return;
+    tractor_binding_clear(&scaffold->tractor);
+}
 
 typedef enum {
     ASTEROID_TIER_XXL,
@@ -931,28 +1057,26 @@ typedef struct {
     float rotation;
     float spin;
     float age;
-    int8_t towed_by; /* player id, -1 = loose */
-    uint8_t tractor_station; /* 0 = none, otherwise station index + 1 */
-    uint8_t tractor_module;  /* 0 = none, otherwise module index + 1 */
+    tractor_binding_t tractor;
     uint8_t custody_station; /* 0 = none; station index + 1 owns/charges this pod */
 } cargo_pod_t;
 
 static inline void cargo_pod_clear_module_tractor(cargo_pod_t *pod) {
     if (!pod) return;
-    pod->tractor_station = 0;
-    pod->tractor_module = 0;
+    if (pod->tractor.kind == TRACTOR_SOURCE_STATION_MODULE)
+        tractor_binding_clear(&pod->tractor);
 }
 
 static inline bool cargo_pod_has_module_tractor(const cargo_pod_t *pod) {
-    return pod && pod->tractor_station != 0 && pod->tractor_module != 0;
+    return pod && pod->tractor.kind == TRACTOR_SOURCE_STATION_MODULE;
 }
 
 static inline bool cargo_pod_module_tractor_indices(const cargo_pod_t *pod,
                                                     int *out_station,
                                                     int *out_module) {
     if (!cargo_pod_has_module_tractor(pod)) return false;
-    int station = (int)pod->tractor_station - 1;
-    int module = (int)pod->tractor_module - 1;
+    int station = pod->tractor.source_index;
+    int module = pod->tractor.source_part;
     if (station < 0 || station >= MAX_STATIONS ||
         module < 0 || module >= MAX_MODULES_PER_STATION) {
         return false;
@@ -977,8 +1101,35 @@ static inline void cargo_pod_set_module_tractor(cargo_pod_t *pod,
         module_idx < 0 || module_idx >= MAX_MODULES_PER_STATION) {
         return;
     }
-    pod->tractor_station = (uint8_t)(station_idx + 1);
-    pod->tractor_module = (uint8_t)(module_idx + 1);
+    pod->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_STATION_MODULE,
+        .source_index = (int16_t)station_idx,
+        .source_part = (int16_t)module_idx,
+    };
+}
+
+static inline int cargo_pod_player_tractor(const cargo_pod_t *pod) {
+    return pod && pod->tractor.kind == TRACTOR_SOURCE_PLAYER
+        ? pod->tractor.source_index : -1;
+}
+
+static inline bool cargo_pod_has_player_tractor(const cargo_pod_t *pod) {
+    return cargo_pod_player_tractor(pod) >= 0;
+}
+
+static inline void cargo_pod_set_player_tractor(cargo_pod_t *pod,
+                                                 int player_idx) {
+    if (!pod || player_idx < 0) return;
+    pod->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_PLAYER,
+        .source_index = (int16_t)player_idx,
+        .source_part = -1,
+    };
+}
+
+static inline void cargo_pod_clear_tractor(cargo_pod_t *pod) {
+    if (!pod) return;
+    tractor_binding_clear(&pod->tractor);
 }
 
 static inline int cargo_pod_custody_station(const cargo_pod_t *pod) {
@@ -1026,11 +1177,14 @@ typedef struct {
     float spin;
     float seed;
     float age;
-    /* TODO: retire the int8 player-id pair below once every consumer
-     * (wire sync, smelt-time credit split) reads from *_token instead.
-     * The token form survives disconnect/reconnect; the int8 form is
-     * wire-legacy and goes stale if a player reconnects into a new slot. */
-    int8_t last_towed_by;      /* player ID who last towed this, -1 = none */
+    /* Current tractor ownership. This is the authoritative live
+     * relationship; ship tow arrays are source-side projections retained
+     * for capacity and wire/save compatibility. */
+    tractor_binding_t tractor;
+    /* The int8 player-id pair below is retained only for exact legacy-save
+     * compatibility and diagnostics. Live ownership reads `tractor`; payout
+     * attribution reads the stable token form, which survives reconnects. */
+    int8_t last_towed_by;      /* historical payout provenance; not live ownership */
     int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
     float smelt_progress;      /* 0.0-1.0: how far through smelting (in furnace beam) */
     /* Crystal ore has a two-stage smelt. Stage 0 is the raw fractured
@@ -1066,6 +1220,45 @@ typedef struct {
      * coordinate in the belt. */
     uint8_t rock_pub[32];
 } asteroid_t;
+
+static inline int asteroid_tractor_player(const asteroid_t *asteroid) {
+    return asteroid && asteroid->tractor.kind == TRACTOR_SOURCE_PLAYER
+        ? asteroid->tractor.source_index : -1;
+}
+
+static inline int asteroid_tractor_npc(const asteroid_t *asteroid) {
+    return asteroid && asteroid->tractor.kind == TRACTOR_SOURCE_NPC
+        ? asteroid->tractor.source_index : -1;
+}
+
+static inline bool asteroid_has_tractor(const asteroid_t *asteroid) {
+    return asteroid && asteroid->tractor.kind != TRACTOR_SOURCE_NONE;
+}
+
+static inline void asteroid_set_player_tractor(asteroid_t *asteroid,
+                                                int player_idx) {
+    if (!asteroid || player_idx < 0) return;
+    asteroid->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_PLAYER,
+        .source_index = (int16_t)player_idx,
+        .source_part = -1,
+    };
+}
+
+static inline void asteroid_set_npc_tractor(asteroid_t *asteroid,
+                                             int npc_idx) {
+    if (!asteroid || npc_idx < 0) return;
+    asteroid->tractor = (tractor_binding_t){
+        .kind = TRACTOR_SOURCE_NPC,
+        .source_index = (int16_t)npc_idx,
+        .source_part = -1,
+    };
+}
+
+static inline void asteroid_clear_tractor(asteroid_t *asteroid) {
+    if (!asteroid) return;
+    tractor_binding_clear(&asteroid->tractor);
+}
 
 typedef enum {
     NPC_ROLE_MINER,
@@ -1184,10 +1377,11 @@ typedef struct {
     /* Physics body. Sim_ship primitives mutate this directly so NPCs
      * and players run through the same code with the same shape.
      * Slice 5 of #294 dropped the npc-side duplicate fields (pos, vel,
-     * angle, hull_class) — every reader migrated to `npc->ship.*`.
+     * angle, hull_class) — every reader migrated to `npc->ship->*`.
      * Save format v50+ serializes ship.{pos,vel,angle,hull_class}
      * directly; v49 saves load by remap into the embedded body. */
-    ship_t ship;
+    entity_ref_t ship_ref;
+    ship_t *ship; /* non-owning view of world.ships[ship_ref.index].component */
     /* Per-NPC input intent, the same shape sp->input has on the player
      * side. AI brain writes turn / thrust / boost / mine each tick via
      * npc_set_intent; the apply path reads from here. The
@@ -1196,7 +1390,6 @@ typedef struct {
      * unified shape lets a future autopilot/agent path drive a ship
      * through the same dispatch as a human player. */
     input_intent_t input;
-    float cargo[COMMODITY_COUNT];
     int target_asteroid;
     int home_station;
     int dest_station;
@@ -1209,14 +1402,6 @@ typedef struct {
     float state_timer;
     bool thrusting;
     float tint_r, tint_g, tint_b;  /* manifest rarity display tint */
-    int towed_fragment;             /* asteroid index being towed, -1 = none */
-    int towed_scaffold;             /* scaffold index being towed by a worker, -1 = none */
-    /* Hull HP. Decrements on collision (asteroid / station / ship). When
-     * the NPC docks at home, the dock auto-repairs by consuming repair
-     * kits from station inventory (1 kit per HP). If hull <= 0 the
-     * NPC despawns; sim_ai's spawn loop replaces it on the next tick.
-     * Added in save v32 — earlier saves default to npc_max_hull on load. */
-    float hull;
     /* Per-NPC economic identity. Stamped onto towed asteroid fragments
      * (a->last_towed_token) so the smelt-payout credits the NPC's
      * ledger entry at the home station, and used by haulers to receive
@@ -1225,18 +1410,6 @@ typedef struct {
      * counter (the dead ledger entries belonging to the old token
      * just sit until the 16-slot LRU evicts them). */
     uint8_t session_token[8];
-
-    /* Gossip-contract bounded memory. Snapshots of contracts the NPC has
-     * learned about via dock contact. The hauler picker reads only from
-     * here, never from w->contracts[] — peer station state is never
-     * iterated. FIFO eviction on overflow. Ephemeral — not serialized;
-     * the next dock cycle re-populates via the dock handshake. */
-    contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
-    uint8_t known_contract_count;
-
-    /* NPC-local situated knowledge. Slice 1 mirrors contract gossip into
-     * KNOW_CONTRACT payloads without changing the hauler picker yet. */
-    knowledge_view_t knowledge;
 
     /* Runtime-only inspect diagnostics for the latest job-offer comparison.
      * kind is inspect_diag_kind_t; score/selected are compact UI values.
@@ -1294,28 +1467,22 @@ typedef struct {
     uint8_t hnn_experience_pad[1];
 } npc_ship_t;
 
-/* NPC fragment towing is mid-migration from npc_ship_t.towed_fragment to the
- * embedded ship_t.towed_fragments[] list. Keep the scalar as a save/wire/UI
- * compatibility mirror while new physics paths can read the ship-shaped state.
- */
+/* NPCs use the same ship tow component as players. */
 static inline int npc_towed_fragment_index(const npc_ship_t *npc) {
     if (!npc) return -1;
-    if (npc->ship.towed_count > 0) {
-        int idx = npc->ship.towed_fragments[0];
+    if (npc->ship->towed_count > 0) {
+        int idx = npc->ship->towed_fragments[0];
         if (idx >= 0 && idx < MAX_ASTEROIDS) return idx;
     }
-    if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS)
-        return npc->towed_fragment;
     return -1;
 }
 
 static inline void npc_clear_towed_fragment(npc_ship_t *npc) {
     if (!npc) return;
-    npc->towed_fragment = -1;
-    npc->ship.towed_count = 0;
-    for (int i = 0; i < (int)(sizeof(npc->ship.towed_fragments) /
-                              sizeof(npc->ship.towed_fragments[0])); i++) {
-        npc->ship.towed_fragments[i] = -1;
+    npc->ship->towed_count = 0;
+    for (int i = 0; i < (int)(sizeof(npc->ship->towed_fragments) /
+                              sizeof(npc->ship->towed_fragments[0])); i++) {
+        npc->ship->towed_fragments[i] = -1;
     }
 }
 
@@ -1323,33 +1490,18 @@ static inline void npc_set_towed_fragment_index(npc_ship_t *npc, int idx) {
     if (!npc) return;
     npc_clear_towed_fragment(npc);
     if (idx < 0 || idx >= MAX_ASTEROIDS) return;
-    npc->towed_fragment = idx;
-    npc->ship.towed_fragments[0] = (int16_t)idx;
-    npc->ship.towed_count = 1;
-}
-
-static inline void npc_sync_towed_fragment(npc_ship_t *npc) {
-    if (!npc) return;
-    npc_set_towed_fragment_index(npc, npc_towed_fragment_index(npc));
+    npc->ship->towed_fragments[0] = (int16_t)idx;
+    npc->ship->towed_count = 1;
 }
 
 /* ------------------------------------------------------------------ */
-/* character_t — controller layer (#294 Slice 1: types only)            */
+/* character_t — actor/controller registry                            */
 /* ------------------------------------------------------------------ */
 /*
- * A character_t is the AI brain or human pilot binding sitting on top
- * of a ship_t. The unification target (#294) is:
- *
- *   ship_t       — physics + cargo + manifest + upgrades + hull HP
- *   character_t  — kind, brain state, target, home/dest station,
- *                  state timer; indexes a ship by id
- *   world_t      — ships[]      unified pool (players + NPCs)
- *                  characters[] controller pool
- *
- * Slice 1 introduces the type and an empty `characters[]` pool on
- * world_t so later slices can populate them without a flag-day rename.
- * Nothing reads or writes the pool yet — npc_ship_t and
- * server_player_t still own physics + brain state today.
+ * This is deliberately a registry, not another component store. NPC and
+ * player actor records each contain exactly one authoritative ship_t;
+ * character_t identifies the controller and actor slot without mirroring
+ * physics, AI state, targets, or tow ownership.
  */
 typedef enum {
     CHARACTER_KIND_NONE = 0,
@@ -1362,22 +1514,9 @@ typedef enum {
 typedef struct {
     bool active;
     character_kind_t kind;
-    int ship_idx;             /* index into world.ships[]; -1 = unbound */
-    /* For NPC kinds: index into world.npc_ships[]. For PLAYER: index
-     * into world.players[]. -1 = unbound. Distinct from ship_idx —
-     * those address different pools. Used by character_for_npc_slot
-     * et al. so the lookup is unambiguous regardless of how the
-     * ships[] free-slot allocator handed out indices. */
-    int npc_slot;
-    /* Brain state — meaningful for NPC kinds. Players carry these in
-     * server_player_t for now; converging is a later slice. */
-    npc_state_t state;
-    int target_asteroid;      /* -1 = none */
-    int home_station;
-    int dest_station;
-    float state_timer;
-    int towed_fragment;       /* -1 = none */
-    int towed_scaffold;       /* -1 = none */
+    /* Resolves directly to world.npc_ships[slot] for NPC kinds. */
+    int actor_slot;
+    entity_ref_t ship_ref;
 } character_t;
 
 typedef struct {

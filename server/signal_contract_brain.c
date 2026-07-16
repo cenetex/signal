@@ -273,9 +273,9 @@ static void fill_features(const world_t *w,
     int dst = c->dest_station;
     const station_t *src_st = (src >= 0 && src < MAX_STATIONS) ? &w->stations[src] : NULL;
     const station_t *dst_st = (dst >= 0 && dst < MAX_STATIONS) ? &w->stations[dst] : NULL;
-    float capacity = ship_cargo_capacity(&sp->ship);
+    float capacity = ship_cargo_capacity(sp->ship);
     int held = (c->commodity < COMMODITY_COUNT)
-        ? ship_finished_count(&sp->ship, c->commodity)
+        ? ship_finished_count(sp->ship, c->commodity)
         : 0;
 
     row[0] = 1.0;
@@ -297,7 +297,7 @@ static void fill_features(const world_t *w,
     row[16] = scale(c->distance, 9000.0);
     row[17] = scale(c->age, 300.0);
     row[18] = clip(c->hull_ratio, 0.0, 1.0);
-    row[19] = scale((double)ship_towed_body_count(&sp->ship), 10.0);
+    row[19] = scale((double)ship_towed_body_count(sp->ship), 10.0);
     row[20] = (src_st && station_produces(src_st, c->commodity)) ? 1.0 : 0.0;
     row[21] = (dst_st && station_consumes(dst_st, c->commodity)) ? 1.0 : 0.0;
     row[22] = (src == 0) ? 1.0 : 0.0;

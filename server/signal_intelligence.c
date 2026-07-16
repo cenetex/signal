@@ -448,7 +448,7 @@ int signal_intelligence_choose_hail_station_with_reason(
         return sp->nearby_station;
     }
 
-    float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
+    float comm = (sp->ship->comm_range > 0.0f) ? sp->ship->comm_range : 1500.0f;
     int best_station = -1;
     float best_d = INFINITY;
     float best_quality = 0.0f;
@@ -462,7 +462,7 @@ int signal_intelligence_choose_hail_station_with_reason(
         if (scan < comm_fallback) scan = comm_fallback;
         if (scan <= 0.0f) continue;
 
-        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        float d_sq = v2_dist_sq(sp->ship->pos, st->pos);
         if (d_sq > scan * scan) continue;
         candidate_count++;
         if (d_sq < best_d) {

@@ -198,10 +198,7 @@ static bool catalog_normalize_furnaces(station_t *st,
 
     for (int i = furnace_count - 1; i >= spec_count; i--) {
         int idx = furnace_indices[i];
-        for (int k = idx + 1; k < st->module_count; k++)
-            st->modules[k - 1] = st->modules[k];
-        st->module_count--;
-        changed = true;
+        changed |= station_module_remove(st, idx);
     }
     return changed;
 }

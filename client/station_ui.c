@@ -97,7 +97,7 @@ const station_t* navigation_station_ptr(void) {
     if (LOCAL_PLAYER.nearby_station >= 0) {
         return nearby_station_ptr();
     }
-    return station_at(nearest_station_index(LOCAL_PLAYER.ship.pos));
+    return station_at(nearest_station_index(LOCAL_PLAYER.ship->pos));
 }
 
 /* ------------------------------------------------------------------ */
@@ -466,7 +466,7 @@ static bool ui_contract_laser_gate_note(const contract_t *ct,
     if (!out || cap == 0) return false;
     out[0] = '\0';
     int required = ui_contract_required_mining_level(ct);
-    if (required <= LOCAL_PLAYER.ship.mining_level) return false;
+    if (required <= LOCAL_PLAYER.ship->mining_level) return false;
     snprintf(out, cap, "requires L%d laser", required + 1);
     return true;
 }
@@ -478,7 +478,7 @@ bool station_laser_refit_summary(char *out, size_t out_size)
 
     station_ui_state_t ui = { 0 };
     build_station_ui_state(&ui);
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     if (!ui.station || ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING))
         return false;
 
@@ -672,7 +672,7 @@ int build_work_slots(int here_idx, vec2 here_pos,
             if (here_idx < 0 || ct->station_index != here_idx) continue;
             if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
                 float held_ore = 0.0f;
-                const ship_t *ship = &LOCAL_PLAYER.ship;
+                const ship_t *ship = LOCAL_PLAYER.ship;
                 for (int t = 0; t < ship->towed_count; t++) {
                     int fi = ship->towed_fragments[t];
                     if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
@@ -682,7 +682,8 @@ int build_work_slots(int here_idx, vec2 here_pos,
                 }
                 held_int = (int)lroundf(held_ore);
             } else {
-                held_int = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+                held_int = contract_fit_manifest_count(
+                    ct, &LOCAL_PLAYER.ship->manifest);
             }
             actionable_here = held_int > 0;
         }
@@ -770,9 +771,9 @@ void build_station_ui_state(station_ui_state_t* ui) {
         return;
     }
 
-    ui->hull_now = (int)lroundf(LOCAL_PLAYER.ship.hull);
-    ui->hull_max = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
-    float repair = station_repair_cost(&LOCAL_PLAYER.ship, current_station_ptr());
+    ui->hull_now = (int)lroundf(LOCAL_PLAYER.ship->hull);
+    ui->hull_max = (int)lroundf(ship_max_hull(LOCAL_PLAYER.ship));
+    float repair = station_repair_cost(LOCAL_PLAYER.ship, current_station_ptr());
     ui->repair_cost = (int)lroundf(repair);
 
     /* Compute per-upgrade module accounting (cargo first, dock fallback).
@@ -791,13 +792,13 @@ void build_station_ui_state(station_ui_state_t* ui) {
     for (int i = 0; i < 3; i++) {
         commodity_t c = (commodity_t)(COMMODITY_FRAME +
                         upgrade_required_product(slots[i].up));
-        int need = (int)ceilf(upgrade_product_cost(&LOCAL_PLAYER.ship, slots[i].up));
-        int in_cargo  = ship_manifest_count_c(&LOCAL_PLAYER.ship, c);
+        int need = (int)ceilf(upgrade_product_cost(LOCAL_PLAYER.ship, slots[i].up));
+        int in_cargo  = ship_manifest_count_c(LOCAL_PLAYER.ship, c);
         int at_station = ui->station ? station_manifest_count_c(ui->station, c) : 0;
         int from_station = need - (need < in_cargo ? need : in_cargo);
         if (from_station < 0) from_station = 0;
         float credit = ui->station
-            ? upgrade_station_credit_cost(ui->station, &LOCAL_PLAYER.ship,
+            ? upgrade_station_credit_cost(ui->station, LOCAL_PLAYER.ship,
                                           slots[i].up, from_station)
             : 0.0f;
         *slots[i].needed    = need;
@@ -811,7 +812,7 @@ void build_station_ui_state(station_ui_state_t* ui) {
 
     /* Kit availability for the [R] row — drives "X kits ship / Y kits
      * station" hint and the partial-repair warning. */
-    ui->ship_kits    = ship_manifest_count_c(&LOCAL_PLAYER.ship,
+    ui->ship_kits    = ship_manifest_count_c(LOCAL_PLAYER.ship,
                                              COMMODITY_REPAIR_KIT);
     ui->station_kits = (ui->station)
         ? station_manifest_count_c(ui->station, COMMODITY_REPAIR_KIT) : 0;
@@ -821,13 +822,13 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->kits_short_by = (hp_needed > kits_avail) ? (hp_needed - kits_avail) : 0;
     float bal = player_current_balance();
     ui->can_upgrade_mining =
-        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+        can_afford_upgrade(ui->station, LOCAL_PLAYER.ship,
                            SHIP_UPGRADE_MINING, bal);
     ui->can_upgrade_hold =
-        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+        can_afford_upgrade(ui->station, LOCAL_PLAYER.ship,
                            SHIP_UPGRADE_HOLD, bal);
     ui->can_upgrade_tractor =
-        can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship,
+        can_afford_upgrade(ui->station, LOCAL_PLAYER.ship,
                            SHIP_UPGRADE_TRACTOR, bal);
 }
 
@@ -1479,7 +1480,7 @@ static bool local_player_tows_pod(const ship_t *ship, int pod_idx)
         pod->commodity >= COMMODITY_COUNT) {
         return false;
     }
-    if (pod->towed_by == (int8_t)LOCAL_PLAYER.id) return true;
+    if (cargo_pod_player_tractor(pod) == LOCAL_PLAYER.id) return true;
     return local_ship_lists_towed_pod(ship, pod_idx);
 }
 
@@ -1531,7 +1532,7 @@ static bool station_shipyard_pod_staged_at_hopper_local(const station_t *st,
         if (station_idx >= 0 &&
             cargo_pod_is_tractored_by_module(pod, station_idx, i))
             return true;
-        if (pod->towed_by >= 0 &&
+        if (cargo_pod_has_player_tractor(pod) &&
             v2_dist_sq(pod->pos, hopper_pos) <= hopper_range_sq)
             return true;
     }
@@ -1579,12 +1580,13 @@ int station_shipyard_material_available_local(const station_t *st,
     if (!st || commodity >= COMMODITY_COUNT) return 0;
     int total =
         station_shipyard_station_material_available_local(st, commodity);
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
         if (!station_shipyard_pod_is_exact_material_local(pod, commodity))
             continue;
-        if (pod->towed_by >= 0 && !local_player_tows_pod(ship, i))
+        if (cargo_pod_has_player_tractor(pod) &&
+            !local_player_tows_pod(ship, i))
             continue;
         if (!station_shipyard_pod_staged_at_hopper_local(st, pod, commodity))
             continue;
@@ -1845,7 +1847,7 @@ static bool trade_station_market_pod(const station_t *st, int station_idx,
     const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
     if (!pod->active || pod->kind != CARGO_POD_CARGO ||
         pod->quantity == 0 || pod->commodity >= COMMODITY_COUNT ||
-        pod->towed_by >= 0 || pod->shipment_id != 0) {
+        cargo_pod_has_player_tractor(pod) || pod->shipment_id != 0) {
         return false;
     }
     int ps = -1;
@@ -2503,7 +2505,7 @@ static bool contract_row_tracked_note(int here_idx,
 
     if (ct->action == CONTRACT_TRACTOR &&
         ct->commodity >= COMMODITY_RAW_ORE_COUNT &&
-        contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0 &&
+        contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship->manifest) > 0 &&
         here_idx != (int)ct->station_index) {
         snprintf(out, out_size, "wrong station");
         return true;
@@ -2515,7 +2517,7 @@ static bool contract_row_tracked_note(int here_idx,
 static float ui_towed_matching_ore(const contract_t *ct)
 {
     float held = 0.0f;
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     if (!ct || ct->action != CONTRACT_TRACTOR ||
         ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
         return 0.0f;
@@ -2590,7 +2592,8 @@ static bool station_contract_s_action_label(const station_t *station,
             return true;
         }
         snprintf(out, out_size,
-                 contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0
+                 contract_fit_manifest_count(
+                     ct, &LOCAL_PLAYER.ship->manifest) > 0
                     ? "unload pod" : "track cargo");
         return true;
     }
@@ -3102,7 +3105,7 @@ bool station_panel_legend_text(station_view_t view,
 
     if (view == STATION_VIEW_TRADE && station) {
         trade_row_t rows[TRADE_MAX_ROWS];
-        int row_count = build_trade_rows(station, &LOCAL_PLAYER.ship,
+        int row_count = build_trade_rows(station, LOCAL_PLAYER.ship,
                                          rows, TRADE_MAX_ROWS);
         int first = 0, last = 0, total_pages = 1;
         trade_page_range(rows, row_count, (int)g.trade_page,
@@ -3122,7 +3125,7 @@ bool station_panel_legend_text(station_view_t view,
                 row_action = "buy crate";
             }
         }
-        const char *sell_action = LOCAL_PLAYER.ship.towed_pod_count > 0
+        const char *sell_action = LOCAL_PLAYER.ship->towed_pod_count > 0
             ? "tow to intake"
             : "sell all";
         snprintf(out, out_size,
@@ -3430,7 +3433,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
                             bool compact)
 {
     const station_t *st = ui->station;
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     float row_h = compact ? 14.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
@@ -3815,7 +3818,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                             bool compact)
 {
     const station_t *st = ui->station;
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     float row_h = compact ? 14.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
@@ -4578,7 +4581,7 @@ static void draw_yard_view(const station_ui_state_t *ui,
         if (module_kind(kit) == MODULE_KIND_NONE) continue;
         if (!station_can_order_scaffold(ui->station, kit)) continue;
         any = true;
-        bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit);
+        bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship->unlocked_modules, kit);
         if (!unlocked) { locked++; continue; }
         int fee = scaffold_order_fee(kit);
         int mat = (int)module_build_cost_lookup(kit);

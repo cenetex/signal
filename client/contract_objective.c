@@ -95,11 +95,11 @@ static void objective_set_asteroid_target(contract_objective_t *out,
 static const char *objective_upgrade_effect(ship_upgrade_t upgrade) {
     switch (upgrade) {
     case SHIP_UPGRADE_MINING:
-        if (LOCAL_PLAYER.ship.mining_level == 0)
+        if (LOCAL_PLAYER.ship->mining_level == 0)
             return "L2 unlocks L rocks and Cuprite";
-        if (LOCAL_PLAYER.ship.mining_level == 1)
+        if (LOCAL_PLAYER.ship->mining_level == 1)
             return "L3 unlocks XL rocks and Crystal";
-        if (LOCAL_PLAYER.ship.mining_level == 2)
+        if (LOCAL_PLAYER.ship->mining_level == 2)
             return "L4 unlocks XXL rocks";
         return "higher fracture output";
     case SHIP_UPGRADE_HOLD:
@@ -270,14 +270,14 @@ static bool objective_laser_gate_note(int required,
                                       size_t cap) {
     if (!out || cap == 0) return false;
     out[0] = '\0';
-    if (required <= LOCAL_PLAYER.ship.mining_level) return false;
+    if (required <= LOCAL_PLAYER.ship->mining_level) return false;
     snprintf(out, cap, "requires L%d laser", required + 1);
     return true;
 }
 
 static float towed_matching_ore(const contract_t *ct) {
     float held = 0.0f;
-    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const ship_t *ship = LOCAL_PLAYER.ship;
     for (int t = 0; t < ship->towed_count; t++) {
         int fi = ship->towed_fragments[t];
         if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
@@ -409,7 +409,7 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
     }
 
     float available_ore = 0.0f;
-    int frag = nearest_matching_fragment(ct, LOCAL_PLAYER.ship.pos,
+    int frag = nearest_matching_fragment(ct, LOCAL_PLAYER.ship->pos,
                                          &available_ore);
     if (frag >= 0) {
         out->kind = CONTRACT_OBJECTIVE_TRACTOR;
@@ -453,7 +453,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
     out->commodity = ct->commodity;
 
     int qty = contract_quantity_goal(ct);
-    int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
+    int held = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship->manifest);
     if (held > 0) {
         int deliver = held < qty ? held : qty;
         out->kind = CONTRACT_OBJECTIVE_DELIVER;
@@ -484,7 +484,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
     }
 
     int stock_station = nearest_station_with_buyable_stock(ct,
-        LOCAL_PLAYER.ship.pos, (int)ct->station_index);
+        LOCAL_PLAYER.ship->pos, (int)ct->station_index);
     if (stock_station >= 0) {
         char stock[32];
         station_name(stock_station, stock, sizeof(stock));
@@ -501,7 +501,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
     }
 
     int producer = nearest_station_producing(ct->commodity,
-                                             LOCAL_PLAYER.ship.pos);
+                                             LOCAL_PLAYER.ship->pos);
     char upstream[80];
     format_upstream_step(ct->commodity, upstream, sizeof(upstream));
     out->kind = CONTRACT_OBJECTIVE_MAKE;
@@ -655,7 +655,7 @@ static bool player_can_fulfill_contract_now(const contract_t *ct) {
     if (ct->action != CONTRACT_TRACTOR) return false;
     if (ct->commodity < COMMODITY_RAW_ORE_COUNT)
         return towed_matching_ore(ct) > 0.0f;
-    return contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0;
+    return contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship->manifest) > 0;
 }
 
 static bool contract_has_valid_fracture_target(const contract_t *ct) {
@@ -707,7 +707,7 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
     vec2 here = LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station >= 0 &&
                 LOCAL_PLAYER.current_station < MAX_STATIONS
               ? g.world.stations[LOCAL_PLAYER.current_station].pos
-              : LOCAL_PLAYER.ship.pos;
+              : LOCAL_PLAYER.ship->pos;
 
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!(g.player_known_contract_mask & (1u << i))) continue; /* gossip filter */
@@ -798,7 +798,7 @@ bool contract_objective_ready_upgrade(contract_objective_t *out) {
 
     float balance = player_current_balance();
     for (int i = 0; i < (int)(sizeof(checks) / sizeof(checks[0])); i++) {
-        if (!can_afford_upgrade(st, &LOCAL_PLAYER.ship,
+        if (!can_afford_upgrade(st, LOCAL_PLAYER.ship,
                                 checks[i].upgrade, balance))
             continue;
         out->active = true;

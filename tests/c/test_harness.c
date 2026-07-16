@@ -103,7 +103,6 @@ bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
         unit.pub[3] = (uint8_t)(i >> 8);
         if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return false;
     }
-    ship->cargo[c] = (float)count;
     return true;
 }
 
@@ -116,7 +115,44 @@ bool test_set_station_finished_units(station_t *st, commodity_t c, int count) {
     if (existing > 0)
         (void)station_manifest_consume_by_commodity(st, c, existing);
     st->_inventory_cache[c] = 0.0f;
+    st->_finished_residue[c] = 0.0f;
     return station_finished_mint(st, c, count, NULL) == count;
+}
+
+bool test_set_station_finished_amount(station_t *st, commodity_t c,
+                                      float amount) {
+    if (!st || !isfinite(amount) || amount < 0.0f) return false;
+    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
+    if (!station_manifest_bootstrap(st)) return false;
+
+    int existing = manifest_count_by_commodity(&st->manifest, c);
+    if (existing > 0)
+        (void)station_manifest_consume_by_commodity(st, c, existing);
+    st->_inventory_cache[c] = 0.0f;
+    st->_finished_residue[c] = 0.0f;
+    int expected_whole = (int)floorf(amount + 0.0001f);
+    int minted = station_finished_accumulate(st, c, amount, NULL);
+    return minted == expected_whole &&
+           fabsf(station_inventory_amount(st, c) - amount) < 0.001f;
+}
+
+void test_clear_knowledge(knowledge_view_t *view, uint8_t capacity) {
+    if (!view) return;
+    memset(view, 0, sizeof(*view));
+    knowledge_view_configure(view, capacity);
+}
+
+bool test_add_known_contract(knowledge_view_t *view,
+                             const contract_summary_t *summary) {
+    if (!view || !summary) return false;
+    if (view->capacity == 0)
+        knowledge_view_configure(view, SHIP_KNOWN_ITEM_CAP);
+    return knowledge_view_insert_contract(view, summary);
+}
+
+uint8_t test_known_contracts(const knowledge_view_t *view,
+                             contract_summary_t *out, uint8_t cap) {
+    return knowledge_view_collect_contracts(view, out, cap);
 }
 
 /* Place an outpost via the new tow flow without doing the full tow physics.
@@ -125,9 +161,8 @@ bool test_set_station_finished_units(station_t *st, commodity_t c, int count) {
 int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos) {
     int sidx = spawn_scaffold(w, MODULE_SIGNAL_RELAY, pos, sp->id);
     if (sidx < 0) return -1;
-    sp->ship.towed_scaffold = (int16_t)sidx;
     w->scaffolds[sidx].state = SCAFFOLD_TOWING;
-    w->scaffolds[sidx].towed_by = sp->id;
+    if (!world_scaffold_set_player_tractor(w, sidx, sp->id)) return -1;
     sp->input.place_outpost = true;
     sp->input.place_target_station = -1;
     sp->input.place_target_ring = -1;
@@ -141,6 +176,8 @@ int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos) {
             return s;
         }
     }
+    world_scaffold_clear_tractor(w, sidx);
+    w->scaffolds[sidx].active = false;
     return -1;
 }
 

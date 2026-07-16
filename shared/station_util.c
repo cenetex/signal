@@ -32,6 +32,88 @@ bool station_collides(const station_t *st) {
     return st->radius > 0.0f && !st->planned;
 }
 
+static bool station_module_identity_equal(const station_module_t *a,
+                                          const station_module_t *b)
+{
+    if (!a || !b) return false;
+    return a->type == b->type &&
+           a->ring == b->ring &&
+           a->slot == b->slot &&
+           a->scaffold == b->scaffold &&
+           a->commodity == b->commodity;
+}
+
+void station_module_clear_runtime(station_module_t *module) {
+    if (!module) return;
+    module->input_buffer = 0.0f;
+    module->output_buffer = 0.0f;
+    module->active_pulse = 0.0f;
+    module->craft_progress = 0.0f;
+    module->flow_diag = STATION_FLOW_DIAG_NONE;
+    memset(module->_runtime_pad, 0, sizeof(module->_runtime_pad));
+}
+
+void station_modules_clear_runtime(station_t *st) {
+    if (!st) return;
+    for (int i = 0; i < MAX_MODULES_PER_STATION; i++)
+        station_module_clear_runtime(&st->modules[i]);
+}
+
+station_module_t *station_module_append(station_t *st, module_type_t type,
+                                        uint8_t ring, uint8_t slot,
+                                        bool scaffold, float build_progress,
+                                        commodity_t commodity) {
+    if (!st || st->module_count < 0 ||
+        st->module_count >= MAX_MODULES_PER_STATION) {
+        return NULL;
+    }
+    station_module_t *module = &st->modules[st->module_count++];
+    memset(module, 0, sizeof(*module));
+    module->type = type;
+    module->ring = ring;
+    module->slot = slot;
+    module->scaffold = scaffold;
+    module->last_smelt_commodity = LAST_SMELT_NONE;
+    module->commodity = (uint8_t)commodity;
+    module->build_progress = build_progress;
+    station_module_clear_runtime(module);
+    return module;
+}
+
+bool station_module_remove(station_t *st, int module_index) {
+    if (!st || module_index < 0 || module_index >= st->module_count ||
+        st->module_count > MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    for (int i = module_index + 1; i < st->module_count; i++)
+        st->modules[i - 1] = st->modules[i];
+    st->module_count--;
+    memset(&st->modules[st->module_count], 0,
+           sizeof(st->modules[st->module_count]));
+    return true;
+}
+
+void station_module_copy_identity(station_module_t *dst,
+                                  const station_module_t *src) {
+    if (!dst || !src) return;
+    if (!station_module_identity_equal(dst, src)) {
+        *dst = *src;
+        station_module_clear_runtime(dst);
+        return;
+    }
+    float input = dst->input_buffer;
+    float output = dst->output_buffer;
+    float pulse = dst->active_pulse;
+    float craft = dst->craft_progress;
+    uint8_t diag = dst->flow_diag;
+    *dst = *src;
+    dst->input_buffer = input;
+    dst->output_buffer = output;
+    dst->active_pulse = pulse;
+    dst->craft_progress = craft;
+    dst->flow_diag = diag;
+}
+
 bool station_has_module(const station_t *st, module_type_t type) {
     for (int i = 0; i < st->module_count; i++)
         if (st->modules[i].type == type && !st->modules[i].scaffold) return true;
@@ -603,7 +685,7 @@ station_demand_t station_demand_for(const station_t *st, commodity_t c) {
      * Mirrors priority 4's "don't import what we make" check. */
     if (station_produces(st, c)) return out;
 
-    float supply = st->_inventory_cache[c];
+    float supply = station_inventory_amount(st, c);
     float target = station_demand_target_for(st, c);
     if (target <= 0.0f) return out;
 
@@ -638,30 +720,30 @@ float station_raw_ore_chain_need_score(const station_t *st, commodity_t ore) {
     commodity_t ingot = commodity_refined_form(ore);
     if (ingot == ore || ingot >= COMMODITY_COUNT) return 0.0f;
 
-    float ingot_room = MAX_PRODUCT_STOCK - st->_inventory_cache[ingot];
+    float ingot_room = MAX_PRODUCT_STOCK - station_inventory_amount(st, ingot);
     if (ingot_room <= FLOAT_EPSILON) return 0.0f;
 
-    float score = shortage01(st->_inventory_cache[ingot], MAX_PRODUCT_STOCK);
+    float score = shortage01(station_inventory_amount(st, ingot), MAX_PRODUCT_STOCK);
     switch (ore) {
     case COMMODITY_FERRITE_ORE:
         if (station_has_module(st, MODULE_FRAME_PRESS)) {
-            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_FRAME],
+            score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_FRAME),
                                       MAX_PRODUCT_STOCK),
-                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+                          shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
     case COMMODITY_CUPRITE_ORE:
         if (station_has_module(st, MODULE_LASER_FAB)) {
-            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_LASER_MODULE],
+            score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_LASER_MODULE),
                                       12.0f),
-                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+                          shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
     case COMMODITY_CRYSTAL_ORE:
         if (station_has_module(st, MODULE_TRACTOR_FAB)) {
-            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_TRACTOR_MODULE],
+            score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_TRACTOR_MODULE),
                                       12.0f),
-                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+                          shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
     default:
@@ -875,7 +957,7 @@ station_flow_consumer_status(const station_t *st, int producer_idx,
         float cap = module_buffer_capacity(st->modules[c].type);
         if (cap <= 0.0f) continue;
         status.any = true;
-        if (st->module_input[c] + STATION_FLOW_DIAG_EPS >= cap) continue;
+        if (st->modules[c].input_buffer + STATION_FLOW_DIAG_EPS >= cap) continue;
         status.any_space = true;
         float rate = station_flow_rate_between(st, producer_idx, c);
         if (rate > status.best_rate) status.best_rate = rate;
@@ -915,11 +997,11 @@ station_flow_diag_t station_module_flow_diag(const station_t *st,
         commodity_t tag = station_flow_storage_tag(m);
         if (tag == COMMODITY_COUNT) return STATION_FLOW_DIAG_NONE;
         float cap = module_buffer_capacity(m->type);
-        if (cap > 0.0f && st->module_output[module_index] + STATION_FLOW_DIAG_EPS >= cap)
+        if (cap > 0.0f && st->modules[module_index].output_buffer + STATION_FLOW_DIAG_EPS >= cap)
             return STATION_FLOW_DIAG_OUTPUT_FULL;
         station_flow_consumer_status_t downstream =
             station_flow_consumer_status(st, module_index, tag);
-        if (st->module_output[module_index] > STATION_FLOW_DIAG_EPS) {
+        if (st->modules[module_index].output_buffer > STATION_FLOW_DIAG_EPS) {
             if (!downstream.any) return STATION_FLOW_DIAG_NO_CONSUMER;
             if (!downstream.any_space) return STATION_FLOW_DIAG_CONSUMER_FULL;
             if (downstream.best_rate <= STATION_FLOW_DIAG_SLOW_RATE)
@@ -928,7 +1010,7 @@ station_flow_diag_t station_module_flow_diag(const station_t *st,
         }
         if (downstream.any && !downstream.any_space)
             return STATION_FLOW_DIAG_CONSUMER_FULL;
-        if (downstream.any && st->_inventory_cache[tag] <= STATION_FLOW_DIAG_EPS)
+        if (downstream.any && station_inventory_amount(st, tag) <= STATION_FLOW_DIAG_EPS)
             return STATION_FLOW_DIAG_NO_INPUT;
         return downstream.any_space ? STATION_FLOW_DIAG_RUNNING
                                     : STATION_FLOW_DIAG_NONE;
@@ -936,18 +1018,18 @@ station_flow_diag_t station_module_flow_diag(const station_t *st,
 
     if (kind == MODULE_KIND_SHIPYARD) {
         if (st->pending_scaffold_count <= 0) return STATION_FLOW_DIAG_NONE;
-        return st->module_input[module_index] > STATION_FLOW_DIAG_EPS
+        return st->modules[module_index].input_buffer > STATION_FLOW_DIAG_EPS
              ? STATION_FLOW_DIAG_RUNNING
              : STATION_FLOW_DIAG_NO_INPUT;
     }
 
     commodity_t output = module_instance_output(m);
     float cap = module_buffer_capacity(m->type);
-    if (cap > 0.0f && st->module_output[module_index] + STATION_FLOW_DIAG_EPS >= cap)
+    if (cap > 0.0f && st->modules[module_index].output_buffer + STATION_FLOW_DIAG_EPS >= cap)
         return STATION_FLOW_DIAG_OUTPUT_FULL;
 
     if (output != COMMODITY_COUNT &&
-        st->module_output[module_index] > STATION_FLOW_DIAG_EPS) {
+        st->modules[module_index].output_buffer > STATION_FLOW_DIAG_EPS) {
         station_flow_consumer_status_t downstream =
             station_flow_consumer_status(st, module_index, output);
         if (!downstream.any) return STATION_FLOW_DIAG_NO_CONSUMER;
@@ -960,12 +1042,12 @@ station_flow_diag_t station_module_flow_diag(const station_t *st,
                       ? module_instance_input_ore(m)
                       : module_schema_input(m->type);
     if (input != COMMODITY_COUNT &&
-        st->module_input[module_index] <= STATION_FLOW_DIAG_EPS)
+        st->modules[module_index].input_buffer <= STATION_FLOW_DIAG_EPS)
         return STATION_FLOW_DIAG_NO_INPUT;
 
-    if (st->module_input[module_index] > STATION_FLOW_DIAG_EPS ||
-        st->module_output[module_index] > STATION_FLOW_DIAG_EPS ||
-        st->module_craft_progress[module_index] > STATION_FLOW_DIAG_EPS)
+    if (st->modules[module_index].input_buffer > STATION_FLOW_DIAG_EPS ||
+        st->modules[module_index].output_buffer > STATION_FLOW_DIAG_EPS ||
+        st->modules[module_index].craft_progress > STATION_FLOW_DIAG_EPS)
         return STATION_FLOW_DIAG_RUNNING;
 
     return STATION_FLOW_DIAG_NONE;
@@ -992,17 +1074,6 @@ static int station_clamped_module_count(int module_count)
     return module_count;
 }
 
-static bool station_module_identity_equal(const station_module_t *a,
-                                          const station_module_t *b)
-{
-    if (!a || !b) return false;
-    return a->type == b->type &&
-           a->ring == b->ring &&
-           a->slot == b->slot &&
-           a->scaffold == b->scaffold &&
-           a->commodity == b->commodity;
-}
-
 void station_reconcile_module_diag_for_identity(station_t *st,
                                                 const station_module_t *modules,
                                                 int module_count)
@@ -1016,7 +1087,7 @@ void station_reconcile_module_diag_for_identity(station_t *st,
             m < new_count &&
             station_module_identity_equal(&st->modules[m], &modules[m]);
         if (!same_live_slot)
-            st->module_diag[m] = STATION_FLOW_DIAG_NONE;
+            st->modules[m].flow_diag = STATION_FLOW_DIAG_NONE;
     }
 }
 
@@ -1029,9 +1100,9 @@ station_flow_diag_t station_module_flow_diag_view(const station_t *st,
         return STATION_FLOW_DIAG_NONE;
     }
     if (mirrored_authoritative)
-        return (station_flow_diag_t)st->module_diag[module_index];
-    if (st->module_diag[module_index] != STATION_FLOW_DIAG_NONE)
-        return (station_flow_diag_t)st->module_diag[module_index];
+        return (station_flow_diag_t)st->modules[module_index].flow_diag;
+    if (st->modules[module_index].flow_diag != STATION_FLOW_DIAG_NONE)
+        return (station_flow_diag_t)st->modules[module_index].flow_diag;
     return station_module_flow_diag(st, module_index);
 }
 

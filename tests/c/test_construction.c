@@ -59,21 +59,19 @@ static bool construction_spawn_towed_material_pod(world_t *w,
     if (!w || !sp || count < 0 || count > CARGO_POD_MANIFEST_CAP)
         return false;
     if (count == 0) return true;
-    if (sp->ship.towed_pod_count >= 10) return false;
+    if (sp->ship->towed_pod_count >= 10) return false;
     cargo_unit_t units[CARGO_POD_MANIFEST_CAP];
     memset(units, 0, sizeof(units));
     for (int i = 0; i < count; i++) {
         if (!hash_legacy_migrate_unit(origin, c, (uint16_t)i, &units[i]))
             return false;
     }
-    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship.pos,
+    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship->pos,
                                                 v2(0.0f, 0.0f), c,
                                                 units, (uint16_t)count,
                                                 CARGO_POD_CARGO);
     if (pod_idx < 0) return false;
-    sp->ship.towed_pods[sp->ship.towed_pod_count++] = (int16_t)pod_idx;
-    w->cargo_pods[pod_idx].towed_by = (int8_t)sp->id;
-    return true;
+    return world_cargo_pod_set_player_tractor(w, pod_idx, (int)sp->id);
 }
 
 static int construction_spawn_loose_material_pod(world_t *w, vec2 pos,
@@ -118,10 +116,8 @@ static int construction_spawn_station_market_pod(world_t *w,
     int pod_idx = construction_spawn_loose_material_pod(
         w, pos, c, count, origin);
     if (pod_idx < 0) return -1;
-    w->cargo_pods[pod_idx].towed_by = -1;
-    cargo_pod_set_module_tractor(&w->cargo_pods[pod_idx],
-                                 station_idx, dock_idx);
-    return pod_idx;
+    return world_cargo_pod_set_module_tractor(
+        w, pod_idx, station_idx, dock_idx) ? pod_idx : -1;
 }
 
 static int construction_count_exact_pod_units(const world_t *w, commodity_t c) {
@@ -187,10 +183,6 @@ static void construction_stage_towed_pods_at_hoppers(world_t *w,
 static void construction_reset_station_modules(station_t *st) {
     if (!st) return;
     memset(st->modules, 0, sizeof(st->modules));
-    memset(st->module_active_pulse, 0, sizeof(st->module_active_pulse));
-    memset(st->module_input, 0, sizeof(st->module_input));
-    memset(st->module_output, 0, sizeof(st->module_output));
-    memset(st->module_craft_progress, 0, sizeof(st->module_craft_progress));
     st->module_count = 0;
     st->pending_ship_build_count = 0;
     st->pending_scaffold_count = 0;
@@ -414,13 +406,22 @@ TEST(test_module_construction_and_delivery) {
     ASSERT_EQ_INT(st->module_count, mc_before + 3);
     ASSERT(st->modules[producer_idx].scaffold);
     ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
-    /* Deliver the required cuprite ingots (goes into station inventory) */
-    ship_t ship = {0};
-    ship.cargo[COMMODITY_CUPRITE_INGOT] = 200.0f;
-    step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
-    ASSERT(ship.cargo[COMMODITY_CUPRITE_INGOT] < 200.0f);  /* consumed from ship */
-    ASSERT_EQ_INT(ship.manifest.cap, 0);
-    ASSERT(ship.receipts_opaque == NULL);
+    /* Deliver the required exact cuprite cargo in a physical towed pod. */
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    ASSERT(construction_spawn_towed_material_pod(
+        &w, sp, COMMODITY_CUPRITE_INGOT,
+        (int)ceilf(module_build_cost_lookup(MODULE_TRACTOR_FAB) - 0.0001f),
+        (const uint8_t *)"MODBUILD"));
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(ship_towed_pods_manifest_count(
+                      &w, sp->ship, COMMODITY_CUPRITE_INGOT),
+                  (int)module_build_cost_lookup(MODULE_TRACTOR_FAB));
+    step_module_delivery(&w, st, 1, sp->ship, COMMODITY_COUNT);
+    ASSERT_EQ_FLOAT(ship_cargo_amount(sp->ship, COMMODITY_CUPRITE_INGOT),
+                    0.0f, 0.001f);
     ASSERT_EQ_FLOAT(st->modules[producer_idx].build_progress, 1.0f, 0.01f); /* fully supplied */
     ASSERT(st->modules[producer_idx].scaffold);  /* still building — not instant */
     /* Run sim for 15 seconds (MODULE_BUILD_TIME = 10s + margin) */
@@ -455,24 +456,16 @@ TEST(test_construction_consumes_manifest_units) {
     sp->id = 0;
     memset(sp->session_token, 0xCC, sizeof(sp->session_token));
     player_init_ship(sp, &w);
-    ASSERT(manifest_init(&sp->ship.manifest, 16));
-    sp->ship.cargo[COMMODITY_FRAME] = 5.0f;
-    cargo_unit_t u = {0};
-    u.kind = CARGO_KIND_FRAME;
-    u.commodity = COMMODITY_FRAME;
-    for (int i = 0; i < 5; i++) {
-        u.pub[0] = (uint8_t)(i + 1);
-        ASSERT(manifest_push(&sp->ship.manifest, &u));
-    }
-    ASSERT_EQ_INT(manifest_count_by_commodity(&sp->ship.manifest, COMMODITY_FRAME), 5);
+    ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, 5,
+                                        MINING_GRADE_COMMON));
+    ASSERT_EQ_INT(manifest_count_by_commodity(&sp->ship->manifest, COMMODITY_FRAME), 5);
 
     sp->input.service_sell = true;
     sp->input.service_sell_only = COMMODITY_COUNT;
     world_sim_step(&w, SIM_DT);
 
-    int frames_left = manifest_count_by_commodity(&sp->ship.manifest, COMMODITY_FRAME);
-    int cargo_left = (int)floorf(sp->ship.cargo[COMMODITY_FRAME] + 0.0001f);
-    ASSERT_EQ_INT(cargo_left, frames_left);
+    int frames_left = manifest_count_by_commodity(&sp->ship->manifest, COMMODITY_FRAME);
+    ASSERT_EQ_INT(ship_finished_count(sp->ship, COMMODITY_FRAME), frames_left);
     /* Some frames consumed by the scaffold (it needs them). */
     ASSERT(frames_left < 5);
     int consumed = 5 - frames_left;
@@ -597,8 +590,10 @@ TEST(test_module_delivery_consumes_towed_manifest_pod) {
     m->scaffold = true;
     m->build_progress = 0.0f;
 
-    ship_t ship = {0};
-    memset(ship.towed_pods, -1, sizeof(ship.towed_pods));
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
     cargo_unit_t unit = {0};
     ASSERT(hash_legacy_migrate_unit((const uint8_t *)"PODMODL1",
                                     COMMODITY_FRAME, 0, &unit));
@@ -607,18 +602,17 @@ TEST(test_module_delivery_consumes_towed_manifest_pod) {
                                                 COMMODITY_FRAME, &unit, 1,
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
-    ship.towed_pods[0] = (int16_t)pod_idx;
-    ship.towed_pod_count = 1;
-    w.cargo_pods[pod_idx].towed_by = 0;
+    ASSERT(world_cargo_pod_set_player_tractor(&w, pod_idx, 0));
 
-    float payout = step_module_delivery(&w, st, 0, &ship, COMMODITY_FRAME);
+    float payout = step_module_delivery(&w, st, 0, sp->ship,
+                                        COMMODITY_FRAME);
 
     ASSERT(payout > 0.0f);
     ASSERT_EQ_FLOAT(m->build_progress,
                     1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
                     0.001f);
     ASSERT(!w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT((int)st->chain_event_count, 1);
 }
 
@@ -643,21 +637,19 @@ TEST(test_station_scaffold_consumes_towed_manifest_pod) {
     cargo_unit_t unit = {0};
     ASSERT(hash_legacy_migrate_unit((const uint8_t *)"PODSTN01",
                                     COMMODITY_FRAME, 0, &unit));
-    int pod_idx = spawn_cargo_pod_with_manifest(&w, sp->ship.pos,
+    int pod_idx = spawn_cargo_pod_with_manifest(&w, sp->ship->pos,
                                                 v2(0.0f, 0.0f),
                                                 COMMODITY_FRAME, &unit, 1,
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
-    sp->ship.towed_pods[0] = (int16_t)pod_idx;
-    sp->ship.towed_pod_count = 1;
-    w.cargo_pods[pod_idx].towed_by = 0;
+    ASSERT(world_cargo_pod_set_player_tractor(&w, pod_idx, 0));
 
     sp->input.service_sell = true;
     sp->input.service_sell_only = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
 
     ASSERT(!w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_FLOAT(st->scaffold_progress,
                     1.0f / SCAFFOLD_MATERIAL_NEEDED, 0.001f);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
@@ -688,11 +680,11 @@ TEST(test_docked_buy_one_unit_per_intent) {
     sp->docked = true;
     sp->current_station = 1;
     memset(sp->session_token, 0xAA, sizeof(sp->session_token));
-    ASSERT(manifest_init(&sp->ship.manifest, 16));
+    ASSERT(manifest_init(&sp->ship->manifest, 16));
     ledger_credit_supply(st, sp->session_token, 5000.0f);
     float bal_before = ledger_balance(st, sp->session_token);
-    float cargo_before = sp->ship.cargo[COMMODITY_FRAME];
-    int tow_before = sp->ship.towed_pod_count;
+    float cargo_before = sp->ship->cargo[COMMODITY_FRAME];
+    int tow_before = sp->ship->towed_pod_count;
     int station_frames_before = station_finished_count(st, COMMODITY_FRAME);
 
     sp->input.buy_product = true;
@@ -700,11 +692,11 @@ TEST(test_docked_buy_one_unit_per_intent) {
     sp->input.buy_grade = MINING_GRADE_COMMON;
     world_sim_step(&w, SIM_DT);
 
-    float cargo_delta = sp->ship.cargo[COMMODITY_FRAME] - cargo_before;
+    float cargo_delta = sp->ship->cargo[COMMODITY_FRAME] - cargo_before;
     float bal_delta = bal_before - ledger_balance(st, sp->session_token);
     ASSERT_EQ_FLOAT(cargo_delta, 0.0f, 0.01f);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, tow_before + 1);
-    int pod_idx = sp->ship.towed_pods[tow_before];
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, tow_before + 1);
+    int pod_idx = sp->ship->towed_pods[tow_before];
     ASSERT(pod_idx >= 0 && pod_idx < MAX_CARGO_PODS);
     ASSERT_EQ_INT(pod_idx, market_pod);
     ASSERT(w.cargo_pods[pod_idx].active);
@@ -758,8 +750,8 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     memset(sp->session_token, 0xA1, sizeof(sp->session_token));
     sp->docked = true;
     sp->current_station = 1;
-    sp->ship.hull_class = HULL_CLASS_NPC_MINER;
-    sp->ship.hull = ship_max_hull(&sp->ship);
+    sp->ship->hull_class = HULL_CLASS_NPC_MINER;
+    sp->ship->hull = ship_max_hull(sp->ship);
 
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
@@ -769,8 +761,8 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
 
     for (int i = 0; i < 4000; i++) world_sim_step(&w, 1.0f / 120.0f);
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
-    ASSERT_EQ_INT(sp->ship.hull_class, HULL_CLASS_MINER);
-    ASSERT_EQ_INT(ship_module_socket_count(&sp->ship), 3);
+    ASSERT_EQ_INT(sp->ship->hull_class, HULL_CLASS_MINER);
+    ASSERT_EQ_INT(ship_module_socket_count(sp->ship), 3);
     ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
     const ship_asset_t *asset = world_ship_asset_by_id_const(&w, sp->ship_asset_id);
     ASSERT(asset != NULL);
@@ -881,7 +873,7 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
                   original_token, sizeof(original_token)) == 0);
 
     (void)world_player_release_ship_asset(&w, 0);
-    ship_cleanup(&original->ship);
+    ship_cleanup(original->ship);
     memset(original, 0, sizeof(*original));
 
     server_player_t *replacement = &w.players[0];
@@ -998,6 +990,8 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
     sp->current_station = 1;
     sp->nearby_station = 1;
     sp->in_dock_range = true;
+    sp->ship->hull_class = HULL_CLASS_HAULER;
+    sp->ship->tractor_level = 1;
     memset(sp->session_token, 0xB7, sizeof(sp->session_token));
 
     ASSERT(construction_spawn_towed_material_pod(
@@ -1006,20 +1000,20 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
         &w, sp, COMMODITY_LASER_MODULE, lasers, (const uint8_t *)"PODHULL1"));
     ASSERT(construction_spawn_towed_material_pod(
         &w, sp, COMMODITY_TRACTOR_MODULE, tractors, (const uint8_t *)"PODHULT1"));
-    ASSERT(sp->ship.towed_pod_count > 0);
-    sp->ship.pos = st->pos;
+    ASSERT(sp->ship->towed_pod_count > 0);
+    sp->ship->pos = st->pos;
 
     ASSERT(!shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, expected_pods);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, expected_pods);
 
-    construction_stage_towed_pods_at_hoppers(&w, st, &sp->ship);
+    construction_stage_towed_pods_at_hoppers(&w, st, sp->ship);
 
     float before = ledger_balance(st, sp->session_token);
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
 
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
@@ -1087,12 +1081,12 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
     w.cargo_pods[frame_pod].pos = frame_hopper;
     w.cargo_pods[laser_pod].pos = laser_hopper;
     w.cargo_pods[tractor_pod].pos = tractor_hopper;
-    cargo_pod_set_module_tractor(&w.cargo_pods[frame_pod], 1,
-                                 frame_hopper_idx);
-    cargo_pod_set_module_tractor(&w.cargo_pods[laser_pod], 1,
-                                 laser_hopper_idx);
-    cargo_pod_set_module_tractor(&w.cargo_pods[tractor_pod], 1,
-                                 tractor_hopper_idx);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, frame_pod, 1, frame_hopper_idx));
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, laser_pod, 1, laser_hopper_idx));
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, tractor_pod, 1, tractor_hopper_idx));
 
     ASSERT(shipyard_queue_station_hull_request(&w, 0, HULL_CLASS_MINER));
 
@@ -1252,6 +1246,8 @@ TEST(test_shipyard_player_commission_rejects_split_yard_towed_materials) {
     sp->current_station = 1;
     sp->nearby_station = 1;
     sp->in_dock_range = true;
+    sp->ship->hull_class = HULL_CLASS_HAULER;
+    sp->ship->tractor_level = 1;
     memset(sp->session_token, 0xD5, sizeof(sp->session_token));
 
     ASSERT(construction_spawn_towed_material_pod(
@@ -1262,12 +1258,12 @@ TEST(test_shipyard_player_commission_rejects_split_yard_towed_materials) {
     ASSERT(construction_spawn_towed_material_pod(
         &w, sp, COMMODITY_TRACTOR_MODULE, tractors,
         (const uint8_t *)"SPLTPYDT"));
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 3);
-    construction_stage_towed_pods_at_hoppers(&w, st, &sp->ship);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 3);
+    construction_stage_towed_pods_at_hoppers(&w, st, sp->ship);
 
     ASSERT(!shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
-    ASSERT_EQ_INT(sp->ship.towed_pod_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(construction_count_exact_pod_units(&w, COMMODITY_FRAME),
                   frames);
     ASSERT_EQ_INT(construction_count_exact_pod_units(&w, COMMODITY_LASER_MODULE),
@@ -1361,7 +1357,7 @@ TEST(test_shipyard_manufacture_consumes_staged_material_pod) {
     int pod_idx = construction_spawn_loose_material_pod(
         &w, pod_pos, mat, units, (const uint8_t *)"PODSCF01");
     ASSERT(pod_idx >= 0);
-    ASSERT_EQ_INT(w.cargo_pods[pod_idx].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), -1);
 
     st->pending_scaffolds[0].type = type;
     st->pending_scaffolds[0].owner = -1;
@@ -1419,17 +1415,21 @@ TEST(test_shipyard_commission_rejects_invalid_owner_without_draining_materials) 
 TEST(test_world_seed_station_manifests_matches_float) {
     WORLD_DECL;
     world_reset(&w);
+    int expected[MAX_STATIONS][COMMODITY_COUNT] = {{0}};
     for (int i = 0; i < 3; i++) {
-        int expected = i == 1 ? 8 : 0;
-        ASSERT_EQ_INT(w.stations[i].manifest.count, expected);
+        int expected_count = i == 1 ? 8 : 0;
+        ASSERT_EQ_INT(w.stations[i].manifest.count, expected_count);
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            expected[i][c] = station_finished_count(&w.stations[i],
+                                                    (commodity_t)c);
     }
     world_seed_station_manifests(&w);
     for (int s = 0; s < 3; s++) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-            int expected = (int)floorf(w.stations[s]._inventory_cache[c] + 0.0001f);
             int got = manifest_count_by_commodity(&w.stations[s].manifest,
                                                   (commodity_t)c);
-            ASSERT_EQ_INT(got, expected);
+            ASSERT_EQ_INT(got, expected[s][c]);
+            ASSERT_EQ_FLOAT(w.stations[s]._inventory_cache[c], 0.0f, 0.0f);
         }
     }
 }
@@ -1444,7 +1444,7 @@ TEST(test_kepler_starts_with_frame_pod_not_frame_inventory) {
                                          COMMODITY_LASER_MODULE), 8);
     ASSERT_EQ_FLOAT(kepler->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(kepler->_inventory_cache[COMMODITY_LASER_MODULE],
-                    8.0f, 0.001f);
+                    0.0f, 0.001f);
 
     int frame_pod = -1;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -1460,7 +1460,7 @@ TEST(test_kepler_starts_with_frame_pod_not_frame_inventory) {
     }
 
     ASSERT(frame_pod >= 0);
-    ASSERT_EQ_INT(w.cargo_pods[frame_pod].towed_by, -1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[frame_pod]), -1);
 }
 
 TEST(test_module_activation_does_not_spawn_free_worker_hull) {
@@ -1482,7 +1482,8 @@ TEST(test_module_activation_does_not_spawn_free_worker_hull) {
      * by calling activation directly. This must activate the module but leave
      * worker provisioning to the roster/shipyard pass. */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
-    st->_inventory_cache[mat] = module_build_cost_lookup(MODULE_FURNACE);
+    ASSERT(test_set_station_finished_amount(
+        st, mat, module_build_cost_lookup(MODULE_FURNACE)));
     step_module_activation(&w, SIM_DT);
     ASSERT_EQ_INT(module_build_state(furnace), MODULE_BUILD_BUILDING);
 
@@ -1505,14 +1506,14 @@ TEST(test_238_station_core_blocks_player) {
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius; /* 16 */
 
     /* Start 200 units away, heading straight at center */
-    w->players[0].ship.pos = v2(st_pos.x + 200.0f, st_pos.y);
-    w->players[0].ship.vel = v2(-500.0f, 0.0f);
+    w->players[0].ship->pos = v2(st_pos.x + 200.0f, st_pos.y);
+    w->players[0].ship->vel = v2(-500.0f, 0.0f);
 
     /* Run 120 ticks (~1 second) */
     for (int i = 0; i < 120; i++)
         world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship->pos, st_pos));
     float min_allowed = st_r + 4.0f + ship_r;
     /* Player must be outside the core collision boundary */
     ASSERT(dist >= min_allowed - 1.0f);
@@ -1528,13 +1529,13 @@ TEST(test_238_module_circle_blocks_player) {
 
     /* Approach from outside, heading at module */
     vec2 approach_dir = v2_norm(v2_sub(mod_pos, w->stations[0].pos));
-    w->players[0].ship.pos = v2_add(mod_pos, v2_scale(approach_dir, 100.0f));
-    w->players[0].ship.vel = v2_scale(approach_dir, -400.0f);
+    w->players[0].ship->pos = v2_add(mod_pos, v2_scale(approach_dir, 100.0f));
+    w->players[0].ship->vel = v2_scale(approach_dir, -400.0f);
 
     for (int i = 0; i < 120; i++)
         world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w->players[0].ship.pos, mod_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship->pos, mod_pos));
     float min_allowed = 34.0f /* MODULE_COLLISION_RADIUS */ + ship_r;
     ASSERT(dist >= min_allowed - 2.0f);
 }
@@ -1554,16 +1555,16 @@ TEST(test_238_corridor_blocks_radial_approach) {
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
     /* Place player at the ring radius at the corridor midpoint, approaching inward */
-    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
-    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship.pos));
-    w->players[0].ship.vel = v2_scale(inward, 300.0f);
+    w->players[0].ship->pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship->pos));
+    w->players[0].ship->vel = v2_scale(inward, 300.0f);
 
     for (int i = 0; i < 120; i++)
         world_sim_step(w, SIM_DT);
 
     /* Player should have been pushed to outer edge of corridor band.
      * Corridor outer edge = ring_r + CORRIDOR_HW + ship_r */
-    float dist_from_center = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
+    float dist_from_center = v2_len(v2_sub(w->players[0].ship->pos, st_pos));
     float corridor_hw = 10.0f; /* CORRIDOR_HW */
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
     float outer_edge = ring_r + corridor_hw + ship_r;
@@ -1618,14 +1619,14 @@ TEST(test_238_dock_gap_allows_entry) {
     vec2 outside = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r + 80.0f), sinf(gap_mid) * (ring_r + 80.0f)));
     vec2 inside_target = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r - 80.0f), sinf(gap_mid) * (ring_r - 80.0f)));
 
-    w->players[0].ship.pos = outside;
+    w->players[0].ship->pos = outside;
     vec2 dir = v2_norm(v2_sub(inside_target, outside));
-    w->players[0].ship.vel = v2_scale(dir, 200.0f);
+    w->players[0].ship->vel = v2_scale(dir, 200.0f);
 
     for (int i = 0; i < 120; i++)
         world_sim_step(w, SIM_DT);
 
-    float dist_from_center = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
+    float dist_from_center = v2_len(v2_sub(w->players[0].ship->pos, st_pos));
     ASSERT(dist_from_center < ring_r);
 }
 
@@ -1640,14 +1641,14 @@ TEST(test_238_corridor_angular_edge_no_clip) {
     /* Furnace at slot 2 on ring 1 — approach from just before its angle */
     float slot2_ang = module_angle_ring(&w->stations[0], 1, 2);
     float test_ang = slot2_ang - 0.02f; /* just inside corridor end */
-    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
-    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship.pos));
-    w->players[0].ship.vel = v2_scale(inward, 300.0f);
+    w->players[0].ship->pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship->pos));
+    w->players[0].ship->vel = v2_scale(inward, 300.0f);
 
     for (int i = 0; i < 60; i++)
         world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship->pos, st_pos));
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
     float outer_edge = ring_r + 10.0f + ship_r;
     ASSERT(dist >= outer_edge - 2.0f);
@@ -1671,13 +1672,13 @@ TEST(test_238_module_corridor_junction_no_jitter) {
     float mod_ang = module_angle_ring(&w->stations[0], 2, 2);
     /* Place ship just corridor-side of the module at the ring radius */
     float junction_ang = mod_ang - 0.05f;
-    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(junction_ang) * ring_r, sinf(junction_ang) * ring_r));
-    w->players[0].ship.vel = v2(0.0f, 0.0f);
+    w->players[0].ship->pos = v2_add(st_pos, v2(cosf(junction_ang) * ring_r, sinf(junction_ang) * ring_r));
+    w->players[0].ship->vel = v2(0.0f, 0.0f);
 
     /* Record position every 30 ticks, check for oscillation */
     vec2 positions[8];
     for (int snap = 0; snap < 8; snap++) {
-        positions[snap] = w->players[0].ship.pos;
+        positions[snap] = w->players[0].ship->pos;
         for (int i = 0; i < 30; i++)
             world_sim_step(w, SIM_DT);
     }
@@ -1710,13 +1711,13 @@ TEST(test_238_invisible_wall_repro) {
     float mid_ang = TWO_PI_F * 1.5f / 6.0f;
     /* Place at ring_r + corridor_hw + 5 (inside collision band but outside visual) */
     float test_r = ring_r + corridor_hw + 5.0f; /* between visual edge and collision edge */
-    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * test_r, sinf(mid_ang) * test_r));
+    w->players[0].ship->pos = v2_add(st_pos, v2(cosf(mid_ang) * test_r, sinf(mid_ang) * test_r));
     /* Fly tangentially (no radial component) */
-    vec2 radial = v2_norm(v2_sub(w->players[0].ship.pos, st_pos));
+    vec2 radial = v2_norm(v2_sub(w->players[0].ship->pos, st_pos));
     vec2 tangent = v2(-radial.y, radial.x);
-    w->players[0].ship.vel = v2_scale(tangent, 200.0f);
+    w->players[0].ship->vel = v2_scale(tangent, 200.0f);
 
-    vec2 start_pos = w->players[0].ship.pos;
+    vec2 start_pos = w->players[0].ship->pos;
     for (int i = 0; i < 60; i++)
         world_sim_step(w, SIM_DT);
 
@@ -1725,7 +1726,7 @@ TEST(test_238_invisible_wall_repro) {
      * the collision is correct (ship has physical radius) but the visual
      * doesn't show it. Verify the collision fires: ship should be pushed outward. */
     float start_r = v2_len(v2_sub(start_pos, st_pos));
-    float end_r = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
+    float end_r = v2_len(v2_sub(w->players[0].ship->pos, st_pos));
     /* Ship should have been pushed outward (end_r >= start_r) because it was
      * inside the collision band. If this FAILS, the collision isn't detecting
      * the ship at this distance. */
@@ -1770,7 +1771,7 @@ TEST(test_furnace_geom_spokes_use_instance_ore_tag) {
     add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE);
     add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
-    st.module_active_pulse[0] = 1.0f;
+    st.modules[0].active_pulse = 1.0f;
 
     station_build_geom(&st, &geom);
 
@@ -1785,15 +1786,15 @@ TEST(test_station_geom_spoke_uses_module_diag_fallback) {
     st.signal_range = 1.0f;
     add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
-    st.module_active_pulse[0] = 0.0f;
-    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[0].active_pulse = 0.0f;
+    st.modules[0].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
 
     station_build_geom(&st, &geom);
 
     ASSERT_EQ_INT(geom.spoke_count, 1);
     ASSERT(geom.spokes[0].pulse > 0.1f);
 
-    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_CONSUMER_FULL;
+    st.modules[0].flow_diag = (uint8_t)STATION_FLOW_DIAG_CONSUMER_FULL;
     station_build_geom(&st, &geom);
 
     ASSERT_EQ_INT(geom.spoke_count, 1);
@@ -1814,7 +1815,7 @@ TEST(test_scaffold_spawn) {
     ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
     ASSERT_EQ_INT(w.scaffolds[idx].owner, 0);
     ASSERT_EQ_INT(w.scaffolds[idx].placed_station, -1);
-    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, -1);
+    ASSERT_EQ_INT(scaffold_tractor_player(&w.scaffolds[idx]), -1);
     ASSERT(w.scaffolds[idx].radius > 0.0f);
 
     /* Spawn fills slots until full */
@@ -1863,7 +1864,7 @@ TEST(test_scaffold_towed_scaffold_init) {
     SERVER_PLAYER_DECL(sp);
     sp.connected = true;
     player_init_ship(&sp, &w);
-    ASSERT_EQ_INT(sp.ship.towed_scaffold, -1);
+    ASSERT_EQ_INT(sp.ship->towed_scaffold, -1);
 }
 
 TEST(test_scaffold_tow_pickup) {
@@ -1875,7 +1876,7 @@ TEST(test_scaffold_tow_pickup) {
     w.players[0].input.tractor_hold = true;  /* hold R to grab */
 
     /* Spawn scaffold very close to the player */
-    vec2 player_pos = w.players[0].ship.pos;
+    vec2 player_pos = w.players[0].ship->pos;
     vec2 scaffold_pos = v2_add(player_pos, v2(50.0f, 0.0f));
     int idx = spawn_scaffold(&w, MODULE_FURNACE, scaffold_pos, 0);
     ASSERT(idx >= 0);
@@ -1883,9 +1884,9 @@ TEST(test_scaffold_tow_pickup) {
     /* Run sim — player should pick up the scaffold */
     for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, idx);
+    ASSERT_EQ_INT(w.players[0].ship->towed_scaffold, idx);
     ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_TOWING);
-    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, 0);
+    ASSERT_EQ_INT(scaffold_tractor_player(&w.scaffolds[idx]), 0);
 }
 
 TEST(test_scaffold_tow_release_on_r) {
@@ -1897,20 +1898,20 @@ TEST(test_scaffold_tow_release_on_r) {
     w.players[0].input.tractor_hold = true;  /* hold R to grab */
 
     /* Spawn and attach scaffold */
-    vec2 player_pos = w.players[0].ship.pos;
+    vec2 player_pos = w.players[0].ship->pos;
     int idx = spawn_scaffold(&w, MODULE_FURNACE, v2_add(player_pos, v2(50.0f, 0.0f)), 0);
     ASSERT(idx >= 0);
     for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, idx);
+    ASSERT_EQ_INT(w.players[0].ship->towed_scaffold, idx);
 
     /* Tap R = release scaffold */
     w.players[0].input.tractor_hold = false;
     w.players[0].input.release_tow = true;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, -1);
+    ASSERT_EQ_INT(w.players[0].ship->towed_scaffold, -1);
     ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
-    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, -1);
+    ASSERT_EQ_INT(scaffold_tractor_player(&w.scaffolds[idx]), -1);
 }
 
 TEST(test_scaffold_tow_release_on_dock) {
@@ -1924,14 +1925,13 @@ TEST(test_scaffold_tow_release_on_dock) {
 
     /* Spawn and manually attach scaffold */
     vec2 near_station = v2_add(w.stations[0].pos, v2(100.0f, 0.0f));
-    w.players[0].ship.pos = near_station;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = near_station;
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
     int idx = spawn_scaffold(&w, MODULE_DOCK, v2_add(near_station, v2(50.0f, 0.0f)), 0);
     ASSERT(idx >= 0);
     /* Manually attach to avoid needing sim steps in dock approach range */
-    w.players[0].ship.towed_scaffold = (int16_t)idx;
     w.scaffolds[idx].state = SCAFFOLD_TOWING;
-    w.scaffolds[idx].towed_by = 0;
+    ASSERT(world_scaffold_set_player_tractor(&w, idx, 0));
 
     /* Now dock — scaffold should be released */
     w.players[0].nearby_station = 0;
@@ -1941,7 +1941,7 @@ TEST(test_scaffold_tow_release_on_dock) {
 
     /* After docking, scaffold should be loose */
     if (w.players[0].docked) {
-        ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, -1);
+        ASSERT_EQ_INT(w.players[0].ship->towed_scaffold, -1);
         ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
     }
 }
@@ -1955,15 +1955,14 @@ TEST(test_scaffold_tow_speed_cap) {
     w.players[0].input.tractor_hold = true;
 
     /* Place player far from stations to avoid docking interference */
-    w.players[0].ship.pos = v2(5000.0f, 5000.0f);
-    w.players[0].ship.vel = v2(200.0f, 0.0f); /* moving fast */
+    w.players[0].ship->pos = v2(5000.0f, 5000.0f);
+    w.players[0].ship->vel = v2(200.0f, 0.0f); /* moving fast */
 
     /* Spawn and manually attach scaffold */
     int idx = spawn_scaffold(&w, MODULE_FURNACE, v2(5050.0f, 5000.0f), 0);
     ASSERT(idx >= 0);
-    w.players[0].ship.towed_scaffold = (int16_t)idx;
     w.scaffolds[idx].state = SCAFFOLD_TOWING;
-    w.scaffolds[idx].towed_by = 0;
+    ASSERT(world_scaffold_set_player_tractor(&w, idx, 0));
 
     /* Run sim for a while */
     for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
@@ -2084,7 +2083,7 @@ TEST(test_scaffold_full_pipeline) {
      * step_module_activation will route it to the scaffold. */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost]._inventory_cache[mat] = cost;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -2164,7 +2163,7 @@ TEST(test_build_outpost_full_economy) {
      * place_towed_scaffold so docked-mode is valid here. */
     sp->docked = true;
     sp->current_station = outpost;
-    sp->ship.pos = st_out->pos;
+    sp->ship->pos = st_out->pos;
 
     /* service_sell triggers step_scaffold_delivery (advances the
      * station scaffold) and step_module_delivery (advances any module
@@ -2347,8 +2346,8 @@ TEST(test_build_outpost_full_economy) {
         &w, module_world_pos_ring(st_out, frame_hop->ring, frame_hop->slot),
         COMMODITY_FRAME, 1, shell_origin);
     ASSERT(shell_pod >= 0);
-    cargo_pod_set_module_tractor(&w.cargo_pods[shell_pod],
-                                 outpost, frame_hop_idx);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, shell_pod, outpost, frame_hop_idx));
 
     /* Step 11 — process ore. The retired hopper-float path no longer
      * accepts raw `_inventory_cache[ORE]`; smelting now means a physical
@@ -2407,14 +2406,13 @@ TEST(test_scaffold_ship_drag) {
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
     w.players[0].input.tractor_hold = true;
-    w.players[0].ship.pos = v2(5000.0f, 5000.0f);
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship->pos = v2(5000.0f, 5000.0f);
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
 
     /* Spawn and attach scaffold */
     int idx = spawn_scaffold(&w, MODULE_FURNACE, v2(5050.0f, 5000.0f), 0);
-    w.players[0].ship.towed_scaffold = (int16_t)idx;
     w.scaffolds[idx].state = SCAFFOLD_TOWING;
-    w.scaffolds[idx].towed_by = 0;
+    ASSERT(world_scaffold_set_player_tractor(&w, idx, 0));
 
     /* Thrust for a while */
     for (int i = 0; i < 600; i++) {
@@ -2424,18 +2422,19 @@ TEST(test_scaffold_ship_drag) {
 
     /* Ship speed should be capped (much slower than free flight). Cap
      * is now engine-coupled — miner accel 300 → tow cap ~82 u/s. */
-    float spd = v2_len(w.players[0].ship.vel);
+    float spd = v2_len(w.players[0].ship->vel);
+    ASSERT_EQ_INT(w.players[0].ship->towed_scaffold, idx);
     ASSERT(spd <= 100.0f); /* engine-coupled cap + thrust/drag balance */
 
     /* Compare to free-flight speed: reset and thrust without scaffold */
-    w.players[0].ship.towed_scaffold = -1;
     w.scaffolds[idx].state = SCAFFOLD_LOOSE;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    world_scaffold_clear_tractor(&w, idx);
+    w.players[0].ship->vel = v2(0.0f, 0.0f);
     for (int i = 0; i < 600; i++) {
         w.players[0].input.thrust = 1.0f;
         world_sim_step(&w, SIM_DT);
     }
-    float free_spd = v2_len(w.players[0].ship.vel);
+    float free_spd = v2_len(w.players[0].ship->vel);
 
     /* Free flight should be significantly faster */
     ASSERT(free_spd > spd * 1.5f);
@@ -2699,7 +2698,7 @@ TEST(test_hauler_delivers_to_planned_outpost) {
     int sc_idx = spawn_scaffold(&w, MODULE_SIGNAL_RELAY, near_kepler, 0);
     ASSERT(sc_idx >= 0);
     w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
-    w.scaffolds[sc_idx].towed_by = -1;
+    world_scaffold_clear_tractor(&w, sc_idx);
 
     /* Find or seed Kepler's hauler-class worker to take the scaffold tow
      * contract. Scaffold delivery work is executed by hauler hulls; tow
@@ -2716,10 +2715,8 @@ TEST(test_hauler_delivers_to_planned_outpost) {
     ASSERT(worker_idx >= 0);
     w.npc_ships[worker_idx].state = NPC_STATE_DOCKED;
     w.npc_ships[worker_idx].state_timer = 0.0f;
-    w.npc_ships[worker_idx].ship.pos = w.stations[1].pos;
-    /* Slice 13: also seed the paired ship_t so the pre-mirror at the
-     * top of step_npc_ships doesn't drag the worker back to its
-     * spawn position next tick. */
+    w.npc_ships[worker_idx].ship->pos = w.stations[1].pos;
+    /* Resolve through the public actor lookup and seed its ship position. */
     {
         ship_t *worker_ship = world_npc_ship_for(&w, worker_idx);
         ASSERT(worker_ship != NULL);
@@ -2728,12 +2725,12 @@ TEST(test_hauler_delivers_to_planned_outpost) {
 
     /* Run up to 30s — wait for the worker to grab the scaffold */
     npc_ship_t *worker = &w.npc_ships[worker_idx];
-    for (int i = 0; i < 120 * 30 && worker->towed_scaffold < 0; i++)
+    for (int i = 0; i < 120 * 30 && worker->ship->towed_scaffold < 0; i++)
         world_sim_step(&w, SIM_DT);
 
     /* Worker must have accepted the tow contract and grabbed the scaffold. */
     ASSERT_EQ_INT(worker->role, NPC_ROLE_HAULER);
-    ASSERT(worker->towed_scaffold >= 0);
+    ASSERT(worker->ship->towed_scaffold >= 0);
     /* Destination must be the planned outpost, not a starter station */
     ASSERT(worker->dest_station >= SIGNAL_FIRST_OUTPOST_INDEX);
     ASSERT_EQ_INT(worker->dest_station, plan_slot);
@@ -2763,8 +2760,8 @@ TEST(test_save_preserves_pending_scaffolds) {
     w->stations[1].pending_ship_builds[0].build_progress = 0.5f;
     w->stations[1].pending_ship_build_count = 1;
     /* Some module buffer state */
-    w->stations[1].module_input[3] = 42.5f;
-    w->stations[1].module_output[5] = 17.0f;
+    w->stations[1].modules[3].input_buffer = 42.5f;
+    w->stations[1].modules[5].output_buffer = 17.0f;
     /* Spawn a nascent scaffold */
     int sidx = spawn_scaffold(w, MODULE_FRAME_PRESS, w->stations[1].pos, 0);
     ASSERT(sidx >= 0);
@@ -2789,8 +2786,8 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].owner, 0);
     ASSERT_EQ_FLOAT(loaded->stations[1].pending_ship_builds[0].build_progress,
                     0.5f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded->stations[1].module_input[3], 42.5f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded->stations[1].module_output[5], 17.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[1].modules[3].input_buffer, 42.5f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[1].modules[5].output_buffer, 17.0f, 0.01f);
 
     /* Scaffolds are transient in v24 — not persisted in world save.
      * Nascent scaffolds are regenerated from pending orders on restart. */
@@ -2855,13 +2852,15 @@ TEST(test_placed_scaffold_supply_phase) {
     /* Deliver half the material */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost]._inventory_cache[mat] = cost * 0.5f;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
+                                            cost * 0.5f));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(m->build_progress > 0.4f && m->build_progress < 0.6f);
     ASSERT(m->scaffold); /* still building */
 
     /* Deliver the rest */
-    w.stations[outpost]._inventory_cache[mat] = cost * 0.5f;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
+                                            cost * 0.5f));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -2984,13 +2983,15 @@ TEST(test_placed_scaffold_player_delivery) {
     w.players[0].current_station = outpost;
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.players[0].ship.cargo[mat] = cost;
+    ASSERT(construction_spawn_towed_material_pod(
+        &w, &w.players[0], mat, (int)ceilf(cost - 0.0001f),
+        (const uint8_t *)"PLYBUILD"));
 
     /* Trigger sell action — step_module_delivery pulls from cargo */
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
-    ASSERT(w.players[0].ship.cargo[mat] < 0.01f); /* cargo consumed */
+    ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
 }
 
 TEST(test_construction_contract_closes_on_activation) {
@@ -3016,7 +3017,7 @@ TEST(test_construction_contract_closes_on_activation) {
 
     /* Supply and activate */
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost]._inventory_cache[mat] = cost;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
     /* Run build timer */
@@ -3047,7 +3048,7 @@ TEST(test_stale_contract_does_not_block_next_need) {
     /* Supply, build, activate */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost]._inventory_cache[mat] = cost;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold);
@@ -3085,7 +3086,8 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     /* Deliver a partial amount (not enough to fully supply).
      * But make the station inventory exceed the 80% generic threshold
      * by adding a different commodity that fills the buffer. */
-    w.stations[outpost]._inventory_cache[mat] = cost * 0.3f; /* partial supply */
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
+                                            cost * 0.3f));
     world_sim_step(&w, SIM_DT);
 
     /* After one tick, step_module_activation routed the partial amount
@@ -3104,7 +3106,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     ASSERT(contract_alive);
 
     /* Now deliver the rest */
-    w.stations[outpost]._inventory_cache[mat] = cost;
+    ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
 }
@@ -3505,8 +3507,8 @@ TEST(test_module_flow_same_ring_transfer) {
     if (furnace_idx < 0 || press_idx < 0) return; /* setup failed, skip */
 
     /* Seed the furnace's output with ferrite ingots */
-    w.stations[1].module_output[furnace_idx] = 10.0f;
-    w.stations[1].module_input[press_idx] = 0.0f;
+    w.stations[1].modules[furnace_idx].output_buffer = 10.0f;
+    w.stations[1].modules[press_idx].input_buffer = 0.0f;
 
     /* Run one full second of sim */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
@@ -3515,10 +3517,11 @@ TEST(test_module_flow_same_ring_transfer) {
      * The press now actively consumes from its input buffer to produce
      * frames at a 2-ingot recipe, so we just check that flow happened
      * and some downstream work is visible. */
-    ASSERT(w.stations[1].module_output[furnace_idx] < 10.0f);
-    ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
-           w.stations[1].module_output[press_idx] > 0.0f ||
-           w.stations[1]._inventory_cache[COMMODITY_FRAME] > 0.0f);
+    ASSERT(w.stations[1].modules[furnace_idx].output_buffer < 10.0f);
+    ASSERT(w.stations[1].modules[press_idx].input_buffer > 0.0f ||
+           w.stations[1].modules[press_idx].output_buffer > 0.0f ||
+           station_inventory_amount(
+               &w.stations[1], COMMODITY_FRAME) > 0.0f);
 }
 
 TEST(test_module_flow_production_fills_buffers) {
@@ -3528,8 +3531,10 @@ TEST(test_module_flow_production_fills_buffers) {
     WORLD_DECL;
     world_reset(&w);
     /* Seed Kepler with frame-press input */
-    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
-    float frames_before = w.stations[1]._inventory_cache[COMMODITY_FRAME];
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_FERRITE_INGOT, 50));
+    float frames_before = station_inventory_amount(
+        &w.stations[1], COMMODITY_FRAME);
     /* Find frame press */
     int press_idx = -1;
     for (int i = 0; i < w.stations[1].module_count; i++) {
@@ -3544,10 +3549,12 @@ TEST(test_module_flow_production_fills_buffers) {
 
     /* Production should have pulled ferrite into the chain, and either
      * buffered or stocked some downstream result. */
-    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] < 50.0f);
-    ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
-           w.stations[1].module_output[press_idx] > 0.0f ||
-           w.stations[1]._inventory_cache[COMMODITY_FRAME] > frames_before);
+    ASSERT(station_inventory_amount(&w.stations[1],
+                                    COMMODITY_FERRITE_INGOT) < 50.0f);
+    ASSERT(w.stations[1].modules[press_idx].input_buffer > 0.0f ||
+           w.stations[1].modules[press_idx].output_buffer > 0.0f ||
+           station_inventory_amount(&w.stations[1], COMMODITY_FRAME) >
+               frames_before);
 }
 
 TEST(test_module_flow_does_not_overflow_capacity) {
@@ -3571,12 +3578,12 @@ TEST(test_module_flow_does_not_overflow_capacity) {
     if (furnace_idx < 0) return;
 
     /* Seed a huge amount of output, run for many ticks */
-    w.stations[1].module_output[furnace_idx] = 1000.0f;
+    w.stations[1].modules[furnace_idx].output_buffer = 1000.0f;
     for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
 
     /* Press input must not exceed its capacity */
     float cap = module_buffer_capacity(MODULE_FRAME_PRESS);
-    ASSERT(w.stations[1].module_input[press_idx] <= cap + 0.01f);
+    ASSERT(w.stations[1].modules[press_idx].input_buffer <= cap + 0.01f);
 }
 
 /* #280: storage modules must participate in flow as buffers, not be
@@ -3598,18 +3605,21 @@ TEST(test_module_flow_storage_feeds_consumer) {
     }
     if (hopper_idx < 0 || press_idx < 0) return; /* layout drift, skip */
 
-    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
-    w.stations[1].module_output[hopper_idx] = 0.0f;
-    w.stations[1].module_input[press_idx] = 0.0f;
-    float ingots_before = w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_FERRITE_INGOT, 50));
+    w.stations[1].modules[hopper_idx].output_buffer = 0.0f;
+    w.stations[1].modules[press_idx].input_buffer = 0.0f;
+    float ingots_before = station_inventory_amount(
+        &w.stations[1], COMMODITY_FERRITE_INGOT);
 
     /* One second of sim — hopper should refill its output from inventory
      * and the flow stepper should push it onward. */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
 
-    bool flowed = w.stations[1].module_output[hopper_idx] > 0.0f
-               || w.stations[1].module_input[press_idx] > 0.0f
-               || w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <
+    bool flowed = w.stations[1].modules[hopper_idx].output_buffer > 0.0f
+               || w.stations[1].modules[press_idx].input_buffer > 0.0f
+               || station_inventory_amount(&w.stations[1],
+                                            COMMODITY_FERRITE_INGOT) <
                   ingots_before - 0.5f;
     ASSERT(flowed);
 }
@@ -3714,7 +3724,7 @@ TEST(test_module_flow_diag_output_full) {
         .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
         .build_progress = 1.0f,
     };
-    st.module_output[0] = module_buffer_capacity(MODULE_FRAME_PRESS);
+    st.modules[0].output_buffer = module_buffer_capacity(MODULE_FRAME_PRESS);
 
     ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
                   STATION_FLOW_DIAG_OUTPUT_FULL);
@@ -3728,7 +3738,7 @@ TEST(test_module_flow_diag_no_consumer) {
         .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 0,
         .build_progress = 1.0f,
     };
-    st.module_output[0] = 2.0f;
+    st.modules[0].output_buffer = 2.0f;
 
     ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
                   STATION_FLOW_DIAG_NO_CONSUMER);
@@ -3747,7 +3757,7 @@ TEST(test_module_flow_diag_slow_feed) {
         .slot = (uint8_t)(STATION_RING_SLOTS[3] / 2),
         .build_progress = 1.0f, .commodity = (uint8_t)COMMODITY_FRAME,
     };
-    st.module_output[0] = 2.0f;
+    st.modules[0].output_buffer = 2.0f;
 
     ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
                   STATION_FLOW_DIAG_SLOW_FEED);
@@ -3765,8 +3775,9 @@ TEST(test_module_flow_diag_storage_consumer_full) {
         .type = MODULE_FRAME_PRESS, .ring = 2, .slot = 1,
         .build_progress = 1.0f,
     };
-    st._inventory_cache[COMMODITY_FERRITE_INGOT] = 10.0f;
-    st.module_input[1] = module_buffer_capacity(MODULE_FRAME_PRESS);
+    ASSERT(test_set_station_finished_units(
+        &st, COMMODITY_FERRITE_INGOT, 10));
+    st.modules[1].input_buffer = module_buffer_capacity(MODULE_FRAME_PRESS);
 
     ASSERT_EQ_INT(station_module_flow_diag(&st, 0),
                   STATION_FLOW_DIAG_CONSUMER_FULL);
@@ -3812,8 +3823,8 @@ TEST(test_station_flow_summary_formats_active_modules) {
     st.module_count = 2;
     st.modules[0] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB };
-    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
-    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[0].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[1].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
 
     ASSERT(station_flow_summary(&st, true, &summary));
     ASSERT_EQ_INT(summary.diag, STATION_FLOW_DIAG_RUNNING);
@@ -3831,8 +3842,8 @@ TEST(test_station_flow_summary_prioritizes_blocked_module) {
     st.module_count = 2;
     st.modules[0] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB };
-    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
-    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
+    st.modules[0].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[1].flow_diag = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
 
     ASSERT(station_flow_summary(&st, true, &summary));
     ASSERT_EQ_INT(summary.diag, STATION_FLOW_DIAG_OUTPUT_FULL);
@@ -3853,29 +3864,96 @@ TEST(test_station_identity_reconcile_clears_stale_module_diag) {
     st.modules[1] = (station_module_t){ .type = MODULE_LASER_FAB, .ring = 2,
                                          .slot = 1, .build_progress = 1.0f,
                                          .commodity = COMMODITY_COUNT };
-    st.module_diag[0] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
-    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
+    st.modules[0].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[1].flow_diag = (uint8_t)STATION_FLOW_DIAG_OUTPUT_FULL;
     incoming[0] = st.modules[0];
     incoming[1] = st.modules[1];
 
     station_reconcile_module_diag_for_identity(&st, incoming, 2);
-    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
-    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_OUTPUT_FULL);
+    ASSERT_EQ_INT(st.modules[0].flow_diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.modules[1].flow_diag, STATION_FLOW_DIAG_OUTPUT_FULL);
 
     incoming[1].build_progress = 0.5f;
     station_reconcile_module_diag_for_identity(&st, incoming, 2);
-    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
-    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_OUTPUT_FULL);
+    ASSERT_EQ_INT(st.modules[0].flow_diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.modules[1].flow_diag, STATION_FLOW_DIAG_OUTPUT_FULL);
 
     incoming[1].type = MODULE_TRACTOR_FAB;
     station_reconcile_module_diag_for_identity(&st, incoming, 2);
-    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
-    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_NONE);
+    ASSERT_EQ_INT(st.modules[0].flow_diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.modules[1].flow_diag, STATION_FLOW_DIAG_NONE);
 
-    st.module_diag[1] = (uint8_t)STATION_FLOW_DIAG_RUNNING;
+    st.modules[1].flow_diag = (uint8_t)STATION_FLOW_DIAG_RUNNING;
     station_reconcile_module_diag_for_identity(&st, incoming, 1);
-    ASSERT_EQ_INT(st.module_diag[0], STATION_FLOW_DIAG_RUNNING);
-    ASSERT_EQ_INT(st.module_diag[1], STATION_FLOW_DIAG_NONE);
+    ASSERT_EQ_INT(st.modules[0].flow_diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.modules[1].flow_diag, STATION_FLOW_DIAG_NONE);
+}
+
+TEST(test_station_module_lifecycle_moves_and_clears_runtime) {
+    station_t st = {0};
+    station_module_t *dock = station_module_append(
+        &st, MODULE_DOCK, 0, 0, false, 1.0f, COMMODITY_COUNT);
+    station_module_t *press = station_module_append(
+        &st, MODULE_FRAME_PRESS, 2, 1, false, 1.0f, COMMODITY_FRAME);
+    station_module_t *laser = station_module_append(
+        &st, MODULE_LASER_FAB, 3, 2, false, 1.0f,
+        COMMODITY_LASER_MODULE);
+    ASSERT(dock != NULL);
+    ASSERT(press != NULL);
+    ASSERT(laser != NULL);
+
+    press->input_buffer = 3.0f;
+    press->output_buffer = 4.0f;
+    press->active_pulse = 0.5f;
+    press->craft_progress = 0.25f;
+    press->flow_diag = STATION_FLOW_DIAG_RUNNING;
+    laser->input_buffer = 7.0f;
+
+    ASSERT(station_module_remove(&st, 0));
+    ASSERT_EQ_INT(st.module_count, 2);
+    ASSERT_EQ_INT(st.modules[0].type, MODULE_FRAME_PRESS);
+    ASSERT_EQ_FLOAT(st.modules[0].input_buffer, 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st.modules[0].output_buffer, 4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st.modules[0].active_pulse, 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(st.modules[0].craft_progress, 0.25f, 0.001f);
+    ASSERT_EQ_INT(st.modules[0].flow_diag, STATION_FLOW_DIAG_RUNNING);
+    ASSERT_EQ_INT(st.modules[1].type, MODULE_LASER_FAB);
+    ASSERT_EQ_FLOAT(st.modules[1].input_buffer, 7.0f, 0.001f);
+
+    station_module_t *replacement = station_module_append(
+        &st, MODULE_HOPPER, 1, 3, false, 1.0f, COMMODITY_FERRITE_INGOT);
+    ASSERT(replacement != NULL);
+    ASSERT_EQ_FLOAT(replacement->input_buffer, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(replacement->output_buffer, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(replacement->active_pulse, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(replacement->craft_progress, 0.0f, 0.001f);
+    ASSERT_EQ_INT(replacement->flow_diag, STATION_FLOW_DIAG_NONE);
+}
+
+TEST(test_station_module_identity_copy_preserves_only_matching_runtime) {
+    station_module_t local = {
+        .type = MODULE_FRAME_PRESS,
+        .ring = 2,
+        .slot = 1,
+        .commodity = COMMODITY_FRAME,
+        .input_buffer = 3.0f,
+        .flow_diag = STATION_FLOW_DIAG_RUNNING,
+    };
+    station_module_t incoming = local;
+    incoming.build_progress = 0.5f;
+    incoming.input_buffer = 0.0f;
+    incoming.flow_diag = STATION_FLOW_DIAG_NONE;
+
+    station_module_copy_identity(&local, &incoming);
+    ASSERT_EQ_FLOAT(local.build_progress, 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(local.input_buffer, 3.0f, 0.001f);
+    ASSERT_EQ_INT(local.flow_diag, STATION_FLOW_DIAG_RUNNING);
+
+    incoming.type = MODULE_LASER_FAB;
+    station_module_copy_identity(&local, &incoming);
+    ASSERT_EQ_INT(local.type, MODULE_LASER_FAB);
+    ASSERT_EQ_FLOAT(local.input_buffer, 0.0f, 0.001f);
+    ASSERT_EQ_INT(local.flow_diag, STATION_FLOW_DIAG_NONE);
 }
 
 TEST(test_station_flow_summary_mirrored_authoritative) {
@@ -4113,13 +4191,13 @@ TEST(test_targeted_spokes_drive_only_loaded_rings) {
     station_t *st = &w->stations[2];
     /* Force every Helios producer's pulse high so spokes are taut. */
     for (int m = 0; m < st->module_count; m++) {
-        if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
+        if (module_is_producer(st->modules[m].type)) st->modules[m].active_pulse = 1.0f;
     }
     float r1_0 = st->arm_rotation[0];  /* first crystal pass */
     float r3_0 = st->arm_rotation[2];  /* ring 3 */
     for (int i = 0; i < 1200; i++) {  /* 10 sim seconds */
         for (int m = 0; m < st->module_count; m++) {
-            if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
+            if (module_is_producer(st->modules[m].type)) st->modules[m].active_pulse = 1.0f;
         }
         world_sim_step(w, 1.0f / 120.0f);
     }
@@ -4147,7 +4225,7 @@ TEST(test_output_hopper_spoke_contributes_torque) {
     add_module_at(st, MODULE_FRAME_PRESS, 2, 0);
     add_hopper_for(st, 3, 4, COMMODITY_FRAME);
     /* No drift bias — isolate the spoke contribution. arm_omega all 0. */
-    st->module_active_pulse[0] = 1.0f;
+    st->modules[0].active_pulse = 1.0f;
 
     /* Single tick: omega should become non-zero on both endpoint rings,
      * with opposite signs (Newton's third). */
@@ -4260,6 +4338,8 @@ void register_construction_module_schema_tests(void) {
     RUN(test_station_flow_summary_formats_active_modules);
     RUN(test_station_flow_summary_prioritizes_blocked_module);
     RUN(test_station_identity_reconcile_clears_stale_module_diag);
+    RUN(test_station_module_lifecycle_moves_and_clears_runtime);
+    RUN(test_station_module_identity_copy_preserves_only_matching_runtime);
     RUN(test_station_flow_summary_mirrored_authoritative);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);

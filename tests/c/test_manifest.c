@@ -523,7 +523,7 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     w->players[0].connected = true;
     w->players[0].session_ready = true;
     memset(w->players[0].session_token, 0x5A, sizeof(w->players[0].session_token));
-    w->players[0].ship.pos = w->stations[0].pos;
+    w->players[0].ship->pos = w->stations[0].pos;
 
     a->active = true;
     a->tier = ASTEROID_TIER_S;
@@ -826,7 +826,7 @@ static void setup_fracture_claim_scenario(world_t *w, int asteroid_idx, int play
     w->players[player_slot].session_ready = true;
     memset(w->players[player_slot].session_token, token_fill,
            sizeof(w->players[player_slot].session_token));
-    w->players[player_slot].ship.pos = w->stations[0].pos;
+    w->players[player_slot].ship->pos = w->stations[0].pos;
 
     a->active = true;
     a->tier = ASTEROID_TIER_S;
@@ -889,7 +889,7 @@ TEST(test_fracture_claim_rejects_out_of_signal_range) {
     /* Push the player far enough from every station that signal_radius
      * at the asteroid excludes them. 1e6 world-units is well past any
      * station's signal_range in test setup. */
-    w->players[0].ship.pos = v2(w->stations[0].pos.x + 1.0e6f,
+    w->players[0].ship->pos = v2(w->stations[0].pos.x + 1.0e6f,
                                 w->stations[0].pos.y + 1.0e6f);
     sha256_bytes(w->players[0].session_token, 8, player_pub);
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
@@ -948,7 +948,7 @@ TEST(test_fracture_claim_tie_break_prefers_first_claimant) {
     w->players[1].connected = true;
     w->players[1].session_ready = true;
     memset(w->players[1].session_token, 0x6E, sizeof(w->players[1].session_token));
-    w->players[1].ship.pos = w->stations[0].pos;
+    w->players[1].ship->pos = w->stations[0].pos;
 
     sha256_bytes(w->players[0].session_token, 8, pub_a);
     sha256_bytes(w->players[1].session_token, 8, pub_b);

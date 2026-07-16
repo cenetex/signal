@@ -183,7 +183,7 @@ static inline bool station_policy_is_off_relay(const station_t *st)
 static inline float station_policy_repair_kit_pressure(const station_t *st)
 {
     if (!st) return 0.0f;
-    float stock = st->_inventory_cache[COMMODITY_REPAIR_KIT];
+    float stock = station_inventory_amount(st, COMMODITY_REPAIR_KIT);
     float target = 25.0f;
     if (stock >= target) return 0.0f;
     return (target - stock) / target;

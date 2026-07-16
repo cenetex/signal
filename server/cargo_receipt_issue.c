@@ -108,18 +108,18 @@ cargo_receipt_present_result_t cargo_receipt_present_to_ship(
     if (memcmp(chain[chain_len - 1].recipient_pubkey, sp->pubkey, 32) != 0)
         return CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT;
 
-    if (!ship_manifest_bootstrap(&sp->ship))
+    if (!ship_manifest_bootstrap(sp->ship))
         return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
 
-    int idx = manifest_find(&sp->ship.manifest, cargo_pub);
+    int idx = manifest_find(&sp->ship->manifest, cargo_pub);
     if (idx < 0) return CARGO_RECEIPT_PRESENT_REJECT_NOT_CARRIED;
 
-    ship_receipts_t *receipts = ship_get_receipts(&sp->ship);
+    ship_receipts_t *receipts = ship_get_receipts(sp->ship);
     if (!receipts) return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
     if ((uint16_t)idx >= receipts->count) {
-        if (!ship_receipts_reserve(receipts, sp->ship.manifest.count))
+        if (!ship_receipts_reserve(receipts, sp->ship->manifest.count))
             return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
-        while (receipts->count < sp->ship.manifest.count) {
+        while (receipts->count < sp->ship->manifest.count) {
             if (!ship_receipts_push_empty(receipts))
                 return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
         }

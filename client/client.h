@@ -283,6 +283,28 @@ typedef struct {
     float ping_rtt_at_send;
 } net_input_timing_t;
 
+/* Network interpolation is a presentation cache, not an ECS component.
+ * Keep only replicated render fields here so snapshots cannot alias or
+ * mutate authoritative world.ships storage through npc_ship_t::ship. */
+typedef struct {
+    bool active;
+    npc_role_t role;
+    npc_state_t state;
+    bool thrusting;
+    hull_class_t hull_class;
+    vec2 pos;
+    vec2 vel;
+    float angle;
+    int target_asteroid;
+    int16_t towed_fragment;
+    int16_t towed_scaffold;
+    float tint_r;
+    float tint_g;
+    float tint_b;
+    uint8_t session_token[8];
+    int home_station;
+} client_npc_render_state_t;
+
 typedef struct {
     input_state_t input;
     star_t stars[MAX_STARS];
@@ -729,8 +751,8 @@ typedef struct {
         float elapsed[MAX_ASTEROIDS];
     } asteroid_interp;
     struct {
-        npc_ship_t prev[MAX_NPC_SHIPS];
-        npc_ship_t curr[MAX_NPC_SHIPS];
+        client_npc_render_state_t prev[MAX_NPC_SHIPS];
+        client_npc_render_state_t curr[MAX_NPC_SHIPS];
         float t;
         float interval;
     } npc_interp;

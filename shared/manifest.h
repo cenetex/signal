@@ -25,6 +25,20 @@ bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit);
 bool manifest_remove(manifest_t *manifest, uint16_t index, cargo_unit_t *out_unit);
 int manifest_find(const manifest_t *manifest, const uint8_t pub[32]);
 
+bool cargo_store_bootstrap(cargo_store_t *store, uint16_t default_cap);
+void cargo_store_cleanup(cargo_store_t *store);
+bool cargo_store_clone(cargo_store_t *dst, const cargo_store_t *src);
+ship_receipts_t *cargo_store_receipts(cargo_store_t *store);
+const ship_receipts_t *cargo_store_receipts_const(const cargo_store_t *store);
+bool cargo_store_push_with_chain(cargo_store_t *store,
+                                 const cargo_unit_t *unit,
+                                 const cargo_receipt_chain_t *chain);
+bool cargo_store_remove_with_chain(cargo_store_t *store, uint16_t index,
+                                   cargo_unit_t *out_unit,
+                                   cargo_receipt_chain_t *out_chain);
+int cargo_store_consume_by_commodity(cargo_store_t *store,
+                                     commodity_t commodity, int n);
+
 /* Return the index of the first unit in `manifest` matching the given
  * commodity+grade, or -1 if none. Used by transaction paths to pick a
  * unit to transfer (FIFO — oldest first). O(manifest.count). */
@@ -56,7 +70,7 @@ int manifest_consume_by_commodity(manifest_t *manifest,
                                   commodity_t commodity, int n);
 
 /* Ship-side finished-good helpers. Finished goods live in the manifest;
- * ship.cargo[c] is a derived compatibility count. */
+ * finished ship.cargo[c] slots are retired compatibility storage. */
 int ship_finished_count(const ship_t *ship, commodity_t c);
 void ship_finished_sync(ship_t *ship, commodity_t c);
 int ship_finished_drain(ship_t *ship, commodity_t c, int n);
@@ -136,10 +150,8 @@ void manifest_migrate_quantity(manifest_t *manifest);
 /* Manifest-as-truth helpers (PR: kill the float<->manifest drift)   */
 /* ---------------------------------------------------------------- */
 /* For finished-good commodities (c >= COMMODITY_RAW_ORE_COUNT) the
- * manifest is the authoritative store. The float
- * `station_t::_inventory_cache[c]` is a derived count whose floor() must
- * always equal manifest_count_by_commodity(c). These helpers preserve
- * that invariant by mutating both the manifest and the float in lockstep.
+ * manifest is the authoritative store. Fractional production lives in a
+ * separate sub-unit residue and can never represent a whole cargo unit.
  *
  * Raw-ore commodities (c < COMMODITY_RAW_ORE_COUNT) are NOT covered —
  * raw ore lives only in the float (hopper amounts) and never gains a
@@ -148,8 +160,7 @@ void manifest_migrate_quantity(manifest_t *manifest);
 
 /* Mint `n` whole units of finished `c` into the station. Pushes `n`
  * legacy-migrate manifest entries (origin = 8-byte provenance prefix,
- * may be NULL for a generic "STATION " stamp), then bumps the float
- * cache so floor(inventory[c]) == manifest_count. Returns the number
+ * may be NULL for a generic "STATION " stamp). Returns the number
  * actually minted (may be < n if manifest cap is hit). */
 int station_finished_mint(station_t *st, commodity_t c, int n,
                           const uint8_t origin[8]);
@@ -159,21 +170,19 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
 int station_finished_count(const station_t *st, commodity_t c);
 void station_finished_sync(station_t *st, commodity_t c);
 
-/* Drain up to `n` units of finished `c` from the manifest (FIFO) and
- * decrement the float cache by the same number. Returns units drained. */
+/* Drain up to `n` units of finished `c` from the manifest (FIFO). */
 int station_finished_drain(station_t *st, commodity_t c, int n);
 
 /* Production accumulator for finished `c`. Adds `amount` (may be
- * fractional) to the float; for any integer crossings, mints that
- * many manifest units (using origin) so the invariant
- * floor(inventory[c]) == manifest_count holds at the end of the call.
+ * fractional) to the residue; for any integer crossings, mints that
+ * many manifest units (using origin).
  * Returns the integer count minted this call. */
 int station_finished_accumulate(station_t *st, commodity_t c, float amount,
                                 const uint8_t origin[8]);
 
 /* Consume `amount` (may be fractional) of finished `c` from the
- * manifest. For any integer crossings, drains that many manifest units
- * (FIFO) so floor(inventory[c]) == manifest_count holds. Returns the
+ * manifest plus residue. For integer crossings, drains manifest units
+ * (FIFO). Returns the
  * integer count drained this call. */
 int station_finished_consume(station_t *st, commodity_t c, float amount);
 

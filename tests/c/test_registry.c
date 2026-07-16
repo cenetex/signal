@@ -93,7 +93,7 @@ TEST(test_registry_reconnect_with_new_token) {
      * marker we'll check survives the rebinding, plus a station ledger
      * entry keyed by T1 to verify ledger migration. */
     setup_registered_player(w, 0, pk, tok1);
-    w->players[0].ship.stat_credits_earned = 4242.0f;
+    w->players[0].ship->stat_credits_earned = 4242.0f;
     station_t *st = &w->stations[0];
     memcpy(st->ledger[st->ledger_count].player_pubkey, tok1, 8);
     st->ledger[st->ledger_count].balance = 1234.0f;
@@ -111,7 +111,7 @@ TEST(test_registry_reconnect_with_new_token) {
     memcpy(new_slot->session_token, tok2, 8);
     new_slot->session_ready = true;
     /* Carry the persistent state. */
-    new_slot->ship.stat_credits_earned = w->players[0].ship.stat_credits_earned;
+    new_slot->ship->stat_credits_earned = w->players[0].ship->stat_credits_earned;
     /* Migrate ledger entries from T1 → T2. */
     for (int e = 0; e < st->ledger_count; e++) {
         if (memcmp(st->ledger[e].player_pubkey, tok1, 8) == 0)
@@ -129,7 +129,7 @@ TEST(test_registry_reconnect_with_new_token) {
     /* Lookup now resolves to the new slot. */
     ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 5);
     /* State marker survives. */
-    ASSERT_EQ_FLOAT(w->players[5].ship.stat_credits_earned, 4242.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w->players[5].ship->stat_credits_earned, 4242.0f, 0.01f);
 
     /* Old token T1 is no longer claimed by any live, ready slot. */
     bool old_alive = false;
@@ -185,10 +185,10 @@ TEST(test_registry_same_token_takeover_moves_live_ship) {
     player_init_ship(old, w);
     setup_registered_player(w, 0, pk, tok);
     old->docked = false;
-    old->ship.pos = v2(1234.0f, 5678.0f);
-    old->ship.vel = v2(11.0f, -3.0f);
-    old->ship.angle = 0.75f;
-    old->ship.stat_credits_earned = 91.0f;
+    old->ship->pos = v2(1234.0f, 5678.0f);
+    old->ship->vel = v2(11.0f, -3.0f);
+    old->ship->angle = 0.75f;
+    old->ship->stat_credits_earned = 91.0f;
     uint32_t old_asset_id = old->ship_asset_id;
     ASSERT(old_asset_id != SHIP_ASSET_ID_NONE);
 
@@ -214,12 +214,12 @@ TEST(test_registry_same_token_takeover_moves_live_ship) {
     ASSERT_EQ_INT(old->ship_asset_id, SHIP_ASSET_ID_NONE);
     ASSERT_EQ_INT(new_slot->ship_asset_id, old_asset_id);
     ASSERT(!new_slot->docked);
-    ASSERT_EQ_FLOAT(new_slot->ship.pos.x, 1234.0f, 0.001f);
-    ASSERT_EQ_FLOAT(new_slot->ship.pos.y, 5678.0f, 0.001f);
-    ASSERT_EQ_FLOAT(new_slot->ship.vel.x, 11.0f, 0.001f);
-    ASSERT_EQ_FLOAT(new_slot->ship.vel.y, -3.0f, 0.001f);
-    ASSERT_EQ_FLOAT(new_slot->ship.angle, 0.75f, 0.001f);
-    ASSERT_EQ_FLOAT(new_slot->ship.stat_credits_earned, 91.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->pos.x, 1234.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->pos.y, 5678.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->vel.x, 11.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->vel.y, -3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->angle, 0.75f, 0.001f);
+    ASSERT_EQ_FLOAT(new_slot->ship->stat_credits_earned, 91.0f, 0.001f);
 }
 
 TEST(test_registry_same_token_reattach_finds_active_duplicate) {
@@ -253,8 +253,7 @@ TEST(test_registry_same_token_reattach_finds_active_duplicate) {
 }
 
 TEST(test_player_clear_live_session_identity) {
-    server_player_t sp;
-    memset(&sp, 0, sizeof(sp));
+    SERVER_PLAYER_DECL(sp);
     memset(sp.session_token, 0xAB, sizeof(sp.session_token));
     memset(sp.pubkey, 0xCD, sizeof(sp.pubkey));
     sp.session_ready = true;

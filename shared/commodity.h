@@ -17,6 +17,9 @@ void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *
 
 float ship_total_cargo(const ship_t* ship);
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity);
+/* Materialize the legacy aggregate wire/save view without mutating the
+ * authoritative cargo store. */
+void ship_cargo_snapshot(const ship_t* ship, float out[COMMODITY_COUNT]);
 
 /* Cargo space taken by one unit of commodity. 1.0 for most goods;
  * REPAIR_KIT is dense at REPAIR_KIT_CARGO_DENSITY. Used by space

@@ -318,7 +318,7 @@ build-test:
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
-	# alone. The user has hit this exact gap (npc_ship_t.pos → .ship.pos
+	# alone. The user has hit this exact gap (npc_ship_t.pos → .ship->pos
 	# silently broke autopilot in deployed wasm). Keep this fast: it's
 	# an incremental build of the same -O2/-g object cache, so unchanged
 	# files don't re-link.

@@ -4,6 +4,7 @@
 #include "handoff_ticket.h"
 
 #include "cargo_receipt.h"
+#include "commodity.h"
 #include "manifest.h"
 #include "sha256.h"
 #include "signal_crypto.h"
@@ -181,7 +182,7 @@ void handoff_ticket_ship_state_hash(const ship_t *ship, uint8_t out[32]) {
     sha_update_f32(&c, ship->angle);
     sha_update_f32(&c, ship->hull);
     for (int i = 0; i < COMMODITY_COUNT; i++)
-        sha_update_f32(&c, ship->cargo[i]);
+        sha_update_f32(&c, ship_cargo_amount(ship, (commodity_t)i));
     sha_update_i32(&c, (int32_t)ship->hull_class);
     sha_update_i32(&c, (int32_t)ship->mining_level);
     sha_update_i32(&c, (int32_t)ship->hold_level);
@@ -267,7 +268,7 @@ bool handoff_ship_snapshot_pack(const ship_t *ship, uint8_t *out, size_t cap,
     write_f32_le(&out[off], ship->angle); off += 4;
     write_f32_le(&out[off], ship->hull); off += 4;
     for (int c = 0; c < COMMODITY_COUNT; c++) {
-        write_f32_le(&out[off], ship->cargo[c]);
+        write_f32_le(&out[off], ship_cargo_amount(ship, (commodity_t)c));
         off += 4;
     }
     write_u32_le(&out[off], (uint32_t)ship->hull_class); off += 4;

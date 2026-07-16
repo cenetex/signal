@@ -13,9 +13,9 @@ static void setup_autopilot_world(world_t *w) {
     /* Place in core signal so autopilot can engage (>= 0.80). At 3000u
      * from Prospect, signal is 0.833. Autopilot tests don't exercise
      * outpost placement so the OUTPOST_MAX_SIGNAL gate isn't involved. */
-    w->players[0].ship.pos = v2_add(w->stations[0].pos, v2(3000.0f, 0.0f));
-    w->players[0].ship.vel = v2(0.0f, 0.0f);
-    w->players[0].ship.angle = 0.0f;
+    w->players[0].ship->pos = v2_add(w->stations[0].pos, v2(3000.0f, 0.0f));
+    w->players[0].ship->vel = v2(0.0f, 0.0f);
+    w->players[0].ship->angle = 0.0f;
 }
 
 static void seed_test_asteroid(asteroid_t *a, asteroid_tier_t tier, vec2 pos, float radius) {
@@ -54,9 +54,9 @@ TEST(test_autopilot_prefers_nearest_mineable_asteroid) {
     WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
-    vec2 base = sp->ship.pos;
+    vec2 base = sp->ship->pos;
 
-    sp->ship.mining_level = 1; /* can mine both L and M */
+    sp->ship->mining_level = 1; /* can mine both L and M */
     seed_test_asteroid(&w.asteroids[0], ASTEROID_TIER_L, v2_add(base, v2(500.0f, 0.0f)), 60.0f);
     seed_test_asteroid(&w.asteroids[1], ASTEROID_TIER_M, v2_add(base, v2(220.0f, 40.0f)), 42.0f);
 
@@ -71,7 +71,7 @@ TEST(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one) {
     WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
-    vec2 base = sp->ship.pos;
+    vec2 base = sp->ship->pos;
 
     seed_test_asteroid(&w.asteroids[0], ASTEROID_TIER_M, v2_add(base, v2(420.0f, 0.0f)), 44.0f);
     seed_test_asteroid(&w.asteroids[1], ASTEROID_TIER_XXL, v2_add(base, v2(210.0f, 0.0f)), 56.0f);
@@ -89,7 +89,7 @@ TEST(test_autopilot_ignores_fragments_targets_rocks) {
     WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
-    vec2 base = sp->ship.pos;
+    vec2 base = sp->ship->pos;
 
     seed_test_asteroid(&w.asteroids[0], ASTEROID_TIER_M, v2_add(base, v2(420.0f, 0.0f)), 44.0f);
     seed_test_asteroid(&w.asteroids[1], ASTEROID_TIER_XXL, v2_add(base, v2(210.0f, 0.0f)), 56.0f);
@@ -297,9 +297,9 @@ TEST(test_autopilot_exits_station_before_mining_route) {
     sp->autopilot_mode = 1;
     sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
     sp->autopilot_target = 0;
-    sp->ship.pos = station_approach_target(&w->stations[1], w->stations[0].pos);
-    sp->ship.vel = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;
+    sp->ship->pos = station_approach_target(&w->stations[1], w->stations[0].pos);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
 
     w->asteroids[0].active = true;
     w->asteroids[0].tier = ASTEROID_TIER_L;
@@ -621,7 +621,7 @@ TEST(test_autopilot_completes_mining_cycle) {
     w->players[0].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
     w->players[0].session_ready = true;
     memset(w->players[0].session_token, 0x01, 8);
-    float earned_before = w->players[0].ship.stat_credits_earned;
+    float earned_before = w->players[0].ship->stat_credits_earned;
 
     run_autopilot_ticks(w, &w->players[0], 180.0f);
 
@@ -629,7 +629,7 @@ TEST(test_autopilot_completes_mining_cycle) {
      * within 180 sim-seconds. The physical pod/shell smelt pipeline
      * added enough station-side work that the earlier 90s gate now
      * catches normal first-cycle return trips mid-haul. */
-    ASSERT(w->players[0].ship.stat_credits_earned > earned_before);
+    ASSERT(w->players[0].ship->stat_credits_earned > earned_before);
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -672,7 +672,7 @@ TEST(test_autopilot_does_not_leave_signal) {
     float min_signal = 1.0f;
     for (int i = 0; i < 60 * 120; i++) {
         world_sim_step(w, 1.0f / 120.0f);
-        float sig = signal_strength_at(w, w->players[0].ship.pos);
+        float sig = signal_strength_at(w, w->players[0].ship->pos);
         if (sig < min_signal) min_signal = sig;
     }
     /* Autopilot requires 80% signal. It might briefly dip below during
@@ -695,7 +695,7 @@ TEST(test_autopilot_multiple_players) {
         memset(w->players[p].session_token, (uint8_t)(p + 1), 8);
         w->players[p].autopilot_mode = 1;
         w->players[p].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
-        earned_start[p] = w->players[p].ship.stat_credits_earned;
+        earned_start[p] = w->players[p].ship->stat_credits_earned;
     }
 
     /* 240s of sim. The earlier 180s was tight when only player↔player
@@ -719,13 +719,13 @@ TEST(test_autopilot_multiple_players) {
      * tracked separately. */
     int earned = 0;
     for (int p = 0; p < 3; p++) {
-        if (w->players[p].ship.stat_credits_earned > earned_start[p]) earned++;
+        if (w->players[p].ship->stat_credits_earned > earned_start[p]) earned++;
     }
     ASSERT(earned >= 1);
 
     /* All should still be alive (hull > 0 or docked). */
     for (int p = 0; p < 3; p++) {
-        ASSERT(w->players[p].ship.hull > 0.0f || w->players[p].docked);
+        ASSERT(w->players[p].ship->hull > 0.0f || w->players[p].docked);
     }
     /* w auto-freed by WORLD_HEAP cleanup */
 }
@@ -764,7 +764,7 @@ TEST(test_autopilot_follows_path_waypoints) {
             world_sim_step(w, 1.0f / 120.0f);
             if (w->players[0].autopilot_state != AUTOPILOT_STEP_FLY_TO_TARGET) break;
             for (int j = 0; j < wp_count; j++) {
-                float d = v2_dist_sq(w->players[0].ship.pos, waypoints[j]);
+                float d = v2_dist_sq(w->players[0].ship->pos, waypoints[j]);
                 if (d < closest[j]) closest[j] = d;
             }
         }
@@ -808,20 +808,20 @@ TEST(test_autopilot_path_matches_preview) {
         float best_d = 1e18f;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             const asteroid_t *a = &w->asteroids[i];
-            if (!mining_level_can_fracture_asteroid(w->players[0].ship.mining_level, a))
+            if (!mining_level_can_fracture_asteroid(w->players[0].ship->mining_level, a))
                 continue;
             if (!test_asteroid_clear_of_station_traffic(w, a)) continue;
             if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-            float d = v2_dist_sq(a->pos, w->players[0].ship.pos);
+            float d = v2_dist_sq(a->pos, w->players[0].ship->pos);
             if (d < best_d) { best_d = d; client_target = i; }
         }
 
         /* The server target may differ (it checks clear approach),
          * but the destinations should be reasonably close. */
         if (client_target >= 0 && client_target != server_target) {
-            float server_dist = sqrtf(v2_dist_sq(w->players[0].ship.pos,
+            float server_dist = sqrtf(v2_dist_sq(w->players[0].ship->pos,
                                                   w->asteroids[server_target].pos));
-            float client_dist = sqrtf(v2_dist_sq(w->players[0].ship.pos,
+            float client_dist = sqrtf(v2_dist_sq(w->players[0].ship->pos,
                                                   w->asteroids[client_target].pos));
             /* Server may pick a farther rock if the nearest is blocked,
              * but the two shouldn't diverge by more than 500u or the

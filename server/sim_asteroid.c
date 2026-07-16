@@ -194,7 +194,7 @@ static bool player_can_claim_fracture(const world_t *w, int player_id, int aster
     if (!w->asteroids[asteroid_idx].active) return false;
     radius = fracture_signal_radius(w, w->asteroids[asteroid_idx].pos);
     if (radius <= 0.0f) return false;
-    return v2_dist_sq(sp->ship.pos, w->asteroids[asteroid_idx].pos) <= radius * radius;
+    return v2_dist_sq(sp->ship->pos, w->asteroids[asteroid_idx].pos) <= radius * radius;
 }
 
 static int fracture_find_by_id(const world_t *w, uint32_t fracture_id) {
@@ -727,36 +727,13 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
     float cleanup_d_sq = FRACTURE_CHILD_CLEANUP_DISTANCE * FRACTURE_CHILD_CLEANUP_DISTANCE;
 
     asteroid_step_thrown_state(w);
-
-    /* Build "currently towed" set so we can skip ambient drag on them.
-     * Towed fragments have their own drag in the tractor physics. */
-    bool towed[MAX_ASTEROIDS];
-    memset(towed, 0, sizeof(towed));
-    for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (!w->players[p].connected) continue;
-        for (int t = 0; t < w->players[p].ship.towed_count; t++) {
-            int idx = w->players[p].ship.towed_fragments[t];
-            if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
-        }
-    }
-    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-        if (!w->npc_ships[n].active) continue;
-        int idx = npc_towed_fragment_index(&w->npc_ships[n]);
-        if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
-    }
+    sim_world_integrate_bodies(w, SIM_BODY_PHASE_ASTEROIDS, dt);
     sim_active_station_t active_stations[MAX_STATIONS];
     int active_station_count = collect_active_stations(w, active_stations);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
-
-        a->rotation += a->spin * dt;
-        a->pos = v2_add(a->pos, v2_scale(a->vel, dt));
-        /* Ambient drag — skip towed fragments (they have their own drag) */
-        if (!towed[i])
-            a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
-        a->age += dt;
 
         if (!a->fracture_child &&
             a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
@@ -790,7 +767,7 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
                 bool near_player = false;
                 for (int p = 0; p < MAX_PLAYERS; p++) {
                     if (!w->players[p].connected) continue;
-                if (v2_dist_sq(a->pos, w->players[p].ship.pos) <= cleanup_d_sq) {
+                if (v2_dist_sq(a->pos, w->players[p].ship->pos) <= cleanup_d_sq) {
                     near_player = true;
                     break;
                     }
@@ -1060,7 +1037,7 @@ static void materialized_chunk_set_build(const world_t *w,
 static bool asteroid_disturbed(const asteroid_t *a) {
     return v2_len_sq(a->vel) > 4.0f || /* velocity > 2 u/s */
            a->hp < a->max_hp ||        /* damaged */
-           a->last_towed_by >= 0;       /* being towed */
+           asteroid_has_tractor(a);     /* currently being towed */
 }
 
 void maintain_asteroid_field(world_t *w, float dt) {
@@ -1075,11 +1052,11 @@ void maintain_asteroid_field(world_t *w, float dt) {
     int nv = 0;
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
-        viewports[nv++] = w->players[p].ship.pos;
+        viewports[nv++] = w->players[p].ship->pos;
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        viewports[nv++] = w->npc_ships[n].ship.pos;
+        viewports[nv++] = w->npc_ships[n].ship->pos;
     }
     if (nv == 0) return;
 

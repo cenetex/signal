@@ -13,6 +13,64 @@
 #define ROCK_THROW_BALLISTIC_SECONDS 6.0f
 #define ASTEROID_THROW_TIMER_TICKS 12u  /* 120 Hz sim -> 0.1s timer quantum */
 
+typedef enum {
+    SIM_BODY_FLAG_DYNAMIC   = 1u << 0,
+    SIM_BODY_FLAG_SPIN      = 1u << 1,
+    SIM_BODY_FLAG_AGE       = 1u << 2,
+    SIM_BODY_FLAG_DRAG      = 1u << 3,
+    SIM_BODY_FLAG_KINEMATIC = 1u << 4,
+    SIM_BODY_FLAG_TOWED     = 1u << 5,
+} sim_body_flags_t;
+
+typedef enum {
+    SIM_BODY_COLLIDE_NONE     = 0,
+    SIM_BODY_COLLIDE_SHIP     = 1u << 0,
+    SIM_BODY_COLLIDE_STATION  = 1u << 1,
+    SIM_BODY_COLLIDE_ASTEROID = 1u << 2,
+    SIM_BODY_COLLIDE_CARGO    = 1u << 3,
+} sim_body_collision_mask_t;
+
+typedef enum {
+    SIM_BODY_PHASE_ASTEROIDS = 0,
+    SIM_BODY_PHASE_CARGO_PODS,
+    SIM_BODY_PHASE_SCAFFOLD_AMBIENT,
+    SIM_BODY_PHASE_SCAFFOLD_SNAPPING,
+} sim_body_phase_t;
+
+/* Common mutable component view used by asteroids, cargo pods, and
+ * scaffolds. Gameplay entities retain their domain fields; all motion,
+ * spin, age, drag, kinematic state, and collision participation are
+ * projected into this one integrator shape. */
+typedef struct {
+    vec2 *pos;
+    vec2 *vel;
+    float *rotation;
+    float *spin;
+    float *age;
+    float radius;
+    float velocity_multiplier;
+    uint16_t flags;          /* sim_body_flags_t */
+    uint16_t collision_mask; /* sim_body_collision_mask_t */
+} sim_body_t;
+
+typedef struct {
+    bool collided;
+    vec2 normal;
+    float closing_speed;
+} sim_body_contact_t;
+
+void sim_body_integrate(sim_body_t body, float dt,
+                        float velocity_multiplier);
+void sim_body_advance(sim_body_t body, float dt);
+sim_body_t sim_body_from_asteroid(asteroid_t *asteroid);
+sim_body_t sim_body_from_cargo_pod(cargo_pod_t *pod);
+sim_body_t sim_body_from_scaffold(scaffold_t *scaffold);
+void sim_world_integrate_bodies(world_t *w, sim_body_phase_t phase,
+                                float dt);
+sim_body_contact_t sim_body_resolve_static_circle(
+    sim_body_t body, vec2 center, float obstacle_radius,
+    vec2 obstacle_vel, float bounce_scale, float skin);
+
 /* Physics API — called from world_sim_step */
 void step_asteroid_gravity(world_t *w, float dt);
 void resolve_asteroid_collisions(world_t *w);

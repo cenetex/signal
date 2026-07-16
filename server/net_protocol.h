@@ -131,7 +131,7 @@ static inline uint8_t server_player_state_flags_for_wire(
     if (sp->beam_active) flags |= 2;
     if (sp->docked) flags |= 4;
     if (sp->scan_active) flags |= 8;
-    if (sp->ship.tractor_active) flags |= 16;
+    if (sp->ship->tractor_active) flags |= 16;
     if (sp->beam_ineffective) flags |= 32;
     if (sp->beam_hit) flags |= 64;
     return flags;
@@ -335,7 +335,7 @@ static inline bool server_fracture_player_in_range_for_world(
     float radius =
         server_fracture_signal_radius_for_world(w, w->asteroids[asteroid_idx].pos);
     if (radius <= 0.0f) return false;
-    return v2_dist_sq(sp->ship.pos, w->asteroids[asteroid_idx].pos) <=
+    return v2_dist_sq(sp->ship->pos, w->asteroids[asteroid_idx].pos) <=
         radius * radius;
 }
 
@@ -806,16 +806,16 @@ static inline int serialize_protocol_info(uint8_t *buf,
 static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_STATE;
     buf[1] = id;
-    write_f32_le(&buf[2],  sp->ship.pos.x);
-    write_f32_le(&buf[6],  sp->ship.pos.y);
-    write_f32_le(&buf[10], sp->ship.vel.x);
-    write_f32_le(&buf[14], sp->ship.vel.y);
-    write_f32_le(&buf[18], sp->ship.angle);
+    write_f32_le(&buf[2],  sp->ship->pos.x);
+    write_f32_le(&buf[6],  sp->ship->pos.y);
+    write_f32_le(&buf[10], sp->ship->vel.x);
+    write_f32_le(&buf[14], sp->ship->vel.y);
+    write_f32_le(&buf[18], sp->ship->angle);
     buf[22] = server_player_state_flags_for_wire(sp);
-    buf[23] = (uint8_t)sp->ship.tractor_level;
-    buf[24] = sp->ship.towed_count;
+    buf[23] = (uint8_t)sp->ship->tractor_level;
+    buf[24] = sp->ship->towed_count;
     for (int t = 0; t < 10; t++) {
-        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        int16_t fi = (t < sp->ship->towed_count) ? sp->ship->towed_fragments[t] : -1;
         uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
         buf[25 + t * 2]     = (uint8_t)(wire & 0xFFu);
         buf[25 + t * 2 + 1] = (uint8_t)(wire >> 8);
@@ -857,21 +857,21 @@ static inline void serialize_player_state_record(uint8_t *p,
                                                  uint8_t id,
                                                  uint32_t server_tick) {
     p[0] = id;
-    write_f32_le(&p[1],  sp->ship.pos.x);
-    write_f32_le(&p[5],  sp->ship.pos.y);
-    write_f32_le(&p[9],  sp->ship.vel.x);
-    write_f32_le(&p[13], sp->ship.vel.y);
-    write_f32_le(&p[17], sp->ship.angle);
+    write_f32_le(&p[1],  sp->ship->pos.x);
+    write_f32_le(&p[5],  sp->ship->pos.y);
+    write_f32_le(&p[9],  sp->ship->vel.x);
+    write_f32_le(&p[13], sp->ship->vel.y);
+    write_f32_le(&p[17], sp->ship->angle);
     uint8_t flags = server_player_state_flags_for_wire(sp);
     /* bit 1 was "beam_active && beam_hit" -- now just "beam_active" so
      * the client can render the beam even when it's firing into empty
      * space (no rock target). beam_hit is implied by the beam_end
      * coords matching a target. */
     p[21] = flags;
-    p[22] = (uint8_t)sp->ship.tractor_level;
-    p[23] = sp->ship.towed_count;
+    p[22] = (uint8_t)sp->ship->tractor_level;
+    p[23] = sp->ship->towed_count;
     for (int t = 0; t < 10; t++) {
-        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        int16_t fi = (t < sp->ship->towed_count) ? sp->ship->towed_fragments[t] : -1;
         uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
         p[24 + t * 2]     = (uint8_t)(wire & 0xFFu);
         p[24 + t * 2 + 1] = (uint8_t)(wire >> 8);
@@ -935,11 +935,11 @@ static inline int serialize_player_motion_for_recipient(
         uint8_t *p = &buf[PLAYER_MOTION_MSG_HEADER +
                           count * PLAYER_MOTION_RECORD_SIZE];
         p[0] = (uint8_t)i;
-        write_f32_le(&p[1],  players[i].ship.pos.x);
-        write_f32_le(&p[5],  players[i].ship.pos.y);
-        write_f32_le(&p[9],  players[i].ship.vel.x);
-        write_f32_le(&p[13], players[i].ship.vel.y);
-        write_f32_le(&p[17], players[i].ship.angle);
+        write_f32_le(&p[1],  players[i].ship->pos.x);
+        write_f32_le(&p[5],  players[i].ship->pos.y);
+        write_f32_le(&p[9],  players[i].ship->vel.x);
+        write_f32_le(&p[13], players[i].ship->vel.y);
+        write_f32_le(&p[17], players[i].ship->angle);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYER_MOTION;
@@ -994,14 +994,14 @@ static inline int serialize_player_motion_q_for_recipient(
                           count * PLAYER_MOTION_Q_RECORD_SIZE];
         p[0] = (uint8_t)i;
         write_u16_le(&p[1], (uint16_t)player_motion_q_encode(
-                         players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE));
+                         players[i].ship->pos.x, PLAYER_MOTION_Q_POS_SCALE));
         write_u16_le(&p[3], (uint16_t)player_motion_q_encode(
-                         players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE));
+                         players[i].ship->pos.y, PLAYER_MOTION_Q_POS_SCALE));
         write_u16_le(&p[5], (uint16_t)player_motion_q_encode(
-                         players[i].ship.vel.x, PLAYER_MOTION_Q_VEL_SCALE));
+                         players[i].ship->vel.x, PLAYER_MOTION_Q_VEL_SCALE));
         write_u16_le(&p[7], (uint16_t)player_motion_q_encode(
-                         players[i].ship.vel.y, PLAYER_MOTION_Q_VEL_SCALE));
-        p[9] = player_motion_q_angle(players[i].ship.angle);
+                         players[i].ship->vel.y, PLAYER_MOTION_Q_VEL_SCALE));
+        p[9] = player_motion_q_angle(players[i].ship->angle);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYER_MOTION_Q;
@@ -1010,38 +1010,38 @@ static inline int serialize_player_motion_q_for_recipient(
 }
 
 static inline void server_player_motion_delta_clear_all(server_player_t *sp) {
-    if (!sp) return;
-    memset(sp->player_motion_delta_valid, 0,
-           sizeof(sp->player_motion_delta_valid));
-    memset(sp->player_motion_delta_qx, 0,
-           sizeof(sp->player_motion_delta_qx));
-    memset(sp->player_motion_delta_qy, 0,
-           sizeof(sp->player_motion_delta_qy));
-    memset(sp->player_motion_delta_vel, 0,
-           sizeof(sp->player_motion_delta_vel));
-    memset(sp->player_motion_delta_angle, 0,
-           sizeof(sp->player_motion_delta_angle));
-    memset(sp->player_motion_delta_tick, 0,
-           sizeof(sp->player_motion_delta_tick));
-    sp->player_motion_delta_heartbeat_tick = 0u;
-    sp->world_player_motion_cache.valid = false;
-    sp->world_player_motion_delta_cache.valid = false;
-    sp->world_player_motion_posed_cache.valid = false;
+    if (!sp || !sp->replication) return;
+    memset(sp->replication->player_motion_delta_valid, 0,
+           sizeof(sp->replication->player_motion_delta_valid));
+    memset(sp->replication->player_motion_delta_qx, 0,
+           sizeof(sp->replication->player_motion_delta_qx));
+    memset(sp->replication->player_motion_delta_qy, 0,
+           sizeof(sp->replication->player_motion_delta_qy));
+    memset(sp->replication->player_motion_delta_vel, 0,
+           sizeof(sp->replication->player_motion_delta_vel));
+    memset(sp->replication->player_motion_delta_angle, 0,
+           sizeof(sp->replication->player_motion_delta_angle));
+    memset(sp->replication->player_motion_delta_tick, 0,
+           sizeof(sp->replication->player_motion_delta_tick));
+    sp->replication->player_motion_delta_heartbeat_tick = 0u;
+    sp->replication->world_player_motion_cache.valid = false;
+    sp->replication->world_player_motion_delta_cache.valid = false;
+    sp->replication->world_player_motion_posed_cache.valid = false;
 }
 
 static inline void server_player_motion_delta_clear_slot(server_player_t *sp,
                                                          int slot) {
-    if (!sp || slot < 0 || slot >= MAX_PLAYERS) return;
-    if (!sp->player_motion_delta_valid[slot]) return;
-    sp->player_motion_delta_valid[slot] = false;
-    sp->player_motion_delta_qx[slot] = 0;
-    sp->player_motion_delta_qy[slot] = 0;
-    sp->player_motion_delta_vel[slot] = v2(0.0f, 0.0f);
-    sp->player_motion_delta_angle[slot] = 0;
-    sp->player_motion_delta_tick[slot] = 0u;
-    sp->world_player_motion_cache.valid = false;
-    sp->world_player_motion_delta_cache.valid = false;
-    sp->world_player_motion_posed_cache.valid = false;
+    if (!sp || !sp->replication || slot < 0 || slot >= MAX_PLAYERS) return;
+    if (!sp->replication->player_motion_delta_valid[slot]) return;
+    sp->replication->player_motion_delta_valid[slot] = false;
+    sp->replication->player_motion_delta_qx[slot] = 0;
+    sp->replication->player_motion_delta_qy[slot] = 0;
+    sp->replication->player_motion_delta_vel[slot] = v2(0.0f, 0.0f);
+    sp->replication->player_motion_delta_angle[slot] = 0;
+    sp->replication->player_motion_delta_tick[slot] = 0u;
+    sp->replication->world_player_motion_cache.valid = false;
+    sp->replication->world_player_motion_delta_cache.valid = false;
+    sp->replication->world_player_motion_posed_cache.valid = false;
 }
 
 static inline void server_player_motion_delta_note_q(server_player_t *sp,
@@ -1051,13 +1051,13 @@ static inline void server_player_motion_delta_note_q(server_player_t *sp,
                                                      vec2 vel,
                                                      uint8_t angle,
                                                      uint32_t server_tick) {
-    if (!sp || slot < 0 || slot >= MAX_PLAYERS) return;
-    sp->player_motion_delta_valid[slot] = true;
-    sp->player_motion_delta_qx[slot] = qx;
-    sp->player_motion_delta_qy[slot] = qy;
-    sp->player_motion_delta_vel[slot] = vel;
-    sp->player_motion_delta_angle[slot] = angle;
-    sp->player_motion_delta_tick[slot] = server_tick;
+    if (!sp || !sp->replication || slot < 0 || slot >= MAX_PLAYERS) return;
+    sp->replication->player_motion_delta_valid[slot] = true;
+    sp->replication->player_motion_delta_qx[slot] = qx;
+    sp->replication->player_motion_delta_qy[slot] = qy;
+    sp->replication->player_motion_delta_vel[slot] = vel;
+    sp->replication->player_motion_delta_angle[slot] = angle;
+    sp->replication->player_motion_delta_tick[slot] = server_tick;
 }
 
 static inline void server_player_motion_delta_note_abs_msg(
@@ -1095,7 +1095,8 @@ static inline void server_player_motion_delta_note_delta_msg(
     const uint8_t *data,
     size_t len,
     uint32_t server_tick) {
-    if (!sp || !data || len < PLAYER_MOTIOND_Q_MSG_HEADER ||
+    if (!sp || !sp->replication || !data ||
+        len < PLAYER_MOTIOND_Q_MSG_HEADER ||
         data[0] != NET_MSG_WORLD_PLAYER_MOTIOND_Q) {
         return;
     }
@@ -1107,10 +1108,10 @@ static inline void server_player_motion_delta_note_delta_msg(
         const uint8_t *p = &data[PLAYER_MOTIOND_Q_MSG_HEADER +
                                  i * PLAYER_MOTIOND_Q_RECORD_SIZE];
         uint8_t id = p[0];
-        if (id >= MAX_PLAYERS || !sp->player_motion_delta_valid[id])
+        if (id >= MAX_PLAYERS || !sp->replication->player_motion_delta_valid[id])
             continue;
-        int qx = (int)sp->player_motion_delta_qx[id] + (int)(int8_t)p[1];
-        int qy = (int)sp->player_motion_delta_qy[id] + (int)(int8_t)p[2];
+        int qx = (int)sp->replication->player_motion_delta_qx[id] + (int)(int8_t)p[1];
+        int qy = (int)sp->replication->player_motion_delta_qy[id] + (int)(int8_t)p[2];
         if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
             server_player_motion_delta_clear_slot(sp, id);
             continue;
@@ -1128,7 +1129,8 @@ static inline void server_player_motion_delta_note_posed_msg(
     const uint8_t *data,
     size_t len,
     uint32_t server_tick) {
-    if (!sp || !data || len < PLAYER_POSED_Q_MSG_HEADER ||
+    if (!sp || !sp->replication || !data ||
+        len < PLAYER_POSED_Q_MSG_HEADER ||
         data[0] != NET_MSG_WORLD_PLAYER_POSED_Q) {
         return;
     }
@@ -1140,17 +1142,17 @@ static inline void server_player_motion_delta_note_posed_msg(
         const uint8_t *p = &data[PLAYER_POSED_Q_MSG_HEADER +
                                  i * PLAYER_POSED_Q_RECORD_SIZE];
         uint8_t id = p[0];
-        if (id >= MAX_PLAYERS || !sp->player_motion_delta_valid[id])
+        if (id >= MAX_PLAYERS || !sp->replication->player_motion_delta_valid[id])
             continue;
-        int qx = (int)sp->player_motion_delta_qx[id] + (int)(int8_t)p[1];
-        int qy = (int)sp->player_motion_delta_qy[id] + (int)(int8_t)p[2];
+        int qx = (int)sp->replication->player_motion_delta_qx[id] + (int)(int8_t)p[1];
+        int qy = (int)sp->replication->player_motion_delta_qy[id] + (int)(int8_t)p[2];
         if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
             server_player_motion_delta_clear_slot(sp, id);
             continue;
         }
         server_player_motion_delta_note_q(
             sp, id, (int16_t)qx, (int16_t)qy,
-            sp->player_motion_delta_vel[id],
+            sp->replication->player_motion_delta_vel[id],
             p[3], server_tick);
     }
 }
@@ -1160,7 +1162,8 @@ static inline void server_player_motion_delta_note_mixed_msg(
     const uint8_t *data,
     size_t len,
     uint32_t server_tick) {
-    if (!sp || !data || len < PLAYER_MOTIONM_Q_MSG_HEADER ||
+    if (!sp || !sp->replication || !data ||
+        len < PLAYER_MOTIONM_Q_MSG_HEADER ||
         data[0] != NET_MSG_WORLD_PLAYER_MOTIONM_Q) {
         return;
     }
@@ -1190,18 +1193,18 @@ static inline void server_player_motion_delta_note_mixed_msg(
         }
         uint8_t angle = data[off++];
         if (reserved || id >= MAX_PLAYERS ||
-            !sp->player_motion_delta_valid[id]) {
+            !sp->replication->player_motion_delta_valid[id]) {
             continue;
         }
-        int qx = (int)sp->player_motion_delta_qx[id] + (int)dx;
-        int qy = (int)sp->player_motion_delta_qy[id] + (int)dy;
+        int qx = (int)sp->replication->player_motion_delta_qx[id] + (int)dx;
+        int qy = (int)sp->replication->player_motion_delta_qy[id] + (int)dy;
         if (qx < -32768 || qx > 32767 || qy < -32768 || qy > 32767) {
             server_player_motion_delta_clear_slot(sp, id);
             continue;
         }
         server_player_motion_delta_note_q(
             sp, id, (int16_t)qx, (int16_t)qy,
-            has_velocity ? vel : sp->player_motion_delta_vel[id],
+            has_velocity ? vel : sp->replication->player_motion_delta_vel[id],
             angle, server_tick);
     }
 }
@@ -1221,31 +1224,32 @@ static inline bool player_motion_prediction_should_send_impl(
     uint32_t server_tick,
     bool heartbeat_due,
     bool coalesced_heartbeat) {
-    if (!recipient || slot < 0 || slot >= MAX_PLAYERS)
+    if (!recipient || !recipient->replication ||
+        slot < 0 || slot >= MAX_PLAYERS)
         return true;
-    if (!recipient->player_motion_delta_valid[slot])
+    if (!recipient->replication->player_motion_delta_valid[slot])
         return true;
-    uint32_t last_tick = recipient->player_motion_delta_tick[slot];
+    uint32_t last_tick = recipient->replication->player_motion_delta_tick[slot];
     if (last_tick == 0u)
         return true;
 
     uint32_t age_ticks = server_tick - last_tick;
     float dt = (float)age_ticks * SIM_DT;
     float predicted_x =
-        (float)recipient->player_motion_delta_qx[slot] *
+        (float)recipient->replication->player_motion_delta_qx[slot] *
         PLAYER_MOTION_Q_POS_SCALE +
-        recipient->player_motion_delta_vel[slot].x * dt;
+        recipient->replication->player_motion_delta_vel[slot].x * dt;
     float predicted_y =
-        (float)recipient->player_motion_delta_qy[slot] *
+        (float)recipient->replication->player_motion_delta_qy[slot] *
         PLAYER_MOTION_Q_POS_SCALE +
-        recipient->player_motion_delta_vel[slot].y * dt;
+        recipient->replication->player_motion_delta_vel[slot].y * dt;
     float current_x = (float)qx * PLAYER_MOTION_Q_POS_SCALE;
     float current_y = (float)qy * PLAYER_MOTION_Q_POS_SCALE;
     float dx = current_x - predicted_x;
     float dy = current_y - predicted_y;
     float error_sq = dx * dx + dy * dy;
     uint8_t angle_delta = player_motion_q_angle_delta(
-        angle, recipient->player_motion_delta_angle[slot]);
+        angle, recipient->replication->player_motion_delta_angle[slot]);
     if (age_ticks < PLAYER_MOTION_NET_MIN_REPEAT_TICKS)
         return error_sq >= PLAYER_MOTION_NET_PREDICT_ERROR_SQ * 4.0f ||
             angle_delta >= PLAYER_MOTION_NET_ANGLE_FAST_STEP_THRESHOLD;
@@ -1303,10 +1307,10 @@ static inline void serialize_player_motion_q_record(uint8_t *p,
     write_u16_le(&p[1], (uint16_t)qx);
     write_u16_le(&p[3], (uint16_t)qy);
     write_u16_le(&p[5], (uint16_t)player_motion_q_encode(
-                     sp->ship.vel.x, PLAYER_MOTION_Q_VEL_SCALE));
+                     sp->ship->vel.x, PLAYER_MOTION_Q_VEL_SCALE));
     write_u16_le(&p[7], (uint16_t)player_motion_q_encode(
-                     sp->ship.vel.y, PLAYER_MOTION_Q_VEL_SCALE));
-    p[9] = player_motion_q_angle(sp->ship.angle);
+                     sp->ship->vel.y, PLAYER_MOTION_Q_VEL_SCALE));
+    p[9] = player_motion_q_angle(sp->ship->angle);
 }
 
 static inline int serialize_player_motion_split_q_for_recipient(
@@ -1338,29 +1342,29 @@ static inline int serialize_player_motion_split_q_for_recipient(
         }
 
         int16_t qx = player_motion_q_encode(
-            players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE);
+            players[i].ship->pos.x, PLAYER_MOTION_Q_POS_SCALE);
         int16_t qy = player_motion_q_encode(
-            players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE);
-        uint8_t angle = player_motion_q_angle(players[i].ship.angle);
+            players[i].ship->pos.y, PLAYER_MOTION_Q_POS_SCALE);
+        uint8_t angle = player_motion_q_angle(players[i].ship->angle);
         int8_t qvx8 = 0;
         int8_t qvy8 = 0;
         bool delta_velocity_ok =
             player_motiond_q_encode_i8(
-                players[i].ship.vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
+                players[i].ship->vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
             player_motiond_q_encode_i8(
-                players[i].ship.vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
+                players[i].ship->vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
         if (!player_motion_prediction_should_send(
                 recipient, i, qx, qy, angle, server_tick)) {
             continue;
         }
         bool delta_ok = recipient &&
-            recipient->player_motion_delta_valid[i] &&
+            recipient->replication->player_motion_delta_valid[i] &&
             delta_velocity_ok;
         int dx = 0;
         int dy = 0;
         if (delta_ok) {
-            dx = (int)qx - (int)recipient->player_motion_delta_qx[i];
-            dy = (int)qy - (int)recipient->player_motion_delta_qy[i];
+            dx = (int)qx - (int)recipient->replication->player_motion_delta_qx[i];
+            dy = (int)qy - (int)recipient->replication->player_motion_delta_qy[i];
             delta_ok = dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127;
         }
 
@@ -1368,10 +1372,10 @@ static inline int serialize_player_motion_split_q_for_recipient(
         int8_t prev_qvy8 = 0;
         bool posed_ok = posed_buf && delta_ok &&
             player_motiond_q_encode_i8(
-                recipient->player_motion_delta_vel[i].x,
+                recipient->replication->player_motion_delta_vel[i].x,
                 PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvx8) &&
             player_motiond_q_encode_i8(
-                recipient->player_motion_delta_vel[i].y,
+                recipient->replication->player_motion_delta_vel[i].y,
                 PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvy8) &&
             prev_qvx8 == qvx8 && prev_qvy8 == qvy8;
 
@@ -1437,9 +1441,9 @@ static inline int serialize_player_motion_mixed_q_for_recipient(
     int mixed_count = 0;
     int mixed_len = PLAYER_MOTIONM_Q_MSG_HEADER;
     bool heartbeat_due = !recipient ||
-        recipient->player_motion_delta_heartbeat_tick == 0u ||
+        recipient->replication->player_motion_delta_heartbeat_tick == 0u ||
         (uint32_t)(server_tick -
-                   recipient->player_motion_delta_heartbeat_tick) >=
+                   recipient->replication->player_motion_delta_heartbeat_tick) >=
             PLAYER_MOTION_NET_HEARTBEAT_TICKS;
     if (heartbeat_due_out) *heartbeat_due_out = heartbeat_due;
     if (!abs_buf || !mixed_buf || !players) {
@@ -1456,30 +1460,30 @@ static inline int serialize_player_motion_mixed_q_for_recipient(
         }
 
         int16_t qx = player_motion_q_encode(
-            players[i].ship.pos.x, PLAYER_MOTION_Q_POS_SCALE);
+            players[i].ship->pos.x, PLAYER_MOTION_Q_POS_SCALE);
         int16_t qy = player_motion_q_encode(
-            players[i].ship.pos.y, PLAYER_MOTION_Q_POS_SCALE);
-        uint8_t angle = player_motion_q_angle(players[i].ship.angle);
+            players[i].ship->pos.y, PLAYER_MOTION_Q_POS_SCALE);
+        uint8_t angle = player_motion_q_angle(players[i].ship->angle);
         int8_t qvx8 = 0;
         int8_t qvy8 = 0;
         bool delta_velocity_ok =
             player_motiond_q_encode_i8(
-                players[i].ship.vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
+                players[i].ship->vel.x, PLAYER_MOTIOND_Q_VEL_SCALE, &qvx8) &&
             player_motiond_q_encode_i8(
-                players[i].ship.vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
+                players[i].ship->vel.y, PLAYER_MOTIOND_Q_VEL_SCALE, &qvy8);
         if (!player_motion_prediction_should_send_coalesced(
                 recipient, i, qx, qy, angle, server_tick,
                 heartbeat_due)) {
             continue;
         }
         bool delta_ok = recipient &&
-            recipient->player_motion_delta_valid[i] &&
+            recipient->replication->player_motion_delta_valid[i] &&
             delta_velocity_ok;
         int dx = 0;
         int dy = 0;
         if (delta_ok) {
-            dx = (int)qx - (int)recipient->player_motion_delta_qx[i];
-            dy = (int)qy - (int)recipient->player_motion_delta_qy[i];
+            dx = (int)qx - (int)recipient->replication->player_motion_delta_qx[i];
+            dy = (int)qy - (int)recipient->replication->player_motion_delta_qy[i];
             delta_ok = dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127;
         }
 
@@ -1487,10 +1491,10 @@ static inline int serialize_player_motion_mixed_q_for_recipient(
         int8_t prev_qvy8 = 0;
         bool posed_ok = delta_ok &&
             player_motiond_q_encode_i8(
-                recipient->player_motion_delta_vel[i].x,
+                recipient->replication->player_motion_delta_vel[i].x,
                 PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvx8) &&
             player_motiond_q_encode_i8(
-                recipient->player_motion_delta_vel[i].y,
+                recipient->replication->player_motion_delta_vel[i].y,
                 PLAYER_MOTIOND_Q_VEL_SCALE, &prev_qvy8) &&
             prev_qvx8 == qvx8 && prev_qvy8 == qvy8;
 
@@ -1657,7 +1661,7 @@ static inline bool asteroid_net_tow_lifecycle_high_detail(
     const asteroid_t *a,
     float dist_sq) {
     return a && a->active && a->tier == ASTEROID_TIER_S &&
-        a->last_towed_by >= 0 &&
+        asteroid_has_tractor(a) &&
         dist_sq <= ASTEROID_NET_NEAR_RADIUS_SQ;
 }
 
@@ -2006,21 +2010,21 @@ static inline void asteroid_state_q_clear_sent(
  * active known slot. */
 static inline void server_player_invalidate_asteroid_stream_caches(
     server_player_t *sp) {
-    if (!sp) return;
-    memset(sp->asteroid_motion_sent_tick, 0,
-           sizeof(sp->asteroid_motion_sent_tick));
-    memset(sp->asteroid_motion_sent_pos, 0,
-           sizeof(sp->asteroid_motion_sent_pos));
-    memset(sp->asteroid_motion_sent_vel, 0,
-           sizeof(sp->asteroid_motion_sent_vel));
-    memset(sp->asteroid_identity_sent_sig, 0,
-           sizeof(sp->asteroid_identity_sent_sig));
-    memset(sp->asteroid_state_sent_tick, 0,
-           sizeof(sp->asteroid_state_sent_tick));
-    memset(sp->asteroid_state_sent_sig, 0,
-           sizeof(sp->asteroid_state_sent_sig));
-    memset(sp->asteroid_state_sent_semantic_sig, 0,
-           sizeof(sp->asteroid_state_sent_semantic_sig));
+    if (!sp || !sp->replication) return;
+    memset(sp->replication->asteroid_motion_sent_tick, 0,
+           sizeof(sp->replication->asteroid_motion_sent_tick));
+    memset(sp->replication->asteroid_motion_sent_pos, 0,
+           sizeof(sp->replication->asteroid_motion_sent_pos));
+    memset(sp->replication->asteroid_motion_sent_vel, 0,
+           sizeof(sp->replication->asteroid_motion_sent_vel));
+    memset(sp->replication->asteroid_identity_sent_sig, 0,
+           sizeof(sp->replication->asteroid_identity_sent_sig));
+    memset(sp->replication->asteroid_state_sent_tick, 0,
+           sizeof(sp->replication->asteroid_state_sent_tick));
+    memset(sp->replication->asteroid_state_sent_sig, 0,
+           sizeof(sp->replication->asteroid_state_sent_sig));
+    memset(sp->replication->asteroid_state_sent_semantic_sig, 0,
+           sizeof(sp->replication->asteroid_state_sent_semantic_sig));
 }
 
 static inline bool asteroid_net_motion_should_send(
@@ -2060,36 +2064,36 @@ static inline void server_prioritize_towed_asteroid_streams(
     uint32_t server_tick) {
     if (!sp || !asteroids) return;
 
-    int tow_cap = (int)(sizeof(sp->ship.towed_fragments) /
-                        sizeof(sp->ship.towed_fragments[0]));
-    int tow_count = sp->ship.towed_count;
+    int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
+                        sizeof(sp->ship->towed_fragments[0]));
+    int tow_count = sp->ship->towed_count;
     if (tow_count > tow_cap) tow_count = tow_cap;
 
     for (int t = 0; t < tow_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
+        int idx = sp->ship->towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &asteroids[idx];
         if (!a->active) continue;
-        if (v2_dist_sq(a->pos, sp->ship.pos) >= ASTEROID_VIEW_RADIUS_SQ)
+        if (v2_dist_sq(a->pos, sp->ship->pos) >= ASTEROID_VIEW_RADIUS_SQ)
             continue;
 
-        uint32_t last_identity_tick = sp->asteroid_state_sent_tick[idx];
-        bool identity_due = !sp->asteroid_sent[idx] ||
+        uint32_t last_identity_tick = sp->replication->asteroid_state_sent_tick[idx];
+        bool identity_due = !sp->replication->asteroid_sent[idx] ||
             last_identity_tick == 0u ||
             (uint32_t)(server_tick - last_identity_tick) >=
                 ASTEROID_NET_TOWED_IDENTITY_HEARTBEAT_TICKS;
 
         if (identity_due) {
-            sp->asteroid_sent[idx] = false;
-            sp->asteroid_identity_sent_sig[idx] = 0u;
+            sp->replication->asteroid_sent[idx] = false;
+            sp->replication->asteroid_identity_sent_sig[idx] = 0u;
             asteroid_state_q_clear_sent(
-                idx, sp->asteroid_state_sent_tick,
-                sp->asteroid_state_sent_sig,
-                sp->asteroid_state_sent_semantic_sig);
+                idx, sp->replication->asteroid_state_sent_tick,
+                sp->replication->asteroid_state_sent_sig,
+                sp->replication->asteroid_state_sent_semantic_sig);
         }
-        sp->asteroid_motion_sent_tick[idx] = 0u;
-        sp->asteroid_motion_sent_pos[idx] = v2(0.0f, 0.0f);
-        sp->asteroid_motion_sent_vel[idx] = v2(0.0f, 0.0f);
+        sp->replication->asteroid_motion_sent_tick[idx] = 0u;
+        sp->replication->asteroid_motion_sent_pos[idx] = v2(0.0f, 0.0f);
+        sp->replication->asteroid_motion_sent_vel[idx] = v2(0.0f, 0.0f);
     }
 }
 
@@ -3154,7 +3158,7 @@ static inline int write_inspect_snapshot_matching_relay_receipt_rows(
         const server_player_t *sp = &receipt_world->players[pidx];
         if (!sp->connected) continue;
         row_count = write_inspect_snapshot_matching_holder_receipt_rows(
-            buf, row_count, max_rows, &sp->ship, npc_diag,
+            buf, row_count, max_rows, sp->ship, npc_diag,
             INSPECT_ROW_RELAY_RECEIPT);
         if (row_count >= max_rows) return row_count;
         if (row_count > 0 &&
@@ -3372,7 +3376,7 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
     return serialize_inspect_snapshot_ship_manifest(
         buf, INSPECT_TARGET_NPC, target_index, -1,
         (uint8_t)npc->role, (uint8_t)npc->state, home, dest, ship,
-        &npc->knowledge, npc, NULL, 0, NULL, -1);
+        &npc->ship->knowledge, npc, NULL, 0, NULL, -1);
 }
 
 static inline int serialize_inspect_snapshot_npc_with_station_receipts(
@@ -3392,7 +3396,7 @@ static inline int serialize_inspect_snapshot_npc_with_station_receipts(
     return serialize_inspect_snapshot_ship_manifest(
         buf, INSPECT_TARGET_NPC, target_index, -1,
         (uint8_t)npc->role, (uint8_t)npc->state, home, dest, ship,
-        &npc->knowledge, npc, stations, station_count, NULL, -1);
+        &npc->ship->knowledge, npc, stations, station_count, NULL, -1);
 }
 
 static inline int serialize_inspect_snapshot_npc_with_world_receipts(
@@ -3413,7 +3417,7 @@ static inline int serialize_inspect_snapshot_npc_with_world_receipts(
     return serialize_inspect_snapshot_ship_manifest(
         buf, INSPECT_TARGET_NPC, target_index, -1,
         (uint8_t)npc->role, (uint8_t)npc->state, home, dest, ship,
-        &npc->knowledge, npc, stations, station_count, receipt_world,
+        &npc->ship->knowledge, npc, stations, station_count, receipt_world,
         (int)target_index);
 }
 
@@ -3429,14 +3433,14 @@ static inline int serialize_inspect_snapshot_player(uint8_t *buf,
     uint8_t current_station =
         (player->current_station >= 0 && player->current_station < MAX_STATIONS)
         ? (uint8_t)player->current_station : near_station;
-    float rounded_hull = player->ship.hull + 0.5f;
+    float rounded_hull = player->ship->hull + 0.5f;
     if (rounded_hull < 0.0f) rounded_hull = 0.0f;
     if (rounded_hull > 255.0f) rounded_hull = 255.0f;
 
     return serialize_inspect_snapshot_ship_manifest(
         buf, INSPECT_TARGET_PLAYER, target_index, -1,
-        (uint8_t)player->ship.hull_class, (uint8_t)rounded_hull,
-        current_station, near_station, &player->ship, NULL, NULL, NULL, 0,
+        (uint8_t)player->ship->hull_class, (uint8_t)rounded_hull,
+        current_station, near_station, player->ship, NULL, NULL, NULL, 0,
         NULL, -1);
 }
 
@@ -3489,11 +3493,11 @@ static inline void serialize_one_npc(uint8_t *p, int index,
     p[1] |= (((uint8_t)n->role & 0x3) << 1);
     p[1] |= (((uint8_t)n->state & 0x7) << 3);
     if (n->thrusting) p[1] |= (1 << 6);
-    write_f32_le(&p[2],  n->ship.pos.x);
-    write_f32_le(&p[6],  n->ship.pos.y);
-    write_f32_le(&p[10], n->ship.vel.x);
-    write_f32_le(&p[14], n->ship.vel.y);
-    write_f32_le(&p[18], n->ship.angle);
+    write_f32_le(&p[2],  n->ship->pos.x);
+    write_f32_le(&p[6],  n->ship->pos.y);
+    write_f32_le(&p[10], n->ship->vel.x);
+    write_f32_le(&p[14], n->ship->vel.y);
+    write_f32_le(&p[18], n->ship->angle);
     uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
         ? (uint16_t)n->target_asteroid : 0xFFFFu;
     int towed_idx = npc_towed_fragment_index(n);
@@ -3525,7 +3529,7 @@ static inline int serialize_npcs_for_player(uint8_t *buf,
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
         serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i]);
         count++;
@@ -3542,7 +3546,7 @@ static inline int serialize_npc_motion_for_player(uint8_t *buf,
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION_MSG_HEADER +
@@ -3550,11 +3554,11 @@ static inline int serialize_npc_motion_for_player(uint8_t *buf,
         p[0] = (uint8_t)i;
         p[1] = 1;
         if (npcs[i].thrusting) p[1] |= (1 << 6);
-        write_f32_le(&p[2],  npcs[i].ship.pos.x);
-        write_f32_le(&p[6],  npcs[i].ship.pos.y);
-        write_f32_le(&p[10], npcs[i].ship.vel.x);
-        write_f32_le(&p[14], npcs[i].ship.vel.y);
-        write_f32_le(&p[18], npcs[i].ship.angle);
+        write_f32_le(&p[2],  npcs[i].ship->pos.x);
+        write_f32_le(&p[6],  npcs[i].ship->pos.y);
+        write_f32_le(&p[10], npcs[i].ship->vel.x);
+        write_f32_le(&p[14], npcs[i].ship->vel.y);
+        write_f32_le(&p[18], npcs[i].ship->angle);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPC_MOTION;
@@ -3595,7 +3599,7 @@ static inline int serialize_npc_motion_q_for_player(uint8_t *buf,
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION_Q_MSG_HEADER +
@@ -3605,17 +3609,17 @@ static inline int serialize_npc_motion_q_for_player(uint8_t *buf,
         if (npcs[i].thrusting) p[1] |= (1 << 6);
         asteroid_motion_q_write_i16(
             &p[2], asteroid_motion_q_encode(
-                       npcs[i].ship.pos.x, NPC_MOTION_Q_POS_SCALE));
+                       npcs[i].ship->pos.x, NPC_MOTION_Q_POS_SCALE));
         asteroid_motion_q_write_i16(
             &p[4], asteroid_motion_q_encode(
-                       npcs[i].ship.pos.y, NPC_MOTION_Q_POS_SCALE));
+                       npcs[i].ship->pos.y, NPC_MOTION_Q_POS_SCALE));
         asteroid_motion_q_write_i16(
             &p[6], asteroid_motion_q_encode(
-                       npcs[i].ship.vel.x, NPC_MOTION_Q_VEL_SCALE));
+                       npcs[i].ship->vel.x, NPC_MOTION_Q_VEL_SCALE));
         asteroid_motion_q_write_i16(
             &p[8], asteroid_motion_q_encode(
-                       npcs[i].ship.vel.y, NPC_MOTION_Q_VEL_SCALE));
-        write_u16_le(&p[10], npc_motion_q_encode_angle(npcs[i].ship.angle));
+                       npcs[i].ship->vel.y, NPC_MOTION_Q_VEL_SCALE));
+        write_u16_le(&p[10], npc_motion_q_encode_angle(npcs[i].ship->angle));
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPC_MOTION_Q;
@@ -3630,7 +3634,7 @@ static inline int serialize_npc_motion8_q_for_player(uint8_t *buf,
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION8_Q_MSG_HEADER +
@@ -3640,13 +3644,13 @@ static inline int serialize_npc_motion8_q_for_player(uint8_t *buf,
         if (npcs[i].thrusting) p[1] |= (1 << 6);
         asteroid_motion_q_write_i16(
             &p[2], asteroid_motion_q_encode(
-                       npcs[i].ship.pos.x, NPC_MOTION_Q_POS_SCALE));
+                       npcs[i].ship->pos.x, NPC_MOTION_Q_POS_SCALE));
         asteroid_motion_q_write_i16(
             &p[4], asteroid_motion_q_encode(
-                       npcs[i].ship.pos.y, NPC_MOTION_Q_POS_SCALE));
-        p[6] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship.vel.x);
-        p[7] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship.vel.y);
-        p[8] = npc_motion8_q_encode_angle(npcs[i].ship.angle);
+                       npcs[i].ship->pos.y, NPC_MOTION_Q_POS_SCALE));
+        p[6] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship->vel.x);
+        p[7] = (uint8_t)npc_motion8_q_encode_vel(npcs[i].ship->vel.y);
+        p[8] = npc_motion8_q_encode_angle(npcs[i].ship->angle);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPC_MOTION8_Q;
@@ -3710,9 +3714,9 @@ static inline bool npc_motion_should_send(
     float angle,
     uint32_t server_tick) {
     if (!sp || index >= MAX_NPC_SHIPS) return false;
-    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->npc_motion_sent_tick[index];
     if (last_tick == 0u) return true;
-    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+    if (((sp->replication->npc_motion_sent_flags[index] ^ flags) &
          NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
         return true;
     uint32_t age_ticks = server_tick - last_tick;
@@ -3720,15 +3724,15 @@ static inline bool npc_motion_should_send(
         return true;
     float dt = (float)age_ticks * SIM_DT;
     vec2 predicted = v2_add(
-        sp->npc_motion_sent_pos[index],
-        v2_scale(sp->npc_motion_sent_vel[index], dt));
+        sp->replication->npc_motion_sent_pos[index],
+        v2_scale(sp->replication->npc_motion_sent_vel[index], dt));
     if (v2_dist_sq(predicted, pos) >= NPC_MOTION_PREDICT_ERROR_SQ)
         return true;
-    if (v2_dist_sq(sp->npc_motion_sent_vel[index], vel) >=
+    if (v2_dist_sq(sp->replication->npc_motion_sent_vel[index], vel) >=
         NPC_MOTION_VEL_ERROR_SQ)
         return true;
     return npc_motion_angle_delta(
-        sp->npc_motion_sent_angle[index], angle) >= NPC_MOTION_ANGLE_ERROR;
+        sp->replication->npc_motion_sent_angle[index], angle) >= NPC_MOTION_ANGLE_ERROR;
 }
 
 static inline bool npc_motion_pos_q_eligible(
@@ -3739,19 +3743,19 @@ static inline bool npc_motion_pos_q_eligible(
     float angle,
     uint32_t server_tick) {
     if (!sp || index >= MAX_NPC_SHIPS) return false;
-    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->npc_motion_sent_tick[index];
     if (last_tick == 0u) return false;
-    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+    if (((sp->replication->npc_motion_sent_flags[index] ^ flags) &
          NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
         return false;
     uint32_t age_ticks = server_tick - last_tick;
     if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
         return false;
-    if (v2_dist_sq(sp->npc_motion_sent_vel[index], vel) >=
+    if (v2_dist_sq(sp->replication->npc_motion_sent_vel[index], vel) >=
         NPC_MOTION_VEL_ERROR_SQ)
         return false;
     return npc_motion_angle_delta(
-        sp->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
+        sp->replication->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
 }
 
 static inline bool npc_motion_pose_q_eligible(
@@ -3761,15 +3765,15 @@ static inline bool npc_motion_pose_q_eligible(
     vec2 vel,
     uint32_t server_tick) {
     if (!sp || index >= MAX_NPC_SHIPS) return false;
-    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->npc_motion_sent_tick[index];
     if (last_tick == 0u) return false;
-    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+    if (((sp->replication->npc_motion_sent_flags[index] ^ flags) &
          NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
         return false;
     uint32_t age_ticks = server_tick - last_tick;
     if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
         return false;
-    return v2_dist_sq(sp->npc_motion_sent_vel[index], vel) <
+    return v2_dist_sq(sp->replication->npc_motion_sent_vel[index], vel) <
         NPC_MOTION_VEL_ERROR_SQ;
 }
 
@@ -3780,16 +3784,16 @@ static inline bool npc_motion_linear_q_eligible(
     float angle,
     uint32_t server_tick) {
     if (!sp || index >= MAX_NPC_SHIPS) return false;
-    uint32_t last_tick = sp->npc_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->npc_motion_sent_tick[index];
     if (last_tick == 0u) return false;
-    if (((sp->npc_motion_sent_flags[index] ^ flags) &
+    if (((sp->replication->npc_motion_sent_flags[index] ^ flags) &
          NPC_MOTION_VISUAL_FLAGS_MASK) != 0)
         return false;
     uint32_t age_ticks = server_tick - last_tick;
     if (age_ticks >= NPC_MOTION_HEARTBEAT_TICKS)
         return false;
     return npc_motion_angle_delta(
-        sp->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
+        sp->replication->npc_motion_sent_angle[index], angle) < NPC_MOTION_ANGLE_ERROR;
 }
 
 static inline void npc_motion_note_sent(server_player_t *sp,
@@ -3800,11 +3804,11 @@ static inline void npc_motion_note_sent(server_player_t *sp,
                                         float angle,
                                         uint32_t server_tick) {
     if (!sp || index >= MAX_NPC_SHIPS) return;
-    sp->npc_motion_sent_tick[index] = server_tick;
-    sp->npc_motion_sent_flags[index] = flags;
-    sp->npc_motion_sent_pos[index] = pos;
-    sp->npc_motion_sent_vel[index] = vel;
-    sp->npc_motion_sent_angle[index] = angle;
+    sp->replication->npc_motion_sent_tick[index] = server_tick;
+    sp->replication->npc_motion_sent_flags[index] = flags;
+    sp->replication->npc_motion_sent_pos[index] = pos;
+    sp->replication->npc_motion_sent_vel[index] = vel;
+    sp->replication->npc_motion_sent_angle[index] = angle;
 }
 
 static inline int serialize_npc_status_for_player(uint8_t *buf,
@@ -3814,7 +3818,7 @@ static inline int serialize_npc_status_for_player(uint8_t *buf,
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_STATUS_MSG_HEADER +
@@ -3854,7 +3858,7 @@ static inline int serialize_npc_status8_for_player(uint8_t *buf,
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
         int target =
             (npcs[i].target_asteroid >= 0 &&
@@ -3872,7 +3876,7 @@ static inline int serialize_npc_status8_for_player(uint8_t *buf,
     count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship.pos, player_pos))
+        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_STATUS8_MSG_HEADER +
@@ -4152,7 +4156,8 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
         uint8_t *p = &buf[2 + count * STATION_RECORD_SIZE];
         p[0] = (uint8_t)i;
         for (int c = 0; c < COMMODITY_COUNT; c++)
-            write_f32_le(&p[1 + c * 4], st->_inventory_cache[c]);
+            write_f32_le(&p[1 + c * 4],
+                         station_inventory_amount(st, (commodity_t)c));
         /* Derived from -Σ(ledger.balance); the field was removed but
          * the wire shape is preserved so old clients still parse. */
         write_f32_le(&p[1 + COMMODITY_COUNT * 4], station_credit_pool(st));
@@ -4822,7 +4827,8 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
     p[0] = (uint8_t)index;
     p[1] = (uint8_t)pod->kind;
     p[2] = (uint8_t)pod->commodity;
-    p[3] = (pod->towed_by < 0) ? 0xFFu : (uint8_t)pod->towed_by;
+    int player_tractor = cargo_pod_player_tractor(pod);
+    p[3] = player_tractor < 0 ? 0xFFu : (uint8_t)player_tractor;
     write_f32_le(&p[4],  pod->pos.x);
     write_f32_le(&p[8],  pod->pos.y);
     write_f32_le(&p[12], pod->vel.x);
@@ -4837,8 +4843,12 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
     cargo_pod_summary_fields(pod, &flags, &best_grade);
     p[34] = flags;
     p[35] = best_grade;
-    p[36] = pod->tractor_station;
-    p[37] = pod->tractor_module;
+    int tractor_station = -1;
+    int tractor_module = -1;
+    (void)cargo_pod_module_tractor_indices(
+        pod, &tractor_station, &tractor_module);
+    p[36] = tractor_station < 0 ? 0 : (uint8_t)(tractor_station + 1);
+    p[37] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
 }
 
 static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation);
@@ -4849,7 +4859,8 @@ static inline void serialize_one_cargo_pod_q(uint8_t *p,
     p[0] = (uint8_t)index;
     p[1] = (uint8_t)pod->kind;
     p[2] = (uint8_t)pod->commodity;
-    p[3] = (pod->towed_by < 0) ? 0xFFu : (uint8_t)pod->towed_by;
+    int player_tractor = cargo_pod_player_tractor(pod);
+    p[3] = player_tractor < 0 ? 0xFFu : (uint8_t)player_tractor;
     asteroid_motion_q_write_i16(
         &p[4], asteroid_motion_q_encode(pod->pos.x,
                                         CARGO_POD_MOTION_Q_POS_SCALE));
@@ -4872,8 +4883,12 @@ static inline void serialize_one_cargo_pod_q(uint8_t *p,
     cargo_pod_summary_fields(pod, &flags, &best_grade);
     p[24] = flags;
     p[25] = best_grade;
-    p[26] = pod->tractor_station;
-    p[27] = pod->tractor_module;
+    int tractor_station = -1;
+    int tractor_module = -1;
+    (void)cargo_pod_module_tractor_indices(
+        pod, &tractor_station, &tractor_module);
+    p[26] = tractor_station < 0 ? 0 : (uint8_t)(tractor_station + 1);
+    p[27] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
@@ -5188,7 +5203,7 @@ static inline bool cargo_pod_motion_should_send(
     float rotation,
     uint32_t server_tick) {
     if (!sp || index >= MAX_CARGO_PODS) return false;
-    uint32_t last_tick = sp->cargo_pod_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->cargo_pod_motion_sent_tick[index];
     if (last_tick == 0u) return true;
     uint32_t age_ticks = server_tick - last_tick;
     if (age_ticks >= CARGO_POD_MOTION_HEARTBEAT_TICKS)
@@ -5196,15 +5211,15 @@ static inline bool cargo_pod_motion_should_send(
 
     float dt = (float)age_ticks * SIM_DT;
     vec2 predicted_pos = v2_add(
-        sp->cargo_pod_motion_sent_pos[index],
-        v2_scale(sp->cargo_pod_motion_sent_vel[index], dt));
+        sp->replication->cargo_pod_motion_sent_pos[index],
+        v2_scale(sp->replication->cargo_pod_motion_sent_vel[index], dt));
     if (v2_dist_sq(predicted_pos, pos) >= CARGO_POD_MOTION_PREDICT_ERROR_SQ)
         return true;
-    if (v2_dist_sq(sp->cargo_pod_motion_sent_vel[index], vel) >=
+    if (v2_dist_sq(sp->replication->cargo_pod_motion_sent_vel[index], vel) >=
         CARGO_POD_MOTION_VEL_ERROR_SQ)
         return true;
     return cargo_pod_motion_rotation_delta(
-        sp->cargo_pod_motion_sent_rotation[index], rotation) >=
+        sp->replication->cargo_pod_motion_sent_rotation[index], rotation) >=
         CARGO_POD_MOTION_ROT_ERROR;
 }
 
@@ -5214,13 +5229,13 @@ static inline bool cargo_pod_motion_linear_q_eligible(
     float rotation,
     uint32_t server_tick) {
     if (!sp || index >= MAX_CARGO_PODS) return false;
-    uint32_t last_tick = sp->cargo_pod_motion_sent_tick[index];
+    uint32_t last_tick = sp->replication->cargo_pod_motion_sent_tick[index];
     if (last_tick == 0u) return false;
     uint32_t age_ticks = server_tick - last_tick;
     if (age_ticks >= CARGO_POD_MOTION_HEARTBEAT_TICKS)
         return false;
     return cargo_pod_motion_rotation_delta(
-        sp->cargo_pod_motion_sent_rotation[index], rotation) <
+        sp->replication->cargo_pod_motion_sent_rotation[index], rotation) <
         CARGO_POD_MOTION_ROT_ERROR;
 }
 
@@ -5231,10 +5246,10 @@ static inline void cargo_pod_motion_note_sent(server_player_t *sp,
                                               float rotation,
                                               uint32_t server_tick) {
     if (!sp || index >= MAX_CARGO_PODS) return;
-    sp->cargo_pod_motion_sent_tick[index] = server_tick;
-    sp->cargo_pod_motion_sent_pos[index] = pos;
-    sp->cargo_pod_motion_sent_vel[index] = vel;
-    sp->cargo_pod_motion_sent_rotation[index] = rotation;
+    sp->replication->cargo_pod_motion_sent_tick[index] = server_tick;
+    sp->replication->cargo_pod_motion_sent_pos[index] = pos;
+    sp->replication->cargo_pod_motion_sent_vel[index] = vel;
+    sp->replication->cargo_pod_motion_sent_rotation[index] = rotation;
 }
 
 static inline uint64_t net_world_cargo_pods_semantic_hash(const uint8_t *data,
@@ -5571,35 +5586,35 @@ static inline float input_ack_state_angle_error(float a, float b) {
 
 static inline void server_player_reset_authoritative_ack_state(
     server_player_t *sp) {
-    if (!sp) return;
-    sp->input_ack_state_valid = false;
-    sp->input_ack_state_tick = 0;
-    sp->input_ack_state_pos = v2(0.0f, 0.0f);
-    sp->input_ack_state_vel = v2(0.0f, 0.0f);
-    sp->input_ack_state_angle = 0.0f;
-    sp->input_ack_state_flags = 0;
-    sp->input_ack_state_tractor_level = 0;
-    sp->input_ack_state_towed_count = 0;
+    if (!sp || !sp->replication) return;
+    sp->replication->input_ack_state_valid = false;
+    sp->replication->input_ack_state_tick = 0;
+    sp->replication->input_ack_state_pos = v2(0.0f, 0.0f);
+    sp->replication->input_ack_state_vel = v2(0.0f, 0.0f);
+    sp->replication->input_ack_state_angle = 0.0f;
+    sp->replication->input_ack_state_flags = 0;
+    sp->replication->input_ack_state_tractor_level = 0;
+    sp->replication->input_ack_state_towed_count = 0;
     for (int i = 0; i < 10; i++)
-        sp->input_ack_state_towed_fragments[i] = 0xFFFFu;
+        sp->replication->input_ack_state_towed_fragments[i] = 0xFFFFu;
 }
 
 static inline void server_player_note_authoritative_ack_state(
     server_player_t *sp,
     uint32_t server_tick) {
-    if (!sp) return;
-    sp->input_ack_state_valid = true;
-    sp->input_ack_state_tick = server_tick;
-    sp->input_ack_state_pos = sp->ship.pos;
-    sp->input_ack_state_vel = sp->ship.vel;
-    sp->input_ack_state_angle = sp->ship.angle;
-    sp->input_ack_state_flags = server_player_state_flags_for_wire(sp);
-    sp->input_ack_state_tractor_level = (uint8_t)sp->ship.tractor_level;
-    sp->input_ack_state_towed_count = sp->ship.towed_count;
+    if (!sp || !sp->replication) return;
+    sp->replication->input_ack_state_valid = true;
+    sp->replication->input_ack_state_tick = server_tick;
+    sp->replication->input_ack_state_pos = sp->ship->pos;
+    sp->replication->input_ack_state_vel = sp->ship->vel;
+    sp->replication->input_ack_state_angle = sp->ship->angle;
+    sp->replication->input_ack_state_flags = server_player_state_flags_for_wire(sp);
+    sp->replication->input_ack_state_tractor_level = (uint8_t)sp->ship->tractor_level;
+    sp->replication->input_ack_state_towed_count = sp->ship->towed_count;
     for (int i = 0; i < 10; i++) {
-        int16_t fi = (i < sp->ship.towed_count)
-            ? sp->ship.towed_fragments[i] : -1;
-        sp->input_ack_state_towed_fragments[i] =
+        int16_t fi = (i < sp->ship->towed_count)
+            ? sp->ship->towed_fragments[i] : -1;
+        sp->replication->input_ack_state_towed_fragments[i] =
             (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
     }
 }
@@ -5625,34 +5640,35 @@ static inline bool server_player_authoritative_ack_state_required(
     uint32_t server_tick,
     bool force_state) {
     if (!sp) return false;
-    if (force_state || !sp->input_ack_state_valid) return true;
-    if ((uint32_t)(server_tick - sp->input_ack_state_tick) >=
+    if (!sp->replication) return true;
+    if (force_state || !sp->replication->input_ack_state_valid) return true;
+    if ((uint32_t)(server_tick - sp->replication->input_ack_state_tick) >=
         INPUT_ACK_STATE_HEARTBEAT_TICKS) {
         return true;
     }
-    vec2 dp = v2_sub(sp->ship.pos, sp->input_ack_state_pos);
+    vec2 dp = v2_sub(sp->ship->pos, sp->replication->input_ack_state_pos);
     if (v2_len_sq(dp) > INPUT_ACK_STATE_POS_ERROR_SQ) return true;
-    vec2 dv = v2_sub(sp->ship.vel, sp->input_ack_state_vel);
+    vec2 dv = v2_sub(sp->ship->vel, sp->replication->input_ack_state_vel);
     if (v2_len_sq(dv) > INPUT_ACK_STATE_VEL_ERROR_SQ) return true;
     if (input_ack_state_angle_error(
-            sp->ship.angle, sp->input_ack_state_angle) >
+            sp->ship->angle, sp->replication->input_ack_state_angle) >
         INPUT_ACK_STATE_ANGLE_ERROR) {
         return true;
     }
-    if (server_player_state_flags_for_wire(sp) != sp->input_ack_state_flags)
+    if (server_player_state_flags_for_wire(sp) != sp->replication->input_ack_state_flags)
         return true;
-    if ((uint8_t)sp->ship.tractor_level !=
-        sp->input_ack_state_tractor_level) {
+    if ((uint8_t)sp->ship->tractor_level !=
+        sp->replication->input_ack_state_tractor_level) {
         return true;
     }
-    if (sp->ship.towed_count != sp->input_ack_state_towed_count)
+    if (sp->ship->towed_count != sp->replication->input_ack_state_towed_count)
         return true;
     for (int i = 0; i < 10; i++) {
-        int16_t fi = (i < sp->ship.towed_count)
-            ? sp->ship.towed_fragments[i] : -1;
+        int16_t fi = (i < sp->ship->towed_count)
+            ? sp->ship->towed_fragments[i] : -1;
         uint16_t wire =
             (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
-        if (wire != sp->input_ack_state_towed_fragments[i])
+        if (wire != sp->replication->input_ack_state_towed_fragments[i])
             return true;
     }
     return false;
@@ -5886,11 +5902,11 @@ static inline void server_emit_world_snapshot_for_player(
             scratch->asteroid_pos8_q, &pos8_q_len,
             scratch->asteroid_state_q, &state_q_len,
             scratch->asteroid_remove, &remove_len,
-            w->asteroids, sp->ship.pos, sp->asteroid_sent,
-            sp->asteroid_motion_sent_tick, sp->asteroid_motion_sent_pos,
-            sp->asteroid_motion_sent_vel, sp->asteroid_identity_sent_sig,
-            sp->asteroid_state_sent_tick,
-            sp->asteroid_state_sent_sig, sp->asteroid_state_sent_semantic_sig,
+            w->asteroids, sp->ship->pos, sp->replication->asteroid_sent,
+            sp->replication->asteroid_motion_sent_tick, sp->replication->asteroid_motion_sent_pos,
+            sp->replication->asteroid_motion_sent_vel, sp->replication->asteroid_identity_sent_sig,
+            sp->replication->asteroid_state_sent_tick,
+            sp->replication->asteroid_state_sent_sig, sp->replication->asteroid_state_sent_semantic_sig,
             w->tick, background_identity_budget);
         if (alen > ASTEROID_MSG_HEADER)
             send(send_user, scratch->asteroids, alen);
@@ -5923,20 +5939,20 @@ static inline void server_emit_world_snapshot_for_player(
     }
 
     int nlen = serialize_npcs_for_player(
-        scratch->npcs, w->npc_ships, sp->ship.pos);
+        scratch->npcs, w->npc_ships, sp->ship->pos);
     send(send_user, scratch->npcs, nlen);
     if (emit_live_world_drift) {
         int nmotion8_q_len = serialize_npc_motion8_q_for_player(
-            scratch->npc_motion8_q, w->npc_ships, sp->ship.pos);
+            scratch->npc_motion8_q, w->npc_ships, sp->ship->pos);
         if (nmotion8_q_len > NPC_MOTION8_Q_MSG_HEADER)
             send(send_user, scratch->npc_motion8_q, nmotion8_q_len);
         int nstatus8_len = serialize_npc_status8_for_player(
-            scratch->npc_status8, w->npc_ships, sp->ship.pos);
+            scratch->npc_status8, w->npc_ships, sp->ship->pos);
         if (nstatus8_len > NPC_STATUS8_MSG_HEADER) {
             send(send_user, scratch->npc_status8, nstatus8_len);
         } else {
             int nstatus_len = serialize_npc_status_for_player(
-                scratch->npc_status, w->npc_ships, sp->ship.pos);
+                scratch->npc_status, w->npc_ships, sp->ship->pos);
             if (nstatus_len > NPC_STATUS_MSG_HEADER)
                 send(send_user, scratch->npc_status, nstatus_len);
         }
@@ -5945,56 +5961,57 @@ static inline void server_emit_world_snapshot_for_player(
     int scaffold_remove_len = 0;
     int slen = serialize_scaffolds_for_player_delta(
         scratch->scaffolds, scratch->scaffold_remove, &scaffold_remove_len,
-        w->scaffolds, sp->ship.pos, sp->scaffold_sent,
-        sp->scaffold_sent_sig, sp->scaffold_motion_sent_sig);
+        w->scaffolds, sp->ship->pos, sp->replication->scaffold_sent,
+        sp->replication->scaffold_sent_sig,
+        sp->replication->scaffold_motion_sent_sig);
     if (slen > 2)
         send(send_user, scratch->scaffolds, slen);
     if (scaffold_remove_len > SCAFFOLD_REMOVE_MSG_HEADER)
         send(send_user, scratch->scaffold_remove, scaffold_remove_len);
     if (emit_live_world_drift) {
         int smotion_q_len = serialize_scaffold_motion_q_for_player_delta(
-            scratch->scaffold_motion_q, w->scaffolds, sp->ship.pos,
-            sp->scaffold_sent, sp->scaffold_motion_sent_sig);
+            scratch->scaffold_motion_q, w->scaffolds, sp->ship->pos,
+            sp->replication->scaffold_sent, sp->replication->scaffold_motion_sent_sig);
         if (smotion_q_len > SCAFFOLD_MOTION_Q_MSG_HEADER)
             send(send_user, scratch->scaffold_motion_q, smotion_q_len);
     }
 
     int cargo_remove_len = 0;
     bool cargo_refresh_due = cargo_pod_net_metadata_refresh_due(
-        sp->world_cargo_pods_last_sent_tick, w->tick);
+        sp->replication->world_cargo_pods_last_sent_tick, w->tick);
     int clen = serialize_cargo_pods_q_for_player_delta(
         scratch->cargo_pods_q, scratch->cargo_pod_remove, &cargo_remove_len,
-        w->cargo_pods, sp->ship.pos, sp->cargo_pod_sent,
-        sp->cargo_pod_sent_sig, cargo_refresh_due);
+        w->cargo_pods, sp->ship->pos, sp->replication->cargo_pod_sent,
+        sp->replication->cargo_pod_sent_sig, cargo_refresh_due);
     if (clen > 2)
         send(send_user, scratch->cargo_pods_q, clen);
     if (cargo_remove_len > CARGO_POD_REMOVE_MSG_HEADER)
         send(send_user, scratch->cargo_pod_remove, cargo_remove_len);
     if (emit_live_world_drift) {
         int cmotion_q_len = serialize_cargo_pod_motion_q_for_player(
-            scratch->cargo_pod_motion_q, w->cargo_pods, sp->ship.pos);
+            scratch->cargo_pod_motion_q, w->cargo_pods, sp->ship->pos);
         if (cmotion_q_len > CARGO_POD_MOTION_Q_MSG_HEADER)
             send(send_user, scratch->cargo_pod_motion_q, cmotion_q_len);
     }
 
     int ilen = serialize_interactions_q_for_player(
-        scratch->interactions_q, &w->interactions, sp->ship.pos);
+        scratch->interactions_q, &w->interactions, sp->ship->pos);
     send(send_user, scratch->interactions_q, ilen);
     if (emit_live_world_drift) {
         int idrift_len = serialize_interaction_drift_for_player(
-            scratch->interaction_drift, &w->interactions, sp->ship.pos);
+            scratch->interaction_drift, &w->interactions, sp->ship->pos);
         if (idrift_len > INTERACTION_DRIFT_MSG_HEADER)
             send(send_user, scratch->interaction_drift, idrift_len);
     }
 
-    if (!sp->world_time_sent ||
-        (uint32_t)(w->tick - sp->world_time_last_sent_tick) >=
+    if (!sp->replication->world_time_sent ||
+        (uint32_t)(w->tick - sp->replication->world_time_last_sent_tick) >=
             WORLD_TIME_REPEAT_TICKS) {
         scratch->world_time[0] = NET_MSG_WORLD_TIME;
         write_f32_le(&scratch->world_time[1], w->time);
         send(send_user, scratch->world_time, (int)sizeof(scratch->world_time));
-        sp->world_time_sent = true;
-        sp->world_time_last_sent_tick = w->tick;
+        sp->replication->world_time_sent = true;
+        sp->replication->world_time_last_sent_tick = w->tick;
     }
 }
 
@@ -6015,7 +6032,7 @@ static inline bool server_player_fracture_resolved_sent(
     uint32_t fracture_id) {
     if (!sp || fracture_id == 0u) return false;
     for (int i = 0; i < MAX_PENDING_RESOLVES; i++) {
-        if (sp->fracture_resolved_sent_ids[i] == fracture_id)
+        if (sp->replication->fracture_resolved_sent_ids[i] == fracture_id)
             return true;
     }
     return false;
@@ -6028,10 +6045,10 @@ static inline void server_player_mark_fracture_resolved_sent(
         server_player_fracture_resolved_sent(sp, fracture_id)) {
         return;
     }
-    sp->fracture_resolved_sent_ids[
-        sp->fracture_resolved_sent_cursor % MAX_PENDING_RESOLVES] = fracture_id;
-    sp->fracture_resolved_sent_cursor =
-        (uint8_t)((sp->fracture_resolved_sent_cursor + 1u) %
+    sp->replication->fracture_resolved_sent_ids[
+        sp->replication->fracture_resolved_sent_cursor % MAX_PENDING_RESOLVES] = fracture_id;
+    sp->replication->fracture_resolved_sent_cursor =
+        (uint8_t)((sp->replication->fracture_resolved_sent_cursor + 1u) %
                   MAX_PENDING_RESOLVES);
 }
 
@@ -6054,11 +6071,11 @@ static inline void server_emit_fracture_updates(
                     continue;
                 server_player_t *sp = &w->players[p];
                 if (!sp->connected) continue;
-                if (sp->fracture_challenge_sent_id[i] == state->fracture_id)
+                if (sp->replication->fracture_challenge_sent_id[i] == state->fracture_id)
                     continue;
                 if (server_fracture_player_in_range_for_world(w, p, i)) {
                     send(send_user, p, buf, len);
-                    sp->fracture_challenge_sent_id[i] = state->fracture_id;
+                    sp->replication->fracture_challenge_sent_id[i] = state->fracture_id;
                 }
             }
             state->challenge_dirty = false;
@@ -6122,22 +6139,23 @@ static inline void server_emit_fracture_updates(
 static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const server_player_t *sp, float station_balance) {
     buf[0] = NET_MSG_PLAYER_SHIP;
     buf[1] = id;
-    write_f32_le(&buf[2], sp->ship.hull);
+    write_f32_le(&buf[2], sp->ship->hull);
     write_f32_le(&buf[6], station_balance);
     buf[10] = sp->docked ? 1 : 0;
     buf[11] = (uint8_t)sp->current_station;
-    buf[12] = (uint8_t)sp->ship.mining_level;
-    buf[13] = (uint8_t)sp->ship.hold_level;
-    buf[14] = (uint8_t)sp->ship.tractor_level;
+    buf[12] = (uint8_t)sp->ship->mining_level;
+    buf[13] = (uint8_t)sp->ship->hold_level;
+    buf[14] = (uint8_t)sp->ship->tractor_level;
     buf[15] = sp->autopilot_mode; /* repurposed reserved byte */
     for (int c = 0; c < COMMODITY_COUNT; c++)
-        write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
+        write_f32_le(&buf[16 + c * 4],
+                     ship_cargo_amount(sp->ship, (commodity_t)c));
     int off = 16 + COMMODITY_COUNT * 4;
     buf[off++] = (uint8_t)(sp->nearby_fragments < 255 ? sp->nearby_fragments : 255);
     buf[off++] = (uint8_t)(sp->tractor_fragments < 255 ? sp->tractor_fragments : 255);
-    buf[off++] = sp->ship.towed_count;
+    buf[off++] = sp->ship->towed_count;
     for (int t = 0; t < 10; t++) {
-        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        int16_t fi = (t < sp->ship->towed_count) ? sp->ship->towed_fragments[t] : -1;
         uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
         buf[off++] = (uint8_t)(wire & 0xFFu);
         buf[off++] = (uint8_t)(wire >> 8);
@@ -6363,14 +6381,14 @@ static inline void server_begin_pending_action_result(
     sp->pending_action_before_docking_approach = sp->docking_approach;
     sp->pending_action_before_station = st;
     sp->pending_action_before_autopilot_mode = sp->autopilot_mode;
-    sp->pending_action_before_hull = sp->ship.hull;
-    sp->pending_action_before_cargo_total = ship_total_cargo(&sp->ship);
-    sp->pending_action_before_manifest_count = sp->ship.manifest.count;
-    sp->pending_action_before_mining_level = (uint8_t)sp->ship.mining_level;
-    sp->pending_action_before_hold_level = (uint8_t)sp->ship.hold_level;
-    sp->pending_action_before_tractor_level = (uint8_t)sp->ship.tractor_level;
-    sp->pending_action_before_towed_count = sp->ship.towed_count;
-    sp->pending_action_before_towed_scaffold = sp->ship.towed_scaffold;
+    sp->pending_action_before_hull = sp->ship->hull;
+    sp->pending_action_before_cargo_total = ship_total_cargo(sp->ship);
+    sp->pending_action_before_manifest_count = sp->ship->manifest.count;
+    sp->pending_action_before_mining_level = (uint8_t)sp->ship->mining_level;
+    sp->pending_action_before_hold_level = (uint8_t)sp->ship->hold_level;
+    sp->pending_action_before_tractor_level = (uint8_t)sp->ship->tractor_level;
+    sp->pending_action_before_towed_count = sp->ship->towed_count;
+    sp->pending_action_before_towed_scaffold = sp->ship->towed_scaffold;
     sp->pending_action_before_station_pending_scaffold_count =
         (w && st >= 0 && st < MAX_STATIONS)
             ? w->stations[st].pending_scaffold_count
@@ -6400,30 +6418,30 @@ static inline bool server_pending_action_state_changed(
         sp->autopilot_mode) {
         return true;
     }
-    if (fabsf(sp->pending_action_before_hull - sp->ship.hull) > 0.01f)
+    if (fabsf(sp->pending_action_before_hull - sp->ship->hull) > 0.01f)
         return true;
     if (fabsf(sp->pending_action_before_cargo_total -
-              ship_total_cargo(&sp->ship)) > 0.01f) {
+              ship_total_cargo(sp->ship)) > 0.01f) {
         return true;
     }
-    if (sp->pending_action_before_manifest_count != sp->ship.manifest.count)
+    if (sp->pending_action_before_manifest_count != sp->ship->manifest.count)
         return true;
     if (sp->pending_action_before_mining_level !=
-        (uint8_t)sp->ship.mining_level) {
+        (uint8_t)sp->ship->mining_level) {
         return true;
     }
     if (sp->pending_action_before_hold_level !=
-        (uint8_t)sp->ship.hold_level) {
+        (uint8_t)sp->ship->hold_level) {
         return true;
     }
     if (sp->pending_action_before_tractor_level !=
-        (uint8_t)sp->ship.tractor_level) {
+        (uint8_t)sp->ship->tractor_level) {
         return true;
     }
-    if (sp->pending_action_before_towed_count != sp->ship.towed_count)
+    if (sp->pending_action_before_towed_count != sp->ship->towed_count)
         return true;
     if (sp->pending_action_before_towed_scaffold !=
-        sp->ship.towed_scaffold) {
+        sp->ship->towed_scaffold) {
         return true;
     }
     if (sp->pending_action_before_station_pending_scaffold_count !=
@@ -6566,7 +6584,7 @@ static inline int serialize_hail_response_for_world(
 
 /* Per-player gossip-contract visibility mask. Bit i set iff compact
  * contract record i from NET_MSG_CONTRACTS matches a summary in the
- * player's ship known_contracts pool (by action + station_index +
+ * player's ship knowledge view (by action + station_index +
  * commodity + provenance terms). The client stores NET_MSG_CONTRACTS compactly too, so
  * the mask must use the same ordinal space, not raw w->contracts[]
  * slots. Wire: [type:1][mask:u32]. */
@@ -6578,8 +6596,17 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
         int ordinal = 0;
         for (int k = 0; k < MAX_CONTRACTS && k < 32; k++) {
             if (!contracts[k].active) continue;
-            for (int i = 0; i < ship->known_contract_count; i++) {
-                const contract_summary_t *cs = &ship->known_contracts[i];
+            uint8_t known_count = ship->knowledge.count;
+            if (known_count > KNOWLEDGE_VIEW_MAX_CAP)
+                known_count = KNOWLEDGE_VIEW_MAX_CAP;
+            for (uint8_t i = 0; i < known_count; i++) {
+                const knowledge_item_t *knowledge = &ship->knowledge.items[i];
+                if (knowledge->kind != (uint8_t)KNOW_CONTRACT ||
+                    knowledge->payload_kind !=
+                        (uint8_t)KNOW_PAYLOAD_CONTRACT_SUMMARY) continue;
+                contract_summary_t summary;
+                memcpy(&summary, knowledge->payload, sizeof(summary));
+                const contract_summary_t *cs = &summary;
                 if (!cs->active) continue;
                 if (cs->action == (uint8_t)contracts[k].action &&
                     cs->station_index == contracts[k].station_index &&
@@ -6664,7 +6691,7 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
         write_u32_le(&p[25], s->due_tick);
         uint16_t held_bound = 0;
         if (player_id < MAX_PLAYERS) {
-            const ship_t *ship = &w->players[player_id].ship;
+            const ship_t *ship = w->players[player_id].ship;
             for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
                 int pod_idx = ship->towed_pods[t];
                 if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
@@ -6760,7 +6787,7 @@ static inline void server_emit_private_snapshot_for_player(
     server_player_t *sp = &w->players[player_slot];
     if (!sp->connected) return;
 
-    if (server_player_is_gameplay_ready(sp) && !sp->input_ack_state_valid) {
+    if (server_player_is_gameplay_ready(sp) && !sp->replication->input_ack_state_valid) {
         (void)server_emit_authoritative_player_state_snapshot(
             sp, (uint8_t)player_slot, w->tick, send, send_user);
     }
@@ -6769,11 +6796,11 @@ static inline void server_emit_private_snapshot_for_player(
         scratch->player_ship, (uint8_t)player_slot, w, sp);
     send(send_user, scratch->player_ship, ship_len);
 
-    int hold_len = serialize_hold_ingots(scratch->hold_ingots, &sp->ship);
+    int hold_len = serialize_hold_ingots(scratch->hold_ingots, sp->ship);
     send(send_user, scratch->hold_ingots, hold_len);
 
     int manifest_len = serialize_player_manifest(
-        scratch->player_manifest, &sp->ship);
+        scratch->player_manifest, sp->ship);
     send(send_user, scratch->player_manifest, manifest_len);
 
     int inspect_len = serialize_inspect_snapshot_for_world(
@@ -6781,7 +6808,7 @@ static inline void server_emit_private_snapshot_for_player(
     send(send_user, scratch->inspect_snapshot, inspect_len);
 
     int known_len = serialize_player_known_contracts(
-        scratch->known_contracts, w->contracts, &sp->ship);
+        scratch->known_contracts, w->contracts, sp->ship);
     send(send_user, scratch->known_contracts, known_len);
 
     int ledger_len = serialize_player_known_ledger(

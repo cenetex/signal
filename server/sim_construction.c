@@ -5,6 +5,7 @@
 #include "sim_construction.h"
 #include "chain_log.h"
 #include "sim_nav.h"
+#include "../shared/manifest.h"
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -100,7 +101,7 @@ static int feed_module_supply_from_loose_pods(world_t *w, station_t *st,
     for (int i = 0; i < MAX_CARGO_PODS && accepted < max_units; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(pod, material)) continue;
-        if (pod->towed_by >= 0) continue;
+        if (cargo_pod_has_player_tractor(pod)) continue;
         if (!construction_pod_staged_at_matching_hopper(w, st, station_idx,
                                                         module, pod,
                                                         material))
@@ -120,6 +121,7 @@ static int feed_module_supply_from_loose_pods(world_t *w, station_t *st,
                 module_supply_fraction(module));
             accepted++;
         }
+        if (!pod->active) world_cargo_pod_clear_tractor(w, i);
     }
     return accepted;
 }
@@ -129,23 +131,9 @@ static int feed_module_supply_from_loose_pods(world_t *w, station_t *st,
 /* ------------------------------------------------------------------ */
 
 void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain_pos) {
-    if (st->module_count >= MAX_MODULES_PER_STATION) return;
     commodity_t commodity = station_default_module_commodity(st, type);
-    int idx = st->module_count++;
-    station_module_t *m = &st->modules[idx];
-    m->type = type;
-    m->ring = arm;
-    m->slot = chain_pos;
-    m->scaffold = false;
-    m->build_progress = 1.0f;
-    m->last_smelt_commodity = LAST_SMELT_NONE;
-    m->commodity = (uint8_t)commodity;
-    m->_pad[0] = 0; m->_pad[1] = 0;
-    /* Reset the activity pulse for this slot. station_t lives across
-     * world_resets in some flows (heap-allocated test worlds), so
-     * stale pulse from a previously-occupying module would leak into
-     * the new one's spoke and bias dynamics on first tick. */
-    st->module_active_pulse[idx] = 0.0f;
+    (void)station_module_append(st, type, arm, chain_pos, false, 1.0f,
+                                commodity);
 }
 
 /* Override-aware variant for callers that want a specific commodity
@@ -256,21 +244,12 @@ static bool construction_check_placement(const station_t *st,
 
 /* Add a scaffold module to a station and generate a supply contract */
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int arm, int chain_pos) {
-    if (st->module_count >= MAX_MODULES_PER_STATION) return;
     if (!construction_check_placement(st, type, arm, chain_pos, station_idx)) return;
 
     commodity_t commodity = station_default_module_commodity(st, type);
-    int idx = st->module_count++;
-    station_module_t *m = &st->modules[idx];
-    m->type = type;
-    m->ring = (uint8_t)arm;
-    m->slot = (uint8_t)chain_pos;
-    m->scaffold = true;
-    m->build_progress = 0.0f;
-    m->last_smelt_commodity = LAST_SMELT_NONE;
-    m->commodity = (uint8_t)commodity;
-    m->_pad[0] = 0; m->_pad[1] = 0;
-    st->module_active_pulse[idx] = 0.0f;
+    station_module_t *m = station_module_append(
+        st, type, (uint8_t)arm, (uint8_t)chain_pos, true, 0.0f, commodity);
+    if (!m) return;
 
     /* Generate a supply contract for the required material */
     float cost = module_build_cost(type);
@@ -363,10 +342,11 @@ void step_module_activation(world_t *w, float dt) {
                 w, st, s, i, m, mat, cost, needed);
             if (pod_units > 0)
                 needed = cost * (1.0f - module_supply_fraction(m));
-            if (needed < 0.01f || st->_inventory_cache[mat] < 0.01f)
+            float stored = station_inventory_amount(st, mat);
+            if (needed < 0.01f || stored < 0.01f)
                 continue;
-            float deliver = fminf(st->_inventory_cache[mat], needed);
-            st->_inventory_cache[mat] -= deliver;
+            float deliver = fminf(stored, needed);
+            (void)station_finished_consume(st, mat, deliver);
             m->build_progress += deliver / cost;
             if (m->build_progress > 1.0f) m->build_progress = 1.0f;
         }

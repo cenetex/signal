@@ -68,7 +68,9 @@ TEST(test_prefix_pricing_compose_with_stock_curve) {
     station_t st = {0};
     st.base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     /* Half-full PRODUCT stockpile (capacity = MAX_PRODUCT_STOCK). */
-    st._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK * 0.5f;
+    ASSERT(test_set_station_finished_units(
+        &st, COMMODITY_FERRITE_INGOT,
+        (int)(MAX_PRODUCT_STOCK * 0.5f)));
     float base_buy = station_buy_price(&st, COMMODITY_FERRITE_INGOT);
     /* Sanity: stock-fill curve gives 0.75× at 50% fill. */
     ASSERT_EQ_FLOAT(base_buy, 24.0f * 0.75f, 0.01f);

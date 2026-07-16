@@ -47,9 +47,9 @@ static int spawn_towed_fragment(world_t *w, server_player_t *sp,
     a->commodity = COMMODITY_FERRITE_ORE;
     a->last_towed_by = (int8_t)sp->id;
     memcpy(a->last_towed_token, sp->session_token, 8);
-    /* Drop into the tow array. Caller is responsible for towed_count. */
-    if (sp->ship.towed_count < (int)(sizeof(sp->ship.towed_fragments)/sizeof(sp->ship.towed_fragments[0]))) {
-        sp->ship.towed_fragments[sp->ship.towed_count++] = (int16_t)idx;
+    if (!world_asteroid_set_player_tractor(w, idx, (int)sp->id)) {
+        a->active = false;
+        return -1;
     }
     return idx;
 }
@@ -88,8 +88,8 @@ static void setup_two_players(world_t *w) {
     w->players[1].docked = false;
     w->players[0].current_station = -1;
     w->players[1].current_station = -1;
-    w->players[0].ship.pos = v2(0.0f, 0.0f);
-    w->players[1].ship.pos = v2(500.0f, 0.0f);
+    w->players[0].ship->pos = v2(0.0f, 0.0f);
+    w->players[1].ship->pos = v2(500.0f, 0.0f);
 }
 
 /* Tests ------------------------------------------------------------ */
@@ -106,9 +106,9 @@ TEST(test_release_imparts_throw_velocity) {
     WORLD_DECL;
     setup_two_players(&w);
     server_player_t *sp = &w.players[0];
-    sp->ship.pos   = v2(0.0f, 0.0f);
-    sp->ship.angle = 0.0f;            /* +X facing */
-    sp->ship.vel   = v2(30.0f, 0.0f);
+    sp->ship->pos   = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;            /* +X facing */
+    sp->ship->vel   = v2(30.0f, 0.0f);
     int aidx = spawn_towed_fragment(&w, sp, v2(-100.0f, 0.0f), 12.0f);
     ASSERT(aidx >= 0);
 
@@ -119,10 +119,10 @@ TEST(test_release_imparts_throw_velocity) {
 
     asteroid_t *a = &w.asteroids[aidx];
     /* Towed array was cleared. */
-    ASSERT_EQ_INT(sp->ship.towed_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_count, 0);
     /* Rock fires along band axis (+X toward and past the ship), at
      * meaningfully more than ship's own velocity. */
-    ASSERT(a->vel.x > sp->ship.vel.x + 30.0f);
+    ASSERT(a->vel.x > sp->ship->vel.x + 30.0f);
     /* last_towed_token preserved on release. */
     ASSERT(memcmp(a->last_towed_token, sp->session_token, 8) == 0);
     ASSERT(asteroid_is_ballistic(a));
@@ -151,16 +151,16 @@ TEST(test_thrown_rock_damages_target_player) {
     a->radius = 30.0f;
     a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
     a->commodity = COMMODITY_FERRITE_ORE;
-    a->pos = v2(target->ship.pos.x - 50.0f, target->ship.pos.y);
+    a->pos = v2(target->ship->pos.x - 50.0f, target->ship->pos.y);
     a->vel = v2(400.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
     a->last_towed_by = (int8_t)thrower->id;
     asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
-    float hull_before = target->ship.hull;
+    float hull_before = target->ship->hull;
     /* Step a few ticks so the rock crosses the gap and hits target. */
     for (int t = 0; t < 60; t++) world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(target->ship.hull < hull_before);
+    ASSERT(target->ship->hull < hull_before);
 }
 
 TEST(test_thrown_rock_self_damage_prevented) {
@@ -182,14 +182,14 @@ TEST(test_thrown_rock_self_damage_prevented) {
     a->radius = 30.0f;
     a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
     a->commodity = COMMODITY_FERRITE_ORE;
-    a->pos = v2(sp->ship.pos.x - 50.0f, sp->ship.pos.y);
+    a->pos = v2(sp->ship->pos.x - 50.0f, sp->ship->pos.y);
     a->vel = v2(500.0f, 0.0f);
     memcpy(a->last_towed_token, sp->session_token, 8);
     asteroid_mark_thrown(a, sp->session_token, ROCK_THROW_BALLISTIC_SECONDS);
 
-    float hull_before = sp->ship.hull;
+    float hull_before = sp->ship->hull;
     for (int t = 0; t < 60; t++) world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT_EQ_FLOAT(sp->ship.hull, hull_before, 0.01f);
+    ASSERT_EQ_FLOAT(sp->ship->hull, hull_before, 0.01f);
     ASSERT(!asteroid_is_ballistic(a));
 }
 
@@ -199,7 +199,7 @@ TEST(test_kill_attribution_via_thrown_by_token) {
     server_player_t *thrower = &w.players[0];
     server_player_t *target  = &w.players[1];
     /* Pre-damage target so a single hit kills. */
-    target->ship.hull = 1.0f;
+    target->ship->hull = 1.0f;
 
     int aidx = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -213,7 +213,7 @@ TEST(test_kill_attribution_via_thrown_by_token) {
     a->radius = 50.0f;
     a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
     a->commodity = COMMODITY_FERRITE_ORE;
-    a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
+    a->pos = v2(target->ship->pos.x - 80.0f, target->ship->pos.y);
     a->vel = v2(500.0f, 0.0f);
     memcpy(a->last_towed_token, "SMELTCRD", 8);
     asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
@@ -235,7 +235,7 @@ TEST(test_stale_last_towed_token_does_not_credit_kill) {
     setup_two_players(&w);
     server_player_t *thrower = &w.players[0];
     server_player_t *target  = &w.players[1];
-    target->ship.hull = 1.0f;
+    target->ship->hull = 1.0f;
 
     int aidx = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -249,7 +249,7 @@ TEST(test_stale_last_towed_token_does_not_credit_kill) {
     a->radius = 50.0f;
     a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
     a->commodity = COMMODITY_FERRITE_ORE;
-    a->pos = v2(target->ship.pos.x - 80.0f, target->ship.pos.y);
+    a->pos = v2(target->ship->pos.x - 80.0f, target->ship->pos.y);
     a->vel = v2(500.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
 
@@ -291,10 +291,10 @@ TEST(test_ramming_attributes_kill) {
 
     /* Put them next to each other, rammer flying into target hard,
      * target pre-damaged so a single hit kills. */
-    rammer->ship.pos = v2(target->ship.pos.x - 30.0f, target->ship.pos.y);
-    rammer->ship.vel = v2(500.0f, 0.0f);
-    target->ship.hull = 1.0f;
-    target->ship.vel = v2(0.0f, 0.0f);
+    rammer->ship->pos = v2(target->ship->pos.x - 30.0f, target->ship->pos.y);
+    rammer->ship->vel = v2(500.0f, 0.0f);
+    target->ship->hull = 1.0f;
+    target->ship->vel = v2(0.0f, 0.0f);
 
     const sim_event_t *death = NULL;
     for (int t = 0; t < 30 && !death; t++) {
@@ -325,20 +325,18 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     }
     ASSERT(npc_idx >= 0);
     npc_ship_t *npc = &w.npc_ships[npc_idx];
-    /* Pin BOTH the npc-side hull and the paired ship_t hull. Damage is
-     * routed to the paired ship.hull (slice 9+); the npc.hull is just
-     * a mirror that gets overwritten at end-of-tick. With the slice-3a
+    /* Pin the NPC's authoritative ship hull. With the slice-3a
      * mass-equal asteroid bounce, the rock loses momentum each impact,
      * so a single 800 u/s hit doesn't escalate to multiple lethal
      * hits — start the ship at hull 1.0 so the very first contact is
      * fatal, regardless of how many bounces follow. */
-    npc->hull = 1.0f;
-    npc->ship.vel  = v2(0.0f, 0.0f);
+    npc->ship->hull = 1.0f;
+    npc->ship->vel  = v2(0.0f, 0.0f);
     /* Use Prospect's position (station 0) so we're inside signal coverage
      * — the chunk-streaming layer culls asteroids outside materialized
      * (signal-covered) chunks. Slightly offset so the asteroid path
      * doesn't run through station modules. */
-    npc->ship.pos  = v2(w.stations[0].pos.x + 600.0f, w.stations[0].pos.y);
+    npc->ship->pos  = v2(w.stations[0].pos.x + 600.0f, w.stations[0].pos.y);
     npc->state = NPC_STATE_TRAVEL_TO_DEST; /* force collision pass to run */
 
     /* Place a flying rock just behind the NPC, owned by thrower. */
@@ -357,7 +355,7 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     /* Place rock already overlapping the NPC and moving toward it —
      * one tick is enough to register the hit. */
     const hull_def_t *hull = npc_hull_def(npc);
-    a->pos = v2(npc->ship.pos.x - (hull->ship_radius + a->radius - 5.0f), npc->ship.pos.y);
+    a->pos = v2(npc->ship->pos.x - (hull->ship_radius + a->radius - 5.0f), npc->ship->pos.y);
     a->vel = v2(800.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
     asteroid_mark_thrown(a, thrower->session_token, ROCK_THROW_BALLISTIC_SECONDS);
@@ -366,15 +364,15 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     /* Pin npc.pos and re-pin asteroid each tick so neither hauler nav
      * nor any belt physics drifts them out of the contact window. The
      * test only cares about kill attribution, not nav stability. */
-    vec2 npc_pin = npc->ship.pos;
+    vec2 npc_pin = npc->ship->pos;
     ship_t *npc_ship = world_npc_ship_for(&w, npc_idx);
     ASSERT(npc_ship != NULL);
     npc_ship->pos  = npc_pin;
     npc_ship->vel  = v2(0.0f, 0.0f);
     npc_ship->hull = 1.0f;
     for (int t = 0; t < 120 && !kill; t++) {
-        npc->ship.vel = v2(0.0f, 0.0f);
-        npc->ship.pos = npc_pin;
+        npc->ship->vel = v2(0.0f, 0.0f);
+        npc->ship->pos = npc_pin;
         npc_ship->vel = v2(0.0f, 0.0f);
         npc_ship->pos = npc_pin;
         world_sim_step(&w, 1.0f / 120.0f);
@@ -411,14 +409,14 @@ TEST(test_collectible_fragment_damages_ship) {
     /* Confirm precondition: this fragment IS a collectible (the case
      * the old gate skipped). */
     ASSERT(asteroid_is_collectible(a));
-    a->pos = v2(target->ship.pos.x - 40.0f, target->ship.pos.y);
+    a->pos = v2(target->ship->pos.x - 40.0f, target->ship->pos.y);
     a->vel = v2(400.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
     a->last_towed_by = (int8_t)thrower->id;
 
-    float hull_before = target->ship.hull;
+    float hull_before = target->ship->hull;
     for (int t = 0; t < 60; t++) world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(target->ship.hull < hull_before);
+    ASSERT(target->ship->hull < hull_before);
 }
 
 void register_pvp_rocks_tests(void) {
