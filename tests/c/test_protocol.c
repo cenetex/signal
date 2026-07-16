@@ -5019,14 +5019,14 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
     w.players[0].connected = true;
     w.players[0].id = 0;
     w.players[0].ship->hull = 88.0f;
-    w.players[0].replication->input_ack_state_valid = true;
+    server_player_note_authoritative_ack_state(&w.players[0], w.tick);
     ASSERT(ship_manifest_bootstrap(w.players[0].ship));
 
     static server_private_snapshot_scratch_t scratch;
     packet_capture_t cap;
     memset(&cap, 0, sizeof(cap));
 
-    server_emit_private_snapshot_for_player(&w, 0,
+    server_emit_private_snapshot_for_player(&w, 0, true,
                                             packet_capture_sink, &cap,
                                             &scratch);
 
@@ -5065,7 +5065,7 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
     packet_capture_t cap;
     memset(&cap, 0, sizeof(cap));
 
-    server_emit_private_snapshot_for_player(&w, 0,
+    server_emit_private_snapshot_for_player(&w, 0, true,
                                             packet_capture_sink, &cap,
                                             &scratch);
 
@@ -5075,6 +5075,47 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_SHIP);
     ASSERT(w.players[0].replication->input_ack_state_valid);
     ASSERT_EQ_INT((int)w.players[0].replication->input_ack_state_tick, 1234);
+}
+
+TEST(test_private_snapshot_emits_idle_authoritative_heartbeat) {
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    sp->last_input_seq = 77;
+    sp->last_input_tick = 1001u;
+    ASSERT(ship_manifest_bootstrap(sp->ship));
+    server_player_note_authoritative_ack_state(sp, 100u);
+
+    static server_private_snapshot_scratch_t scratch;
+    packet_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    /* Private snapshots are not input ACKs. Even a large pose delta must
+     * wait for the heartbeat so it cannot invent a replay baseline. */
+    sp->ship->pos = v2(INPUT_ACK_STATE_POS_ERROR_SQ, 0.0f);
+    w.tick = 100u + INPUT_ACK_STATE_HEARTBEAT_TICKS - 1u;
+    server_emit_private_snapshot_for_player(
+        &w, 0, true, packet_capture_sink, &cap, &scratch);
+    ASSERT(!packet_capture_has_type(&cap, NET_MSG_STATE));
+    ASSERT_EQ_INT((int)sp->replication->input_ack_state_tick, 100);
+
+    memset(&cap, 0, sizeof(cap));
+    w.tick = 100u + INPUT_ACK_STATE_HEARTBEAT_TICKS;
+    server_emit_private_snapshot_for_player(
+        &w, 0, false, packet_capture_sink, &cap, &scratch);
+    ASSERT(!packet_capture_has_type(&cap, NET_MSG_STATE));
+    ASSERT_EQ_INT((int)sp->replication->input_ack_state_tick, 100);
+
+    memset(&cap, 0, sizeof(cap));
+    server_emit_private_snapshot_for_player(
+        &w, 0, true, packet_capture_sink, &cap, &scratch);
+    ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
+    ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
+    ASSERT_EQ_INT((int)sp->replication->input_ack_state_tick,
+                  100 + INPUT_ACK_STATE_HEARTBEAT_TICKS);
 }
 
 TEST(test_station_snapshot_emitter_sequence_shared) {
@@ -8559,6 +8600,7 @@ void register_protocol_main_tests(void) {
     RUN(test_world_time_snapshot_reconciles_at_low_cadence);
     RUN(test_private_snapshot_emitter_sequence_shared);
     RUN(test_private_snapshot_emits_local_authoritative_baseline);
+    RUN(test_private_snapshot_emits_idle_authoritative_heartbeat);
     RUN(test_station_snapshot_emitter_sequence_shared);
     RUN(test_fracture_update_emitter_shared);
     RUN(test_fracture_challenge_rebroadcast_suppresses_seen_players);

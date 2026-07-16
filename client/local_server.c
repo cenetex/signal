@@ -473,7 +473,8 @@ static void local_server_emit_private_snapshots(local_server_t *ls,
     if (sp->replication->force_authoritative_resync)
         server_player_reset_authoritative_ack_state(sp);
     server_emit_private_snapshot_for_player(
-        &ls->world, player_slot, local_server_send_packet, NULL,
+        &ls->world, player_slot, ls->throttled_snapshots,
+        local_server_send_packet, NULL,
         &local_server_private_snapshot_scratch);
     sp->replication->force_authoritative_resync = false;
     ls->private_snapshot_dirty = false;

@@ -2132,30 +2132,6 @@ void draw_ship_tractor_field(void) {
         draw_circle_outline(LOCAL_PLAYER.ship->pos, radius, 40, PAL_F_SIGNAL_MINT, alpha * 0.8f);
         draw_tractor_field_spirals(LOCAL_PLAYER.ship->pos, radius,
                                    PAL_F_SIGNAL_OPERATIONAL, alpha * 0.55f, 0.0f);
-    } else if (LOCAL_PLAYER.ship->towed_count > 0) {
-        /* LEASHED: beam lines to fragments. Towed fragments are already in
-         * custody, so showing rarity here is intentional; brightness still
-         * ramps with leash stretch so taut reads as urgent. */
-        tractor_beam_t beam = tractor_tow_beam(
-            tr, TRACTOR_TOW_BAND_REST_LENGTH);
-        for (int t = 0; t < LOCAL_PLAYER.ship->towed_count; t++) {
-            int idx = LOCAL_PLAYER.ship->towed_fragments[t];
-            if (idx < 0 || idx >= MAX_ASTEROIDS || !g.world.asteroids[idx].active) continue;
-            const asteroid_t *a = &g.world.asteroids[idx];
-            vec2 fpos = a->pos;
-            float stretch = tractor_beam_tautness(
-                LOCAL_PLAYER.ship->pos, fpos, &beam);
-            float gr, gg, gb;
-            grade_tint(a->grade, &gr, &gg, &gb);
-            float boost = 1.0f + 0.5f * stretch;
-            float beam_r = fminf(1.0f, gr * boost);
-            float beam_g = fminf(1.0f, gg * boost);
-            float beam_b = fminf(1.0f, gb * boost);
-            float beam_a = 0.20f + 0.55f * stretch;
-            draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, fpos,
-                                     beam_r, beam_g, beam_b, beam_a,
-                                     stretch, (float)t * 1.7f);
-        }
     }
     world_signal_visual_leave_cue(cue_prev);
 }
@@ -3028,11 +3004,15 @@ void draw_autopilot_path(void) {
     world_signal_visual_leave_cue(cue_prev);
 }
 
-/* Draw tractor tether lines from ship to towed fragments. Tethers show
- * rarity because the fragment has already been collected/towed. */
+static void cargo_pod_content_color(const cargo_pod_t *pod,
+                                    float *r, float *g0, float *b);
+
+/* Draw the canonical player-tractor tether for every towed body. Fragments
+ * use grade color and cargo pods use commodity color, but both share the
+ * same traveling tow-band wave and tautness response. Cargo bindings are
+ * authoritative, so this also covers pods towed by remote players. */
 void draw_towed_tethers(void) {
     if (g.death_cinematic.active) return;
-    if (LOCAL_PLAYER.ship->towed_count == 0) return;
     float cue_prev = world_signal_visual_enter_cue();
     float tr = ship_tractor_range(LOCAL_PLAYER.ship);
     tractor_beam_t beam = tractor_tow_beam(
@@ -3051,6 +3031,31 @@ void draw_towed_tethers(void) {
             LOCAL_PLAYER.ship->pos, a->pos, &beam);
         draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, a->pos,
                                  r, gg, b, pulse, stretch, (float)t * 1.7f);
+    }
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &g.world.cargo_pods[i];
+        if (!pod->active) continue;
+        int tractor_player = cargo_pod_player_tractor(pod);
+        if (tractor_player < 0 || tractor_player >= MAX_PLAYERS) continue;
+        const ship_t *ship = g.world.players[tractor_player].ship;
+        if (!ship) continue;
+        if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 80.0f) &&
+            !on_screen(ship->pos.x, ship->pos.y, 80.0f)) {
+            continue;
+        }
+
+        float r, gg, b;
+        cargo_pod_content_color(pod, &r, &gg, &b);
+        tractor_beam_t pod_beam = tractor_tow_beam(
+            ship_tractor_range(ship), TRACTOR_TOW_BAND_REST_LENGTH);
+        float stretch = tractor_beam_tautness(
+            ship->pos, pod->pos, &pod_beam);
+        float pulse = 0.40f + 0.15f *
+            sinf(g.world.time * 3.0f + (float)i * 1.5f);
+        draw_tractor_tether_wave(ship->pos, pod->pos,
+                                 r, gg, b, pulse, stretch,
+                                 (float)i * 1.7f);
     }
     world_signal_visual_leave_cue(cue_prev);
 }
@@ -3869,11 +3874,6 @@ void draw_cargo_pods(void) {
                                gr, gg, gb, 0.82f);
         }
 
-        int tractor_player = cargo_pod_player_tractor(pod);
-        if (tractor_player >= 0 && tractor_player < MAX_PLAYERS) {
-            const ship_t *ship = g.world.players[tractor_player].ship;
-            draw_segment(ship->pos, pod->pos, r, g0, b, 0.42f);
-        }
     }
 }
 

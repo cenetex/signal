@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "sim_physics.h"
 
 static void setup_autopilot_world(world_t *w) {
     world_reset(w);
@@ -153,6 +154,29 @@ TEST(test_spatial_grid_grows_past_initial_hash_capacity) {
         }
     }
     ASSERT(found);
+}
+
+TEST(test_spatial_grid_retains_dense_cell_asteroids) {
+    WORLD_DECL;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    const int target_count = SPATIAL_INITIAL_PER_CELL * 5;
+    for (int i = 0; i < target_count; i++) {
+        seed_test_asteroid(&w.asteroids[i], ASTEROID_TIER_S,
+                           v2(10.0f + (float)i, 20.0f), 5.0f);
+    }
+
+    spatial_grid_build(&w);
+
+    int cx, cy;
+    spatial_grid_cell(&w.asteroid_grid, w.asteroids[0].pos, &cx, &cy);
+    const spatial_cell_t *cell = spatial_grid_lookup(&w.asteroid_grid, cx, cy);
+    ASSERT(cell != NULL);
+    ASSERT_EQ_INT((int)cell->count, target_count);
+    ASSERT((int)cell->count > (int)ASTEROID_PHYSICS_CELL_BUDGET);
+    ASSERT_EQ_INT((int)w.asteroid_grid.overflow_count, 0);
+    for (int i = 0; i < target_count; i++)
+        ASSERT_EQ_INT((int)cell->indices[i], i);
 }
 
 TEST(test_flight_steer_to_brakes_for_intermediate_waypoint) {
@@ -845,6 +869,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_approach_speed_basic);
     RUN(test_nav_speed_control_deadband);
     RUN(test_spatial_grid_grows_past_initial_hash_capacity);
+    RUN(test_spatial_grid_retains_dense_cell_asteroids);
     RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
     RUN(test_flight_steer_to_reverses_from_low_speed_obstacle);
     RUN(test_flight_brake_uses_deterministic_velocity_heading);

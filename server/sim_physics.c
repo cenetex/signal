@@ -6,6 +6,13 @@
 #include <math.h>
 #include <string.h>
 
+static uint16_t asteroid_physics_cell_count(const spatial_cell_t *cell) {
+    if (!cell) return 0;
+    return cell->count < ASTEROID_PHYSICS_CELL_BUDGET
+        ? cell->count
+        : (uint16_t)ASTEROID_PHYSICS_CELL_BUDGET;
+}
+
 static bool token_has_any_bit(const uint8_t token[8]) {
     return (token[0] | token[1] | token[2] | token[3] |
             token[4] | token[5] | token[6] | token[7]) != 0;
@@ -274,7 +281,9 @@ void step_asteroid_gravity(world_t *w, float dt) {
             for (int gx = cx - 1; gx <= cx + 1; gx++) {
                 const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
                 if (!cell) continue;
-                for (int ci = 0; ci < cell->count; ci++) {
+                uint16_t candidate_count =
+                    asteroid_physics_cell_count(cell);
+                for (uint16_t ci = 0; ci < candidate_count; ci++) {
                     int j = cell->indices[ci];
                     if (j <= i) continue; /* avoid double-processing */
                     asteroid_t *b = &w->asteroids[j];
@@ -370,7 +379,9 @@ void step_asteroid_gravity(world_t *w, float dt) {
                 for (int gx = acx - 1; gx <= acx + 1 && !near_asteroid; gx++) {
                     const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
                     if (!cell) continue;
-                    for (int ci = 0; ci < cell->count; ci++) {
+                    uint16_t candidate_count =
+                        asteroid_physics_cell_count(cell);
+                    for (uint16_t ci = 0; ci < candidate_count; ci++) {
                         int j = cell->indices[ci];
                         if (j == i || !w->asteroids[j].active) continue;
                         if (v2_dist_sq(a->pos, w->asteroids[j].pos) <= 400.0f * 400.0f) {
@@ -418,7 +429,9 @@ void resolve_asteroid_collisions(world_t *w) {
             for (int gx = cx - 1; gx <= cx + 1; gx++) {
                 const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
                 if (!cell) continue;
-                for (int ci = 0; ci < cell->count; ci++) {
+                uint16_t candidate_count =
+                    asteroid_physics_cell_count(cell);
+                for (uint16_t ci = 0; ci < candidate_count; ci++) {
                     int j = cell->indices[ci];
                     if (j <= i) continue; /* avoid double-processing */
                     asteroid_t *b = &w->asteroids[j];

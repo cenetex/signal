@@ -5635,15 +5635,24 @@ static inline bool server_emit_authoritative_player_state_snapshot(
     return true;
 }
 
+static inline bool server_player_authoritative_ack_heartbeat_required(
+    const server_player_t *sp,
+    uint32_t server_tick) {
+    if (!sp || !sp->replication ||
+        !sp->replication->input_ack_state_valid) {
+        return true;
+    }
+    return (uint32_t)(server_tick - sp->replication->input_ack_state_tick) >=
+           INPUT_ACK_STATE_HEARTBEAT_TICKS;
+}
+
 static inline bool server_player_authoritative_ack_state_required(
     const server_player_t *sp,
     uint32_t server_tick,
     bool force_state) {
     if (!sp) return false;
-    if (!sp->replication) return true;
-    if (force_state || !sp->replication->input_ack_state_valid) return true;
-    if ((uint32_t)(server_tick - sp->replication->input_ack_state_tick) >=
-        INPUT_ACK_STATE_HEARTBEAT_TICKS) {
+    if (force_state ||
+        server_player_authoritative_ack_heartbeat_required(sp, server_tick)) {
         return true;
     }
     vec2 dp = v2_sub(sp->ship->pos, sp->replication->input_ack_state_pos);
@@ -6779,6 +6788,7 @@ static inline void server_emit_station_snapshot(
 static inline void server_emit_private_snapshot_for_player(
     world_t *w,
     int player_slot,
+    bool include_authoritative_heartbeat,
     server_packet_sink_fn send,
     void *send_user,
     server_private_snapshot_scratch_t *scratch) {
@@ -6787,7 +6797,16 @@ static inline void server_emit_private_snapshot_for_player(
     server_player_t *sp = &w->players[player_slot];
     if (!sp->connected) return;
 
-    if (server_player_is_gameplay_ready(sp) && !sp->replication->input_ack_state_valid) {
+    /* This is the recipient's only periodic authoritative pose lane: the
+     * shared player stream deliberately excludes its own player. Keep the
+     * no-input path to the timed heartbeat; movement/angle thresholds belong
+     * to input acknowledgements, whose tick is the replay baseline. */
+    bool state_invalid = !sp->replication ||
+                         !sp->replication->input_ack_state_valid;
+    bool heartbeat_due = include_authoritative_heartbeat &&
+        server_player_authoritative_ack_heartbeat_required(sp, w->tick);
+    if (server_player_is_gameplay_ready(sp) &&
+        (state_invalid || heartbeat_due)) {
         (void)server_emit_authoritative_player_state_snapshot(
             sp, (uint8_t)player_slot, w->tick, send, send_user);
     }

@@ -5452,7 +5452,7 @@ static void broadcast_ship_states(void) {
             .player = sp,
         };
         server_emit_private_snapshot_for_player(
-            &world, i, ws_private_packet_sink, &sink,
+            &world, i, true, ws_private_packet_sink, &sink,
             &private_snapshot_scratch);
         sp->replication->force_authoritative_resync = false;
     }

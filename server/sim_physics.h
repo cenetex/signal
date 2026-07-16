@@ -12,6 +12,10 @@
  * thrown-rock damage and kills. */
 #define ROCK_THROW_BALLISTIC_SECONDS 6.0f
 #define ASTEROID_THROW_TIMER_TICKS 12u  /* 120 Hz sim -> 0.1s timer quantum */
+/* The shared spatial grid retains every asteroid so navigation cannot miss
+ * dense obstacles. The 30 Hz pair solver keeps a deterministic per-cell
+ * workload matching the established flight model and browser frame budget. */
+#define ASTEROID_PHYSICS_CELL_BUDGET 16u
 
 typedef enum {
     SIM_BODY_FLAG_DYNAMIC   = 1u << 0,

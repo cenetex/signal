@@ -463,6 +463,16 @@ static void spatial_grid_clear(spatial_grid_t *g) {
     g->occupied = 0;
 }
 
+static void spatial_grid_destroy(spatial_grid_t *g) {
+    if (!g) return;
+    if (g->entries) {
+        for (uint32_t i = 0; i < g->capacity; i++)
+            free(g->entries[i].cell.indices);
+    }
+    free(g->entries);
+    memset(g, 0, sizeof(*g));
+}
+
 static bool spatial_grid_grow(spatial_grid_t *g) {
     if (!g || !g->entries || g->capacity == 0) return false;
     if (g->capacity > UINT32_MAX / 2u) return false;
@@ -484,7 +494,12 @@ static bool spatial_grid_grow(spatial_grid_t *g) {
 
     for (uint32_t i = 0; i < old_capacity; i++) {
         const sparse_cell_entry_t *old = &old_entries[i];
-        if (old->key_x == INT32_MIN) continue;
+        if (old->key_x == INT32_MIN) {
+            /* Cleared slots retain their per-cell buffer for reuse.  Once the
+             * hash table grows, those unused buffers no longer have an owner. */
+            free(old->cell.indices);
+            continue;
+        }
         uint32_t h = ((uint32_t)old->key_x * 73856093u) ^
                      ((uint32_t)old->key_y * 19349663u);
         for (uint32_t probes = 0, slot = h & g->mask; probes < g->capacity;
@@ -529,11 +544,26 @@ static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     spatial_grid_cell(g, pos, &cx, &cy);
     spatial_cell_t *cell = spatial_grid_get_or_create(g, cx, cy);
     if (!cell) return; /* OOM — see spatial_grid_ensure */
-    if (cell->count < SPATIAL_MAX_PER_CELL) {
-        cell->indices[cell->count++] = (int16_t)idx;
-    } else {
-        g->overflow_count++;
+    if (cell->count >= cell->capacity) {
+        uint32_t next_capacity = cell->capacity > 0
+            ? (uint32_t)cell->capacity * 2u
+            : (uint32_t)SPATIAL_INITIAL_PER_CELL;
+        if (next_capacity > SPATIAL_MAX_PER_CELL)
+            next_capacity = SPATIAL_MAX_PER_CELL;
+        if (next_capacity <= cell->capacity) {
+            g->overflow_count++;
+            return;
+        }
+        int16_t *next_indices = (int16_t *)realloc(
+            cell->indices, next_capacity * sizeof(*next_indices));
+        if (!next_indices) {
+            g->overflow_count++;
+            return;
+        }
+        cell->indices = next_indices;
+        cell->capacity = (uint16_t)next_capacity;
     }
+    cell->indices[cell->count++] = (int16_t)idx;
 }
 
 void spatial_grid_build(world_t *w) {
@@ -546,7 +576,7 @@ void spatial_grid_build(world_t *w) {
     }
 #ifndef NDEBUG
     if (g->overflow_count > 0 && (w->tick % 120u) == 0u) {
-        printf("[spatial-grid] overflow dropped=%u cap_per_cell=%u tick=%u\n",
+        printf("[spatial-grid] allocation overflow dropped=%u cap_per_cell=%u tick=%u\n",
                (unsigned)g->overflow_count,
                (unsigned)SPATIAL_MAX_PER_CELL,
                (unsigned)w->tick);
@@ -13204,8 +13234,7 @@ void world_cleanup(world_t *w) {
     w->signal_cache.beacon_count = 0;
     w->signal_cache.beacon_valid = false;
     w->signal_cache.valid = false;
-    free(w->asteroid_grid.entries);
-    w->asteroid_grid.entries = NULL;
+    spatial_grid_destroy(&w->asteroid_grid);
 }
 
 void world_seed_station_manifests(world_t *w) {
@@ -13424,14 +13453,13 @@ static void world_seed_genesis_ship_assets(world_t *w) {
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
-    sparse_cell_entry_t *grid_entries = w->asteroid_grid.entries;
     for (int i = 0; i < WORLD_SHIP_CAP; i++)
         if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
-    free(grid_entries);
+    spatial_grid_destroy(&w->asteroid_grid);
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     /* Caller-supplied non-zero seed → reproducible (test fixtures, save

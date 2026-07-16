@@ -94,12 +94,14 @@ static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 /* ------------------------------------------------------------------ */
 
 #define SPATIAL_CELL_SIZE 800.0f
-#define SPATIAL_MAX_PER_CELL 16
+#define SPATIAL_INITIAL_PER_CELL 16
+#define SPATIAL_MAX_PER_CELL MAX_ASTEROIDS
 #define SPATIAL_HASH_INITIAL_CAP 512  /* power of 2 */
 
 typedef struct {
-    int16_t indices[SPATIAL_MAX_PER_CELL];
-    uint8_t count;
+    int16_t *indices;
+    uint16_t count;
+    uint16_t capacity;
 } spatial_cell_t;
 
 typedef struct {
@@ -112,7 +114,7 @@ typedef struct {
     uint32_t capacity;            /* always power of 2 */
     uint32_t mask;                /* capacity - 1 */
     uint32_t occupied;            /* number of occupied slots */
-    uint32_t overflow_count;      /* active asteroids dropped by full cells */
+    uint32_t overflow_count;      /* active asteroids dropped by allocation failure */
 } spatial_grid_t;
 
 /* Map world position to cell coordinates (unbounded). */
