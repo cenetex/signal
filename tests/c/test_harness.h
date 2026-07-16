@@ -96,10 +96,10 @@ extern int g_only_soak;
     ship_t name##_ship_backing = {0}; \
     npc_ship_t name = {.ship = &name##_ship_backing}
 #define SERVER_PLAYER_ARRAY(name, count) \
-    ship_t name##_ship_backing[(count)] = {{0}}; \
-    server_connection_t name##_connection_backing[(count)] = {{0}}; \
-    server_replication_t name##_replication_backing[(count)] = {{0}}; \
-    server_player_t name[(count)] = {{0}}; \
+    ship_t name##_ship_backing[(count)] = {0}; \
+    server_connection_t name##_connection_backing[(count)] = {0}; \
+    server_replication_t name##_replication_backing[(count)] = {0}; \
+    server_player_t name[(count)] = {0}; \
     for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) { \
         name[name##_bind_i].connection = \
             &name##_connection_backing[name##_bind_i]; \
@@ -108,8 +108,8 @@ extern int g_only_soak;
         name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]; \
     }
 #define NPC_SHIP_ARRAY(name, count) \
-    ship_t name##_ship_backing[(count)] = {{0}}; \
-    npc_ship_t name[(count)] = {{0}}; \
+    ship_t name##_ship_backing[(count)] = {0}; \
+    npc_ship_t name[(count)] = {0}; \
     for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) \
         name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]
 #else
@@ -145,10 +145,10 @@ static inline void npc_ship_auto_cleanup(npc_ship_t *npc) {
     npc_ship_t __attribute__((cleanup(npc_ship_auto_cleanup))) name = \
         {.ship = &name##_ship_backing}
 #define SERVER_PLAYER_ARRAY(name, count) \
-    ship_t name##_ship_backing[(count)] = {{0}}; \
-    server_connection_t name##_connection_backing[(count)] = {{0}}; \
-    server_replication_t name##_replication_backing[(count)] = {{0}}; \
-    server_player_t name[(count)] = {{0}}; \
+    ship_t name##_ship_backing[(count)] = {0}; \
+    server_connection_t name##_connection_backing[(count)] = {0}; \
+    server_replication_t name##_replication_backing[(count)] = {0}; \
+    server_player_t name[(count)] = {0}; \
     for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) { \
         name[name##_bind_i].connection = \
             &name##_connection_backing[name##_bind_i]; \
@@ -157,8 +157,8 @@ static inline void npc_ship_auto_cleanup(npc_ship_t *npc) {
         name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]; \
     }
 #define NPC_SHIP_ARRAY(name, count) \
-    ship_t name##_ship_backing[(count)] = {{0}}; \
-    npc_ship_t name[(count)] = {{0}}; \
+    ship_t name##_ship_backing[(count)] = {0}; \
+    npc_ship_t name[(count)] = {0}; \
     for (int name##_bind_i = 0; name##_bind_i < (count); name##_bind_i++) \
         name[name##_bind_i].ship = &name##_ship_backing[name##_bind_i]
 #endif
