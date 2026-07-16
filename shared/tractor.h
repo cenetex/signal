@@ -137,6 +137,18 @@ typedef struct {
 #define TRACTOR_TOW_BAND_AXIAL_DAMPING     1.8f
 #define TRACTOR_TOW_BAND_TANGENT_DAMPING   1.1f
 
+/* A taut field line still carries a visible traveling ripple. Fully
+ * flattening the wave made cargo pods, which normally ride near the outer
+ * tow band, look like they had fallen back to the old straight cable even
+ * though they were using the canonical renderer. Tension is communicated by
+ * the brighter straight core; it must not erase the tractor signature. */
+#define TRACTOR_TETHER_TAUT_WAVE_FLOOR      0.55f
+
+static inline float tractor_tether_wave_scale(float tautness) {
+    float taut = clampf(tautness, 0.0f, 1.0f);
+    return 1.0f - taut * (1.0f - TRACTOR_TETHER_TAUT_WAVE_FLOOR);
+}
+
 static inline tractor_beam_t tractor_tow_beam(float range,
                                                float rest_length) {
     return (tractor_beam_t){

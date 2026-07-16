@@ -659,6 +659,7 @@ const smokeLoopState = {
   onboardingReturn: 21,
   onboardingMarket: 22,
   onboardingComplete: 23,
+  cargoTowing: 24,
 } as const;
 
 const mobileFlag = {
@@ -1343,6 +1344,13 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.towing);
     expect(await hudActionText(page)).toContain('Towing 1 // needed at Prospect');
+
+    /* Keep a renderable, near-taut cargo tow in the deployed bundle so the
+     * canonical pod wave can be inspected without playing through the whole
+     * production chain. setSmokeLoopState returning 1 also guards the fixture
+     * against drifting out of the WebAssembly build. */
+    await setSmokeLoopState(page, smokeLoopState.cargoTowing);
+    await page.waitForTimeout(100);
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
     expect(await hudActionText(page)).toContain('123 prospect vouchers available // dock to spend');

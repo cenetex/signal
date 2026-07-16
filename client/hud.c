@@ -3594,6 +3594,7 @@ enum {
     SMOKE_LOOP_STATE_ONBOARDING_RETURN = 21,
     SMOKE_LOOP_STATE_ONBOARDING_MARKET = 22,
     SMOKE_LOOP_STATE_ONBOARDING_COMPLETE = 23,
+    SMOKE_LOOP_STATE_CARGO_TOWING = 24,
 };
 
 static void smoke_set_onboarding_economy_progress(bool earned,
@@ -3626,6 +3627,9 @@ static void smoke_clear_loop_state(void) {
     sp->scan_target_index = -1;
     sp->scan_module_index = -1;
     sp->ship->towed_count = 0;
+    sp->ship->towed_pod_count = 0;
+    for (int i = 0; i < 10; i++)
+        sp->ship->towed_pods[i] = -1;
     sp->ship->towed_scaffold = -1;
     sp->ship->tractor_active = false;
     sp->nearby_fragments = 0;
@@ -3649,6 +3653,8 @@ static void smoke_clear_loop_state(void) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         g.world.scaffolds[i].active = false;
     }
+    memset(&g.world.cargo_pods[MAX_CARGO_PODS - 1], 0,
+           sizeof(g.world.cargo_pods[MAX_CARGO_PODS - 1]));
     if (MAX_STATIONS > SMOKE_OUTPOST_INDEX) {
         station_t *ghost = &g.world.stations[SMOKE_OUTPOST_INDEX];
         ghost->scaffold = false;
@@ -3716,6 +3722,41 @@ static int smoke_apply_loop_state(int state) {
         sp->ship->towed_count = 1;
         sp->ship->towed_fragments[0] = 0;
         return 1;
+    case SMOKE_LOOP_STATE_CARGO_TOWING: {
+        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
+            return 0;
+        sp->ship->pos = v2_add(g.world.stations[0].pos, v2(600.0f, 0.0f));
+        sp->ship->vel = v2(0.0f, 0.0f);
+        g.camera_pos = sp->ship->pos;
+        g.camera_initialized = true;
+        int pod_idx = MAX_CARGO_PODS - 1;
+        cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        float range = fmaxf(ship_tractor_range(sp->ship), 180.0f);
+        *pod = (cargo_pod_t){
+            .active = true,
+            .kind = CARGO_POD_CARGO,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .quantity = 6,
+            .manifest_count = 6,
+            .pos = v2_add(sp->ship->pos, v2(range * 0.96f, 0.0f)),
+            .vel = sp->ship->vel,
+            .radius = 18.0f,
+            .rotation = 0.35f,
+            .age = 2.0f,
+        };
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            pod->manifest_units[i] = (cargo_unit_t){
+                .kind = CARGO_KIND_INGOT,
+                .commodity = COMMODITY_FERRITE_INGOT,
+                .grade = (uint8_t)MINING_GRADE_COMMON,
+                .quantity = 1,
+            };
+        }
+        cargo_pod_set_player_tractor(pod, sp->id);
+        sp->ship->towed_pod_count = 1;
+        sp->ship->towed_pods[0] = (int16_t)pod_idx;
+        return 1;
+    }
     case SMOKE_LOOP_STATE_HAIL_READY: {
         if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
             return 0;

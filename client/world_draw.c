@@ -2045,9 +2045,10 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 }
 
 /* Tractor tethers are field lines, not cables: a traveling wave rides the
- * tether and flattens as the leash pulls taut, so slack reads as a lazy
- * shimmer and tension reads as a straight, bright pull. `tautness` is
- * 0 slack .. 1 fully stretched; `phase` de-syncs multiple tethers. */
+ * tether and tightens as the leash pulls taut. The ripple deliberately keeps
+ * a non-zero floor at full tension so actively towed cargo cannot become
+ * visually indistinguishable from the removed straight-cable renderer.
+ * `tautness` is 0 slack .. 1 fully stretched; `phase` de-syncs tethers. */
 static void draw_tractor_tether_wave(vec2 from, vec2 to,
                                      float r, float g0, float b,
                                      float alpha, float tautness,
@@ -2060,8 +2061,9 @@ static void draw_tractor_tether_wave(vec2 from, vec2 to,
     vec2 dir = v2_scale(span, 1.0f / len);
     vec2 perp = v2(-dir.y, dir.x);
     float taut = clampf(tautness, 0.0f, 1.0f);
-    float amp = (2.5f + len * 0.045f) * (1.0f - taut);
-    const int steps = 12;
+    float amp = (4.0f + len * 0.060f) *
+                tractor_tether_wave_scale(taut);
+    const int steps = 20;
     sgl_begin_line_strip();
     sgl_c4f(r, g0, b, alpha);
     for (int s = 0; s <= steps; s++) {

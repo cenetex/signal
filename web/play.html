@@ -108,6 +108,20 @@
           signalWasmReady = true;
           window.SignalGameWasmReady = true;
           document.getElementById('loading').classList.add('done');
+          var smokeParams = new URLSearchParams(window.location.search);
+          var smokeState = Number(smokeParams.get('smokeState'));
+          if (smokeParams.get('smoke') === '1' &&
+              Number.isInteger(smokeState) && smokeState > 0 &&
+              typeof Module.ccall === 'function') {
+            var applySmokeState = function() {
+              Module.ccall('set_smoke_loop_state', 'number', ['number'], [smokeState]);
+            };
+            applySmokeState();
+            /* The loopback server keeps publishing authoritative state. A
+             * fixture selected in the URL must be re-applied after those
+             * packets so visual QA sees a stable scene rather than one frame. */
+            window.setInterval(applySmokeState, 16);
+          }
           signalFocusCanvas();
         }
       };

@@ -52,6 +52,16 @@ TEST(test_tractor_tow_profile_is_shared_across_anchor_types) {
     ASSERT_EQ_FLOAT(target_vel.y, 0.0f, 0.001f);
 }
 
+TEST(test_tractor_tether_wave_remains_visible_at_full_tension) {
+    ASSERT_EQ_FLOAT(tractor_tether_wave_scale(-1.0f), 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(tractor_tether_wave_scale(0.0f), 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(tractor_tether_wave_scale(0.5f), 0.775f, 0.001f);
+    ASSERT_EQ_FLOAT(tractor_tether_wave_scale(1.0f),
+                    TRACTOR_TETHER_TAUT_WAVE_FLOOR, 0.001f);
+    ASSERT_EQ_FLOAT(tractor_tether_wave_scale(2.0f),
+                    TRACTOR_TETHER_TAUT_WAVE_FLOOR, 0.001f);
+}
+
 TEST(test_tractor_binding_has_one_source_at_a_time) {
     cargo_pod_t pod = {0};
     cargo_pod_clear_tractor(&pod);
@@ -417,6 +427,7 @@ TEST(test_tractor_diagonal_pull_deterministic_reference) {
 void register_tractor_tests(void) {
     TEST_SECTION("\nTractor primitive (R1):\n");
     RUN(test_tractor_tow_profile_is_shared_across_anchor_types);
+    RUN(test_tractor_tether_wave_remains_visible_at_full_tension);
     RUN(test_tractor_binding_has_one_source_at_a_time);
     RUN(test_tow_link_pool_is_authority_for_ship_projections);
     RUN(test_tow_target_generation_changes_after_recycle);
