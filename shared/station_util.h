@@ -97,6 +97,13 @@ vec2          station_ring_point_velocity(const station_t *st, int ring,
 vec2          module_world_velocity_ring(const station_t *st, int ring,
                                          int slot);
 float         module_angle_ring   (const station_t *st, int ring, int slot);
+/* Point on a live module collision surface nearest `target_pos`. Beam and
+ * flow renderers share this so no visual starts at the module center or
+ * invents a different radius. */
+bool          station_module_surface_point_toward(const station_t *st,
+                                                  int module_idx,
+                                                  vec2 target_pos,
+                                                  vec2 *out_point);
 float         station_dock_lane_angle(const station_t *st, int ring, int slot);
 vec2          station_dock_lane_pos(const station_t *st, int ring, int slot,
                                     float radius);

@@ -3598,6 +3598,16 @@ enum {
     SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR = 25,
 };
 
+void smoke_apply_loop_state_for_frame(void) {
+    /* Most fixtures intentionally allow input and timers to evolve after
+     * setup. Only the module/cargo scene must overwrite streamed interaction
+     * state at the render boundary to keep its visual telemetry stable. */
+    if (smoke_loop_state_override ==
+        SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR) {
+        (void)smoke_apply_loop_state(smoke_loop_state_override);
+    }
+}
+
 static void smoke_set_onboarding_economy_progress(bool earned,
                                                   bool docked_after_earning,
                                                   bool viewed_trade) {
@@ -3617,6 +3627,8 @@ static void smoke_clear_loop_state(void) {
     server_player_t *sp = &LOCAL_PLAYER;
     float max_hull = ship_max_hull(sp->ship);
 
+    g.local_server.active = true;
+    g.world.interactions.count = 0;
     sp->docked = false;
     sp->in_dock_range = false;
     sp->docking_approach = false;
@@ -3645,6 +3657,9 @@ static void smoke_clear_loop_state(void) {
     g.collection_feedback_timer = 0.0f;
     g.collection_feedback_fragments = 0;
     g.collection_feedback_ore = 0.0f;
+    g.tracked_contract = -1;
+    g.selected_contract = -1;
+    g.player_known_contract_mask = 0;
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
     g.hail_timer = 0.0f;
     g.hail_station[0] = '\0';
@@ -3654,8 +3669,10 @@ static void smoke_clear_loop_state(void) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         g.world.scaffolds[i].active = false;
     }
-    memset(&g.world.cargo_pods[MAX_CARGO_PODS - 1], 0,
-           sizeof(g.world.cargo_pods[MAX_CARGO_PODS - 1]));
+    for (int i = 0; i < 3 && i < MAX_CARGO_PODS; i++) {
+        memset(&g.world.cargo_pods[MAX_CARGO_PODS - 1 - i], 0,
+               sizeof(g.world.cargo_pods[MAX_CARGO_PODS - 1 - i]));
+    }
     if (MAX_STATIONS > SMOKE_OUTPOST_INDEX) {
         station_t *ghost = &g.world.stations[SMOKE_OUTPOST_INDEX];
         ghost->scaffold = false;
@@ -3761,6 +3778,10 @@ static int smoke_apply_loop_state(int state) {
     case SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR: {
         if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
             return 0;
+        /* Freeze authoritative loopback publication while this render-only
+         * fixture is active so interaction telemetry observes complete
+         * frames instead of racing the next simulation clear. */
+        g.local_server.active = false;
         station_t *st = &g.world.stations[0];
         int module_idx = -1;
         for (int m = 0; m < st->module_count; m++) {
@@ -3772,67 +3793,76 @@ static int smoke_apply_loop_state(int state) {
         }
         if (module_idx < 0) return 0;
 
-        const station_module_t *module = &st->modules[module_idx];
+        station_module_t *module = &st->modules[module_idx];
+        if (module->ring > 0 && module->ring <= MAX_ARMS) {
+            st->arm_rotation[module->ring - 1] =
+                fmodf(g.world.time * 0.35f, TWO_PI_F);
+        }
         vec2 module_pos = module_world_pos_ring(
             st, module->ring, module->slot);
         vec2 outward = v2_norm(v2_sub(module_pos, st->pos));
-        int pod_idx = MAX_CARGO_PODS - 1;
-        cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
-        *pod = (cargo_pod_t){
-            .active = true,
-            .kind = CARGO_POD_CARGO,
-            .commodity = COMMODITY_FERRITE_INGOT,
-            .quantity = 6,
-            .manifest_count = 6,
-            .pos = v2_add(module_pos, v2_scale(
-                outward, STATION_MODULE_COL_RADIUS + 220.0f)),
-            .vel = v2(0.0f, 0.0f),
-            .radius = 18.0f,
-            .rotation = 0.35f,
-            .age = 2.0f,
-        };
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            pod->manifest_units[i] = (cargo_unit_t){
-                .kind = CARGO_KIND_INGOT,
+        vec2 tangent = v2(-outward.y, outward.x);
+        g.world.interactions.count = 0;
+        for (int p = 0; p < 3; p++) {
+            int pod_idx = MAX_CARGO_PODS - 1 - p;
+            cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+            float radial = STATION_MODULE_COL_RADIUS + 190.0f + 55.0f * p;
+            float lateral = ((float)p - 1.0f) * 72.0f;
+            *pod = (cargo_pod_t){
+                .active = true,
+                .kind = CARGO_POD_CARGO,
                 .commodity = COMMODITY_FERRITE_INGOT,
-                .grade = (uint8_t)MINING_GRADE_COMMON,
-                .quantity = 1,
-                .origin_station = 0,
+                .quantity = (uint16_t)(4 + p),
+                .manifest_count = (uint16_t)(4 + p),
+                .pos = v2_add(module_pos,
+                              v2_add(v2_scale(outward, radial),
+                                     v2_scale(tangent, lateral))),
+                .vel = v2(0.0f, 0.0f),
+                .radius = 18.0f,
+                .rotation = 0.22f * (float)(p + 1),
+                .age = 2.0f,
+            };
+            for (uint16_t i = 0; i < pod->manifest_count; i++) {
+                pod->manifest_units[i] = (cargo_unit_t){
+                    .kind = CARGO_KIND_INGOT,
+                    .commodity = COMMODITY_FERRITE_INGOT,
+                    .grade = (uint8_t)MINING_GRADE_COMMON,
+                    .quantity = 1,
+                    .origin_station = 0,
+                };
+            }
+            cargo_pod_set_module_tractor(pod, 0, module_idx);
+            vec2 emitter = module_pos;
+            if (!station_module_tractor_emitter(
+                    &g.world, 0, module_idx, pod->pos, &emitter)) {
+                return 0;
+            }
+            int interaction_idx = g.world.interactions.count++;
+            g.world.interactions.items[interaction_idx] = (sim_interaction_t){
+                .type = SIM_INTERACTION_TRACTOR_BEAM,
+                .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
+                .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+                .source = {
+                    .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+                    .index = 0,
+                    .aux = (int16_t)module_idx,
+                },
+                .target = {
+                    .type = SIM_INTERACTION_ENTITY_CARGO_POD,
+                    .index = (int16_t)pod_idx,
+                    .aux = -1,
+                },
+                .source_pos = emitter,
+                .target_pos = pod->pos,
+                .range = CARGO_POD_DOCK_TRACTOR_RANGE,
+                .intensity = 0.60f + 0.12f * p,
             };
         }
-        cargo_pod_set_module_tractor(pod, 0, module_idx);
-        vec2 emitter = module_pos;
-        if (!station_module_tractor_emitter(
-                &g.world, 0, module_idx, pod->pos, &emitter)) {
-            return 0;
-        }
 
-        g.world.interactions.count = 1;
-        g.world.interactions.items[0] = (sim_interaction_t){
-            .type = SIM_INTERACTION_TRACTOR_BEAM,
-            .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
-            .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
-            .source = {
-                .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
-                .index = 0,
-                .aux = (int16_t)module_idx,
-            },
-            .target = {
-                .type = SIM_INTERACTION_ENTITY_CARGO_POD,
-                .index = (int16_t)pod_idx,
-                .aux = -1,
-            },
-            .source_pos = emitter,
-            .target_pos = pod->pos,
-            .range = CARGO_POD_DOCK_TRACTOR_RANGE,
-            .intensity = 0.65f,
-        };
-
-        vec2 midpoint = v2_scale(v2_add(emitter, pod->pos), 0.5f);
-        sp->ship->pos = v2_add(midpoint, v2(-outward.y * 150.0f,
-                                            outward.x * 150.0f));
+        vec2 camera = v2_add(module_pos, v2_scale(outward, 165.0f));
+        sp->ship->pos = v2_add(camera, v2_scale(tangent, 185.0f));
         sp->ship->vel = v2(0.0f, 0.0f);
-        g.camera_pos = midpoint;
+        g.camera_pos = camera;
         g.camera_initialized = true;
         return 1;
     }

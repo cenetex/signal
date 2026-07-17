@@ -1363,6 +1363,14 @@ bool station_module_tractor_emitter(const world_t *w,
                                     vec2 target_pos,
                                     vec2 *out_emitter);
 
+/* Resolve interaction endpoints against the current ECS snapshot. Entity
+ * bindings remain authoritative while serialized coordinates are fallbacks
+ * for entity-less visuals. Module sources use the shared surface geometry. */
+bool sim_interaction_resolve_live_endpoints(const world_t *w,
+                                            const sim_interaction_t *interaction,
+                                            vec2 *out_source,
+                                            vec2 *out_target);
+
 /* Resolve the current module-local pod-center hold anchor. This is the
  * physical capture/parking target, including stable per-pod slot offsets;
  * it is deliberately not the visible tractor emitter. */

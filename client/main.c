@@ -1785,6 +1785,12 @@ static void init(void) {
 /* on_player_join ... sync_local_player_slot_from_network: see net_sync.h/c */
 
 static void render_world(void) {
+#ifdef __EMSCRIPTEN__
+    /* Render fixtures must be applied after any pending authoritative packet
+     * and before camera/frustum calculation, not only when a HUD getter is
+     * queried by browser tests. */
+    smoke_apply_loop_state_for_frame();
+#endif
     /* Guard against Safari's NaN-on-audio-resume frame (the same one
      * ui_window_width handles). Unguarded NaN here propagates through
      * set_camera_bounds into cam_right - cam_left, then into

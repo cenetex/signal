@@ -149,6 +149,15 @@ static inline float tractor_tether_wave_scale(float tautness) {
     return 1.0f - taut * (1.0f - TRACTOR_TETHER_TAUT_WAVE_FLOOR);
 }
 
+/* Canonical visual amplitude in world units. Keeping span response here lets
+ * render telemetry and tests describe the exact wave the renderer emits. */
+static inline float tractor_tether_wave_amplitude(float span,
+                                                  float tautness) {
+    float length = fmaxf(span, 0.0f);
+    return (4.0f + length * 0.060f) *
+           tractor_tether_wave_scale(tautness);
+}
+
 static inline tractor_beam_t tractor_tow_beam(float range,
                                                float rest_length) {
     return (tractor_beam_t){

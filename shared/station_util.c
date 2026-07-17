@@ -420,6 +420,32 @@ vec2 module_world_pos_ring(const station_t *st, int ring, int slot) {
     return v2_add(st->pos, v2_scale(v2_from_angle(angle), r));
 }
 
+bool station_module_surface_point_toward(const station_t *st,
+                                         int module_idx,
+                                         vec2 target_pos,
+                                         vec2 *out_point) {
+    if (!st || !out_point || !station_exists(st) || module_idx < 0 ||
+        module_idx >= st->module_count) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold) return false;
+
+    vec2 module_pos = module_world_pos_ring(
+        st, module->ring, module->slot);
+    vec2 direction = v2_sub(target_pos, module_pos);
+    float len = v2_len(direction);
+    if (len > 0.001f) {
+        direction = v2_scale(direction, 1.0f / len);
+    } else {
+        direction = v2_from_angle(module_angle_ring(
+            st, module->ring, module->slot));
+    }
+    *out_point = v2_add(
+        module_pos, v2_scale(direction, STATION_MODULE_COL_RADIUS));
+    return true;
+}
+
 vec2 station_ring_point_velocity(const station_t *st, int ring, vec2 point) {
     if (!st) return v2(0.0f, 0.0f);
     if (ring < 1 || ring > STATION_NUM_RINGS)

@@ -6240,24 +6240,89 @@ bool station_module_tractor_emitter(const world_t *w,
         module_idx >= MAX_MODULES_PER_STATION) {
         return false;
     }
-    const station_t *st = &w->stations[station_idx];
-    if (!station_exists(st) || module_idx >= st->module_count)
-        return false;
-    const station_module_t *module = &st->modules[module_idx];
-    if (module->scaffold) return false;
+    return station_module_surface_point_toward(
+        &w->stations[station_idx], module_idx, target_pos, out_emitter);
+}
 
-    vec2 module_pos = module_world_pos_ring(
-        st, module->ring, module->slot);
-    vec2 direction = v2_sub(target_pos, module_pos);
-    float len = v2_len(direction);
-    if (len > 0.001f) {
-        direction = v2_scale(direction, 1.0f / len);
-    } else {
-        direction = v2_from_angle(module_angle_ring(
-            st, module->ring, module->slot));
+static bool sim_interaction_entity_live_position(
+    const world_t *w,
+    sim_interaction_entity_ref_t ref,
+    vec2 fallback,
+    vec2 *out_pos) {
+    if (!w || !out_pos) return false;
+    switch ((sim_interaction_entity_type_t)ref.type) {
+    case SIM_INTERACTION_ENTITY_NONE:
+        *out_pos = fallback;
+        return true;
+    case SIM_INTERACTION_ENTITY_CARGO_POD:
+        if (ref.index < 0 || ref.index >= MAX_CARGO_PODS ||
+            !w->cargo_pods[ref.index].active) {
+            return false;
+        }
+        *out_pos = w->cargo_pods[ref.index].pos;
+        return true;
+    case SIM_INTERACTION_ENTITY_PLAYER_SHIP: {
+        const ship_t *ship = world_player_ship_for_const(w, ref.index);
+        if (!ship) return false;
+        *out_pos = ship->pos;
+        return true;
     }
-    *out_emitter = v2_add(
-        module_pos, v2_scale(direction, STATION_MODULE_COL_RADIUS));
+    case SIM_INTERACTION_ENTITY_ASTEROID:
+        if (ref.index < 0 || ref.index >= MAX_ASTEROIDS ||
+            !w->asteroids[ref.index].active) {
+            return false;
+        }
+        *out_pos = w->asteroids[ref.index].pos;
+        return true;
+    case SIM_INTERACTION_ENTITY_SCAFFOLD:
+        if (ref.index < 0 || ref.index >= MAX_SCAFFOLDS ||
+            !w->scaffolds[ref.index].active) {
+            return false;
+        }
+        *out_pos = w->scaffolds[ref.index].pos;
+        return true;
+    case SIM_INTERACTION_ENTITY_STATION_MODULE:
+        if (ref.index < 0 || ref.index >= MAX_STATIONS ||
+            !station_exists(&w->stations[ref.index]) || ref.aux < 0 ||
+            ref.aux >= w->stations[ref.index].module_count) {
+            return false;
+        }
+        *out_pos = module_world_pos_ring(
+            &w->stations[ref.index],
+            w->stations[ref.index].modules[ref.aux].ring,
+            w->stations[ref.index].modules[ref.aux].slot);
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool sim_interaction_resolve_live_endpoints(
+    const world_t *w,
+    const sim_interaction_t *interaction,
+    vec2 *out_source,
+    vec2 *out_target) {
+    if (!w || !interaction || !out_source || !out_target) return false;
+    vec2 target = interaction->target_pos;
+    if (!sim_interaction_entity_live_position(
+            w, interaction->target, target, &target)) {
+        return false;
+    }
+
+    vec2 source = interaction->source_pos;
+    if (interaction->source.type ==
+        SIM_INTERACTION_ENTITY_STATION_MODULE) {
+        if (!station_module_tractor_emitter(
+                w, interaction->source.index, interaction->source.aux,
+                target, &source)) {
+            return false;
+        }
+    } else if (!sim_interaction_entity_live_position(
+                   w, interaction->source, source, &source)) {
+        return false;
+    }
+    *out_source = source;
+    *out_target = target;
     return true;
 }
 

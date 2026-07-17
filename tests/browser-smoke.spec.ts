@@ -634,6 +634,50 @@ async function setSmokeLoopState(page: Page, state: number): Promise<void> {
   expect(ok).toBe(1);
 }
 
+type TractorDrawTelemetry = {
+  count: number;
+  sourceType: number;
+  targetType: number;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  span: number;
+  amplitude: number;
+  tautness: number;
+  intensity: number;
+};
+
+async function tractorDrawTelemetry(
+  page: Page,
+  visual: number,
+): Promise<TractorDrawTelemetry> {
+  return page.evaluate((visualKind) => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    const read = (name: string, returnType = 'number') => {
+      if (!mod || typeof mod.ccall !== 'function') return 0;
+      return Number(mod.ccall(name, returnType, ['number'], [visualKind])) || 0;
+    };
+    return {
+      count: read('signal_tractor_draw_count'),
+      sourceType: read('signal_tractor_draw_source_type'),
+      targetType: read('signal_tractor_draw_target_type'),
+      sourceX: read('signal_tractor_draw_source_x'),
+      sourceY: read('signal_tractor_draw_source_y'),
+      targetX: read('signal_tractor_draw_target_x'),
+      targetY: read('signal_tractor_draw_target_y'),
+      span: read('signal_tractor_draw_span'),
+      amplitude: read('signal_tractor_draw_amplitude'),
+      tautness: read('signal_tractor_draw_tautness'),
+      intensity: read('signal_tractor_draw_intensity'),
+    };
+  }, visual);
+}
+
 const smokeLoopState = {
   clear: 0,
   fragmentsNearby: 1,
@@ -1355,7 +1399,30 @@ test.describe('Browser smoke tests', () => {
 
     /* Guard the deployed fixture used to inspect module-surface origins. */
     await setSmokeLoopState(page, smokeLoopState.moduleCargoTractor);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 1)).count, {
+        timeout: 3_000,
+        message: 'module cargo fixture should draw all three tractor waves',
+      })
+      .toBeGreaterThanOrEqual(3);
+    const moduleTractor = await tractorDrawTelemetry(page, 1);
+    expect(moduleTractor.sourceType).toBe(1); // station module
+    expect(moduleTractor.targetType).toBe(2); // cargo pod
+    expect(moduleTractor.span).toBeGreaterThan(180);
+    expect(Math.hypot(
+      moduleTractor.targetX - moduleTractor.sourceX,
+      moduleTractor.targetY - moduleTractor.sourceY,
+    )).toBeCloseTo(moduleTractor.span, 3);
+    expect(moduleTractor.amplitude).toBeGreaterThan(4);
+    expect(moduleTractor.tautness).toBeGreaterThanOrEqual(0);
+    expect(moduleTractor.tautness).toBeLessThanOrEqual(1);
+    expect(moduleTractor.intensity).toBeGreaterThan(0.5);
     await page.waitForTimeout(100);
+    const rotatedModuleTractor = await tractorDrawTelemetry(page, 1);
+    expect(Math.hypot(
+      rotatedModuleTractor.sourceX - moduleTractor.sourceX,
+      rotatedModuleTractor.sourceY - moduleTractor.sourceY,
+    )).toBeGreaterThan(1);
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
     expect(await hudActionText(page)).toContain('123 prospect vouchers available // dock to spend');

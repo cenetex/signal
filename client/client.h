@@ -842,6 +842,9 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height);
 /* HUD drawing (call from render_ui) */
 void draw_hud_panels(void);
 void draw_hud(void);
+#ifdef __EMSCRIPTEN__
+void smoke_apply_loop_state_for_frame(void);
+#endif
 void draw_hail_ping(void);
 float hail_ping_camera_zoom(void);
 float player_current_balance(void);

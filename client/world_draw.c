@@ -23,6 +23,10 @@
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #define sgl_c4f render_color4f
 
 #define HAIL_PING_DURATION   1.50f   /* ring sweep - gentle, not a shockwave */
@@ -287,10 +291,137 @@ static asteroid_render_lists_t g_asteroid_render_lists;
 static bool g_asteroid_render_lists_valid = false;
 static asteroid_draw_frame_t g_asteroid_draw_frame;
 
+typedef struct {
+    int count;
+    uint8_t source_type;
+    uint8_t target_type;
+    vec2 source;
+    vec2 target;
+    float span;
+    float amplitude;
+    float tautness;
+    float intensity;
+} tractor_draw_telemetry_t;
+
+static tractor_draw_telemetry_t
+    g_tractor_draw_telemetry[SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR + 1];
+
 void world_draw_begin_frame(void) {
     g_asteroid_render_lists_valid = false;
     g_asteroid_draw_frame.valid = false;
+    memset(g_tractor_draw_telemetry, 0, sizeof(g_tractor_draw_telemetry));
 }
+
+static void world_draw_record_tractor(uint8_t source_type,
+                                      uint8_t target_type,
+                                      uint8_t visual,
+                                      vec2 source,
+                                      vec2 target,
+                                      float span,
+                                      float amplitude,
+                                      float tautness,
+                                      float intensity) {
+    if (visual > SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR) return;
+    tractor_draw_telemetry_t *telemetry =
+        &g_tractor_draw_telemetry[visual];
+    telemetry->count++;
+    telemetry->source_type = source_type;
+    telemetry->target_type = target_type;
+    telemetry->source = source;
+    telemetry->target = target;
+    telemetry->span = span;
+    telemetry->amplitude = amplitude;
+    telemetry->tautness = tautness;
+    telemetry->intensity = intensity;
+}
+
+#ifdef __EMSCRIPTEN__
+static const tractor_draw_telemetry_t *tractor_draw_telemetry_for_visual(
+    int visual) {
+    if (visual < 0 ||
+        visual > SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR) {
+        return NULL;
+    }
+    return &g_tractor_draw_telemetry[visual];
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_tractor_draw_count(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->count : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_tractor_draw_source_type(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->source_type : SIM_INTERACTION_ENTITY_NONE;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_tractor_draw_target_type(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->target_type : SIM_INTERACTION_ENTITY_NONE;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_span(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->span : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_source_x(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->source.x : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_source_y(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->source.y : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_target_x(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->target.x : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_target_y(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->target.y : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_amplitude(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->amplitude : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_tautness(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->tautness : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_tractor_draw_intensity(int visual) {
+    const tractor_draw_telemetry_t *t =
+        tractor_draw_telemetry_for_visual(visual);
+    return t ? t->intensity : 0.0f;
+}
+#endif
 
 static const asteroid_render_lists_t *asteroid_render_lists(void) {
     if (g_asteroid_render_lists_valid) return &g_asteroid_render_lists;
@@ -2052,7 +2183,11 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 static void draw_tractor_tether_wave(vec2 from, vec2 to,
                                      float r, float g0, float b,
                                      float alpha, float tautness,
-                                     float phase) {
+                                     float phase,
+                                     uint8_t source_type,
+                                     uint8_t target_type,
+                                     uint8_t visual,
+                                     float intensity) {
     vec2 span = v2_sub(to, from);
     float len = sqrtf(v2_len_sq(span));
     if (len < 1.0f) {
@@ -2061,8 +2196,10 @@ static void draw_tractor_tether_wave(vec2 from, vec2 to,
     vec2 dir = v2_scale(span, 1.0f / len);
     vec2 perp = v2(-dir.y, dir.x);
     float taut = clampf(tautness, 0.0f, 1.0f);
-    float amp = (4.0f + len * 0.060f) *
-                tractor_tether_wave_scale(taut);
+    float amp = tractor_tether_wave_amplitude(len, taut);
+    world_draw_record_tractor(source_type, target_type, visual,
+                              from, to, len, amp, taut,
+                              clampf(intensity, 0.0f, 1.0f));
     const int steps = 20;
     sgl_begin_line_strip();
     sgl_c4f(r, g0, b, alpha);
@@ -2615,7 +2752,11 @@ void draw_npc_ships(void) {
                     tnpc->ship->pos, ta->pos, &beam);
                 draw_tractor_tether_wave(tnpc->ship->pos, ta->pos,
                                          0.7f, 0.5f, 0.2f, tp,
-                                         stretch, (float)i * 2.3f);
+                                         stretch, (float)i * 2.3f,
+                                         SIM_INTERACTION_ENTITY_PLAYER_SHIP,
+                                         SIM_INTERACTION_ENTITY_ASTEROID,
+                                         SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR,
+                                         1.0f);
             }
         }
         if (i == scan_npc) {
@@ -2662,7 +2803,11 @@ static void draw_cargo_pod_module_tractor_beam(vec2 emitter,
     float alpha = (0.28f + 0.58f * taut) * pulse *
                   (0.55f + 0.45f * strength);
     draw_tractor_tether_wave(emitter, pod_pos, cr, cg, cb, alpha,
-                             taut, (float)seed * 1.7f);
+                             taut, (float)seed * 1.7f,
+                             SIM_INTERACTION_ENTITY_STATION_MODULE,
+                             SIM_INTERACTION_ENTITY_CARGO_POD,
+                             SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
+                             strength);
 }
 
 static bool draw_published_cargo_pod_module_tractors(void) {
@@ -2691,21 +2836,24 @@ static bool draw_published_cargo_pod_module_tractors(void) {
         if (!pod->active) continue;
 
         vec2 emitter = it->source_pos;
-        (void)station_module_tractor_emitter(
-            &g.world, station_idx, module_idx, pod->pos, &emitter);
+        vec2 target = it->target_pos;
+        if (!sim_interaction_resolve_live_endpoints(
+                &g.world, it, &emitter, &target)) {
+            continue;
+        }
         float range = it->range > 0.0f
             ? it->range
             : cargo_pod_module_tractor_range_for_pod(module->type, pod);
         tractor_beam_t beam = cargo_pod_module_tractor_beam(range);
         float intensity = clampf(it->intensity, 0.0f, 1.0f);
         if (intensity <= 0.0f) continue;
-        float tautness = tractor_beam_tautness(emitter, pod->pos, &beam);
+        float tautness = tractor_beam_tautness(emitter, target, &beam);
 
         commodity_t commodity = it->commodity < COMMODITY_COUNT
             ? (commodity_t)it->commodity
             : pod->commodity;
         draw_cargo_pod_module_tractor_beam(
-            emitter, pod->pos, pod, commodity, intensity, tautness, pod_idx);
+            emitter, target, pod, commodity, intensity, tautness, pod_idx);
         drew = true;
     }
     return drew;
@@ -2740,11 +2888,14 @@ void draw_hopper_tractors(void) {
         if (!a->active) continue;
 
         vec2 source_pos = it->source_pos;
-        (void)station_module_tractor_emitter(
-            &g.world, station_idx, module_idx, a->pos, &source_pos);
+        vec2 target_pos = it->target_pos;
+        if (!sim_interaction_resolve_live_endpoints(
+                &g.world, it, &source_pos, &target_pos)) {
+            continue;
+        }
         tractor_beam_t beam = tractor_tow_beam(it->range, 0.0f);
         float tautness = tractor_beam_tautness(
-            source_pos, a->pos, &beam);
+            source_pos, target_pos, &beam);
         float fr, fg, fb;
         module_color(st->modules[module_idx].type, &fr, &fg, &fb);
         float pulse = 0.78f + 0.22f *
@@ -2752,8 +2903,12 @@ void draw_hopper_tractors(void) {
         float alpha = (0.22f + 0.58f * tautness) * pulse *
                       clampf(it->intensity, 0.15f, 1.0f);
         draw_tractor_tether_wave(
-            source_pos, a->pos, fr, fg, fb, alpha, tautness,
-            (float)asteroid_idx * 1.7f + (float)module_idx);
+            source_pos, target_pos, fr, fg, fb, alpha, tautness,
+            (float)asteroid_idx * 1.7f + (float)module_idx,
+            SIM_INTERACTION_ENTITY_STATION_MODULE,
+            SIM_INTERACTION_ENTITY_ASTEROID,
+            SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+            it->intensity);
     }
 
     (void)draw_published_cargo_pod_module_tractors();
@@ -3035,7 +3190,11 @@ void draw_towed_tethers(void) {
         float stretch = tractor_beam_tautness(
             LOCAL_PLAYER.ship->pos, a->pos, &beam);
         draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, a->pos,
-                                 r, gg, b, pulse, stretch, (float)t * 1.7f);
+                                 r, gg, b, pulse, stretch, (float)t * 1.7f,
+                                 SIM_INTERACTION_ENTITY_PLAYER_SHIP,
+                                 SIM_INTERACTION_ENTITY_ASTEROID,
+                                 SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR,
+                                 1.0f);
     }
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -3060,7 +3219,11 @@ void draw_towed_tethers(void) {
             sinf(g.world.time * 3.0f + (float)i * 1.5f);
         draw_tractor_tether_wave(ship->pos, pod->pos,
                                  r, gg, b, pulse, stretch,
-                                 (float)i * 1.7f);
+                                 (float)i * 1.7f,
+                                 SIM_INTERACTION_ENTITY_PLAYER_SHIP,
+                                 SIM_INTERACTION_ENTITY_CARGO_POD,
+                                 SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR,
+                                 1.0f);
     }
     world_signal_visual_leave_cue(cue_prev);
 }
@@ -3353,7 +3516,11 @@ void draw_remote_players(void) {
                     tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
                 float stretch = tractor_beam_tautness(pos, a->pos, &beam);
                 draw_tractor_tether_wave(pos, a->pos, rr, rg, rb, tp,
-                                         stretch, (float)t * 1.7f + (float)i);
+                                         stretch, (float)t * 1.7f + (float)i,
+                                         SIM_INTERACTION_ENTITY_PLAYER_SHIP,
+                                         SIM_INTERACTION_ENTITY_ASTEROID,
+                                         SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR,
+                                         1.0f);
             }
         }
     }
@@ -4367,7 +4534,10 @@ void draw_shipyard_intake_beams(void) {
             bool is_prod = (st->modules[i].type == prod_type);
             if (!is_yard && !is_prod) continue;
 
-            vec2 mod_pos = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
+            vec2 mod_pos = module_world_pos_ring(
+                st, st->modules[i].ring, st->modules[i].slot);
+            (void)station_module_surface_point_toward(
+                st, i, target, &mod_pos);
             float pulse = 0.4f + 0.3f * sinf(t + (float)i * 0.7f);
             if (is_yard) pulse *= 0.7f; /* shipyard line is steadier */
 

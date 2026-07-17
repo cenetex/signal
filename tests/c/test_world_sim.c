@@ -1624,6 +1624,82 @@ TEST(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods) {
                     STATION_MODULE_COL_RADIUS, 0.001f);
 }
 
+TEST(test_interaction_endpoints_follow_live_rotating_module_surface) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = &w.stations[0];
+    int dock_idx = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (!st->modules[m].scaffold &&
+            st->modules[m].type == MODULE_DOCK) {
+            dock_idx = m;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+
+    station_module_t *dock = &st->modules[dock_idx];
+    vec2 module_before = module_world_pos_ring(st, dock->ring, dock->slot);
+    w.cargo_pods[0] = (cargo_pod_t){
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity = 1,
+        .pos = v2_add(module_before, v2(240.0f, 95.0f)),
+        .radius = 18.0f,
+    };
+    sim_interaction_t interaction = {
+        .type = SIM_INTERACTION_TRACTOR_BEAM,
+        .visual = SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR,
+        .source = {
+            .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+            .index = 0,
+            .aux = (int16_t)dock_idx,
+        },
+        .target = {
+            .type = SIM_INTERACTION_ENTITY_CARGO_POD,
+            .index = 0,
+            .aux = -1,
+        },
+        /* Deliberately stale coordinates: live entity bindings must win. */
+        .source_pos = v2(-999.0f, -999.0f),
+        .target_pos = v2(999.0f, 999.0f),
+    };
+
+    vec2 source_before = v2(0.0f, 0.0f);
+    vec2 target_before = v2(0.0f, 0.0f);
+    ASSERT(sim_interaction_resolve_live_endpoints(
+        &w, &interaction, &source_before, &target_before));
+    ASSERT_EQ_FLOAT(target_before.x, w.cargo_pods[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(target_before.y, w.cargo_pods[0].pos.y, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(source_before, module_before)),
+                    STATION_MODULE_COL_RADIUS, 0.001f);
+
+    vec2 shared_surface = v2(0.0f, 0.0f);
+    ASSERT(station_module_surface_point_toward(
+        st, dock_idx, target_before, &shared_surface));
+    ASSERT_EQ_FLOAT(source_before.x, shared_surface.x, 0.001f);
+    ASSERT_EQ_FLOAT(source_before.y, shared_surface.y, 0.001f);
+
+    ASSERT(dock->ring > 0 && dock->ring <= MAX_ARMS);
+    st->arm_rotation[dock->ring - 1] += 0.4f;
+    vec2 module_after = module_world_pos_ring(st, dock->ring, dock->slot);
+    vec2 source_after = v2(0.0f, 0.0f);
+    vec2 target_after = v2(0.0f, 0.0f);
+    ASSERT(sim_interaction_resolve_live_endpoints(
+        &w, &interaction, &source_after, &target_after));
+    ASSERT_EQ_FLOAT(target_after.x, w.cargo_pods[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(target_after.y, w.cargo_pods[0].pos.y, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(source_after, module_after)),
+                    STATION_MODULE_COL_RADIUS, 0.001f);
+    ASSERT(v2_dist_sq(source_before, source_after) > 1.0f);
+
+    w.cargo_pods[0].active = false;
+    ASSERT(!sim_interaction_resolve_live_endpoints(
+        &w, &interaction, &source_after, &target_after));
+}
+
 TEST(test_station_tractor_arrival_requires_relative_velocity_capture) {
     WORLD_DECL;
     world_reset(&w);
@@ -9698,6 +9774,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_dock_tractor_spreads_market_pods);
     RUN(test_station_tractor_hold_slots_do_not_shift_when_pod_leaves);
     RUN(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods);
+    RUN(test_interaction_endpoints_follow_live_rotating_module_surface);
     RUN(test_station_tractor_arrival_requires_relative_velocity_capture);
     RUN(test_cargo_tractor_interaction_evicts_fragment_when_buffer_full);
     RUN(test_station_tractor_uses_rotating_anchor_velocity);
