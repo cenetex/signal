@@ -6230,6 +6230,37 @@ static vec2 station_module_cargo_mouth(const station_t *st,
     return v2_add(module_pos, v2_scale(outward, holdout));
 }
 
+bool station_module_tractor_emitter(const world_t *w,
+                                    int station_idx,
+                                    int module_idx,
+                                    vec2 target_pos,
+                                    vec2 *out_emitter) {
+    if (!w || !out_emitter || station_idx < 0 ||
+        station_idx >= MAX_STATIONS || module_idx < 0 ||
+        module_idx >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_t *st = &w->stations[station_idx];
+    if (!station_exists(st) || module_idx >= st->module_count)
+        return false;
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold) return false;
+
+    vec2 module_pos = module_world_pos_ring(
+        st, module->ring, module->slot);
+    vec2 direction = v2_sub(target_pos, module_pos);
+    float len = v2_len(direction);
+    if (len > 0.001f) {
+        direction = v2_scale(direction, 1.0f / len);
+    } else {
+        direction = v2_from_angle(module_angle_ring(
+            st, module->ring, module->slot));
+    }
+    *out_emitter = v2_add(
+        module_pos, v2_scale(direction, STATION_MODULE_COL_RADIUS));
+    return true;
+}
+
 static int cargo_pod_module_hold_slot(const world_t *w,
                                       const cargo_pod_t *pod,
                                       int station_idx,
@@ -7451,6 +7482,9 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
         float intensity = tractor_beam_range_fraction(
             resolved.anchor, pod->pos, &resolved.beam);
         if (intensity <= 0.0f) continue;
+        vec2 emitter = resolved.anchor;
+        (void)station_module_tractor_emitter(
+            w, station_idx, module_idx, pod->pos, &emitter);
 
         sim_emit_interaction(w, (sim_interaction_t){
             .type = SIM_INTERACTION_TRACTOR_BEAM,
@@ -7468,7 +7502,7 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
                 .index = (int16_t)i,
                 .aux = -1,
             },
-            .source_pos = resolved.anchor,
+            .source_pos = emitter,
             .target_pos = pod->pos,
             .range = resolved.beam.range,
             .intensity = intensity,

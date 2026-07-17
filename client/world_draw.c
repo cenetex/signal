@@ -2638,15 +2638,16 @@ void draw_npc_ships(void) {
     }
 }
 
-static void draw_cargo_pod_module_tractor_beam(vec2 anchor,
+static void draw_cargo_pod_module_tractor_beam(vec2 emitter,
                                                vec2 pod_pos,
                                                const cargo_pod_t *pod,
                                                commodity_t commodity,
+                                               float intensity,
                                                float tautness,
                                                int seed) {
     float radius = (pod && pod->radius > 0.0f) ? pod->radius : 18.0f;
     if (!on_screen(pod_pos.x, pod_pos.y, radius + 80.0f) &&
-        !on_screen(anchor.x, anchor.y, 80.0f)) {
+        !on_screen(emitter.x, emitter.y, 80.0f)) {
         return;
     }
 
@@ -2655,10 +2656,12 @@ static void draw_cargo_pod_module_tractor_beam(vec2 anchor,
         commodity_color(commodity, &cr, &cg, &cb);
 
     float taut = clampf(tautness, 0.0f, 1.0f);
+    float strength = clampf(intensity, 0.0f, 1.0f);
     float pulse = 0.88f + 0.12f *
         sinf(g.world.time * 3.0f + (float)seed * 1.37f);
-    float alpha = (0.20f + 0.55f * taut) * pulse;
-    draw_tractor_tether_wave(anchor, pod_pos, cr, cg, cb, alpha,
+    float alpha = (0.28f + 0.58f * taut) * pulse *
+                  (0.55f + 0.45f * strength);
+    draw_tractor_tether_wave(emitter, pod_pos, cr, cg, cb, alpha,
                              taut, (float)seed * 1.7f);
 }
 
@@ -2687,22 +2690,22 @@ static bool draw_published_cargo_pod_module_tractors(void) {
         const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
         if (!pod->active) continue;
 
-        vec2 anchor = it->source_pos;
-        (void)cargo_pod_module_tractor_anchor(
-            &g.world, pod, station_idx, module_idx, &anchor);
+        vec2 emitter = it->source_pos;
+        (void)station_module_tractor_emitter(
+            &g.world, station_idx, module_idx, pod->pos, &emitter);
         float range = it->range > 0.0f
             ? it->range
             : cargo_pod_module_tractor_range_for_pod(module->type, pod);
         tractor_beam_t beam = cargo_pod_module_tractor_beam(range);
-        float intensity = tractor_beam_range_fraction(anchor, pod->pos, &beam);
+        float intensity = clampf(it->intensity, 0.0f, 1.0f);
         if (intensity <= 0.0f) continue;
-        float tautness = tractor_beam_tautness(anchor, pod->pos, &beam);
+        float tautness = tractor_beam_tautness(emitter, pod->pos, &beam);
 
         commodity_t commodity = it->commodity < COMMODITY_COUNT
             ? (commodity_t)it->commodity
             : pod->commodity;
         draw_cargo_pod_module_tractor_beam(
-            anchor, pod->pos, pod, commodity, tautness, pod_idx);
+            emitter, pod->pos, pod, commodity, intensity, tautness, pod_idx);
         drew = true;
     }
     return drew;
@@ -2736,9 +2739,9 @@ void draw_hopper_tractors(void) {
         const asteroid_t *a = &g.world.asteroids[asteroid_idx];
         if (!a->active) continue;
 
-        vec2 source_pos = module_world_pos_ring(
-            st, st->modules[module_idx].ring,
-            st->modules[module_idx].slot);
+        vec2 source_pos = it->source_pos;
+        (void)station_module_tractor_emitter(
+            &g.world, station_idx, module_idx, a->pos, &source_pos);
         tractor_beam_t beam = tractor_tow_beam(it->range, 0.0f);
         float tautness = tractor_beam_tautness(
             source_pos, a->pos, &beam);

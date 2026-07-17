@@ -1146,6 +1146,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                         beam_sources[beam_idx], a->pos, &link.beam);
                     if (intensity <= 0.0f || beam_modules[beam_idx] < 0)
                         continue;
+                    vec2 emitter = beam_sources[beam_idx];
+                    (void)station_module_tractor_emitter(
+                        w, s, beam_modules[beam_idx], a->pos, &emitter);
                     sim_emit_interaction(w, (sim_interaction_t){
                         .type = SIM_INTERACTION_TRACTOR_BEAM,
                         .visual =
@@ -1161,7 +1164,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                             .index = (int16_t)i,
                             .aux = -1,
                         },
-                        .source_pos = beam_sources[beam_idx],
+                        .source_pos = emitter,
                         .target_pos = a->pos,
                         .range = HOPPER_PULL_RANGE,
                         .intensity = intensity,

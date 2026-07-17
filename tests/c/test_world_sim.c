@@ -1477,6 +1477,28 @@ TEST(test_station_dock_tractor_spreads_market_pods) {
                       &w, pod_a, 0, dock_idx), 1);
     ASSERT_EQ_INT(test_count_pod_module_tractor_interactions(
                       &w, pod_b, 0, dock_idx), 1);
+    vec2 emitter = v2(0.0f, 0.0f);
+    vec2 source_a = v2(0.0f, 0.0f);
+    vec2 source_b = v2(0.0f, 0.0f);
+    vec2 anchor_a = v2(0.0f, 0.0f);
+    vec2 anchor_b = v2(0.0f, 0.0f);
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[pod_a].pos, &emitter));
+    ASSERT(test_pod_module_tractor_source(&w, pod_a, &source_a));
+    ASSERT(test_pod_module_tractor_source(&w, pod_b, &source_b));
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_a], 0, dock_idx, &anchor_a));
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_b], 0, dock_idx, &anchor_b));
+    ASSERT_EQ_FLOAT(source_a.x, emitter.x, 0.001f);
+    ASSERT_EQ_FLOAT(source_a.y, emitter.y, 0.001f);
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[pod_b].pos, &emitter));
+    ASSERT_EQ_FLOAT(source_b.x, emitter.x, 0.001f);
+    ASSERT_EQ_FLOAT(source_b.y, emitter.y, 0.001f);
+    ASSERT(v2_dist_sq(anchor_a, anchor_b) > 1.0f);
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(emitter, module_pos)),
+                    STATION_MODULE_COL_RADIUS, 0.001f);
     float dist = v2_len(v2_sub(w.cargo_pods[pod_b].pos,
                                w.cargo_pods[pod_a].pos));
     ASSERT(dist >= w.cargo_pods[pod_a].radius +
@@ -1521,8 +1543,16 @@ TEST(test_station_tractor_hold_slots_do_not_shift_when_pod_leaves) {
     ASSERT(world_cargo_pod_set_module_tractor(&w, pod_b, 0, dock_idx));
 
     world_sim_step(&w, SIM_DT);
-    vec2 before = v2(0.0f, 0.0f);
-    ASSERT(test_pod_module_tractor_source(&w, pod_b, &before));
+    vec2 source_before = v2(0.0f, 0.0f);
+    vec2 expected_source = v2(0.0f, 0.0f);
+    vec2 anchor_before = v2(0.0f, 0.0f);
+    ASSERT(test_pod_module_tractor_source(&w, pod_b, &source_before));
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[pod_b].pos, &expected_source));
+    ASSERT_EQ_FLOAT(source_before.x, expected_source.x, 0.001f);
+    ASSERT_EQ_FLOAT(source_before.y, expected_source.y, 0.001f);
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_b], 0, dock_idx, &anchor_before));
 
     w.cargo_pods[pod_a].active = false;
     for (int a = 0; a < MAX_ARMS; a++) {
@@ -1532,10 +1562,17 @@ TEST(test_station_tractor_hold_slots_do_not_shift_when_pod_leaves) {
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
         st->modules[m].active_pulse = 0.0f;
     world_sim_step(&w, SIM_DT);
-    vec2 after = v2(0.0f, 0.0f);
-    ASSERT(test_pod_module_tractor_source(&w, pod_b, &after));
-    ASSERT_EQ_FLOAT(after.x, before.x, 0.001f);
-    ASSERT_EQ_FLOAT(after.y, before.y, 0.001f);
+    vec2 source_after = v2(0.0f, 0.0f);
+    vec2 anchor_after = v2(0.0f, 0.0f);
+    ASSERT(test_pod_module_tractor_source(&w, pod_b, &source_after));
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[pod_b].pos, &expected_source));
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_b], 0, dock_idx, &anchor_after));
+    ASSERT_EQ_FLOAT(source_after.x, expected_source.x, 0.001f);
+    ASSERT_EQ_FLOAT(source_after.y, expected_source.y, 0.001f);
+    ASSERT_EQ_FLOAT(anchor_after.x, anchor_before.x, 0.001f);
+    ASSERT_EQ_FLOAT(anchor_after.y, anchor_before.y, 0.001f);
 }
 
 TEST(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods) {
@@ -1574,6 +1611,17 @@ TEST(test_station_tractor_pool_slots_do_not_alias_after_sixteen_pods) {
     ASSERT(cargo_pod_module_tractor_anchor(
         &w, &w.cargo_pods[16], 0, dock_idx, &anchor_sixteen));
     ASSERT(v2_dist_sq(anchor_zero, anchor_sixteen) > 1.0f);
+
+    vec2 emitter_zero = v2(0.0f, 0.0f);
+    vec2 emitter_sixteen = v2(0.0f, 0.0f);
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[pod_zero].pos, &emitter_zero));
+    ASSERT(station_module_tractor_emitter(
+        &w, 0, dock_idx, w.cargo_pods[16].pos, &emitter_sixteen));
+    ASSERT_EQ_FLOAT(emitter_zero.x, emitter_sixteen.x, 0.001f);
+    ASSERT_EQ_FLOAT(emitter_zero.y, emitter_sixteen.y, 0.001f);
+    ASSERT_EQ_FLOAT(v2_len(v2_sub(emitter_zero, module_pos)),
+                    STATION_MODULE_COL_RADIUS, 0.001f);
 }
 
 TEST(test_station_tractor_arrival_requires_relative_velocity_capture) {
@@ -3717,6 +3765,24 @@ TEST(test_furnace_smelting_accepts_beam_corridor_delivery) {
 
     step_furnace_smelting(&w, SIM_DT);
     ASSERT(a->smelt_progress > 0.0f);
+    int tractor_count = 0;
+    for (int i = 0; i < w.interactions.count; i++) {
+        const sim_interaction_t *it = &w.interactions.items[i];
+        if (it->type != SIM_INTERACTION_TRACTOR_BEAM ||
+            it->visual != SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR ||
+            it->source.type != SIM_INTERACTION_ENTITY_STATION_MODULE ||
+            it->target.type != SIM_INTERACTION_ENTITY_ASTEROID ||
+            it->target.index != frag) {
+            continue;
+        }
+        vec2 emitter = v2(0.0f, 0.0f);
+        ASSERT(station_module_tractor_emitter(
+            &w, it->source.index, it->source.aux, a->pos, &emitter));
+        ASSERT_EQ_FLOAT(it->source_pos.x, emitter.x, 0.001f);
+        ASSERT_EQ_FLOAT(it->source_pos.y, emitter.y, 0.001f);
+        tractor_count++;
+    }
+    ASSERT_EQ_INT(tractor_count, 2);
 }
 
 TEST(test_crystal_requires_two_distinct_furnace_passes) {

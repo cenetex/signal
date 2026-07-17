@@ -660,6 +660,7 @@ const smokeLoopState = {
   onboardingMarket: 22,
   onboardingComplete: 23,
   cargoTowing: 24,
+  moduleCargoTractor: 25,
 } as const;
 
 const mobileFlag = {
@@ -1350,6 +1351,10 @@ test.describe('Browser smoke tests', () => {
      * production chain. setSmokeLoopState returning 1 also guards the fixture
      * against drifting out of the WebAssembly build. */
     await setSmokeLoopState(page, smokeLoopState.cargoTowing);
+    await page.waitForTimeout(100);
+
+    /* Guard the deployed fixture used to inspect module-surface origins. */
+    await setSmokeLoopState(page, smokeLoopState.moduleCargoTractor);
     await page.waitForTimeout(100);
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
