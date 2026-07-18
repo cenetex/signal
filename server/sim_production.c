@@ -805,60 +805,6 @@ static int station_loose_pod_craft_product_pod_batch(world_t *w,
         w, station_idx, module_idx, recipe_id, inputs, recipe->input_count);
 }
 
-typedef struct {
-    recipe_id_t recipe_id;
-    commodity_t primary_input;
-    float primary_units_per_batch;
-    commodity_t secondary_input;
-    float secondary_units_per_batch;
-    commodity_t output;
-    float output_units_per_batch;
-} producer_recipe_t;
-
-static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_recipe) {
-    recipe_id_t recipe_id;
-    const recipe_def_t *recipe;
-    commodity_t primary;
-
-    if (!out_recipe) return false;
-    memset(out_recipe, 0, sizeof(*out_recipe));
-    out_recipe->secondary_input = COMMODITY_COUNT;
-
-    switch (mt) {
-    case MODULE_FRAME_PRESS: recipe_id = RECIPE_FRAME_BASIC; break;
-    case MODULE_LASER_FAB:   recipe_id = RECIPE_LASER_BASIC; break;
-    case MODULE_TRACTOR_FAB: recipe_id = RECIPE_TRACTOR_COIL; break;
-    default: return false;
-    }
-
-    recipe = recipe_get(recipe_id);
-    if (!recipe) return false;
-    out_recipe->recipe_id = recipe_id;
-    primary = module_schema_input(mt);
-    out_recipe->primary_input = primary;
-    out_recipe->output = recipe->output_commodity;
-    out_recipe->output_units_per_batch =
-        recipe->output_count > 0 ? (float)recipe->output_count : 1.0f;
-
-    for (size_t i = 0; i < recipe->input_count; i++) {
-        commodity_t input = recipe->input_commodities[i];
-        if (input == primary) {
-            out_recipe->primary_units_per_batch += 1.0f;
-            continue;
-        }
-        if (out_recipe->secondary_input == COMMODITY_COUNT ||
-            out_recipe->secondary_input == input) {
-            out_recipe->secondary_input = input;
-            out_recipe->secondary_units_per_batch += 1.0f;
-            continue;
-        }
-        return false;
-    }
-
-    return out_recipe->primary_units_per_batch > 0.0f &&
-           out_recipe->output == module_schema_output(mt);
-}
-
 /* Tagged furnace/pair capability lives in shared/station_util.c
  * (`station_can_smelt`) so the client-side dock UI can use the same
  * predicate. The sim wrapper here just keeps the existing public symbol

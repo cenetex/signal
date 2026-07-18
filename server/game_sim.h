@@ -779,12 +779,20 @@ bool world_entity_ref_is_live(const world_t *w, entity_ref_t ref);
 tow_link_t *world_tow_link_for_target(world_t *w, entity_ref_t target);
 const tow_link_t *world_tow_link_for_target_const(const world_t *w,
                                                   entity_ref_t target);
+int world_tow_link_count_for_source(const world_t *w, entity_ref_t source,
+                                    tow_profile_t profile);
+int world_tow_collect_targets(const world_t *w, entity_ref_t source,
+                              tow_profile_t profile, entity_ref_t *out,
+                              int cap);
 bool world_tow_link_set(world_t *w, entity_ref_t source,
                         entity_ref_t target, tow_profile_t profile,
                         int slot, tow_link_state_t state);
 bool world_tow_link_clear_target(world_t *w, entity_ref_t target);
 void world_tow_links_clear_source(world_t *w, entity_ref_t source);
 void world_tow_links_reconcile(world_t *w);
+/* Validate liveness and rebuild projections without importing compatibility
+ * mirrors back into relationship authority. */
+void world_tow_links_refresh(world_t *w);
 bool world_asteroid_set_player_tractor(world_t *w, int asteroid_idx,
                                        int player_idx);
 bool world_asteroid_set_npc_tractor(world_t *w, int asteroid_idx,
@@ -810,6 +818,7 @@ bool world_npc_ship_slot_activate(world_t *w, int npc_slot);
 void world_player_ship_slot_release(world_t *w, int player_slot);
 void world_npc_ship_slot_release(world_t *w, int npc_slot);
 void world_rebind_ship_controllers(world_t *w);
+bool world_ship_cached_views_valid(const world_t *w);
 bool world_character_bind_player(world_t *w, int player_slot);
 void world_character_unbind_player(world_t *w, int player_slot);
 ship_t *world_ship_asset_state(world_t *w, ship_asset_t *asset);
@@ -1181,8 +1190,6 @@ int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
                                                 float spin);
 int world_ensure_starter_frame_pods(world_t *w);
 int world_ensure_starter_laser_module_reserve(world_t *w);
-bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
-                                  commodity_t commodity);
 void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame);
 bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod);
 bool cargo_pod_take_manifest_unit(cargo_pod_t *pod, commodity_t commodity,

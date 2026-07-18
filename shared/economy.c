@@ -4,16 +4,8 @@
 #include "economy.h"
 #include "manifest.h"
 
-typedef struct {
-    commodity_t primary_input;
-    float primary_units_per_batch;
-    commodity_t secondary_input;
-    float secondary_units_per_batch;
-    commodity_t output;
-    float output_units_per_batch;
-} producer_recipe_t;
-
-static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_recipe) {
+bool producer_recipe_for_module(module_type_t mt,
+                                producer_recipe_t *out_recipe) {
     recipe_id_t recipe_id;
     const recipe_def_t *recipe;
     commodity_t primary;
@@ -31,6 +23,7 @@ static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_
 
     recipe = recipe_get(recipe_id);
     if (!recipe) return false;
+    out_recipe->recipe_id = recipe_id;
     primary = module_schema_input(mt);
     out_recipe->primary_input = primary;
     out_recipe->output = recipe->output_commodity;

@@ -1578,7 +1578,11 @@ TEST(test_supply_contract_uses_correct_material) {
     /* LASER_FAB needs crystal ingot + frame hoppers. Plant both. */
     add_hopper_for(&w.stations[1], 3, 1, COMMODITY_CRYSTAL_INGOT);
     add_hopper_for(&w.stations[1], 3, 7, COMMODITY_FRAME);
-    begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 2, 4);
+    int build_slot = station_ring_free_slot(
+        &w.stations[1], 2, STATION_RING_SLOTS[2]);
+    ASSERT(build_slot >= 0);
+    begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB,
+                                 2, build_slot);
     /* The generated contract should be for crystal ingots */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -3880,6 +3884,37 @@ TEST(test_contract_price_scales_with_demand) {
     ASSERT(c_starved->base_price > 0.0f);
 }
 
+TEST(test_supply_need_policy_owns_open_refill_and_close_targets) {
+    station_t st = {0};
+    st.signal_range = 100.0f;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_SHIPYARD,
+        .build_progress = 1.0f,
+    };
+    st.module_count = 1;
+
+    station_supply_need_t frame = station_supply_need_for(
+        &st, COMMODITY_FRAME);
+    ASSERT(frame.eligible);
+    ASSERT(frame.should_open);
+    ASSERT(!frame.should_close);
+    ASSERT_EQ_FLOAT(frame.open_target, 12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(frame.target, 12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(frame.close_target, 12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(frame.deficit, 12.0f, 0.001f);
+
+    st.modules[0].type = MODULE_DOCK;
+    station_supply_need_t kits = station_supply_need_for(
+        &st, COMMODITY_REPAIR_KIT);
+    ASSERT(kits.eligible);
+    ASSERT(kits.should_open);
+    ASSERT_EQ_FLOAT(kits.open_target,
+                    REPAIR_KIT_STOCK_CAP * 0.25f, 0.001f);
+    ASSERT_EQ_FLOAT(kits.target, REPAIR_KIT_STOCK_CAP, 0.001f);
+    ASSERT_EQ_FLOAT(kits.close_target,
+                    REPAIR_KIT_STOCK_CAP * 0.95f, 0.001f);
+}
+
 void register_economy_demand_tests(void) {
     TEST_SECTION("\nStation demand primitive:\n");
     RUN(test_top_demand_no_shortage_returns_none);
@@ -3887,4 +3922,5 @@ void register_economy_demand_tests(void) {
     RUN(test_top_demand_skips_self_produced_commodities);
     RUN(test_top_demand_severity_clamped_zero_to_one);
     RUN(test_contract_price_scales_with_demand);
+    RUN(test_supply_need_policy_owns_open_refill_and_close_targets);
 }

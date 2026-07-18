@@ -4,6 +4,7 @@
 #include "chain_log.h"
 #include "fixpoint.h"
 #include "sha256.h"
+#include "wire_codec.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -27,22 +28,9 @@ static size_t cs_len(const char *s, size_t cap) {
 #  include <sys/stat.h>
 #endif
 
-static void write_u32_le(uint8_t *p, uint32_t u) {
-    p[0] = (uint8_t)(u);
-    p[1] = (uint8_t)(u >> 8);
-    p[2] = (uint8_t)(u >> 16);
-    p[3] = (uint8_t)(u >> 24);
-}
-
-static void write_u64_le(uint8_t *p, uint64_t u) {
-    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(u >> (i * 8));
-}
-
-static void write_f32_le(uint8_t *p, float f) {
-    uint32_t u;
-    memcpy(&u, &f, 4);
-    write_u32_le(p, u);
-}
+#define write_u32_le wire_write_u32_le
+#define write_u64_le wire_write_u64_le
+#define write_f32_le wire_write_f32_le
 
 bool highscore_submit(highscore_table_t *t,
                       const char *callsign, float credits_earned,

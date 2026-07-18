@@ -50,6 +50,18 @@ int manifest_find_first_cg(const manifest_t *manifest,
  * station-summary builder + sanity tests. O(manifest.count). */
 int manifest_count_by_commodity(const manifest_t *manifest,
                                 commodity_t commodity);
+int manifest_count_by_commodity_grade(const manifest_t *manifest,
+                                      commodity_t commodity,
+                                      mining_grade_t grade);
+
+/* Cargo-pod content queries shared by simulation, protocol summaries, HUD,
+ * and rendering.  `cargo_pod_has_exact_manifest` deliberately rejects
+ * shipment-bound pods: their credit-cargo envelope is not interchangeable
+ * material even when every visible unit has the same commodity. */
+bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
+                                  commodity_t commodity);
+mining_grade_t cargo_pod_manifest_best_grade(const cargo_pod_t *pod);
+mining_grade_t cargo_pod_display_grade(const cargo_pod_t *pod);
 
 /* Compute the manifest's grade-weighted display tint. `fill_ratio`
  * controls how far the returned color blends from the neutral holder

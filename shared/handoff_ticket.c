@@ -8,58 +8,21 @@
 #include "manifest.h"
 #include "sha256.h"
 #include "signal_crypto.h"
+#include "wire_codec.h"
 
 #include <string.h>
 
 static const char HANDOFF_SHIP_DOMAIN[] = "signal-handoff-ship-v1";
 static const char HANDOFF_CARGO_DOMAIN[] = "signal-handoff-cargo-v1";
 
-static void write_u16_le(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-
-static uint16_t read_u16_le(const uint8_t *p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-
-static void write_u32_le(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
-
-static uint32_t read_u32_le(const uint8_t *p) {
-    return (uint32_t)p[0]
-         | ((uint32_t)p[1] << 8)
-         | ((uint32_t)p[2] << 16)
-         | ((uint32_t)p[3] << 24);
-}
-
-static void write_u64_le(uint8_t *p, uint64_t v) {
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-
-static uint64_t read_u64_le(const uint8_t *p) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++)
-        v |= ((uint64_t)p[i]) << (8 * i);
-    return v;
-}
-
-static void write_f32_le(uint8_t *p, float f) {
-    union { float f; uint32_t u; } conv;
-    conv.f = f;
-    write_u32_le(p, conv.u);
-}
-
-static float read_f32_le(const uint8_t *p) {
-    union { float f; uint32_t u; } conv;
-    conv.u = read_u32_le(p);
-    return conv.f;
-}
+#define write_u16_le wire_write_u16_le
+#define read_u16_le  wire_read_u16_le
+#define write_u32_le wire_write_u32_le
+#define read_u32_le  wire_read_u32_le
+#define write_u64_le wire_write_u64_le
+#define read_u64_le  wire_read_u64_le
+#define write_f32_le wire_write_f32_le
+#define read_f32_le  wire_read_f32_le
 
 static void sha_update_u16(sha256_ctx_t *c, uint16_t v) {
     uint8_t b[2];

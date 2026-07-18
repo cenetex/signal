@@ -620,6 +620,72 @@ int manifest_count_by_commodity(const manifest_t *manifest, commodity_t commodit
     return n;
 }
 
+int manifest_count_by_commodity_grade(const manifest_t *manifest,
+                                      commodity_t commodity,
+                                      mining_grade_t grade) {
+    if (!manifest || !manifest->units ||
+        commodity >= COMMODITY_COUNT || grade >= MINING_GRADE_COUNT) {
+        return 0;
+    }
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *unit = &manifest->units[i];
+        if (unit->commodity == (uint8_t)commodity &&
+            unit->grade == (uint8_t)grade) {
+            n++;
+        }
+    }
+    return n;
+}
+
+bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
+                                  commodity_t commodity) {
+    if (!pod || !pod->active || pod->kind != CARGO_POD_CARGO) return false;
+    if (pod->shipment_id != 0 || pod->commodity != commodity) return false;
+    if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if ((commodity_t)pod->manifest_units[i].commodity != commodity)
+            return false;
+    }
+    return true;
+}
+
+mining_grade_t cargo_pod_manifest_best_grade(const cargo_pod_t *pod) {
+    mining_grade_t best = MINING_GRADE_COMMON;
+    if (!pod || pod->manifest_count == 0 ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return best;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        mining_grade_t grade = (mining_grade_t)pod->manifest_units[i].grade;
+        if (grade < MINING_GRADE_COUNT && grade > best) best = grade;
+    }
+    return best;
+}
+
+mining_grade_t cargo_pod_display_grade(const cargo_pod_t *pod) {
+    if (!pod || !pod->active) return MINING_GRADE_COMMON;
+
+    bool complete_local = pod->manifest_count > 0 &&
+                          pod->manifest_count == pod->quantity &&
+                          pod->manifest_count <= CARGO_POD_MANIFEST_CAP;
+    if (complete_local) {
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            if ((commodity_t)pod->manifest_units[i].commodity != pod->commodity) {
+                complete_local = false;
+                break;
+            }
+        }
+    }
+    if (complete_local) return cargo_pod_manifest_best_grade(pod);
+    if (pod->summary_grade < (uint8_t)MINING_GRADE_COUNT)
+        return (mining_grade_t)pod->summary_grade;
+    return cargo_pod_manifest_best_grade(pod);
+}
+
 bool manifest_rarity_tint(const manifest_t *manifest, float fill_ratio,
                           float neutral_r, float neutral_g, float neutral_b,
                           float *out_r, float *out_g, float *out_b) {

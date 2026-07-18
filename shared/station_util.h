@@ -120,6 +120,40 @@ bool          station_has_ring(const station_t *st, int ring);
 bool          ring_has_dock(const station_t *st, int ring);
 int           station_ring_free_slot(const station_t *st, int ring, int port_count);
 
+/* Canonical station-module placement contract. Planning deliberately permits
+ * dependencies that are not live yet; physical placement requires every live
+ * invariant, including an existing input pair. Scaffold placement preserves
+ * the game's staged construction lifecycle: the physical kit may occupy a
+ * valid slot before its eventual intake is built. All modes reject invalid
+ * module/ring/slot tuples and occupied slots. */
+typedef enum {
+    STATION_PLACEMENT_PLAN = 0,
+    STATION_PLACEMENT_PHYSICAL,
+    STATION_PLACEMENT_SCAFFOLD,
+} station_placement_mode_t;
+
+typedef enum {
+    STATION_PLACEMENT_OK = 0,
+    STATION_PLACEMENT_INVALID_STATION,
+    STATION_PLACEMENT_INVALID_MODULE,
+    STATION_PLACEMENT_STATION_FULL,
+    STATION_PLACEMENT_INVALID_RING,
+    STATION_PLACEMENT_INVALID_SLOT,
+    STATION_PLACEMENT_SLOT_OCCUPIED,
+    STATION_PLACEMENT_RESERVED_FOR_OTHER,
+    STATION_PLACEMENT_MISSING_INPUT_PAIR,
+} station_placement_status_t;
+
+station_placement_status_t station_placement_validate(
+    const station_t *st, module_type_t type, int ring, int slot,
+    station_placement_mode_t mode);
+const char *station_placement_status_label(station_placement_status_t status);
+
+/* Count-driven planning ring progression. Installed modules and reservations
+ * both count so the client preview and authoritative planner expose the same
+ * ring set. */
+int           station_max_plannable_ring(const station_t *st);
+
 /* ----- Slot pairing: "across-the-ring-gap on an adjacent ring" -----
  *
  * Producers (FURNACE / FRAME_PRESS / LASER_FAB / TRACTOR_FAB /
@@ -274,6 +308,28 @@ typedef struct {
     float       severity;    /* 0..1 */
     float       price_mult;  /* 1.0..1.5 */
 } station_demand_t;
+
+/* Full supply-contract policy for one station/commodity pair.  This is the
+ * common hysteresis contract used by simulation contract opening/closing and
+ * by demand pricing: `open_target` is the low-water trigger, `target` is the
+ * requested refill level, and `close_target` is the high-water mark. */
+typedef struct {
+    commodity_t commodity;
+    float stock;
+    float open_target;
+    float target;
+    float close_target;
+    float deficit;
+    float severity;
+    float price_mult;
+    bool eligible;
+    bool locally_produced;
+    bool should_open;
+    bool should_close;
+} station_supply_need_t;
+
+station_supply_need_t station_supply_need_for(const station_t *st,
+                                              commodity_t commodity);
 
 station_demand_t station_top_demand(const station_t *st);
 

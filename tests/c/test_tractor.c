@@ -156,6 +156,59 @@ TEST(test_tow_target_generation_changes_after_recycle) {
     ASSERT(second.generation != first.generation);
 }
 
+TEST(test_tow_links_ignore_stale_projection_capacity_and_collect_stably) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    /* Poison the compatibility projection. Relationship admission must use
+     * tow_links, then rebuild this view rather than treating it as authority. */
+    sp->ship->towed_count = 10;
+    sp->ship->towed_pod_count = 10;
+    memset(sp->ship->towed_fragments, 0, sizeof(sp->ship->towed_fragments));
+    memset(sp->ship->towed_pods, 0, sizeof(sp->ship->towed_pods));
+
+    w.cargo_pods[7].active = true;
+    w.cargo_pods[7].kind = CARGO_POD_CARGO;
+    w.cargo_pods[3].active = true;
+    w.cargo_pods[3].kind = CARGO_POD_CARGO;
+    ASSERT(world_cargo_pod_set_player_tractor(&w, 7, 0));
+    ASSERT(world_cargo_pod_set_player_tractor(&w, 3, 0));
+    ASSERT_EQ_INT(world_tow_link_count_for_source(
+                      &w, sp->ship_ref, TOW_PROFILE_SHIP_POD), 2);
+
+    entity_ref_t one[1] = {entity_ref_none()};
+    ASSERT_EQ_INT(world_tow_collect_targets(
+                      &w, sp->ship_ref, TOW_PROFILE_SHIP_POD, one, 1), 2);
+    ASSERT_EQ_INT(one[0].kind, ENTITY_KIND_CARGO_POD);
+    ASSERT_EQ_INT(one[0].index, 3);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 2);
+    ASSERT_EQ_INT(sp->ship->towed_pods[0], 3);
+    ASSERT_EQ_INT(sp->ship->towed_pods[1], 7);
+}
+
+TEST(test_ship_pointer_cache_rebinds_and_clears_stale_views) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+    ASSERT(world_ship_cached_views_valid(&w));
+
+    ship_t stale = {0};
+    sp->ship_ref = entity_ref_none();
+    sp->ship = &stale;
+    ASSERT(world_player_ship_for(&w, 0) == NULL);
+    ASSERT(sp->ship == NULL);
+    ASSERT(world_ship_cached_views_valid(&w));
+}
+
 TEST(test_tractor_pull_engages_beyond_rest) {
     /* Body at d=10 along +X from origin. rest=5, pull=2, push=0.
      * stretch = 5; spring_mag = -2 * 5 = -10 (toward source, i.e. -X).
@@ -437,6 +490,8 @@ void register_tractor_tests(void) {
     RUN(test_tractor_binding_has_one_source_at_a_time);
     RUN(test_tow_link_pool_is_authority_for_ship_projections);
     RUN(test_tow_target_generation_changes_after_recycle);
+    RUN(test_tow_links_ignore_stale_projection_capacity_and_collect_stably);
+    RUN(test_ship_pointer_cache_rebinds_and_clears_stale_views);
     RUN(test_tractor_pull_engages_beyond_rest);
     RUN(test_tractor_push_engages_below_rest);
     RUN(test_tractor_constant_pull_independent_of_stretch);

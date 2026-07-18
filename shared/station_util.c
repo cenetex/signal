@@ -566,6 +566,87 @@ int station_ring_free_slot(const station_t *st, int ring, int port_count) {
     return -1;
 }
 
+static int station_placement_plan_at(const station_t *st, int ring, int slot) {
+    if (!st) return -1;
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        if ((int)st->placement_plans[p].ring == ring &&
+            (int)st->placement_plans[p].slot == slot) {
+            return p;
+        }
+    }
+    return -1;
+}
+
+station_placement_status_t station_placement_validate(
+    const station_t *st, module_type_t type, int ring, int slot,
+    station_placement_mode_t mode) {
+    if (!st || !station_exists(st))
+        return STATION_PLACEMENT_INVALID_STATION;
+    if ((unsigned)type >= MODULE_COUNT || module_is_dead(type))
+        return STATION_PLACEMENT_INVALID_MODULE;
+    if (st->module_count < 0 || st->module_count >= MAX_MODULES_PER_STATION)
+        return STATION_PLACEMENT_STATION_FULL;
+    if (ring < 1 || ring > STATION_NUM_RINGS ||
+        !module_valid_on_ring(type, ring)) {
+        return STATION_PLACEMENT_INVALID_RING;
+    }
+    if (slot < 0 || slot >= STATION_RING_SLOTS[ring])
+        return STATION_PLACEMENT_INVALID_SLOT;
+
+    for (int i = 0; i < st->module_count; i++) {
+        if ((int)st->modules[i].ring == ring &&
+            (int)st->modules[i].slot == slot) {
+            return STATION_PLACEMENT_SLOT_OCCUPIED;
+        }
+    }
+
+    int planned = station_placement_plan_at(st, ring, slot);
+    if (mode != STATION_PLACEMENT_PLAN) {
+        if (planned >= 0 && st->placement_plans[planned].type != type)
+            return STATION_PLACEMENT_RESERVED_FOR_OTHER;
+    }
+    if (mode == STATION_PLACEMENT_PHYSICAL) {
+        if (module_requires_pair(type) &&
+            !station_pair_satisfied(st, ring, slot, type)) {
+            return STATION_PLACEMENT_MISSING_INPUT_PAIR;
+        }
+    }
+    return STATION_PLACEMENT_OK;
+}
+
+const char *station_placement_status_label(station_placement_status_t status) {
+    switch (status) {
+    case STATION_PLACEMENT_OK:                 return "valid";
+    case STATION_PLACEMENT_INVALID_STATION:    return "invalid station";
+    case STATION_PLACEMENT_INVALID_MODULE:     return "invalid module";
+    case STATION_PLACEMENT_STATION_FULL:       return "station full";
+    case STATION_PLACEMENT_INVALID_RING:       return "invalid ring";
+    case STATION_PLACEMENT_INVALID_SLOT:       return "invalid slot";
+    case STATION_PLACEMENT_SLOT_OCCUPIED:      return "slot occupied";
+    case STATION_PLACEMENT_RESERVED_FOR_OTHER: return "reserved for another module";
+    case STATION_PLACEMENT_MISSING_INPUT_PAIR: return "missing input hopper";
+    default:                                   return "invalid placement";
+    }
+}
+
+int station_max_plannable_ring(const station_t *st) {
+    if (!st) return 1;
+    int counts[STATION_NUM_RINGS + 1] = {0};
+    for (int m = 0; m < st->module_count; m++) {
+        int ring = (int)st->modules[m].ring;
+        if (ring >= 1 && ring <= STATION_NUM_RINGS) counts[ring]++;
+    }
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        int ring = (int)st->placement_plans[p].ring;
+        if (ring >= 1 && ring <= STATION_NUM_RINGS) counts[ring]++;
+    }
+    int unlocked = 1;
+    if (STATION_NUM_RINGS >= 2 && counts[1] >= 2) unlocked = 2;
+    if (STATION_NUM_RINGS >= 3 && counts[2] >= 4) unlocked = 3;
+    if (unlocked > STATION_NUM_RINGS) unlocked = STATION_NUM_RINGS;
+    return unlocked;
+}
+
 /* ------------------------------------------------------------------ */
 /* Slot pairing — cross-ring                                           */
 /* ------------------------------------------------------------------ */
@@ -664,69 +745,17 @@ int station_find_output_hopper_for_module(const station_t *st, const station_mod
 /* Demand: top shortage, severity, recommended pay multiplier.         */
 /* ------------------------------------------------------------------ */
 
-/* Per-commodity supply target. Mirrors the targets the contract priority
- * ladder uses in game_sim.c (priority 3 for ore, priority 4 for ingots,
- * priority 5 for kit inputs) so the demand primitive and the contract
- * generator agree on what "starving" means. */
-static float station_demand_target_for(const station_t *st, commodity_t c) {
-    if (c < COMMODITY_RAW_ORE_COUNT) {
-        /* Raw ore — matches priority 3 (REFINERY_HOPPER_CAPACITY * 0.5). */
-        return REFINERY_HOPPER_CAPACITY * 0.5f;
-    }
-    switch (c) {
-        case COMMODITY_FERRITE_INGOT:
-        case COMMODITY_CUPRITE_INGOT:
-        case COMMODITY_CRYSTAL_INGOT:
-            /* Matches priority 4 (MAX_PRODUCT_STOCK * 0.9). */
-            return MAX_PRODUCT_STOCK * 0.9f;
-        case COMMODITY_FRAME:
-        case COMMODITY_LASER_MODULE:
-        case COMMODITY_TRACTOR_MODULE:
-            /* Matches priority 5 kit_input_target. */
-            return 12.0f;
-        case COMMODITY_REPAIR_KIT:
-            /* Non-shipyard dock buffer. Half the shipyard's per-batch
-             * output keeps small docks topped up without making them
-             * post a contract on every minor repair. */
-            return 50.0f;
-        default: break;
-    }
-    /* Unknown commodity — caller will see severity 0 and skip it. */
-    if (st) (void)st;
-    return 1.0f;
-}
-
 station_demand_t station_demand_for(const station_t *st, commodity_t c) {
     station_demand_t out = {
         .commodity  = COMMODITY_COUNT,
         .severity   = 0.0f,
         .price_mult = 1.0f,
     };
-    if (!st || !station_is_active(st)) return out;
-    if (c >= COMMODITY_COUNT) return out;
-    if (!station_consumes(st, c)) return out;
-    /* A station that produces what it consumes (e.g. Helios with its
-     * own crystal furnace feeding its laser fab) is not starving for
-     * that commodity — the producer keeps the local shelf supplied.
-     * Mirrors priority 4's "don't import what we make" check. */
-    if (station_produces(st, c)) return out;
-
-    float supply = station_inventory_amount(st, c);
-    float target = station_demand_target_for(st, c);
-    if (target <= 0.0f) return out;
-
-    float deficit = target - supply;
-    if (deficit <= 0.0f) return out;
-    float severity = deficit / target;
-    if (severity > 1.0f) severity = 1.0f;
-
-    out.commodity  = c;
-    out.severity   = severity;
-    /* 1.0× at no shortage, up to 1.5× at total starvation. The 0.5
-     * slope is conservative — generous enough that haulers will
-     * notice, gentle enough that players can't game the system by
-     * deliberately starving a station they own. */
-    out.price_mult = 1.0f + 0.5f * severity;
+    station_supply_need_t need = station_supply_need_for(st, c);
+    if (!need.should_open) return out;
+    out.commodity = c;
+    out.severity = need.severity;
+    out.price_mult = need.price_mult;
     return out;
 }
 
@@ -785,6 +814,68 @@ float station_raw_ore_need_score(const station_t *st, commodity_t ore) {
     float raw_gate = shortage01(st->_inventory_cache[ore],
                                 REFINERY_HOPPER_CAPACITY * 0.5f);
     return chain_need * raw_gate;
+}
+
+station_supply_need_t station_supply_need_for(const station_t *st,
+                                              commodity_t c) {
+    station_supply_need_t out = {
+        .commodity = COMMODITY_COUNT,
+        .price_mult = 1.0f,
+        .should_close = true,
+    };
+    if (!st || !station_is_active(st) || c >= COMMODITY_COUNT) return out;
+
+    out.commodity = c;
+    out.stock = station_inventory_amount(st, c);
+    out.eligible = station_consumes(st, c);
+    out.locally_produced = station_produces(st, c);
+
+    if (c < COMMODITY_RAW_ORE_COUNT) {
+        out.eligible = station_can_smelt(st, c);
+        out.open_target = REFINERY_HOPPER_CAPACITY * 0.5f;
+        out.target = REFINERY_HOPPER_CAPACITY * 0.95f;
+        out.close_target = REFINERY_HOPPER_CAPACITY * 0.95f;
+        out.severity = station_raw_ore_need_score(st, c);
+        out.deficit = fmaxf(0.0f, out.target - out.stock);
+        out.should_open = out.eligible && out.severity > 0.0f;
+        out.should_close = !out.eligible ||
+                           station_raw_ore_chain_need_score(st, c) <= 0.0f ||
+                           out.stock >= out.close_target;
+    } else if (c == COMMODITY_FERRITE_INGOT ||
+               c == COMMODITY_CUPRITE_INGOT ||
+               c == COMMODITY_CRYSTAL_INGOT) {
+        out.open_target = MAX_PRODUCT_STOCK * 0.9f;
+        out.target = MAX_PRODUCT_STOCK * 0.9f;
+        out.close_target = MAX_PRODUCT_STOCK * 0.95f;
+    } else if (c == COMMODITY_FRAME ||
+               c == COMMODITY_LASER_MODULE ||
+               c == COMMODITY_TRACTOR_MODULE) {
+        out.open_target = 12.0f;
+        out.target = 12.0f;
+        out.close_target = 12.0f;
+    } else if (c == COMMODITY_REPAIR_KIT &&
+               station_has_module(st, MODULE_DOCK) &&
+               !station_has_module(st, MODULE_SHIPYARD)) {
+        out.eligible = true;
+        out.open_target = REPAIR_KIT_STOCK_CAP * 0.25f;
+        out.target = REPAIR_KIT_STOCK_CAP;
+        out.close_target = REPAIR_KIT_STOCK_CAP * 0.95f;
+    } else {
+        out.eligible = false;
+    }
+
+    if (c >= COMMODITY_RAW_ORE_COUNT) {
+        out.deficit = fmaxf(0.0f, out.target - out.stock);
+        if (out.open_target > 0.0f)
+            out.severity = fminf(1.0f,
+                                 fmaxf(0.0f, out.open_target - out.stock) /
+                                     out.open_target);
+        out.should_open = out.eligible && !out.locally_produced &&
+                          out.stock < out.open_target;
+        out.should_close = out.stock >= out.close_target;
+    }
+    out.price_mult = 1.0f + 0.5f * out.severity;
+    return out;
 }
 
 station_demand_t station_top_demand(const station_t *st) {

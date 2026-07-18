@@ -144,14 +144,8 @@ static int input_ship_manifest_count_c(const ship_t *ship, commodity_t commodity
 }
 
 static int input_station_manifest_count_c(const station_t *st, commodity_t commodity) {
-    if (!st) return 0;
-    int s = (int)(st - g.world.stations);
-    if (s < 0 || s >= MAX_STATIONS) return 0;
-    if ((int)commodity < 0 || (int)commodity >= COMMODITY_COUNT) return 0;
-    int total = 0;
-    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
-        total += (int)g.station_manifest_summary[s][commodity][gi];
-    return total;
+    float amount = client_station_stock_amount(st, commodity);
+    return amount > 0.0f ? (int)floorf(amount + 0.0001f) : 0;
 }
 
 static int input_contract_quantity_goal(const contract_t *ct) {
@@ -171,26 +165,6 @@ bool is_key_pressed(sapp_keycode key) {
     return ((int)key >= 0) && ((int)key < (int)KEY_COUNT) && g.input.key_pressed[key];
 }
 
-/* Compute which rings are unlocked on a station.
- * Ring 1 is always available.
- * Ring 2 unlocks when ring 1 has 2+ committed entries (modules + plans).
- * Ring 3 unlocks when ring 2 has 4+ committed entries. */
-static int station_max_unlocked_ring(const station_t *st) {
-    int counts[STATION_NUM_RINGS + 1] = {0};
-    for (int m = 0; m < st->module_count; m++) {
-        int r = st->modules[m].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
-    }
-    for (int p = 0; p < st->placement_plan_count; p++) {
-        int r = st->placement_plans[p].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
-    }
-    int unlocked = 1;
-    if (counts[1] >= 2) unlocked = 2;
-    if (counts[2] >= 4) unlocked = 3;
-    return unlocked;
-}
-
 /* Build a flat list of (station, ring, slot) tuples for every open slot
  * across all player outposts in snap range of a position. Returns the
  * count. Sorted so the slot whose world position is closest to `pos`
@@ -203,7 +177,9 @@ typedef struct {
 } reticle_target_t;
 #define RETICLE_MAX_TARGETS 32
 
-static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
+static int collect_reticle_targets(vec2 pos, module_type_t type,
+                                   station_placement_mode_t mode,
+                                   reticle_target_t *out, int max) {
     int count = 0;
     const float SNAP_RANGE_SQ = 600.0f * 600.0f;
     for (int s = SIGNAL_FIRST_OUTPOST_INDEX; s < MAX_STATIONS && count < max; s++) {
@@ -212,16 +188,12 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
         /* Include planned stations — they accept plans even though they
          * have no physical presence yet. */
         if (v2_dist_sq(st->pos, pos) > SNAP_RANGE_SQ) continue;
-        int max_ring = station_max_unlocked_ring(st);
+        int max_ring = station_max_plannable_ring(st);
         for (int ring = 1; ring <= max_ring && count < max; ring++) {
             int slots = STATION_RING_SLOTS[ring];
             for (int slot = 0; slot < slots && count < max; slot++) {
-                bool taken = false;
-                for (int m = 0; m < st->module_count; m++)
-                    if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
-                        taken = true; break;
-                    }
-                if (taken) continue;
+                if (station_placement_validate(st, type, ring, slot, mode) !=
+                    STATION_PLACEMENT_OK) continue;
                 vec2 sp = module_world_pos_ring(st, ring, slot);
                 out[count].station = s;
                 out[count].ring = ring;
@@ -832,12 +804,17 @@ static void sample_placement_tow(input_intent_t *intent) {
     g.placement_reticle_active = false;
     if (!is_key_pressed(SAPP_KEYCODE_E)) return;
     reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
-    intent->place_outpost = true;
     const char *scaffold_name = "scaffold";
     int sc_idx = LOCAL_PLAYER.ship->towed_scaffold;
-    if (sc_idx >= 0 && sc_idx < MAX_SCAFFOLDS && g.world.scaffolds[sc_idx].active)
+    module_type_t scaffold_type = MODULE_COUNT;
+    if (sc_idx >= 0 && sc_idx < MAX_SCAFFOLDS && g.world.scaffolds[sc_idx].active) {
+        scaffold_type = g.world.scaffolds[sc_idx].module_type;
         scaffold_name = module_type_name(g.world.scaffolds[sc_idx].module_type);
+    }
+    int n = collect_reticle_targets(
+        LOCAL_PLAYER.ship->pos, scaffold_type, STATION_PLACEMENT_SCAFFOLD,
+        targets, RETICLE_MAX_TARGETS);
+    intent->place_outpost = true;
     if (n > 0) {
         intent->place_target_station = (int8_t)targets[0].station;
         intent->place_target_ring = (int8_t)targets[0].ring;
@@ -857,7 +834,9 @@ static void sample_placement_tow(input_intent_t *intent) {
  * grace_until expiry, exit plan mode. */
 static void plan_mode_real_track(void) {
     reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
+    int n = collect_reticle_targets(
+        LOCAL_PLAYER.ship->pos, (module_type_t)g.plan_type,
+        STATION_PLACEMENT_PLAN, targets, RETICLE_MAX_TARGETS);
     if (n == 0) {
         if (g.world.time >= g.plan_mode_grace_until) g.plan_mode_active = false;
         return;
@@ -1005,6 +984,16 @@ static void plan_mode_handle_real_place(input_intent_t *intent) {
                    pr, psl);
         return;
     }
+    if (ps < 0 || ps >= MAX_STATIONS) return;
+    station_placement_status_t placement = station_placement_validate(
+        &g.world.stations[ps], (module_type_t)g.plan_type, pr, psl,
+        STATION_PLACEMENT_PLAN);
+    if (placement != STATION_PLACEMENT_OK) {
+        set_notice("Cannot reserve %s: %s.",
+                   module_type_name((module_type_t)g.plan_type),
+                   station_placement_status_label(placement));
+        return;
+    }
     intent->add_plan = true;
     intent->plan_station = (int8_t)ps;
     intent->plan_ring = (int8_t)pr;
@@ -1050,13 +1039,15 @@ static void sample_plan_mode(input_intent_t *intent) {
  * (real) or kick off ghost preview (none in range). */
 static void sample_b_enter_plan(void) {
     if (!is_key_pressed(SAPP_KEYCODE_B) || LOCAL_PLAYER.docked) return;
-    reticle_target_t targets[RETICLE_MAX_TARGETS];
-    int n = collect_reticle_targets(LOCAL_PLAYER.ship->pos, targets, RETICLE_MAX_TARGETS);
     uint32_t mask = LOCAL_PLAYER.ship->unlocked_modules;
     if (g.plan_type == 0 || g.plan_type == MODULE_DOCK ||
         !module_unlocked_for_player(mask, (module_type_t)g.plan_type)) {
         g.plan_type = MODULE_SIGNAL_RELAY;
     }
+    reticle_target_t targets[RETICLE_MAX_TARGETS];
+    int n = collect_reticle_targets(
+        LOCAL_PLAYER.ship->pos, (module_type_t)g.plan_type,
+        STATION_PLACEMENT_PLAN, targets, RETICLE_MAX_TARGETS);
     if (n > 0) {
         g.plan_mode_active = true;
         g.placement_target_station = targets[0].station;

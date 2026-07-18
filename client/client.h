@@ -392,6 +392,12 @@ typedef struct {
      * station_t because station_t is the authoritative save/wire format
      * and this is derived. */
     uint16_t station_manifest_summary[MAX_STATIONS][COMMODITY_COUNT][MINING_GRADE_COUNT];
+    /* Full station stock read model from WORLD_STATIONS. This is intentionally
+     * client-owned: station_t::_inventory_cache is authoritative raw-ore
+     * storage and must never be repurposed as a finished-goods network mirror.
+     * Offline mode refreshes the same view from station_inventory_amount(). */
+    float station_stock_summary[MAX_STATIONS][COMMODITY_COUNT];
+    bool  station_stock_summary_valid[MAX_STATIONS];
     /* Network provenance mirror for the local hold. HOLD_INGOTS arrives
      * just before PLAYER_MANIFEST; the latter rebuilds ship.manifest from
      * summary counts and grafts these detailed named-ingot units back in
@@ -654,7 +660,6 @@ typedef struct {
      * green halo with alpha = heartbeat[i]. Previous-frame mirror so we
      * can compute the delta wherever the records land. */
     float station_heartbeat[MAX_STATIONS];
-    float station_prev_inventory[MAX_STATIONS][COMMODITY_COUNT];
     float station_prev_credit_pool[MAX_STATIONS];
     bool  station_prev_seen[MAX_STATIONS];
     /* --- Hail overlay --- */
@@ -904,6 +909,8 @@ const station_t* current_station_ptr(void);
 const station_t* nearby_station_ptr(void);
 int nearest_station_index(vec2 pos);
 const station_t* navigation_station_ptr(void);
+float client_station_stock_amount(const station_t *station,
+                                  commodity_t commodity);
 
 /* (Old MARKET / STATUS formatter helpers retired in the docked-UI
  * redesign — the verb-list view computes its rows inline from station

@@ -99,6 +99,40 @@ TEST(test_manifest_clone_detaches_storage) {
     manifest_free(&src);
 }
 
+TEST(test_manifest_grade_and_cargo_pod_queries_share_one_contract) {
+    manifest_t manifest = {0};
+    cargo_unit_t units[2] = {0};
+    ASSERT(manifest_init(&manifest, 2));
+    units[0].commodity = (uint8_t)COMMODITY_FRAME;
+    units[0].grade = (uint8_t)MINING_GRADE_FINE;
+    units[1].commodity = (uint8_t)COMMODITY_FRAME;
+    units[1].grade = (uint8_t)MINING_GRADE_RARE;
+    ASSERT(manifest_push(&manifest, &units[0]));
+    ASSERT(manifest_push(&manifest, &units[1]));
+    ASSERT_EQ_INT(manifest_count_by_commodity_grade(
+                      &manifest, COMMODITY_FRAME, MINING_GRADE_FINE), 1);
+    ASSERT_EQ_INT(manifest_count_by_commodity_grade(
+                      &manifest, COMMODITY_FRAME, MINING_GRADE_RARE), 1);
+
+    cargo_pod_t pod = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FRAME,
+        .quantity = 2,
+        .manifest_count = 2,
+    };
+    pod.manifest_units[0] = units[0];
+    pod.manifest_units[1] = units[1];
+    ASSERT(cargo_pod_has_exact_manifest(&pod, COMMODITY_FRAME));
+    ASSERT_EQ_INT(cargo_pod_manifest_best_grade(&pod), MINING_GRADE_RARE);
+    ASSERT_EQ_INT(cargo_pod_display_grade(&pod), MINING_GRADE_RARE);
+
+    pod.shipment_id = 9;
+    ASSERT(!cargo_pod_has_exact_manifest(&pod, COMMODITY_FRAME));
+    ASSERT_EQ_INT(cargo_pod_display_grade(&pod), MINING_GRADE_RARE);
+    manifest_free(&manifest);
+}
+
 TEST(test_ship_copy_clones_manifest_storage) {
     ship_t src = {0};
     ship_t dst = {0};
@@ -1068,6 +1102,7 @@ void register_manifest_tests(void) {
     RUN(test_cargo_kind_name_all_branches);
     RUN(test_manifest_push_find_remove_preserves_order);
     RUN(test_manifest_clone_detaches_storage);
+    RUN(test_manifest_grade_and_cargo_pod_queries_share_one_contract);
     RUN(test_hash_legacy_migrate_unit_deterministic);
     RUN(test_hash_legacy_migrate_unit_rejects_raw_ore);
     RUN(test_manifest_migrate_legacy_inventory_synthesizes_entries);

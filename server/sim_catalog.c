@@ -18,6 +18,7 @@
 #include "manifest.h"
 #include "sim_construction.h"
 #include "station_util.h"
+#include "persistence_io.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -36,59 +37,10 @@
 #include <unistd.h>
 #endif
 
-/* ---- CRC32 (IEEE 802.3, same implementation as sim_save.c) ---- */
-static uint32_t crc32_update(uint32_t crc, const void *buf, size_t len) {
-    const uint8_t *p = (const uint8_t *)buf;
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= p[i];
-        for (int j = 0; j < 8; j++)
-            /* MSVC C4146: see matching comment in sim_save.c. */
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-    }
-    return ~crc;
-}
-
-static uint32_t crc32_file(FILE *f) {
-    uint32_t crc = 0;
-    long start = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t chunk[4096];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
-        crc = crc32_update(crc, chunk, n);
-    fseek(f, start, SEEK_SET);
-    return crc;
-}
-
-static bool catalog_flush_durable(FILE *f) {
-    if (!f || fflush(f) != 0) return false;
-#ifdef _WIN32
-    return _commit(_fileno(f)) == 0;
-#else
-    return fsync(fileno(f)) == 0;
-#endif
-}
-
-static bool catalog_replace_file(const char *tmp_path, const char *final_path) {
-#ifdef _WIN32
-    return MoveFileExA(tmp_path, final_path,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-    if (rename(tmp_path, final_path) != 0) return false;
-    char dir[256];
-    int n = snprintf(dir, sizeof(dir), "%s", final_path);
-    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
-    char *slash = strrchr(dir, '/');
-    if (slash) *slash = '\0';
-    else snprintf(dir, sizeof(dir), ".");
-    int fd = open(dir[0] ? dir : "/", O_RDONLY);
-    if (fd < 0) return false;
-    bool ok = fsync(fd) == 0;
-    close(fd);
-    return ok;
-#endif
-}
+#define crc32_update          persistence_crc32_update
+#define crc32_file            persistence_crc32_file
+#define catalog_flush_durable persistence_flush_durable
+#define catalog_replace_file  persistence_replace_file
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
 #define CATALOG_VERSION 7  /* v7: Helios furnace set is 2x crystal + 1x cuprite.

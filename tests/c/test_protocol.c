@@ -4,6 +4,28 @@
 #include "cargo_receipt_issue.h"
 #include "faction.h"
 #include "station_policy.h"
+#include "wire_codec.h"
+
+TEST(test_wire_codec_roundtrips_and_fails_closed_on_bounds) {
+    uint8_t buf[18] = {0};
+    wire_writer_t writer = wire_writer_init(buf, sizeof(buf));
+    wire_put_u16(&writer, 0xBEEF);
+    wire_put_i16(&writer, -1234);
+    wire_put_u32(&writer, 0x89ABCDEFu);
+    wire_put_u64(&writer, 0x0123456789ABCDEFull);
+    wire_put_f32(&writer, 12.5f);
+    ASSERT(!writer.ok); /* final float exceeds the fixed record */
+    ASSERT_EQ_INT(writer.offset, 16);
+
+    wire_reader_t reader = wire_reader_init(buf, 16);
+    ASSERT_EQ_INT(wire_get_u16(&reader), 0xBEEF);
+    ASSERT_EQ_INT(wire_get_i16(&reader), -1234);
+    ASSERT(wire_get_u32(&reader) == 0x89ABCDEFu);
+    ASSERT(wire_get_u64(&reader) == 0x0123456789ABCDEFull);
+    ASSERT(reader.ok);
+    ASSERT_EQ_FLOAT(wire_get_f32(&reader), 0.0f, 0.0f);
+    ASSERT(!reader.ok);
+}
 
 TEST(test_roundtrip_player_state) {
     SERVER_PLAYER_DECL(sp);
@@ -8507,6 +8529,7 @@ TEST(test_parse_input_launch_keeps_semantic_action) {
 
 void register_protocol_main_tests(void) {
     TEST_SECTION("\nProtocol roundtrip tests:\n");
+    RUN(test_wire_codec_roundtrips_and_fails_closed_on_bounds);
     RUN(test_roundtrip_player_state);
     RUN(test_authoritative_player_state_includes_ack_tail);
     RUN(test_roundtrip_batched_player_states);

@@ -56,6 +56,7 @@ extern bool g_has_avatar_keypair;
 extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B) */
 #include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
+#include "wire_codec.h"
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -1133,7 +1134,9 @@ static void sync_docked_towed_pods(world_t *w, server_player_t *sp);
 static float apply_scaffold_tow_physics(server_player_t *sp,
                                         scaffold_t *sc,
                                         float dt);
-static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot);
+static bool find_nearest_open_slot(const station_t *st, vec2 pos,
+                                   module_type_t type,
+                                   int *out_ring, int *out_slot);
 
 static float player_station_balance_at(const world_t *w,
                                        const server_player_t *sp,
@@ -1406,6 +1409,91 @@ const tow_link_t *world_tow_link_for_target_const(const world_t *w,
     return world_tow_link_for_target((world_t *)w, target);
 }
 
+static bool tow_link_source_order_before(const tow_link_t *a,
+                                         const tow_link_t *b) {
+    if (a->source.kind != b->source.kind)
+        return a->source.kind < b->source.kind;
+    if (a->source.index != b->source.index)
+        return a->source.index < b->source.index;
+    if (a->source.part != b->source.part)
+        return a->source.part < b->source.part;
+    if (a->source.generation != b->source.generation)
+        return a->source.generation < b->source.generation;
+    if (a->profile != b->profile) return a->profile < b->profile;
+    if (a->slot != b->slot) return a->slot < b->slot;
+    if (a->target.kind != b->target.kind)
+        return a->target.kind < b->target.kind;
+    if (a->target.index != b->target.index)
+        return a->target.index < b->target.index;
+    return a->target.part < b->target.part;
+}
+
+int world_tow_collect_targets(const world_t *w, entity_ref_t source,
+                              tow_profile_t profile, entity_ref_t *out,
+                              int cap) {
+    if (!w || entity_ref_is_none(source) || cap < 0) return 0;
+    const tow_link_t *ordered[MAX_TOW_LINKS];
+    int count = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &w->tow_links[i];
+        if (!link->active || !entity_ref_equal(link->source, source)) continue;
+        if (profile != TOW_PROFILE_NONE && link->profile != (uint8_t)profile)
+            continue;
+        int insert = count;
+        while (insert > 0 &&
+               !tow_link_source_order_before(ordered[insert - 1], link)) {
+            ordered[insert] = ordered[insert - 1];
+            insert--;
+        }
+        ordered[insert] = link;
+        count++;
+    }
+    if (out) {
+        int written = count < cap ? count : cap;
+        for (int i = 0; i < written; i++) out[i] = ordered[i]->target;
+    }
+    return count;
+}
+
+int world_tow_link_count_for_source(const world_t *w, entity_ref_t source,
+                                    tow_profile_t profile) {
+    return world_tow_collect_targets(w, source, profile, NULL, 0);
+}
+
+static bool world_tow_link_capacity_allows(const world_t *w,
+                                           entity_ref_t source,
+                                           tow_profile_t profile,
+                                           const tow_link_t *replaced) {
+    if (source.kind == ENTITY_KIND_STATION_MODULE)
+        return profile == TOW_PROFILE_MODULE_POD;
+    if (source.kind != ENTITY_KIND_SHIP) return false;
+    const ship_t *ship = world_ship_resolve_const(w, source);
+    if (!ship) return false;
+
+    int fragments = 0;
+    int pods = 0;
+    int scaffolds = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &w->tow_links[i];
+        if (!link->active || link == replaced ||
+            !entity_ref_equal(link->source, source)) continue;
+        switch ((tow_profile_t)link->profile) {
+        case TOW_PROFILE_SHIP_FRAGMENT: fragments++; break;
+        case TOW_PROFILE_SHIP_POD:      pods++; break;
+        case TOW_PROFILE_SHIP_SCAFFOLD: scaffolds++; break;
+        default: break;
+        }
+    }
+    if (profile == TOW_PROFILE_SHIP_SCAFFOLD) return scaffolds < 1;
+    if (profile != TOW_PROFILE_SHIP_FRAGMENT &&
+        profile != TOW_PROFILE_SHIP_POD) return false;
+    if (source.index >= WORLD_NPC_SHIP_BASE)
+        return profile == TOW_PROFILE_SHIP_FRAGMENT && fragments < 1;
+    if (profile == TOW_PROFILE_SHIP_FRAGMENT && fragments >= 10) return false;
+    if (profile == TOW_PROFILE_SHIP_POD && pods >= 10) return false;
+    return fragments + pods < ship_tow_body_capacity(ship);
+}
+
 static bool world_tow_link_store(world_t *w, entity_ref_t source,
                                  entity_ref_t target, tow_profile_t profile,
                                  int slot, tow_link_state_t state) {
@@ -1416,6 +1504,7 @@ static bool world_tow_link_store(world_t *w, entity_ref_t source,
         return false;
     }
     tow_link_t *link = world_tow_link_for_target(w, target);
+    if (!world_tow_link_capacity_allows(w, source, profile, link)) return false;
     if (!link) {
         for (int i = 0; i < MAX_TOW_LINKS; i++) {
             if (!w->tow_links[i].active) {
@@ -1656,7 +1745,7 @@ ship_t *world_player_ship_for(world_t *w, int player_slot) {
     if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return NULL;
     server_player_t *sp = &w->players[player_slot];
     ship_t *ship = world_ship_resolve(w, sp->ship_ref);
-    if (ship) sp->ship = ship;
+    sp->ship = ship;
     return ship;
 }
 
@@ -1670,7 +1759,7 @@ ship_t *world_npc_ship_for(world_t *w, int npc_slot) {
     npc_ship_t *npc = &w->npc_ships[npc_slot];
     if (!npc->active) return NULL;
     ship_t *ship = world_ship_resolve(w, npc->ship_ref);
-    if (ship) npc->ship = ship;
+    npc->ship = ship;
     return ship;
 }
 
@@ -1722,6 +1811,30 @@ void world_rebind_ship_controllers(world_t *w) {
             asset->ship = &asset->stored_ship;
         }
     }
+}
+
+bool world_ship_cached_views_valid(const world_t *w) {
+    if (!w) return false;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        const ship_t *resolved = world_ship_resolve_const(
+            w, w->players[p].ship_ref);
+        if (w->players[p].ship != resolved) return false;
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        const ship_t *resolved = world_ship_resolve_const(
+            w, w->npc_ships[n].ship_ref);
+        if (w->npc_ships[n].ship != resolved) return false;
+    }
+    for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
+        const ship_asset_t *asset = &w->ship_assets[a];
+        const ship_t *expected = NULL;
+        if (asset->active && asset->status == SHIP_ASSET_STATUS_ASSIGNED)
+            expected = world_ship_resolve_const(w, asset->live_ship_ref);
+        else if (asset->active)
+            expected = &asset->stored_ship;
+        if (asset->ship != expected) return false;
+    }
+    return true;
 }
 
 static int player_slot_for_ptr(const world_t *w, const server_player_t *sp) {
@@ -2516,17 +2629,20 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
 
-static int ship_towed_fragment_slot(const ship_t *ship, int asteroid_idx) {
-    if (!ship || asteroid_idx < 0) return -1;
-    int count = ship_towed_fragment_count(ship);
-    for (int t = 0; t < count; t++) {
-        if (ship->towed_fragments[t] == asteroid_idx) return t;
-    }
-    return -1;
+static int ship_towed_fragment_slot(world_t *w, entity_ref_t source,
+                                    int asteroid_idx) {
+    if (!w || entity_ref_is_none(source) || asteroid_idx < 0 ||
+        asteroid_idx >= MAX_ASTEROIDS) return -1;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
+    const tow_link_t *link = world_tow_link_for_target_const(w, target);
+    return link && entity_ref_equal(link->source, source) &&
+                   link->profile == TOW_PROFILE_SHIP_FRAGMENT
+        ? (int)link->slot : -1;
 }
 
-/* Target bindings own live fragment custody. Ship arrays are projections
- * used by tow physics, capacity, saves, and the existing wire protocol. */
+/* The relationship pool owns live fragment custody. Target bindings and ship
+ * arrays are compact projections for physics, saves, and wire compatibility. */
 static bool player_attach_fragment(world_t *w, server_player_t *sp,
                                    int asteroid_idx) {
     int player_idx = player_slot_for_ptr(w, sp);
@@ -2538,15 +2654,10 @@ static bool player_attach_fragment(world_t *w, server_player_t *sp,
     int owner = asteroid_tractor_player(asteroid);
     if (asteroid_has_tractor(asteroid) && owner != player_idx) return false;
 
-    ship_t *ship = sp->ship;
-    int slot = ship_towed_fragment_slot(ship, asteroid_idx);
-    if (slot < 0) {
-        int cap = (int)(sizeof(ship->towed_fragments) /
-                        sizeof(ship->towed_fragments[0]));
-        if (ship->towed_count >= cap || ship_tow_body_space(ship) <= 0)
-            return false;
-        slot = ship->towed_count;
-    }
+    int slot = ship_towed_fragment_slot(w, sp->ship_ref, asteroid_idx);
+    if (slot < 0)
+        slot = world_tow_link_count_for_source(
+            w, sp->ship_ref, TOW_PROFILE_SHIP_FRAGMENT);
     entity_ref_t target = world_entity_ref_for_slot(
         w, ENTITY_KIND_ASTEROID, asteroid_idx, -1);
     return world_tow_link_set(
@@ -2561,7 +2672,7 @@ static bool player_detach_fragment(world_t *w, server_player_t *sp,
         asteroid_idx >= MAX_ASTEROIDS) {
         return false;
     }
-    int slot = ship_towed_fragment_slot(sp->ship, asteroid_idx);
+    int slot = ship_towed_fragment_slot(w, sp->ship_ref, asteroid_idx);
     if (slot < 0) return false;
     asteroid_t *asteroid = &w->asteroids[asteroid_idx];
     if (asteroid_tractor_player(asteroid) == player_idx) {
@@ -2572,20 +2683,20 @@ static bool player_detach_fragment(world_t *w, server_player_t *sp,
     return true;
 }
 
-static int ship_towed_pod_slot(const ship_t *ship, int pod_idx) {
-    if (!ship || pod_idx < 0) return -1;
-    int count = ship->towed_pod_count;
-    int cap = (int)(sizeof(ship->towed_pods) / sizeof(ship->towed_pods[0]));
-    if (count > cap) count = cap;
-    for (int t = 0; t < count; t++) {
-        if (ship->towed_pods[t] == pod_idx) return t;
-    }
-    return -1;
+static int ship_towed_pod_slot(world_t *w, entity_ref_t source, int pod_idx) {
+    if (!w || entity_ref_is_none(source) || pod_idx < 0 ||
+        pod_idx >= MAX_CARGO_PODS) return -1;
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    const tow_link_t *link = world_tow_link_for_target_const(w, target);
+    return link && entity_ref_equal(link->source, source) &&
+                   link->profile == TOW_PROFILE_SHIP_POD
+        ? (int)link->slot : -1;
 }
 
-/* Mutate both sides of a player/pod tractor relationship together. The
- * target binding is authoritative; ship lists are compact source projections
- * retained for capacity, save, and wire compatibility. */
+/* Mutate the player/pod relationship through the pool. Target bindings and
+ * ship lists are rebuilt projections retained for physics, save, and wire
+ * compatibility. */
 static bool player_attach_cargo_pod(world_t *w, server_player_t *sp,
                                     int pod_idx) {
     int player_idx = player_slot_for_ptr(w, sp);
@@ -2594,14 +2705,10 @@ static bool player_attach_cargo_pod(world_t *w, server_player_t *sp,
         !w->cargo_pods[pod_idx].active) {
         return false;
     }
-    ship_t *ship = sp->ship;
-    int slot = ship_towed_pod_slot(ship, pod_idx);
-    int cap = (int)(sizeof(ship->towed_pods) / sizeof(ship->towed_pods[0]));
-    if (slot < 0) {
-        if (ship->towed_pod_count >= cap || ship_tow_body_space(ship) <= 0)
-            return false;
-        slot = ship->towed_pod_count;
-    }
+    int slot = ship_towed_pod_slot(w, sp->ship_ref, pod_idx);
+    if (slot < 0)
+        slot = world_tow_link_count_for_source(
+            w, sp->ship_ref, TOW_PROFILE_SHIP_POD);
     entity_ref_t target = world_entity_ref_for_slot(
         w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
     return world_tow_link_set(
@@ -2614,7 +2721,7 @@ static bool player_detach_cargo_pod(world_t *w, server_player_t *sp,
     int player_idx = player_slot_for_ptr(w, sp);
     if (!w || !sp || player_idx < 0 ||
         pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
-    int slot = ship_towed_pod_slot(sp->ship, pod_idx);
+    int slot = ship_towed_pod_slot(w, sp->ship_ref, pod_idx);
     if (slot < 0) return false;
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (cargo_pod_player_tractor(pod) == player_idx) {
@@ -2841,11 +2948,43 @@ static void world_tow_rebuild_projections(world_t *w) {
         memset(ship->towed_fragments, -1, sizeof(ship->towed_fragments));
         memset(ship->towed_pods, -1, sizeof(ship->towed_pods));
     }
+    /* Projection order is explicit and independent of relationship-pool slot
+     * reuse. This keeps save/wire hold slots stable after a middle link is
+     * released while leaving tow_links as the only relationship authority. */
+    tow_link_t *ordered[MAX_TOW_LINKS];
+    int count = 0;
     for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        if (!w->tow_links[i].active) continue;
         tow_link_t *link = &w->tow_links[i];
-        if (link->active && !world_tow_project_link(w, link))
+        int j = count;
+        while (j > 0 && !tow_link_source_order_before(ordered[j - 1], link)) {
+            ordered[j] = ordered[j - 1];
+            j--;
+        }
+        ordered[j] = link;
+        count++;
+    }
+    for (int i = 0; i < count; i++) {
+        tow_link_t *link = ordered[i];
+        if (!world_tow_project_link(w, link))
             memset(link, 0, sizeof(*link));
     }
+}
+
+void world_tow_links_refresh(world_t *w) {
+    if (!w) return;
+    world_tow_refresh_generation_liveness(w);
+
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        tow_link_t *link = &w->tow_links[i];
+        if (!link->active) continue;
+        if (!world_tow_source_is_live(w, link->source) ||
+            !world_entity_ref_is_live(w, link->target)) {
+            memset(link, 0, sizeof(*link));
+        }
+    }
+
+    world_tow_rebuild_projections(w);
 }
 
 void world_tow_links_reconcile(world_t *w) {
@@ -2865,20 +3004,15 @@ void world_tow_links_reconcile(world_t *w) {
         if (w->scaffolds[i].active)
             world_tow_import_target_projection(w, ENTITY_KIND_SCAFFOLD, i);
 
-    for (int i = 0; i < MAX_TOW_LINKS; i++) {
-        tow_link_t *link = &w->tow_links[i];
-        if (!link->active) continue;
-        if (!world_tow_source_is_live(w, link->source) ||
-            !world_entity_ref_is_live(w, link->target)) {
-            memset(link, 0, sizeof(*link));
-        }
-    }
-
-    world_tow_rebuild_projections(w);
+    world_tow_links_refresh(w);
 }
 
 static void reconcile_tractor_relationships(world_t *w) {
-    world_tow_links_reconcile(w);
+    /* Runtime ticks validate the relation pool and rebuild read projections;
+     * they never import target/ship mirrors back into authority. Legacy
+     * imports happen only through the explicit world_tow_links_reconcile()
+     * load/test boundary. */
+    world_tow_links_refresh(w);
 }
 
 static void sync_docked_towed_pods(world_t *w, server_player_t *sp) {
@@ -2974,21 +3108,6 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
             w, pod_idx, station_idx, dock_idx)) return false;
 
     st->modules[dock_idx].active_pulse = 1.0f;
-    return true;
-}
-
-bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
-                                  commodity_t commodity) {
-    if (!pod || !pod->active || pod->kind != CARGO_POD_CARGO) return false;
-    if (pod->shipment_id != 0) return false;
-    if (pod->commodity != commodity) return false;
-    if (pod->manifest_count == 0 || pod->manifest_count != pod->quantity)
-        return false;
-    if (pod->manifest_count > CARGO_POD_MANIFEST_CAP) return false;
-    for (uint16_t i = 0; i < pod->manifest_count; i++) {
-        if ((commodity_t)pod->manifest_units[i].commodity != commodity)
-            return false;
-    }
     return true;
 }
 
@@ -3842,20 +3961,6 @@ static int try_buy_station_market_pod(world_t *w,
     return 1;
 }
 
-static mining_grade_t cargo_pod_best_manifest_grade(const cargo_pod_t *pod) {
-    mining_grade_t best = MINING_GRADE_COMMON;
-    if (!pod || pod->manifest_count == 0 ||
-        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
-        return best;
-    }
-    for (uint16_t i = 0; i < pod->manifest_count; i++) {
-        mining_grade_t grade = (mining_grade_t)pod->manifest_units[i].grade;
-        if (grade < MINING_GRADE_COUNT && grade > best)
-            best = grade;
-    }
-    return best;
-}
-
 static bool station_owned_pod_inside_charge_boundary(const world_t *w,
                                                      int station_idx,
                                                      const cargo_pod_t *pod) {
@@ -3914,7 +4019,7 @@ static bool charge_station_owned_pod_if_due(world_t *w,
         .type = SIM_EVENT_BUY, .player_id = sp->id,
         .buy = { .station = station_idx,
                  .commodity = (uint8_t)pod->commodity,
-                 .grade = (uint8_t)cargo_pod_best_manifest_grade(pod),
+                 .grade = (uint8_t)cargo_pod_manifest_best_grade(pod),
                  .cost = (int)lroundf(cost),
                  .quantity = pod->quantity }});
     SIM_LOG("[pod-charge] player %d cleared %s station boundary with pod %d: %.0f %s\n",
@@ -5402,7 +5507,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     }
 }
 
-static bool is_already_towed(const ship_t *ship, int asteroid_idx);
+static bool is_already_towed(world_t *w, const server_player_t *sp,
+                             int asteroid_idx);
 
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
@@ -5675,8 +5781,9 @@ static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward
 }
 
 /* Check if a fragment is already towed by this player */
-static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
-    return ship_towed_fragment_slot(ship, asteroid_idx) >= 0;
+static bool is_already_towed(world_t *w, const server_player_t *sp,
+                             int asteroid_idx) {
+    return sp && ship_towed_fragment_slot(w, sp->ship_ref, asteroid_idx) >= 0;
 }
 
 static commodity_t autopilot_tow_collection_filter(const world_t *w,
@@ -5896,7 +6003,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         float dx = sp->ship->pos.x - a->pos.x;
         float dy = sp->ship->pos.y - a->pos.y;
         if (dx * dx > broad_sq || dy * dy > broad_sq) continue;
-        if (is_already_towed(sp->ship, i) || asteroid_has_tractor(a)) continue;
+        if (is_already_towed(w, sp, i) || asteroid_has_tractor(a)) continue;
         float d_sq = dx * dx + dy * dy;
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
@@ -6144,7 +6251,7 @@ static void release_towed_pods(world_t *w, server_player_t *sp) {
             ship_release_body_tow(sp->ship, pod->pos, &pod->vel);
             (void)player_detach_cargo_pod(w, sp, idx);
         } else {
-            world_tow_links_reconcile(w);
+            world_tow_links_refresh(w);
             break;
         }
     }
@@ -7893,13 +8000,9 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         int slot = sp->input.place_target_slot;
         if (s >= 0 && s < MAX_STATIONS && station_is_active(&w->stations[s])) {
             station_t *st = &w->stations[s];
-            /* Verify the slot is still open */
-            bool taken = false;
-            for (int m = 0; m < st->module_count; m++)
-                if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
-                    taken = true; break;
-                }
-            if (!taken) {
+            if (station_placement_validate(
+                    st, sc->module_type, ring, slot,
+                    STATION_PLACEMENT_SCAFFOLD) == STATION_PLACEMENT_OK) {
                 sc->state = SCAFFOLD_SNAPPING;
                 sc->placed_station = s;
                 sc->placed_ring = ring;
@@ -7961,11 +8064,16 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
                     break;
                 }
             }
-            if (chosen_ring < 0) {
+            if (chosen_ring < 0 ||
+                station_placement_validate(
+                    st, sc->module_type, chosen_ring, chosen_slot,
+                    STATION_PLACEMENT_SCAFFOLD) != STATION_PLACEMENT_OK) {
                 chosen_ring = 1;
                 chosen_slot = 0;
             }
-            if (st->module_count < MAX_MODULES_PER_STATION) {
+            if (station_placement_validate(
+                    st, sc->module_type, chosen_ring, chosen_slot,
+                    STATION_PLACEMENT_SCAFFOLD) == STATION_PLACEMENT_OK) {
                 commodity_t commodity = station_default_module_commodity(
                     st, sc->module_type);
                 (void)station_module_append(
@@ -7988,7 +8096,8 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         int ring, slot;
-        if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+        if (find_nearest_open_slot(st, sc->pos, sc->module_type,
+                                   &ring, &slot)) {
             sc->state = SCAFFOLD_SNAPPING;
             sc->placed_station = s;
             sc->placed_ring = ring;
@@ -8101,7 +8210,7 @@ static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
     if (idx >= 0) {
         if (idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active ||
             w->scaffolds[idx].state != SCAFFOLD_TOWING) {
-            world_tow_links_reconcile(w);
+            world_tow_links_refresh(w);
             idx = -1;
         }
     }
@@ -9119,7 +9228,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                             station_t *st = &w->stations[s];
                             if (!station_is_active(st)) continue;
                             int ring, slot;
-                            if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+                            if (find_nearest_open_slot(
+                                    st, sc->pos, sc->module_type,
+                                    &ring, &slot)) {
                                 sc->state = SCAFFOLD_SNAPPING;
                                 sc->placed_station = s;
                                 sc->placed_ring = ring;
@@ -9279,7 +9390,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             for (int k = 0; k < distinct_n; k++)
                 if (distinct[k] == type) { already = true; break; }
             bool over_cap = !already && distinct_n >= PLAYER_PLAN_TYPE_LIMIT;
-            if (!taken && !over_cap) {
+            station_placement_status_t placement = station_placement_validate(
+                st, type, ring, slot, STATION_PLACEMENT_PLAN);
+            bool ring_unlocked = ring <= station_max_plannable_ring(st);
+            bool type_unlocked = sp->ship && module_unlocked_for_player(
+                sp->ship->unlocked_modules, type);
+            if (!taken && !over_cap && ring_unlocked && type_unlocked &&
+                placement == STATION_PLACEMENT_OK) {
                 if (existing >= 0) {
                     st->placement_plans[existing].type = type;
                     st->placement_plans[existing].owner = (int8_t)sp->id;
@@ -9664,24 +9781,8 @@ static void step_contracts(world_t *w, float dt) {
                  * MAX_PRODUCT_STOCK hysteresis, kit inputs use the
                  * 12-unit shipyard target, and repair kits use their
                  * larger dock buffer. */
-                float current = station_inventory_amount(st, c);
-                float threshold = MAX_PRODUCT_STOCK * 0.95f;
-                if (c < COMMODITY_RAW_ORE_COUNT) {
-                    threshold = REFINERY_HOPPER_CAPACITY * 0.95f;
-                } else if ((c == COMMODITY_FRAME ||
-                            c == COMMODITY_LASER_MODULE ||
-                            c == COMMODITY_TRACTOR_MODULE) &&
-                           station_has_module(st, MODULE_SHIPYARD)) {
-                    threshold = 12.0f;
-                } else if (c == COMMODITY_REPAIR_KIT &&
-                           station_has_module(st, MODULE_DOCK) &&
-                           !station_has_module(st, MODULE_SHIPYARD)) {
-                    threshold = REPAIR_KIT_STOCK_CAP * 0.95f;
-                }
-                bool obsolete_raw_ore =
-                    c < COMMODITY_RAW_ORE_COUNT &&
-                    station_raw_ore_chain_need_score(st, c) <= 0.0f;
-                if (obsolete_raw_ore || current >= threshold) {
+                station_supply_need_t supply = station_supply_need_for(st, c);
+                if (supply.should_close) {
                     bool was_claimed = (w->contracts[i].claimed_by >= 0);
                     w->contracts[i].active = false;
                     if (was_claimed)
@@ -9817,8 +9918,12 @@ static void step_contracts(world_t *w, float dt) {
             float worst_deficit = 0.0f;
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                float deficit = station_raw_ore_need_score(st, (commodity_t)c);
-                if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
+                station_supply_need_t supply = station_supply_need_for(
+                    st, (commodity_t)c);
+                if (supply.should_open && supply.severity > worst_deficit) {
+                    worst_deficit = supply.severity;
+                    worst_ore = c;
+                }
             }
             if (worst_ore >= 0) {
                 /* Demand multiplier: 1.0× when at target, up to 1.5× at
@@ -9866,9 +9971,12 @@ static void step_contracts(world_t *w, float dt) {
                  * filled past cap before Kepler dropped low enough to
                  * trigger a contract. 90% keeps haulers moving while
                  * still gating contracts on actual demand. */
-                float deficit = MAX_PRODUCT_STOCK * 0.9f -
-                                station_inventory_amount(st, checks[j].ingot);
-                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
+                station_supply_need_t supply = station_supply_need_for(
+                    st, checks[j].ingot);
+                if (supply.should_open && supply.deficit > worst_deficit) {
+                    worst_deficit = supply.deficit;
+                    worst_idx = j;
+                }
             }
             if (worst_idx >= 0) {
                 commodity_t ingot = checks[worst_idx].ingot;
@@ -9912,12 +10020,14 @@ static void step_contracts(world_t *w, float dt) {
             };
             float worst_deficit = 0.0f;
             int   worst_idx = -1;
-            const float kit_input_target = 12.0f; /* keep ~3 batches' worth on hand */
             for (int j = 0; j < 3; j++) {
                 if (station_has_module(st, kit_inputs[j].producer)) continue;
-                float deficit = kit_input_target -
-                                station_inventory_amount(st, kit_inputs[j].c);
-                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
+                station_supply_need_t supply = station_supply_need_for(
+                    st, kit_inputs[j].c);
+                if (supply.should_open && supply.deficit > worst_deficit) {
+                    worst_deficit = supply.deficit;
+                    worst_idx = j;
+                }
             }
             if (worst_idx >= 0) {
                 commodity_t mat = kit_inputs[worst_idx].c;
@@ -9948,10 +10058,10 @@ static void step_contracts(world_t *w, float dt) {
         if (!need.active && !has_production_contract
             && station_has_module(st, MODULE_DOCK)
             && !station_has_module(st, MODULE_SHIPYARD)) {
-            const float kit_import_threshold = REPAIR_KIT_STOCK_CAP * 0.25f;
-            float kits_on_hand = (float)station_finished_count(st, COMMODITY_REPAIR_KIT);
-            if (kits_on_hand < kit_import_threshold) {
-                float deficit = REPAIR_KIT_STOCK_CAP - kits_on_hand;
+            station_supply_need_t supply = station_supply_need_for(
+                st, COMMODITY_REPAIR_KIT);
+            if (supply.should_open) {
+                float deficit = supply.deficit;
                 float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
                              ? st->base_price[COMMODITY_REPAIR_KIT]
                              : 6.0f;
@@ -11208,7 +11318,9 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
  * center (closest ring radius wins). The SLOT is chosen by the scaffold's
  * angle around the station. This lets the player aim by flying to the
  * inner area for ring 1, outer area for ring 3, and aiming the angle. */
-static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot) {
+static bool find_nearest_open_slot(const station_t *st, vec2 pos,
+                                   module_type_t type,
+                                   int *out_ring, int *out_slot) {
     vec2 delta = v2_sub(pos, st->pos);
     float dist = v2_len(delta);
     if (dist > SCAFFOLD_SNAP_RANGE + STATION_RING_RADIUS[STATION_NUM_RINGS]) return false;
@@ -11218,16 +11330,19 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
     float best_ring_diff = 1e18f;
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
         if (ring > 1 && !ring_has_dock(st, ring - 1)) continue; /* dock gates next ring */
-        /* Check if any slot on this ring is open */
+        /* Check if any slot on this ring satisfies the canonical physical
+         * placement contract for this scaffold type. */
         int slots = STATION_RING_SLOTS[ring];
-        bool any_open = false;
+        bool any_valid = false;
         for (int slot = 0; slot < slots; slot++) {
-            bool taken = false;
-            for (int m = 0; m < st->module_count; m++)
-                if (st->modules[m].ring == ring && st->modules[m].slot == slot) { taken = true; break; }
-            if (!taken) { any_open = true; break; }
+            if (station_placement_validate(
+                    st, type, ring, slot, STATION_PLACEMENT_SCAFFOLD) ==
+                STATION_PLACEMENT_OK) {
+                any_valid = true;
+                break;
+            }
         }
-        if (!any_open) continue;
+        if (!any_valid) continue;
         float ring_r = STATION_RING_RADIUS[ring];
         float diff = fabsf(dist - ring_r);
         if (diff < best_ring_diff) {
@@ -11244,10 +11359,9 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
     float best_slot_diff = 1e18f;
     int slots = STATION_RING_SLOTS[best_ring];
     for (int slot = 0; slot < slots; slot++) {
-        bool taken = false;
-        for (int m = 0; m < st->module_count; m++)
-            if (st->modules[m].ring == best_ring && st->modules[m].slot == slot) { taken = true; break; }
-        if (taken) continue;
+        if (station_placement_validate(
+                st, type, best_ring, slot, STATION_PLACEMENT_SCAFFOLD) !=
+            STATION_PLACEMENT_OK) continue;
         float slot_angle = module_angle_ring(st, best_ring, slot);
         float diff = fabsf(wrap_angle(slot_angle - scaffold_angle));
         if (diff < best_slot_diff) {
@@ -11265,19 +11379,18 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
 /* Convert a snapped scaffold into a station module.
  * The placed module enters a supply phase (build_progress 0→1) where
  * material must be delivered before the 10s construction timer starts. */
-static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
+static bool finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
     station_t *st = &w->stations[sc->placed_station];
-    if (st->module_count >= MAX_MODULES_PER_STATION) {
-        sc->active = false;
-        return;
-    }
+    station_placement_status_t placement = station_placement_validate(
+        st, sc->module_type, sc->placed_ring, sc->placed_slot,
+        STATION_PLACEMENT_SCAFFOLD);
+    if (placement != STATION_PLACEMENT_OK) return false;
     commodity_t commodity = station_default_module_commodity(st, sc->module_type);
     station_module_t *m = station_module_append(
         st, sc->module_type, (uint8_t)sc->placed_ring,
         (uint8_t)sc->placed_slot, true, 0.0f, commodity);
     if (!m) {
-        sc->active = false;
-        return;
+        return false;
     }
     /* If this slot was planned, fulfill the plan (remove it). */
     for (int p = 0; p < st->placement_plan_count; p++) {
@@ -11310,6 +11423,7 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
             module_type_name(sc->module_type), sc->placed_station,
             sc->placed_ring, sc->placed_slot, cost, commodity_name(material));
     sc->active = false;
+    return true;
 }
 
 static void step_scaffolds(world_t *w, float dt) {
@@ -11394,7 +11508,6 @@ static void step_scaffolds(world_t *w, float dt) {
                     st->dock_radius = OUTPOST_DOCK_RADIUS;
                     st->signal_range = OUTPOST_SIGNAL_RANGE;
                     add_module_at(st, MODULE_DOCK, 0, 0xFF);
-                    add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
                     rebuild_station_services(st);
                     int chosen_ring = 1, chosen_slot = 0;
                     for (int p = 0; p < st->placement_plan_count; p++) {
@@ -11407,7 +11520,10 @@ static void step_scaffolds(world_t *w, float dt) {
                             break;
                         }
                     }
-                    if (st->module_count < MAX_MODULES_PER_STATION) {
+                    if (station_placement_validate(
+                            st, sc->module_type, chosen_ring, chosen_slot,
+                            STATION_PLACEMENT_SCAFFOLD) ==
+                        STATION_PLACEMENT_OK) {
                         commodity_t commodity = station_default_module_commodity(
                             st, sc->module_type);
                         (void)station_module_append(
@@ -11429,7 +11545,8 @@ static void step_scaffolds(world_t *w, float dt) {
                 station_t *st = &w->stations[s];
                 if (!station_is_active(st)) continue;
                 int ring, slot;
-                if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+                if (find_nearest_open_slot(st, sc->pos, sc->module_type,
+                                           &ring, &slot)) {
                     sc->state = SCAFFOLD_SNAPPING;
                     sc->placed_station = s;
                     sc->placed_ring = ring;
@@ -11451,7 +11568,12 @@ static void step_scaffolds(world_t *w, float dt) {
             if (dist < SCAFFOLD_SNAP_ARRIVE) {
                 /* Close enough — lock into place and become a module */
                 sc->pos = target;
-                finalize_scaffold_placement(w, sc);
+                if (!finalize_scaffold_placement(w, sc)) {
+                    sc->state = SCAFFOLD_LOOSE;
+                    sc->placed_station = -1;
+                    sc->placed_ring = -1;
+                    sc->placed_slot = -1;
+                }
                 continue; /* scaffold is now deactivated */
             }
 
@@ -13153,6 +13275,12 @@ static void resolve_world_ship_collisions(world_t *w) {
 void world_sim_step(world_t *w, float dt) {
     sim_profile_begin_step();
 
+    /* Raw ship pointers are derived caches only. World copies, reconnect
+     * transfers, and save staging may move controller records between ticks;
+     * resolve every cache from its generation-checked handle before systems
+     * are allowed to observe it. */
+    world_rebind_ship_controllers(w);
+
     SIM_PROFILE_BEGIN(prof_bookkeeping);
     w->events.count = 0;
     sim_interactions_clear(w);
@@ -14093,16 +14221,6 @@ const char *server_pubkey_proof_status_name(
 /* Layer A.3 of #479 — signed-action verification                     */
 /* ================================================================== */
 
-static uint64_t read_u64_le_buf(const uint8_t *p) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (i * 8);
-    return v;
-}
-
-static uint16_t read_u16_le_buf(const uint8_t *p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-
 signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
                                             const uint8_t *data, int len,
                                             uint8_t *out_action_type,
@@ -14124,9 +14242,9 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
         return SIGNED_ACTION_REJECT_NO_PUBKEY;
 
     /* Layout: [type:1][nonce:8][action_type:1][payload_len:2][payload][sig:64] */
-    uint64_t nonce       = read_u64_le_buf(&data[1]);
+    uint64_t nonce       = wire_read_u64_le(&data[1]);
     uint8_t  action_type = data[9];
-    uint16_t payload_len = read_u16_le_buf(&data[10]);
+    uint16_t payload_len = wire_read_u16_le(&data[10]);
     if (payload_len > SIGNED_ACTION_MAX_PAYLOAD)
         return SIGNED_ACTION_REJECT_MALFORMED;
     int expected = 1 + 11 + (int)payload_len + (int)SIGNED_ACTION_SIG_SIZE;

@@ -5912,7 +5912,7 @@ static void step_scaffold_tow_contract(world_t *w, npc_ship_t *npc, int n, float
         if (!sc->active || sc->state == SCAFFOLD_PLACED ||
             sc->state == SCAFFOLD_SNAPPING ||
             scaffold_tractor_npc(sc) != n) {
-            world_tow_links_reconcile(w);
+            world_tow_links_refresh(w);
             if (npc->state == NPC_STATE_TRAVEL_TO_DEST ||
                 npc->state == NPC_STATE_UNLOADING) {
                 npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -6368,7 +6368,7 @@ void step_npc_ships(world_t *w, float dt) {
                         (void)world_asteroid_set_npc_tractor(
                             w, towed_fragment, n);
                     if (asteroid_tractor_npc(tow) != n) {
-                        world_tow_links_reconcile(w);
+                        world_tow_links_refresh(w);
                         npc->state = NPC_STATE_IDLE;
                         npc->state_timer = 2.0f;
                         break;

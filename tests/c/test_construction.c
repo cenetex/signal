@@ -383,7 +383,10 @@ TEST(test_module_build_material_types) {
     station_t *st = &w.stations[1];
     add_hopper_for(st, 3, 1, COMMODITY_CRYSTAL_INGOT);
     add_hopper_for(st, 3, 7, COMMODITY_FRAME);
-    begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 4);
+    int build_slot = station_ring_free_slot(
+        st, 2, STATION_RING_SLOTS[2]);
+    ASSERT(build_slot >= 0);
+    begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, build_slot);
     bool found_crystal = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CRYSTAL_INGOT) {
@@ -402,7 +405,10 @@ TEST(test_module_construction_and_delivery) {
     add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(st, 3, 2, COMMODITY_FRAME);
     int producer_idx = mc_before + 2;
-    begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 4);
+    int build_slot = station_ring_free_slot(
+        st, 2, STATION_RING_SLOTS[2]);
+    ASSERT(build_slot >= 0);
+    begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, build_slot);
     ASSERT_EQ_INT(st->module_count, mc_before + 3);
     ASSERT(st->modules[producer_idx].scaffold);
     ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
@@ -1472,7 +1478,10 @@ TEST(test_module_activation_does_not_spawn_free_worker_hull) {
      * ferrite ore hopper to satisfy its input. */
     station_t *st = &w.stations[1];
     add_hopper_for(st, 3, 1, COMMODITY_FERRITE_ORE);
-    begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, 4);
+    int build_slot = station_ring_free_slot(
+        st, 2, STATION_RING_SLOTS[2]);
+    ASSERT(build_slot >= 0);
+    begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, build_slot);
     station_module_t *furnace = &st->modules[st->module_count - 1];
     ASSERT_EQ_INT(furnace->type, MODULE_FURNACE);
     ASSERT(furnace->scaffold);
@@ -4301,6 +4310,34 @@ TEST(test_seed_stations_pair_complete) {
     }
 }
 
+TEST(test_station_placement_contract_distinguishes_plan_and_physical) {
+    station_t st = {0};
+    st.signal_range = 100.0f;
+
+    /* A future plan may declare a producer before its intake is built; a
+     * physical scaffold may not materialize into that invalid live layout. */
+    ASSERT_EQ_INT(station_placement_validate(
+                      &st, MODULE_FRAME_PRESS, 2, 0,
+                      STATION_PLACEMENT_PLAN),
+                  STATION_PLACEMENT_OK);
+    ASSERT_EQ_INT(station_placement_validate(
+                      &st, MODULE_FRAME_PRESS, 2, 0,
+                      STATION_PLACEMENT_PHYSICAL),
+                  STATION_PLACEMENT_MISSING_INPUT_PAIR);
+
+    st.modules[0] = (station_module_t){
+        .type = MODULE_SIGNAL_RELAY,
+        .ring = 2,
+        .slot = 0,
+        .build_progress = 1.0f,
+    };
+    st.module_count = 1;
+    ASSERT_EQ_INT(station_placement_validate(
+                      &st, MODULE_FRAME_PRESS, 2, 0,
+                      STATION_PLACEMENT_PLAN),
+                  STATION_PLACEMENT_SLOT_OCCUPIED);
+}
+
 void register_construction_module_schema_tests(void) {
     TEST_SECTION("\nModule schema (#280):\n");
     RUN(test_module_build_state_lifecycle);
@@ -4345,6 +4382,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seeded_kepler_shipyard_inner_ring_layout);
     RUN(test_seed_stations_pair_complete);
+    RUN(test_station_placement_contract_distinguishes_plan_and_physical);
     RUN(test_helios_rings_rotate_under_dynamics);
     RUN(test_helios_ring2_keeps_legacy_rotation_rate);
     RUN(test_targeted_spokes_drive_only_loaded_rings);

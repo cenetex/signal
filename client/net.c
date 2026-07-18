@@ -10,6 +10,7 @@
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
 #include "net_clock.h"
+#include "wire_codec.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -88,55 +89,15 @@ static void net_player_state_clear_ack_transport(NetPlayerState *ps) {
     ps->ack_server_send_ms = 0;
 }
 
-/* ---------- Protocol helpers (shared between WASM and native) ------------ */
-
-static void write_f32_le(uint8_t* buf, float v) {
-    union { float f; uint32_t u; } conv;
-    conv.f = v;
-    buf[0] = (uint8_t)(conv.u);
-    buf[1] = (uint8_t)(conv.u >> 8);
-    buf[2] = (uint8_t)(conv.u >> 16);
-    buf[3] = (uint8_t)(conv.u >> 24);
-}
-
-static void write_u32_le(uint8_t* buf, uint32_t v) {
-    buf[0] = (uint8_t)(v & 0xFFu);
-    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
-    buf[2] = (uint8_t)((v >> 16) & 0xFFu);
-    buf[3] = (uint8_t)((v >> 24) & 0xFFu);
-}
-
-static void write_u16_le(uint8_t* buf, uint16_t v) {
-    buf[0] = (uint8_t)(v & 0xFFu);
-    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
-}
-
-static uint32_t read_u32_le(const uint8_t* buf) {
-    return (uint32_t)buf[0]
-         | ((uint32_t)buf[1] << 8)
-         | ((uint32_t)buf[2] << 16)
-         | ((uint32_t)buf[3] << 24);
-}
-
-static uint16_t read_u16_le(const uint8_t* buf) {
-    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
-}
-
-static uint64_t read_u64_le(const uint8_t* buf) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++)
-        v |= ((uint64_t)buf[i]) << (8 * i);
-    return v;
-}
-
-static float read_f32_le(const uint8_t* buf) {
-    union { float f; uint32_t u; } conv;
-    conv.u = (uint32_t)buf[0]
-           | ((uint32_t)buf[1] << 8)
-           | ((uint32_t)buf[2] << 16)
-           | ((uint32_t)buf[3] << 24);
-    return conv.f;
-}
+/* Short aliases keep record layouts readable; implementations live in the
+ * shared codec used by both endpoints. */
+#define write_f32_le wire_write_f32_le
+#define write_u32_le wire_write_u32_le
+#define write_u16_le wire_write_u16_le
+#define read_u32_le  wire_read_u32_le
+#define read_u16_le  wire_read_u16_le
+#define read_u64_le  wire_read_u64_le
+#define read_f32_le  wire_read_f32_le
 
 static int16_t net_player_motion_q_encode(float value) {
     if (!isfinite(value) || PLAYER_MOTION_Q_POS_SCALE <= 0.0f)

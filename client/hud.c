@@ -210,32 +210,6 @@ static uint8_t hud_best_nearby_fragment_grade(void) {
     return best;
 }
 
-static uint8_t hud_cargo_pod_best_grade(const cargo_pod_t *pod) {
-    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
-    if (!pod || !pod->active) return best;
-    bool exact_local = pod->manifest_count > 0 &&
-                       pod->manifest_count == pod->quantity;
-    if (exact_local) {
-        bool all_match = true;
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            const cargo_unit_t *unit = &pod->manifest_units[i];
-            if ((commodity_t)unit->commodity != pod->commodity) {
-                all_match = false;
-                break;
-            }
-            if (unit->grade < (uint8_t)MINING_GRADE_COUNT &&
-                unit->grade > best) {
-                best = unit->grade;
-            }
-        }
-        if (all_match) return best;
-    }
-    if (pod->summary_grade < (uint8_t)MINING_GRADE_COUNT) {
-        return pod->summary_grade;
-    }
-    return best;
-}
-
 static void hud_set_grade_color(uint8_t grade) {
     uint8_t r, g0, b;
     if (grade >= (uint8_t)MINING_GRADE_COUNT)
@@ -505,7 +479,7 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
             if (pod->active) {
                 out.kind = HUD_ACTION_SCAN_CARGO_POD;
                 out.commodity = pod->commodity;
-                out.grade = (int)hud_cargo_pod_best_grade(pod);
+                out.grade = (int)cargo_pod_display_grade(pod);
                 out.int_a = pod->quantity;
                 out.int_b = pod->kind;
                 return out;

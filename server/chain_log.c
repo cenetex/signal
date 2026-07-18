@@ -13,6 +13,7 @@
 #include "sha256.h"
 #include "base58.h"
 #include "signal_crypto.h"
+#include "persistence_io.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -54,14 +55,7 @@ _Static_assert(CHAIN_UNSIGNED_HEADER_SIZE ==
 static char g_chain_dir[256] = "chain";
 static bool g_chain_log_disk_enabled = true;
 
-static bool chain_log_flush_durable(FILE *f) {
-    if (!f || fflush(f) != 0) return false;
-#if defined(_WIN32)
-    return _commit(_fileno(f)) == 0;
-#else
-    return fsync(fileno(f)) == 0;
-#endif
-}
+#define chain_log_flush_durable persistence_flush_durable
 
 static void chain_log_rollback_append(const char *path, long length) {
     if (!path || length < 0) return;

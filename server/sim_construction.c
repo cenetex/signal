@@ -227,19 +227,14 @@ static bool construction_check_placement(const station_t *st,
                                          module_type_t type,
                                          int ring, int slot,
                                          int station_idx) {
-    (void)station_idx;
-    if (!module_valid_on_ring(type, ring)) {
-        SIM_LOG("[sim] refused %s on station %d ring %d — invalid ring for type\n",
-                module_type_name(type), station_idx, ring);
-        return false;
-    }
-    if (module_requires_pair(type) && !station_pair_satisfied(st, ring, slot, type)) {
-        SIM_LOG("[sim] refused %s on station %d ring %d slot %d — no compatible %s\n",
-                module_type_name(type), station_idx, ring, slot,
-                module_type_name(module_pair_intake(type)));
-        return false;
-    }
-    return true;
+    (void)station_idx; /* SIM_LOG compiles out in non-debug builds. */
+    station_placement_status_t status = station_placement_validate(
+        st, type, ring, slot, STATION_PLACEMENT_PHYSICAL);
+    if (status == STATION_PLACEMENT_OK) return true;
+    SIM_LOG("[sim] refused %s on station %d ring %d slot %d — %s\n",
+            module_type_name(type), station_idx, ring, slot,
+            station_placement_status_label(status));
+    return false;
 }
 
 /* Add a scaffold module to a station and generate a supply contract */
@@ -277,21 +272,13 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
  * topmost active ring," matching the pre-pair behavior. */
 static bool find_paired_free_slot(const station_t *st, module_type_t type,
                                   int *out_ring, int *out_slot) {
-    bool needs_pair = module_requires_pair(type);
     for (int r = STATION_NUM_RINGS; r >= 1; r--) {
         if (!station_has_ring(st, r)) continue;
-        if (!module_valid_on_ring(type, r)) continue;
         int slots = STATION_RING_SLOTS[r];
         for (int s = 0; s < slots; s++) {
-            /* Slot must be free. */
-            bool taken = false;
-            for (int i = 0; i < st->module_count; i++) {
-                if (st->modules[i].ring == r && st->modules[i].slot == s) {
-                    taken = true; break;
-                }
-            }
-            if (taken) continue;
-            if (needs_pair && !station_pair_satisfied(st, r, s, type)) continue;
+            if (station_placement_validate(
+                    st, type, r, s, STATION_PLACEMENT_PHYSICAL) !=
+                STATION_PLACEMENT_OK) continue;
             *out_ring = r;
             *out_slot = s;
             return true;

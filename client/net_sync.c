@@ -544,14 +544,13 @@ static bool client_move_player_slot(int dst_slot, int src_slot) {
     server_connection_t *connection = dst->connection;
     server_replication_t *replication = dst->replication;
     entity_ref_t ship_ref = dst->ship_ref;
-    ship_t *ship = dst->ship;
     uint32_t ship_asset_id = dst->ship_asset_id;
     *dst = controller;
     dst->connection = connection;
     dst->replication = replication;
     dst->ship_ref = ship_ref;
-    dst->ship = ship;
     dst->ship_asset_id = ship_asset_id;
+    world_rebind_ship_controllers(&g.world);
 
     world_player_runtime_slot_reset(&g.world, src_slot);
     (void)world_player_ship_slot_activate(&g.world, src_slot);
@@ -1338,7 +1337,8 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
     if (g.station_prev_seen[index] && station_exists(st)) {
         bool fired = false;
         for (int i = 0; i < COMMODITY_COUNT; i++) {
-            if (fabsf(inventory[i] - g.station_prev_inventory[index][i]) >= 0.5f) {
+            if (fabsf(inventory[i] -
+                      g.station_stock_summary[index][i]) >= 0.5f) {
                 fired = true;
                 break;
             }
@@ -1350,9 +1350,15 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
         if (fired) g.station_heartbeat[index] = 1.0f;
     }
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        st->_inventory_cache[i] = inventory[i];
-        g.station_prev_inventory[index][i] = inventory[i];
+        g.station_stock_summary[index][i] = inventory[i];
     }
+    /* Raw ore is genuinely stored in station_t on both sides. Finished
+     * stock remains exclusively in the client read model above. */
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        st->_inventory_cache[i] = inventory[i];
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++)
+        st->_inventory_cache[i] = 0.0f;
+    g.station_stock_summary_valid[index] = true;
     g.station_prev_credit_pool[index] = credit_pool;
     g.station_prev_seen[index] = station_exists(st);
 }

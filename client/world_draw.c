@@ -3952,32 +3952,6 @@ void draw_damage_flash(float screen_w, float screen_h) {
 /* Scaffold world objects                                             */
 /* ================================================================== */
 
-static uint8_t cargo_pod_visual_best_grade(const cargo_pod_t *pod) {
-    uint8_t best = (uint8_t)MINING_GRADE_COMMON;
-    if (!pod || !pod->active) return best;
-    bool exact_local = pod->manifest_count > 0 &&
-                       pod->manifest_count == pod->quantity;
-    if (exact_local) {
-        bool all_match = true;
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            const cargo_unit_t *unit = &pod->manifest_units[i];
-            if ((commodity_t)unit->commodity != pod->commodity) {
-                all_match = false;
-                break;
-            }
-            if (unit->grade < (uint8_t)MINING_GRADE_COUNT &&
-                unit->grade > best) {
-                best = unit->grade;
-            }
-        }
-        if (all_match) return best;
-    }
-    if (pod->summary_grade < (uint8_t)MINING_GRADE_COUNT) {
-        return pod->summary_grade;
-    }
-    return best;
-}
-
 static void cargo_pod_content_color(const cargo_pod_t *pod,
                                     float *r, float *g0, float *b) {
     if (!pod || pod->kind == CARGO_POD_GAS) {
@@ -4036,7 +4010,7 @@ void draw_cargo_pods(void) {
             LOCAL_PLAYER.scan_active &&
             LOCAL_PLAYER.scan_target_type == INSPECT_TARGET_CARGO_POD &&
             LOCAL_PLAYER.scan_target_index == i;
-        uint8_t grade = cargo_pod_visual_best_grade(pod);
+        uint8_t grade = (uint8_t)cargo_pod_display_grade(pod);
         if (scan_reveal && grade > (uint8_t)MINING_GRADE_COMMON) {
             float gr, gg, gb;
             grade_tint(grade, &gr, &gg, &gb);

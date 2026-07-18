@@ -18,66 +18,20 @@
 #include "sim_ai.h"
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
+#include "wire_codec.h"
 
 /* Forward declaration — defined below. */
 static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t *ch);
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-static inline void write_f32_le(uint8_t *buf, float v) {
-    union { float f; uint32_t u; } conv;
-    conv.f = v;
-    buf[0] = (uint8_t)(conv.u);
-    buf[1] = (uint8_t)(conv.u >> 8);
-    buf[2] = (uint8_t)(conv.u >> 16);
-    buf[3] = (uint8_t)(conv.u >> 24);
-}
-
-static inline void write_u16_le(uint8_t *buf, uint16_t v) {
-    buf[0] = (uint8_t)(v);
-    buf[1] = (uint8_t)(v >> 8);
-}
-
-static inline uint16_t read_u16_le(const uint8_t *buf) {
-    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
-}
-
-static inline void write_u32_le(uint8_t *buf, uint32_t v) {
-    buf[0] = (uint8_t)(v);
-    buf[1] = (uint8_t)(v >> 8);
-    buf[2] = (uint8_t)(v >> 16);
-    buf[3] = (uint8_t)(v >> 24);
-}
-
-static inline uint32_t read_u32_le(const uint8_t *buf) {
-    return (uint32_t)buf[0]
-         | ((uint32_t)buf[1] << 8)
-         | ((uint32_t)buf[2] << 16)
-         | ((uint32_t)buf[3] << 24);
-}
-
-static inline void write_u64_le(uint8_t *buf, uint64_t v) {
-    for (int i = 0; i < 8; i++)
-        buf[i] = (uint8_t)(v >> (8 * i));
-}
-
-static inline uint64_t read_u64_le(const uint8_t *buf) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++)
-        v |= ((uint64_t)buf[i]) << (8 * i);
-    return v;
-}
-
-static inline float read_f32_le(const uint8_t *buf) {
-    union { float f; uint32_t u; } conv;
-    conv.u = (uint32_t)buf[0]
-           | ((uint32_t)buf[1] << 8)
-           | ((uint32_t)buf[2] << 16)
-           | ((uint32_t)buf[3] << 24);
-    return conv.f;
-}
+/* Short aliases keep the protocol record definitions compact. */
+#define write_f32_le wire_write_f32_le
+#define write_u16_le wire_write_u16_le
+#define read_u16_le  wire_read_u16_le
+#define write_u32_le wire_write_u32_le
+#define read_u32_le  wire_read_u32_le
+#define write_u64_le wire_write_u64_le
+#define read_u64_le  wire_read_u64_le
+#define read_f32_le  wire_read_f32_le
 
 static inline uint64_t net_fnv1a64_update(uint64_t h, uint8_t byte) {
     h ^= (uint64_t)byte;
@@ -4806,16 +4760,7 @@ static inline void cargo_pod_summary_fields(const cargo_pod_t *pod,
     if (pod) {
         if (pod->shipment_id != 0)
             flags |= CARGO_POD_SUMMARY_SHIPMENT_BOUND;
-        if (pod->manifest_count > 0 &&
-            pod->manifest_count <= CARGO_POD_MANIFEST_CAP) {
-            for (uint16_t i = 0; i < pod->manifest_count; i++) {
-                uint8_t grade = pod->manifest_units[i].grade;
-                if (grade < (uint8_t)MINING_GRADE_COUNT &&
-                    grade > best_grade) {
-                    best_grade = grade;
-                }
-            }
-        }
+        best_grade = (uint8_t)cargo_pod_manifest_best_grade(pod);
         if (cargo_pod_has_exact_manifest(pod, pod->commodity))
             flags |= CARGO_POD_SUMMARY_EXACT_MATERIAL;
     }

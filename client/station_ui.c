@@ -46,6 +46,18 @@ const station_t* station_at(int station_index) {
     return &g.world.stations[station_index];
 }
 
+float client_station_stock_amount(const station_t *station,
+                                  commodity_t commodity) {
+    if (!station || (unsigned)commodity >= COMMODITY_COUNT) return 0.0f;
+    if (station >= &g.world.stations[0] &&
+        station < &g.world.stations[MAX_STATIONS]) {
+        int index = (int)(station - &g.world.stations[0]);
+        if (g.station_stock_summary_valid[index])
+            return g.station_stock_summary[index][commodity];
+    }
+    return station_inventory_amount(station, commodity);
+}
+
 const station_t* current_station_ptr(void) {
     return station_at(LOCAL_PLAYER.current_station);
 }
@@ -2162,9 +2174,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             : (int)lroundf(REFINERY_HOPPER_CAPACITY);
         int dock_stock_units = trade_station_market_pod_units(
             st, station_idx, c, MINING_GRADE_COUNT);
-        float station_total_amount = (finished_good
-            ? (float)station_manifest_count_c(st, c)
-            : station_inventory_amount(st, c)) + (float)dock_stock_units;
+        float station_total_amount = client_station_stock_amount(st, c) +
+                                     (float)dock_stock_units;
         int station_total_inv =
             (int)floorf(station_total_amount + 0.0001f);
         int station_space_units =
@@ -4689,9 +4700,8 @@ static void draw_yard_view(const station_ui_state_t *ui,
             commodity_t mat_type = module_build_material_lookup(t);
             float need = module_build_cost_lookup(t);
             float have = (p == 0 && nascent) ? nascent->build_amount : 0.0f;
-            float station_have = (mat_type >= COMMODITY_RAW_ORE_COUNT)
-                ? (float)station_manifest_count_c(ui->station, mat_type)
-                : ui->station->_inventory_cache[mat_type];
+            float station_have = client_station_stock_amount(ui->station,
+                                                             mat_type);
             int got = (int)lroundf(have);
             int total = (int)lroundf(need);
             int remaining = (int)ceilf((need - have) - 0.001f);

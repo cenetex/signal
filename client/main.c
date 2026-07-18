@@ -507,6 +507,11 @@ static void refresh_station_manifest_summaries(void) {
         memset(&g.station_manifest_summary[s][0][0], 0,
                sizeof(g.station_manifest_summary[s]));
         const station_t *st = &g.world.stations[s];
+        for (int c = 0; c < COMMODITY_COUNT; c++) {
+            g.station_stock_summary[s][c] =
+                station_inventory_amount(st, (commodity_t)c);
+        }
+        g.station_stock_summary_valid[s] = station_exists(st);
         if (!st->manifest.units || st->manifest.count == 0) continue;
         for (uint16_t i = 0; i < st->manifest.count; i++) {
             const cargo_unit_t *u = &st->manifest.units[i];
@@ -2121,7 +2126,8 @@ static void render_world(void) {
                 default: break;
             }
             if ((int)sell_c >= 0) {
-                int stock = (int)lroundf(tst->_inventory_cache[sell_c]);
+                int stock = (int)lroundf(
+                    client_station_stock_amount(tst, sell_c));
                 int price = (int)lroundf(station_sell_price(tst, sell_c));
                 if (stock > 0)
                     sdtx_printf("Stock %d // dock to trade @ %d cr", stock, price);

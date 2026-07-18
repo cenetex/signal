@@ -39,6 +39,7 @@
 #include "protocol.h"
 #include "station_authority.h"
 #include "chain_log.h"
+#include "persistence_io.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -68,97 +69,11 @@
 /* World persistence                                                   */
 /* ================================================================== */
 
-/* ---- CRC32 (IEEE 802.3 polynomial, public domain) ---- */
-static uint32_t crc32_update(uint32_t crc, const void *buf, size_t len) {
-    const uint8_t *p = (const uint8_t *)buf;
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= p[i];
-        for (int j = 0; j < 8; j++)
-            /* MSVC C4146: unary minus on unsigned — use (0u - x) form
-             * to spell out the two's-complement intent explicitly. */
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-    }
-    return ~crc;
-}
-
-static uint32_t crc32_file(FILE *f) {
-    uint32_t crc = 0;
-    long start = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t chunk[4096];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
-        crc = crc32_update(crc, chunk, n);
-    fseek(f, start, SEEK_SET);
-    return crc;
-}
-
-static bool save_flush_durable(FILE *f) {
-    if (!f || fflush(f) != 0) return false;
-#ifdef _WIN32
-    return _commit(_fileno(f)) == 0;
-#else
-    return fsync(fileno(f)) == 0;
-#endif
-}
-
-static bool save_sync_parent_dir(const char *path) {
-#ifdef _WIN32
-    (void)path;
-    return true;
-#else
-    if (!path || !path[0]) return false;
-    char dir[512];
-    int n = snprintf(dir, sizeof(dir), "%s", path);
-    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
-    char *slash = strrchr(dir, '/');
-    if (slash) {
-        if (slash == dir) slash[1] = '\0';
-        else *slash = '\0';
-    } else {
-        snprintf(dir, sizeof(dir), ".");
-    }
-    int fd = open(dir, O_RDONLY);
-    if (fd < 0) return false;
-    bool ok = fsync(fd) == 0;
-    close(fd);
-    return ok;
-#endif
-}
-
-static bool save_replace_file(const char *tmp_path, const char *final_path) {
-#ifdef _WIN32
-    return MoveFileExA(tmp_path, final_path,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0 &&
-           save_sync_parent_dir(final_path);
-#else
-    if (rename(tmp_path, final_path) != 0) return false;
-    return save_sync_parent_dir(final_path);
-#endif
-}
-
-static bool crc32_file_prefix(FILE *f, long end, uint32_t *out_crc) {
-    if (!f || !out_crc || end < 0) return false;
-    uint32_t crc = 0;
-    long start = ftell(f);
-    if (fseek(f, 0, SEEK_SET) != 0) return false;
-    long remaining = end;
-    uint8_t chunk[4096];
-    while (remaining > 0) {
-        size_t want = remaining < (long)sizeof(chunk) ? (size_t)remaining : sizeof(chunk);
-        size_t n = fread(chunk, 1, want, f);
-        if (n == 0) {
-            (void)fseek(f, start, SEEK_SET);
-            return false;
-        }
-        crc = crc32_update(crc, chunk, n);
-        remaining -= (long)n;
-    }
-    if (fseek(f, start, SEEK_SET) != 0) return false;
-    *out_crc = crc;
-    return true;
-}
+#define crc32_update       persistence_crc32_update
+#define crc32_file         persistence_crc32_file
+#define crc32_file_prefix  persistence_crc32_file_prefix
+#define save_flush_durable persistence_flush_durable
+#define save_replace_file  persistence_replace_file
 
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
