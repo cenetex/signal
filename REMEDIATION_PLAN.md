@@ -255,9 +255,10 @@ platform drift need broader automated coverage.
   `handoff_ticket_unpack`/`_verify_hashes`, `handoff_ship_snapshot_unpack`),
   with a minimized seed corpus tracked in `tests/fuzz/corpus/` and a
   standalone ASan replay target (`make fuzz-receipts-standalone`) for crash
-  triage. Still open: full client-input/snapshot protocol decode (needs
-  world/player shims), save-load parsing, chain-log parsing, and a
-  time-bounded CI job so the harness runs on PRs instead of only locally.
+  triage, and a time-bounded `fuzz` job in the native safety gates workflow
+  (corpus replay as regression gate + 5-minute exploration, crash artifacts
+  uploaded). Still open: full client-input/snapshot protocol decode (needs
+  world/player shims), save-load parsing, and chain-log parsing harnesses.
 
 ---
 
