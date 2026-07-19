@@ -770,8 +770,11 @@ typedef struct {
     struct {
         cargo_pod_t prev[MAX_CARGO_PODS];
         cargo_pod_t curr[MAX_CARGO_PODS];
-        float t;
-        float interval;
+        /* Cargo metadata, linear motion, and full pose packets are sparse
+         * deltas and may arrive as separate packets in the same frame. Keep
+         * one clock per pod so traffic for pod B cannot restart pod A's
+         * correction or strand it on an old extrapolation baseline. */
+        float elapsed[MAX_CARGO_PODS];
     } cargo_pod_interp;
     struct {
         NetPlayerState prev[NET_MAX_PLAYERS];

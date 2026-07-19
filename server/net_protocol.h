@@ -5120,7 +5120,7 @@ static inline int serialize_cargo_pod_motion_q_for_player(
            count * CARGO_POD_MOTION_Q_RECORD_SIZE;
 }
 
-#define CARGO_POD_MOTION_NET_REPEAT_TICKS 240u /* ~0.5 Hz visual correction */
+#define CARGO_POD_TOW_MOTION_REPEAT_TICKS 12u /* 10 Hz while a beam constrains pose */
 #define CARGO_POD_MOTION_PREDICT_ERROR_SQ (32.0f * 32.0f)
 #define CARGO_POD_MOTION_VEL_ERROR_SQ (8.0f * 8.0f)
 #define CARGO_POD_MOTION_ROT_ERROR 1.25f
@@ -5144,17 +5144,20 @@ static inline float cargo_pod_motion_rotation_delta(float a, float b) {
     return d;
 }
 
-static inline bool cargo_pod_motion_should_send(
+static inline bool cargo_pod_motion_should_send_mode(
     const server_player_t *sp,
     uint8_t index,
     vec2 pos,
     vec2 vel,
     float rotation,
-    uint32_t server_tick) {
+    uint32_t server_tick,
+    bool tractored) {
     if (!sp || index >= MAX_CARGO_PODS) return false;
     uint32_t last_tick = sp->replication->cargo_pod_motion_sent_tick[index];
     if (last_tick == 0u) return true;
     uint32_t age_ticks = server_tick - last_tick;
+    if (tractored && age_ticks >= CARGO_POD_TOW_MOTION_REPEAT_TICKS)
+        return true;
     if (age_ticks >= CARGO_POD_MOTION_HEARTBEAT_TICKS)
         return true;
 
@@ -5172,12 +5175,27 @@ static inline bool cargo_pod_motion_should_send(
         CARGO_POD_MOTION_ROT_ERROR;
 }
 
-static inline bool cargo_pod_motion_linear_q_eligible(
+static inline bool cargo_pod_motion_should_send(
+    const server_player_t *sp,
+    uint8_t index,
+    vec2 pos,
+    vec2 vel,
+    float rotation,
+    uint32_t server_tick) {
+    return cargo_pod_motion_should_send_mode(
+        sp, index, pos, vel, rotation, server_tick, false);
+}
+
+static inline bool cargo_pod_motion_linear_q_eligible_mode(
     const server_player_t *sp,
     uint8_t index,
     float rotation,
-    uint32_t server_tick) {
+    uint32_t server_tick,
+    bool tractored) {
     if (!sp || index >= MAX_CARGO_PODS) return false;
+    /* A towed pod's orientation is part of the beam constraint. Always
+     * carry it instead of using the rotation-less linear record. */
+    if (tractored) return false;
     uint32_t last_tick = sp->replication->cargo_pod_motion_sent_tick[index];
     if (last_tick == 0u) return false;
     uint32_t age_ticks = server_tick - last_tick;
@@ -5186,6 +5204,15 @@ static inline bool cargo_pod_motion_linear_q_eligible(
     return cargo_pod_motion_rotation_delta(
         sp->replication->cargo_pod_motion_sent_rotation[index], rotation) <
         CARGO_POD_MOTION_ROT_ERROR;
+}
+
+static inline bool cargo_pod_motion_linear_q_eligible(
+    const server_player_t *sp,
+    uint8_t index,
+    float rotation,
+    uint32_t server_tick) {
+    return cargo_pod_motion_linear_q_eligible_mode(
+        sp, index, rotation, server_tick, false);
 }
 
 static inline void cargo_pod_motion_note_sent(server_player_t *sp,

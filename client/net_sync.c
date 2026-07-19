@@ -36,6 +36,8 @@
 #define SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC 0.60f
 #define CARGO_POD_RENDER_CORRECTION_SEC 0.18f
 #define CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
+#define CARGO_POD_RENDER_CORRECTION_CUTOFF_SEC \
+    (CARGO_POD_RENDER_CORRECTION_SEC * 4.0f)
 #define REMOTE_PENDING_RECEIPT_CAP 64
 #define NET_INPUT_JITTER_BUFFER_TICKS 1u
 /* Replay is keyed to server-anchored sim ticks. Movement packets carry the
@@ -736,6 +738,39 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
     return out;
 }
 
+static void cargo_pod_interp_begin_update(int idx) {
+    if (idx < 0 || idx >= MAX_CARGO_PODS) return;
+    float elapsed = clampf(g.cargo_pod_interp.elapsed[idx], 0.0f,
+                           CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+    g.cargo_pod_interp.prev[idx] =
+        cargo_pod_render_state_at(idx, elapsed);
+    g.cargo_pod_interp.elapsed[idx] = 0.0f;
+}
+
+/* Cargo identity deltas already carry the authoritative tractor player.
+ * Project those bindings into the local ship's compatibility list so tow
+ * prediction, render offsets, capacity/UI, and release affordances all read
+ * the same relationship. A held pod is necessarily within the player's
+ * relevance window, so the sparse identity cache is sufficient authority. */
+static void sync_local_towed_pods_from_cargo_authority(void) {
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
+    server_player_t *sp = &g.world.players[player_idx];
+    if (!sp->connected || !sp->ship) return;
+
+    int cap = (int)(sizeof(sp->ship->towed_pods) /
+                    sizeof(sp->ship->towed_pods[0]));
+    int count = 0;
+    for (int i = 0; i < MAX_CARGO_PODS && count < cap; i++) {
+        const cargo_pod_t *pod = &g.cargo_pod_interp.curr[i];
+        if (!pod->active || cargo_pod_player_tractor(pod) != player_idx)
+            continue;
+        sp->ship->towed_pods[count++] = (int16_t)i;
+    }
+    for (int i = count; i < cap; i++) sp->ship->towed_pods[i] = -1;
+    sp->ship->towed_pod_count = (uint8_t)count;
+}
+
 static bool net_local_player_towing_asteroid(int idx) {
     if (!g.net_authority_enabled || !net_local_prediction_enabled())
         return false;
@@ -812,8 +847,10 @@ static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
     backdated.pos = v2_sub(predicted->pos,
                            v2_scale(predicted->vel, elapsed));
 
-    g.cargo_pod_interp.prev[idx] = *predicted;
+    g.cargo_pod_interp.prev[idx] = backdated;
+    g.cargo_pod_interp.prev[idx].active = false;
     g.cargo_pod_interp.curr[idx] = backdated;
+    g.cargo_pod_interp.elapsed[idx] = elapsed;
 }
 
 static void net_adopt_local_scaffold_prediction(int idx, float elapsed) {
@@ -849,16 +886,19 @@ void net_adopt_local_tow_prediction(float dt) {
         net_adopt_local_asteroid_prediction(idx, elapsed);
     }
 
-    float pod_elapsed = net_prediction_future_elapsed(
-        g.cargo_pod_interp.t, g.cargo_pod_interp.interval, dt,
-        CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
     int pod_count = sp->ship->towed_pod_count;
     int pod_cap = (int)(sizeof(sp->ship->towed_pods) /
                         sizeof(sp->ship->towed_pods[0]));
     if (pod_count > pod_cap) pod_count = pod_cap;
-    for (int t = 0; t < pod_count; t++)
-        net_adopt_local_cargo_pod_prediction(
-            sp->ship->towed_pods[t], pod_elapsed);
+    for (int t = 0; t < pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        float elapsed = g.cargo_pod_interp.elapsed[idx];
+        if (isfinite(dt) && dt > 0.0f) elapsed += dt;
+        elapsed = clampf(elapsed, 0.0f,
+                         CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+        net_adopt_local_cargo_pod_prediction(idx, elapsed);
+    }
 
     float scaffold_elapsed = net_prediction_future_elapsed(
         g.scaffold_interp.t, g.scaffold_interp.interval, dt,
@@ -889,6 +929,27 @@ void net_advance_asteroid_interpolation(float dt) {
         if (prev->active &&
             elapsed >= ASTEROID_RENDER_CORRECTION_CUTOFF_SEC)
             prev->active = false;
+    }
+}
+
+void net_advance_cargo_pod_interpolation(float dt) {
+    if (!isfinite(dt) || dt <= 0.0f) return;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *curr = &g.cargo_pod_interp.curr[i];
+        cargo_pod_t *prev = &g.cargo_pod_interp.prev[i];
+        if (!curr->active) {
+            g.cargo_pod_interp.elapsed[i] = 0.0f;
+            prev->active = false;
+            continue;
+        }
+        float elapsed = g.cargo_pod_interp.elapsed[i] + dt;
+        g.cargo_pod_interp.elapsed[i] = clampf(
+            elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
+        if (prev->active &&
+            g.cargo_pod_interp.elapsed[i] >=
+                CARGO_POD_RENDER_CORRECTION_CUTOFF_SEC) {
+            prev->active = false;
+        }
     }
 }
 
@@ -966,7 +1027,6 @@ void reset_remote_dynamic_sync(void) {
 
     memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
-    g.cargo_pod_interp.interval = 0.1f;
 
     memset(&g.world.interactions, 0, sizeof(g.world.interactions));
 
@@ -1886,15 +1946,6 @@ void apply_remote_scaffold_motion(const NetScaffoldMotionState* received,
 }
 
 void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
-    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_CARGO_PODS; i++)
-        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
-    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval, packet_interval, 0.3f);
-    g.cargo_pod_interp.t = 0.0f;
-
     bool seen[MAX_CARGO_PODS] = { false };
     const NetProtocolInfo *info = net_protocol_info();
     bool replacement_snapshot = !info ||
@@ -1902,6 +1953,7 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_interp_begin_update(idx);
         cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
         pod->active = true;
         pod->kind = (cargo_pod_kind_t)received[i].kind;
@@ -1932,44 +1984,29 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
     }
     if (replacement_snapshot) {
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
-            if (!seen[i]) g.cargo_pod_interp.curr[i].active = false;
+            if (seen[i] || !g.cargo_pod_interp.curr[i].active) continue;
+            cargo_pod_interp_begin_update(i);
+            g.cargo_pod_interp.curr[i].active = false;
         }
     }
+    sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
     if (!indices || count <= 0) return;
 
-    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_CARGO_PODS; i++)
-        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
-    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
-                                        packet_interval, 0.3f);
-    g.cargo_pod_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = indices[i];
         if (idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_interp_begin_update(idx);
         g.cargo_pod_interp.curr[idx].active = false;
     }
+    sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* received,
                                    int count) {
     if (!received || count <= 0) return;
-
-    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_CARGO_PODS; i++)
-        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
-    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
-                                        packet_interval, 0.3f);
-    g.cargo_pod_interp.t = 0.0f;
 
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
@@ -1977,6 +2014,7 @@ void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* received,
 
         cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
         if (!pod->active) continue;
+        cargo_pod_interp_begin_update(idx);
         pod->pos = v2(received[i].pos_x, received[i].pos_y);
         pod->vel = v2(received[i].vel_x, received[i].vel_y);
         pod->rotation = received[i].rotation;
@@ -1987,22 +2025,13 @@ void apply_remote_cargo_pod_linear(const NetCargoPodLinearState* received,
                                    int count) {
     if (!received || count <= 0) return;
 
-    float elapsed = g.cargo_pod_interp.t * g.cargo_pod_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_CARGO_PODS; i++)
-        g.cargo_pod_interp.prev[i] = cargo_pod_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
-    g.cargo_pod_interp.interval = lerpf(g.cargo_pod_interp.interval,
-                                        packet_interval, 0.3f);
-    g.cargo_pod_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_CARGO_PODS) continue;
 
         cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
         if (!pod->active) continue;
+        cargo_pod_interp_begin_update(idx);
         pod->pos = v2(received[i].pos_x, received[i].pos_y);
         pod->vel = v2(received[i].vel_x, received[i].vel_y);
     }
@@ -2736,8 +2765,6 @@ void interpolate_world_for_render(void) {
         *dst = scaffold_render_state_at(i, scaffold_elapsed);
     }
 
-    float cargo_pod_elapsed = clampf(g.cargo_pod_interp.t * g.cargo_pod_interp.interval,
-                                     0.0f, CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *curr = &g.cargo_pod_interp.curr[i];
         const cargo_pod_t *prev = &g.cargo_pod_interp.prev[i];
@@ -2746,8 +2773,11 @@ void interpolate_world_for_render(void) {
             continue;
         }
         cargo_pod_t *dst = &g.world.cargo_pods[i];
-        *dst = cargo_pod_render_state_at(i, cargo_pod_elapsed);
+        *dst = cargo_pod_render_state_at(
+            i, clampf(g.cargo_pod_interp.elapsed[i], 0.0f,
+                      CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC));
     }
+    sync_local_towed_pods_from_cargo_authority();
 }
 
 const NetPlayerState* net_get_interpolated_players(void) {

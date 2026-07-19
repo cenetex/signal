@@ -15,14 +15,11 @@ typedef struct {
     bool station_snapshot_dirty;
     bool private_snapshot_dirty;
     bool global_snapshot_dirty;
-    /* false (default): emit authoritative snapshots every tick. The
-     * loopback transport is an in-process memcpy — there is no bandwidth
-     * to save, and anything less than per-tick pose data renders as
-     * visible stepping in singleplayer.
-     * true: mirror the dedicated server's throttled broadcast cadences
-     * (20 Hz player / 10 Hz world / 4 Hz private) so local mode exercises
-     * the same prediction + dead-reckoning path as multiplayer. Opt-in
-     * via ?netcadence=1 (web) or SIGNAL_LOCAL_NET_CADENCE=1 (native). */
+    /* true (default): mirror the dedicated server's bounded broadcast
+     * cadences (20 Hz player / 10 Hz world / 4 Hz private). This keeps
+     * loopback packet work stable and exercises the same prediction path
+     * as multiplayer. Set ?netcadence=0 (web) or
+     * SIGNAL_LOCAL_NET_CADENCE=0 (native) for per-tick diagnostic mode. */
     bool throttled_snapshots;
 } local_server_t;
 

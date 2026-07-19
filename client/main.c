@@ -252,19 +252,18 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_handoff_result = on_remote_handoff_result;
 }
 
-/* Singleplayer loopback emits authoritative snapshots every tick by
- * default; opting into the dedicated server's throttled cadences turns
- * local mode into a test bed for the prediction/dead-reckoning path.
+/* Keep singleplayer on the dedicated server's bounded cadences by default.
+ * Per-tick snapshots are still available as an explicit diagnostic mode.
  * See local_server_t.throttled_snapshots. */
 static bool local_throttled_snapshots_requested(void) {
 #ifdef __EMSCRIPTEN__
     const char *v = emscripten_run_script_string(
-        "(new URLSearchParams(window.location.search).has('netcadence')"
-        " ? '1' : '')");
-    return v && v[0] == '1';
+        "(new URLSearchParams(window.location.search).get('netcadence')"
+        " ?? '1')");
+    return !v || v[0] != '0';
 #else
     const char *v = getenv("SIGNAL_LOCAL_NET_CADENCE");
-    return v && v[0] != '\0' && v[0] != '0';
+    return !(v && v[0] == '0');
 #endif
 }
 
@@ -419,7 +418,6 @@ static void reset_world(void) {
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
     g.scaffold_interp.interval = 0.1f;
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
-    g.cargo_pod_interp.interval = 0.1f;
     memset(&g.player_interp, 0, sizeof(g.player_interp));
     g.player_interp.interval = 0.1f;
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
@@ -1537,9 +1535,9 @@ static void sim_step(float dt) {
 
     /* Advance interpolation timers (both modes) */
     net_advance_asteroid_interpolation(dt);
+    net_advance_cargo_pod_interpolation(dt);
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
     g.scaffold_interp.t += dt / fmaxf(g.scaffold_interp.interval, 0.01f);
-    g.cargo_pod_interp.t += dt / fmaxf(g.cargo_pod_interp.interval, 0.01f);
     g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
     /* Thrust flame: local input for manual, server input for autopilot.
@@ -3117,6 +3115,9 @@ int signal_smoke_remote_towable_interp_check(void) {
     bool saved_player0_docked = g.world.players[0].docked;
     uint8_t saved_player0_towed_count = g.world.players[0].ship->towed_count;
     int16_t saved_player0_towed_fragments[10];
+    uint8_t saved_player0_towed_pod_count =
+        g.world.players[0].ship->towed_pod_count;
+    int16_t saved_player0_towed_pods[10];
     asteroid_t saved_world_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_local_server_asteroids[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
@@ -3128,14 +3129,16 @@ int signal_smoke_remote_towable_interp_check(void) {
     cargo_pod_t saved_world_cargo_pods[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_prev[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_curr[MAX_CARGO_PODS];
+    float saved_cargo_pod_elapsed[MAX_CARGO_PODS];
     float saved_scaffold_t = g.scaffold_interp.t;
     float saved_scaffold_interval = g.scaffold_interp.interval;
-    float saved_cargo_pod_t = g.cargo_pod_interp.t;
-    float saved_cargo_pod_interval = g.cargo_pod_interp.interval;
 
     memcpy(saved_player0_towed_fragments,
            g.world.players[0].ship->towed_fragments,
            sizeof(saved_player0_towed_fragments));
+    memcpy(saved_player0_towed_pods,
+           g.world.players[0].ship->towed_pods,
+           sizeof(saved_player0_towed_pods));
     memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
     memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
            sizeof(saved_local_server_asteroids));
@@ -3149,9 +3152,15 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_world_cargo_pods, g.world.cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(saved_cargo_pod_prev, g.cargo_pod_interp.prev, sizeof(saved_cargo_pod_prev));
     memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
+    memcpy(saved_cargo_pod_elapsed, g.cargo_pod_interp.elapsed,
+           sizeof(saved_cargo_pod_elapsed));
 
     g.local_server.active = false;
     g.world.players[0].ship->towed_count = 0;
+    g.world.players[0].ship->towed_pod_count = 0;
+    for (int i = 0; i < 10; i++) {
+        g.world.players[0].ship->towed_pods[i] = -1;
+    }
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
@@ -3159,7 +3168,6 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.scaffold_interp.interval = 0.1f;
     memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
-    g.cargo_pod_interp.interval = 0.1f;
 
     NetScaffoldState scaffold = {
         .index = 3,
@@ -3198,15 +3206,61 @@ int signal_smoke_remote_towable_interp_check(void) {
         .quantity = 12,
     };
     apply_remote_cargo_pods(&pod, 1);
-    g.cargo_pod_interp.t = 0.1f / fmaxf(g.cargo_pod_interp.interval, 0.001f);
+    g.cargo_pod_interp.elapsed[5] = 0.1f;
     interpolate_world_for_render();
     float pod_first_x = g.world.cargo_pods[5].pos.x;
     pod.pos_x = 100.0f;
     pod.vel_x = 0.0f;
     apply_remote_cargo_pods(&pod, 1);
-    g.cargo_pod_interp.t = 0.05f / fmaxf(g.cargo_pod_interp.interval, 0.001f);
+    g.cargo_pod_interp.elapsed[5] = 0.05f;
     interpolate_world_for_render();
     float pod_blended_x = g.world.cargo_pods[5].pos.x;
+
+    memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
+    memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+    pod.pos_x = 0.0f;
+    pod.pos_y = 0.0f;
+    pod.vel_x = 100.0f;
+    NetCargoPodState unrelated_pod = pod;
+    unrelated_pod.index = 6;
+    unrelated_pod.pos_y = 90.0f;
+    unrelated_pod.vel_x = 0.0f;
+    NetCargoPodState pod_pair[2] = {pod, unrelated_pod};
+    apply_remote_cargo_pods(pod_pair, 2);
+    g.cargo_pod_interp.elapsed[5] = 0.1f;
+    interpolate_world_for_render();
+    float pod_before_unrelated_x = g.world.cargo_pods[5].pos.x;
+    NetCargoPodMotionState unrelated_pod_motion = {
+        .index = 6,
+        .pos_x = 5.0f,
+        .pos_y = 90.0f,
+        .vel_x = 0.0f,
+        .vel_y = 0.0f,
+        .rotation = 0.0f,
+    };
+    apply_remote_cargo_pod_motion(&unrelated_pod_motion, 1);
+    net_advance_cargo_pod_interpolation(0.05f);
+    interpolate_world_for_render();
+    float pod_after_unrelated_x = g.world.cargo_pods[5].pos.x;
+
+    g.net_authority_enabled = true;
+    g.local_player_slot = 0;
+    g.world.players[0].connected = true;
+    g.world.players[0].ship->towed_pod_count = 0;
+    for (int i = 0; i < 10; i++) {
+        g.world.players[0].ship->towed_pods[i] = -1;
+    }
+    NetCargoPodState held_pod = pod;
+    held_pod.index = 11;
+    held_pod.tractor_player = 0;
+    apply_remote_cargo_pods(&held_pod, 1);
+    bool pod_roster_attach_ok =
+        g.world.players[0].ship->towed_pod_count == 1 &&
+        g.world.players[0].ship->towed_pods[0] == 11;
+    held_pod.tractor_player = -1;
+    apply_remote_cargo_pods(&held_pod, 1);
+    bool pod_roster_detach_ok =
+        g.world.players[0].ship->towed_pod_count == 0;
 
     NetAsteroidState asteroid = {
         .index = 7,
@@ -3445,6 +3499,12 @@ int signal_smoke_remote_towable_interp_check(void) {
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
              pod_blended_x > pod_first_x &&
              pod_blended_x < 95.0f &&
+             pod_before_unrelated_x > 9.0f &&
+             pod_before_unrelated_x < 11.5f &&
+             pod_after_unrelated_x > 14.0f &&
+             pod_after_unrelated_x < 16.0f &&
+             pod_roster_attach_ok &&
+             pod_roster_detach_ok &&
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
@@ -3484,10 +3544,10 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(g.world.cargo_pods, saved_world_cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(g.cargo_pod_interp.prev, saved_cargo_pod_prev, sizeof(saved_cargo_pod_prev));
     memcpy(g.cargo_pod_interp.curr, saved_cargo_pod_curr, sizeof(saved_cargo_pod_curr));
+    memcpy(g.cargo_pod_interp.elapsed, saved_cargo_pod_elapsed,
+           sizeof(saved_cargo_pod_elapsed));
     g.scaffold_interp.t = saved_scaffold_t;
     g.scaffold_interp.interval = saved_scaffold_interval;
-    g.cargo_pod_interp.t = saved_cargo_pod_t;
-    g.cargo_pod_interp.interval = saved_cargo_pod_interval;
     g.local_server.active = saved_local_server_active;
     g.net_authority_enabled = saved_net_authority_enabled;
     g.net_input_tick_protocol = saved_net_input_tick_protocol;
@@ -3498,6 +3558,10 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(g.world.players[0].ship->towed_fragments,
            saved_player0_towed_fragments,
            sizeof(saved_player0_towed_fragments));
+    g.world.players[0].ship->towed_pod_count = saved_player0_towed_pod_count;
+    memcpy(g.world.players[0].ship->towed_pods,
+           saved_player0_towed_pods,
+           sizeof(saved_player0_towed_pods));
     return ok ? 1 : 0;
 }
 #endif

@@ -267,8 +267,8 @@ static int collect_asteroid_pull_stations(const world_t *w,
 /* ================================================================== */
 
 void step_asteroid_gravity(world_t *w, float dt) {
-    /* Build spatial grid for neighbor lookups */
-    spatial_grid_build(w);
+    /* world_sim_step builds this once after asteroid integration so cargo,
+     * gravity, and asteroid collision all share the same tick snapshot. */
     const spatial_grid_t *g = &w->asteroid_grid;
 
     /* Asteroid-asteroid attraction (non-S tier, within 800 units) via spatial grid */

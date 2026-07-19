@@ -797,7 +797,6 @@ static uint64_t last_player_state_emit = 0;
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define WORLD_NPC_MOTION_REPEAT_TICKS NPC_MOTION_NET_REPEAT_TICKS
 #define WORLD_NPC_STATUS_REPEAT_TICKS NPC_STATUS_NET_REPEAT_TICKS
-#define WORLD_CARGO_POD_MOTION_REPEAT_TICKS CARGO_POD_MOTION_NET_REPEAT_TICKS
 #define WS_DEFERABLE_SEND_BUFFER_RESERVE 8192u /* keep room for PONG + authoritative acks */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
@@ -2122,6 +2121,7 @@ static bool server_decode_cargo_pod_motion_sample(
 
 static size_t server_filter_cargo_pod_motion_packet(
     server_player_t *sp,
+    const cargo_pod_t *pods,
     const uint8_t *data,
     size_t len,
     uint8_t *out,
@@ -2160,18 +2160,24 @@ static size_t server_filter_cargo_pod_motion_packet(
         server_cargo_pod_motion_sample_t sample;
         if (!server_decode_cargo_pod_motion_sample(record, type, &sample))
             continue;
-        if (!cargo_pod_motion_should_send(sp,
-                                          sample.index,
-                                          sample.pos,
-                                          sample.vel,
-                                          sample.rotation,
-                                          world_tick))
+        bool tractored = pods && sample.index < MAX_CARGO_PODS &&
+            pods[sample.index].active &&
+            (cargo_pod_has_player_tractor(&pods[sample.index]) ||
+             cargo_pod_has_module_tractor(&pods[sample.index]));
+        if (!cargo_pod_motion_should_send_mode(sp,
+                                               sample.index,
+                                               sample.pos,
+                                               sample.vel,
+                                               sample.rotation,
+                                               world_tick,
+                                               tractored))
             continue;
         if (linear_out &&
-            cargo_pod_motion_linear_q_eligible(sp,
-                                               sample.index,
-                                               sample.rotation,
-                                               world_tick)) {
+            cargo_pod_motion_linear_q_eligible_mode(sp,
+                                                    sample.index,
+                                                    sample.rotation,
+                                                    world_tick,
+                                                    tractored)) {
             serialize_one_cargo_pod_linear_q(
                 &linear_out[CARGO_POD_LINEAR_Q_MSG_HEADER +
                             (size_t)linear_count *
@@ -2377,12 +2383,6 @@ static void ws_send_world_cargo_pod_motion_if_changed(struct mg_connection *c,
                                                       uint32_t world_tick) {
     if (!c || !sp || !data || len <= CARGO_POD_MOTION_MSG_HEADER) return;
     if (sp->replication->world_cargo_pods_last_sent_tick == world_tick) return;
-    if (sp->replication->world_cargo_pod_motion_last_sent_tick != 0 &&
-        (uint32_t)(world_tick - sp->replication->world_cargo_pod_motion_last_sent_tick) <
-            WORLD_CARGO_POD_MOTION_REPEAT_TICKS) {
-        net_tx_record_suppressed(data, len);
-        return;
-    }
     uint8_t filtered[CARGO_POD_MOTION_MSG_HEADER +
                      MAX_CARGO_PODS * CARGO_POD_MOTION_RECORD_SIZE];
     uint8_t linear_filtered[CARGO_POD_LINEAR_Q_MSG_HEADER +
@@ -2393,7 +2393,8 @@ static void ws_send_world_cargo_pod_motion_if_changed(struct mg_connection *c,
     if (data[0] == NET_MSG_WORLD_CARGO_POD_MOTION ||
         data[0] == NET_MSG_WORLD_CARGO_POD_MOTION_Q) {
         send_len = server_filter_cargo_pod_motion_packet(
-            sp, data, len, filtered, linear_filtered, &linear_len, world_tick);
+            sp, world.cargo_pods, data, len, filtered, linear_filtered,
+            &linear_len, world_tick);
         send_data = filtered;
         if (send_len <= CARGO_POD_MOTION_MSG_HEADER &&
             linear_len <= CARGO_POD_LINEAR_Q_MSG_HEADER) {

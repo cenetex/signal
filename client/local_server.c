@@ -508,8 +508,8 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
     uint32_t tick = ls->world.tick;
 
     if (!ls->throttled_snapshots) {
-        /* Default loopback: full-fidelity pose data every tick (see the
-         * throttled_snapshots comment in local_server.h). Station
+        /* Diagnostic loopback mode: full-fidelity pose data every tick
+         * (see the throttled_snapshots comment in local_server.h). Station
          * identity must be checked BEFORE emit_station_snapshots, which
          * clears station_snapshot_dirty. Diag/econ telemetry keeps its
          * cadence — it carries no motion. */
@@ -529,9 +529,9 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
         return;
     }
 
-    /* Throttled (opt-in): mirror the dedicated server's broadcast
-     * cadences so singleplayer exercises the same prediction and
-     * dead-reckoning path as multiplayer. */
+    /* Default loopback: mirror the dedicated server's broadcast cadences
+     * so packet work is bounded and singleplayer exercises the same
+     * prediction/dead-reckoning path as multiplayer. */
     if ((tick % LOCAL_SERVER_PLAYER_TICKS) == 0u)
         local_server_emit_player_snapshots(ls, player_slot);
     if ((tick % LOCAL_SERVER_WORLD_TICKS) == 0u)

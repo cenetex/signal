@@ -7867,7 +7867,28 @@ static bool resolve_cargo_pod_station_collisions(world_t *w, int pod_idx) {
 static bool resolve_cargo_pod_asteroid_collisions(world_t *w, int pod_idx) {
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (!pod->active) return false;
+    bool candidates[MAX_ASTEROIDS] = {0};
+    const spatial_grid_t *grid = &w->asteroid_grid;
+    if (!grid->entries || grid->overflow_count > 0) {
+        /* Allocation failure is rare; keep collision behavior conservative. */
+        for (int i = 0; i < MAX_ASTEROIDS; i++) candidates[i] = true;
+    } else {
+        int cx, cy;
+        spatial_grid_cell(grid, pod->pos, &cx, &cy);
+        for (int gy = cy - 1; gy <= cy + 1; gy++) {
+            for (int gx = cx - 1; gx <= cx + 1; gx++) {
+                const spatial_cell_t *cell = spatial_grid_lookup(grid, gx, gy);
+                if (!cell) continue;
+                for (uint16_t ci = 0; ci < cell->count; ci++) {
+                    int asteroid_idx = cell->indices[ci];
+                    if (asteroid_idx >= 0 && asteroid_idx < MAX_ASTEROIDS)
+                        candidates[asteroid_idx] = true;
+                }
+            }
+        }
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!candidates[i]) continue;
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (resolve_cargo_pod_circle_collision(w, pod_idx, a->pos,
@@ -7882,10 +7903,71 @@ static bool resolve_cargo_pod_asteroid_collisions(world_t *w, int pod_idx) {
 static void resolve_cargo_pod_pair_collisions(world_t *w) {
     if (!w) return;
     for (int pass = 0; pass < 3; pass++) {
+        bool candidates[MAX_CARGO_PODS][MAX_CARGO_PODS] = {{0}};
+        int active_indices[MAX_CARGO_PODS];
+        int active_count = 0;
+        float max_radius = 0.0f;
+        bool finite_bounds = true;
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            const cargo_pod_t *pod = &w->cargo_pods[i];
+            if (!pod->active) continue;
+            active_indices[active_count++] = i;
+            if (!isfinite(pod->pos.x) || !isfinite(pod->radius) ||
+                pod->radius < 0.0f) {
+                finite_bounds = false;
+            } else if (pod->radius > max_radius) {
+                max_radius = pod->radius;
+            }
+        }
+
+        if (finite_bounds) {
+            /* Stable insertion sort makes candidate generation independent
+             * of libc and keeps equal-x pods in slot order. */
+            for (int i = 1; i < active_count; i++) {
+                int value = active_indices[i];
+                int j = i - 1;
+                while (j >= 0 &&
+                       (w->cargo_pods[active_indices[j]].pos.x >
+                            w->cargo_pods[value].pos.x ||
+                        (w->cargo_pods[active_indices[j]].pos.x ==
+                             w->cargo_pods[value].pos.x &&
+                         active_indices[j] > value))) {
+                    active_indices[j + 1] = active_indices[j];
+                    j--;
+                }
+                active_indices[j + 1] = value;
+            }
+            for (int ai = 0; ai < active_count; ai++) {
+                int a_idx = active_indices[ai];
+                const cargo_pod_t *a = &w->cargo_pods[a_idx];
+                for (int bi = ai + 1; bi < active_count; bi++) {
+                    int b_idx = active_indices[bi];
+                    const cargo_pod_t *b = &w->cargo_pods[b_idx];
+                    float dx = b->pos.x - a->pos.x;
+                    if (dx > a->radius + max_radius + 8.0f) break;
+                    if (dx > a->radius + b->radius + 8.0f) continue;
+                    int lo = a_idx < b_idx ? a_idx : b_idx;
+                    int hi = a_idx < b_idx ? b_idx : a_idx;
+                    candidates[lo][hi] = true;
+                }
+            }
+        } else {
+            for (int ai = 0; ai < active_count; ai++) {
+                for (int bi = ai + 1; bi < active_count; bi++) {
+                    int a_idx = active_indices[ai];
+                    int b_idx = active_indices[bi];
+                    int lo = a_idx < b_idx ? a_idx : b_idx;
+                    int hi = a_idx < b_idx ? b_idx : a_idx;
+                    candidates[lo][hi] = true;
+                }
+            }
+        }
+
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             cargo_pod_t *a = &w->cargo_pods[i];
             if (!a->active) continue;
             for (int j = i + 1; j < MAX_CARGO_PODS; j++) {
+                if (!candidates[i][j]) continue;
                 cargo_pod_t *b = &w->cargo_pods[j];
                 if (!b->active) continue;
 
@@ -13326,6 +13408,7 @@ void world_sim_step(world_t *w, float dt) {
     SIM_PROFILE_BEGIN(prof_asteroids);
     sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
+    spatial_grid_build(w);
     SIM_PROFILE_END(SIM_PROF_ASTEROIDS, prof_asteroids);
 
     SIM_PROFILE_BEGIN(prof_cargo);

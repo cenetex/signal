@@ -52,6 +52,7 @@ void net_observe_transport_latency_sample(float rtt_ms,
                                           bool from_input_ack);
 void net_adopt_local_tow_prediction(float dt);
 void net_advance_asteroid_interpolation(float dt);
+void net_advance_cargo_pod_interpolation(float dt);
 
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);

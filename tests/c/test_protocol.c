@@ -3316,7 +3316,6 @@ TEST(test_cargo_pod_motion_linear_q_uses_position_velocity_when_rotation_matches
 TEST(test_cargo_pod_motion_prediction_gate_skips_predicted_pose) {
     SERVER_PLAYER_DECL(sp);
 
-    ASSERT_EQ_INT((int)CARGO_POD_MOTION_NET_REPEAT_TICKS, 240);
     ASSERT_EQ_FLOAT(CARGO_POD_MOTION_VEL_ERROR_SQ, 64.0f, 0.001f);
     ASSERT_EQ_FLOAT(CARGO_POD_MOTION_ROT_ERROR, 1.25f, 0.001f);
     ASSERT_EQ_INT((int)CARGO_POD_MOTION_HEARTBEAT_TICKS, 720);
@@ -3345,13 +3344,45 @@ TEST(test_cargo_pod_motion_prediction_gate_skips_predicted_pose) {
                                          v2(14.0f, -20.0f),
                                          v2(5.0f, 0.0f),
                                          0.75f,
-                                         100u + CARGO_POD_MOTION_NET_REPEAT_TICKS));
+                                         340u));
     ASSERT(cargo_pod_motion_should_send(&sp,
                                         5,
                                         v2(12.0f, -20.0f),
                                         v2(2.0f, 0.0f),
                                         0.25f,
                                         100u + CARGO_POD_MOTION_HEARTBEAT_TICKS));
+}
+
+TEST(test_tractored_cargo_pod_motion_uses_pose_updates_at_world_cadence) {
+    SERVER_PLAYER_DECL(sp);
+
+    ASSERT_EQ_INT((int)CARGO_POD_TOW_MOTION_REPEAT_TICKS, 12);
+    cargo_pod_motion_note_sent(&sp,
+                               5,
+                               v2(10.0f, -20.0f),
+                               v2(2.0f, 0.0f),
+                               0.25f,
+                               100u);
+
+    ASSERT(!cargo_pod_motion_should_send_mode(&sp,
+                                              5,
+                                              v2(10.1f, -20.0f),
+                                              v2(2.0f, 0.0f),
+                                              0.25f,
+                                              111u,
+                                              true));
+    ASSERT(cargo_pod_motion_should_send_mode(&sp,
+                                             5,
+                                             v2(10.2f, -20.0f),
+                                             v2(2.0f, 0.0f),
+                                             0.25f,
+                                             112u,
+                                             true));
+    ASSERT(!cargo_pod_motion_linear_q_eligible_mode(&sp,
+                                                    5,
+                                                    0.25f,
+                                                    112u,
+                                                    true));
 }
 
 TEST(test_cargo_pod_motion_prediction_gate_sends_divergence) {
@@ -8608,6 +8639,7 @@ void register_protocol_main_tests(void) {
     RUN(test_cargo_pod_motion_q_stream_quantizes_pose);
     RUN(test_cargo_pod_motion_linear_q_uses_position_velocity_when_rotation_matches);
     RUN(test_cargo_pod_motion_prediction_gate_skips_predicted_pose);
+    RUN(test_tractored_cargo_pod_motion_uses_pose_updates_at_world_cadence);
     RUN(test_cargo_pod_motion_prediction_gate_sends_divergence);
     RUN(test_scaffold_delta_uses_compact_removal_stream_when_available);
     RUN(test_roundtrip_interactions);
