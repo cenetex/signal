@@ -248,7 +248,16 @@ platform drift need broader automated coverage.
 - keep replay gates on the blocking path
 - add Linux x86 and Windows coverage for determinism-critical targets
 - run ASan/UBSan and clang-tidy in CI
-- add libFuzzer harnesses for protocol decode, save load, and chain-log parsing
+- ~~add libFuzzer harnesses~~ for protocol decode, save load, and chain-log
+  parsing. **First harness shipped 2026-07:** `make fuzz-receipts` covers the
+  untrusted receipt/handoff decode paths (`tests/fuzz/fuzz_cargo_receipt.c`:
+  `cargo_receipt_unpack`/`_chain_verify`, `ship_receipts_*` store ops,
+  `handoff_ticket_unpack`/`_verify_hashes`, `handoff_ship_snapshot_unpack`),
+  with a minimized seed corpus tracked in `tests/fuzz/corpus/` and a
+  standalone ASan replay target (`make fuzz-receipts-standalone`) for crash
+  triage. Still open: full client-input/snapshot protocol decode (needs
+  world/player shims), save-load parsing, chain-log parsing, and a
+  time-bounded CI job so the harness runs on PRs instead of only locally.
 
 ---
 

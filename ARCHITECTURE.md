@@ -121,6 +121,7 @@ cargo.
 |-----|--------|
 | [CLAUDE.md](CLAUDE.md) | AI-oriented build commands, save layout, working style |
 | [docs/cargo-architecture.md](docs/cargo-architecture.md) | Three-state cargo model (fragment, bulk, crate) |
+| [docs/ledger-float-design.md](docs/ledger-float-design.md) | Why ledger money is float32, error bounds, migration triggers |
 | [docs/holographic-gossip-network.md](docs/holographic-gossip-network.md) | Decaying market gossip and neural worker coordination |
 | [docs/holographic-gossip-gap-analysis.md](docs/holographic-gossip-gap-analysis.md) | Gap analysis from current docs/code to the gossip-network vision |
 | [docs/decentralization.md](docs/decentralization.md) | Federation architecture and trust model |

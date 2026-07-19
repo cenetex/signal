@@ -6,15 +6,21 @@
  *
  * ⚠️  DO NOT MECHANICALLY SPLIT THIS FILE.  ⚠️
  *
- * Yes, this file is large (~5k LOC). The split is tracked as #272 slices
- * 2-6. Those slices are intentionally BLOCKED on the engine refactor in
- * #285 (streaming entity pool + persistent station catalog). Splitting
- * along the current data shape would lock in `MAX_STATIONS=8`-style
- * assumptions across six new files; every one of them would need to be
- * re-touched when #285 lands. The only universally-correct slice was
- * slice 1 (save/load → server/sim_save.c, commit 8611749), which doesn't
- * depend on the data shape. Until #285 Phase 3 lands, keep edits in this
- * file behind banner comments and resist the urge to extract.
+ * Yes, this file is large (~14.5k LOC as of 2026-07 — it has roughly
+ * tripled since this banner was written at ~5k LOC, so re-validate the
+ * blocking rationale below before citing it). The split is tracked as
+ * #272 slices 2-6. Those slices are intentionally BLOCKED on the engine
+ * refactor in #285 (streaming entity pool + persistent station catalog).
+ * Splitting along the current data shape would lock in
+ * `MAX_STATIONS=8`-style assumptions across six new files; every one of
+ * them would need to be re-touched when #285 lands. The only
+ * universally-correct slice was slice 1 (save/load → server/sim_save.c,
+ * commit 8611749), which doesn't depend on the data shape. Slices that
+ * provably don't touch `MAX_*` constants, `WORLD_RADIUS`, or the spatial
+ * grid may be extracted on the same evidence standard as slice 1 —
+ * document that evidence in the commit message. Until #285 Phase 3
+ * lands, keep edits in this file behind banner comments and resist the
+ * urge to extract anything else.
  *
  * If you're reading this because the file is unwieldy: feature work that
  * touches `MAX_*` constants, `WORLD_RADIUS`, or the spatial grid IS a
@@ -51,9 +57,6 @@
 #include "station_authority.h"
 #include "net_protocol.h"
 
-/* Imported from main.c — aws-swarm avatar keypair */
-extern bool g_has_avatar_keypair;
-extern uint8_t g_avatar_nacl_secret[64]; /* per-station Ed25519 identity (#479 B) */
 #include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include "wire_codec.h"

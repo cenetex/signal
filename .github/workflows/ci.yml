@@ -35,5 +35,5 @@ jobs:
           make build-server
           make test
           make test-san
-          make banned-apis deterministic-libm
+          make banned-apis deterministic-libm doc-freshness
           make cppcheck

@@ -426,6 +426,40 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     endif()
 endif()
 
+# ------------------------------------------------------------------
+# Fuzz targets (libFuzzer, clang only). Off by default; enable with
+# -DSIGNAL_BUILD_FUZZERS=ON. Harnesses live in tests/fuzz/ and probe
+# untrusted decode paths (cargo receipts, handoff tickets/snapshots).
+# See REMEDIATION_PLAN.md §12.
+# ------------------------------------------------------------------
+option(SIGNAL_BUILD_FUZZERS "Build libFuzzer harnesses (clang only)" OFF)
+if(SIGNAL_BUILD_FUZZERS)
+    if(EMSCRIPTEN OR MSVC OR NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "SIGNAL_BUILD_FUZZERS requires a non-MSVC clang toolchain "
+            "(got ${CMAKE_C_COMPILER_ID}). Configure with "
+            "-DCMAKE_C_COMPILER=clang.")
+    endif()
+    add_executable(fuzz_cargo_receipt
+        tests/fuzz/fuzz_cargo_receipt.c
+        shared/cargo_receipt.c
+        shared/handoff_ticket.c
+        shared/manifest.c
+        shared/commodity.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(fuzz_cargo_receipt PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_options(fuzz_cargo_receipt PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+        -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+        -fno-sanitize-recover=all)
+    target_link_options(fuzz_cargo_receipt PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    target_link_libraries(fuzz_cargo_receipt PRIVATE m)
+endif()
+
 if(BUILD_WASM_REPLAY AND EMSCRIPTEN)
     add_executable(signal_replay
         tools/signal_replay.c

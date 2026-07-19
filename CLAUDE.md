@@ -107,16 +107,11 @@ Per-player saves live under `saves/`:
   First-claim-wins; this records the claimant identity but cannot prove
   original ownership of a pre-identity token — see #479-A.4.
 
-`world.sav` is versioned. The current format is v62 (minimum accepted v49).
-Recent migration highlights: v62 expands each station's player ledger from 16
-to `STATION_LEDGER_MAX` entries while old saves still read their historical
-16-entry table; v61 persists contract `target_pub`; v60 persists active
-fracture-child throw ownership; v59 persists delivery-shipment debt/proof
-state; v58 expands station session slots to `MAX_STATIONS`; v57/v56 add
-contract origin and provenance requirements; v55 persists staged crystal
-sidecars; v54 adds `world_seq`; v53 adds per-station manifest receipt chains;
-v52 added the per-NPC paired-ship manifest tail for in-flight hauler cargo
-identity.
+`world.sav` is versioned. The current and minimum-accepted versions are the
+`SAVE_VERSION` / `MIN_SAVE_VERSION` constants in `server/sim_save.c` — treat
+that file as the source of truth (its header comment carries the per-version
+migration notes), and do not copy the numbers into docs. `make doc-freshness`
+fails if a doc re-asserts a stale "current format is vN" claim.
 
 ## Working Style
 

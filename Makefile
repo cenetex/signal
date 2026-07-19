@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -431,11 +431,61 @@ test-tsan:
 	cmake --build build-tsan --parallel
 	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
+# libFuzzer harness for untrusted receipt/handoff decode paths.
+# Requires a clang that ships the libFuzzer runtime — Xcode CLT clang
+# does NOT (missing libclang_rt.fuzzer_osx.a), so prefer Homebrew LLVM
+# when present. Override with FUZZ_CC=... . FUZZ_TIME bounds the run;
+# crash artifacts land in tests/fuzz/artifacts/ for standalone replay.
+FUZZ_CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; else echo clang; fi)
+FUZZ_TIME ?= 60
+# Large enough for the ticket prefix plus HANDOFF_SHIP_SNAPSHOT_MAX_SIZE.
+# Without this override libFuzzer defaults to 4096 bytes and cannot reach
+# multi-cargo snapshots with full receipt chains.
+FUZZ_MAX_LEN ?= 131072
+fuzz-receipts:
+	cmake $(GENERATOR) -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=$(FUZZ_CC)
+	cmake --build build-fuzz --parallel --target fuzz_cargo_receipt
+	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus
+	./build-fuzz/fuzz_cargo_receipt tests/fuzz/corpus \
+		-artifact_prefix=tests/fuzz/artifacts/ \
+		-max_total_time=$(FUZZ_TIME) -max_len=$(FUZZ_MAX_LEN) \
+		-print_final_stats=1
+
+# Replays corpus/crash artifacts through the harness under plain
+# ASan/UBSan (no libFuzzer) — use for triage of tests/fuzz/artifacts/.
+# Exit is nonzero if any artifact crashes. Note: the tweetnacl UBSan
+# loosening (-fno-sanitize=shift,signed-integer-overflow) applies to the
+# whole single-TU invocation here; the CMake fuzz build scopes it
+# per-file. This target is for triage, not a gate.
+fuzz-receipts-standalone:
+	@mkdir -p build-fuzz tests/fuzz/artifacts tests/fuzz/corpus
+	$(FUZZ_CC) -std=c11 -O1 -g -DSIGNAL_FUZZ_STANDALONE \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-fno-sanitize=shift -fno-sanitize=signed-integer-overflow \
+		-Ishared -Iserver -Iclient -Ivendor/tweetnacl \
+		tests/fuzz/fuzz_cargo_receipt.c \
+		shared/cargo_receipt.c shared/handoff_ticket.c \
+		shared/manifest.c shared/commodity.c \
+		vendor/tweetnacl/tweetnacl.c vendor/tweetnacl/randombytes.c \
+		vendor/tweetnacl/signal_crypto_tweetnacl.c \
+		-lm -o build-fuzz/fuzz_cargo_receipt_standalone
+	@set --; \
+	for f in tests/fuzz/artifacts/* tests/fuzz/corpus/*; do \
+		if [ -f "$$f" ]; then set -- "$$@" "$$f"; fi; \
+	done; \
+	if [ "$$#" -gt 0 ]; then \
+		./build-fuzz/fuzz_cargo_receipt_standalone "$$@"; \
+	fi
+
 banned-apis:
 	python3 scripts/check_banned_apis.py
 
 deterministic-libm:
 	python3 scripts/check_deterministic_libm.py
+
+doc-freshness:
+	python3 scripts/check_doc_freshness.py
 
 deterministic-build-flags:
 	python3 scripts/check_deterministic_build_flags.py $(COMPILE_COMMANDS)

@@ -6466,10 +6466,6 @@ static bool save_persistent_state(void) {
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
-/* aws-swarm avatar keypair (imported at startup) */
-static uint8_t g_avatar_nacl_secret[64];
-static bool g_has_avatar_keypair = false;
-
 int main(void) {
     /* Line-buffer stdout and unbuffer stderr so `docker compose logs`
      * sees server output in real time. Without this, fully-buffered
@@ -6546,10 +6542,17 @@ int main(void) {
     }
 
     /* ── aws-swarm avatar keypair import ────────────────────────────
-     * When SIGNAL_AVATAR_KEYPAIR_B64 is set, use the avatar's Ed25519
-     * keypair for the player's station identity instead of deriving one
-     * from the operator secret. The keypair is base64-encoded NaCl format
-     * (seed || pubkey = 64 bytes).
+     * When SIGNAL_AVATAR_KEYPAIR_B64 is set, decode the avatar's Ed25519
+     * keypair (base64-encoded 32-byte seed) and print the station
+     * founding position derived from its pubkey.
+     *
+     * NOTE: the decoded keypair is intentionally NOT stored. Commit
+     * 18f563b announced wiring it into outpost founding (station signing
+     * identity), but that consumption never landed — the globals it
+     * added were write-only and have been removed. Outpost identity
+     * derivation goes through station_authority.h as usual. If the
+     * avatar-identity wiring is revived, thread the keypair through
+     * world_t or an explicit operator context — not file-scope globals.
      */
     {
         const char *avatar_keypair_b64 = getenv("SIGNAL_AVATAR_KEYPAIR_B64");
@@ -6560,8 +6563,6 @@ int main(void) {
             if (seed_len == 32) {
                 uint8_t nacl_secret[64];
                 signal_crypto_keypair_from_seed(seed, nacl_secret + 32, nacl_secret);
-                memcpy(g_avatar_nacl_secret, nacl_secret, 64);
-                g_has_avatar_keypair = true;
                 printf("[server] imported avatar keypair from SIGNAL_AVATAR_KEYPAIR_B64\n");
                 
                 /* Derive station position from pubkey */
