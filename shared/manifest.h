@@ -63,6 +63,30 @@ bool cargo_pod_has_exact_manifest(const cargo_pod_t *pod,
 mining_grade_t cargo_pod_manifest_best_grade(const cargo_pod_t *pod);
 mining_grade_t cargo_pod_display_grade(const cargo_pod_t *pod);
 
+/* Coarse physical-content grammar shared by world rendering and tests.
+ * The carrier shell is deliberately not part of this enum: shell and
+ * payload are separate identities, and every non-gas cargo pod renders the
+ * same structural holder around one of these payload treatments. */
+typedef enum {
+    CARGO_POD_CONTENT_EMPTY = 0,
+    CARGO_POD_CONTENT_INGOT,
+    CARGO_POD_CONTENT_STRUT,
+    CARGO_POD_CONTENT_ACTIVE,
+    CARGO_POD_CONTENT_SERVICE,
+    CARGO_POD_CONTENT_GAS,
+    CARGO_POD_CONTENT_MIXED,
+} cargo_pod_content_shape_t;
+
+/* Resolve detailed local manifest rows when available and fall back to the
+ * commodity summary for remote pods. Raw-ore compatibility pods use the bulk
+ * ingot/block treatment; live fragments remain asteroid_t world objects. */
+cargo_pod_content_shape_t cargo_pod_content_shape(const cargo_pod_t *pod);
+
+/* Normal production carriers hold CARGO_POD_UNIT_CAPACITY units. Rich legacy
+ * or refinery pods may exceed it; display load clamps at 1 rather than
+ * inventing a larger structural size. */
+float cargo_pod_load_ratio(const cargo_pod_t *pod);
+
 /* Compute the manifest's grade-weighted display tint. `fill_ratio`
  * controls how far the returned color blends from the neutral holder
  * color toward the average `cargo_unit_t.grade` color, matching the

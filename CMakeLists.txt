@@ -144,6 +144,9 @@ set(SIGNAL_SIM_SOURCES
 # Shared libraries used by both sim and client render — pure C, no
 # sokol / audio / GL dependencies.
 set(SIGNAL_SIM_HELPERS
+    shared/cell_geometry.c
+    shared/cell_stress.c
+    shared/cargo_package.c
     shared/commodity.c
     shared/manifest.c
     shared/ship.c
@@ -170,6 +173,7 @@ set(SIGNAL_SIM_HELPERS
 # compiled into signal_server or signal_test.
 set(SIGNAL_CLIENT_SOURCES
     client/main.c
+    client/client_log.c
     client/net.c
     client/station_ui.c
     client/hud.c
@@ -260,6 +264,10 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_commodity.c
         tests/c/test_math.c
         tests/c/test_ship.c
+        tests/c/test_client_log.c
+        tests/c/test_cell_geometry.c
+        tests/c/test_cell_stress.c
+        tests/c/test_cargo_package.c
         tests/c/test_manifest.c
         tests/c/test_economy.c
         tests/c/test_world_sim.c
@@ -303,6 +311,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         client/identity.c
+        client/client_log.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}

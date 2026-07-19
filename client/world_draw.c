@@ -1678,11 +1678,241 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
 /* Main station draw                                                  */
 /* ------------------------------------------------------------------ */
 
+static void station_cell_vertices(vec2 center, vec2 out[6]) {
+    for (int i = 0; i < 6; i++) {
+        float a = -PI_F * 0.5f + (float)i * PI_F / 3.0f;
+        out[i] = v2_add(center, v2(cosf(a) * CELL_EDGE_LENGTH,
+                                   sinf(a) * CELL_EDGE_LENGTH));
+    }
+}
+
+/* Station cells keep the one-size grammar, while authored station sections
+ * can span hundreds of world units. A megastructure span is therefore a
+ * repeated open truss of standard-length struts, never a scaled-up cell. */
+static void draw_station_frame_span(vec2 a, vec2 b,
+                                    float r, float g0, float b0,
+                                    float alpha) {
+    vec2 delta = v2_sub(b, a);
+    float length = v2_len(delta);
+    if (length < 0.1f) return;
+    vec2 dir = v2_scale(delta, 1.0f / length);
+    vec2 normal = v2(-dir.y, dir.x);
+    float half_width = fminf(4.0f, CELL_EDGE_LENGTH * 0.22f);
+    int segments = (int)ceilf(length / CELL_EDGE_LENGTH);
+    if (segments < 1) segments = 1;
+    if (segments > 96) segments = 96;
+
+    sgl_begin_lines();
+    sgl_c4f(r, g0, b0, alpha);
+    for (int i = 0; i < segments; i++) {
+        float t0 = (float)i / (float)segments;
+        float t1 = (float)(i + 1) / (float)segments;
+        vec2 p0 = v2_add(a, v2_scale(delta, t0));
+        vec2 p1 = v2_add(a, v2_scale(delta, t1));
+        vec2 p0a = v2_add(p0, v2_scale(normal, half_width));
+        vec2 p0b = v2_sub(p0, v2_scale(normal, half_width));
+        vec2 p1a = v2_add(p1, v2_scale(normal, half_width));
+        vec2 p1b = v2_sub(p1, v2_scale(normal, half_width));
+        sgl_v2f(p0a.x, p0a.y); sgl_v2f(p1a.x, p1a.y);
+        sgl_v2f(p0b.x, p0b.y); sgl_v2f(p1b.x, p1b.y);
+        if ((i & 1) == 0) {
+            sgl_v2f(p0a.x, p0a.y); sgl_v2f(p1b.x, p1b.y);
+        } else {
+            sgl_v2f(p0b.x, p0b.y); sgl_v2f(p1a.x, p1a.y);
+        }
+    }
+    sgl_end();
+}
+
+static void draw_corridor_arc(vec2 center, float ring_radius,
+                              float angle_a, float arc_delta,
+                              float cr, float cg, float cb, float alpha);
+
+static void draw_station_cell(vec2 center, bool reinforced, bool scaffold,
+                              float progress, float r, float g0, float b,
+                              float alpha) {
+    vec2 vertices[6];
+    station_cell_vertices(center, vertices);
+    float fill = scaffold ? clampf(progress, 0.0f, 1.0f) : 1.0f;
+    if (fill > 0.01f) {
+        int faces = (int)ceilf(fill * 6.0f);
+        sgl_begin_triangles();
+        sgl_c4f(r * 0.22f, g0 * 0.22f, b * 0.22f,
+                alpha * (scaffold ? 0.42f : 0.72f));
+        for (int i = 0; i < faces && i < 6; i++) {
+            sgl_v2f(center.x, center.y);
+            sgl_v2f(vertices[i].x, vertices[i].y);
+            sgl_v2f(vertices[(i + 1) % 6].x,
+                    vertices[(i + 1) % 6].y);
+        }
+        sgl_end();
+    }
+
+    int edge_count = scaffold ? (int)ceilf(fill * 6.0f) : 6;
+    sgl_begin_lines();
+    sgl_c4f(scaffold ? 1.0f : r,
+            scaffold ? 0.85f : g0,
+            scaffold ? 0.47f : b, alpha);
+    for (int i = 0; i < edge_count && i < 6; i++) {
+        sgl_v2f(vertices[i].x, vertices[i].y);
+        sgl_v2f(vertices[(i + 1) % 6].x,
+                vertices[(i + 1) % 6].y);
+        if (reinforced) {
+            sgl_v2f(center.x, center.y);
+            sgl_v2f(vertices[i].x, vertices[i].y);
+        }
+    }
+    sgl_end();
+}
+
+static void draw_station_triangle_cell_at(const cell_node_t *node,
+                                          vec2 center, vec2 station_center,
+                                          bool scaffold, float progress,
+                                          float r, float g0, float b,
+                                          float alpha) {
+    vec2 outward = v2_sub(center, station_center);
+    float length = v2_len(outward);
+    if (length > 0.001f) {
+        outward = v2_scale(outward, 1.0f / length);
+    } else {
+        cell_point_t active = cell_triangle_active_vector(node);
+        outward = v2(active.x, active.y);
+    }
+    vec2 tangent = v2(-outward.y, outward.x);
+    float altitude = CELL_EDGE_LENGTH * 0.8660254038f;
+    vec2 tip = v2_add(center, v2_scale(outward, altitude * (2.0f / 3.0f)));
+    vec2 base = v2_sub(center, v2_scale(outward, altitude / 3.0f));
+    vec2 a = v2_add(base, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
+    vec2 c = v2_sub(base, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
+    float fill = scaffold ? clampf(progress, 0.0f, 1.0f) : 1.0f;
+    if (fill > 0.01f) {
+        sgl_begin_triangles();
+        sgl_c4f(r * 0.25f, g0 * 0.25f, b * 0.25f, alpha * 0.72f);
+        sgl_v2f(a.x, a.y); sgl_v2f(c.x, c.y); sgl_v2f(tip.x, tip.y);
+        sgl_end();
+    }
+    int edges = scaffold ? (int)ceilf(fill * 3.0f) : 3;
+    vec2 vertices[3] = {a, c, tip};
+    sgl_begin_lines();
+    sgl_c4f(scaffold ? 1.0f : r,
+            scaffold ? 0.85f : g0,
+            scaffold ? 0.47f : b, alpha);
+    for (int i = 0; i < edges && i < 3; i++) {
+        sgl_v2f(vertices[i].x, vertices[i].y);
+        sgl_v2f(vertices[(i + 1) % 3].x, vertices[(i + 1) % 3].y);
+    }
+    sgl_end();
+}
+
+static void draw_station_cell_icon(const station_t *station,
+                                   const station_module_t *module,
+                                   vec2 center, float angle,
+                                   float alpha) {
+    if (!station || !module || module->scaffold) return;
+    float mr, mg, mb;
+    float hr = 0.0f, hg = 0.0f, hb = 0.0f;
+    bool hopper = module->type == MODULE_HOPPER &&
+                  module->commodity < COMMODITY_COUNT;
+    if (hopper) {
+        commodity_hopper_palette((commodity_t)module->commodity,
+                                 &mr, &mg, &mb, &hr, &hg, &hb);
+    } else {
+        module_color(module->type, &mr, &mg, &mb);
+    }
+    if (module->type == MODULE_FURNACE)
+        station_palette_furnace_module_color(station, module, &mr, &mg, &mb);
+
+    sgl_push_matrix();
+    sgl_translate(center.x, center.y, 0.0f);
+    sgl_rotate(angle + PI_F * 0.5f, 0.0f, 0.0f, 1.0f);
+    sgl_scale(0.34f, 0.34f, 1.0f);
+    if (hopper) {
+        draw_hopper_shape(mr, mg, mb, hr, hg, hb, alpha);
+    } else {
+        draw_module_shape(module->type, mr, mg, mb, alpha);
+    }
+    sgl_pop_matrix();
+}
+
+static void draw_station_cell_graph(const station_t *station,
+                                    bool detailed, float base_alpha) {
+    station_geom_t geom;
+    station_build_geom(station, &geom);
+    if (geom.cell_count <= 0) return;
+
+    /* Ring corridors are open trusses, not filled circular material. Their
+     * rails coincide with the legacy collision band during migration. */
+    for (int i = 0; i < geom.corridor_count; i++) {
+        const geom_corridor_t *corridor = &geom.corridors[i];
+        draw_corridor_arc(station->pos, corridor->ring_radius,
+                          corridor->angle_a, corridor->arc_delta,
+                          0.30f, 0.48f, 0.55f,
+                          base_alpha * (detailed ? 0.58f : 0.32f));
+    }
+
+    /* Every outer section is tied to the nearest populated inner section;
+     * ring-one cells tie to the reinforced hub. Each long line is tessellated
+     * into standard-length truss bays by draw_station_frame_span. */
+    for (int i = 0; i < station->module_count; i++) {
+        const station_module_t *module = &station->modules[i];
+        vec2 end = module_world_pos_ring(station, module->ring, module->slot);
+        vec2 start = station->pos;
+        float best = 1e30f;
+        for (int j = 0; j < station->module_count; j++) {
+            const station_module_t *candidate = &station->modules[j];
+            if (candidate->ring >= module->ring) continue;
+            vec2 p = module_world_pos_ring(station, candidate->ring,
+                                           candidate->slot);
+            float d = v2_dist_sq(p, end);
+            if (d < best) { best = d; start = p; }
+        }
+        draw_station_frame_span(start, end, 0.30f, 0.48f, 0.55f,
+                                base_alpha * (detailed ? 0.66f : 0.36f));
+    }
+
+    for (int i = 0; i < geom.cell_count; i++) {
+        const cell_node_t *node = &geom.cells[i].node;
+        vec2 center = geom.cells[i].center;
+        float r = 0.45f, g0 = 0.85f, b = 1.0f;
+        bool scaffold = (node->flags & CELL_NODE_FLAG_SCAFFOLD) != 0;
+        float progress = geom.cells[i].build_progress;
+        int module_index = station_cell_module_index(node);
+        if (module_index >= 0 && module_index < station->module_count) {
+            const station_module_t *module = &station->modules[module_index];
+            module_color(module->type, &r, &g0, &b);
+            if (module->type == MODULE_HOPPER &&
+                module->commodity < COMMODITY_COUNT) {
+                commodity_color((commodity_t)module->commodity, &r, &g0, &b);
+            } else if (module->type == MODULE_FURNACE) {
+                station_palette_furnace_module_color(station, module,
+                                                     &r, &g0, &b);
+            }
+        }
+        if (node->shape == CELL_SHAPE_TRIANGLE) {
+            draw_station_triangle_cell_at(node, center, station->pos,
+                                          scaffold, progress, r, g0, b,
+                                          base_alpha * (detailed ? 1.0f : 0.72f));
+        } else {
+            draw_station_cell(center,
+                              node->shape == CELL_SHAPE_REINFORCED_HEX,
+                              scaffold, progress, r, g0, b,
+                              base_alpha * (detailed ? 1.0f : 0.72f));
+        }
+        if (detailed && module_index >= 0 &&
+            module_index < station->module_count &&
+            node->shape != CELL_SHAPE_TRIANGLE) {
+            float angle = module_angle_ring(
+                station, station->modules[module_index].ring,
+                station->modules[module_index].slot);
+            draw_station_cell_icon(station, &station->modules[module_index],
+                                   center, angle, base_alpha * 0.90f);
+        }
+    }
+}
+
 /* Draw station core and dock range (below ships in render order). */
 void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) && !station->scaffold) return;
-    (void)is_nearby;
-
     float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
     station_role_color(station, &role_r, &role_g, &role_b);
 
@@ -1690,45 +1920,19 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     if (station->scaffold) {
         float alpha = 0.3f + 0.2f * sinf(g.world.time * 1.5f);
         float prog = station->scaffold_progress;
-        int dash_segs = 24;
-        float step = TWO_PI_F / (float)dash_segs;
-        for (int i = 0; i < dash_segs; i += 2) {
-            float a0 = (float)i * step;
-            float a1 = (float)(i + 1) * step;
-            vec2 p0 = v2_add(station->pos, v2(cosf(a0) * station->dock_radius, sinf(a0) * station->dock_radius));
-            vec2 p1 = v2_add(station->pos, v2(cosf(a1) * station->dock_radius, sinf(a1) * station->dock_radius));
-            draw_segment(p0, p1, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, alpha);
-        }
-        draw_circle_outline(station->pos, station->radius, 18, role_r * 0.6f, role_g * 0.6f, role_b * 0.6f, alpha + 0.15f);
-        if (prog > 0.01f) {
-            int filled = (int)(prog * 24.0f);
-            float fs = TWO_PI_F / 24.0f;
-            for (int i = 0; i < filled && i < 24; i++) {
-                vec2 p0 = v2_add(station->pos, v2(cosf(i*fs) * (station->radius+12.0f), sinf(i*fs) * (station->radius+12.0f)));
-                vec2 p1 = v2_add(station->pos, v2(cosf((i+1)*fs) * (station->radius+12.0f), sinf((i+1)*fs) * (station->radius+12.0f)));
-                draw_segment(p0, p1, role_r, role_g, role_b, 0.8f);
-            }
-        }
+        draw_station_cell(station->pos, true, true, prog,
+                          role_r, role_g, role_b, alpha + 0.45f);
+        /* Circular presentation survives only as a non-material signal field. */
+        draw_circle_outline(station->pos, station->signal_range, 48,
+                            role_r, role_g, role_b, alpha * 0.20f);
         return;
     }
 
-    (void)is_current;
-
-    /* Station center is empty space — the construction yard.
-     * Just a faint marker so the player can locate the geometric center. */
-    float pulse = 0.15f + 0.08f * sinf(g.world.time * 2.0f);
-    draw_circle_outline(station->pos, 4.0f, 8, role_r * 0.4f, role_g * 0.4f, role_b * 0.4f, pulse);
-
-    /* Radial spokes from core to ring 1 modules */
-    for (int i = 0; i < station->module_count; i++) {
-        if (station->modules[i].ring != 1) continue;
-        vec2 mod_pos = module_world_pos_ring(station, 1, station->modules[i].slot);
-        sgl_c4f(role_r * 0.2f, role_g * 0.2f, role_b * 0.2f, 0.25f);
-        sgl_begin_lines();
-        sgl_v2f(station->pos.x, station->pos.y);
-        sgl_v2f(mod_pos.x, mod_pos.y);
-        sgl_end();
-    }
+    /* The center is now a real reinforced cell, not an empty orbital marker.
+     * Nearby/current stations expose every authored cell and scaffold edge;
+     * distant stations collapse to one cheap six-edge assembly silhouette. */
+    draw_station_cell_graph(station, is_current || is_nearby,
+                            is_current ? 0.95f : (is_nearby ? 0.78f : 0.52f));
 
     /* Faint ring orbit guides */
     for (int r = 1; r <= STATION_NUM_RINGS; r++) {
@@ -1765,47 +1969,34 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
 static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float arc_delta,
                                float cr, float cg, float cb, float alpha) {
-    /* Corridor visual band — slightly wider than STATION_CORRIDOR_HW to account
-     * for the angular margin expansion in collision (ship radius ~12-15 units). */
-    float hw = STATION_CORRIDOR_HW + 4.0f;
+    /* Open two-rail truss. The rails expose the physical corridor collision
+     * without turning an orbit into a material circle. */
+    float hw = STATION_CORRIDOR_HW;
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
-
-    /* arc_delta comes from the geom emitter and is already the
-     * canonical forward span — no normalization. */
     float da = arc_delta;
+    int segments = (int)ceilf(fabsf(da) * ring_radius / CELL_EDGE_LENGTH);
+    if (segments < CORRIDOR_ARC_SEGMENTS) segments = CORRIDOR_ARC_SEGMENTS;
+    if (segments > 96) segments = 96;
 
-    /* Solid fill — triangle strip as quads */
-    sgl_c4f(cr * 0.15f, cg * 0.15f, cb * 0.15f, alpha * 0.6f);
-    sgl_begin_triangles();
-    for (int i = 0; i < CORRIDOR_ARC_SEGMENTS; i++) {
-        float t0 = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
-        float t1 = (float)(i + 1) / (float)CORRIDOR_ARC_SEGMENTS;
+    sgl_begin_lines();
+    sgl_c4f(cr, cg, cb, alpha);
+    for (int i = 0; i < segments; i++) {
+        float t0 = (float)i / (float)segments;
+        float t1 = (float)(i + 1) / (float)segments;
         float a0 = angle_a + da * t0;
         float a1 = angle_a + da * t1;
         vec2 i0 = v2_add(center, v2(cosf(a0) * r_inner, sinf(a0) * r_inner));
         vec2 o0 = v2_add(center, v2(cosf(a0) * r_outer, sinf(a0) * r_outer));
         vec2 i1 = v2_add(center, v2(cosf(a1) * r_inner, sinf(a1) * r_inner));
         vec2 o1 = v2_add(center, v2(cosf(a1) * r_outer, sinf(a1) * r_outer));
-        sgl_v2f(i0.x,i0.y); sgl_v2f(o0.x,o0.y); sgl_v2f(o1.x,o1.y);
-        sgl_v2f(i0.x,i0.y); sgl_v2f(o1.x,o1.y); sgl_v2f(i1.x,i1.y);
-    }
-    sgl_end();
-
-    /* Edge lines (inner and outer arcs) — brighter than fill */
-    sgl_c4f(cr * 0.55f, cg * 0.55f, cb * 0.55f, alpha * 0.7f);
-    sgl_begin_line_strip();
-    for (int i = 0; i <= CORRIDOR_ARC_SEGMENTS; i++) {
-        float t = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
-        float a = angle_a + da * t;
-        sgl_v2f(center.x + cosf(a) * r_inner, center.y + sinf(a) * r_inner);
-    }
-    sgl_end();
-    sgl_begin_line_strip();
-    for (int i = 0; i <= CORRIDOR_ARC_SEGMENTS; i++) {
-        float t = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
-        float a = angle_a + da * t;
-        sgl_v2f(center.x + cosf(a) * r_outer, center.y + sinf(a) * r_outer);
+        sgl_v2f(i0.x, i0.y); sgl_v2f(i1.x, i1.y);
+        sgl_v2f(o0.x, o0.y); sgl_v2f(o1.x, o1.y);
+        if ((i & 1) == 0) {
+            sgl_v2f(i0.x, i0.y); sgl_v2f(o1.x, o1.y);
+        } else {
+            sgl_v2f(o0.x, o0.y); sgl_v2f(i1.x, i1.y);
+        }
     }
     sgl_end();
 }
@@ -1813,6 +2004,24 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
 /* Draw module rings (above ships in render order). */
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) || station->scaffold) return;
+
+    /* Structural cells and open trusses render in draw_station(). This upper
+     * pass keeps only active commodity-flow fields above ships. */
+    station_geom_t field_geom;
+    station_build_geom(station, &field_geom);
+    float field_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
+    sgl_begin_lines();
+    for (int i = 0; i < field_geom.spoke_count; i++) {
+        const geom_spoke_t *spoke = &field_geom.spokes[i];
+        if (spoke->pulse <= 0.01f) continue;
+        float r, g0, b;
+        commodity_color((commodity_t)spoke->commodity, &r, &g0, &b);
+        sgl_c4f(r, g0, b, field_alpha * 0.65f * spoke->pulse);
+        sgl_v2f(spoke->a.x, spoke->a.y);
+        sgl_v2f(spoke->b.x, spoke->b.y);
+    }
+    sgl_end();
+    return;
 
     float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
     station_role_color(station, &role_r, &role_g, &role_b);
@@ -2451,6 +2660,165 @@ static void draw_throw_preview(void) {
     }
 }
 
+static vec2 ship_cell_local_point(cell_point_t point, vec2 center) {
+    return v2(point.x - center.x, point.y - center.y);
+}
+
+static void ship_cell_hex_vertices(vec2 center, float edge, vec2 out[6]) {
+    for (int i = 0; i < 6; i++) {
+        float angle = -PI_F * 0.5f + (float)i * PI_F / 3.0f;
+        out[i] = v2_add(center, v2(cosf(angle) * edge,
+                                   sinf(angle) * edge));
+    }
+}
+
+static void ship_cell_draw_hex(vec2 center, bool reinforced,
+                               float r, float g0, float b, float alpha) {
+    vec2 vertices[6];
+    ship_cell_hex_vertices(center, CELL_EDGE_LENGTH, vertices);
+    sgl_begin_triangles();
+    sgl_c4f(r * 0.25f, g0 * 0.25f, b * 0.25f, alpha * 0.72f);
+    for (int i = 0; i < 6; i++) {
+        sgl_v2f(center.x, center.y);
+        sgl_v2f(vertices[i].x, vertices[i].y);
+        sgl_v2f(vertices[(i + 1) % 6].x, vertices[(i + 1) % 6].y);
+    }
+    sgl_end();
+
+    sgl_begin_lines();
+    sgl_c4f(r, g0, b, alpha);
+    for (int i = 0; i < 6; i++) {
+        sgl_v2f(vertices[i].x, vertices[i].y);
+        sgl_v2f(vertices[(i + 1) % 6].x, vertices[(i + 1) % 6].y);
+        if (reinforced) {
+            sgl_v2f(center.x, center.y);
+            sgl_v2f(vertices[i].x, vertices[i].y);
+        }
+    }
+    sgl_end();
+
+    if (reinforced) {
+        float joint = CELL_EDGE_LENGTH * 0.11f;
+        sgl_begin_quads();
+        sgl_c4f(r, g0, b, alpha);
+        sgl_v2f(center.x - joint, center.y - joint);
+        sgl_v2f(center.x + joint, center.y - joint);
+        sgl_v2f(center.x + joint, center.y + joint);
+        sgl_v2f(center.x - joint, center.y + joint);
+        sgl_end();
+    }
+}
+
+static void ship_cell_draw_payload(vec2 center, float load,
+                                   float r, float g0, float b) {
+    if (load <= 0.0f) return;
+    int blocks = (int)ceilf(clampf(load, 0.0f, 1.0f) * 4.0f - 0.0001f);
+    float half = CELL_EDGE_LENGTH * 0.105f;
+    float offset = CELL_EDGE_LENGTH * 0.22f;
+    sgl_begin_quads();
+    sgl_c4f(r * 0.82f, g0 * 0.82f, b * 0.82f, 0.92f);
+    for (int i = 0; i < blocks; i++) {
+        float x = center.x + ((i & 1) ? offset : -offset);
+        float y = center.y + ((i & 2) ? offset : -offset);
+        sgl_v2f(x - half, y - half);
+        sgl_v2f(x + half, y - half);
+        sgl_v2f(x + half, y + half);
+        sgl_v2f(x - half, y + half);
+    }
+    sgl_end();
+}
+
+static void ship_cell_draw_triangle(const cell_node_t *node, vec2 graph_center,
+                                    bool thrusting,
+                                    float hull_r, float hull_g, float hull_b,
+                                    float flame_r, float flame_g,
+                                    float flame_b) {
+    cell_point_t host_point = cell_coord_world(node->coord, CELL_EDGE_LENGTH);
+    vec2 host = ship_cell_local_point(host_point, graph_center);
+    float angle = (float)node->orientation * PI_F / 3.0f;
+    vec2 normal = v2(cosf(angle), sinf(angle));
+    vec2 tangent = v2(-normal.y, normal.x);
+    float apothem = CELL_EDGE_LENGTH * 0.8660254038f;
+    vec2 edge_center = v2_add(host, v2_scale(normal, apothem));
+    vec2 a = v2_add(edge_center, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
+    vec2 b = v2_sub(edge_center, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
+    vec2 tip = v2_add(host, v2_scale(normal, CELL_EDGE_LENGTH * 1.7320508f));
+
+    float r = hull_r, g0 = hull_g, bl = hull_b;
+    switch ((cell_role_t)node->role) {
+    case CELL_ROLE_ENGINE:
+        r = flame_r; g0 = flame_g; bl = flame_b;
+        break;
+    case CELL_ROLE_TOW:
+        r = 0.30f; g0 = 0.82f; bl = 0.76f;
+        break;
+    case CELL_ROLE_WEAPON:
+        r = 0.88f; g0 = 0.46f; bl = 0.22f;
+        break;
+    case CELL_ROLE_SENSOR:
+        r = 0.36f; g0 = 0.66f; bl = 0.92f;
+        break;
+    default:
+        break;
+    }
+
+    sgl_begin_triangles();
+    sgl_c4f(r * 0.32f, g0 * 0.32f, bl * 0.32f, 0.90f);
+    sgl_v2f(a.x, a.y); sgl_v2f(b.x, b.y); sgl_v2f(tip.x, tip.y);
+    sgl_end();
+    sgl_begin_lines();
+    sgl_c4f(r, g0, bl, 0.98f);
+    sgl_v2f(a.x, a.y); sgl_v2f(b.x, b.y);
+    sgl_v2f(b.x, b.y); sgl_v2f(tip.x, tip.y);
+    sgl_v2f(tip.x, tip.y); sgl_v2f(a.x, a.y);
+    sgl_end();
+
+    if (thrusting && node->role == CELL_ROLE_ENGINE) {
+        float flicker = 7.0f + sinf(g.world.time * 42.0f + host.x) * 2.0f;
+        vec2 exhaust = v2_add(tip, v2_scale(normal, flicker));
+        vec2 e0 = v2_add(tip, v2_scale(tangent, 3.0f));
+        vec2 e1 = v2_sub(tip, v2_scale(tangent, 3.0f));
+        float cue_prev = world_signal_visual_enter_cue();
+        sgl_begin_triangles();
+        sgl_c4f(flame_r, flame_g, flame_b, 0.86f);
+        sgl_v2f(e0.x, e0.y); sgl_v2f(e1.x, e1.y);
+        sgl_v2f(exhaust.x, exhaust.y);
+        sgl_end();
+        world_signal_visual_leave_cue(cue_prev);
+    }
+}
+
+static void draw_ship_cell_graph(const ship_t *ship, bool thrusting,
+                                 float hull_r, float hull_g, float hull_b,
+                                 float flame_r, float flame_g, float flame_b) {
+    cell_graph_t graph;
+    if (!ship_cell_graph(ship, &graph)) return;
+    vec2 center = ship_cell_center_of_mass(ship);
+    float cargo_remaining = ship_total_cargo(ship);
+
+    for (uint8_t i = 0; i < graph.count; i++) {
+        const cell_node_t *node = &graph.nodes[i];
+        if (node->shape == CELL_SHAPE_TRIANGLE) continue;
+        cell_point_t point = cell_coord_world(node->coord, CELL_EDGE_LENGTH);
+        vec2 local = ship_cell_local_point(point, center);
+        ship_cell_draw_hex(local, node->shape == CELL_SHAPE_REINFORCED_HEX,
+                           hull_r, hull_g, hull_b, 0.96f);
+        int capacity = cell_shape_payload_capacity((cell_shape_t)node->shape);
+        float held = fminf(cargo_remaining, (float)capacity);
+        cargo_remaining -= held;
+        ship_cell_draw_payload(local,
+                               capacity > 0 ? held / (float)capacity : 0.0f,
+                               hull_r, hull_g, hull_b);
+    }
+    for (uint8_t i = 0; i < graph.count; i++) {
+        const cell_node_t *node = &graph.nodes[i];
+        if (node->shape != CELL_SHAPE_TRIANGLE) continue;
+        ship_cell_draw_triangle(node, center, thrusting,
+                                hull_r, hull_g, hull_b,
+                                flame_r, flame_g, flame_b);
+    }
+}
+
 void draw_ship(void) {
     /* While the death cinematic is rolling, the player ship is hidden —
      * we draw the wreckage at the death position via draw_death_wreckage. */
@@ -2460,37 +2828,6 @@ void draw_ship(void) {
     sgl_push_matrix();
     sgl_translate(LOCAL_PLAYER.ship->pos.x, LOCAL_PLAYER.ship->pos.y, 0.0f);
     sgl_rotate(LOCAL_PLAYER.ship->angle, 0.0f, 0.0f, 1.0f);
-
-    if (g.thrusting) {
-        float flicker = 10.0f + sinf(g.world.time * 42.0f) * 3.0f;
-        /* Flame color reads the ship's current situation:
-         *   boost held      -> blue (exhaust is hotter, burning hull)
-         *   frontier signal -> static white
-         *   fringe signal   -> teal degradation
-         *   core            -> warm gold/orange default
-         * Boost wins - you can always see it even in a desert. */
-        bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
-                        || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
-        float fr, fg, fb;
-        if (boost_on && !LOCAL_PLAYER.docked) {
-            fr = 0.35f; fg = 0.80f; fb = 1.00f;
-        } else if (sig < SIGNAL_BAND_FRONTIER) {
-            fr = 0.82f; fg = 0.92f; fb = 1.00f;
-        } else if (sig < SIGNAL_BAND_FRINGE) {
-            fr = 0.18f; fg = 0.78f; fb = 0.72f;
-        } else {
-            fr = 1.00f; fg = 0.74f; fb = 0.24f;
-        }
-        float cue_prev = world_signal_visual_enter_cue();
-        sgl_c4f(fr, fg, fb, 0.95f);
-        sgl_begin_triangles();
-        sgl_v2f(-12.0f, 0.0f);
-        sgl_v2f(-26.0f - flicker, 6.0f);
-        sgl_v2f(-26.0f - flicker, -6.0f);
-        sgl_end();
-        world_signal_visual_leave_cue(cue_prev);
-    }
 
     /* Ship body tint: signal-blue player livery when empty, blending toward
      * the manifest's grade-weighted color as cargo fills. Same helper drives
@@ -2508,22 +2845,21 @@ void draw_ship(void) {
                                        &tr, &tg, &tb);
         }
     }
-    render_color4f_at(LOCAL_PLAYER.ship->pos, tr, tg, tb, 1.0f);
-    sgl_begin_triangles();
-    sgl_v2f(22.0f, 0.0f);
-    sgl_v2f(-14.0f, 12.0f);
-    sgl_v2f(-14.0f, -12.0f);
-    sgl_end();
-
-    render_color4f_at(LOCAL_PLAYER.ship->pos, 0.04f, 0.16f, 0.18f, 1.0f);
-    sgl_begin_triangles();
-    sgl_v2f(8.0f, 0.0f);
-    sgl_v2f(-5.0f, 5.5f);
-    sgl_v2f(-5.0f, -5.5f);
-    sgl_end();
-
-    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.20f, 0.72f, 0.82f, 0.90f);
-    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.20f, 0.72f, 0.82f, 0.90f);
+    bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
+                    || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
+    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
+    float fr, fg, fb;
+    if (boost_on && !LOCAL_PLAYER.docked) {
+        fr = 0.35f; fg = 0.80f; fb = 1.00f;
+    } else if (sig < SIGNAL_BAND_FRONTIER) {
+        fr = 0.82f; fg = 0.92f; fb = 1.00f;
+    } else if (sig < SIGNAL_BAND_FRINGE) {
+        fr = 0.18f; fg = 0.78f; fb = 0.72f;
+    } else {
+        fr = 1.00f; fg = 0.74f; fb = 0.24f;
+    }
+    draw_ship_cell_graph(LOCAL_PLAYER.ship, g.thrusting,
+                         tr, tg, tb, fr, fg, fb);
 
     sgl_pop_matrix();
     world_signal_visual_leave_cue(ship_sat_prev);
@@ -2656,48 +2992,18 @@ void draw_death_wreckage(void) {
 }
 
 void draw_npc_ship(const npc_ship_t* npc) {
-    const hull_def_t* hull = npc_hull_def(npc);
-    bool is_hauler = npc->ship->hull_class == HULL_CLASS_HAULER;
-    float scale = hull->render_scale;
     /* NPC hulls keep cleaner, colder lines than the player ship while
      * still absorbing manifest rarity/cargo tint from the server. */
     float hull_r = lerpf(0.50f, npc->tint_r, 0.38f);
     float hull_g = lerpf(0.55f, npc->tint_g, 0.38f);
     float hull_b = lerpf(0.60f, npc->tint_b, 0.38f);
 
-    (void)is_hauler;
-
     sgl_push_matrix();
     sgl_translate(npc->ship->pos.x, npc->ship->pos.y, 0.0f);
     sgl_rotate(npc->ship->angle, 0.0f, 0.0f, 1.0f);
-    sgl_scale(scale, scale, 1.0f);
-
-    if (npc->thrusting) {
-        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->ship->pos.x) * 2.5f;
-        sgl_c4f(1.0f, 0.6f, 0.15f, 0.9f);
-        sgl_begin_triangles();
-        sgl_v2f(-12.0f, 0.0f);
-        sgl_v2f(-26.0f - flicker, 6.0f);
-        sgl_v2f(-26.0f - flicker, -6.0f);
-        sgl_end();
-    }
-
-    sgl_c4f(hull_r, hull_g, hull_b, 1.0f);
-    sgl_begin_triangles();
-    sgl_v2f(22.0f, 0.0f);
-    sgl_v2f(-14.0f, 12.0f);
-    sgl_v2f(-14.0f, -12.0f);
-    sgl_end();
-
-    sgl_c4f(hull_r * 0.3f, hull_g * 0.3f, hull_b * 0.3f, 1.0f);
-    sgl_begin_triangles();
-    sgl_v2f(8.0f, 0.0f);
-    sgl_v2f(-5.0f, 5.5f);
-    sgl_v2f(-5.0f, -5.5f);
-    sgl_end();
-
-    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), hull_r * 0.9f, hull_g * 0.8f, hull_b * 0.3f, 0.85f);
-    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), hull_r * 0.9f, hull_g * 0.8f, hull_b * 0.3f, 0.85f);
+    draw_ship_cell_graph(npc->ship, npc->thrusting,
+                         hull_r, hull_g, hull_b,
+                         1.0f, 0.60f, 0.15f);
 
     sgl_pop_matrix();
 }
@@ -2779,6 +3085,66 @@ void draw_npc_ships(void) {
     }
 }
 
+enum {
+    CARGO_POD_HEX_EDGES = 6,
+    CARGO_POD_LOAD_RAILS = 6,
+};
+
+#define CARGO_POD_SHELL_SCALE CARGO_POD_SHELL_RADIUS_SCALE
+
+static void cargo_pod_hex_vertices(float radius,
+                                   vec2 out[CARGO_POD_HEX_EDGES]) {
+    float shell_radius = radius * CARGO_POD_SHELL_SCALE;
+    for (int i = 0; i < CARGO_POD_HEX_EDGES; i++) {
+        float angle = -PI_F * 0.5f + (float)i * (PI_F / 3.0f);
+        out[i] = v2(cosf(angle) * shell_radius,
+                    sinf(angle) * shell_radius);
+    }
+}
+
+/* Render the same named complete-edge hardpoint used by authoritative tow
+ * physics. Older/partial snapshots fall back to the deterministic nearest
+ * edge until their next metadata refresh. */
+static vec2 cargo_pod_tow_hardpoint_local(const cargo_pod_t *pod,
+                                          vec2 source) {
+    if (!pod) return v2(0.0f, 0.0f);
+    int hardpoint = cargo_pod_tow_hardpoint(pod);
+    if (hardpoint < 0) hardpoint = cargo_pod_select_hardpoint(pod, source);
+    float angle = (float)hardpoint * PI_F / 3.0f;
+    float apothem = pod->radius * CARGO_POD_SHELL_SCALE * 0.8660254038f;
+    return v2(cosf(angle) * apothem, sinf(angle) * apothem);
+}
+
+static vec2 cargo_pod_tow_hardpoint_world(const cargo_pod_t *pod,
+                                          vec2 source) {
+    if (!pod) return v2(0.0f, 0.0f);
+    int hardpoint = cargo_pod_tow_hardpoint(pod);
+    if (hardpoint < 0) hardpoint = cargo_pod_select_hardpoint(pod, source);
+    return cargo_pod_hardpoint_world(pod, hardpoint);
+}
+
+static bool cargo_pod_tractor_source_pos(const cargo_pod_t *pod,
+                                         vec2 *out_source) {
+    if (!pod || !out_source) return false;
+    int player_idx = cargo_pod_player_tractor(pod);
+    if (player_idx >= 0 && player_idx < MAX_PLAYERS) {
+        const ship_t *ship = g.world.players[player_idx].ship;
+        if (!ship) return false;
+        *out_source = ship->pos;
+        return true;
+    }
+
+    int station_idx = -1;
+    int module_idx = -1;
+    if (!cargo_pod_module_tractor_indices(
+            pod, &station_idx, &module_idx)) return false;
+    const station_t *st = &g.world.stations[station_idx];
+    if (!station_exists(st) || module_idx >= st->module_count) return false;
+    const station_module_t *module = &st->modules[module_idx];
+    *out_source = module_world_pos_ring(st, module->ring, module->slot);
+    return true;
+}
+
 static void draw_cargo_pod_module_tractor_beam(vec2 emitter,
                                                vec2 pod_pos,
                                                const cargo_pod_t *pod,
@@ -2847,6 +3213,7 @@ static bool draw_published_cargo_pod_module_tractors(void) {
         tractor_beam_t beam = cargo_pod_module_tractor_beam(range);
         float intensity = clampf(it->intensity, 0.0f, 1.0f);
         if (intensity <= 0.0f) continue;
+        target = cargo_pod_tow_hardpoint_world(pod, emitter);
         float tautness = tractor_beam_tautness(emitter, target, &beam);
 
         commodity_t commodity = it->commodity < COMMODITY_COUNT
@@ -3213,11 +3580,12 @@ void draw_towed_tethers(void) {
         cargo_pod_content_color(pod, &r, &gg, &b);
         tractor_beam_t pod_beam = tractor_tow_beam(
             ship_tractor_range(ship), TRACTOR_TOW_BAND_REST_LENGTH);
+        vec2 hardpoint = cargo_pod_tow_hardpoint_world(pod, ship->pos);
         float stretch = tractor_beam_tautness(
-            ship->pos, pod->pos, &pod_beam);
+            ship->pos, hardpoint, &pod_beam);
         float pulse = 0.40f + 0.15f *
             sinf(g.world.time * 3.0f + (float)i * 1.5f);
-        draw_tractor_tether_wave(ship->pos, pod->pos,
+        draw_tractor_tether_wave(ship->pos, hardpoint,
                                  r, gg, b, pulse, stretch,
                                  (float)i * 1.7f,
                                  SIM_INTERACTION_ENTITY_PLAYER_SHIP,
@@ -3965,6 +4333,227 @@ static void cargo_pod_content_color(const cargo_pod_t *pod,
     *r = 0.78f; *g0 = 0.60f; *b = 0.30f;
 }
 
+static int cargo_pod_filled_load_rails(const cargo_pod_t *pod) {
+    float ratio = cargo_pod_load_ratio(pod);
+    if (ratio <= 0.0f) return 0;
+    int rails = (int)ceilf(ratio * (float)CARGO_POD_LOAD_RAILS - 0.0001f);
+    if (rails < 1) rails = 1;
+    if (rails > CARGO_POD_LOAD_RAILS) rails = CARGO_POD_LOAD_RAILS;
+    return rails;
+}
+
+static void cargo_pod_draw_hex_fill(const vec2 vertices[CARGO_POD_HEX_EDGES],
+                                    float r, float g0, float b, float a) {
+    sgl_begin_triangles();
+    sgl_c4f(r, g0, b, a);
+    for (int i = 0; i < CARGO_POD_HEX_EDGES; i++) {
+        const vec2 p0 = vertices[i];
+        const vec2 p1 = vertices[(i + 1) % CARGO_POD_HEX_EDGES];
+        sgl_v2f(0.0f, 0.0f);
+        sgl_v2f(p0.x, p0.y);
+        sgl_v2f(p1.x, p1.y);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_hex_outline(
+    const vec2 vertices[CARGO_POD_HEX_EDGES],
+    float r, float g0, float b, float a) {
+    sgl_begin_lines();
+    sgl_c4f(r, g0, b, a);
+    for (int i = 0; i < CARGO_POD_HEX_EDGES; i++) {
+        const vec2 p0 = vertices[i];
+        const vec2 p1 = vertices[(i + 1) % CARGO_POD_HEX_EDGES];
+        sgl_v2f(p0.x, p0.y);
+        sgl_v2f(p1.x, p1.y);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_load_rails(
+    const vec2 vertices[CARGO_POD_HEX_EDGES], int filled,
+    float r, float g0, float b) {
+    sgl_begin_lines();
+    for (int i = 0; i < CARGO_POD_LOAD_RAILS; i++) {
+        vec2 edge0 = v2_scale(vertices[i], 0.72f);
+        vec2 edge1 = v2_scale(
+            vertices[(i + 1) % CARGO_POD_HEX_EDGES], 0.72f);
+        vec2 edge = v2_sub(edge1, edge0);
+        vec2 p0 = v2_add(edge0, v2_scale(edge, 0.22f));
+        vec2 p1 = v2_add(edge0, v2_scale(edge, 0.78f));
+        if (i < filled) {
+            sgl_c4f(fminf(1.0f, r * 1.25f),
+                    fminf(1.0f, g0 * 1.25f),
+                    fminf(1.0f, b * 1.25f), 0.92f);
+        } else {
+            sgl_c4f(0.28f, 0.35f, 0.38f, 0.30f);
+        }
+        sgl_v2f(p0.x, p0.y);
+        sgl_v2f(p1.x, p1.y);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_ingot_blocks(int count, float radius,
+                                        float r, float g0, float b) {
+    if (count <= 0) return;
+    if (count > 6) count = 6;
+    int cols = count <= 2 ? count : (count <= 4 ? 2 : 3);
+    int rows = (count + cols - 1) / cols;
+    float spacing_x = radius * 0.34f;
+    float spacing_y = radius * 0.34f;
+    float half = radius * (cols >= 3 ? 0.10f : 0.13f);
+
+    sgl_begin_quads();
+    sgl_c4f(r * 0.72f, g0 * 0.72f, b * 0.72f, 0.88f);
+    for (int i = 0; i < count; i++) {
+        int row = i / cols;
+        int first = row * cols;
+        int in_row = count - first;
+        if (in_row > cols) in_row = cols;
+        int col = i - first;
+        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing_x;
+        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing_y;
+        sgl_v2f(x - half, y - half);
+        sgl_v2f(x + half, y - half);
+        sgl_v2f(x + half, y + half);
+        sgl_v2f(x - half, y + half);
+    }
+    sgl_end();
+
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.35f),
+            fminf(1.0f, g0 * 1.35f),
+            fminf(1.0f, b * 1.35f), 0.96f);
+    for (int i = 0; i < count; i++) {
+        int row = i / cols;
+        int first = row * cols;
+        int in_row = count - first;
+        if (in_row > cols) in_row = cols;
+        int col = i - first;
+        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing_x;
+        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing_y;
+        sgl_v2f(x - half, y - half); sgl_v2f(x + half, y - half);
+        sgl_v2f(x + half, y - half); sgl_v2f(x + half, y + half);
+        sgl_v2f(x + half, y + half); sgl_v2f(x - half, y + half);
+        sgl_v2f(x - half, y + half); sgl_v2f(x - half, y - half);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_strut_payload(float radius,
+                                         float r, float g0, float b) {
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.35f),
+            fminf(1.0f, g0 * 1.35f),
+            fminf(1.0f, b * 1.35f), 0.96f);
+    for (int row = -1; row <= 1; row++) {
+        float y = (float)row * radius * 0.23f;
+        float skew = (float)row * radius * 0.06f;
+        sgl_v2f(-radius * 0.38f + skew, y);
+        sgl_v2f( radius * 0.38f + skew, y);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_active_payload(float radius,
+                                          float r, float g0, float b,
+                                          float load) {
+    vec2 tip = v2(radius * 0.48f, 0.0f);
+    vec2 back_top = v2(-radius * 0.34f, -radius * 0.38f);
+    vec2 back_bottom = v2(-radius * 0.34f, radius * 0.38f);
+    sgl_begin_triangles();
+    sgl_c4f(r * 0.65f, g0 * 0.65f, b * 0.65f,
+            0.24f + 0.42f * load);
+    sgl_v2f(tip.x, tip.y);
+    sgl_v2f(back_top.x, back_top.y);
+    sgl_v2f(back_bottom.x, back_bottom.y);
+    sgl_end();
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.40f),
+            fminf(1.0f, g0 * 1.40f),
+            fminf(1.0f, b * 1.40f), 0.98f);
+    sgl_v2f(tip.x, tip.y); sgl_v2f(back_top.x, back_top.y);
+    sgl_v2f(back_top.x, back_top.y); sgl_v2f(back_bottom.x, back_bottom.y);
+    sgl_v2f(back_bottom.x, back_bottom.y); sgl_v2f(tip.x, tip.y);
+    sgl_end();
+}
+
+static void cargo_pod_draw_service_payload(float radius,
+                                           float r, float g0, float b) {
+    float arm = radius * 0.36f;
+    float inner = radius * 0.12f;
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.35f),
+            fminf(1.0f, g0 * 1.35f),
+            fminf(1.0f, b * 1.35f), 0.96f);
+    sgl_v2f(-arm, -inner); sgl_v2f( arm, -inner);
+    sgl_v2f(-arm,  inner); sgl_v2f( arm,  inner);
+    sgl_v2f(-inner, -arm); sgl_v2f(-inner,  arm);
+    sgl_v2f( inner, -arm); sgl_v2f( inner,  arm);
+    sgl_end();
+}
+
+static void cargo_pod_draw_gas_payload(float radius,
+                                       float r, float g0, float b) {
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.22f),
+            fminf(1.0f, g0 * 1.22f),
+            fminf(1.0f, b * 1.22f), 0.78f);
+    for (int row = -1; row <= 1; row++) {
+        float y = (float)row * radius * 0.22f;
+        sgl_v2f(-radius * 0.40f, y);
+        sgl_v2f(-radius * 0.12f, y - radius * 0.07f);
+        sgl_v2f(-radius * 0.12f, y - radius * 0.07f);
+        sgl_v2f( radius * 0.14f, y + radius * 0.07f);
+        sgl_v2f( radius * 0.14f, y + radius * 0.07f);
+        sgl_v2f( radius * 0.40f, y);
+    }
+    sgl_end();
+}
+
+static void cargo_pod_draw_mixed_payload(float radius,
+                                         float r, float g0, float b) {
+    float half = radius * 0.15f;
+    float x = -radius * 0.25f;
+    sgl_begin_quads();
+    sgl_c4f(r * 0.68f, g0 * 0.68f, b * 0.68f, 0.86f);
+    sgl_v2f(x - half, -half); sgl_v2f(x + half, -half);
+    sgl_v2f(x + half,  half); sgl_v2f(x - half,  half);
+    sgl_end();
+    sgl_begin_lines();
+    sgl_c4f(fminf(1.0f, r * 1.35f),
+            fminf(1.0f, g0 * 1.35f),
+            fminf(1.0f, b * 1.35f), 0.94f);
+    sgl_v2f(x - half, -half); sgl_v2f(x + half, -half);
+    sgl_v2f(x + half, -half); sgl_v2f(x + half,  half);
+    sgl_v2f(x + half,  half); sgl_v2f(x - half,  half);
+    sgl_v2f(x - half,  half); sgl_v2f(x - half, -half);
+    sgl_v2f(radius * 0.08f, -radius * 0.30f);
+    sgl_v2f(radius * 0.46f, 0.0f);
+    sgl_v2f(radius * 0.46f, 0.0f);
+    sgl_v2f(radius * 0.08f, radius * 0.30f);
+    sgl_v2f(radius * 0.08f, radius * 0.30f);
+    sgl_v2f(radius * 0.08f, -radius * 0.30f);
+    sgl_end();
+}
+
+static void cargo_pod_draw_active_hardpoint(const cargo_pod_t *pod,
+                                            vec2 source,
+                                            float r, float g0, float b) {
+    vec2 hp = cargo_pod_tow_hardpoint_local(pod, source);
+    float size = fmaxf(1.5f, pod->radius * 0.10f);
+    sgl_begin_quads();
+    sgl_c4f(fminf(1.0f, r * 1.45f),
+            fminf(1.0f, g0 * 1.45f),
+            fminf(1.0f, b * 1.45f), 1.0f);
+    sgl_v2f(hp.x, hp.y - size);
+    sgl_v2f(hp.x + size, hp.y);
+    sgl_v2f(hp.x, hp.y + size);
+    sgl_v2f(hp.x - size, hp.y);
+    sgl_end();
+}
+
 void draw_cargo_pods(void) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
@@ -3975,7 +4564,11 @@ void draw_cargo_pods(void) {
         cargo_pod_content_color(pod, &r, &g0, &b);
         float pulse = 1.0f + 0.08f * sinf(g.world.time * 4.0f + pod->rotation);
 
-        if (pod->kind == CARGO_POD_GAS) {
+        cargo_pod_content_shape_t content = cargo_pod_content_shape(pod);
+        float load = cargo_pod_load_ratio(pod);
+        int filled_rails = cargo_pod_filled_load_rails(pod);
+
+        if (content == CARGO_POD_CONTENT_GAS) {
             draw_circle_filled(pod->pos, pod->radius * 1.8f * pulse, 18,
                                0.12f, 0.72f, 0.68f, 0.16f);
         }
@@ -3984,25 +4577,53 @@ void draw_cargo_pods(void) {
         sgl_translate(pod->pos.x, pod->pos.y, 0.0f);
         sgl_rotate(pod->rotation, 0.0f, 0.0f, 1.0f);
 
-        float half = pod->radius * 0.72f;
-        sgl_begin_quads();
-        sgl_c4f(r * 0.58f, g0 * 0.58f, b * 0.58f, 0.86f);
-        sgl_v2f(-half, -half);
-        sgl_v2f( half, -half);
-        sgl_v2f( half,  half);
-        sgl_v2f(-half,  half);
-        sgl_end();
+        vec2 shell[CARGO_POD_HEX_EDGES];
+        cargo_pod_hex_vertices(pod->radius, shell);
+        cargo_pod_draw_hex_fill(shell, 0.10f, 0.15f, 0.17f, 0.88f);
 
-        sgl_begin_lines();
-        sgl_c4f(fminf(1.0f, r * 1.62f), fminf(1.0f, g0 * 1.48f),
-                fminf(1.0f, b * 1.48f), 0.96f);
-        sgl_v2f(-half, -half); sgl_v2f( half, -half);
-        sgl_v2f( half, -half); sgl_v2f( half,  half);
-        sgl_v2f( half,  half); sgl_v2f(-half,  half);
-        sgl_v2f(-half,  half); sgl_v2f(-half, -half);
-        sgl_v2f(-half, 0.0f);  sgl_v2f( half, 0.0f);
-        sgl_v2f(0.0f, -half);  sgl_v2f(0.0f,  half);
-        sgl_end();
+        vec2 payload_field[CARGO_POD_HEX_EDGES];
+        for (int h = 0; h < CARGO_POD_HEX_EDGES; h++)
+            payload_field[h] = v2_scale(shell[h], 0.70f);
+        cargo_pod_draw_hex_fill(payload_field, r, g0, b,
+                                0.05f + 0.13f * load);
+        cargo_pod_draw_load_rails(shell, filled_rails, r, g0, b);
+
+        switch (content) {
+        case CARGO_POD_CONTENT_INGOT:
+            cargo_pod_draw_ingot_blocks(filled_rails, pod->radius, r, g0, b);
+            break;
+        case CARGO_POD_CONTENT_STRUT:
+            cargo_pod_draw_strut_payload(pod->radius, r, g0, b);
+            break;
+        case CARGO_POD_CONTENT_ACTIVE:
+            cargo_pod_draw_active_payload(pod->radius, r, g0, b, load);
+            break;
+        case CARGO_POD_CONTENT_SERVICE:
+            cargo_pod_draw_service_payload(pod->radius, r, g0, b);
+            break;
+        case CARGO_POD_CONTENT_GAS:
+            cargo_pod_draw_gas_payload(pod->radius, r, g0, b);
+            break;
+        case CARGO_POD_CONTENT_MIXED:
+            cargo_pod_draw_mixed_payload(pod->radius, r, g0, b);
+            break;
+        case CARGO_POD_CONTENT_EMPTY:
+        default:
+            break;
+        }
+
+        cargo_pod_draw_hex_outline(shell, 0.54f, 0.67f, 0.72f, 0.96f);
+        if (pod->has_shell_frame) {
+            vec2 named_shell[CARGO_POD_HEX_EDGES];
+            for (int h = 0; h < CARGO_POD_HEX_EDGES; h++)
+                named_shell[h] = v2_scale(shell[h], 0.87f);
+            cargo_pod_draw_hex_outline(named_shell, 0.42f, 0.65f, 0.72f,
+                                       0.52f);
+        }
+
+        vec2 tractor_source;
+        if (cargo_pod_tractor_source_pos(pod, &tractor_source))
+            cargo_pod_draw_active_hardpoint(pod, tractor_source, r, g0, b);
 
         sgl_pop_matrix();
 

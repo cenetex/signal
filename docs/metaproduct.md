@@ -166,33 +166,37 @@ That artifact is the whole product in miniature.
 
 ## Visible Matter Algebra
 
-Matter should obey one visible operation wherever it crosses a manufactured
-boundary: a 2x2 quartering.
+The canonical construction authority is
+[`rock-cell-grammar.md`](rock-cell-grammar.md). Matter keeps the visible 2x2
+quartering at manufactured conversion boundaries, then enters one 60°
+structural lattice:
 
 ```text
 1 rock fragment -> smelt -> 4 ingots
-1 ingot         -> press -> 4 frames
-1 ingot+frame   -> fab   -> 1 module
-4 frames        -> weld  -> 1 block
+1 ingot         -> press -> 4 standard struts
+3 struts        -> assemble -> 1 directional triangle
+6 struts        -> assemble -> 1 standard hex rim
+12 struts       -> assemble -> 1 reinforced hex hub
 ```
 
-The balance target is not "make every number smaller." It is: keep current
-effective rock costs while replacing hidden decimal-ish ratios with visible
-powers of four. A dock that currently costs 20 frames is one old rock because
-one rock produces 20 frames; in the target algebra it costs 16 frames because
-one rock produces 16 frames. A furnace that currently costs 60 frames remains
-three rocks by becoming 48 frames. The rest of the cost table should be
-restated the same way: frame costs scale by 16/20, ingot costs scale by 4/10,
-and prices are tuned separately because price is information, not matter.
+The balance target is not "make every number smaller." It is to keep current
+effective rock costs while making every structural unit visible. A dock that
+currently costs 20 frames is one old rock because one rock produces 20 frames;
+in the accepted algebra it costs 16 struts because one rock produces 16
+struts. A furnace that currently costs 60 frames remains three rocks by
+becoming 48 struts. The full throughput and cell balance worksheet lives in the
+canonical grammar document. Prices remain tuned separately because price is
+information, not matter.
 
 The visual rule is the product rule. Fracture remains irregular: a rock breaks
 into two to four messy fragments because nature is uncounted. The furnace is
-where nature becomes geometry. Smelt should visibly cut a fragment into four
-exact squares, and each ingot should be a named crate-form object. The frame
-press repeats the same gesture: one solid square is drawn into four hollow
-frames. Modules should show their recipe directly: a gunmetal frame outline
-holding a crystal-violet or cuprite-green core. Nothing in the matter ladder
-should require the player to memorize a hidden multiplier.
+where nature becomes geometry. Smelt visibly cuts a fragment into four exact
+square ingots, and the press draws each ingot into four standard struts. Those
+struts form triangle, hex, and reinforced-hex cells. Squares remain visible as
+packed payload inside hex carriers; they are not structural docking cells.
+Modules show their recipe directly as a structural rim around an interior
+commodity treatment. Nothing in the matter ladder should require the player to
+memorize a hidden multiplier.
 
 This is also the line between analog flow and conserved matter. Smelt rates,
 craft duration, demand pressure, and prices may remain continuous because they
@@ -200,8 +204,8 @@ are time or information. Conserved matter should be countable on screen.
 
 Repair kits are the known violation. A recipe that turns one fabrication set
 into 100 kits creates a thing no sprite can honestly explain. The destination
-is hull and stations as blocks: damage knocks blocks off, repair welds frames
-or blocks back on, and hull is a block count rather than an HP bar plus kit
+is hull and stations as cells: damage shears legal cells free, repair welds
+struts or cells back on, and hull is a cell graph rather than an HP bar plus kit
 stack. That convergence belongs in a gated epic, but every interim repair slice
 should point toward it rather than further entrenching kits.
 

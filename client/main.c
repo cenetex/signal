@@ -24,6 +24,7 @@
 #include "gossip.h"
 #include "net_input_lead.h"
 #include "net_clock.h"
+#include "client_log.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -4078,6 +4079,7 @@ static void cleanup(void) {
     hull_fog_shutdown();
     sgl_shutdown();
     sg_shutdown();
+    client_log_shutdown();
 }
 
 static void event(const sapp_event* event) {
@@ -4489,6 +4491,7 @@ int signal_debug_held_control_mask(void) {
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    (void)client_log_init();
     return (sapp_desc){
         .init_cb = init,
         .frame_cb = frame,

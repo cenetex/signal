@@ -17,7 +17,7 @@ TEST(test_ship_hull_def_hauler) {
     ship.hull_class = HULL_CLASS_HAULER;
     const hull_def_t* hull = ship_hull_def(&ship);
     ASSERT_STR_EQ(hull->name, "Frame-2 Cargo Hauler");
-    ASSERT_EQ_FLOAT(hull->ingot_capacity, 40.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->ingot_capacity, 72.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->mining_rate, 0.0f, 0.01f);
 }
 
@@ -73,6 +73,49 @@ TEST(test_ship_cargo_capacity_with_upgrades) {
     ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 24.0f, 0.01f);
     ship.hold_level = 2;
     ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 24.0f + 2 * 8.0f, 0.01f);
+}
+
+TEST(test_ship_cell_graph_derives_capacity_mass_and_thrust) {
+    ship_t ship = {0};
+    cell_graph_t graph;
+    cell_graph_totals_t totals;
+
+    ship.hull_class = HULL_CLASS_HAULER;
+    ASSERT_EQ_INT(ship_cell_layout_kind(ship.hull_class),
+                  CELL_LAYOUT_LIGHT_FREIGHTER);
+    ASSERT(ship_cell_graph(&ship, &graph));
+    ASSERT_EQ_INT(graph.count, 4);
+    ship_cell_totals(&ship, &totals);
+    ASSERT_EQ_INT(totals.struts, 21);
+    ASSERT_EQ_INT(totals.cargo_capacity, 72);
+    ASSERT_EQ_FLOAT(totals.shell_mass, 21.0f, 0.001f);
+    ASSERT_EQ_FLOAT(totals.thrust_units, 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 72.0f, 0.001f);
+    vec2 empty_center = ship_cell_center_of_mass(&ship);
+    ship.cargo[COMMODITY_FERRITE_ORE] = 72.0f;
+    vec2 full_center = ship_cell_center_of_mass(&ship);
+    ASSERT(full_center.x > empty_center.x);
+    ship.cargo[COMMODITY_FERRITE_ORE] = 0.0f;
+
+    ship.hull_class = HULL_CLASS_DRONE_TRACTOR;
+    ASSERT_EQ_INT(ship_cell_layout_kind(ship.hull_class), CELL_LAYOUT_TUG);
+    ASSERT_EQ_FLOAT(ship_cell_shell_mass(&ship), 9.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ship_cell_thrust_units(&ship), 1.0f, 0.001f);
+}
+
+TEST(test_ship_asset_cell_identities_survive_carrier_detach) {
+    ship_t ship = {.hull_class = HULL_CLASS_HAULER};
+    cell_graph_t graph;
+    cell_node_t detached;
+    ASSERT(ship_cell_graph_for_identity(&ship, 77, &graph));
+    uint64_t control_id = graph.nodes[0].identity;
+    uint64_t carrier_id = graph.nodes[2].identity;
+    ASSERT(control_id == ((uint64_t)77 << 32) + 1);
+    graph.nodes[2].payload_units = 9;
+    ASSERT(cell_graph_remove_node(&graph, carrier_id, &detached));
+    ASSERT(graph.nodes[0].identity == control_id);
+    ASSERT(detached.identity == carrier_id);
+    ASSERT_EQ_INT(detached.payload_units, 9);
 }
 
 TEST(test_ship_mining_rate_with_upgrades) {
@@ -269,6 +312,187 @@ TEST(test_ship_tow_release_is_body_agnostic) {
     ASSERT_EQ_FLOAT(fragment_vel.y, -5.0f, 0.001f);
 }
 
+TEST(test_hex_pod_mass_hardpoints_and_polygon_are_shape_aware) {
+    cargo_pod_t pod = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .quantity = 24,
+        .pos = {10.0f, 20.0f},
+        .radius = 20.0f,
+    };
+    ASSERT_EQ_FLOAT(cargo_pod_shell_mass(&pod), 6.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cargo_pod_payload_mass(&pod), 6.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cargo_pod_total_mass(&pod), 12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cargo_pod_inverse_mass(&pod), 1.0f / 12.0f, 0.0001f);
+
+    int east = cargo_pod_select_hardpoint(&pod, v2(100.0f, 20.0f));
+    ASSERT_EQ_INT(east, 0);
+    ASSERT_STR_EQ(cargo_pod_hardpoint_name(east), "east");
+    vec2 hardpoint = cargo_pod_hardpoint_world(&pod, east);
+    ASSERT(hardpoint.x > pod.pos.x);
+    ASSERT_EQ_FLOAT(hardpoint.y, pod.pos.y, 0.001f);
+
+    ASSERT(cargo_pod_contains_point(&pod, pod.pos));
+    ASSERT(cargo_pod_contains_point(&pod, v2(10.0f, 37.9f)));
+    ASSERT(!cargo_pod_contains_point(&pod, v2(28.0f, 20.0f)));
+    ASSERT_EQ_FLOAT(cargo_pod_support_radius(&pod, v2(0.0f, 1.0f)),
+                    18.0f, 0.001f);
+    ASSERT_EQ_FLOAT(cargo_pod_support_radius(&pod, v2(1.0f, 0.0f)),
+                    18.0f * 0.8660254f, 0.001f);
+}
+
+TEST(test_off_center_tow_applies_angular_impulse) {
+    ship_t tractor = {.hull_class = HULL_CLASS_MINER};
+    tractor.pos = v2(0.0f, 0.0f);
+    vec2 body_pos = v2(220.0f, 0.0f);
+    vec2 body_vel = v2(0.0f, 0.0f);
+    float angle = 0.0f;
+    float spin = 0.0f;
+    towable_body_t body = {
+        .pos = &body_pos,
+        .vel = &body_vel,
+        .inv_mass = 0.5f,
+        .attachment_offset = {0.0f, 10.0f},
+        .angle = &angle,
+        .spin = &spin,
+        .inv_inertia = 0.02f,
+    };
+    ship_apply_body_tow(&tractor, &body, 1.0f / 60.0f);
+    ASSERT(body_vel.x < 0.0f);
+    ASSERT(spin > 0.0f);
+}
+
+TEST(test_cargo_pod_tow_aligns_selected_edge_without_spin) {
+    ship_t tractor = {.hull_class = HULL_CLASS_MINER};
+    tractor.pos = v2(0.0f, 0.0f);
+    tractor.angle = 0.35f;
+    cargo_pod_t pod = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .quantity = 24,
+        .radius = 20.0f,
+        .pos = {220.0f, 40.0f},
+        .rotation = 1.7f,
+        .spin = 9.0f,
+    };
+    const int hardpoint = 2;
+    const float dt = 1.0f / 120.0f;
+
+    /* A full minute of changing tow geometry must not accumulate angular
+     * velocity. The selected edge follows the source as an aligned joint. */
+    for (int tick = 0; tick < 120 * 60; tick++) {
+        tractor.pos.x += tractor.vel.x * dt;
+        tractor.pos.y += tractor.vel.y * dt;
+        pod.pos.x += pod.vel.x * dt;
+        pod.pos.y += pod.vel.y * dt;
+        pod.vel = v2_scale(pod.vel, 1.0f / (1.0f + 0.35f * dt));
+
+        /* Exercise alignment changes instead of a single static axis. */
+        tractor.pos.y = fixp_sinf((float)tick * 0.0025f) * 70.0f;
+        ship_apply_cargo_pod_tow(&tractor, &pod, hardpoint, dt);
+
+        vec2 source = ship_tow_hardpoint_world(&tractor);
+        vec2 to_source = v2_sub(source, pod.pos);
+        float expected = wrap_angle(
+            fixp_atan2f(to_source.y, to_source.x) -
+            (float)hardpoint * 1.0471975511965976f);
+        ASSERT_EQ_FLOAT(pod.spin, 0.0f, 0.000001f);
+        ASSERT_EQ_FLOAT(pod.rotation, expected, 0.00001f);
+    }
+}
+
+TEST(test_tow_mass_centering_and_sixty_degree_rotation) {
+    cargo_pod_t empty = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .quantity = 0,
+        .radius = 20.0f,
+    };
+    cargo_pod_t loaded = empty;
+    loaded.quantity = 24;
+
+    ship_t light_tractor = {.hull_class = HULL_CLASS_MINER};
+    ship_t heavy_tractor = light_tractor;
+    vec2 light_pos = v2(220.0f, 0.0f), light_vel = v2(0.0f, 0.0f);
+    vec2 heavy_pos = light_pos, heavy_vel = light_vel;
+    towable_body_t light_body = {
+        .pos = &light_pos,
+        .vel = &light_vel,
+        .inv_mass = cargo_pod_inverse_mass(&empty),
+    };
+    towable_body_t heavy_body = {
+        .pos = &heavy_pos,
+        .vel = &heavy_vel,
+        .inv_mass = cargo_pod_inverse_mass(&loaded),
+    };
+    ship_apply_body_tow(&light_tractor, &light_body, 1.0f / 60.0f);
+    ship_apply_body_tow(&heavy_tractor, &heavy_body, 1.0f / 60.0f);
+    ASSERT(v2_len(light_vel) > v2_len(heavy_vel));
+
+    /* A centered edge attachment lies on the band axis and therefore cannot
+     * manufacture angular momentum. */
+    ship_t centered_tractor = {.hull_class = HULL_CLASS_MINER};
+    vec2 centered_pos = v2(220.0f, 0.0f), centered_vel = v2(0.0f, 0.0f);
+    float centered_angle = 0.0f, centered_spin = 0.0f;
+    vec2 centered_axis = v2_norm(v2_sub(
+        ship_tow_hardpoint_world(&centered_tractor), centered_pos));
+    towable_body_t centered = {
+        .pos = &centered_pos,
+        .vel = &centered_vel,
+        .inv_mass = cargo_pod_inverse_mass(&loaded),
+        .attachment_offset = {
+            centered_axis.x * 10.0f, centered_axis.y * 10.0f,
+        },
+        .angle = &centered_angle,
+        .spin = &centered_spin,
+        .inv_inertia = cargo_pod_inverse_inertia(&loaded),
+    };
+    ship_apply_body_tow(&centered_tractor, &centered, 1.0f / 60.0f);
+    ASSERT_EQ_FLOAT(centered_spin, 0.0f, 0.0001f);
+
+    /* Rotating the complete ship/pod/hardpoint scene by one grammar step
+     * rotates the linear result by 60 degrees while preserving yaw. */
+    const float c60 = 0.5f, s60 = 0.8660254037844386f;
+    ship_t tractor_a = {.hull_class = HULL_CLASS_MINER};
+    ship_t tractor_b = tractor_a;
+    tractor_b.angle = 1.0471975511965976f;
+    cargo_pod_t pod_a = loaded;
+    pod_a.pos = v2(220.0f, 40.0f);
+    pod_a.rotation = 0.2f;
+    cargo_pod_set_tow_hardpoint(&pod_a, 2);
+    cargo_pod_t pod_b = pod_a;
+    pod_b.pos = v2(pod_a.pos.x * c60 - pod_a.pos.y * s60,
+                   pod_a.pos.x * s60 + pod_a.pos.y * c60);
+    pod_b.rotation += 1.0471975511965976f;
+    towable_body_t body_a = {
+        .pos = &pod_a.pos,
+        .vel = &pod_a.vel,
+        .inv_mass = cargo_pod_inverse_mass(&pod_a),
+        .attachment_offset = cargo_pod_hardpoint_offset(
+            &pod_a, cargo_pod_tow_hardpoint(&pod_a)),
+        .angle = &pod_a.rotation,
+        .spin = &pod_a.spin,
+        .inv_inertia = cargo_pod_inverse_inertia(&pod_a),
+    };
+    towable_body_t body_b = {
+        .pos = &pod_b.pos,
+        .vel = &pod_b.vel,
+        .inv_mass = cargo_pod_inverse_mass(&pod_b),
+        .attachment_offset = cargo_pod_hardpoint_offset(
+            &pod_b, cargo_pod_tow_hardpoint(&pod_b)),
+        .angle = &pod_b.rotation,
+        .spin = &pod_b.spin,
+        .inv_inertia = cargo_pod_inverse_inertia(&pod_b),
+    };
+    ship_apply_body_tow(&tractor_a, &body_a, 1.0f / 60.0f);
+    ship_apply_body_tow(&tractor_b, &body_b, 1.0f / 60.0f);
+    vec2 rotated_a = v2(pod_a.vel.x * c60 - pod_a.vel.y * s60,
+                        pod_a.vel.x * s60 + pod_a.vel.y * c60);
+    ASSERT_EQ_FLOAT(pod_b.vel.x, rotated_a.x, 0.001f);
+    ASSERT_EQ_FLOAT(pod_b.vel.y, rotated_a.y, 0.001f);
+    ASSERT_EQ_FLOAT(pod_b.spin, pod_a.spin, 0.001f);
+}
+
 TEST(test_product_name) {
     ASSERT_STR_EQ(product_name(PRODUCT_FRAME), "Frames");
     ASSERT_STR_EQ(product_name(PRODUCT_LASER_MODULE), "Laser Modules");
@@ -282,6 +506,8 @@ void register_ship_tests(void) {
     RUN(test_ship_loadout_metadata_tracks_module_sockets);
     RUN(test_ship_max_hull);
     RUN(test_ship_cargo_capacity_with_upgrades);
+    RUN(test_ship_cell_graph_derives_capacity_mass_and_thrust);
+    RUN(test_ship_asset_cell_identities_survive_carrier_detach);
     RUN(test_ship_mining_rate_with_upgrades);
     RUN(test_ship_upgrade_maxed);
     RUN(test_ship_upgrade_cost_escalates);
@@ -296,5 +522,9 @@ void register_ship_tests(void) {
     RUN(test_ship_fragment_tow_applies_ship_reaction);
     RUN(test_ship_tow_applies_to_ship_like_body);
     RUN(test_ship_tow_release_is_body_agnostic);
+    RUN(test_hex_pod_mass_hardpoints_and_polygon_are_shape_aware);
+    RUN(test_off_center_tow_applies_angular_impulse);
+    RUN(test_cargo_pod_tow_aligns_selected_edge_without_spin);
+    RUN(test_tow_mass_centering_and_sixty_degree_rotation);
     RUN(test_product_name);
 }

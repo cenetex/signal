@@ -27,20 +27,34 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
 
 void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt) {
     if (!ship || !body || !body->pos || !body->vel) return;
+    vec2 velocity_before = *body->vel;
     tractor_link_t link = {
         .source = {
-            .pos      = ship->pos,
+            .pos      = ship_tow_hardpoint_world(ship),
             .vel      = &ship->vel,
             .inv_mass = 1.0f / SHIP_TOW_BAND_SHIP_MASS,
         },
         .target = {
-            .pos      = *body->pos,
+            .pos      = v2_add(*body->pos, body->attachment_offset),
             .vel      = body->vel,
             .inv_mass = body->inv_mass,
         },
         .beam = tractor_tow_beam(0.0f, TRACTOR_TOW_BAND_REST_LENGTH),
     };
-    (void)tractor_link_apply(&link, dt);
+    bool applied = tractor_link_apply(&link, dt);
+    if (applied && body->spin && body->angle && body->inv_mass > 0.0f &&
+        body->inv_inertia > 0.0f &&
+        v2_len_sq(body->attachment_offset) > 0.0001f) {
+        /* Recover the target impulse from its linear velocity delta, then
+         * apply r×J at the named hardpoint.  This keeps tractor.c's single
+         * equal-and-opposite force implementation authoritative. */
+        vec2 delta_v = v2_sub(*body->vel, velocity_before);
+        vec2 impulse = v2_scale(delta_v, 1.0f / body->inv_mass);
+        float angular_impulse = body->attachment_offset.x * impulse.y -
+                                body->attachment_offset.y * impulse.x;
+        *body->spin += angular_impulse * body->inv_inertia;
+        *body->angle = wrap_angle(*body->angle);
+    }
 }
 
 void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
@@ -49,6 +63,51 @@ void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
         .pos = &fragment->pos,
         .vel = &fragment->vel,
         .inv_mass = 1.0f,
+    };
+    ship_apply_body_tow(ship, &body, dt);
+}
+
+void ship_apply_cargo_pod_tow(ship_t *ship, cargo_pod_t *pod,
+                              int hardpoint, float dt) {
+    if (!ship || !pod || !pod->active) return;
+
+    int aligned_hardpoint = cell_orientation_normalize(hardpoint);
+    vec2 source = ship_tow_hardpoint_world(ship);
+    cargo_pod_align_tow_hardpoint(pod, aligned_hardpoint, source);
+
+    /* Apply the linear tow through the aligned edge without generating
+     * r x J torque. Once released, ordinary collisions may impart spin. */
+    towable_body_t body = {
+        .pos = &pod->pos,
+        .vel = &pod->vel,
+        .inv_mass = cargo_pod_inverse_mass(pod),
+        .attachment_offset = cargo_pod_hardpoint_offset(
+            pod, aligned_hardpoint),
+    };
+    ship_apply_body_tow(ship, &body, dt);
+}
+
+void ship_apply_cell_salvage_tow(ship_t *ship, cell_salvage_t *salvage,
+                                 int hardpoint, float dt) {
+    if (!ship || !salvage || !salvage->active) return;
+    cell_graph_totals_t totals;
+    cell_graph_totals(&salvage->graph, &totals);
+    float mass = totals.total_mass > 0.0f ? totals.total_mass : 1.0f;
+    float angle = salvage->rotation +
+                  (float)cell_orientation_normalize(hardpoint) *
+                  1.0471975511965976f;
+    float radius = CELL_EDGE_LENGTH * 0.8660254038f;
+    vec2 offset = v2_scale(v2_from_angle(angle), radius);
+    float inertia = (5.0f / 12.0f) * mass *
+                    CELL_EDGE_LENGTH * CELL_EDGE_LENGTH;
+    towable_body_t body = {
+        .pos = &salvage->pos,
+        .vel = &salvage->vel,
+        .inv_mass = 1.0f / mass,
+        .attachment_offset = offset,
+        .angle = &salvage->rotation,
+        .spin = &salvage->spin,
+        .inv_inertia = inertia > 0.0f ? 1.0f / inertia : 0.0f,
     };
     ship_apply_body_tow(ship, &body, dt);
 }

@@ -133,6 +133,54 @@ TEST(test_manifest_grade_and_cargo_pod_queries_share_one_contract) {
     manifest_free(&manifest);
 }
 
+TEST(test_cargo_pod_content_shape_and_load_ratio) {
+    cargo_pod_t pod = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity = 1,
+        .manifest_count = 1,
+    };
+    pod.manifest_units[0].kind = (uint8_t)CARGO_KIND_INGOT;
+    pod.manifest_units[0].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_INGOT);
+    ASSERT_EQ_FLOAT(cargo_pod_load_ratio(&pod),
+                    1.0f / (float)CARGO_POD_UNIT_CAPACITY, 0.0001f);
+
+    pod.commodity = COMMODITY_FRAME;
+    pod.manifest_units[0].kind = (uint8_t)CARGO_KIND_FRAME;
+    pod.manifest_units[0].commodity = (uint8_t)COMMODITY_FRAME;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_STRUT);
+
+    pod.commodity = COMMODITY_LASER_MODULE;
+    pod.manifest_units[0].kind = (uint8_t)CARGO_KIND_LASER;
+    pod.manifest_units[0].commodity = (uint8_t)COMMODITY_LASER_MODULE;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_ACTIVE);
+
+    pod.commodity = COMMODITY_REPAIR_KIT;
+    pod.manifest_units[0].kind = (uint8_t)CARGO_KIND_REPAIR_KIT;
+    pod.manifest_units[0].commodity = (uint8_t)COMMODITY_REPAIR_KIT;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_SERVICE);
+
+    /* Remote snapshots carry summary count/commodity but no manifest rows. */
+    pod.commodity = COMMODITY_TRACTOR_MODULE;
+    pod.quantity = CARGO_POD_UNIT_CAPACITY;
+    pod.manifest_count = 4;
+    memset(pod.manifest_units, 0, sizeof(pod.manifest_units));
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_ACTIVE);
+    ASSERT_EQ_FLOAT(cargo_pod_load_ratio(&pod), 1.0f, 0.0001f);
+
+    pod.quantity = CARGO_POD_UNIT_CAPACITY + 10;
+    ASSERT_EQ_FLOAT(cargo_pod_load_ratio(&pod), 1.0f, 0.0001f);
+
+    pod.kind = CARGO_POD_GAS;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_GAS);
+
+    pod.quantity = 0;
+    ASSERT_EQ_INT(cargo_pod_content_shape(&pod), CARGO_POD_CONTENT_EMPTY);
+    ASSERT_EQ_FLOAT(cargo_pod_load_ratio(&pod), 0.0f, 0.0001f);
+}
+
 TEST(test_ship_copy_clones_manifest_storage) {
     ship_t src = {0};
     ship_t dst = {0};
@@ -387,7 +435,7 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     ASSERT(frame != NULL);
     ASSERT_EQ_INT(frame->input_count, 1);
     ASSERT_EQ_INT(frame->input_commodities[0], COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(frame->output_count, 2);
+    ASSERT_EQ_INT(frame->output_count, CELL_STRUTS_PER_INGOT);
 
     ASSERT(laser != NULL);
     ASSERT_EQ_INT(laser->input_count, 2);
@@ -404,6 +452,25 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     ASSERT(kits != NULL);
     ASSERT_EQ_INT(kits->input_count, 3);
     ASSERT_EQ_INT(kits->output_count, 100);
+}
+
+TEST(test_frame_recipe_fans_one_ingot_into_four_unique_struts) {
+    cargo_unit_t ingot = {0};
+    cargo_unit_t struts[CELL_STRUTS_PER_INGOT] = {{0}};
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[0] = 0x61;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 0, &ingot));
+
+    for (uint16_t i = 0; i < CELL_STRUTS_PER_INGOT; i++) {
+        ASSERT(hash_product(RECIPE_FRAME_BASIC, &ingot, 1, i, &struts[i]));
+        ASSERT(memcmp(struts[i].parent_merkle, ingot.pub, 32) == 0);
+        for (uint16_t j = 0; j < i; j++)
+            ASSERT(memcmp(struts[i].pub, struts[j].pub, 32) != 0);
+    }
+    ASSERT(!hash_product(RECIPE_FRAME_BASIC, &ingot, 1,
+                         CELL_STRUTS_PER_INGOT,
+                         &struts[CELL_STRUTS_PER_INGOT - 1]));
 }
 
 TEST(test_manifest_migrate_quantity_rewrites_zero_to_one) {
@@ -1103,11 +1170,13 @@ void register_manifest_tests(void) {
     RUN(test_manifest_push_find_remove_preserves_order);
     RUN(test_manifest_clone_detaches_storage);
     RUN(test_manifest_grade_and_cargo_pod_queries_share_one_contract);
+    RUN(test_cargo_pod_content_shape_and_load_ratio);
     RUN(test_hash_legacy_migrate_unit_deterministic);
     RUN(test_hash_legacy_migrate_unit_rejects_raw_ore);
     RUN(test_manifest_migrate_legacy_inventory_synthesizes_entries);
     RUN(test_hash_helpers_set_quantity_one);
     RUN(test_recipe_ratios_match_economy_ladder);
+    RUN(test_frame_recipe_fans_one_ingot_into_four_unique_struts);
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);

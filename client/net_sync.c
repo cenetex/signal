@@ -1925,6 +1925,9 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
                 pod, (int)received[i].tractor_station - 1,
                 (int)received[i].tractor_module - 1);
         }
+        pod->tow_hardpoint_tag = received[i].tow_hardpoint_tag <=
+                CARGO_POD_HARDPOINT_COUNT
+            ? received[i].tow_hardpoint_tag : 0;
         seen[idx] = true;
     }
     if (replacement_snapshot) {

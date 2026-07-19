@@ -1112,7 +1112,9 @@ TEST(test_ship_death_drops_cargo_pods) {
         pods++;
         total += pod->quantity;
     }
-    ASSERT_EQ_INT(pods, 3);
+    ASSERT_EQ_INT(pods,
+                  (45 + CARGO_POD_UNIT_CAPACITY - 1) /
+                  CARGO_POD_UNIT_CAPACITY);
     ASSERT_EQ_INT(total, 45);
 }
 
@@ -1798,10 +1800,12 @@ TEST(test_station_tractor_uses_rotating_anchor_velocity) {
         COMMODITY_FERRITE_INGOT, 1, CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
     ASSERT(world_cargo_pod_set_module_tractor(&w, pod_idx, 0, dock_idx));
+    w.cargo_pods[pod_idx].spin = 6.0f;
 
     vec2 anchor_vel = station_ring_point_velocity(st, dock->ring, mouth);
     step_station_cargo_pod_tractors(&w, SIM_DT);
     ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, anchor_vel) > 0.0f);
+    ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].spin, 0.0f, 0.000001f);
 }
 
 TEST(test_station_dock_tractor_clears_after_pod_moves_out_of_range) {
@@ -1971,13 +1975,14 @@ TEST(test_cargo_pod_bounces_off_station_corridor_ring) {
     float ang2 = module_angle_ring(st, 1, 2);
     float mid_ang = (ang1 + ang2) * 0.5f;
     float ring_r = STATION_RING_RADIUS[1];
-    float pod_r = 18.0f;
-    float outer_edge = ring_r + STATION_CORRIDOR_HW + pod_r;
     vec2 radial = v2(cosf(mid_ang), sinf(mid_ang));
-    vec2 pos = v2_add(st->pos, v2_scale(radial, outer_edge - 4.0f));
-
-    int pod_idx = test_spawn_exact_pod(&w, pos, COMMODITY_LASER_MODULE, 1);
+    int pod_idx = test_spawn_exact_pod(&w, st->pos,
+                                       COMMODITY_LASER_MODULE, 1);
     ASSERT(pod_idx >= 0);
+    float hull_r = cargo_pod_support_radius(&w.cargo_pods[pod_idx], radial);
+    float outer_edge = ring_r + STATION_CORRIDOR_HW + hull_r;
+    w.cargo_pods[pod_idx].pos = v2_add(
+        st->pos, v2_scale(radial, outer_edge - 4.0f));
     w.cargo_pods[pod_idx].vel = v2_scale(radial, -110.0f);
 
     world_sim_step(&w, SIM_DT);
@@ -2010,11 +2015,13 @@ TEST(test_cargo_pod_bounces_off_outer_ring_module_at_collision_envelope) {
     vec2 module_pos = module_world_pos_ring(
         st, STATION_NUM_RINGS, st->modules[0].slot);
     vec2 radial = v2_norm(v2_sub(module_pos, st->pos));
-    float pod_r = 18.0f;
-    float contact = STATION_MODULE_COL_RADIUS + pod_r;
-    vec2 pos = v2_add(module_pos, v2_scale(radial, contact - 4.0f));
-    int pod_idx = test_spawn_exact_pod(&w, pos, COMMODITY_LASER_MODULE, 1);
+    int pod_idx = test_spawn_exact_pod(&w, module_pos,
+                                       COMMODITY_LASER_MODULE, 1);
     ASSERT(pod_idx >= 0);
+    float hull_r = cargo_pod_support_radius(&w.cargo_pods[pod_idx], radial);
+    float contact = STATION_MODULE_COL_RADIUS + hull_r;
+    w.cargo_pods[pod_idx].pos = v2_add(
+        module_pos, v2_scale(radial, contact - 4.0f));
     w.cargo_pods[pod_idx].vel = v2_scale(radial, -110.0f);
 
     world_sim_step(&w, SIM_DT);
@@ -2081,13 +2088,13 @@ TEST(test_cargo_pod_bounces_off_asteroid) {
     a->pos = v2_add(w.stations[0].pos, v2(1800.0f, 0.0f));
     a->vel = v2(0.0f, 0.0f);
 
-    float pod_r = 18.0f;
     vec2 normal = v2(-1.0f, 0.0f);
-    vec2 pod_pos = v2_add(a->pos,
-                          v2_scale(normal, a->radius + pod_r - 4.0f));
-    int pod_idx = test_spawn_exact_pod(&w, pod_pos,
+    int pod_idx = test_spawn_exact_pod(&w, a->pos,
                                        COMMODITY_TRACTOR_MODULE, 1);
     ASSERT(pod_idx >= 0);
+    float hull_r = cargo_pod_support_radius(&w.cargo_pods[pod_idx], normal);
+    w.cargo_pods[pod_idx].pos = v2_add(
+        a->pos, v2_scale(normal, a->radius + hull_r - 4.0f));
     w.cargo_pods[pod_idx].vel = v2(120.0f, 0.0f);
 
     world_sim_step(&w, SIM_DT);
@@ -2095,7 +2102,7 @@ TEST(test_cargo_pod_bounces_off_asteroid) {
     ASSERT(w.cargo_pods[pod_idx].active);
     ASSERT(v2_dot(w.cargo_pods[pod_idx].vel, normal) > 0.0f);
     ASSERT(v2_dist_sq(w.cargo_pods[pod_idx].pos, a->pos) >=
-           (a->radius + pod_r) * (a->radius + pod_r));
+           (a->radius + hull_r) * (a->radius + hull_r));
 }
 
 TEST(test_towed_cargo_pod_bulk_sell_no_longer_uses_dock_custody) {
@@ -4001,7 +4008,7 @@ TEST(test_station_production_ejects_frame_pod) {
     ASSERT_EQ_INT(st->manifest.count, 0);
     ASSERT_EQ_INT(manifest_find(&st->manifest, input.pub), -1);
     const cargo_pod_t *pod = test_first_exact_pod_with_units(
-        &w, COMMODITY_FRAME, 2);
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT);
     ASSERT(pod != NULL);
     ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
     ASSERT(memcmp(pod->manifest_units[0].parent_merkle,
@@ -4066,9 +4073,12 @@ TEST(test_station_production_fills_existing_frame_output_pod) {
     st->modules[press_idx].input_buffer = 2.0f;
     sim_step_station_production(&w, 2.0f);
 
-    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME), 5);
-    ASSERT_EQ_INT(w.cargo_pods[output_pod].manifest_count, 5);
-    ASSERT_EQ_INT(w.cargo_pods[output_pod].quantity, 5);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME),
+                  1 + 2 * CELL_STRUTS_PER_INGOT);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].manifest_count,
+                  1 + 2 * CELL_STRUTS_PER_INGOT);
+    ASSERT_EQ_INT(w.cargo_pods[output_pod].quantity,
+                  1 + 2 * CELL_STRUTS_PER_INGOT);
     int output_hopper = station_find_output_hopper_for_module(
         st, &st->modules[press_idx]);
     ASSERT(output_hopper >= 0);
@@ -4143,7 +4153,7 @@ TEST(test_station_production_consumes_loose_ingot_pod) {
     ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(st->modules[press_idx].input_buffer, 0.0f, 0.001f);
     const cargo_pod_t *pod = test_first_exact_pod_with_units(
-        &w, COMMODITY_FRAME, 2);
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT);
     ASSERT(pod != NULL);
     ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
     ASSERT_EQ_INT(pod->manifest_units[0].kind, CARGO_KIND_FRAME);
@@ -4261,7 +4271,8 @@ TEST(test_station_hopper_accepts_player_towed_ingot_pod) {
 
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
-    ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_FRAME, 2) != NULL);
+    ASSERT(test_first_exact_pod_with_units(
+               &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT) != NULL);
 }
 
 TEST(test_frame_press_consumes_dock_held_ingot_pod) {
@@ -4330,7 +4341,7 @@ TEST(test_frame_press_consumes_dock_held_ingot_pod) {
 
     ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT), 0);
     const cargo_pod_t *pod = test_first_exact_pod_with_units(
-        &w, COMMODITY_FRAME, 2);
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT);
     ASSERT(pod != NULL);
     ASSERT(memcmp(pod->manifest_units[0].pub, expected_first.pub, 32) == 0);
     int output_hopper = station_find_output_hopper_for_module(
@@ -4384,8 +4395,10 @@ TEST(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate) {
     sim_step_station_production(&w, 1.0f);
 
     ASSERT(w.cargo_pods[frame_pod].active);
-    ASSERT_EQ_INT(w.cargo_pods[frame_pod].manifest_count, 3);
-    ASSERT_EQ_INT(w.cargo_pods[frame_pod].quantity, 3);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].manifest_count,
+                  1 + CELL_STRUTS_PER_INGOT);
+    ASSERT_EQ_INT(w.cargo_pods[frame_pod].quantity,
+                  1 + CELL_STRUTS_PER_INGOT);
     int output_hopper = station_find_output_hopper_for_module(
         st, &st->modules[press_idx]);
     ASSERT(output_hopper >= 0);
@@ -4633,8 +4646,11 @@ TEST(test_furnace_tractor_holds_frame_pod_outside_module) {
     ASSERT(w.cargo_pods[pod_idx].active);
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[pod_idx],
                                             0, furnace_idx));
-    float dist = v2_len(v2_sub(w.cargo_pods[pod_idx].pos, furnace_pos));
-    ASSERT(dist >= STATION_MODULE_COL_RADIUS + w.cargo_pods[pod_idx].radius - 0.5f);
+    vec2 separation = v2_sub(w.cargo_pods[pod_idx].pos, furnace_pos);
+    float dist = v2_len(separation);
+    float support = cargo_pod_support_radius(&w.cargo_pods[pod_idx],
+                                             separation);
+    ASSERT(dist >= STATION_MODULE_COL_RADIUS + support - 0.5f);
     vec2 outward = v2_norm(v2_sub(furnace_pos, st->pos));
     ASSERT(v2_dot(v2_sub(w.cargo_pods[pod_idx].pos, furnace_pos), outward) > 0.0f);
 }

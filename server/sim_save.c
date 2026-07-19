@@ -78,7 +78,8 @@
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 75  /* v75: station finished-goods residue is persisted
+#define SAVE_VERSION 76  /* v76: cargo pods persist their named tow hardpoint.
+                          * v75: station finished-goods residue is persisted
                           * separately; whole stock exists only in manifests.
                           * v74: cargo pods persist their active module tractor
                           * owner so parking/handoff continuity survives restart.
@@ -1569,6 +1570,7 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
         ? (uint8_t)(tractor_module + 1) : 0;
     WRITE_FIELD(f, tractor_station_tag);
     WRITE_FIELD(f, tractor_module_tag);
+    WRITE_FIELD(f, pod->tow_hardpoint_tag);
     return true;
 }
 
@@ -1578,6 +1580,7 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     uint8_t commodity = 0;
     cargo_pod_t pod = {0};
     int8_t towed_by = -1;
+    uint8_t tow_hardpoint_tag = 0;
     READ_FIELD(f, index);
     READ_FIELD(f, kind);
     READ_FIELD(f, commodity);
@@ -1629,6 +1632,11 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
                 (int)tractor_module_tag - 1);
         }
     }
+    if (version >= 76) {
+        READ_FIELD(f, tow_hardpoint_tag);
+        if (tow_hardpoint_tag > CARGO_POD_HARDPOINT_COUNT)
+            tow_hardpoint_tag = 0;
+    }
     if (index >= MAX_CARGO_PODS) return false;
     if (kind == CARGO_POD_NONE || kind > CARGO_POD_CARGO) return false;
     if (commodity >= COMMODITY_COUNT) return false;
@@ -1643,6 +1651,9 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     pod.commodity = (commodity_t)commodity;
     if (towed_by >= 0 && towed_by < MAX_PLAYERS)
         cargo_pod_set_player_tractor(&pod, towed_by);
+    /* Tractor setters intentionally clear stale attachment state.  Restore the
+     * persisted named edge only after selecting the loaded tractor owner. */
+    pod.tow_hardpoint_tag = tow_hardpoint_tag;
     w->cargo_pods[index] = pod;
     return true;
 }

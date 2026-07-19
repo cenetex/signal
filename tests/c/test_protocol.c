@@ -2748,6 +2748,7 @@ TEST(test_roundtrip_cargo_pods) {
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
     cargo_pod_set_player_tractor(&pods[3], 2);
+    cargo_pod_set_tow_hardpoint(&pods[3], 4);
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2759,6 +2760,7 @@ TEST(test_roundtrip_cargo_pods) {
     pods[4].pos = v2(7.0f, 8.0f);
     cargo_pod_clear_tractor(&pods[4]);
     cargo_pod_set_module_tractor(&pods[4], 2, 5);
+    cargo_pod_set_tow_hardpoint(&pods[4], 2);
 
     uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_RECORD_SIZE];
     int len = serialize_cargo_pods(buf, pods);
@@ -2781,6 +2783,7 @@ TEST(test_roundtrip_cargo_pods) {
     ASSERT(p[34] & CARGO_POD_SUMMARY_EXACT_MATERIAL);
     ASSERT(!(p[34] & CARGO_POD_SUMMARY_SHIPMENT_BOUND));
     ASSERT_EQ_INT(p[35], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(p[38], 5);
 
     p = &buf[2 + CARGO_POD_RECORD_SIZE];
     ASSERT_EQ_INT(p[0], 4);
@@ -2792,6 +2795,7 @@ TEST(test_roundtrip_cargo_pods) {
     ASSERT_EQ_INT(p[35], MINING_GRADE_COMMON);
     ASSERT_EQ_INT(p[36], 3);
     ASSERT_EQ_INT(p[37], 6);
+    ASSERT_EQ_INT(p[38], 3);
 }
 
 TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
@@ -2811,6 +2815,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     pods[3].radius = 18.0f;
     pods[3].rotation = 0.75f;
     cargo_pod_set_player_tractor(&pods[3], 2);
+    cargo_pod_set_tow_hardpoint(&pods[3], 4);
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2822,6 +2827,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     pods[4].pos = v2(8.0f, 8.0f);
     cargo_pod_clear_tractor(&pods[4]);
     cargo_pod_set_module_tractor(&pods[4], 2, 5);
+    cargo_pod_set_tow_hardpoint(&pods[4], 2);
 
     uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_Q_RECORD_SIZE];
     int len = serialize_cargo_pods_q(buf, pods);
@@ -2847,6 +2853,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     ASSERT(p[24] & CARGO_POD_SUMMARY_EXACT_MATERIAL);
     ASSERT(!(p[24] & CARGO_POD_SUMMARY_SHIPMENT_BOUND));
     ASSERT_EQ_INT(p[25], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(p[28], 5);
 
     p = &buf[2 + CARGO_POD_Q_RECORD_SIZE];
     ASSERT_EQ_INT(p[0], 4);
@@ -2859,6 +2866,7 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     ASSERT_EQ_INT(p[25], MINING_GRADE_COMMON);
     ASSERT_EQ_INT(p[26], 3);
     ASSERT_EQ_INT(p[27], 6);
+    ASSERT_EQ_INT(p[28], 3);
 }
 
 TEST(test_world_cargo_pods_semantic_hash_ignores_pose_drift) {
@@ -2896,6 +2904,12 @@ TEST(test_world_cargo_pods_semantic_hash_ignores_pose_drift) {
     ASSERT(ahash != bhash);
 
     pods[3].quantity = 20;
+    cargo_pod_set_tow_hardpoint(&pods[3], 4);
+    blen = serialize_cargo_pods(b, pods);
+    bhash = net_world_cargo_pods_semantic_hash(b, blen);
+    ASSERT(ahash != bhash);
+
+    pods[3].tow_hardpoint_tag = 0;
     cargo_pod_clear_tractor(&pods[3]);
     blen = serialize_cargo_pods(b, pods);
     bhash = net_world_cargo_pods_semantic_hash(b, blen);
@@ -2938,6 +2952,12 @@ TEST(test_world_cargo_pods_q_semantic_hash_ignores_pose_drift) {
 
     pods[3].radius = 18.0f;
     pods[3].quantity = 19;
+    blen = serialize_cargo_pods_q(b, pods);
+    bhash = net_world_cargo_pods_semantic_hash(b, blen);
+    ASSERT(ahash != bhash);
+
+    pods[3].quantity = 20;
+    cargo_pod_set_tow_hardpoint(&pods[3], 1);
     blen = serialize_cargo_pods_q(b, pods);
     bhash = net_world_cargo_pods_semantic_hash(b, blen);
     ASSERT(ahash != bhash);

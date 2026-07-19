@@ -21,6 +21,7 @@
 
 #include "game_sim.h"  /* world_t */
 #include "ship.h"
+#include "cell_stress.h"
 #include "signal_model.h"
 #include "math_util.h"
 
@@ -55,10 +56,23 @@ typedef struct {
     vec2 *pos;
     vec2 *vel;
     float inv_mass;
+    /* World-space offset from center of mass to a named attachment point.
+     * Zero preserves the legacy center tow.  Angular fields are optional. */
+    vec2 attachment_offset;
+    float *angle;
+    float *spin;
+    float inv_inertia;
 } towable_body_t;
 
 void ship_apply_body_tow(ship_t *ship, const towable_body_t *body, float dt);
 void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt);
+/* Cargo pods use their selected hex-edge hardpoint as a rigid alignment
+ * constraint: the edge faces the tow source and carries no angular momentum
+ * while attached. Loose pods remain free to spin. */
+void ship_apply_cargo_pod_tow(ship_t *ship, cargo_pod_t *pod,
+                              int hardpoint, float dt);
+void ship_apply_cell_salvage_tow(ship_t *ship, cell_salvage_t *salvage,
+                                 int hardpoint, float dt);
 
 /* Release any body from a ship tow band. Stored spring energy becomes
  * velocity along the band axis, on top of the towing ship's velocity.

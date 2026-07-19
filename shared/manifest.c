@@ -42,7 +42,7 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .name = "frame/basic",
         .output_kind = CARGO_KIND_FRAME,
         .output_commodity = COMMODITY_FRAME,
-        .output_count = 2,
+        .output_count = CELL_STRUTS_PER_INGOT,
         .input_count = 1,
         .input_commodities = { COMMODITY_FERRITE_INGOT, COMMODITY_COUNT },
     },
@@ -686,6 +686,71 @@ mining_grade_t cargo_pod_display_grade(const cargo_pod_t *pod) {
     return cargo_pod_manifest_best_grade(pod);
 }
 
+static cargo_pod_content_shape_t cargo_content_shape_for_kind(
+    cargo_kind_t kind) {
+    switch (kind) {
+    case CARGO_KIND_INGOT:
+    case CARGO_KIND_ORE:
+        return CARGO_POD_CONTENT_INGOT;
+    case CARGO_KIND_FRAME:
+        return CARGO_POD_CONTENT_STRUT;
+    case CARGO_KIND_LASER:
+    case CARGO_KIND_TRACTOR:
+        return CARGO_POD_CONTENT_ACTIVE;
+    case CARGO_KIND_REPAIR_KIT:
+        return CARGO_POD_CONTENT_SERVICE;
+    default:
+        return CARGO_POD_CONTENT_MIXED;
+    }
+}
+
+cargo_pod_content_shape_t cargo_pod_content_shape(const cargo_pod_t *pod) {
+    if (!pod || !pod->active || pod->quantity == 0)
+        return CARGO_POD_CONTENT_EMPTY;
+    if (pod->kind == CARGO_POD_GAS)
+        return CARGO_POD_CONTENT_GAS;
+
+    bool detailed = pod->manifest_count > 0 &&
+                    pod->manifest_count <= CARGO_POD_MANIFEST_CAP;
+    cargo_pod_content_shape_t shape = CARGO_POD_CONTENT_EMPTY;
+    if (detailed) {
+        for (uint16_t i = 0; i < pod->manifest_count; i++) {
+            const cargo_unit_t *unit = &pod->manifest_units[i];
+            if (unit->kind >= (uint8_t)CARGO_KIND_COUNT ||
+                unit->commodity != (uint8_t)pod->commodity) {
+                detailed = false;
+                break;
+            }
+            cargo_pod_content_shape_t unit_shape =
+                cargo_content_shape_for_kind((cargo_kind_t)unit->kind);
+            if (shape == CARGO_POD_CONTENT_EMPTY) {
+                shape = unit_shape;
+            } else if (shape != unit_shape) {
+                shape = CARGO_POD_CONTENT_MIXED;
+            }
+        }
+        if (detailed && shape != CARGO_POD_CONTENT_EMPTY)
+            return shape;
+    }
+
+    cargo_kind_t summary_kind;
+    if (cargo_kind_for_commodity(pod->commodity, &summary_kind))
+        return cargo_content_shape_for_kind(summary_kind);
+
+    /* Raw-ore compatibility pods are physical bulk. Normal live raw ore is
+     * still an asteroid fragment and never arrives here as a manifest row. */
+    if (pod->commodity < COMMODITY_RAW_ORE_COUNT)
+        return CARGO_POD_CONTENT_INGOT;
+    return CARGO_POD_CONTENT_MIXED;
+}
+
+float cargo_pod_load_ratio(const cargo_pod_t *pod) {
+    if (!pod || !pod->active || pod->quantity == 0)
+        return 0.0f;
+    float ratio = (float)pod->quantity / (float)CARGO_POD_UNIT_CAPACITY;
+    return ratio < 1.0f ? ratio : 1.0f;
+}
+
 bool manifest_rarity_tint(const manifest_t *manifest, float fill_ratio,
                           float neutral_r, float neutral_g, float neutral_b,
                           float *out_r, float *out_g, float *out_b) {
@@ -821,6 +886,7 @@ bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
 
     if (!recipe || !out_unit || !inputs) return false;
     if (recipe_id == RECIPE_SMELT || recipe_id == RECIPE_LEGACY_MIGRATE) return false;
+    if (output_index >= recipe->output_count) return false;
     if (!cargo_kind_matches_commodity(recipe->output_kind, recipe->output_commodity))
         return false;
     if (!recipe_inputs_match(recipe, inputs, input_count)) return false;

@@ -18,7 +18,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .kind = MODULE_KIND_SERVICE,
         .input = COMMODITY_COUNT, .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 0.0f,
-        .build_material = 20.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 16.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 25, /* 100/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
@@ -32,7 +32,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_FERRITE_ORE, /* primary; accepts all ore types */
         .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 30.0f,
-        .build_material = 40.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 32.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 37, /* 150/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
@@ -49,7 +49,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_FERRITE_ORE,
         .output = COMMODITY_FERRITE_INGOT,
         .rate = 1.0f, .buffer_capacity = 12.0f,
-        .build_material = 60.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 48.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 50, /* 200/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER, /* cross-ring pair rule
@@ -66,7 +66,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .kind = MODULE_KIND_SERVICE,
         .input = COMMODITY_COUNT, .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 0.0f,
-        .build_material = 30.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 24.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 50,
         .services = STATION_SERVICE_REPAIR,
         .valid_rings = MODULE_RINGS_OUTER,
@@ -79,7 +79,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .kind = MODULE_KIND_SERVICE,
         .input = COMMODITY_COUNT, .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 0.0f,
-        .build_material = 40.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 32.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 37, /* 150/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
@@ -93,7 +93,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_FERRITE_INGOT,
         .output = COMMODITY_FRAME,
         .rate = 1.0f, .buffer_capacity = 12.0f,
-        .build_material = 80.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 64.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 75,
         .services = 0,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
@@ -107,7 +107,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_CRYSTAL_INGOT, /* plus frames */
         .output = COMMODITY_LASER_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
-        .build_material = 80.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,
+        .build_material = 32.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,
         .order_fee = 100,
         .services = STATION_SERVICE_UPGRADE_LASER,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
@@ -121,7 +121,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_CUPRITE_INGOT,
         .output = COMMODITY_TRACTOR_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
-        .build_material = 80.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
+        .build_material = 32.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
         .order_fee = 100,
         .services = STATION_SERVICE_UPGRADE_TRACTOR,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
@@ -135,7 +135,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_FRAME, /* default; consumes whatever the order needs */
         .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 60.0f,
-        .build_material = 120.0f, .build_commodity = COMMODITY_FRAME,
+        .build_material = 96.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 125,
         .services = 0,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,

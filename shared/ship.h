@@ -16,6 +16,22 @@ uint8_t           ship_module_mask(const ship_t *ship);
 bool              ship_has_module(const ship_t *ship, ship_module_flags_t module);
 const char*       ship_loadout_name(hull_class_t hull_class);
 
+/* Authored one-size cell graph behind each legacy hull class. Hull classes
+ * remain control/loadout compatibility labels; physical capacity, mass, and
+ * thrust accounting come from these cells. */
+cell_layout_kind_t ship_cell_layout_kind(hull_class_t hull_class);
+bool ship_cell_graph(const ship_t *ship, cell_graph_t *out);
+bool ship_cell_graph_for_identity(const ship_t *ship, uint32_t asset_id,
+                                  cell_graph_t *out);
+void ship_cell_totals(const ship_t *ship, cell_graph_totals_t *out);
+float ship_cell_shell_mass(const ship_t *ship);
+float ship_cell_total_mass(const ship_t *ship);
+float ship_cell_thrust_units(const ship_t *ship);
+float ship_bulk_capacity(const ship_t *ship);
+vec2 ship_cell_center_of_mass(const ship_t *ship);
+vec2 ship_tow_hardpoint_local(const ship_t *ship);
+vec2 ship_tow_hardpoint_world(const ship_t *ship);
+
 vec2 ship_forward(float angle);
 vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship);
 

@@ -395,9 +395,10 @@ TEST(test_station_production_yard_makes_frames) {
                                               COMMODITY_FERRITE_INGOT),
                     4.0f, 0.001f);
     ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FRAME),
-                    2.0f, 0.001f);
+                    (float)CELL_STRUTS_PER_INGOT, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FERRITE_INGOT), 4);
-    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 2);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME),
+                  CELL_STRUTS_PER_INGOT);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {

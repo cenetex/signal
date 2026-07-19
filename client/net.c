@@ -2318,6 +2318,7 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].summary_grade = p[35];
                 pods[i].tractor_station = p[36];
                 pods[i].tractor_module = p[37];
+                pods[i].tow_hardpoint_tag = p[38];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }
@@ -2356,6 +2357,7 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].summary_grade = p[25];
                 pods[i].tractor_station = p[26];
                 pods[i].tractor_module = p[27];
+                pods[i].tow_hardpoint_tag = p[28];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }

@@ -1,4 +1,5 @@
 #include "ship.h"
+#include "commodity.h"
 
 const hull_def_t* hull_def_for_class(hull_class_t hc) {
     if ((unsigned)hc >= HULL_CLASS_COUNT) hc = HULL_CLASS_MINER;
@@ -33,6 +34,136 @@ const char* ship_loadout_name(hull_class_t hull_class) {
     return hull_def_for_class(hull_class)->name;
 }
 
+cell_layout_kind_t ship_cell_layout_kind(hull_class_t hull_class) {
+    switch (hull_class) {
+    case HULL_CLASS_HAULER:
+    case HULL_CLASS_DRONE_CARGO:
+        return CELL_LAYOUT_LIGHT_FREIGHTER;
+    case HULL_CLASS_DRONE_TRACTOR:
+        return CELL_LAYOUT_TUG;
+    case HULL_CLASS_MINER:
+    case HULL_CLASS_NPC_MINER:
+    case HULL_CLASS_DRONE_LASER:
+    default:
+        return CELL_LAYOUT_UTILITY;
+    }
+}
+
+bool ship_cell_graph_for_identity(const ship_t *ship, uint32_t asset_id,
+                                  cell_graph_t *out) {
+    if (!ship || !out ||
+        !cell_graph_authored(ship_cell_layout_kind(ship->hull_class), out)) {
+        return false;
+    }
+    if (asset_id != 0) {
+        for (uint8_t i = 0; i < out->count; i++)
+            out->nodes[i].identity =
+                ((uint64_t)asset_id << 32) | (uint64_t)(i + 1);
+    }
+    return cell_graph_validate(out);
+}
+
+bool ship_cell_graph(const ship_t *ship, cell_graph_t *out) {
+    return ship_cell_graph_for_identity(ship, 0, out);
+}
+
+void ship_cell_totals(const ship_t *ship, cell_graph_totals_t *out) {
+    if (!out) return;
+    cell_graph_t graph;
+    if (!ship_cell_graph(ship, &graph)) {
+        *out = (cell_graph_totals_t){0};
+        return;
+    }
+    cell_graph_totals(&graph, out);
+    out->payload_units = (int)ship_total_cargo(ship);
+    out->payload_mass = ship_total_cargo(ship);
+    out->total_mass = out->shell_mass + out->payload_mass;
+}
+
+float ship_cell_shell_mass(const ship_t *ship) {
+    cell_graph_totals_t totals;
+    ship_cell_totals(ship, &totals);
+    return totals.shell_mass;
+}
+
+float ship_cell_total_mass(const ship_t *ship) {
+    cell_graph_totals_t totals;
+    ship_cell_totals(ship, &totals);
+    return totals.total_mass;
+}
+
+float ship_cell_thrust_units(const ship_t *ship) {
+    cell_graph_totals_t totals;
+    ship_cell_totals(ship, &totals);
+    return totals.thrust_units;
+}
+
+float ship_bulk_capacity(const ship_t *ship) {
+    cell_graph_totals_t totals;
+    ship_cell_totals(ship, &totals);
+    return (float)totals.cargo_capacity;
+}
+
+vec2 ship_cell_center_of_mass(const ship_t *ship) {
+    cell_graph_t graph;
+    if (!ship_cell_graph(ship, &graph)) return v2(0.0f, 0.0f);
+    /* Distribute live aggregate cargo over the graph's volume cells in
+     * deterministic node order before asking the shared graph calculator. */
+    float remaining = ship_total_cargo(ship);
+    for (uint8_t i = 0; i < graph.count; i++) {
+        int capacity = cell_shape_payload_capacity(
+            (cell_shape_t)graph.nodes[i].shape);
+        float held = fminf(remaining, (float)capacity);
+        graph.nodes[i].payload_units = (uint16_t)held;
+        remaining -= held;
+    }
+    cell_point_t center = cell_graph_center_of_mass(&graph);
+    return v2(center.x, center.y);
+}
+
+vec2 ship_tow_hardpoint_local(const ship_t *ship) {
+    cell_graph_t graph;
+    if (!ship_cell_graph(ship, &graph)) return v2(0.0f, 0.0f);
+    vec2 center = ship_cell_center_of_mass(ship);
+
+    /* An explicit tow triangle owns the attachment when fitted. */
+    for (uint8_t i = 0; i < graph.count; i++) {
+        const cell_node_t *node = &graph.nodes[i];
+        if (node->shape != CELL_SHAPE_TRIANGLE ||
+            node->role != CELL_ROLE_TOW) continue;
+        cell_point_t host = cell_coord_world(node->coord, CELL_EDGE_LENGTH);
+        float angle = (float)node->orientation * 1.0471975511965976f;
+        vec2 tip = v2_add(v2(host.x, host.y),
+                          v2_scale(v2_from_angle(angle),
+                                   CELL_EDGE_LENGTH * 1.7320508f));
+        return v2_sub(tip, center);
+    }
+
+    /* Compatibility hulls without a fitted tow triangle expose the named
+     * complete east edge of their forward-most volume cell. */
+    vec2 forward = v2(0.0f, 0.0f);
+    float best_x = -1.0e30f;
+    for (uint8_t i = 0; i < graph.count; i++) {
+        const cell_node_t *node = &graph.nodes[i];
+        if (node->shape == CELL_SHAPE_TRIANGLE) continue;
+        cell_point_t p = cell_coord_world(node->coord, CELL_EDGE_LENGTH);
+        if (p.x > best_x) {
+            best_x = p.x;
+            forward = v2(p.x + CELL_EDGE_LENGTH * 0.8660254038f, p.y);
+        }
+    }
+    return v2_sub(forward, center);
+}
+
+vec2 ship_tow_hardpoint_world(const ship_t *ship) {
+    if (!ship) return v2(0.0f, 0.0f);
+    vec2 local = ship_tow_hardpoint_local(ship);
+    vec2 basis = v2_from_angle(ship->angle);
+    float c = basis.x, s = basis.y;
+    return v2(ship->pos.x + local.x * c - local.y * s,
+              ship->pos.y + local.x * s + local.y * c);
+}
+
 vec2 ship_forward(float angle) {
     return v2_from_angle(angle);
 }
@@ -51,7 +182,9 @@ float npc_max_hull(const npc_ship_t* npc) {
 }
 
 float ship_cargo_capacity(const ship_t* ship) {
-    return ship_hull_def(ship)->cargo_capacity + ((float)ship->hold_level * SHIP_HOLD_UPGRADE_STEP);
+    if (!ship) return 0.0f;
+    return ship_bulk_capacity(ship) +
+           ((float)ship->hold_level * SHIP_HOLD_UPGRADE_STEP);
 }
 
 float ship_mining_rate(const ship_t* ship) {

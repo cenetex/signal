@@ -7,6 +7,10 @@
 void register_commodity_tests(void);
 void register_math_tests(void);
 void register_ship_tests(void);
+void register_client_log_tests(void);
+void register_cell_geometry_tests(void);
+void register_cargo_package_tests(void);
+void register_cell_stress_tests(void);
 void register_manifest_tests(void);
 
 /* Subsystem registries from tests/test_*.c */
@@ -133,6 +137,10 @@ int main(int argc, char **argv) {
     register_commodity_tests();
     register_math_tests();
     register_ship_tests();
+    register_client_log_tests();
+    register_cell_geometry_tests();
+    register_cargo_package_tests();
+    register_cell_stress_tests();
     register_economy_basic_tests();
     register_manifest_tests();
     register_world_sim_basic_tests();

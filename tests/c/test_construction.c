@@ -1770,6 +1770,54 @@ TEST(test_station_geom_emitter_prospect) {
     ASSERT_EQ_INT(geom.dock_count, 1);
     ASSERT_EQ_INT(geom.spoke_count, 1);
     ASSERT_EQ_INT(geom.spokes[0].commodity, COMMODITY_FERRITE_ORE);
+
+    /* The same catalog module records now emit a reinforced axial graph.
+     * This is the physical construction view used by render/inspect. */
+    ASSERT_EQ_INT(geom.cell_count, w->stations[0].module_count + 1);
+    ASSERT_EQ_INT(geom.cells[0].node.shape, CELL_SHAPE_REINFORCED_HEX);
+    ASSERT_EQ_INT(geom.cells[0].node.role, CELL_ROLE_HUB);
+    ASSERT_EQ_FLOAT(geom.cells[0].center.x, w->stations[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(geom.cells[0].center.y, w->stations[0].pos.y, 0.001f);
+    ASSERT(cell_nodes_join(&geom.cells[0].node, &geom.cells[1].node));
+    ASSERT_EQ_INT(geom.cells[1].node.shape, CELL_SHAPE_TRIANGLE);
+    vec2 first_module_pos = module_world_pos_ring(
+        &w->stations[0], w->stations[0].modules[0].ring,
+        w->stations[0].modules[0].slot);
+    ASSERT_EQ_FLOAT(geom.cells[1].center.x, first_module_pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(geom.cells[1].center.y, first_module_pos.y, 0.001f);
+}
+
+TEST(test_station_cell_topology_is_canonical_from_persisted_module_records) {
+    station_t source = {0};
+    source.id = 77;
+    source.signal_range = 1.0f;
+    add_furnace_for(&source, 1, 2, COMMODITY_FERRITE_INGOT);
+    add_hopper_for(&source, 2, 4, COMMODITY_FERRITE_ORE);
+    source.modules[1].scaffold = true;
+    source.modules[1].build_progress = 0.375f;
+    source.modules[1].input_buffer = 40.0f;
+    source.modules[1].output_buffer = 12.0f;
+
+    /* Catalog/save and station-identity wire records preserve this ordered
+     * module slice. Reconstructing it must reproduce identical graph bytes. */
+    station_t mirror = {0};
+    mirror.id = source.id;
+    mirror.signal_range = source.signal_range;
+    mirror.module_count = source.module_count;
+    memcpy(mirror.modules, source.modules,
+           sizeof(source.modules[0]) * (size_t)source.module_count);
+
+    cell_graph_t a, b;
+    uint8_t ea[512], eb[512];
+    size_t na = 0, nb = 0;
+    ASSERT(station_cell_graph(&source, &a));
+    ASSERT(station_cell_graph(&mirror, &b));
+    ASSERT(cell_graph_encode(&a, ea, sizeof(ea), &na));
+    ASSERT(cell_graph_encode(&b, eb, sizeof(eb), &nb));
+    ASSERT_EQ_INT(na, nb);
+    ASSERT(memcmp(ea, eb, na) == 0);
+    ASSERT((b.nodes[2].flags & CELL_NODE_FLAG_SCAFFOLD) != 0);
+    ASSERT_EQ_INT(b.nodes[2].payload_units, CELL_HEX_PAYLOAD_CAPACITY);
 }
 
 TEST(test_furnace_geom_spokes_use_instance_ore_tag) {
@@ -3485,6 +3533,33 @@ TEST(test_module_schema_build_costs_match) {
     }
 }
 
+TEST(test_module_schema_uses_accepted_rock_cell_balance) {
+    static const float expected_cost[MODULE_COUNT] = {
+        [MODULE_DOCK] = 16.0f,
+        [MODULE_HOPPER] = 32.0f,
+        [MODULE_FURNACE] = 48.0f,
+        [MODULE_REPAIR_BAY] = 24.0f,
+        [MODULE_SIGNAL_RELAY] = 32.0f,
+        [MODULE_FRAME_PRESS] = 64.0f,
+        [MODULE_LASER_FAB] = 32.0f,
+        [MODULE_TRACTOR_FAB] = 32.0f,
+        [MODULE_SHIPYARD] = 96.0f,
+    };
+    for (int t = 0; t < MODULE_COUNT; t++) {
+        if (module_is_dead((module_type_t)t)) continue;
+        ASSERT_EQ_FLOAT(module_build_cost_lookup((module_type_t)t),
+                        expected_cost[t], 0.001f);
+    }
+    ASSERT_EQ_FLOAT(REFINERY_INGOTS_PER_FRAGMENT,
+                    (float)CELL_INGOTS_PER_FRAGMENT, 0.001f);
+    ASSERT_EQ_FLOAT(SCAFFOLD_MATERIAL_NEEDED,
+                    3.0f * (float)CELL_STRUTS_PER_FRAGMENT, 0.001f);
+    ASSERT_EQ_INT(module_build_material_lookup(MODULE_LASER_FAB),
+                  COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(module_build_material_lookup(MODULE_TRACTOR_FAB),
+                  COMMODITY_CUPRITE_INGOT);
+}
+
 TEST(test_module_flow_same_ring_transfer) {
     /* Furnace produces ferrite ingots into output_buffer.
      * Frame Press accepts ferrite ingots as input.
@@ -4034,6 +4109,7 @@ void register_construction_collision238_tests(void) {
 void register_construction_station_geom_tests(void) {
     TEST_SECTION("\nStation geometry emitter:\n");
     RUN(test_station_geom_emitter_prospect);
+    RUN(test_station_cell_topology_is_canonical_from_persisted_module_records);
     RUN(test_furnace_geom_spokes_use_instance_ore_tag);
     RUN(test_station_geom_spoke_uses_module_diag_fallback);
 }
@@ -4357,6 +4433,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_schema_valid_rings);
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);
+    RUN(test_module_schema_uses_accepted_rock_cell_balance);
     RUN(test_module_flow_same_ring_transfer);
     RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);

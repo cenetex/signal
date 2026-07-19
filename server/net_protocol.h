@@ -4027,7 +4027,7 @@ _Static_assert(
     "SCAFFOLD_MOTION_Q_RECORD_SIZE must match serialized scaffold q motion layout"
 );
 _Static_assert(
-    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 == CARGO_POD_RECORD_SIZE,
+    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 == CARGO_POD_RECORD_SIZE,
     "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
 _Static_assert(
@@ -4794,6 +4794,8 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
         pod, &tractor_station, &tractor_module);
     p[36] = tractor_station < 0 ? 0 : (uint8_t)(tractor_station + 1);
     p[37] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
+    p[38] = pod->tow_hardpoint_tag <= CARGO_POD_HARDPOINT_COUNT
+        ? pod->tow_hardpoint_tag : 0;
 }
 
 static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation);
@@ -4834,6 +4836,8 @@ static inline void serialize_one_cargo_pod_q(uint8_t *p,
         pod, &tractor_station, &tractor_module);
     p[26] = tractor_station < 0 ? 0 : (uint8_t)(tractor_station + 1);
     p[27] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
+    p[28] = pod->tow_hardpoint_tag <= CARGO_POD_HARDPOINT_COUNT
+        ? pod->tow_hardpoint_tag : 0;
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {

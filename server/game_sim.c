@@ -336,7 +336,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .turn_speed    = 2.75f,
         .drag          = 0.45f,
         .cargo_capacity  = 24.0f,
-        .ingot_capacity= 0.0f,
+        .ingot_capacity= 24.0f,
         .mining_rate   = 28.0f,
         .tractor_range = 150.0f,
         .ship_radius   = 16.0f,
@@ -350,8 +350,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 140.0f,
         .turn_speed    = 1.6f,
         .drag          = 0.55f,
-        .cargo_capacity  = 0.0f,
-        .ingot_capacity= 40.0f,
+        .cargo_capacity  = 72.0f,
+        .ingot_capacity= 72.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 0.0f,
         .ship_radius   = 22.0f,
@@ -366,7 +366,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .turn_speed    = 2.75f,
         .drag          = 0.45f,
         .cargo_capacity  = 24.0f,
-        .ingot_capacity= 0.0f,
+        .ingot_capacity= 24.0f,
         .mining_rate   = 28.0f,
         .tractor_range = 150.0f,
         .ship_radius   = 16.0f,
@@ -380,8 +380,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 340.0f,
         .turn_speed    = 3.1f,
         .drag          = 0.50f,
-        .cargo_capacity  = 0.0f,
-        .ingot_capacity= 0.0f,
+        .cargo_capacity  = 24.0f,
+        .ingot_capacity= 24.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 145.0f,
         .ship_radius   = 11.0f,
@@ -395,8 +395,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 350.0f,
         .turn_speed    = 3.2f,
         .drag          = 0.48f,
-        .cargo_capacity  = 0.0f,
-        .ingot_capacity= 0.0f,
+        .cargo_capacity  = 24.0f,
+        .ingot_capacity= 24.0f,
         .mining_rate   = 18.0f,
         .tractor_range = 0.0f,
         .ship_radius   = 11.0f,
@@ -410,8 +410,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 260.0f,
         .turn_speed    = 2.5f,
         .drag          = 0.54f,
-        .cargo_capacity  = 0.0f,
-        .ingot_capacity= 12.0f,
+        .cargo_capacity  = 72.0f,
+        .ingot_capacity= 72.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 0.0f,
         .ship_radius   = 12.0f,
@@ -3304,7 +3304,8 @@ static void drop_ship_cargo_pods(world_t *w, server_player_t *sp) {
         int units = (int)floorf(ship_cargo_amount(sp->ship,
                                                  (commodity_t)c) + 0.0001f);
         while (units > 0) {
-            int q = units > 20 ? 20 : units;
+            int q = units > CARGO_POD_UNIT_CAPACITY
+                ? CARGO_POD_UNIT_CAPACITY : units;
             float angle = ((float)c * 1.618f) + (float)units * 0.37f;
             float dist = ship_hull_def(sp->ship)->ship_radius + 32.0f +
                          (float)(units % 5) * 7.0f;
@@ -6130,12 +6131,13 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
 }
 
 static void apply_pod_band_force(server_player_t *sp, cargo_pod_t *pod, float dt) {
-    towable_body_t body = {
-        .pos = &pod->pos,
-        .vel = &pod->vel,
-        .inv_mass = (pod->kind == CARGO_POD_GAS) ? 1.2f : 0.8f,
-    };
-    ship_apply_body_tow(sp->ship, &body, dt);
+    vec2 source = ship_tow_hardpoint_world(sp->ship);
+    int hardpoint = cargo_pod_tow_hardpoint(pod);
+    if (hardpoint < 0) {
+        hardpoint = cargo_pod_select_hardpoint(pod, source);
+        cargo_pod_set_tow_hardpoint(pod, hardpoint);
+    }
+    ship_apply_cargo_pod_tow(sp->ship, pod, hardpoint, dt);
 }
 
 static bool ship_is_towing_pod(const ship_t *ship, int pod_idx) {
@@ -7577,6 +7579,33 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
     return true;
 }
 
+static bool apply_fixed_anchor_pod_tow(cargo_pod_t *pod, vec2 source,
+                                       vec2 source_velocity,
+                                       const tractor_beam_t *beam, float dt) {
+    if (!pod || !beam) return false;
+    int hardpoint = cargo_pod_tow_hardpoint(pod);
+    if (hardpoint < 0) {
+        hardpoint = cargo_pod_select_hardpoint(pod, source);
+        cargo_pod_set_tow_hardpoint(pod, hardpoint);
+    }
+    cargo_pod_align_tow_hardpoint(pod, hardpoint, source);
+    vec2 offset = cargo_pod_hardpoint_offset(pod, hardpoint);
+    tractor_link_t link = {
+        .source = {
+            .pos = source,
+            .vel = &source_velocity,
+            .inv_mass = 0.0f,
+        },
+        .target = {
+            .pos = v2_add(pod->pos, offset),
+            .vel = &pod->vel,
+            .inv_mass = cargo_pod_inverse_mass(pod),
+        },
+        .beam = *beam,
+    };
+    return tractor_link_apply(&link, dt);
+}
+
 void step_station_cargo_pod_tractors(world_t *w, float dt) {
     if (!w) return;
 
@@ -7601,21 +7630,9 @@ void step_station_cargo_pod_tractors(world_t *w, float dt) {
             continue;
         }
         if (dt > 0.0f) {
-            vec2 source_vel = resolved.anchor_vel;
-            tractor_link_t link = {
-                .source = {
-                    .pos = resolved.anchor,
-                    .vel = &source_vel,
-                    .inv_mass = 0.0f,
-                },
-                .target = {
-                    .pos = pod->pos,
-                    .vel = &pod->vel,
-                    .inv_mass = 1.0f,
-                },
-                .beam = resolved.beam,
-            };
-            (void)tractor_link_apply(&link, dt);
+            (void)apply_fixed_anchor_pod_tow(
+                pod, resolved.anchor, resolved.anchor_vel,
+                &resolved.beam, dt);
             if (resolved.station_idx >= 0 &&
                 resolved.station_idx < MAX_STATIONS &&
                 resolved.pulse_module >= 0 &&
@@ -7654,8 +7671,12 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
 
         const station_t *st = &w->stations[station_idx];
         if (module_idx >= st->module_count) continue;
+        int hardpoint = cargo_pod_tow_hardpoint(pod);
+        if (hardpoint < 0)
+            hardpoint = cargo_pod_select_hardpoint(pod, resolved.anchor);
+        vec2 target = cargo_pod_hardpoint_world(pod, hardpoint);
         float intensity = tractor_beam_range_fraction(
-            resolved.anchor, pod->pos, &resolved.beam);
+            resolved.anchor, target, &resolved.beam);
         if (intensity <= 0.0f) continue;
         vec2 emitter = resolved.anchor;
         (void)station_module_tractor_emitter(
@@ -7678,7 +7699,7 @@ static void publish_cargo_pod_module_tractor_interactions(world_t *w) {
                 .aux = -1,
             },
             .source_pos = emitter,
-            .target_pos = pod->pos,
+            .target_pos = target,
             .range = resolved.beam.range,
             .intensity = intensity,
         });
@@ -7700,9 +7721,12 @@ static bool resolve_cargo_pod_circle_collision(world_t *w,
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (!pod->active) return false;
 
+    vec2 outward = v2_sub(pod->pos, center);
+    float hull_radius = cargo_pod_support_radius(pod, outward);
+
     sim_body_contact_t contact = sim_body_resolve_static_circle(
         (sim_body_t){
-            .pos = &pod->pos, .vel = &pod->vel, .radius = pod->radius,
+            .pos = &pod->pos, .vel = &pod->vel, .radius = hull_radius,
         }, center, radius, obstacle_vel, CARGO_POD_BOUNCE_SCALE, 1.0f);
     if (!contact.collided) return false;
     if (contact.closing_speed > CARGO_POD_BREAK_SPEED) {
@@ -7757,12 +7781,13 @@ static bool resolve_cargo_pod_corridor_collision(world_t *w,
     float dist = v2_len(delta);
     if (dist < 1.0f) return false;
 
-    float r_inner = ring_r - STATION_CORRIDOR_HW - pod->radius;
-    float r_outer = ring_r + STATION_CORRIDOR_HW + pod->radius;
+    float hull_radius = cargo_pod_support_radius(pod, delta);
+    float r_inner = ring_r - STATION_CORRIDOR_HW - hull_radius;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + hull_radius;
     if (dist <= r_inner || dist >= r_outer) return false;
 
     float pod_angle = fixp_atan2f(delta.y, delta.x);
-    float angular_margin = fixp_asinf(fminf(pod->radius / dist, 1.0f));
+    float angular_margin = fixp_asinf(fminf(hull_radius / dist, 1.0f));
     float expanded_start = angle_a - angular_margin;
     float expanded_delta = arc_delta + 2.0f * angular_margin;
     if (angle_in_arc(pod_angle, expanded_start, expanded_delta) < 0.0f)
@@ -7774,11 +7799,11 @@ static bool resolve_cargo_pod_corridor_collision(world_t *w,
     float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
     if (d_inner < d_outer) {
         pod->pos = v2_add(center, v2_scale(radial,
-            ring_r - STATION_CORRIDOR_HW - pod->radius - 1.0f));
+            ring_r - STATION_CORRIDOR_HW - hull_radius - 1.0f));
         push_normal = v2_scale(radial, -1.0f);
     } else {
         pod->pos = v2_add(center, v2_scale(radial,
-            ring_r + STATION_CORRIDOR_HW + pod->radius + 1.0f));
+            ring_r + STATION_CORRIDOR_HW + hull_radius + 1.0f));
         push_normal = radial;
     }
 
@@ -7864,9 +7889,10 @@ static void resolve_cargo_pod_pair_collisions(world_t *w) {
                 cargo_pod_t *b = &w->cargo_pods[j];
                 if (!b->active) continue;
 
-                float min_dist = a->radius + b->radius + 8.0f;
                 vec2 ab = v2_sub(b->pos, a->pos);
                 float d_sq = v2_len_sq(ab);
+                float min_dist = cargo_pod_support_radius(a, ab) +
+                                 cargo_pod_support_radius(b, ab) + 8.0f;
                 if (d_sq >= min_dist * min_dist) continue;
 
                 float d = 0.0f;

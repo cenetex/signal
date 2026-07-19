@@ -1521,14 +1521,14 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 /* Cargo pod record: [index:1][kind:1][commodity:1][towed_by:1][pos:2xf32]
  * [vel:2xf32][radius:f32][rotation:f32][quantity:u16]
  * [manifest_count:u16][shipment_id:u16][flags:1][best_grade:1]
- * [tractor_station_tag:1][tractor_module_tag:1].
+ * [tractor_station_tag:1][tractor_module_tag:1][tow_hardpoint_tag:1].
  * Manifest unit rows are not present on this live stream; the flags carry
  * server-derived summary truth for UI gates that need to agree with
  * authoritative material intake. */
-#define CARGO_POD_RECORD_SIZE 38
-#define CARGO_POD_Q_RECORD_SIZE 28
+#define CARGO_POD_RECORD_SIZE 39
+#define CARGO_POD_Q_RECORD_SIZE 29
 _Static_assert(CARGO_POD_Q_RECORD_SIZE ==
-               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2),
+               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2 + 1),
                "compact cargo pod identity record size drifted");
 #define CARGO_POD_MOTION_MSG_HEADER 2
 #define CARGO_POD_MOTION_RECORD_SIZE 21

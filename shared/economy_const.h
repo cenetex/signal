@@ -51,7 +51,8 @@ static inline float prefix_class_price_multiplier(int cls) {
 /* --- Refinery / station production --- */
 /* A collectible ore fragment is the game's smallest physical ore unit.
  * Smelting a full fragment mints this many ingot units. */
-static const float REFINERY_INGOTS_PER_FRAGMENT = 10.0f;
+static const float REFINERY_INGOTS_PER_FRAGMENT =
+    (float)CELL_INGOTS_PER_FRAGMENT;
 static const float REFINERY_HOPPER_CAPACITY = 500.0f;
 static const float REFINERY_BASE_SMELT_RATE = 2.0f;
 /* enum, not `static const int`, so MSVC accepts it as a constant
@@ -109,7 +110,9 @@ static const float REPAIR_KIT_CARGO_DENSITY = 0.1f;
 static const float LABOR_FEE_PER_HP = 1.0f;
 
 /* --- Outpost construction --- */
-static const float SCAFFOLD_MATERIAL_NEEDED = 60.0f;   /* total frames needed */
+/* Founding contribution remains three fragments: 3 × 16 struts. */
+static const float SCAFFOLD_MATERIAL_NEEDED =
+    (float)(3 * CELL_STRUTS_PER_FRAGMENT);
 
 /* --- Ship upgrades --- */
 static const float SHIP_HOLD_UPGRADE_STEP = 8.0f;

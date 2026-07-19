@@ -326,6 +326,7 @@ typedef struct {
     uint8_t summary_grade;
     uint8_t tractor_station;
     uint8_t tractor_module;
+    uint8_t tow_hardpoint_tag;
 } NetCargoPodState;
 typedef struct {
     uint8_t index;

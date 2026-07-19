@@ -160,6 +160,13 @@ make build
 ./build/signal
 ```
 
+Native stdout/stderr telemetry persists by default. On macOS it is appended to
+`~/Library/Logs/signal/client.log`; Linux uses
+`$XDG_STATE_HOME/signal/client.log` (default `~/.local/state`), and Windows uses
+`%LOCALAPPDATA%\\signal\\client.log`. The log rotates to `client.log.1` at 8 MiB.
+Set `SIGNAL_LOG_PATH` to override the file or `SIGNAL_LOG_PERSIST=0` to retain
+line-buffered terminal output without persistence.
+
 Equivalent CMake path:
 
 ```sh

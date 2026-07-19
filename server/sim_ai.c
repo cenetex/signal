@@ -2663,7 +2663,7 @@ static int npc_append_hauler_contract_candidates(
     }
     haul_view.hull_class = HULL_CLASS_HAULER;
     float carried = npc_finished_cargo_total(npc);
-    float space = ship_hull_def(&haul_view)->ingot_capacity - carried;
+    float space = ship_bulk_capacity(&haul_view) - carried;
     if (space + 0.0001f < 1.0f) return 0;
 
     contract_summary_t known[SHIP_KNOWN_ITEM_CAP];
@@ -2742,7 +2742,7 @@ static void npc_fill_hauler_offer(const world_t *w,
     else haul_view = *npc->ship;
     haul_view.hull_class = HULL_CLASS_HAULER;
     float carried = npc_finished_cargo_total(npc);
-    float space = ship_hull_def(&haul_view)->ingot_capacity - carried;
+    float space = ship_bulk_capacity(&haul_view) - carried;
     vec2 start_pos = ship ? ship->pos : npc->ship->pos;
     float pickup_dist = v2_len(v2_sub(source->pos, start_pos));
     float delivery_dist = v2_len(v2_sub(w->stations[dest_station].pos,
@@ -3017,7 +3017,7 @@ static int npc_append_hauler_market_candidates(
     else haul_view = *npc->ship;
     haul_view.hull_class = HULL_CLASS_HAULER;
     float carried = npc_finished_cargo_total(npc);
-    float space = ship_hull_def(&haul_view)->ingot_capacity - carried;
+    float space = ship_bulk_capacity(&haul_view) - carried;
     if (space + 0.0001f < 1.0f) return count;
 
     uint8_t item_count = npc->ship->knowledge.count;
@@ -3342,7 +3342,7 @@ static bool npc_make_delivery_proof_job_offer(const world_t *w,
     float carried = npc_finished_cargo_total(npc);
     ship_t haul_view = ship ? *ship : *npc->ship;
     haul_view.hull_class = HULL_CLASS_HAULER;
-    float capacity = ship_hull_def(&haul_view)->ingot_capacity;
+    float capacity = ship_bulk_capacity(&haul_view);
     if (capacity - carried < commodity_volume(ct->commodity)) return false;
     float pickup_dist = npc->home_station == best_origin ? 0.0f :
         v2_len(v2_sub(origin->pos, w->stations[npc->home_station].pos));
@@ -4476,7 +4476,7 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     int stock = contract_fit_manifest_count(ct, &origin->manifest);
     if (stock <= 0) return 0;
     float held = npc_finished_cargo_total(npc);
-    float space = npc_hull_def(npc)->ingot_capacity - held;
+    float space = ship_bulk_capacity(npc->ship) - held;
     int room = (int)floorf(space + 0.0001f);
     if (room <= 0) return 0;
     int needed = (int)ceilf(ct->quantity_needed);
@@ -5540,7 +5540,7 @@ static int npc_hauler_load_from_source(world_t *w,
                                               &src->manifest);
     if (!ct) return 0;
     float carried = npc_finished_cargo_total(npc);
-    float space = npc_hull_def(npc)->ingot_capacity - carried;
+    float space = ship_bulk_capacity(npc->ship) - carried;
     int take_units = npc_hauler_takeable_units_at_source(src, ct);
     int space_units = (int)floorf(space + 0.0001f);
     if (take_units > space_units) take_units = space_units;

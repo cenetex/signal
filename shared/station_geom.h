@@ -31,7 +31,14 @@ enum {
     /* Worst case: 16 producers × 3 input commodities = 48. Pad. */
     STATION_GEOM_MAX_SPOKES    = MAX_MODULES_PER_STATION * 3,
     STATION_GEOM_MAX_DOCKS     = 6,
+    STATION_GEOM_MAX_CELLS     = CELL_GRAPH_MAX_NODES,
 };
+
+typedef struct {
+    cell_node_t node;
+    vec2 center;
+    float build_progress;
+} geom_cell_t;
 
 typedef struct {
     vec2  center;
@@ -117,6 +124,13 @@ typedef struct {
     /* Dock positions (for rendering berths, not collision) */
     geom_dock_t docks[STATION_GEOM_MAX_DOCKS];
     int dock_count;
+
+    /* Canonical rock-cell construction graph projected onto the station's
+     * authored megastructure sites. The node keeps its compact 60-degree
+     * construction coordinate and identity; center is the live world-space
+     * module site so render, towing, targeting, and collision all agree. */
+    geom_cell_t cells[STATION_GEOM_MAX_CELLS];
+    int cell_count;
 } station_geom_t;
 
 static inline float station_geom_spoke_pulse(const station_t *st, int module_index) {
@@ -159,6 +173,24 @@ static inline float station_geom_spoke_pulse(const station_t *st, int module_ind
 static inline void station_build_geom(const station_t *st, station_geom_t *out) {
     memset(out, 0, sizeof(*out));
     out->center = st->pos;
+
+    cell_graph_t cell_graph;
+    if (station_cell_graph(st, &cell_graph)) {
+        out->cell_count = cell_graph.count;
+        for (int i = 0; i < out->cell_count; i++) {
+            geom_cell_t *cell = &out->cells[i];
+            cell->node = cell_graph.nodes[i];
+            int module_index = station_cell_module_index(&cell->node);
+            cell->center = module_index >= 0 && module_index < st->module_count
+                ? module_world_pos_ring(st, st->modules[module_index].ring,
+                                        st->modules[module_index].slot)
+                : st->pos;
+            cell->build_progress = module_index >= 0 &&
+                    module_index < st->module_count
+                ? st->modules[module_index].build_progress
+                : 1.0f;
+        }
+    }
 
     /* Core */
     if (st->radius > 0.0f) {

@@ -1786,6 +1786,7 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
     ASSERT(world_cargo_pod_set_player_tractor(w, 7, 0));
+    cargo_pod_set_tow_hardpoint(&w->cargo_pods[7], 4);
     w->cargo_pods[7].has_shell_frame = true;
     cargo_pod_set_station_custody(&w->cargo_pods[7], 2);
     ASSERT(hash_legacy_migrate_unit((const uint8_t *)"SAVESHEL",
@@ -1819,6 +1820,7 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_INT(pod->quantity, 1);
     ASSERT_EQ_INT(pod->shipment_id, 11);
     ASSERT_EQ_INT(cargo_pod_player_tractor(pod), 0);
+    ASSERT_EQ_INT(cargo_pod_tow_hardpoint(pod), 4);
     ASSERT_EQ_INT(cargo_pod_custody_station(pod), 2);
     ASSERT(pod->has_shell_frame);
     ASSERT_EQ_INT(pod->shell_frame.commodity, COMMODITY_FRAME);
@@ -1826,6 +1828,8 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
                   w->cargo_pods[7].shell_frame.pub, 32) == 0);
     ASSERT_EQ_FLOAT(pod->pos.x, 44.0f, 0.001f);
     ASSERT_EQ_FLOAT(pod->pos.y, -12.0f, 0.001f);
+    ASSERT_EQ_FLOAT(pod->rotation, 0.7f, 0.001f);
+    ASSERT_EQ_FLOAT(pod->spin, 0.25f, 0.001f);
     remove(TMP("test_delivery_shipments.sav"));
 }
 
@@ -2047,8 +2051,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * have two starter pods, so +2 bytes.
              * v74: each active pod also persists tractor_station and
              * tractor_module; two starter pods add four bytes.
-             * v75: 64 station residue arrays add 5,120 bytes. */
-			#define EXPECTED_SAVE_SIZE 772768
+             * v75: 64 station residue arrays add 5,120 bytes.
+             * v76: each active pod persists its named tow hardpoint; two
+             * starter pods add two bytes. */
+			#define EXPECTED_SAVE_SIZE 772770
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2085,7 +2091,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 75);
+    ASSERT_EQ_INT((int)version, 76);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

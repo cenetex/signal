@@ -1,0 +1,273 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1060" viewBox="0 0 1600 1060" role="img" aria-labelledby="title desc">
+  <title id="title">Signal rock assembly grammar mockup</title>
+  <desc id="desc">Canonical one-size construction grammar: irregular rocks become four square ingots, sixteen conserved struts, directional triangles, hexagonal volume cells, reinforced hexagonal hubs, towable carriers, modular ships, and a seven-cell station cluster.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071018"/>
+      <stop offset="0.58" stop-color="#0b1118"/>
+      <stop offset="1" stop-color="#12101a"/>
+    </linearGradient>
+    <radialGradient id="signalGlow">
+      <stop offset="0" stop-color="#ff4fb8" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#ff4fb8" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ff4fb8" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="stars" width="92" height="74" patternUnits="userSpaceOnUse">
+      <circle cx="9" cy="18" r="1" fill="#9cb0bb" opacity="0.18"/>
+      <circle cx="55" cy="49" r="0.8" fill="#f2c987" opacity="0.2"/>
+      <circle cx="83" cy="11" r="0.7" fill="#c5d4de" opacity="0.16"/>
+    </pattern>
+    <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10Z" fill="#78909c"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10Z" fill="#40a9ff"/>
+    </marker>
+
+    <g id="triangleCell">
+      <polygon points="0,-30 27,18 -27,18" class="cell"/>
+      <circle cx="0" cy="-30" r="3" class="joint"/>
+      <circle cx="27" cy="18" r="3" class="joint"/>
+      <circle cx="-27" cy="18" r="3" class="joint"/>
+    </g>
+    <g id="hexCell">
+      <polygon points="0,-32 28,-16 28,16 0,32 -28,16 -28,-16" class="cell"/>
+      <circle cx="0" cy="-32" r="3" class="joint"/>
+      <circle cx="28" cy="-16" r="3" class="joint"/>
+      <circle cx="28" cy="16" r="3" class="joint"/>
+      <circle cx="0" cy="32" r="3" class="joint"/>
+      <circle cx="-28" cy="16" r="3" class="joint"/>
+      <circle cx="-28" cy="-16" r="3" class="joint"/>
+    </g>
+    <g id="reinforcedHexCell">
+      <use href="#hexCell"/>
+      <line x1="0" y1="0" x2="0" y2="-32" class="strut"/>
+      <line x1="0" y1="0" x2="28" y2="-16" class="strut"/>
+      <line x1="0" y1="0" x2="28" y2="16" class="strut"/>
+      <line x1="0" y1="0" x2="0" y2="32" class="strut"/>
+      <line x1="0" y1="0" x2="-28" y2="16" class="strut"/>
+      <line x1="0" y1="0" x2="-28" y2="-16" class="strut"/>
+      <circle cx="0" cy="0" r="4" class="joint"/>
+    </g>
+  </defs>
+
+  <style>
+    .title { fill:#f2f7fa; font:500 32px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:2px; }
+    .subtitle { fill:#8fa3ae; font:400 15px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stage { fill:#f2c987; font:500 15px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:2px; }
+    .label { fill:#dce7ec; font:500 15px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .muted { fill:#91a4ae; font:400 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .tiny { fill:#78909c; font:400 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:0.4px; }
+    .divider { stroke:#26343d; stroke-width:1; }
+    .flow { fill:none; stroke:#78909c; stroke-width:2; marker-end:url(#arrow); }
+    .flow-blue { fill:none; stroke:#40a9ff; stroke-width:2; marker-end:url(#arrowBlue); }
+    .callout { fill:none; stroke:#5f7783; stroke-width:1.4; }
+    .rock { fill:#252c31; stroke:#7e8c92; stroke-width:3; }
+    .ore { fill:#ff914d; opacity:0.75; filter:url(#softGlow); }
+    .ingot { fill:#45291f; stroke:#ff914d; stroke-width:3; }
+    .ingot-cut { stroke:#ffbd87; stroke-width:1.4; opacity:0.8; }
+    .strut { stroke:#40a9ff; stroke-width:7; stroke-linecap:round; }
+    .cell { fill:#102333; fill-opacity:0.5; stroke:#40a9ff; stroke-width:5; stroke-linejoin:round; }
+    .joint { fill:#071018; stroke:#87d3ff; stroke-width:2; }
+    .payload { fill:#51281c; stroke:#ff914d; stroke-width:2; }
+    .payload-core { fill:#ff914d; opacity:0.28; }
+    .ship { fill:#10281f; stroke:#58d68d; stroke-width:4; stroke-linejoin:round; }
+    .active { fill:#143421; stroke:#58d68d; stroke-width:3; }
+    .tow { fill:none; stroke:#6ec8ff; stroke-width:3; stroke-dasharray:12 8; }
+    .tow-eye { fill:#071018; stroke:#87d3ff; stroke-width:3; }
+    .com { fill:#f2f7fa; stroke:#071018; stroke-width:2; }
+    .ghost { fill:none; stroke:#40a9ff; stroke-width:2; stroke-dasharray:8 7; opacity:0.5; }
+    .snap { fill:none; stroke:#f2c987; stroke-width:2.5; stroke-dasharray:5 6; marker-end:url(#arrow); }
+    .signal { fill:none; stroke:#ff4fb8; stroke-width:2; stroke-dasharray:10 10; opacity:0.75; }
+    .field-fill { fill:url(#signalGlow); }
+    .principle { fill:#f2f7fa; font:500 17px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:0.8px; }
+    .chip { fill:#111b22; stroke:#314550; stroke-width:1; }
+  </style>
+
+  <rect width="1600" height="1060" fill="url(#bg)"/>
+  <rect width="1600" height="1060" fill="url(#stars)"/>
+
+  <text x="58" y="58" class="title">ROCK ASSEMBLY GRAMMAR</text>
+  <text x="60" y="88" class="subtitle">Every carrier, hull cell, module and station segment is a reversible arrangement of mined matter.</text>
+  <line x1="58" y1="115" x2="1542" y2="115" class="divider"/>
+
+  <!-- Stage 1: refinement -->
+  <text x="60" y="151" class="stage">01 / REFINE</text>
+  <path class="rock" d="M83 231 C69 203 91 171 122 177 C141 158 180 178 177 207 C199 228 179 262 149 260 C125 280 86 262 91 239Z"/>
+  <path class="ore" d="M104 221 122 197 139 221 158 197" fill="none" stroke="#ff914d" stroke-width="5"/>
+  <text x="130" y="302" text-anchor="middle" class="label">IRREGULAR ROCK</text>
+  <text x="130" y="323" text-anchor="middle" class="muted">nature · uncounted</text>
+
+  <path d="M205 222 H252" class="flow"/>
+  <g transform="translate(245 190)">
+    <rect width="54" height="54" rx="3" class="ingot"/>
+    <line x1="27" y1="0" x2="27" y2="54" class="ingot-cut"/>
+    <line x1="0" y1="27" x2="54" y2="27" class="ingot-cut"/>
+  </g>
+  <g transform="translate(305 190)">
+    <rect width="54" height="54" rx="3" class="ingot"/>
+    <line x1="27" y1="0" x2="27" y2="54" class="ingot-cut"/>
+    <line x1="0" y1="27" x2="54" y2="27" class="ingot-cut"/>
+  </g>
+  <g transform="translate(365 190)">
+    <rect width="54" height="54" rx="3" class="ingot"/>
+    <line x1="27" y1="0" x2="27" y2="54" class="ingot-cut"/>
+    <line x1="0" y1="27" x2="54" y2="27" class="ingot-cut"/>
+  </g>
+  <g transform="translate(425 190)">
+    <rect width="54" height="54" rx="3" class="ingot"/>
+    <line x1="27" y1="0" x2="27" y2="54" class="ingot-cut"/>
+    <line x1="0" y1="27" x2="54" y2="27" class="ingot-cut"/>
+  </g>
+  <text x="362" y="302" text-anchor="middle" class="label">4 SQUARE INGOTS</text>
+  <text x="365" y="323" text-anchor="middle" class="muted">dense matter · counted</text>
+
+  <path d="M490 222 H530" class="flow"/>
+  <g transform="translate(545 184)">
+    <line x1="0" y1="0" x2="40" y2="0" class="strut"/>
+    <line x1="54" y1="0" x2="94" y2="0" class="strut"/>
+    <line x1="108" y1="0" x2="148" y2="0" class="strut"/>
+    <line x1="162" y1="0" x2="202" y2="0" class="strut"/>
+    <line x1="0" y1="26" x2="40" y2="26" class="strut"/>
+    <line x1="54" y1="26" x2="94" y2="26" class="strut"/>
+    <line x1="108" y1="26" x2="148" y2="26" class="strut"/>
+    <line x1="162" y1="26" x2="202" y2="26" class="strut"/>
+    <line x1="0" y1="52" x2="40" y2="52" class="strut"/>
+    <line x1="54" y1="52" x2="94" y2="52" class="strut"/>
+    <line x1="108" y1="52" x2="148" y2="52" class="strut"/>
+    <line x1="162" y1="52" x2="202" y2="52" class="strut"/>
+    <line x1="0" y1="78" x2="40" y2="78" class="strut"/>
+    <line x1="54" y1="78" x2="94" y2="78" class="strut"/>
+    <line x1="108" y1="78" x2="148" y2="78" class="strut"/>
+    <line x1="162" y1="78" x2="202" y2="78" class="strut"/>
+  </g>
+  <text x="646" y="302" text-anchor="middle" class="label">16 STANDARD STRUTS</text>
+  <text x="646" y="323" text-anchor="middle" class="muted">equal edges · conserved structure</text>
+
+  <!-- Stage 2: cell alphabet -->
+  <line x1="800" y1="150" x2="800" y2="356" class="divider"/>
+  <text x="835" y="151" class="stage">02 / ASSEMBLY CELL ALPHABET</text>
+  <g transform="translate(930 224) scale(1.45)"><use href="#triangleCell"/></g>
+  <text x="930" y="302" text-anchor="middle" class="label">TRIANGLE</text>
+  <text x="930" y="323" text-anchor="middle" class="muted">3 · directional / active</text>
+
+  <g transform="translate(1135 224) scale(1.35)"><use href="#hexCell"/></g>
+  <text x="1135" y="302" text-anchor="middle" class="label">HEXAGON</text>
+  <text x="1135" y="323" text-anchor="middle" class="muted">6 · volume / shell</text>
+
+  <g transform="translate(1370 224) scale(1.35)"><use href="#reinforcedHexCell"/></g>
+  <text x="1370" y="302" text-anchor="middle" class="label">REINFORCED HEX</text>
+  <text x="1370" y="323" text-anchor="middle" class="muted">12 · hub / load transfer</text>
+
+  <rect x="902" y="348" width="432" height="42" rx="21" class="chip"/>
+  <text x="1118" y="375" text-anchor="middle" class="label">12-STRUT BATCH = 4 △ = 2 ⬡ · SQUARES ARE PAYLOAD ONLY</text>
+
+  <line x1="58" y1="420" x2="1542" y2="420" class="divider"/>
+
+  <!-- Stage 3: towing -->
+  <text x="60" y="458" class="stage">03 / TOW AS A TEMPORARY ASSEMBLY</text>
+  <text x="60" y="485" class="muted">“Pod” is a physical shell manifest plus payload—not inventory with a decorative icon.</text>
+
+  <g transform="translate(110 635)">
+    <polygon points="0,0 92,-45 74,0 92,45" class="ship"/>
+    <line x1="22" y1="0" x2="70" y2="0" stroke="#58d68d" stroke-width="3" opacity="0.45"/>
+    <circle cx="78" cy="0" r="7" class="tow-eye"/>
+  </g>
+  <text x="150" y="710" text-anchor="middle" class="label">TRACTOR SHIP</text>
+
+  <path d="M195 635 C244 598 296 672 352 635 S452 608 505 635" class="tow"/>
+  <circle cx="505" cy="635" r="8" class="tow-eye"/>
+
+  <g transform="translate(590 635) scale(2.35)">
+    <use href="#hexCell"/>
+  </g>
+  <rect x="548" y="605" width="29" height="29" class="payload"/>
+  <rect x="582" y="605" width="29" height="29" class="payload"/>
+  <rect x="565" y="640" width="29" height="29" class="payload"/>
+  <circle cx="590" cy="635" r="6" class="com"/>
+  <circle cx="524" cy="635" r="8" class="tow-eye"/>
+
+  <text x="590" y="745" text-anchor="middle" class="label">HEX CARRIER ASSEMBLY</text>
+  <text x="590" y="768" text-anchor="middle" class="muted">one tractor target · shell + contents</text>
+
+  <path d="M520 581 H455 V548" class="callout"/>
+  <text x="451" y="528" text-anchor="middle" class="tiny">TOW NODE</text>
+  <text x="451" y="543" text-anchor="middle" class="tiny">force enters assembly here</text>
+
+  <path d="M559 597 V548 H640" class="callout"/>
+  <text x="645" y="530" class="tiny">PAYLOAD MANIFEST</text>
+  <text x="645" y="545" class="tiny">ingots / components / lineage</text>
+
+  <path d="M650 580 H712 V612" class="callout"/>
+  <text x="718" y="597" class="tiny">SHELL MANIFEST</text>
+  <text x="718" y="612" class="tiny">six rock-derived struts</text>
+
+  <path d="M590 635 H704 V690" class="callout"/>
+  <text x="710" y="682" class="tiny">AGGREGATE CENTER OF MASS</text>
+  <text x="710" y="697" class="tiny">tow load = shell + payload</text>
+
+  <rect x="70" y="808" width="675" height="62" rx="8" class="chip"/>
+  <text x="96" y="834" class="label">V1 PHYSICS</text>
+  <text x="96" y="855" class="muted">single body · bounding radius · rotation/spin · total tow load</text>
+
+  <rect x="70" y="882" width="675" height="62" rx="8" class="chip"/>
+  <text x="96" y="908" class="label">V2 PHYSICS</text>
+  <text x="96" y="929" class="muted">offset tow torque · polygon collision · cells shear under impact</text>
+
+  <!-- Stage 4: welding -->
+  <line x1="800" y1="450" x2="800" y2="1000" class="divider"/>
+  <text x="835" y="458" class="stage">04 / WELD INTO THE WORLD</text>
+  <text x="835" y="485" class="muted">The carrier does not disappear at docking. It becomes part of the persistent cell graph.</text>
+
+  <!-- Incoming cell and snap path -->
+  <g transform="translate(905 615) scale(1.5)"><use href="#hexCell"/></g>
+  <rect x="886" y="596" width="18" height="18" class="payload"/>
+  <rect x="907" y="596" width="18" height="18" class="payload"/>
+  <path d="M963 615 C1003 575 1041 565 1075 578" class="snap"/>
+  <text x="960" y="550" text-anchor="middle" class="tiny">incoming carrier</text>
+
+  <!-- Ship lattice -->
+  <g transform="translate(1115 570)"><use href="#hexCell"/></g>
+  <g transform="translate(1172 570)"><use href="#hexCell"/></g>
+  <g transform="translate(1144 520)"><use href="#hexCell"/></g>
+  <g transform="translate(1144 620)"><use href="#hexCell"/></g>
+  <g transform="translate(1229 570)"><use href="#hexCell"/></g>
+  <g transform="translate(1285 570) scale(1.15)"><use href="#triangleCell"/></g>
+  <polygon points="1318,570 1358,548 1358,592" class="active"/>
+  <circle cx="1229" cy="570" r="13" class="payload-core"/>
+  <polygon points="1078,545 1132,570 1078,595" class="ghost"/>
+  <text x="1190" y="675" text-anchor="middle" class="label">SHIP CELL GRAPH</text>
+  <text x="1190" y="698" text-anchor="middle" class="muted">hex volume cells · square payload · triangle active mount</text>
+
+  <!-- Station lattice -->
+  <circle cx="1170" cy="830" r="155" class="field-fill"/>
+  <circle cx="1170" cy="830" r="152" class="signal"/>
+  <g transform="translate(1170 830)"><use href="#reinforcedHexCell"/></g>
+  <g transform="translate(1225 830)"><use href="#hexCell"/></g>
+  <g transform="translate(1198 878)"><use href="#hexCell"/></g>
+  <g transform="translate(1142 878)"><use href="#hexCell"/></g>
+  <g transform="translate(1115 830)"><use href="#hexCell"/></g>
+  <g transform="translate(1142 782)"><use href="#hexCell"/></g>
+  <g transform="translate(1198 782)"><use href="#hexCell"/></g>
+
+  <text x="1365" y="796" class="label">STATION CELL GRAPH</text>
+  <text x="1365" y="819" class="muted">polygon cells make the ring</text>
+  <text x="1365" y="840" class="muted">circle remains signal only</text>
+  <path d="M1328 824 H1348" class="callout"/>
+
+  <text x="1365" y="890" class="label">REVERSIBLE DAMAGE</text>
+  <text x="1365" y="913" class="muted">impact shears a cell free</text>
+  <text x="1365" y="934" class="muted">cell becomes towable again</text>
+  <path d="M1320 885 H1348" class="callout"/>
+
+  <rect x="835" y="1010" width="707" height="30" rx="15" class="chip"/>
+  <text x="1188" y="1031" text-anchor="middle" class="principle">NO POD VANISHES · SHELL + PAYLOAD BECOME SHIP OR STATION</text>
+</svg>

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>   /* offsetof — Layer B of #479 station_secret guard */
 #include <stdint.h>
+#include "cell_geometry.h"
 #include "math_util.h"
 #include "mining.h"
 #include "holographic_nn.h"
@@ -38,7 +39,7 @@ enum {
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
     CARGO_POD_MANIFEST_CAP = 200, /* one rich ore fragment can become one full smelt pod */
-    CARGO_POD_UNIT_CAPACITY = 20, /* normal production crates fill to this many units */
+    CARGO_POD_UNIT_CAPACITY = CELL_HEX_PAYLOAD_CAPACITY,
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -1058,13 +1059,16 @@ typedef struct {
     float spin;
     float age;
     tractor_binding_t tractor;
+    uint8_t tow_hardpoint_tag; /* 0 = none; 1..6 = complete-edge hardpoint */
     uint8_t custody_station; /* 0 = none; station index + 1 owns/charges this pod */
 } cargo_pod_t;
 
 static inline void cargo_pod_clear_module_tractor(cargo_pod_t *pod) {
     if (!pod) return;
-    if (pod->tractor.kind == TRACTOR_SOURCE_STATION_MODULE)
+    if (pod->tractor.kind == TRACTOR_SOURCE_STATION_MODULE) {
         tractor_binding_clear(&pod->tractor);
+        pod->tow_hardpoint_tag = 0;
+    }
 }
 
 static inline bool cargo_pod_has_module_tractor(const cargo_pod_t *pod) {
@@ -1106,6 +1110,7 @@ static inline void cargo_pod_set_module_tractor(cargo_pod_t *pod,
         .source_index = (int16_t)station_idx,
         .source_part = (int16_t)module_idx,
     };
+    pod->tow_hardpoint_tag = 0;
 }
 
 static inline int cargo_pod_player_tractor(const cargo_pod_t *pod) {
@@ -1125,11 +1130,13 @@ static inline void cargo_pod_set_player_tractor(cargo_pod_t *pod,
         .source_index = (int16_t)player_idx,
         .source_part = -1,
     };
+    pod->tow_hardpoint_tag = 0;
 }
 
 static inline void cargo_pod_clear_tractor(cargo_pod_t *pod) {
     if (!pod) return;
     tractor_binding_clear(&pod->tractor);
+    pod->tow_hardpoint_tag = 0;
 }
 
 static inline int cargo_pod_custody_station(const cargo_pod_t *pod) {
@@ -1867,6 +1874,9 @@ typedef struct {
     int8_t claimed_by;      /* player/NPC id, -1 = open */
 } contract_t;
 
+/* Physical one-size carrier mass, complete-edge hardpoints, and hex hull. */
+#include "cargo_pod_geometry.h"
+
 /* Station query/geometry helpers — must come after station_t */
 #include "station_util.h"
 
@@ -1874,6 +1884,9 @@ typedef struct {
  * Must precede station_geom.h: the geom emitter consults
  * module_pair_intake to emit cross-ring spokes. */
 #include "module_schema.h"
+
+/* Deterministic station module -> axial cell projection. */
+#include "station_cells.h"
 
 /* Unified station collision/render geometry — must come after all
  * station types AND after module_schema.h. */
