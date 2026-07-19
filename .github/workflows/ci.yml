@@ -37,3 +37,25 @@ jobs:
           make test-san
           make banned-apis deterministic-libm doc-freshness
           make cppcheck
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install fuzz toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+      # Replays the tracked seed corpus (deterministic regression gate for
+      # the receipt/handoff decode paths), then explores for FUZZ_TIME
+      # seconds. A crash fails the job and its artifact is uploaded below.
+      - name: Fuzz receipt/handoff decode paths
+        run: make fuzz-receipts FUZZ_TIME=300
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-cargo-receipt-artifacts
+          path: tests/fuzz/artifacts/
+          if-no-files-found: ignore
