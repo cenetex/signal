@@ -1979,6 +1979,9 @@ TEST(test_cargo_pod_bounces_off_station_corridor_ring) {
     int pod_idx = test_spawn_exact_pod(&w, st->pos,
                                        COMMODITY_LASER_MODULE, 1);
     ASSERT(pod_idx >= 0);
+    /* The assertion compares against the pre-step hex support radius, so
+     * keep orientation fixed instead of depending on host libm rounding. */
+    w.cargo_pods[pod_idx].spin = 0.0f;
     float hull_r = cargo_pod_support_radius(&w.cargo_pods[pod_idx], radial);
     float outer_edge = ring_r + STATION_CORRIDOR_HW + hull_r;
     w.cargo_pods[pod_idx].pos = v2_add(
