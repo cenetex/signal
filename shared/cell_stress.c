@@ -339,7 +339,8 @@ bool cell_salvage_decode(const uint8_t *data, size_t len,
         memcmp(data, "SAL1", 4) != 0 || data[4] != 1 ||
         data[5] > CELL_PROVENANCE_KNOWN) return false;
     uint16_t graph_size = read_u16(&data[6]);
-    if (len < CELL_SALVAGE_HEADER_BYTES + graph_size) return false;
+    if (len < (size_t)CELL_SALVAGE_HEADER_BYTES + (size_t)graph_size)
+        return false;
     cell_salvage_t salvage = {.active = true, .provenance = data[5]};
     salvage.pos = v2(read_f32(&data[8]), read_f32(&data[12]));
     salvage.vel = v2(read_f32(&data[16]), read_f32(&data[20]));
