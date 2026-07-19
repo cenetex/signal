@@ -4400,8 +4400,7 @@ static void cargo_pod_draw_ingot_blocks(int count, float radius,
     if (count > 6) count = 6;
     int cols = count <= 2 ? count : (count <= 4 ? 2 : 3);
     int rows = (count + cols - 1) / cols;
-    float spacing_x = radius * 0.34f;
-    float spacing_y = radius * 0.34f;
+    float spacing = radius * 0.34f;
     float half = radius * (cols >= 3 ? 0.10f : 0.13f);
 
     sgl_begin_quads();
@@ -4412,8 +4411,8 @@ static void cargo_pod_draw_ingot_blocks(int count, float radius,
         int in_row = count - first;
         if (in_row > cols) in_row = cols;
         int col = i - first;
-        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing_x;
-        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing_y;
+        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing;
+        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing;
         sgl_v2f(x - half, y - half);
         sgl_v2f(x + half, y - half);
         sgl_v2f(x + half, y + half);
@@ -4431,8 +4430,8 @@ static void cargo_pod_draw_ingot_blocks(int count, float radius,
         int in_row = count - first;
         if (in_row > cols) in_row = cols;
         int col = i - first;
-        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing_x;
-        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing_y;
+        float x = ((float)col - (float)(in_row - 1) * 0.5f) * spacing;
+        float y = ((float)row - (float)(rows - 1) * 0.5f) * spacing;
         sgl_v2f(x - half, y - half); sgl_v2f(x + half, y - half);
         sgl_v2f(x + half, y - half); sgl_v2f(x + half, y + half);
         sgl_v2f(x + half, y + half); sgl_v2f(x - half, y + half);
