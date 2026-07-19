@@ -1476,7 +1476,7 @@ test.describe('Browser smoke tests', () => {
     expect(await hudHintText(page)).toContain('SCAFFOLD SNAP :: Furnace snapping to Outpost 4 ring 2 slot 3');
 
     await setSmokeLoopState(page, smokeLoopState.supplyNeed);
-    expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 30 frames at Outpost 4.');
+    expect(await hudHintText(page)).toContain('SUPPLY NEED :: Outpost scaffold needs 24 frames at Outpost 4.');
 
     await setSmokeLoopState(page, smokeLoopState.yardBlocked);
     expect(await hudHintText(page)).toContain(
