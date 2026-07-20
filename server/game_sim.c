@@ -4984,9 +4984,10 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
 
         float shipment_payout = 0.0f;
         bool ok = true;
-        for (uint16_t i = 0; i < remaining; i++) {
+        for (uint16_t unit_offset = 0; unit_offset < remaining;
+             unit_offset++) {
             uint16_t cargo_idx =
-                (uint16_t)(shipment->quantity_delivered + i);
+                (uint16_t)(shipment->quantity_delivered + unit_offset);
             if (cargo_idx >= shipment->quantity_bound ||
                 cargo_idx >= MAX_DELIVERY_BOUND_CARGO) {
                 ok = false;

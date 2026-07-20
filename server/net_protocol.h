@@ -1546,7 +1546,8 @@ static inline uint64_t net_world_players_semantic_hash(const uint8_t *data,
                 h = net_fnv1a64_update(
                     h,
                     (uint8_t)(data[i] &
-                              (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK));
+                              (uint8_t)(UINT8_MAX ^
+                                        PLAYER_DOCK_STATUS_FLAGS_MASK)));
                 continue;
             }
         }

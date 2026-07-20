@@ -2001,7 +2001,14 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
     sgl_end();
 }
 
-/* Draw module rings (above ships in render order). */
+/* Draw module rings (above ships in render order).  The code below the active
+ * flow-field pass is the retired module-ring renderer, retained temporarily as
+ * migration reference.  MSVC diagnoses every statement after its intentional
+ * early return; keep that suppression local so /WX remains strict elsewhere. */
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4702)
+#endif
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) || station->scaffold) return;
 
@@ -2383,6 +2390,9 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         }
     }
 }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 /* Tractor tethers are field lines, not cables: a traveling wave rides the
  * tether and tightens as the leash pulls taut. The ripple deliberately keeps

@@ -112,7 +112,11 @@ static fixp_t fixp_sqrt_fixp(fixp_t x) {
     if (x >= FIXP_ONE) {
         uint64_t xi = (uint64_t)(x >> 32);
         uint64_t r = 0;
-        uint64_t bit = (uint64_t)1 << ((63 - __builtin_clzll(xi)) & ~(uint64_t)1);
+        /* Highest power of four no greater than xi.  The bounded shift loop
+         * is deterministic on every C11 compiler, including MSVC where the
+         * GCC/Clang __builtin_clzll intrinsic is unavailable. */
+        uint64_t bit = (uint64_t)1 << 62;
+        while (bit > xi) bit >>= 2;
         while (bit) {
             uint64_t t = r + bit;
             r >>= 1;
