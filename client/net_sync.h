@@ -70,6 +70,8 @@ void apply_remote_npc_status(const NetNpcStatusState* npcs, int count);
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool);
 void apply_remote_contracts(const contract_t* contracts, int count);
 void apply_remote_player_known_contracts(uint32_t mask);
+void apply_remote_player_market_memories(
+    const NetMarketMemoryEntry *entries, int count);
 void apply_remote_player_known_ledger(const NetKnownLedgerEntry *entries,
                                       int count);
 void apply_remote_delivery_ledger(const NetDeliveryLedgerEntry *entries,

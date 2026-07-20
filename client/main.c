@@ -232,6 +232,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
     cbs->on_player_known_contracts = apply_remote_player_known_contracts;
+    cbs->on_player_market_memories = apply_remote_player_market_memories;
     cbs->on_player_known_ledger = apply_remote_player_known_ledger;
     cbs->on_delivery_ledger = apply_remote_delivery_ledger;
     cbs->on_death = on_remote_death;

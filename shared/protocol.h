@@ -353,6 +353,15 @@ enum {
                                             * packet lets remote multiplayer render
                                             * cross-station local-credit rows without
                                             * exposing full station ledger tables. */
+    NET_MSG_PLAYER_MARKET_MEMORIES = 0x6F, /* server -> client. Per-player bounded
+                                            * carried market/gossip evidence.
+                                            *
+                                            *   [type:1=0x6F][count:1]
+                                            *     count x PLAYER_MARKET_MEMORY_RECORD_SIZE
+                                            *
+                                            * This is the private wire mirror of
+                                            * KNOW_MARKET items only; authoritative
+                                            * contracts retain their visibility mask. */
     NET_MSG_WORLD_ASTEROID_MOTION  = 0x4B, /* server -> client. Compact live asteroid
                                             * motion correction for already-known clean
                                             * rocks.
@@ -1413,6 +1422,14 @@ enum {
 #define PLAYER_KNOWN_LEDGER_HEADER 2
 #define PLAYER_KNOWN_LEDGER_RECORD_SIZE 5
 #define PLAYER_KNOWN_LEDGER_MAX_RECORDS MAX_STATIONS
+
+/* NET_MSG_PLAYER_MARKET_MEMORIES record:
+ * kind:u8, station_a:u8, station_b:u8, commodity:u8, action:u8,
+ * confidence:u8, salience:u8, hops:u8, quantity_hint:u16,
+ * value_hint:u16, observed_tick:u32, subject_nonce:u64. */
+#define PLAYER_MARKET_MEMORIES_HEADER 2
+#define PLAYER_MARKET_MEMORY_RECORD_SIZE 24
+#define PLAYER_MARKET_MEMORY_MAX_RECORDS SHIP_KNOWN_ITEM_CAP
 
 /* ------------------------------------------------------------------ */
 /* Event broadcast (NET_MSG_EVENTS)                                   */

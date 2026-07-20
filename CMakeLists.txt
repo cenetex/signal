@@ -307,6 +307,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_inspect_anim.c
         tests/c/test_inspect_labels.c
         tests/c/test_route_history_labels.c
+        tests/c/test_rock_usefulness.c
         tests/c/test_signal_field.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c

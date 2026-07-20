@@ -705,6 +705,10 @@ const smokeLoopState = {
   onboardingComplete: 23,
   cargoTowing: 24,
   moduleCargoTractor: 25,
+  rockSmeltPath: 26,
+  rockRouteTarget: 27,
+  rockRouteTow: 28,
+  rockRouteDegraded: 29,
 } as const;
 
 const mobileFlag = {
@@ -1389,6 +1393,22 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.towing);
     expect(await hudActionText(page)).toContain('Towing 1 // needed at Prospect');
+
+    await setSmokeLoopState(page, smokeLoopState.rockSmeltPath);
+    expect(await hudActionText(page)).toContain('smelts to FE Ingot at Prospect');
+
+    await setSmokeLoopState(page, smokeLoopState.rockRouteTarget);
+    const crispTargetRoute = await hudActionText(page);
+    expect(crispTargetRoute).toContain('route remembers Prospect>Kepler');
+
+    await setSmokeLoopState(page, smokeLoopState.rockRouteTow);
+    const crispTowRoute = await hudActionText(page);
+    expect(crispTowRoute).toContain('route remembers Prospect>Kepler');
+
+    await setSmokeLoopState(page, smokeLoopState.rockRouteDegraded);
+    const degradedTowRoute = await hudActionText(page);
+    expect(degradedTowRoute).toContain('route remembers');
+    expect(degradedTowRoute).toContain('?');
 
     /* Keep a renderable, near-taut cargo tow in the deployed bundle so the
      * canonical pod wave can be inspected without playing through the whole

@@ -209,6 +209,14 @@ typedef void (*net_on_player_known_ledger_fn)(
     const NetKnownLedgerEntry *entries, int count);
 
 typedef struct {
+    market_memory_t memory;
+    uint8_t hops;
+} NetMarketMemoryEntry;
+
+typedef void (*net_on_player_market_memories_fn)(
+    const NetMarketMemoryEntry *entries, int count);
+
+typedef struct {
     uint16_t shipment_id;
     uint8_t status;
     uint8_t origin_station;
@@ -537,6 +545,7 @@ typedef struct {
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
     net_on_player_known_contracts_fn on_player_known_contracts;
+    net_on_player_market_memories_fn on_player_market_memories;
     net_on_player_known_ledger_fn on_player_known_ledger;
     net_on_delivery_ledger_fn on_delivery_ledger;
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,

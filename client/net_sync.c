@@ -1722,6 +1722,35 @@ void apply_remote_player_known_contracts(uint32_t mask) {
     g.player_known_contract_mask = mask;
 }
 
+void apply_remote_player_market_memories(
+    const NetMarketMemoryEntry *entries, int count) {
+    /* Loopback already shares the authoritative ship component; rebuilding it
+     * from a presentation packet would discard carried contract summaries. */
+    if (net_is_loopback()) return;
+    if (count < 0) count = 0;
+    if (count > PLAYER_MARKET_MEMORY_MAX_RECORDS)
+        count = PLAYER_MARKET_MEMORY_MAX_RECORDS;
+    knowledge_view_t *view = &LOCAL_PLAYER.ship->knowledge;
+    memset(view, 0, sizeof(*view));
+    view->capacity = SHIP_KNOWN_ITEM_CAP;
+    for (int i = 0; i < count; i++) {
+        const market_memory_t *memory = &entries[i].memory;
+        if (!memory->active ||
+            memory->memory_kind == (uint8_t)MARKET_MEMORY_NONE) {
+            continue;
+        }
+        knowledge_item_t *item = &view->items[view->count++];
+        item->kind = (uint8_t)KNOW_MARKET;
+        item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+        item->confidence = memory->confidence;
+        item->salience = memory->salience;
+        item->hops = entries[i].hops;
+        item->observed_tick = memory->observed_tick;
+        item->learned_tick = memory->observed_tick;
+        memcpy(item->payload, memory, sizeof(*memory));
+    }
+}
+
 void apply_remote_player_known_ledger(const NetKnownLedgerEntry *entries,
                                       int count) {
     if (count < 0) count = 0;

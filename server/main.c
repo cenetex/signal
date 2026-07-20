@@ -1153,6 +1153,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->replication->contracts_semantic_valid = false;
     sp->replication->contracts_last_sent_ms = 0;
     sp->replication->known_contracts_cache.valid = false;
+    sp->replication->market_memories_cache.valid = false;
     sp->replication->known_ledger_cache.valid = false;
     sp->replication->delivery_ledger_cache.valid = false;
     sp->replication->world_stations_cache.valid = false;
@@ -1403,6 +1404,9 @@ static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
         break;
     case NET_MSG_PLAYER_KNOWN_CONTRACTS:
         cache = &sink->player->replication->known_contracts_cache;
+        break;
+    case NET_MSG_PLAYER_MARKET_MEMORIES:
+        cache = &sink->player->replication->market_memories_cache;
         break;
     case NET_MSG_PLAYER_KNOWN_LEDGER:
         cache = &sink->player->replication->known_ledger_cache;
@@ -4754,6 +4758,7 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_WORLD_INTERACTION_DRIFT: return "WORLD_INTERACTION_DRIFT";
     case NET_MSG_PLAYER_SHIP: return "PLAYER_SHIP";
     case NET_MSG_PLAYER_KNOWN_CONTRACTS: return "PLAYER_KNOWN_CONTRACTS";
+    case NET_MSG_PLAYER_MARKET_MEMORIES: return "PLAYER_MARKET_MEMORIES";
     case NET_MSG_DELIVERY_LEDGER: return "DELIVERY_LEDGER";
     case NET_MSG_PLAYER_KNOWN_LEDGER: return "PLAYER_KNOWN_LEDGER";
     case NET_MSG_WORLD_STATIONS: return "WORLD_STATIONS";

@@ -5103,21 +5103,23 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 7);
+    ASSERT_EQ_INT(cap.count, 8);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_HOLD_INGOTS);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_PLAYER_MANIFEST);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_INSPECT_SNAPSHOT);
     ASSERT_EQ_INT(cap.type[4], NET_MSG_PLAYER_KNOWN_CONTRACTS);
-    ASSERT_EQ_INT(cap.type[5], NET_MSG_PLAYER_KNOWN_LEDGER);
-    ASSERT_EQ_INT(cap.type[6], NET_MSG_DELIVERY_LEDGER);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_PLAYER_MARKET_MEMORIES);
+    ASSERT_EQ_INT(cap.type[6], NET_MSG_PLAYER_KNOWN_LEDGER);
+    ASSERT_EQ_INT(cap.type[7], NET_MSG_DELIVERY_LEDGER);
     ASSERT(cap.len[0] > 16);
     ASSERT(cap.len[1] >= HOLD_INGOTS_HEADER);
     ASSERT(cap.len[2] >= PLAYER_MANIFEST_HEADER);
     ASSERT(cap.len[3] > 0);
     ASSERT_EQ_INT(cap.len[4], 5);
-    ASSERT(cap.len[5] >= PLAYER_KNOWN_LEDGER_HEADER);
-    ASSERT(cap.len[6] >= DELIVERY_LEDGER_HEADER);
+    ASSERT(cap.len[5] >= PLAYER_MARKET_MEMORIES_HEADER);
+    ASSERT(cap.len[6] >= PLAYER_KNOWN_LEDGER_HEADER);
+    ASSERT(cap.len[7] >= DELIVERY_LEDGER_HEADER);
 }
 
 TEST(test_private_snapshot_emits_local_authoritative_baseline) {
@@ -5142,7 +5144,7 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 8);
+    ASSERT_EQ_INT(cap.count, 9);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_SHIP);
@@ -7103,6 +7105,58 @@ TEST(test_player_known_ledger_serializes_station_balances) {
     ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 77.0f, 0.001f);
 }
 
+TEST(test_player_market_memories_serialize_only_carried_market_evidence) {
+    SHIP_DECL(ship);
+    knowledge_view_configure(&ship.knowledge, SHIP_KNOWN_ITEM_CAP);
+    market_memory_t memory = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+        .station_a = 2,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = 221,
+        .salience = 199,
+        .quantity_hint = 4,
+        .value_hint = 123,
+        .observed_tick = 4567,
+        .subject_nonce = 0x1122334455667788ull,
+    };
+    knowledge_item_t item = {0};
+    ASSERT(knowledge_item_from_market_memory(&memory, &item));
+    item.hops = 2;
+    knowledge_view_insert(&ship.knowledge, &item);
+
+    contract_summary_t contract = {
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = (uint8_t)COMMODITY_CUPRITE_ORE,
+    };
+    ASSERT(knowledge_view_insert_contract(&ship.knowledge, &contract));
+
+    uint8_t buf[PLAYER_MARKET_MEMORIES_HEADER +
+                PLAYER_MARKET_MEMORY_MAX_RECORDS *
+                PLAYER_MARKET_MEMORY_RECORD_SIZE];
+    int len = serialize_player_market_memories(buf, &ship);
+    ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_MARKET_MEMORIES);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, PLAYER_MARKET_MEMORIES_HEADER +
+                       PLAYER_MARKET_MEMORY_RECORD_SIZE);
+    const uint8_t *p = &buf[PLAYER_MARKET_MEMORIES_HEADER];
+    ASSERT_EQ_INT(p[0], MARKET_MEMORY_ROUTE_REPUTATION);
+    ASSERT_EQ_INT(p[1], 2);
+    ASSERT_EQ_INT(p[2], 0);
+    ASSERT_EQ_INT(p[3], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[5], 221);
+    ASSERT_EQ_INT(p[6], 199);
+    ASSERT_EQ_INT(p[7], 2);
+    ASSERT_EQ_INT(read_u16_le(&p[8]), 4);
+    ASSERT_EQ_INT(read_u16_le(&p[10]), 123);
+    ASSERT_EQ_INT((int)read_u32_le(&p[12]), 4567);
+    ASSERT(read_u64_le(&p[16]) == 0x1122334455667788ull);
+}
+
 TEST(test_delivery_contract_action_serializes) {
     contract_t contracts[MAX_CONTRACTS];
     memset(contracts, 0, sizeof(contracts));
@@ -8396,6 +8450,23 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT(read_u16_le(&known_ledger[8]),
                   PLAYER_KNOWN_LEDGER_MAX_RECORDS);
 
+    const uint8_t *market_memories = find_protocol_stream(
+        buf, NET_MSG_PLAYER_MARKET_MEMORIES);
+    ASSERT(market_memories != NULL);
+    ASSERT_EQ_INT(market_memories[1], PROTOCOL_STREAM_CLASS_PLAYER);
+    ASSERT(read_u16_le(&market_memories[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&market_memories[2]) &
+           PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&market_memories[2]) &
+           PROTOCOL_STREAM_FLAG_DIRTY_ONLY);
+    ASSERT_EQ_INT(read_u16_le(&market_memories[4]),
+                  PLAYER_MARKET_MEMORIES_HEADER);
+    ASSERT_EQ_INT(read_u16_le(&market_memories[6]),
+                  PLAYER_MARKET_MEMORY_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&market_memories[8]),
+                  PLAYER_MARKET_MEMORY_MAX_RECORDS);
+
     const uint8_t *contracts = find_protocol_stream(buf, NET_MSG_CONTRACTS);
     ASSERT(contracts != NULL);
     ASSERT_EQ_INT(read_u16_le(&contracts[6]), CONTRACT_RECORD_SIZE);
@@ -8718,6 +8789,7 @@ void register_protocol_main_tests(void) {
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
     RUN(test_player_known_ledger_serializes_station_balances);
+    RUN(test_player_market_memories_serialize_only_carried_market_evidence);
     RUN(test_delivery_contract_action_serializes);
     RUN(test_contracts_q_omits_zero_optional_tails);
     RUN(test_contracts_semantic_hash_ignores_age_only);

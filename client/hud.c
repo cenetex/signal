@@ -20,6 +20,7 @@
 #include "contract_fit.h"
 #include "npc_identity.h"
 #include "ui_clarity.h"
+#include "rock_usefulness.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -182,7 +183,17 @@ typedef struct {
     int tier;            /* asteroid_tier_t */
     int commodity;       /* commodity_t */
     int grade;           /* mining_grade_t, for fragment text color */
+    char reason[96];     /* owned copy: safe across return-by-value */
+    bool reason_has_color;
+    uint8_t reason_color[3];
 } hud_action_t;
+
+typedef struct {
+    rock_usefulness_candidate_t candidate;
+    char label[96];
+    bool has_color;
+    uint8_t color[3];
+} hud_usefulness_t;
 
 static uint8_t hud_best_towed_fragment_grade(void) {
     uint8_t best = (uint8_t)MINING_GRADE_COMMON;
@@ -218,51 +229,218 @@ static void hud_set_grade_color(uint8_t grade) {
     sdtx_color3b(r, g0, b);
 }
 
-static const char *hud_asteroid_usefulness(const asteroid_t *a) {
-    static char label[64];
-    label[0] = '\0';
-    if (!a || !a->active) return NULL;
+static bool hud_market_memory_from_item(const knowledge_item_t *item,
+                                        market_memory_t *out) {
+    if (!item || !out || item->kind != (uint8_t)KNOW_MARKET ||
+        item->payload_kind != (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY) {
+        return false;
+    }
+    memcpy(out, item->payload, sizeof(*out));
+    return out->active &&
+           out->memory_kind != (uint8_t)MARKET_MEMORY_NONE;
+}
+
+static bool hud_positive_route_memory(const market_memory_t *memory,
+                                      commodity_t fragment_commodity) {
+    if (!memory || !memory->active) return false;
+    if (memory->memory_kind != (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS &&
+        memory->memory_kind != (uint8_t)MARKET_MEMORY_DELIVERY_RECEIPT &&
+        memory->memory_kind != (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION) {
+        return false;
+    }
+    if (memory->station_a >= g.world.station_count ||
+        memory->station_b >= g.world.station_count ||
+        memory->station_a == memory->station_b) {
+        return false;
+    }
+    if (!station_is_active(&g.world.stations[memory->station_a]) ||
+        !station_is_active(&g.world.stations[memory->station_b])) {
+        return false;
+    }
+    commodity_t refined = commodity_refined_form(fragment_commodity);
+    return memory->commodity == (uint8_t)fragment_commodity ||
+           memory->commodity == (uint8_t)refined;
+}
+
+static void hud_copy_station_short_name(int station_idx,
+                                        char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    snprintf(out, cap, "%s", station_short_name(station_idx));
+}
+
+static hud_usefulness_t hud_asteroid_usefulness(const asteroid_t *a) {
+    hud_usefulness_t out = {0};
+    out.candidate.station_a = -1;
+    out.candidate.station_b = -1;
+    out.candidate.commodity = COMMODITY_COUNT;
+    if (!a || !a->active) return out;
 
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
         const contract_t *ct = &g.world.contracts[g.tracked_contract];
         if (ct->active &&
             contract_fit_is_ok(contract_fit_asteroid(ct, a))) {
-            const char *station = (ct->station_index < MAX_STATIONS)
-                ? station_short_name(ct->station_index) : "station";
-            snprintf(label, sizeof(label), "fits %s work", station);
-            return label;
+            rock_usefulness_candidate_t candidate = {
+                .kind = ROCK_USEFULNESS_TRACKED_CONTRACT,
+                .station_a = ct->station_index < MAX_STATIONS
+                    ? ct->station_index : -1,
+                .station_b = -1,
+                .commodity = a->commodity,
+            };
+            rock_usefulness_select(&out.candidate, &candidate);
         }
     }
 
     if (a->tier == ASTEROID_TIER_S && a->commodity < COMMODITY_COUNT) {
-        int best_station = -1;
-        float best_severity = 0.0f;
         int station_count = g.world.station_count;
         if (station_count < 0) station_count = 0;
         if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
         for (int i = 0; i < station_count; i++) {
+            const station_t *station = &g.world.stations[i];
+            if (!station_is_active(station)) continue;
             station_demand_t demand =
-                station_demand_for(&g.world.stations[i], a->commodity);
-            if (demand.severity > best_severity) {
-                best_severity = demand.severity;
-                best_station = i;
+                station_demand_for(station, a->commodity);
+            if (demand.severity >= 0.20f) {
+                rock_usefulness_candidate_t candidate = {
+                    .kind = ROCK_USEFULNESS_DIRECT_DEMAND,
+                    .station_a = i,
+                    .station_b = -1,
+                    .commodity = a->commodity,
+                    .strength = (uint16_t)lroundf(demand.severity * 1000.0f),
+                };
+                rock_usefulness_select(&out.candidate, &candidate);
             }
         }
-        if (best_station >= 0 && best_severity >= 0.20f) {
-            snprintf(label, sizeof(label), "%s at %s",
-                     best_severity >= 0.65f ? "needed" : "wanted",
-                     station_short_name(best_station));
-            return label;
+
+        /* This is the player's bounded carried view: shared directly in local
+         * simulation and privately mirrored by PLAYER_MARKET_MEMORIES online.
+         * Never read station-global route logs from the flight HUD. */
+        {
+            const knowledge_view_t *view = &LOCAL_PLAYER.ship->knowledge;
+            int item_count = view->count;
+            if (item_count > KNOWLEDGE_VIEW_MAX_CAP)
+                item_count = KNOWLEDGE_VIEW_MAX_CAP;
+            for (int i = 0; i < item_count; i++) {
+                market_memory_t memory = {0};
+                const knowledge_item_t *item = &view->items[i];
+                if (!hud_market_memory_from_item(item, &memory) ||
+                    !hud_positive_route_memory(&memory, a->commodity)) {
+                    continue;
+                }
+                rock_usefulness_candidate_t candidate = {
+                    .kind = ROCK_USEFULNESS_REMEMBERED_ROUTE,
+                    .station_a = memory.station_a,
+                    .station_b = memory.station_b,
+                    .commodity = memory.commodity,
+                    .confidence = item->confidence,
+                    .salience = item->salience,
+                    .hops = item->hops,
+                    .subject_nonce = memory.subject_nonce,
+                };
+                rock_usefulness_select(&out.candidate, &candidate);
+            }
+        }
+
+        float nearest_smelt_dist_sq = 0.0f;
+        for (int i = 0; i < station_count; i++) {
+            const station_t *station = &g.world.stations[i];
+            if (!station_is_active(station)) continue;
+            for (int m = 0; m < station->module_count; m++) {
+                const station_module_t *module = &station->modules[m];
+                if (module->scaffold || module->type != MODULE_FURNACE ||
+                    module_instance_input_ore(module) != a->commodity) {
+                    continue;
+                }
+                commodity_t refined = module_instance_output(module);
+                if (refined >= COMMODITY_COUNT) continue;
+                float dist_sq = v2_dist_sq(LOCAL_PLAYER.ship->pos,
+                                           station->pos);
+                if (out.candidate.kind == ROCK_USEFULNESS_SMELT_PATH &&
+                    dist_sq >= nearest_smelt_dist_sq) {
+                    continue;
+                }
+                nearest_smelt_dist_sq = dist_sq;
+                rock_usefulness_candidate_t candidate = {
+                    .kind = ROCK_USEFULNESS_SMELT_PATH,
+                    .station_a = i,
+                    .station_b = -1,
+                    .commodity = refined,
+                    .strength = 1,
+                };
+                /* Replace an equally ranked smelter when this one is nearer;
+                 * higher-ranked demand/route candidates remain untouched. */
+                if (out.candidate.kind == ROCK_USEFULNESS_SMELT_PATH)
+                    out.candidate = candidate;
+                else
+                    rock_usefulness_select(&out.candidate, &candidate);
+            }
         }
     }
 
     if (a->tier == ASTEROID_TIER_S &&
         a->grade >= (uint8_t)MINING_GRADE_RARE) {
-        snprintf(label, sizeof(label), "%s grade",
-                 mining_grade_label((mining_grade_t)a->grade));
-        return label;
+        rock_usefulness_candidate_t candidate = {
+            .kind = ROCK_USEFULNESS_RARE_GRADE,
+            .station_a = -1,
+            .station_b = -1,
+            .commodity = a->commodity,
+            .strength = a->grade,
+        };
+        rock_usefulness_select(&out.candidate, &candidate);
     }
-    return NULL;
+
+    char station_a[20] = "station";
+    char station_b[20] = "station";
+    if (out.candidate.station_a >= 0)
+        hud_copy_station_short_name(out.candidate.station_a,
+                                    station_a, sizeof(station_a));
+    if (out.candidate.station_b >= 0)
+        hud_copy_station_short_name(out.candidate.station_b,
+                                    station_b, sizeof(station_b));
+
+    switch (out.candidate.kind) {
+    case ROCK_USEFULNESS_TRACKED_CONTRACT:
+        snprintf(out.label, sizeof(out.label), "fits %s work", station_a);
+        break;
+    case ROCK_USEFULNESS_DIRECT_DEMAND:
+        snprintf(out.label, sizeof(out.label), "%s at %s",
+                 out.candidate.strength >= 650 ? "needed" : "wanted",
+                 station_a);
+        break;
+    case ROCK_USEFULNESS_REMEMBERED_ROUTE: {
+        const uint8_t hi[3] = { PAL_CONTRACT_READY };
+        const uint8_t lo[3] = { PAL_TEXT_FADED };
+        ui_clarity_t clarity = ui_clarity_from_evidence(
+            out.candidate.confidence, out.candidate.salience,
+            out.candidate.hops, hi, lo);
+        char source_seen[20];
+        char dest_seen[20];
+        uint32_t seed = (uint32_t)(out.candidate.subject_nonce ^
+                                   (out.candidate.subject_nonce >> 32));
+        ui_clarity_degrade_text(station_b, clarity.clarity, seed,
+                                source_seen, sizeof(source_seen));
+        ui_clarity_degrade_text(station_a, clarity.clarity,
+                                seed ^ 0x9e3779b9u,
+                                dest_seen, sizeof(dest_seen));
+        snprintf(out.label, sizeof(out.label), "route remembers %s>%s",
+                 source_seen, dest_seen);
+        out.has_color = true;
+        memcpy(out.color, clarity.fg, sizeof(out.color));
+        break;
+    }
+    case ROCK_USEFULNESS_SMELT_PATH:
+        snprintf(out.label, sizeof(out.label), "smelts to %s at %s",
+                 commodity_short_name((commodity_t)out.candidate.commodity),
+                 station_a);
+        break;
+    case ROCK_USEFULNESS_RARE_GRADE:
+        snprintf(out.label, sizeof(out.label), "%s grade",
+                 mining_grade_label((mining_grade_t)a->grade));
+        break;
+    case ROCK_USEFULNESS_NONE:
+    default:
+        break;
+    }
+    return out;
 }
 
 static int hud_required_mining_level_for_tier(asteroid_tier_t tier) {
@@ -432,10 +610,17 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.tier = (int)a->tier;
         out.commodity = (int)a->commodity;
         out.grade = (int)a->grade;
-        out.str_a = hud_asteroid_gate_reason(a);
-        out.int_b = out.str_a ? 1 : 0;
-        if (!out.str_a)
-            out.str_a = hud_asteroid_usefulness(a);
+        const char *gate = hud_asteroid_gate_reason(a);
+        out.int_b = gate ? 1 : 0;
+        if (gate) {
+            snprintf(out.reason, sizeof(out.reason), "%s", gate);
+        } else {
+            hud_usefulness_t usefulness = hud_asteroid_usefulness(a);
+            snprintf(out.reason, sizeof(out.reason), "%s", usefulness.label);
+            out.reason_has_color = usefulness.has_color;
+            memcpy(out.reason_color, usefulness.color,
+                   sizeof(out.reason_color));
+        }
         return out;
     }
     /* Scan results take precedence over towing/fragments — the player
@@ -499,15 +684,20 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         out.tier = towed_fragments;
         out.commodity = towed_pods;
         out.grade = (int)hud_best_towed_fragment_grade();
-        for (int t = 0; t < towed_fragments; t++) {
+        hud_usefulness_t best = {0};
+        for (int t = 0; t < LOCAL_PLAYER.ship->towed_count; t++) {
             int idx = LOCAL_PLAYER.ship->towed_fragments[t];
             if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
             const asteroid_t *a = &g.world.asteroids[idx];
-            const char *why = hud_asteroid_usefulness(a);
-            if (why) {
-                out.str_a = why;
-                break;
-            }
+            hud_usefulness_t usefulness = hud_asteroid_usefulness(a);
+            if (rock_usefulness_is_stronger(&usefulness.candidate,
+                                            &best.candidate))
+                best = usefulness;
+        }
+        if (best.label[0]) {
+            snprintf(out.reason, sizeof(out.reason), "%s", best.label);
+            out.reason_has_color = best.has_color;
+            memcpy(out.reason_color, best.color, sizeof(out.reason_color));
         }
         return out;
     }
@@ -557,11 +747,11 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "%s CONSOLE", dock_role);
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        if (a->str_a) {
+        if (a->reason[0]) {
             snprintf(out, out_size, "TGT %s // %s // %s",
                      asteroid_tier_name((asteroid_tier_t)a->tier),
                      commodity_code((commodity_t)a->commodity),
-                     a->str_a);
+                     a->reason);
         } else {
             snprintf(out, out_size, "TGT %s // %s // %d HP",
                      asteroid_tier_name((asteroid_tier_t)a->tier),
@@ -606,8 +796,8 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "MINING... // CLAIM WINDOW");
         return;
     case HUD_ACTION_TOWING:
-        if (a->str_a && a->commodity == 0)
-            snprintf(out, out_size, "TOWING %d // %s", a->int_a, a->str_a);
+        if (a->reason[0] && a->commodity == 0)
+            snprintf(out, out_size, "TOWING %d // %s", a->int_a, a->reason);
         else if (a->int_b)
             snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
         else if (a->commodity > 0 && a->tier == 0)
@@ -652,11 +842,11 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
                  current_station ? station_role_name(current_station) : "Station");
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        if (a->str_a) {
+        if (a->reason[0]) {
             snprintf(out, out_size, "Target %s // %s // %s",
                      asteroid_tier_kind((asteroid_tier_t)a->tier),
                      commodity_short_name((commodity_t)a->commodity),
-                     a->str_a);
+                     a->reason);
         } else {
             snprintf(out, out_size, "Target %s // %s // %d hp",
                      asteroid_tier_kind((asteroid_tier_t)a->tier),
@@ -706,8 +896,8 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         snprintf(out, out_size, "Mining... // claim window");
         return;
     case HUD_ACTION_TOWING:
-        if (a->str_a && a->commodity == 0)
-            snprintf(out, out_size, "Towing %d // %s", a->int_a, a->str_a);
+        if (a->reason[0] && a->commodity == 0)
+            snprintf(out, out_size, "Towing %d // %s", a->int_a, a->reason);
         else if (a->int_b)
             snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
         else if (a->commodity > 0 && a->tier == 0)
@@ -746,6 +936,11 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
 }
 
 static void hud_set_action_color(const hud_action_t *a) {
+    if (a->reason_has_color) {
+        sdtx_color3b(a->reason_color[0], a->reason_color[1],
+                     a->reason_color[2]);
+        return;
+    }
     switch (a->kind) {
     case HUD_ACTION_SCAN_MODULE:
     case HUD_ACTION_SCAN_NPC:
@@ -3570,6 +3765,10 @@ enum {
     SMOKE_LOOP_STATE_ONBOARDING_COMPLETE = 23,
     SMOKE_LOOP_STATE_CARGO_TOWING = 24,
     SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR = 25,
+    SMOKE_LOOP_STATE_ROCK_SMELT_PATH = 26,
+    SMOKE_LOOP_STATE_ROCK_ROUTE_TARGET = 27,
+    SMOKE_LOOP_STATE_ROCK_ROUTE_TOW = 28,
+    SMOKE_LOOP_STATE_ROCK_ROUTE_DEGRADED = 29,
 };
 
 void smoke_apply_loop_state_for_frame(void) {
@@ -3634,6 +3833,7 @@ static void smoke_clear_loop_state(void) {
     g.tracked_contract = -1;
     g.selected_contract = -1;
     g.player_known_contract_mask = 0;
+    memset(&sp->ship->knowledge, 0, sizeof(sp->ship->knowledge));
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
     g.hail_timer = 0.0f;
     g.hail_station[0] = '\0';
@@ -3682,6 +3882,58 @@ static void smoke_seed_asteroid(int slot, asteroid_tier_t tier,
     a->seed = seed;
     a->age = 2.0f;
     a->phase = ASTEROID_PHASE_SOLID;
+}
+
+static bool smoke_seed_rock_route(bool towing, bool degraded) {
+    server_player_t *sp = &LOCAL_PLAYER;
+    if (g.world.station_count <= 1 ||
+        !station_is_active(&g.world.stations[0]) ||
+        !station_is_active(&g.world.stations[1])) {
+        return false;
+    }
+
+    /* Fill raw buffers so live demand cannot outrank the remembered route in
+     * this presentation fixture. The furnace remains a valid lower reason. */
+    for (int i = 0; i < g.world.station_count && i < MAX_STATIONS; i++)
+        g.world.stations[i]._inventory_cache[COMMODITY_FERRITE_ORE] =
+            REFINERY_HOPPER_CAPACITY;
+
+    sp->hover_asteroid = towing ? -1 : 0;
+    smoke_seed_asteroid(0, ASTEROID_TIER_S, COMMODITY_FERRITE_ORE,
+                        v2_add(sp->ship->pos, v2(90.0f, 0.0f)),
+                        12.0f, 1.0f, 212.0f);
+    g.world.asteroids[0].grade = (uint8_t)MINING_GRADE_COMMON;
+    if (towing) {
+        sp->ship->towed_count = 1;
+        sp->ship->towed_fragments[0] = 0;
+    }
+
+    market_memory_t memory = {
+        .active = true,
+        .memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_REPUTATION,
+        .station_a = 1,
+        .station_b = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .confidence = degraded ? 90 : 250,
+        .salience = degraded ? 90 : 245,
+        .quantity_hint = degraded ? 1 : 8,
+        .observed_tick = g.world.tick,
+        .subject_nonce = degraded ? 0x44556677u : 0x11223344u,
+    };
+    knowledge_view_t *view = &sp->ship->knowledge;
+    view->capacity = SHIP_KNOWN_ITEM_CAP;
+    view->count = 1;
+    knowledge_item_t *item = &view->items[0];
+    memset(item, 0, sizeof(*item));
+    item->kind = (uint8_t)KNOW_MARKET;
+    item->payload_kind = (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY;
+    item->confidence = memory.confidence;
+    item->salience = memory.salience;
+    item->hops = degraded ? 3 : 0;
+    item->observed_tick = memory.observed_tick;
+    memcpy(item->payload, &memory, sizeof(memory));
+    return true;
 }
 
 static int smoke_apply_loop_state(int state) {
@@ -4160,6 +4412,30 @@ static int smoke_apply_loop_state(int state) {
         g.signal_visual_saturation_initialized = true;
         return 1;
     }
+    case SMOKE_LOOP_STATE_ROCK_SMELT_PATH:
+        if (g.world.station_count <= 0 ||
+            !station_is_active(&g.world.stations[0])) {
+            return 0;
+        }
+        g.local_server.active = false;
+        sp->hover_asteroid = 0;
+        smoke_seed_asteroid(0, ASTEROID_TIER_S, COMMODITY_FERRITE_ORE,
+                            v2_add(sp->ship->pos, v2(90.0f, 0.0f)),
+                            12.0f, 1.0f, 211.0f);
+        g.world.asteroids[0].grade = (uint8_t)MINING_GRADE_COMMON;
+        for (int i = 0; i < g.world.station_count && i < MAX_STATIONS; i++)
+            g.world.stations[i]._inventory_cache[COMMODITY_FERRITE_ORE] =
+                REFINERY_HOPPER_CAPACITY;
+        return 1;
+    case SMOKE_LOOP_STATE_ROCK_ROUTE_TARGET:
+        g.local_server.active = false;
+        return smoke_seed_rock_route(false, false) ? 1 : 0;
+    case SMOKE_LOOP_STATE_ROCK_ROUTE_TOW:
+        g.local_server.active = false;
+        return smoke_seed_rock_route(true, false) ? 1 : 0;
+    case SMOKE_LOOP_STATE_ROCK_ROUTE_DEGRADED:
+        g.local_server.active = false;
+        return smoke_seed_rock_route(true, true) ? 1 : 0;
     default:
         return 0;
     }

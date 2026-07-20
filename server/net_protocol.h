@@ -714,6 +714,14 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PLAYER_KNOWN_LEDGER_HEADER,
                         PLAYER_KNOWN_LEDGER_RECORD_SIZE,
                         PLAYER_KNOWN_LEDGER_MAX_RECORDS, ship_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_MARKET_MEMORIES,
+                        PROTOCOL_STREAM_CLASS_PLAYER,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
+                        PLAYER_MARKET_MEMORIES_HEADER,
+                        PLAYER_MARKET_MEMORY_RECORD_SIZE,
+                        PLAYER_MARKET_MEMORY_MAX_RECORDS, ship_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_INSPECT_SNAPSHOT, PROTOCOL_STREAM_CLASS_LIVE,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -6643,6 +6651,45 @@ static inline int serialize_player_known_ledger(uint8_t *buf,
            count * PLAYER_KNOWN_LEDGER_RECORD_SIZE;
 }
 
+static inline int serialize_player_market_memories(uint8_t *buf,
+                                                   const ship_t *ship) {
+    int count = 0;
+    buf[0] = NET_MSG_PLAYER_MARKET_MEMORIES;
+    if (!ship) {
+        buf[1] = 0;
+        return PLAYER_MARKET_MEMORIES_HEADER;
+    }
+
+    int item_count = ship->knowledge.count;
+    if (item_count > KNOWLEDGE_VIEW_MAX_CAP)
+        item_count = KNOWLEDGE_VIEW_MAX_CAP;
+    for (int i = 0; i < item_count &&
+         count < PLAYER_MARKET_MEMORY_MAX_RECORDS; i++) {
+        const knowledge_item_t *item = &ship->knowledge.items[i];
+        market_memory_t memory = {0};
+        if (!inspect_snapshot_market_memory_from_item(item, &memory))
+            continue;
+        uint8_t *p = &buf[PLAYER_MARKET_MEMORIES_HEADER +
+                          count * PLAYER_MARKET_MEMORY_RECORD_SIZE];
+        p[0] = memory.memory_kind;
+        p[1] = memory.station_a;
+        p[2] = memory.station_b;
+        p[3] = memory.commodity;
+        p[4] = memory.action;
+        p[5] = item->confidence;
+        p[6] = item->salience;
+        p[7] = item->hops;
+        write_u16_le(&p[8], memory.quantity_hint);
+        write_u16_le(&p[10], memory.value_hint);
+        write_u32_le(&p[12], memory.observed_tick);
+        write_u64_le(&p[16], memory.subject_nonce);
+        count++;
+    }
+    buf[1] = (uint8_t)count;
+    return PLAYER_MARKET_MEMORIES_HEADER +
+           count * PLAYER_MARKET_MEMORY_RECORD_SIZE;
+}
+
 static inline int serialize_delivery_ledger(uint8_t *buf,
                                             const world_t *w,
                                             uint8_t player_id) {
@@ -6706,6 +6753,10 @@ typedef struct {
     uint8_t known_ledger[
         PLAYER_KNOWN_LEDGER_HEADER +
         PLAYER_KNOWN_LEDGER_MAX_RECORDS * PLAYER_KNOWN_LEDGER_RECORD_SIZE
+    ];
+    uint8_t market_memories[
+        PLAYER_MARKET_MEMORIES_HEADER +
+        PLAYER_MARKET_MEMORY_MAX_RECORDS * PLAYER_MARKET_MEMORY_RECORD_SIZE
     ];
     uint8_t delivery_ledger[
         DELIVERY_LEDGER_HEADER +
@@ -6805,6 +6856,10 @@ static inline void server_emit_private_snapshot_for_player(
     int known_len = serialize_player_known_contracts(
         scratch->known_contracts, w->contracts, sp->ship);
     send(send_user, scratch->known_contracts, known_len);
+
+    int market_len = serialize_player_market_memories(
+        scratch->market_memories, sp->ship);
+    send(send_user, scratch->market_memories, market_len);
 
     int ledger_len = serialize_player_known_ledger(
         scratch->known_ledger, w, sp);

@@ -3073,6 +3073,40 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_PLAYER_MARKET_MEMORIES:
+        if (len >= PLAYER_MARKET_MEMORIES_HEADER &&
+            net_state.callbacks.on_player_market_memories) {
+            uint8_t count = data[1];
+            if (len >= PLAYER_MARKET_MEMORIES_HEADER +
+                       count * PLAYER_MARKET_MEMORY_RECORD_SIZE) {
+                NetMarketMemoryEntry entries[
+                    PLAYER_MARKET_MEMORY_MAX_RECORDS];
+                memset(entries, 0, sizeof(entries));
+                int n = count < PLAYER_MARKET_MEMORY_MAX_RECORDS
+                    ? count : PLAYER_MARKET_MEMORY_MAX_RECORDS;
+                for (int i = 0; i < n; i++) {
+                    const uint8_t *p = &data[PLAYER_MARKET_MEMORIES_HEADER +
+                                             i * PLAYER_MARKET_MEMORY_RECORD_SIZE];
+                    market_memory_t *memory = &entries[i].memory;
+                    memory->active = true;
+                    memory->memory_kind = p[0];
+                    memory->station_a = p[1];
+                    memory->station_b = p[2];
+                    memory->commodity = p[3];
+                    memory->action = p[4];
+                    memory->confidence = p[5];
+                    memory->salience = p[6];
+                    entries[i].hops = p[7];
+                    memory->quantity_hint = read_u16_le(&p[8]);
+                    memory->value_hint = read_u16_le(&p[10]);
+                    memory->observed_tick = read_u32_le(&p[12]);
+                    memory->subject_nonce = read_u64_le(&p[16]);
+                }
+                net_state.callbacks.on_player_market_memories(entries, n);
+            }
+        }
+        break;
+
     case NET_MSG_PLAYER_KNOWN_CONTRACTS:
         if (len >= 5 && net_state.callbacks.on_player_known_contracts) {
             uint32_t mask = read_u32_le(&data[1]);

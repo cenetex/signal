@@ -287,6 +287,7 @@ typedef struct {
     bool contracts_semantic_valid;
     uint64_t contracts_last_sent_ms;
     net_payload_cache_t known_contracts_cache;
+    net_payload_cache_t market_memories_cache;
     net_payload_cache_t known_ledger_cache;
     net_payload_cache_t delivery_ledger_cache;
     net_payload_cache_t station_identity_cache[MAX_STATIONS];
