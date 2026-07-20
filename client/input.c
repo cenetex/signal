@@ -22,6 +22,9 @@
  *         (Docked station tab changes are [Tab], not [B].)
  *
  *   [F]   TRADE tab → next market page.
+ *   [L]   TRADE tab → open/cycle the focused cargo lineage story.
+ *   [I]   Focused TRADE lineage → toggle player story / proof detail.
+ *   [Esc] Focused TRADE lineage → return to the market rows.
  *
  *   [1-5] TRADE tab → buy/sell visible row.
  *   [1-3] CONTRACTS tab → track/select contract row.
@@ -470,6 +473,7 @@ static void sample_station_tab(void) {
     g.station_view = station_panel_next_visible(
         g.station_view, current_station_ptr(), shift ? -1 : 1);
     g.selected_contract = -1;
+    trade_lineage_close();
 }
 
 void station_panel_input_yard(input_intent_t *intent) {
@@ -731,6 +735,72 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     (void)st;
 }
 
+/* Focused cargo story. [L] opens the first inspectable row on the active
+ * page and cycles to the next one. While open, normal trade actions are
+ * suspended so a proof-page key can never buy or sell the inspected crate. */
+static bool sample_trade_lineage(const station_t *st, const ship_t *ship) {
+    trade_row_t rows[TRADE_MAX_ROWS];
+    int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    int page_first = 0, page_last = 0, total_pages = 1;
+    trade_page_range(rows, row_count, (int)g.trade_page,
+                     &page_first, &page_last, &total_pages);
+    if ((int)g.trade_page >= total_pages) {
+        g.trade_page = 0;
+        trade_page_range(rows, row_count, 0,
+                         &page_first, &page_last, &total_pages);
+    }
+
+    if (g.trade_lineage_row >= 0 &&
+        (g.trade_lineage_row < page_first ||
+         g.trade_lineage_row >= page_last ||
+         !rows[g.trade_lineage_row].has_inspect)) {
+        trade_lineage_close();
+    }
+
+    if (is_key_pressed(SAPP_KEYCODE_L)) {
+        int start = g.trade_lineage_row >= page_first
+            ? g.trade_lineage_row + 1 : page_first;
+        int next = -1;
+        for (int i = start; i < page_last; i++) {
+            if (rows[i].has_inspect) { next = i; break; }
+        }
+        if (next < 0) {
+            for (int i = page_first; i < start && i < page_last; i++) {
+                if (rows[i].has_inspect) { next = i; break; }
+            }
+        }
+        if (next >= 0) {
+            g.trade_lineage_row = next;
+            g.trade_lineage_proof = false;
+            g.trade_lineage_proof_page = 0;
+            set_notice("Cargo lineage opened. [L] next, [I] proof, [Esc] back.");
+        } else {
+            set_notice("No manifest-backed cargo on this market page.");
+        }
+        return true;
+    }
+
+    if (g.trade_lineage_row < 0) return false;
+    if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+        trade_lineage_close();
+        set_notice("Returned to market rows.");
+        return true;
+    }
+    if (is_key_pressed(SAPP_KEYCODE_I)) {
+        g.trade_lineage_proof = !g.trade_lineage_proof;
+        g.trade_lineage_proof_page = 0;
+        set_notice(g.trade_lineage_proof
+            ? "Cargo proof detail. [F] pages, [I] returns to story."
+            : "Cargo lineage story.");
+        return true;
+    }
+    if (g.trade_lineage_proof && is_key_pressed(SAPP_KEYCODE_F)) {
+        g.trade_lineage_proof_page++;
+        return true;
+    }
+    return true;
+}
+
 static void sample_trade_picker(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_TRADE) return;
     const station_t *st = current_station_ptr();
@@ -795,6 +865,9 @@ static void sample_trade_picker(input_intent_t *intent) {
 
 void station_panel_input_trade(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_TRADE) return;
+    const station_t *st = current_station_ptr();
+    const ship_t *ship = LOCAL_PLAYER.ship;
+    if (st && ship && sample_trade_lineage(st, ship)) return;
     sample_trade_sell_all(intent);
     sample_trade_picker(intent);
 }

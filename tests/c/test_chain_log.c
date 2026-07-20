@@ -918,6 +918,57 @@ TEST(test_chain_log_route_history_tail_reader) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_cargo_transform_reader) {
+    chain_test_setup("cargo_transform_reader");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9094u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_smelt_t smelt = {0};
+    for (int i = 0; i < 32; i++) {
+        smelt.fragment_pub[i] = (uint8_t)(0x20 + i);
+        smelt.ingot_pub[i] = (uint8_t)(0x60 + i);
+    }
+    smelt.prefix_class = (uint8_t)INGOT_PREFIX_F;
+    smelt.mined_block = 4422;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 1);
+
+    chain_payload_craft_t craft = {0};
+    craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    craft.input_count = 1;
+    memcpy(craft.input_pubs[0], smelt.ingot_pub, 32);
+    for (int i = 0; i < 32; i++)
+        craft.output_pub[i] = (uint8_t)(0xA0 + i);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) == 2);
+
+    chain_cargo_transform_t found = {0};
+    ASSERT(chain_log_find_cargo_transform(&w->stations[0],
+                                          craft.output_pub, &found));
+    ASSERT_EQ_INT(found.type, CHAIN_EVT_CRAFT);
+    ASSERT_EQ_INT((int)found.event_id, 2);
+    ASSERT_EQ_INT(found.craft.recipe_id, RECIPE_FRAME_BASIC);
+    ASSERT(memcmp(found.craft.input_pubs[0], smelt.ingot_pub, 32) == 0);
+
+    memset(&found, 0, sizeof(found));
+    ASSERT(chain_log_find_cargo_transform(&w->stations[0],
+                                          smelt.ingot_pub, &found));
+    ASSERT_EQ_INT(found.type, CHAIN_EVT_SMELT);
+    ASSERT_EQ_INT((int)found.event_id, 1);
+    ASSERT_EQ_INT((int)found.smelt.mined_block, 4422);
+    ASSERT(memcmp(found.smelt.fragment_pub, smelt.fragment_pub, 32) == 0);
+
+    uint8_t unknown[32] = {0xFF};
+    ASSERT(!chain_log_find_cargo_transform(&w->stations[0], unknown, &found));
+
+    chain_test_teardown();
+}
+
 TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
     /* Regression guard: world_reset's tier seed events must carry real
      * flavor text bound by SHA, not the literal placeholder strings
@@ -1212,6 +1263,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_replay_determinism);
     RUN(test_chain_log_operator_post_text_tamper);
     RUN(test_chain_log_route_history_tail_reader);
+    RUN(test_chain_log_cargo_transform_reader);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
     RUN(test_world_reset_does_not_emit_to_chain_log);
     RUN(test_chain_log_fragment_tow_payload_size);

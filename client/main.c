@@ -400,6 +400,9 @@ static void reset_world(void) {
 
     g.tracked_contract = -1;
     g.selected_contract = -1;
+    g.trade_lineage_row = -1;
+    g.trade_lineage_proof = false;
+    g.trade_lineage_proof_page = 0;
     g.target_station = -1;
     g.target_module = -1;
     g.inspect_station = -1;
@@ -4233,7 +4236,9 @@ enum {
     MOBILE_CTRL_CAN_UPGRADE_MINE  = 1u << 27,
     MOBILE_CTRL_CAN_UPGRADE_HOLD  = 1u << 28,
     MOBILE_CTRL_CAN_UPGRADE_TOW   = 1u << 29,
+    MOBILE_CTRL_CAN_LINEAGE       = 1u << 30,
 };
+#define MOBILE_CTRL_LINEAGE_OPEN UINT32_C(0x80000000)
 
 EMSCRIPTEN_KEEPALIVE
 int signal_mobile_control_flags(void) {
@@ -4248,10 +4253,19 @@ int signal_mobile_control_flags(void) {
         flags |= MOBILE_CTRL_DOCKED | MOBILE_CTRL_CAN_USE;
         switch (g.station_view) {
         case STATION_VIEW_DOCK:  flags |= MOBILE_CTRL_STATION_DOCK; break;
-        case STATION_VIEW_TRADE: flags |= MOBILE_CTRL_STATION_TRADE |
-                                       MOBILE_CTRL_CAN_PAGE |
-                                       MOBILE_CTRL_CAN_SELL |
-                                       MOBILE_CTRL_CAN_DIGITS; break;
+        case STATION_VIEW_TRADE:
+            flags |= MOBILE_CTRL_STATION_TRADE;
+            if (trade_lineage_available(st, LOCAL_PLAYER.ship))
+                flags |= MOBILE_CTRL_CAN_LINEAGE;
+            if (g.trade_lineage_row >= 0) {
+                flags |= MOBILE_CTRL_LINEAGE_OPEN;
+                if (g.trade_lineage_proof) flags |= MOBILE_CTRL_CAN_PAGE;
+            } else {
+                flags |= MOBILE_CTRL_CAN_PAGE |
+                         MOBILE_CTRL_CAN_SELL |
+                         MOBILE_CTRL_CAN_DIGITS;
+            }
+            break;
         case STATION_VIEW_WORK:  flags |= MOBILE_CTRL_STATION_WORK |
                                        MOBILE_CTRL_CAN_SELL |
                                        MOBILE_CTRL_CAN_DIGITS; break;
@@ -4353,6 +4367,14 @@ const char *signal_station_panel_legend(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+const char *signal_trade_lineage_text(void) {
+    static char text[8192];
+    text[0] = '\0';
+    (void)trade_lineage_selected_text(text, sizeof(text));
+    return text;
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char *signal_laser_refit_summary(void) {
     static char summary[256];
     summary[0] = '\0';
@@ -4376,6 +4398,7 @@ int signal_station_panel_digit_slot_count(void) {
 
     switch (g.station_view) {
     case STATION_VIEW_TRADE: {
+        if (g.trade_lineage_row >= 0) return 0;
         trade_row_t rows[TRADE_MAX_ROWS];
         int row_count = build_trade_rows(st, LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
         int page_first = 0, page_last = 0, total_pages = 1;
@@ -4431,6 +4454,7 @@ int signal_mobile_digit_mask(void) {
     int mask = 0;
     switch (g.station_view) {
     case STATION_VIEW_TRADE: {
+        if (g.trade_lineage_row >= 0) break;
         trade_row_t rows[TRADE_MAX_ROWS];
         int row_count = build_trade_rows(st, LOCAL_PLAYER.ship, rows, TRADE_MAX_ROWS);
         int page_first = 0, page_last = 0, total_pages = 1;
@@ -4500,6 +4524,8 @@ static sapp_keycode mobile_action_key(int action) {
     case 14: return SAPP_KEYCODE_S;          /* sell / deliver */
     case 15: return SAPP_KEYCODE_C;          /* cargo hold upgrade */
     case 16: return SAPP_KEYCODE_T;          /* tractor upgrade */
+    case 17: return SAPP_KEYCODE_L;          /* cargo lineage / next cargo */
+    case 18: return SAPP_KEYCODE_I;          /* cargo proof / story toggle */
     case 20: return SAPP_KEYCODE_1;
     case 21: return SAPP_KEYCODE_2;
     case 22: return SAPP_KEYCODE_3;

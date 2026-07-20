@@ -223,6 +223,9 @@ enum {
 int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max);
 void reset_trade_session_rows(int station_index);
+void trade_lineage_close(void);
+bool trade_lineage_available(const station_t *st, const ship_t *ship);
+bool trade_lineage_selected_text(char *out, size_t out_size);
 
 /* Resolve `page` to a [first, last) row range, treating the BUY→SELL
  * boundary as a hard page break so SELL never shares a page with BUY.
@@ -525,6 +528,9 @@ typedef struct {
      * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */
     uint8_t trade_page;
     int trade_session_station;
+    int trade_lineage_row;       /* absolute trade-row index; -1 = list view */
+    bool trade_lineage_proof;    /* focused lineage view shows proof rows */
+    uint8_t trade_lineage_proof_page;
     bool was_docked;
     bool was_autopilot;
     float dock_settle_timer;  /* delay before showing station panel after dock */

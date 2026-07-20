@@ -17,6 +17,7 @@
 #include "chain_log.h"
 #include "route_history_labels.h"
 #include "ui_clarity.h"
+#include <stdarg.h>
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
@@ -1349,6 +1350,7 @@ static int station_index_of(const station_t *st) {
 void reset_trade_session_rows(int station_index) {
     g.trade_session_station = station_index;
     g.trade_page = 0;
+    trade_lineage_close();
 }
 
 static int trade_session_station_index(const station_t *st) {
@@ -1429,6 +1431,329 @@ static void trade_row_attach_inspect(trade_row_t *row,
         ? chain->len : 0;
     memcpy(row->inspect_pub, unit->pub, sizeof(row->inspect_pub));
     memcpy(row->inspect_parent, unit->parent_merkle, sizeof(row->inspect_parent));
+}
+
+enum {
+    TRADE_LINEAGE_STORY_MAX = 12,
+    TRADE_LINEAGE_GAP_MAX = 6,
+    TRADE_LINEAGE_PROOF_MAX = 64,
+    TRADE_LINEAGE_LINE_CAP = 128,
+    TRADE_LINEAGE_WALK_MAX = 12,
+};
+
+typedef struct {
+    char title[96];
+    char story[TRADE_LINEAGE_STORY_MAX][TRADE_LINEAGE_LINE_CAP];
+    int story_count;
+    char gaps[TRADE_LINEAGE_GAP_MAX][TRADE_LINEAGE_LINE_CAP];
+    int gap_count;
+    char current[TRADE_LINEAGE_LINE_CAP];
+    char custody[TRADE_LINEAGE_LINE_CAP];
+    char proof[TRADE_LINEAGE_PROOF_MAX][TRADE_LINEAGE_LINE_CAP];
+    int proof_count;
+} trade_lineage_view_t;
+
+typedef struct {
+    bool valid;
+    uint8_t cargo_pub[32];
+    int holder_station;
+    uint8_t row_kind;
+    bool station_pod;
+    bool towed_pod;
+    trade_lineage_view_t view;
+} trade_lineage_cache_t;
+
+static trade_lineage_cache_t g_trade_lineage_cache;
+
+void trade_lineage_close(void) {
+    g.trade_lineage_row = -1;
+    g.trade_lineage_proof = false;
+    g.trade_lineage_proof_page = 0;
+    g_trade_lineage_cache.valid = false;
+}
+
+static void trade_lineage_append(char lines[][TRADE_LINEAGE_LINE_CAP],
+                                 int *count, int cap, const char *fmt, ...) {
+    if (!lines || !count || *count < 0 || *count >= cap || !fmt) return;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(lines[*count], TRADE_LINEAGE_LINE_CAP, fmt, args);
+    va_end(args);
+    (*count)++;
+}
+
+static void trade_lineage_story_add(trade_lineage_view_t *view,
+                                    const char *fmt, ...) {
+    if (!view || view->story_count >= TRADE_LINEAGE_STORY_MAX || !fmt) return;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(view->story[view->story_count], TRADE_LINEAGE_LINE_CAP, fmt, args);
+    va_end(args);
+    view->story_count++;
+}
+
+static void trade_lineage_gap_add(trade_lineage_view_t *view,
+                                  const char *fmt, ...) {
+    if (!view || view->gap_count >= TRADE_LINEAGE_GAP_MAX || !fmt) return;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(view->gaps[view->gap_count], TRADE_LINEAGE_LINE_CAP, fmt, args);
+    va_end(args);
+    view->gap_count++;
+}
+
+static void trade_lineage_hex(const uint8_t bytes[32], char out[65]) {
+    static const char HEX[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = HEX[(bytes[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = HEX[bytes[i] & 0x0F];
+    }
+    out[64] = '\0';
+}
+
+static void trade_lineage_proof_hash(trade_lineage_view_t *view,
+                                     const char *label,
+                                     const uint8_t bytes[32]) {
+    if (!view || !label || !bytes) return;
+    char hex[65];
+    trade_lineage_hex(bytes, hex);
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX, "%s", label);
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX, "  %.32s", hex);
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX, "  %.32s", hex + 32);
+}
+
+static bool trade_lineage_find_transform(const uint8_t cargo_pub[32],
+                                         int preferred_station,
+                                         chain_cargo_transform_t *out,
+                                         int *out_station) {
+    if (!cargo_pub || !out) return false;
+    if (preferred_station >= 0 && preferred_station < MAX_STATIONS &&
+        chain_log_find_cargo_transform(&g.world.stations[preferred_station],
+                                       cargo_pub, out)) {
+        if (out_station) *out_station = preferred_station;
+        return true;
+    }
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        if (si == preferred_station) continue;
+        if (chain_log_find_cargo_transform(&g.world.stations[si],
+                                           cargo_pub, out)) {
+            if (out_station) *out_station = si;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool trade_lineage_seen(const uint8_t seen[][32], int seen_count,
+                               const uint8_t cargo_pub[32]) {
+    for (int i = 0; i < seen_count; i++)
+        if (memcmp(seen[i], cargo_pub, 32) == 0) return true;
+    return false;
+}
+
+static void trade_lineage_walk(trade_lineage_view_t *view,
+                               const uint8_t cargo_pub[32],
+                               commodity_t commodity_hint,
+                               int preferred_station,
+                               uint8_t seen[][32], int *seen_count,
+                               int depth) {
+    if (!view || !cargo_pub || !seen || !seen_count) return;
+    if (depth >= 5 || *seen_count >= TRADE_LINEAGE_WALK_MAX) {
+        trade_lineage_gap_add(view,
+                              "Gap: earlier transformations exceed the local view.");
+        return;
+    }
+    if (trade_lineage_seen((const uint8_t (*)[32])seen, *seen_count,
+                           cargo_pub)) {
+        trade_lineage_gap_add(view, "Gap: repeated parent link stopped safely.");
+        return;
+    }
+    memcpy(seen[*seen_count], cargo_pub, 32);
+    (*seen_count)++;
+
+    chain_cargo_transform_t transform;
+    int station_idx = -1;
+    if (!trade_lineage_find_transform(cargo_pub, preferred_station,
+                                      &transform, &station_idx)) {
+        char call[8];
+        mining_callsign_from_pubkey(cargo_pub, call);
+        trade_lineage_gap_add(view,
+                              "Gap: %s event for %s is not in local station history.",
+                              commodity_short_name(commodity_hint), call);
+        trade_lineage_proof_hash(view, "Missing transform output ID", cargo_pub);
+        return;
+    }
+
+    const char *station = station_short_name(station_idx);
+    if (transform.type == CHAIN_EVT_SMELT) {
+        char fragment[8];
+        mining_callsign_from_pubkey(transform.smelt.fragment_pub, fragment);
+        trade_lineage_story_add(view, "Fragment %s -> %s at %s",
+                                fragment, commodity_short_name(commodity_hint),
+                                station);
+        trade_lineage_append(view->proof, &view->proof_count,
+                             TRADE_LINEAGE_PROOF_MAX,
+                             "SMELT event %llu @ %s / epoch %llu",
+                             (unsigned long long)transform.event_id, station,
+                             (unsigned long long)transform.epoch);
+        trade_lineage_proof_hash(view, "SMELT output ID",
+                                 transform.smelt.ingot_pub);
+        trade_lineage_proof_hash(view, "Fragment ID",
+                                 transform.smelt.fragment_pub);
+        return;
+    }
+
+    if (transform.type != CHAIN_EVT_CRAFT) return;
+    const recipe_def_t *recipe = recipe_get((recipe_id_t)transform.craft.recipe_id);
+    int input_count = transform.craft.input_count;
+    if (input_count > RECIPE_INPUT_MAX) input_count = RECIPE_INPUT_MAX;
+    for (int i = 0; i < input_count; i++) {
+        commodity_t input_commodity = COMMODITY_COUNT;
+        if (recipe && i < recipe->input_count)
+            input_commodity = recipe->input_commodities[i];
+        trade_lineage_walk(view, transform.craft.input_pubs[i],
+                           input_commodity, -1, seen, seen_count, depth + 1);
+    }
+
+    char inputs[80] = "";
+    if (recipe && recipe->input_count > 0) {
+        for (int i = 0; i < recipe->input_count && i < RECIPE_INPUT_MAX; i++) {
+            if (i > 0) station_ui_append_text(inputs, sizeof(inputs), " + ");
+            station_ui_append_text(inputs, sizeof(inputs),
+                                   commodity_short_name(recipe->input_commodities[i]));
+        }
+    } else {
+        snprintf(inputs, sizeof(inputs), "signed inputs");
+    }
+    trade_lineage_story_add(view, "%s -> %s at %s", inputs,
+                            commodity_short_name(commodity_hint), station);
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX,
+                         "CRAFT event %llu @ %s / epoch %llu / recipe %u",
+                         (unsigned long long)transform.event_id, station,
+                         (unsigned long long)transform.epoch,
+                         (unsigned)transform.craft.recipe_id);
+    trade_lineage_proof_hash(view, "CRAFT output ID",
+                             transform.craft.output_pub);
+    for (int i = 0; i < input_count; i++) {
+        char label[48];
+        snprintf(label, sizeof(label), "CRAFT input %d ID", i + 1);
+        trade_lineage_proof_hash(view, label, transform.craft.input_pubs[i]);
+    }
+}
+
+static void trade_lineage_unit_from_row(const trade_row_t *row,
+                                        cargo_unit_t *unit) {
+    if (!unit) return;
+    memset(unit, 0, sizeof(*unit));
+    if (!row) return;
+    unit->kind = row->inspect_kind;
+    unit->commodity = (uint8_t)row->commodity;
+    unit->grade = (uint8_t)row->grade;
+    unit->recipe_id = row->inspect_recipe_id;
+    unit->origin_station = row->origin_station_idx;
+    unit->quantity = 1;
+    unit->mined_block = row->mined_block;
+    memcpy(unit->pub, row->inspect_pub, sizeof(unit->pub));
+    memcpy(unit->parent_merkle, row->inspect_parent,
+           sizeof(unit->parent_merkle));
+}
+
+static void trade_lineage_build_view(const station_t *holder,
+                                     const trade_row_t *row,
+                                     trade_lineage_view_t *view) {
+    memset(view, 0, sizeof(*view));
+    cargo_unit_t unit;
+    trade_lineage_unit_from_row(row, &unit);
+
+    char serial[12];
+    cargo_lineage_serial_label(&unit, serial, sizeof(serial));
+    snprintf(view->title, sizeof(view->title), "%s %s",
+             commodity_name(row->commodity), serial);
+
+    uint8_t seen[TRADE_LINEAGE_WALK_MAX][32] = {{0}};
+    int seen_count = 0;
+    trade_lineage_walk(view, unit.pub, row->commodity,
+                       (int)unit.origin_station, seen, &seen_count, 0);
+
+    if (view->story_count == 0) {
+        char manifest_story[96];
+        cargo_lineage_story_label(&unit, manifest_story,
+                                  sizeof(manifest_story));
+        trade_lineage_story_add(view, "Manifest: %s", manifest_story);
+    }
+
+    const char *holder_name = holder
+        ? station_short_name(station_index_of(holder)) : "this dock";
+    if (row->is_station_pod) {
+        snprintf(view->current, sizeof(view->current),
+                 "Now: %s crate for sale at %s dock",
+                 commodity_short_name(row->commodity), holder_name);
+    } else if (row->is_towed_pod) {
+        snprintf(view->current, sizeof(view->current),
+                 "Now: %s crate towed by you",
+                 commodity_short_name(row->commodity));
+    } else {
+        snprintf(view->current, sizeof(view->current),
+                 "Now: %s held by you",
+                 commodity_short_name(row->commodity));
+    }
+
+    if (row->inspect_chain_len > 0) {
+        snprintf(view->custody, sizeof(view->custody),
+                 "Custody: %u signed handoff%s attached",
+                 (unsigned)row->inspect_chain_len,
+                 row->inspect_chain_len == 1 ? "" : "s");
+    } else {
+        snprintf(view->custody, sizeof(view->custody),
+                 "Custody gap: portable receipt links are not local here");
+    }
+
+    trade_lineage_proof_hash(view, "Selected cargo ID", unit.pub);
+    if (!station_ui_hash_is_zero(unit.parent_merkle))
+        trade_lineage_proof_hash(view, "Manifest parent root",
+                                 unit.parent_merkle);
+    else
+        trade_lineage_append(view->proof, &view->proof_count,
+                             TRADE_LINEAGE_PROOF_MAX,
+                             "Manifest parent root: none (legacy or origin gap)");
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX,
+                         "Manifest recipe %u (%s) / origin station %u",
+                         (unsigned)unit.recipe_id,
+                         cargo_lineage_recipe_label(&unit),
+                         (unsigned)unit.origin_station);
+    trade_lineage_append(view->proof, &view->proof_count,
+                         TRADE_LINEAGE_PROOF_MAX,
+                         "Mint epoch %llu / local receipt seals %u",
+                         (unsigned long long)unit.mined_block,
+                         (unsigned)row->inspect_chain_len);
+}
+
+static const trade_lineage_view_t *trade_lineage_view_for_row(
+    const station_t *holder, const trade_row_t *row) {
+    if (!holder || !row || !row->has_inspect) return NULL;
+    int holder_idx = station_index_of(holder);
+    if (g_trade_lineage_cache.valid &&
+        g_trade_lineage_cache.holder_station == holder_idx &&
+        g_trade_lineage_cache.row_kind == row->kind &&
+        g_trade_lineage_cache.station_pod == row->is_station_pod &&
+        g_trade_lineage_cache.towed_pod == row->is_towed_pod &&
+        memcmp(g_trade_lineage_cache.cargo_pub, row->inspect_pub, 32) == 0) {
+        return &g_trade_lineage_cache.view;
+    }
+    memset(&g_trade_lineage_cache, 0, sizeof(g_trade_lineage_cache));
+    g_trade_lineage_cache.valid = true;
+    g_trade_lineage_cache.holder_station = holder_idx;
+    g_trade_lineage_cache.row_kind = row->kind;
+    g_trade_lineage_cache.station_pod = row->is_station_pod;
+    g_trade_lineage_cache.towed_pod = row->is_towed_pod;
+    memcpy(g_trade_lineage_cache.cargo_pub, row->inspect_pub, 32);
+    trade_lineage_build_view(holder, row, &g_trade_lineage_cache.view);
+    return &g_trade_lineage_cache.view;
 }
 
 /* station_manifest_has_commodity / ship_manifest_has_commodity removed —
@@ -2231,6 +2556,55 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     }
 
     return row_count;
+}
+
+bool trade_lineage_available(const station_t *st, const ship_t *ship) {
+    if (!st || !ship) return false;
+    trade_row_t rows[TRADE_MAX_ROWS];
+    int count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    for (int i = 0; i < count; i++)
+        if (rows[i].has_inspect) return true;
+    return false;
+}
+
+bool trade_lineage_selected_text(char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_TRADE ||
+        g.trade_lineage_row < 0) return false;
+    const station_t *st = current_station_ptr();
+    const ship_t *ship = LOCAL_PLAYER.ship;
+    if (!st || !ship) return false;
+
+    trade_row_t rows[TRADE_MAX_ROWS];
+    int count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    if (g.trade_lineage_row >= count ||
+        !rows[g.trade_lineage_row].has_inspect) return false;
+    const trade_lineage_view_t *view =
+        trade_lineage_view_for_row(st, &rows[g.trade_lineage_row]);
+    if (!view) return false;
+
+    station_ui_append_text(out, out_size, view->title);
+    if (g.trade_lineage_proof) {
+        for (int i = 0; i < view->proof_count; i++) {
+            station_ui_append_text(out, out_size, " | ");
+            station_ui_append_text(out, out_size, view->proof[i]);
+        }
+    } else {
+        for (int i = 0; i < view->story_count; i++) {
+            station_ui_append_text(out, out_size, " | ");
+            station_ui_append_text(out, out_size, view->story[i]);
+        }
+        for (int i = 0; i < view->gap_count; i++) {
+            station_ui_append_text(out, out_size, " | ");
+            station_ui_append_text(out, out_size, view->gaps[i]);
+        }
+        station_ui_append_text(out, out_size, " | ");
+        station_ui_append_text(out, out_size, view->current);
+        station_ui_append_text(out, out_size, " | ");
+        station_ui_append_text(out, out_size, view->custody);
+    }
+    return true;
 }
 
 /* Page resolver shared by renderer + input. Pages are computed by chunking
@@ -3115,6 +3489,12 @@ bool station_panel_legend_text(station_view_t view,
     if (!panel) return false;
 
     if (view == STATION_VIEW_TRADE && station) {
+        if (g.trade_lineage_row >= 0) {
+            snprintf(out, out_size, g.trade_lineage_proof
+                ? "[L] next  [I] story  [F] proof page  [ESC] market  [TAB] panel"
+                : "[L] next  [I] proof  [ESC] market  [TAB] panel");
+            return true;
+        }
         trade_row_t rows[TRADE_MAX_ROWS];
         int row_count = build_trade_rows(station, LOCAL_PLAYER.ship,
                                          rows, TRADE_MAX_ROWS);
@@ -3139,8 +3519,13 @@ bool station_panel_legend_text(station_view_t view,
         const char *sell_action = LOCAL_PLAYER.ship->towed_pod_count > 0
             ? "tow to intake"
             : "sell all";
-        snprintf(out, out_size,
-                 "[1-5] %s  [F] page  [S] %s  [TAB] panel",
+        bool has_lineage = false;
+        for (int i = first; i < last; i++) {
+            if (rows[i].has_inspect) { has_lineage = true; break; }
+        }
+        snprintf(out, out_size, has_lineage
+                 ? "[1-5] %s  [F] page  [L] lineage  [S] %s  [TAB] panel"
+                 : "[1-5] %s  [F] page  [S] %s  [TAB] panel",
                  row_action, sell_action);
         return true;
     }
@@ -3439,6 +3824,103 @@ static void draw_history_view(const station_ui_state_t *ui,
     }
 }
 
+static bool draw_trade_lineage_focus(const station_t *st,
+                                     const trade_row_t *rows, int row_count,
+                                     float cx, float *my, float inner_right,
+                                     float row_h, float content_bottom,
+                                     bool compact) {
+    if (!st || !rows || !my || g.trade_lineage_row < 0) return false;
+    if (g.trade_lineage_row >= row_count ||
+        !rows[g.trade_lineage_row].has_inspect) {
+        trade_lineage_close();
+        return false;
+    }
+    const trade_lineage_view_t *view =
+        trade_lineage_view_for_row(st, &rows[g.trade_lineage_row]);
+    if (!view) {
+        trade_lineage_close();
+        return false;
+    }
+
+    const uint8_t COL_TITLE[3] = { 130, 210, 255 };
+    const uint8_t COL_STORY[3] = { PAL_TEXT_SECONDARY };
+    const uint8_t COL_CURRENT[3] = { 130, 230, 150 };
+    const uint8_t COL_GAP[3] = { PAL_WARNING };
+    const uint8_t COL_PROOF[3] = { PAL_TEXT_FADED };
+    *my += draw_section_header(cx, *my, inner_right,
+                               g.trade_lineage_proof
+                                   ? "CARGO PROOF" : "CARGO LINEAGE",
+                               HDR_TRADE);
+    char title_fit[96];
+    int chars = (int)floorf((inner_right - cx) / 8.0f);
+    ui_fit_text(view->title, chars, title_fit, sizeof(title_fit));
+    draw_row_lr(cx, *my, inner_right, COL_TITLE, title_fit, NULL, NULL);
+    *my += row_h + (compact ? 2.0f : 4.0f);
+
+    if (!g.trade_lineage_proof) {
+        for (int i = 0; i < view->story_count; i++) {
+            if (*my + row_h > content_bottom) break;
+            char line[TRADE_LINEAGE_LINE_CAP];
+            char fit[TRADE_LINEAGE_LINE_CAP];
+            snprintf(line, sizeof(line), "%d. %s", i + 1, view->story[i]);
+            ui_fit_text(line, chars, fit, sizeof(fit));
+            draw_row_lr(cx, *my, inner_right, COL_STORY, fit, NULL, NULL);
+            *my += row_h;
+        }
+        if (*my + row_h <= content_bottom) {
+            char fit[TRADE_LINEAGE_LINE_CAP];
+            ui_fit_text(view->current, chars, fit, sizeof(fit));
+            draw_row_lr(cx, *my, inner_right, COL_CURRENT, fit, NULL, NULL);
+            *my += row_h;
+        }
+        if (*my + row_h <= content_bottom) {
+            char fit[TRADE_LINEAGE_LINE_CAP];
+            ui_fit_text(view->custody, chars, fit, sizeof(fit));
+            draw_row_lr(cx, *my, inner_right,
+                        view->custody[0] && strstr(view->custody, "gap")
+                            ? COL_GAP : COL_PROOF,
+                        fit, NULL, NULL);
+            *my += row_h;
+        }
+        for (int i = 0; i < view->gap_count; i++) {
+            if (*my + row_h > content_bottom) break;
+            char fit[TRADE_LINEAGE_LINE_CAP];
+            ui_fit_text(view->gaps[i], chars, fit, sizeof(fit));
+            draw_row_lr(cx, *my, inner_right, COL_GAP, fit, NULL, NULL);
+            *my += row_h;
+        }
+        return true;
+    }
+
+    int rows_fit = (int)floorf((content_bottom - *my) / row_h);
+    int per_page = rows_fit - 1; /* reserve the pager line */
+    if (per_page < 4) per_page = 4;
+    int pages = view->proof_count > 0
+        ? (view->proof_count + per_page - 1) / per_page : 1;
+    int page = (int)g.trade_lineage_proof_page;
+    if (page >= pages) {
+        page %= pages;
+        g.trade_lineage_proof_page = (uint8_t)page;
+    }
+    char pager[64];
+    snprintf(pager, sizeof(pager), "proof page %d/%d  [F] next",
+             page + 1, pages);
+    draw_row_lr(cx, *my, inner_right, COL_PROOF,
+                "Identifiers behind the story", COL_PROOF, pager);
+    *my += row_h;
+
+    int first = page * per_page;
+    int last = first + per_page;
+    if (last > view->proof_count) last = view->proof_count;
+    for (int i = first; i < last && *my + row_h <= content_bottom; i++) {
+        char fit[TRADE_LINEAGE_LINE_CAP];
+        ui_fit_text(view->proof[i], chars, fit, sizeof(fit));
+        draw_row_lr(cx, *my, inner_right, COL_PROOF, fit, NULL, NULL);
+        *my += row_h;
+    }
+    return true;
+}
+
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -3486,6 +3968,11 @@ static void draw_trade_view(const station_ui_state_t *ui,
      * a [1] keypress always hits the same row drawn here). */
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    if (draw_trade_lineage_focus(st, rows, row_count,
+                                 cx, &my, inner_right, row_h,
+                                 content_bottom, compact)) {
+        return;
+    }
     trade_custody_board_t board;
     trade_custody_board_build(st, ship, &board);
 

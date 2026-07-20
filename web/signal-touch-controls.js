@@ -21,12 +21,15 @@
     sell: 14,
     cargo: 15,
     tractorUpgrade: 16,
+    lineage: 17,
+    lineageProof: 18,
     one: 20,
     two: 21,
     three: 22,
     four: 23,
     five: 24,
-    auto: 30
+    auto: 30,
+    back: 31
   };
 
   var FLAG = {
@@ -59,7 +62,9 @@
     canRepair: 1 << 26,
     canUpgradeMine: 1 << 27,
     canUpgradeHold: 1 << 28,
-    canUpgradeTractor: 1 << 29
+    canUpgradeTractor: 1 << 29,
+    canLineage: 1 << 30,
+    lineageOpen: 1 << 31
   };
 
   var fallbackKeys = {
@@ -79,12 +84,15 @@
     14: ["s", "KeyS", 83],
     15: ["c", "KeyC", 67],
     16: ["t", "KeyT", 84],
+    17: ["l", "KeyL", 76],
+    18: ["i", "KeyI", 73],
     20: ["1", "Digit1", 49],
     21: ["2", "Digit2", 50],
     22: ["3", "Digit3", 51],
     23: ["4", "Digit4", 52],
     24: ["5", "Digit5", 53],
-    30: ["o", "KeyO", 79]
+    30: ["o", "KeyO", 79],
+    31: ["Escape", "Escape", 27]
   };
 
   var controls = {};
@@ -227,6 +235,7 @@
       ".signal-touch-station .tab{grid-column:1/span 2;grid-row:1}.signal-touch-station .page{grid-column:3/span 2;grid-row:1}.signal-touch-station .sell{grid-column:5/span 3;grid-row:1}",
       ".signal-touch-station .repair{grid-column:1/span 2;grid-row:2}.signal-touch-station .laser{grid-column:3/span 2;grid-row:2}.signal-touch-station .cargo{grid-column:5/span 3;grid-row:2}",
       ".signal-touch-station .tractorUpgrade{grid-column:1/span 2;grid-row:3}.signal-touch-station .one{grid-column:3;grid-row:3}.signal-touch-station .two{grid-column:4;grid-row:3}.signal-touch-station .three{grid-column:5;grid-row:3}.signal-touch-station .four{grid-column:6;grid-row:3}.signal-touch-station .five{grid-column:7;grid-row:3}",
+      ".signal-touch-station .lineage{grid-column:1/span 3;grid-row:4}.signal-touch-station .lineageProof{grid-column:4/span 2;grid-row:4}.signal-touch-station .back{grid-column:6/span 2;grid-row:4}",
       "@media (min-width:860px) and (pointer:fine){.signal-touch-controls{display:none}}",
       "@media (max-width:560px){.signal-touch-controls{--edge:max(12px,env(safe-area-inset-bottom));--side:max(10px,env(safe-area-inset-right));--left-side:max(10px,env(safe-area-inset-left));--top-edge:max(10px,env(safe-area-inset-top))}.signal-touch-button{min-width:44px;min-height:42px;font-size:9px}.signal-touch-left{grid-template-columns:repeat(2,54px);grid-template-rows:42px 54px;gap:6px}.signal-touch-left .left,.signal-touch-left .right{min-height:54px;font-size:17px}.signal-touch-right{grid-template-columns:56px 66px;grid-template-rows:48px 54px 54px 38px;gap:6px}.signal-touch-right .use{min-height:48px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-secondary{bottom:calc(var(--edge) + 218px);grid-template-columns:repeat(2,58px);gap:6px}.signal-touch-station{width:calc(100vw - 20px);grid-auto-rows:34px}}",
       "@media (max-height:520px){.signal-touch-controls{--edge:max(8px,env(safe-area-inset-bottom));--side:max(8px,env(safe-area-inset-right));--left-side:max(8px,env(safe-area-inset-left));--top-edge:max(8px,env(safe-area-inset-top))}.signal-touch-left{grid-template-columns:repeat(2,52px);grid-template-rows:40px 50px}.signal-touch-right{grid-template-columns:52px 62px;grid-template-rows:44px 50px 50px 36px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:50px}.signal-touch-secondary{bottom:calc(var(--edge) + 224px);grid-template-columns:repeat(2,54px)}.signal-touch-station{grid-auto-rows:32px}.signal-touch-station .signal-touch-button{min-height:32px}}"
@@ -360,6 +369,7 @@
     var tradeView = has(flags, FLAG.stationTrade);
     var workView = has(flags, FLAG.stationWork);
     var yardView = has(flags, FLAG.stationYard);
+    var lineageOpen = has(flags, FLAG.lineageOpen);
 
     if (controlsRoot) {
       controlsRoot.classList.toggle("is-docked", docked);
@@ -387,12 +397,16 @@
     setButton("cycle", has(flags, FLAG.canCycle), "Type");
 
     setButton("tab", docked, "Panel");
-    setButton("page", docked && has(flags, FLAG.canPage), "More");
+    setButton("page", docked && has(flags, FLAG.canPage), lineageOpen ? "Proof Page" : "More");
     setButton("sell", docked && has(flags, FLAG.canSell), workView ? "Deliver" : "Sell");
     setButton("repair", docked && dockView && has(flags, FLAG.canRepair), "Repair");
     setButton("laser", docked && dockView && has(flags, FLAG.canUpgradeMine), "Laser+");
     setButton("cargo", docked && dockView && has(flags, FLAG.canUpgradeHold), "Hold+");
     setButton("tractorUpgrade", docked && dockView && has(flags, FLAG.canUpgradeTractor), "Tow+");
+    setButton("lineage", docked && tradeView && has(flags, FLAG.canLineage),
+      lineageOpen ? "Next Cargo" : "Lineage");
+    setButton("lineageProof", docked && tradeView && lineageOpen, "Story / Proof");
+    setButton("back", docked && tradeView && lineageOpen, "Market");
 
     var digitMask = (tradeView || workView || yardView) ? mobileDigitMask(flags) : 0;
     setDigits(docked, digitMask);
@@ -445,6 +459,9 @@
     addButton(station, "three", "3", ACTION.three, "tap", "");
     addButton(station, "four", "4", ACTION.four, "tap", "");
     addButton(station, "five", "5", ACTION.five, "tap", "");
+    addButton(station, "lineage", "Lineage", ACTION.lineage, "tap", "lineage");
+    addButton(station, "lineageProof", "Story / Proof", ACTION.lineageProof, "tap", "lineageProof");
+    addButton(station, "back", "Market", ACTION.back, "tap", "back");
 
     root.appendChild(left);
     root.appendChild(right);

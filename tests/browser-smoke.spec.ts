@@ -540,6 +540,16 @@ async function stationPanelLegend(page: Page): Promise<string> {
   });
 }
 
+async function cargoLineageText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_trade_lineage_text', 'string', [], []) || '';
+  });
+}
+
 async function stationPanelDigitSlots(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -709,6 +719,7 @@ const smokeLoopState = {
   rockRouteTarget: 27,
   rockRouteTow: 28,
   rockRouteDegraded: 29,
+  cargoLineage: 30,
 } as const;
 
 const mobileFlag = {
@@ -1521,6 +1532,53 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  rootBundleSmokeTest('opens a manifest-backed cargo story and paged proof on desktop and narrow layouts', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+
+    await setSmokeLoopState(page, smokeLoopState.cargoLineage);
+    await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
+    await canvas.click();
+    await tap(page, 'L');
+
+    await expect.poll(async () => cargoLineageText(page)).toContain('Fragment');
+    const story = await cargoLineageText(page);
+    expect(story).toContain('-> FE Ingot at Prospect');
+    expect(story).toContain('FE Ingot -> Frame at Prospect');
+    expect(story).toContain('Now: Frame crate for sale at Prospect dock');
+    expect(story).toContain('Custody gap: portable receipt links are not local here');
+    await expect.poll(async () => stationPanelLegend(page)).toContain('[I] proof');
+
+    await tap(page, 'I');
+    const proof = await cargoLineageText(page);
+    expect(proof).toContain('SMELT event');
+    expect(proof).toContain('CRAFT event');
+    expect(proof).toContain('Selected cargo ID');
+    expect(proof).toContain('Manifest parent root');
+    expect(proof).toMatch(/[0-9a-f]{32}/);
+
+    await tap(page, 'L');
+    const legacyStory = await cargoLineageText(page);
+    expect(legacyStory).toContain('Manifest: legacy cargo at Helios');
+    expect(legacyStory).toContain('Gap: Frame event');
+
+    await page.setViewportSize({ width: 390, height: 760 });
+    await tap(page, 'I');
+    await expect.poll(async () => cargoLineageText(page)).toContain('Selected cargo ID');
+    const box = await canvas.boundingBox();
+    expect(box).toBeTruthy();
+    expect(box!.width).toBeGreaterThan(300);
+    expect(box!.height).toBeGreaterThan(500);
+    await expect
+      .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
+      .toBeGreaterThan(0.05);
+
+    await tap(page, 'Escape');
+    await expect.poll(async () => cargoLineageText(page)).toBe('');
+    expectNoFatalErrors(logs);
+  });
+
   test('narrow viewport renders and accepts dock/trade/build hotkeys', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 390, height: 760 });
@@ -1578,7 +1636,7 @@ test.describe('Browser smoke tests', () => {
     const touchScriptSrc = await page.locator('script[src*="signal-touch-controls.js"]').getAttribute('src');
     expect(touchScriptSrc).toMatch(/[?&]v=/);
     const primaryControls = ['use', 'fire', 'thrust', 'tractor', 'brake', 'scan', 'auto', 'plan', 'cycle', 'boost', 'left', 'right'];
-    const stationControls = ['tab', 'page', 'sell', 'repair', 'laser', 'cargo', 'tractorUpgrade', 'one', 'two', 'three', 'four', 'five'];
+    const stationControls = ['tab', 'page', 'sell', 'repair', 'laser', 'cargo', 'tractorUpgrade', 'one', 'two', 'three', 'four', 'five', 'lineage', 'lineageProof', 'back'];
 
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.docked, { timeout: 5_000 })
@@ -1600,7 +1658,9 @@ test.describe('Browser smoke tests', () => {
 
     await tap(page, 'Tab');
     await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
-    await expect.poll(async () => stationPanelLegend(page)).toBe('[1-5] trade  [F] page  [S] sell all  [TAB] panel');
+    await expect
+      .poll(async () => stationPanelLegend(page))
+      .toMatch(/^\[1-5\] trade  \[F\] page(?:  \[L\] lineage)?  \[S\] sell all  \[TAB\] panel$/);
     expectTouchControlsKeepSlots(shipStationSlots, await touchControlRects(page, stationControls), stationControls);
     await expect
       .poll(async () => (await mobileControlFlags(page)) & mobileFlag.stationTrade)

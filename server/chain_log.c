@@ -477,6 +477,63 @@ int chain_log_read_route_history_tail(const station_t *s,
     return n;
 }
 
+bool chain_log_find_cargo_transform(const station_t *s,
+                                    const uint8_t cargo_pub[32],
+                                    chain_cargo_transform_t *out) {
+    if (!s || !cargo_pub || !out) return false;
+    memset(out, 0, sizeof(*out));
+
+    char path[256];
+    if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    bool found = false;
+    for (;;) {
+        uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
+        size_t got = fread(hdr_bytes, 1, sizeof(hdr_bytes), f);
+        if (got == 0 && feof(f)) break;
+        if (got != sizeof(hdr_bytes)) break;
+
+        chain_event_header_t hdr;
+        if (!chain_event_header_unpack(hdr_bytes, &hdr)) break;
+
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+
+        if (hdr.type == CHAIN_EVT_SMELT &&
+            plen == sizeof(chain_payload_smelt_t)) {
+            chain_payload_smelt_t payload;
+            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) break;
+            if (memcmp(payload.ingot_pub, cargo_pub, 32) == 0) {
+                memset(out, 0, sizeof(*out));
+                out->type = CHAIN_EVT_SMELT;
+                out->event_id = hdr.event_id;
+                out->epoch = hdr.epoch;
+                out->smelt = payload;
+                found = true;
+            }
+        } else if (hdr.type == CHAIN_EVT_CRAFT &&
+                   plen == sizeof(chain_payload_craft_t)) {
+            chain_payload_craft_t payload;
+            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) break;
+            if (memcmp(payload.output_pub, cargo_pub, 32) == 0) {
+                memset(out, 0, sizeof(*out));
+                out->type = CHAIN_EVT_CRAFT;
+                out->event_id = hdr.event_id;
+                out->epoch = hdr.epoch;
+                out->craft = payload;
+                found = true;
+            }
+        } else if (fseek(f, plen, SEEK_CUR) != 0) {
+            break;
+        }
+    }
+
+    fclose(f);
+    return found;
+}
+
 void chain_log_reset(const station_t *s) {
     static const uint8_t zero_pub[32] = {0};
     if (!s) return;

@@ -21,6 +21,7 @@
 #include "npc_identity.h"
 #include "ui_clarity.h"
 #include "rock_usefulness.h"
+#include "chain_log.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -3769,7 +3770,71 @@ enum {
     SMOKE_LOOP_STATE_ROCK_ROUTE_TARGET = 27,
     SMOKE_LOOP_STATE_ROCK_ROUTE_TOW = 28,
     SMOKE_LOOP_STATE_ROCK_ROUTE_DEGRADED = 29,
+    SMOKE_LOOP_STATE_CARGO_LINEAGE = 30,
 };
+
+static bool smoke_maintain_cargo_lineage_view(void) {
+    if (g.world.station_count <= 0 ||
+        !station_exists(&g.world.stations[0])) return false;
+    station_t *st = &g.world.stations[0];
+    int dock_module = -1;
+    for (int m = 0; m < st->module_count; m++) {
+        if (!st->modules[m].scaffold && st->modules[m].type == MODULE_DOCK) {
+            dock_module = m;
+            break;
+        }
+    }
+    if (dock_module < 0) return false;
+
+    uint8_t fragment_pub[32];
+    for (int i = 0; i < 32; i++) fragment_pub[i] = (uint8_t)(0x31 + i);
+    cargo_unit_t ingot = {0};
+    cargo_unit_t frame = {0};
+    if (!hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                    fragment_pub, 0, &ingot)) return false;
+    ingot.origin_station = 0;
+    ingot.mined_block = 4422;
+    if (!hash_product(RECIPE_FRAME_BASIC, &ingot, 1, 0, &frame)) return false;
+    frame.origin_station = 0;
+
+    uint8_t legacy_seed[8] = {'L','E','G','A','C','Y','0','1'};
+    cargo_unit_t legacy = {0};
+    if (!hash_legacy_migrate_unit(legacy_seed, COMMODITY_FRAME, 0, &legacy))
+        return false;
+    legacy.origin_station = 2;
+
+    const cargo_unit_t units[2] = {frame, legacy};
+    for (int i = 0; i < 2; i++) {
+        cargo_pod_t *pod = &g.world.cargo_pods[MAX_CARGO_PODS - 2 + i];
+        memset(pod, 0, sizeof(*pod));
+        pod->active = true;
+        pod->kind = CARGO_POD_CARGO;
+        pod->commodity = COMMODITY_FRAME;
+        pod->quantity = 1;
+        pod->manifest_count = 1;
+        pod->manifest_units[0] = units[i];
+        pod->pos = v2_add(module_world_pos_ring(
+                              st, st->modules[dock_module].ring,
+                              st->modules[dock_module].slot),
+                          v2((float)i * 24.0f, 0.0f));
+        pod->radius = 18.0f;
+        pod->age = 2.0f;
+        cargo_pod_set_module_tractor(pod, 0, dock_module);
+    }
+    if (st->base_price[COMMODITY_FRAME] <= FLOAT_EPSILON)
+        st->base_price[COMMODITY_FRAME] = 40.0f;
+
+    LOCAL_PLAYER.docked = true;
+    LOCAL_PLAYER.current_station = 0;
+    LOCAL_PLAYER.nearby_station = 0;
+    LOCAL_PLAYER.in_dock_range = true;
+    LOCAL_PLAYER.ship->pos = st->pos;
+    g.was_docked = true;
+    g.dock_settle_timer = 0.0f;
+    g.station_view = STATION_VIEW_TRADE;
+    g.local_server.active = false;
+    return true;
+}
 
 void smoke_apply_loop_state_for_frame(void) {
     /* Most fixtures intentionally allow input and timers to evolve after
@@ -3778,6 +3843,9 @@ void smoke_apply_loop_state_for_frame(void) {
     if (smoke_loop_state_override ==
         SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR) {
         (void)smoke_apply_loop_state(smoke_loop_state_override);
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_CARGO_LINEAGE) {
+        (void)smoke_maintain_cargo_lineage_view();
     }
 }
 
@@ -3832,6 +3900,7 @@ static void smoke_clear_loop_state(void) {
     g.collection_feedback_ore = 0.0f;
     g.tracked_contract = -1;
     g.selected_contract = -1;
+    trade_lineage_close();
     g.player_known_contract_mask = 0;
     memset(&sp->ship->knowledge, 0, sizeof(sp->ship->knowledge));
     memset(g.scanned_players, 0, sizeof(g.scanned_players));
@@ -4436,6 +4505,54 @@ static int smoke_apply_loop_state(int state) {
     case SMOKE_LOOP_STATE_ROCK_ROUTE_DEGRADED:
         g.local_server.active = false;
         return smoke_seed_rock_route(true, true) ? 1 : 0;
+    case SMOKE_LOOP_STATE_CARGO_LINEAGE: {
+        if (g.world.station_count <= 0 ||
+            !station_exists(&g.world.stations[0])) return 0;
+        station_t *st = &g.world.stations[0];
+        int dock_module = -1;
+        for (int m = 0; m < st->module_count; m++) {
+            if (!st->modules[m].scaffold &&
+                st->modules[m].type == MODULE_DOCK) {
+                dock_module = m;
+                break;
+            }
+        }
+        if (dock_module < 0) return 0;
+
+        uint8_t fragment_pub[32];
+        for (int i = 0; i < 32; i++)
+            fragment_pub[i] = (uint8_t)(0x31 + i);
+        cargo_unit_t ingot = {0};
+        cargo_unit_t frame = {0};
+        if (!hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                        fragment_pub, 0, &ingot)) return 0;
+        ingot.origin_station = 0;
+        ingot.mined_block = 4422;
+        if (!hash_product(RECIPE_FRAME_BASIC, &ingot, 1, 0, &frame)) return 0;
+        frame.origin_station = 0;
+
+        if (g.local_server.world.station_count > 0) {
+            station_t *authority = &g.local_server.world.stations[0];
+            chain_payload_smelt_t smelt = {0};
+            memcpy(smelt.fragment_pub, fragment_pub, 32);
+            memcpy(smelt.ingot_pub, ingot.pub, 32);
+            smelt.prefix_class = ingot.prefix_class;
+            smelt.mined_block = ingot.mined_block;
+            (void)chain_log_emit(&g.local_server.world, authority,
+                                 CHAIN_EVT_SMELT, &smelt, sizeof(smelt));
+
+            chain_payload_craft_t craft = {0};
+            craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+            craft.input_count = 1;
+            memcpy(craft.output_pub, frame.pub, 32);
+            memcpy(craft.input_pubs[0], ingot.pub, 32);
+            (void)chain_log_emit(&g.local_server.world, authority,
+                                 CHAIN_EVT_CRAFT, &craft, sizeof(craft));
+        }
+
+        reset_trade_session_rows(0);
+        return smoke_maintain_cargo_lineage_view() ? 1 : 0;
+    }
     default:
         return 0;
     }

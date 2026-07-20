@@ -444,6 +444,18 @@ typedef struct {
     chain_payload_route_history_t payload;
 } chain_route_history_tail_t;
 
+/* Read model for one cargo-producing event. A player-facing lineage view can
+ * follow a cargo pubkey back through CRAFT outputs and SMELT outputs without
+ * treating the chain log as inventory authority. The payload matching `type`
+ * is populated; the other payload stays zeroed. */
+typedef struct {
+    uint8_t type; /* CHAIN_EVT_SMELT or CHAIN_EVT_CRAFT */
+    uint64_t event_id;
+    uint64_t epoch;
+    chain_payload_smelt_t smelt;
+    chain_payload_craft_t craft;
+} chain_cargo_transform_t;
+
 /* Read the most recent route-history summaries from a station chain. This is
  * a read model only: it verifies neither payouts nor inventory, and callers
  * must still use chain_log_verify/chain_log_verify_with_pubkey when they need
@@ -451,6 +463,14 @@ typedef struct {
 int chain_log_read_route_history_tail(const station_t *s,
                                       chain_route_history_tail_t *out,
                                       int cap);
+
+/* Find the most recent local SMELT/CRAFT event whose output is `cargo_pub`.
+ * This intentionally searches one station log at a time: callers decide
+ * which station histories are locally available and never infer a global
+ * omniscient chain from a missing row. */
+bool chain_log_find_cargo_transform(const station_t *s,
+                                    const uint8_t cargo_pub[32],
+                                    chain_cargo_transform_t *out);
 
 /* Compute the SHA-256 of a chain_event_header_t (all 184 bytes,
  * including the signature — this is the full record hash that gets
