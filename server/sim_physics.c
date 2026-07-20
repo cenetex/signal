@@ -145,14 +145,17 @@ void sim_world_integrate_bodies(world_t *w, sim_body_phase_t phase,
         if (phase == SIM_BODY_PHASE_SCAFFOLD_AMBIENT) {
             /* Spin and age every live scaffold; only loose bodies drift. */
             if (scaffold->state != SCAFFOLD_LOOSE)
-                body.flags &= (uint16_t)~SIM_BODY_FLAG_DYNAMIC;
+                body.flags &=
+                    (uint16_t)(UINT16_MAX ^ SIM_BODY_FLAG_DYNAMIC);
             else {
                 body.flags |= SIM_BODY_FLAG_DRAG;
                 body.velocity_multiplier = 0.98f;
             }
         } else if (phase == SIM_BODY_PHASE_SCAFFOLD_SNAPPING) {
             if (scaffold->state != SCAFFOLD_SNAPPING) continue;
-            body.flags &= (uint16_t)~(SIM_BODY_FLAG_SPIN | SIM_BODY_FLAG_AGE);
+            body.flags &= (uint16_t)(UINT16_MAX ^
+                                     (SIM_BODY_FLAG_SPIN |
+                                      SIM_BODY_FLAG_AGE));
         } else {
             continue;
         }

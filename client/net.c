@@ -224,7 +224,8 @@ static void net_decode_contract_base(contract_t *ct, const uint8_t *p) {
         (uint8_t)INGOT_PREFIX_ANONYMOUS;
     ct->required_recipe_id = read_u16_le(&p[6]);
     if (ct->required_recipe_id >= RECIPE_COUNT)
-        ct->proof_flags &= (uint8_t)~CONTRACT_PROOF_REQUIRE_RECIPE;
+        ct->proof_flags &=
+            (uint8_t)(UINT8_MAX ^ CONTRACT_PROOF_REQUIRE_RECIPE);
     ct->quantity_needed = read_f32_le(&p[8]);
     ct->base_price = read_f32_le(&p[12]);
     ct->age = read_f32_le(&p[16]);
@@ -237,7 +238,8 @@ static void net_decode_contract_base(contract_t *ct, const uint8_t *p) {
 static void net_finish_contract_decode(contract_t *ct) {
     if (!ct) return;
     if (ct->forbidden_origin_mask == 0)
-        ct->proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
+        ct->proof_flags &=
+            (uint8_t)(UINT8_MAX ^ CONTRACT_PROOF_FORBID_ORIGIN);
 }
 
 static bool decode_station_identity_q(NetStationIdentity *si,
@@ -1335,7 +1337,8 @@ static void handle_message(const uint8_t* data, int len) {
                 uint8_t status_flags =
                     p[1] & PLAYER_DOCK_STATUS_FLAGS_MASK;
                 ps->flags = (uint8_t)(
-                    (ps->flags & (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK) |
+                    (ps->flags &
+                     (uint8_t)(UINT8_MAX ^ PLAYER_DOCK_STATUS_FLAGS_MASK)) |
                     status_flags);
                 if ((status_flags & 0x04u) != 0u) {
                     ps->vx = 0.0f;
@@ -1998,8 +2001,9 @@ static void handle_message(const uint8_t* data, int len) {
                 uint8_t idx = data[off++];
                 uint16_t mask = read_u16_le(&data[off]);
                 off += 2;
-                if ((mask & (uint16_t)~(STATION_Q_COMMODITY_MASK |
-                                        STATION_Q_CREDIT_POOL_MASK)) != 0) {
+                if ((mask & (uint16_t)(UINT16_MAX ^
+                                       (STATION_Q_COMMODITY_MASK |
+                                        STATION_Q_CREDIT_POOL_MASK))) != 0) {
                     break;
                 }
                 float inv[COMMODITY_COUNT];
@@ -2980,7 +2984,8 @@ static void handle_message(const uint8_t* data, int len) {
                     break;
                 }
                 uint8_t flags = data[off++];
-                if ((flags & (uint8_t)~CONTRACT_Q_FLAG_MASK) != 0 ||
+                if ((flags &
+                     (uint8_t)(UINT8_MAX ^ CONTRACT_Q_FLAG_MASK)) != 0 ||
                     off + CONTRACT_Q_BASE_SIZE > len) {
                     ok = false;
                     break;

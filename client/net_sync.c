@@ -1218,6 +1218,10 @@ void apply_remote_asteroid_state_q(const NetAsteroidStateQ* asteroids,
     }
 }
 
+static int16_t remote_npc_asteroid_index(int value) {
+    return (value >= 0 && value < MAX_ASTEROIDS) ? (int16_t)value : -1;
+}
+
 void apply_remote_npcs(const NetNpcState* npcs, int count) {
     float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
     npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
@@ -1247,8 +1251,10 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->vel.x = npcs[i].vx;
         n->vel.y = npcs[i].vy;
         n->angle = npcs[i].angle;
-        n->target_asteroid = npcs[i].target_asteroid;
-        n->towed_fragment = npcs[i].towed_fragment;
+        n->target_asteroid =
+            remote_npc_asteroid_index(npcs[i].target_asteroid);
+        n->towed_fragment =
+            remote_npc_asteroid_index(npcs[i].towed_fragment);
         n->towed_scaffold = -1;
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
@@ -1376,8 +1382,10 @@ void apply_remote_npc_status(const NetNpcStatusState* npcs, int count) {
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
         n->hull_class = npc_default_hull_class_for_role(n->role);
-        n->target_asteroid = npcs[i].target_asteroid;
-        n->towed_fragment = npcs[i].towed_fragment;
+        n->target_asteroid =
+            remote_npc_asteroid_index(npcs[i].target_asteroid);
+        n->towed_fragment =
+            remote_npc_asteroid_index(npcs[i].towed_fragment);
         n->towed_scaffold = -1;
     }
 }
@@ -2626,13 +2634,16 @@ void apply_remote_player_state(const NetPlayerState* state) {
             g.player_interp.curr[state->player_id].active;
         NetPlayerState next = *state;
         if ((next.flags & NET_PLAYER_STATE_STATUS_ONLY) != 0u) {
-            next.flags &= (uint8_t)~NET_PLAYER_STATE_STATUS_ONLY;
+            next.flags &=
+                (uint8_t)(UINT8_MAX ^ NET_PLAYER_STATE_STATUS_ONLY);
             if (g.player_interp.curr[state->player_id].active) {
                 uint8_t status_flags =
                     next.flags & PLAYER_DOCK_STATUS_FLAGS_MASK;
                 next = g.player_interp.curr[state->player_id];
                 next.flags = (uint8_t)(
-                    (next.flags & (uint8_t)~PLAYER_DOCK_STATUS_FLAGS_MASK) |
+                    (next.flags &
+                     (uint8_t)(UINT8_MAX ^
+                               PLAYER_DOCK_STATUS_FLAGS_MASK)) |
                     status_flags);
                 if ((status_flags & 0x04u) != 0u) {
                     next.vx = 0.0f;

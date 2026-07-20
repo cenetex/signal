@@ -697,7 +697,8 @@ static void sim_on_sell(const sim_event_t *ev) {
         onboarding_mark_earned();
         /* The furnace milestone supersedes the launch intro and waits until
          * the player has docked, opened the market, and read the payout. */
-        g.deferred_episode_mask &= (uint16_t)~(1u << 0);
+        g.deferred_episode_mask &=
+            (uint16_t)(UINT16_MAX ^ (uint16_t)(1u << 0));
         defer_episode_until_docked(2);
         sell_batch_accumulate(ev, total);
     }
@@ -1299,7 +1300,7 @@ static void episode_per_frame(float dt) {
             for (int i = 0; i < EPISODE_COUNT; i++) {
                 uint16_t bit = (uint16_t)(1u << i);
                 if ((g.deferred_episode_mask & bit) == 0u) continue;
-                g.deferred_episode_mask &= (uint16_t)~bit;
+                g.deferred_episode_mask &= (uint16_t)(UINT16_MAX ^ bit);
                 episode_trigger(&g.episode, i);
                 break;
             }

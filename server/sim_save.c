@@ -1438,7 +1438,8 @@ static bool read_contract(FILE *f, contract_t *c) {
         READ_FIELD(f, c->forbidden_origin_mask);
     } else {
         c->forbidden_origin_mask = 0;
-        c->proof_flags &= (uint8_t)~CONTRACT_PROOF_FORBID_ORIGIN;
+        c->proof_flags &=
+            (uint8_t)(UINT8_MAX ^ CONTRACT_PROOF_FORBID_ORIGIN);
     }
     READ_FIELD(f, c->quantity_needed);
     READ_FIELD(f, c->base_price);
