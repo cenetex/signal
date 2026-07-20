@@ -4,6 +4,12 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: 'Tag/ref to build and attach to an existing release'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -17,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -49,6 +57,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -58,7 +68,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ inputs.release_ref || github.ref_name }}
           cmake --build build --config Release --target signal
 
       - name: Package (Unix)
@@ -86,10 +96,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
 
       - name: Build server
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ inputs.release_ref || github.ref_name }}
           cmake --build build --config Release --target signal_server
 
       - name: Package
@@ -107,7 +124,7 @@ jobs:
   attach-to-release:
     needs: [build-native, build-server]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || inputs.release_ref != ''
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -116,7 +133,8 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_ref || github.event.release.tag_name }}
         run: |
           for f in artifacts/**/*; do
-            [ -f "$f" ] && gh release upload "${{ github.event.release.tag_name }}" "$f" --repo "${{ github.repository }}" --clobber
+            [ -f "$f" ] && gh release upload "$RELEASE_TAG" "$f" --repo "${{ github.repository }}" --clobber
           done
