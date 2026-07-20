@@ -2,6 +2,7 @@
 
 Status: accepted interim design · written 2026-07-18 · supersedes nothing,
 documents what was previously only implicit in code.
+Migration tracked as issue #615.
 
 Station ledger balances — the per-station sovereign credits that are the
 game's only money — are stored and transmitted as `float`. This note records

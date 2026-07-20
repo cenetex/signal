@@ -257,8 +257,9 @@ platform drift need broader automated coverage.
   standalone ASan replay target (`make fuzz-receipts-standalone`) for crash
   triage, and a time-bounded `fuzz` job in the native safety gates workflow
   (corpus replay as regression gate + 5-minute exploration, crash artifacts
-  uploaded). Still open: full client-input/snapshot protocol decode (needs
-  world/player shims), save-load parsing, and chain-log parsing harnesses.
+  uploaded). Still open — tracked as #613: full client-input/snapshot
+  protocol decode (needs world/player shims), save-load parsing, and
+  chain-log parsing harnesses.
 
 ---
 
