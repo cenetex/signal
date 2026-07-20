@@ -136,7 +136,10 @@ bool station_panel_legend_text(station_view_t view,
                                size_t out_size);
 bool station_laser_refit_summary(char *out, size_t out_size);
 bool station_production_summary(char *out, size_t out_size);
+bool station_credit_perception_summary(char *out, size_t out_size);
+bool station_remembered_work_summary(char *out, size_t out_size);
 void station_panel_sample_current(input_intent_t *intent);
+const char *module_consequence_label(module_type_t type);
 
 enum {
     HAIL_CONVERSATION_NPC_LIMIT = NPC_RADIO_HAIL_CONVERSATION_LIMIT,
@@ -859,6 +862,8 @@ void draw_hud(void);
 #ifdef __EMSCRIPTEN__
 void smoke_apply_loop_state_for_frame(void);
 #endif
+bool hud_signal_loss_perception_summary(char *out, size_t out_size);
+bool hud_npc_motive_perception_summary(char *out, size_t out_size);
 void draw_hail_ping(void);
 float hail_ping_camera_zoom(void);
 float player_current_balance(void);

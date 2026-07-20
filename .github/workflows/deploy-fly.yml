@@ -76,6 +76,15 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
           npm run smoke
+      - name: Upload perception review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perception-review-${{ github.sha }}
+          path: |
+            test-results/**/perception-*.png
+            !test-results/**/attachments/**
+          if-no-files-found: warn
 
   deploy:
     name: Launch or deploy app

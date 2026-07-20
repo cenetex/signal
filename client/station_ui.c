@@ -3344,6 +3344,41 @@ static bool station_known_for_line(const station_t *st,
     return false;
 }
 
+bool station_remembered_work_summary(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    const station_t *st = current_station_ptr();
+    if (!st) return false;
+
+    chain_route_history_tail_t rows[8];
+    int count = chain_log_read_route_history_tail(st, rows, 8);
+    if (count <= 0) return false;
+    const chain_route_history_tail_t *row = &rows[count - 1];
+    const chain_payload_route_history_t *p = &row->payload;
+    char title[96];
+    char evidence[112];
+    char meta[96];
+    route_history_detail_fields(row->event_id,
+                                row->epoch,
+                                p->memory_kind,
+                                p->origin_station,
+                                p->destination_station,
+                                p->commodity,
+                                p->action,
+                                p->evidence_count,
+                                p->confidence,
+                                p->salience,
+                                p->value_hint,
+                                p->observed_tick,
+                                title, sizeof(title),
+                                evidence, sizeof(evidence),
+                                meta, sizeof(meta));
+    snprintf(out, out_size, "LOCAL SIGNED PROOF | %s | %s | %s",
+             title, evidence, meta);
+    return true;
+}
+
 typedef struct {
     char text[128];
     const uint8_t *rgb;
@@ -3376,11 +3411,30 @@ static bool station_credit_bridge_line(int current_station,
         }
     }
     if (best_station < 0 || best_balance <= 0.5f) return false;
-    char source[16], here[16];
+    char source[16];
     ui_station_name_short(best_station, source, sizeof(source));
-    ui_station_name_short(current_station, here, sizeof(here));
-    snprintf(out, cap, "Spend %s value by buying cargo there, hauling to %s.",
-             source, here);
+    snprintf(out, cap, "%s: buy > haul", source);
+    return true;
+}
+
+bool station_credit_perception_summary(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    const station_t *st = current_station_ptr();
+    if (!st) return false;
+
+    char ledger[192];
+    char bridge[128];
+    int station_idx = station_index_of(st);
+    if (ui_build_ledger_strip(station_idx, ledger, sizeof(ledger)) <= 0)
+        return false;
+
+    if (station_credit_bridge_line(station_idx, bridge, sizeof(bridge))) {
+        snprintf(out, out_size, "Local balances: %s | %s", ledger, bridge);
+    } else {
+        snprintf(out, out_size, "Local balances: %s", ledger);
+    }
     return true;
 }
 
@@ -3561,17 +3615,21 @@ static int build_station_arrival_lines(const station_t *st,
         lines[n].rgb = ARRIVAL_READY;
         n++;
     }
+    /* When a player has money elsewhere but none here, the cargo bridge is
+     * the arrival fact that resolves the immediate confusion. Keep it ahead
+     * of production so compact layouts do not hide it below the one-line
+     * arrival budget. */
+    if (station_credit_bridge_line(station_index_of(st), buf, sizeof(buf)) &&
+        n < cap) {
+        ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, NULL, NULL);
+        lines[n].rgb = ARRIVAL_CREDIT;
+        n++;
+    }
     if (ui_station_production_summary_for(st, mirrored_authoritative,
                                           buf, sizeof(buf)) &&
         n < cap) {
         ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, NULL, NULL);
         lines[n].rgb = ARRIVAL_PRODUCTION;
-        n++;
-    }
-    if (station_credit_bridge_line(station_index_of(st), buf, sizeof(buf)) &&
-        n < cap) {
-        ui_write_parts(lines[n].text, sizeof(lines[n].text), buf, NULL, NULL);
-        lines[n].rgb = ARRIVAL_CREDIT;
         n++;
     }
     if (station_player_memory_line(st, buf, sizeof(buf)) && n < cap) {
@@ -3607,9 +3665,10 @@ static float draw_station_arrival_brief(const station_t *st,
     for (int i = 0; i < shown; i++) {
         char line[160];
         char fit[160];
-        ui_write_parts(line, sizeof(line),
-                       i == 0 ? "ARRIVAL // " : "        // ",
-                       lines[i].text, NULL);
+        const char *prefix = i == 0
+            ? (compact ? "// " : "ARRIVAL // ")
+            : (compact ? "   " : "        // ");
+        ui_write_parts(line, sizeof(line), prefix, lines[i].text, NULL);
         ui_fit_text(line, chars, fit, sizeof(fit));
         sdtx_color3b(lines[i].rgb[0], lines[i].rgb[1], lines[i].rgb[2]);
         sdtx_pos(ui_text_pos(left_x), ui_text_pos(y));

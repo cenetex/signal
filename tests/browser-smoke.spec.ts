@@ -1,4 +1,4 @@
-import { test, expect, type Page, type Locator } from '@playwright/test';
+import { test, expect, type Page, type Locator, type TestInfo } from '@playwright/test';
 import { inflateSync } from 'node:zlib';
 
 const fatalPattern =
@@ -550,6 +550,51 @@ async function cargoLineageText(page: Page): Promise<string> {
   });
 }
 
+async function stationCreditPerceptionSummary(page: Page): Promise<string> {
+  return page.evaluate(() => new Promise<string>((resolve) => {
+    requestAnimationFrame(() => {
+      const mod = (window as unknown as {
+        Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+      }).Module;
+      if (!mod || typeof mod.ccall !== 'function') {
+        resolve('');
+        return;
+      }
+      resolve(mod.ccall('signal_station_credit_perception_summary', 'string', [], []) || '');
+    });
+  }));
+}
+
+async function signalLossPerceptionSummary(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_signal_loss_perception_summary', 'string', [], []) || '';
+  });
+}
+
+async function npcMotivePerceptionSummary(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_npc_motive_perception_summary', 'string', [], []) || '';
+  });
+}
+
+async function rememberedWorkPerceptionSummary(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_remembered_work_perception_summary', 'string', [], []) || '';
+  });
+}
+
 async function stationPanelDigitSlots(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -720,6 +765,12 @@ const smokeLoopState = {
   rockRouteTow: 28,
   rockRouteDegraded: 29,
   cargoLineage: 30,
+  localMoney: 31,
+  npcMotiveCrisp: 32,
+  npcMotiveDegraded: 33,
+  rememberedWorkCrisp: 34,
+  rememberedWorkDegraded: 35,
+  constructionConsequence: 36,
 } as const;
 
 const mobileFlag = {
@@ -779,6 +830,35 @@ async function waitForRenderedGame(
       })
       .toBeGreaterThan(0);
   }
+}
+
+async function attachPerceptionReview(
+  testInfo: TestInfo,
+  canvas: Locator,
+  scenario: string,
+  viewport: 'desktop' | 'narrow',
+): Promise<void> {
+  await canvas.page().waitForTimeout(100);
+  const box = await canvas.boundingBox();
+  expect(box, `${scenario} — ${viewport} canvas should exist`).toBeTruthy();
+  expect(box!.x, `${scenario} — ${viewport} canvas should stay on-screen`).toBeGreaterThanOrEqual(0);
+  expect(box!.y, `${scenario} — ${viewport} canvas should stay on-screen`).toBeGreaterThanOrEqual(0);
+  const viewportSize = canvas.page().viewportSize();
+  expect(viewportSize).toBeTruthy();
+  expect(
+    box!.x + box!.width,
+    `${scenario} — ${viewport} canvas should not overflow horizontally`,
+  ).toBeLessThanOrEqual(viewportSize!.width + 1);
+  expect(
+    box!.y + box!.height,
+    `${scenario} — ${viewport} canvas should not overflow vertically`,
+  ).toBeLessThanOrEqual(viewportSize!.height + 1);
+  const path = testInfo.outputPath(`perception-${scenario}-${viewport}.png`);
+  await canvas.screenshot({ path });
+  await testInfo.attach(`perception-${scenario}-${viewport}`, {
+    path,
+    contentType: 'image/png',
+  });
 }
 
 async function loadGame(
@@ -1576,6 +1656,120 @@ test.describe('Browser smoke tests', () => {
 
     await tap(page, 'Escape');
     await expect.poll(async () => cargoLineageText(page)).toBe('');
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('perception acceptance answers all six player questions on desktop and narrow layouts', async ({ page }, testInfo) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+
+    await setSmokeLoopState(page, smokeLoopState.rockSmeltPath);
+    expect(
+      await hudActionText(page),
+      'Rock value — why is this rock useful?',
+    ).toContain('smelts to FE Ingot at Prospect');
+    await attachPerceptionReview(testInfo, canvas, 'rock-value', 'desktop');
+
+    await setSmokeLoopState(page, smokeLoopState.weakSignalVisual);
+    expect(
+      await signalLossPerceptionSummary(page),
+      'Signal loss — why is civilization/control thinning here?',
+    ).toBe('[ SIGNAL LOST ]');
+    expect((await signalVisualSaturation(page)) ?? 1).toBeLessThan(0.05);
+    await attachPerceptionReview(testInfo, canvas, 'signal-loss', 'desktop');
+
+    await setSmokeLoopState(page, smokeLoopState.localMoney);
+    await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
+    await expect
+      .poll(async () => stationCreditPerceptionSummary(page), {
+        message: 'local-money view should name both station ledgers and the cargo bridge',
+      })
+      .toContain('Local balances: Kepler 0 kepl');
+    const desktop = await stationCreditPerceptionSummary(page);
+    expect(desktop).toContain('Prospect 80 pros');
+    expect(desktop).toContain(
+      'Prospect: buy > haul',
+    );
+    await attachPerceptionReview(testInfo, canvas, 'local-money', 'desktop');
+
+    await setSmokeLoopState(page, smokeLoopState.npcMotiveCrisp);
+    const crispMotive = await npcMotivePerceptionSummary(page);
+    expect(
+      crispMotive,
+      'NPC motive — why did that worker choose that route?',
+    ).toContain('haul FE Ingot -> Kepler Yard');
+    expect(crispMotive).toContain('because route memory');
+    expect(crispMotive).toContain('heard route @Prospe h0 age2 anchor');
+    expect(crispMotive).not.toContain('?');
+    await attachPerceptionReview(testInfo, canvas, 'npc-motive', 'desktop');
+
+    await setSmokeLoopState(page, smokeLoopState.npcMotiveDegraded);
+    const degradedMotive = await npcMotivePerceptionSummary(page);
+    expect(degradedMotive).toContain('haul FE Ingot -> Kepler Yard');
+    expect(
+      degradedMotive,
+      'NPC motive — relayed evidence should read as degraded, not certain',
+    ).toContain('?');
+
+    await setSmokeLoopState(page, smokeLoopState.rememberedWorkCrisp);
+    const crispMemory = await rememberedWorkPerceptionSummary(page);
+    expect(
+      crispMemory,
+      'Remembered work — who remembers the verified delivery?',
+    ).toContain('LOCAL SIGNED PROOF | route success Prospect>Kepler FR');
+    expect(crispMemory).toContain('signed proof: delivery via FR, 6 receipts');
+    expect(crispMemory).toContain('known event');
+    await attachPerceptionReview(testInfo, canvas, 'remembered-work', 'desktop');
+
+    await setSmokeLoopState(page, smokeLoopState.rememberedWorkDegraded);
+    const degradedMemory = await rememberedWorkPerceptionSummary(page);
+    expect(degradedMemory).toContain('signed proof: delivery via FR, 2 receipts');
+    expect(
+      degradedMemory,
+      'Remembered work — weak route knowledge should read faint without raw confidence',
+    ).toContain('faint event');
+    expect(degradedMemory).not.toContain('conf ');
+
+    await setSmokeLoopState(page, smokeLoopState.constructionConsequence);
+    expect(
+      await hudHintText(page),
+      'Construction consequence — what changed because I built this?',
+    ).toContain('Signal relay online -- civilization reaches farther.');
+    await attachPerceptionReview(testInfo, canvas, 'construction-consequence', 'desktop');
+
+    await page.setViewportSize({ width: 390, height: 760 });
+
+    await setSmokeLoopState(page, smokeLoopState.rockSmeltPath);
+    expect(await hudActionText(page)).toContain('smelts to FE Ingot at Prospect');
+    await attachPerceptionReview(testInfo, canvas, 'rock-value', 'narrow');
+
+    await setSmokeLoopState(page, smokeLoopState.weakSignalVisual);
+    expect(await signalLossPerceptionSummary(page)).toBe('[ SIGNAL LOST ]');
+    await attachPerceptionReview(testInfo, canvas, 'signal-loss', 'narrow');
+
+    await setSmokeLoopState(page, smokeLoopState.localMoney);
+    await expect.poll(async () => stationCreditPerceptionSummary(page)).toBe(desktop);
+    await attachPerceptionReview(testInfo, canvas, 'local-money', 'narrow');
+
+    await setSmokeLoopState(page, smokeLoopState.npcMotiveCrisp);
+    expect(await npcMotivePerceptionSummary(page)).toContain('because route memory');
+    await attachPerceptionReview(testInfo, canvas, 'npc-motive', 'narrow');
+
+    await setSmokeLoopState(page, smokeLoopState.rememberedWorkCrisp);
+    expect(await rememberedWorkPerceptionSummary(page)).toContain('known event');
+    await attachPerceptionReview(testInfo, canvas, 'remembered-work', 'narrow');
+
+    await setSmokeLoopState(page, smokeLoopState.constructionConsequence);
+    expect(await hudHintText(page)).toContain(
+      'Signal relay online -- civilization reaches farther.',
+    );
+    await attachPerceptionReview(testInfo, canvas, 'construction-consequence', 'narrow');
+
+    await expect
+      .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
+      .toBeGreaterThan(0.05);
+
     expectNoFatalErrors(logs);
   });
 

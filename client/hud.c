@@ -37,6 +37,28 @@ static void hud_append_text(char *out, size_t cap, const char *text) {
     snprintf(out + len, cap - len, "%s", text);
 }
 
+static void hud_fit_text(const char *src, int max_chars,
+                         char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!src || max_chars <= 0) return;
+    size_t src_len = strlen(src);
+    size_t limit = (size_t)max_chars;
+    if (limit >= cap) limit = cap - 1;
+    if (src_len <= limit) {
+        snprintf(out, cap, "%s", src);
+        return;
+    }
+    if (limit <= 3) {
+        for (size_t i = 0; i < limit; i++) out[i] = '.';
+        out[limit] = '\0';
+        return;
+    }
+    memcpy(out, src, limit - 3);
+    memcpy(out + limit - 3, "...", 3);
+    out[limit] = '\0';
+}
+
 #ifdef __EMSCRIPTEN__
 EM_JS(int, signal_relay_debug_region_js, (char *out, int cap), {
     if (cap <= 0) return 0;
@@ -2067,6 +2089,7 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     float bg_y = fmaxf(8.0f, py - 9.0f);
     float bg_w = fminf(326.0f, screen_w - bg_x - 12.0f);
     float bg_h = 76.0f;
+    int text_chars = (int)floorf((bg_w - 20.0f) / cell);
 
     int cycle = (int)floorf(g.world.time / 0.85f);
     InspectJobCause cause;
@@ -2147,7 +2170,10 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     const char *dest = (snap->dest_station < MAX_STATIONS)
         ? g.world.stations[snap->dest_station].name : "?";
     if (job) {
-        sdtx_puts(job_card_action[0] ? job_card_action : "selected work");
+        char action_fit[96];
+        hud_fit_text(job_card_action[0] ? job_card_action : "selected work",
+                     text_chars, action_fit, sizeof(action_fit));
+        sdtx_puts(action_fit);
     } else {
         sdtx_printf("%s %s  %.10s > %.10s",
                     hud_npc_role_label(snap->role),
@@ -2170,7 +2196,9 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
 
     sdtx_pos(px / cell, (py + 46.0f) / cell);
     sdtx_color3b(clarity.fg[0], clarity.fg[1], clarity.fg[2]);
-    sdtx_puts(memory_seen);
+    char memory_fit[96];
+    hud_fit_text(memory_seen, text_chars, memory_fit, sizeof(memory_fit));
+    sdtx_puts(memory_fit);
 
     sdtx_pos(px / cell, (py + 60.0f) / cell);
     sdtx_color3b(clarity.dim[0], clarity.dim[1], clarity.dim[2]);
@@ -2181,13 +2209,19 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
             ui_clarity_degrade_text(job_card_source, clarity.clarity,
                                     (uint32_t)(job->event_id & 0xffffffffu),
                                     source_seen, sizeof(source_seen));
-            sdtx_printf("%s", source_seen);
+            char source_fit[96];
+            hud_fit_text(source_seen, text_chars,
+                         source_fit, sizeof(source_fit));
+            sdtx_puts(source_fit);
         } else if (hud_job_source_chain_label(job, source_chain, sizeof(source_chain))) {
             char source_seen[72];
             ui_clarity_degrade_text(source_chain, clarity.clarity,
                                     (uint32_t)(job->event_id & 0xffffffffu),
                                     source_seen, sizeof(source_seen));
-            sdtx_printf("%s", source_seen);
+            char source_fit[72];
+            hud_fit_text(source_seen, text_chars,
+                         source_fit, sizeof(source_fit));
+            sdtx_puts(source_fit);
         } else if (hnn_trace) {
             char trace[96];
             hud_hnn_trace_detail_label(hnn_trace, trace, sizeof(trace));
@@ -2209,6 +2243,57 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
         sdtx_color3b(PAL_TEXT_FADED);
         sdtx_puts(contract);
     }
+}
+
+bool hud_npc_motive_perception_summary(char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    const NetInspectSnapshot *snap = &g.inspect_snapshot;
+    if (g.inspect_snapshot_timer <= 0.0f ||
+        snap->target_type != INSPECT_TARGET_NPC ||
+        snap->target_index >= MAX_NPC_SHIPS ||
+        !g.world.npc_ships[snap->target_index].active) {
+        return false;
+    }
+
+    InspectJobCause cause;
+    if (!inspect_label_find_job_cause(snap, &cause) || !cause.job)
+        return false;
+    const NetInspectSnapshotRow *job = cause.job;
+    uint8_t source_idx = (uint8_t)(job->event_id & 0xFFu);
+    uint8_t dest_idx = (uint8_t)((job->event_id >> 8) & 0xFFu);
+    uint8_t commodity = (uint8_t)((job->event_id >> 24) & 0xFFu);
+    const char *source = source_idx < MAX_STATIONS
+        ? g.world.stations[source_idx].name : "?";
+    const char *dest = dest_idx < MAX_STATIONS
+        ? g.world.stations[dest_idx].name : "?";
+    const char *comm = commodity < COMMODITY_COUNT
+        ? commodity_short_name((commodity_t)commodity) : "work";
+
+    char action[96];
+    char motive[96];
+    char source_line[96];
+    if (!inspect_label_job_contact_card(job, comm, source, dest,
+                                        action, sizeof(action),
+                                        motive, sizeof(motive),
+                                        source_line, sizeof(source_line))) {
+        return false;
+    }
+
+    ui_clarity_t clarity = hud_job_clarity(job);
+    int cycle = (int)floorf(g.world.time / 0.85f);
+    char motive_seen[96];
+    char source_seen[96];
+    ui_clarity_degrade_text(
+        motive, clarity.clarity,
+        (uint32_t)(snap->target_index * 2654435761u + cycle),
+        motive_seen, sizeof(motive_seen));
+    ui_clarity_degrade_text(source_line, clarity.clarity,
+                            (uint32_t)(job->event_id & 0xffffffffu),
+                            source_seen, sizeof(source_seen));
+    snprintf(out, out_size, "%s | %s | %s", action, motive_seen,
+             source_seen);
+    return true;
 }
 
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
@@ -2792,6 +2877,21 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     }
 }
 
+bool hud_signal_loss_perception_summary(char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (g.local_player_slot < 0 || LOCAL_PLAYER.docked) return false;
+    float sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
+    if (sig_quality < 0.01f) {
+        snprintf(out, out_size, "[ SIGNAL LOST ]");
+        return true;
+    }
+    if (sig_quality >= SIGNAL_BAND_OPERATIONAL) return false;
+    int ctrl_pct = (int)lroundf(signal_control_scale(sig_quality) * 100.0f);
+    snprintf(out, out_size, "[ LOW SIGNAL -- CTRL %d%% ]", ctrl_pct);
+    return true;
+}
+
 static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float sig_quality) {
     if (LOCAL_PLAYER.docked) return;
     if (g.death_screen_timer > 0.0f || g.death_cinematic.active) return;
@@ -2817,11 +2917,10 @@ static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float s
     float urgency = 1.0f - clampf(sig_quality / SIGNAL_BAND_OPERATIONAL,
                                   0.0f, 1.0f);
     uint8_t alpha = (uint8_t)(90.0f + urgency * 110.0f);
-    int ctrl_pct = (int)lroundf(signal_control_scale(sig_quality) * 100.0f);
     const uint8_t frontier_rgb[3] = { PAL_SIGNAL_FRONTIER };
     sdtx_color4b(frontier_rgb[0], frontier_rgb[1], frontier_rgb[2], alpha);
     char text[64];
-    snprintf(text, sizeof(text), "[ LOW SIGNAL -- CTRL %d%% ]", ctrl_pct);
+    if (!hud_signal_loss_perception_summary(text, sizeof(text))) return;
     sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.40f) / cell, cell,
                        text);
 }
@@ -3771,7 +3870,229 @@ enum {
     SMOKE_LOOP_STATE_ROCK_ROUTE_TOW = 28,
     SMOKE_LOOP_STATE_ROCK_ROUTE_DEGRADED = 29,
     SMOKE_LOOP_STATE_CARGO_LINEAGE = 30,
+    SMOKE_LOOP_STATE_LOCAL_MONEY = 31,
+    SMOKE_LOOP_STATE_NPC_MOTIVE_CRISP = 32,
+    SMOKE_LOOP_STATE_NPC_MOTIVE_DEGRADED = 33,
+    SMOKE_LOOP_STATE_REMEMBERED_WORK_CRISP = 34,
+    SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED = 35,
+    SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE = 36,
 };
+
+static int smoke_remembered_work_mode = -1;
+
+static bool smoke_maintain_npc_motive_view(bool degraded) {
+    if (g.world.station_count <= 1 ||
+        !station_exists(&g.world.stations[0]) ||
+        !station_exists(&g.world.stations[1])) return false;
+
+    server_player_t *sp = &LOCAL_PLAYER;
+    npc_ship_t *npc = &g.world.npc_ships[0];
+    npc->active = true;
+    npc->role = NPC_ROLE_HAULER;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    const uint8_t token[8] = {'N','P','C','0','0','7','0','1'};
+    memcpy(npc->session_token, token, sizeof(token));
+    if (npc->ship) {
+        npc->ship->pos = v2_add(sp->ship->pos, v2(120.0f, 0.0f));
+        npc->ship->vel = v2(0.0f, 0.0f);
+    }
+
+    memset(&g.inspect_snapshot, 0, sizeof(g.inspect_snapshot));
+    g.inspect_snapshot.target_type = INSPECT_TARGET_NPC;
+    g.inspect_snapshot.target_index = 0;
+    g.inspect_snapshot.module_index = 0xffu;
+    g.inspect_snapshot.role = (uint8_t)NPC_ROLE_HAULER;
+    g.inspect_snapshot.state = (uint8_t)NPC_STATE_TRAVEL_TO_DEST;
+    g.inspect_snapshot.home_station = 0;
+    g.inspect_snapshot.dest_station = 1;
+    g.inspect_snapshot.row_count = 1;
+
+    NetInspectSnapshotRow *job = &g.inspect_snapshot.rows[0];
+    job->commodity = (uint8_t)INSPECT_DIAG_JOB_HAUL;
+    job->grade = degraded ? 90u : 245u;
+    job->chain_len = 255u;
+    job->flags = INSPECT_ROW_DIAGNOSTIC;
+    job->event_id = (uint64_t)0u |
+                    ((uint64_t)1u << 8) |
+                    ((uint64_t)INSPECT_DIAG_JOB_HAUL << 16) |
+                    ((uint64_t)COMMODITY_FERRITE_INGOT << 24);
+    job->cargo_pub[INSPECT_JOB_FACTOR_VALUE] = degraded ? 72u : 190u;
+    job->cargo_pub[INSPECT_JOB_FACTOR_ROUTE] = degraded ? 85u : 245u;
+    job->cargo_pub[INSPECT_JOB_FACTOR_FRESHNESS] = degraded ? 58u : 230u;
+    job->cargo_pub[INSPECT_JOB_META_REASON] =
+        (uint8_t)INSPECT_JOB_REASON_ROUTE_MEMORY;
+    job->cargo_pub[INSPECT_JOB_META_MEMORY_KIND] =
+        (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
+    job->cargo_pub[INSPECT_JOB_META_HOPS] = degraded ? 4u : 0u;
+    job->cargo_pub[INSPECT_JOB_META_AGE] = degraded ? 61u : 2u;
+    job->cargo_pub[INSPECT_JOB_META_SOURCE_STATION] = 0u;
+    job->cargo_pub[INSPECT_JOB_META_PROOF_KIND] =
+        (uint8_t)INSPECT_JOB_PROOF_CHAIN_ANCHOR;
+    for (int i = 0; i < 32; i++)
+        job->receipt_head[i] = (uint8_t)(0x90 + i);
+
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = -1;
+    sp->in_dock_range = false;
+    g.was_docked = false;
+    g.inspect_snapshot_timer = 6.0f;
+    g.local_server.active = false;
+    return true;
+}
+
+static bool smoke_maintain_remembered_work_view(void) {
+    if (g.world.station_count <= 1 ||
+        !station_exists(&g.world.stations[1])) return false;
+    server_player_t *sp = &LOCAL_PLAYER;
+    station_t *st = &g.world.stations[1];
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+    sp->ship->pos = st->pos;
+    g.was_docked = true;
+    g.dock_settle_timer = 0.0f;
+    g.station_view = STATION_VIEW_HISTORY;
+    g.local_server.active = false;
+    return true;
+}
+
+static bool smoke_seed_remembered_work(bool degraded) {
+    int mode = degraded ? 1 : 0;
+    if (g.local_server.world.station_count <= 1) return false;
+    if (smoke_remembered_work_mode != mode) {
+        chain_payload_route_history_t payload = {0};
+        payload.memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
+        payload.origin_station = 0;
+        payload.destination_station = 1;
+        payload.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+        payload.action = (uint8_t)CONTRACT_DELIVERY;
+        payload.confidence = degraded ? 90u : 245u;
+        payload.salience = degraded ? 85u : 235u;
+        payload.evidence_count = degraded ? 2u : 6u;
+        payload.value_hint = degraded ? 40u : 120u;
+        payload.observed_tick = (uint32_t)g.world.tick;
+        payload.subject_nonce = degraded
+            ? UINT64_C(0x6060dd01) : UINT64_C(0x6060cc01);
+        station_t *authority = &g.local_server.world.stations[1];
+        if (chain_log_emit(&g.local_server.world, authority,
+                           CHAIN_EVT_ROUTE_HISTORY,
+                           &payload, sizeof(payload)) == 0) {
+            return false;
+        }
+        smoke_remembered_work_mode = mode;
+    }
+    return smoke_maintain_remembered_work_view();
+}
+
+static bool smoke_maintain_construction_consequence_view(void) {
+    if (g.world.station_count <= 0 ||
+        !station_exists(&g.world.stations[0])) return false;
+    server_player_t *sp = &LOCAL_PLAYER;
+    station_t *st = &g.world.stations[0];
+    int relay_idx = -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_SIGNAL_RELAY) {
+            relay_idx = i;
+            break;
+        }
+    }
+    if (relay_idx < 0) return false;
+    station_module_t *relay = &st->modules[relay_idx];
+    relay->scaffold = false;
+    relay->build_progress = 1.0f;
+    if (st->signal_range <= 0.0f) st->signal_range = 1600.0f;
+
+    g.commission_timer = 1.5f;
+    g.commission_pos = module_world_pos_ring(st, relay->ring, relay->slot);
+    module_color_fn(MODULE_SIGNAL_RELAY,
+                    &g.commission_cr, &g.commission_cg, &g.commission_cb);
+    snprintf(g.notice, sizeof(g.notice), "%s",
+             module_consequence_label(MODULE_SIGNAL_RELAY));
+    g.notice_timer = 6.0f;
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = 0;
+    sp->in_dock_range = false;
+    sp->ship->pos = v2_add(g.commission_pos, v2(180.0f, 0.0f));
+    g.camera_pos = g.commission_pos;
+    g.camera_initialized = true;
+    g.camera_drift_timer = 0.0f;
+    g.camera_station_index = -1;
+    g.was_docked = false;
+    g.local_server.active = false;
+    return true;
+}
+
+static bool smoke_maintain_local_money_view(void) {
+    if (g.world.station_count <= 1 ||
+        !station_exists(&g.world.stations[0]) ||
+        !station_exists(&g.world.stations[1])) return false;
+
+    server_player_t *sp = &LOCAL_PLAYER;
+    station_t *earned_here = &g.world.stations[0];
+    station_t *docked_here = &g.world.stations[1];
+    uint8_t pubkey[32];
+    client_session_pseudo_pubkey(sp->session_token, pubkey);
+
+    earned_here->ledger_count = 1;
+    memset(&earned_here->ledger[0], 0, sizeof(earned_here->ledger[0]));
+    memcpy(earned_here->ledger[0].player_pubkey, pubkey, sizeof(pubkey));
+    earned_here->ledger[0].balance = 80.0f;
+    earned_here->ledger[0].lifetime_credits_in = 80;
+    docked_here->ledger_count = 0;
+    g.known_station_ledger_count = 2;
+    g.known_station_ledger[0] = (NetKnownLedgerEntry){
+        .station = 0,
+        .balance = 80.0f,
+    };
+    g.known_station_ledger[1] = (NetKnownLedgerEntry){
+        .station = 1,
+        .balance = 0.0f,
+    };
+
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+    sp->ship->pos = docked_here->pos;
+    g.was_docked = true;
+    g.dock_settle_timer = 0.0f;
+    g.station_balance = 0.0f;
+    g.station_view = STATION_VIEW_TRADE;
+    g.local_server.active = false;
+    return true;
+}
+
+static bool smoke_maintain_weak_signal_view(void) {
+    if (g.world.station_count <= 0 ||
+        !station_exists(&g.world.stations[0])) return false;
+
+    server_player_t *sp = &LOCAL_PLAYER;
+    g.episode.watched[7] = true;
+    g.local_server.active = false;
+    sp->docked = false;
+    sp->current_station = -1;
+    sp->nearby_station = -1;
+    sp->in_dock_range = false;
+    sp->docking_approach = false;
+    g.was_docked = false;
+    g.dock_settle_timer = 0.0f;
+    sp->ship->pos = v2(100000.0f, 100000.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    g.camera_pos = sp->ship->pos;
+    g.hail_ping_origin = sp->ship->pos;
+    g.hail_ping_range = (sp->ship->comm_range > 0.0f)
+                      ? sp->ship->comm_range : 1500.0f;
+    g.signal_visual_saturation = signal_visual_saturation(
+        signal_strength_at(&g.world, sp->ship->pos));
+    g.signal_visual_saturation_initialized = true;
+    g.world.time = 0.5f; /* positive warning blink phase for review */
+    return true;
+}
 
 static bool smoke_maintain_cargo_lineage_view(void) {
     if (g.world.station_count <= 0 ||
@@ -3844,8 +4165,31 @@ void smoke_apply_loop_state_for_frame(void) {
         SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR) {
         (void)smoke_apply_loop_state(smoke_loop_state_override);
     } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_ROCK_SMELT_PATH) {
+        (void)smoke_apply_loop_state(smoke_loop_state_override);
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_WEAK_SIGNAL_VISUAL) {
+        (void)smoke_maintain_weak_signal_view();
+    } else if (smoke_loop_state_override ==
                SMOKE_LOOP_STATE_CARGO_LINEAGE) {
         (void)smoke_maintain_cargo_lineage_view();
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_LOCAL_MONEY) {
+        (void)smoke_maintain_local_money_view();
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_NPC_MOTIVE_CRISP) {
+        (void)smoke_maintain_npc_motive_view(false);
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_NPC_MOTIVE_DEGRADED) {
+        (void)smoke_maintain_npc_motive_view(true);
+    } else if (smoke_loop_state_override ==
+                   SMOKE_LOOP_STATE_REMEMBERED_WORK_CRISP ||
+               smoke_loop_state_override ==
+                   SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED) {
+        (void)smoke_maintain_remembered_work_view();
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE) {
+        (void)smoke_maintain_construction_consequence_view();
     }
 }
 
@@ -3895,6 +4239,9 @@ static void smoke_clear_loop_state(void) {
     g.plan_mode_active = false;
     g.notice_timer = 0.0f;
     g.notice[0] = '\0';
+    g.commission_timer = 0.0f;
+    g.inspect_snapshot_timer = 0.0f;
+    memset(&g.inspect_snapshot, 0, sizeof(g.inspect_snapshot));
     g.collection_feedback_timer = 0.0f;
     g.collection_feedback_fragments = 0;
     g.collection_feedback_ore = 0.0f;
@@ -4432,27 +4779,11 @@ static int smoke_apply_loop_state(int state) {
         return 1;
     }
     case SMOKE_LOOP_STATE_WEAK_SIGNAL_VISUAL:
-        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
-            return 0;
-        g.local_server.active = false;
-        sp->docked = false;
-        sp->current_station = -1;
-        sp->nearby_station = -1;
-        sp->in_dock_range = false;
-        sp->docking_approach = false;
-        g.was_docked = false;
-        g.dock_settle_timer = 0.0f;
-        sp->ship->pos = v2(100000.0f, 100000.0f);
-        sp->ship->vel = v2(0.0f, 0.0f);
-        g.camera_pos = sp->ship->pos;
+        /* Keep the deterministic perception fixture focused on the live HUD
+         * cue. The narrative episode is asynchronous in the browser and can
+         * otherwise cover later review captures from the same page. */
         g.hail_ping_timer = 0.0f;
-        g.hail_ping_origin = sp->ship->pos;
-        g.hail_ping_range = (sp->ship->comm_range > 0.0f)
-                          ? sp->ship->comm_range : 1500.0f;
-        g.signal_visual_saturation = signal_visual_saturation(
-            signal_strength_at(&g.world, sp->ship->pos));
-        g.signal_visual_saturation_initialized = true;
-        return 1;
+        return smoke_maintain_weak_signal_view() ? 1 : 0;
     case SMOKE_LOOP_STATE_NARROW_CAMERA_OFFSET: {
         if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
             return 0;
@@ -4553,6 +4884,18 @@ static int smoke_apply_loop_state(int state) {
         reset_trade_session_rows(0);
         return smoke_maintain_cargo_lineage_view() ? 1 : 0;
     }
+    case SMOKE_LOOP_STATE_LOCAL_MONEY:
+        return smoke_maintain_local_money_view() ? 1 : 0;
+    case SMOKE_LOOP_STATE_NPC_MOTIVE_CRISP:
+        return smoke_maintain_npc_motive_view(false) ? 1 : 0;
+    case SMOKE_LOOP_STATE_NPC_MOTIVE_DEGRADED:
+        return smoke_maintain_npc_motive_view(true) ? 1 : 0;
+    case SMOKE_LOOP_STATE_REMEMBERED_WORK_CRISP:
+        return smoke_seed_remembered_work(false) ? 1 : 0;
+    case SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED:
+        return smoke_seed_remembered_work(true) ? 1 : 0;
+    case SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE:
+        return smoke_maintain_construction_consequence_view() ? 1 : 0;
     default:
         return 0;
     }

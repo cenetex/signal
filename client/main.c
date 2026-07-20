@@ -1053,7 +1053,7 @@ static void maybe_notice_local_credits_rule(int station_idx, float balance) {
     }
 }
 
-static const char *module_consequence_label(module_type_t type) {
+const char *module_consequence_label(module_type_t type) {
     switch (type) {
     case MODULE_DOCK:
         return "Dock online -- station accepts traffic here.";
@@ -4372,6 +4372,39 @@ const char *signal_trade_lineage_text(void) {
     text[0] = '\0';
     (void)trade_lineage_selected_text(text, sizeof(text));
     return text;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_station_credit_perception_summary(void) {
+    static char summary[384];
+    smoke_apply_loop_state_for_frame();
+    summary[0] = '\0';
+    (void)station_credit_perception_summary(summary, sizeof(summary));
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_signal_loss_perception_summary(void) {
+    static char summary[96];
+    summary[0] = '\0';
+    (void)hud_signal_loss_perception_summary(summary, sizeof(summary));
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_npc_motive_perception_summary(void) {
+    static char summary[320];
+    summary[0] = '\0';
+    (void)hud_npc_motive_perception_summary(summary, sizeof(summary));
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_remembered_work_perception_summary(void) {
+    static char summary[384];
+    summary[0] = '\0';
+    (void)station_remembered_work_summary(summary, sizeof(summary));
+    return summary;
 }
 
 EMSCRIPTEN_KEEPALIVE
