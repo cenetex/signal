@@ -70,6 +70,8 @@
 #include "npc_radio.h"
 #include "ship.h"
 
+#define TRACTOR_TAP_MAX_SEC 0.2f
+
 static float action_predict_window_sec(void) {
     float window = 0.5f;
     if (g.net_authority_enabled && g.net_last_ack_rtt > 0.0f) {
@@ -83,12 +85,32 @@ static float action_predict_window_sec(void) {
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
+    g.input.tractor_press_time = 0.0f;
+    g.input.tractor_press_active = false;
+    g.input.tractor_release_tap_pending = false;
     g.input.brake_stop_latched = false;
     g.input.reverse_thrust_active = false;
 }
 
 void consume_pressed_input(void) {
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
+}
+
+void input_tractor_key_down(void) {
+    if (g.input.tractor_press_active) return;
+    g.input.tractor_press_time =
+        isfinite(g.net_time) && g.net_time > 0.0f ? g.net_time : 0.0f;
+    g.input.tractor_press_active = true;
+    g.input.tractor_release_tap_pending = false;
+}
+
+void input_tractor_key_up(void) {
+    if (!g.input.tractor_press_active) return;
+    float held = g.net_time - g.input.tractor_press_time;
+    if (isfinite(held) && held >= 0.0f && held < TRACTOR_TAP_MAX_SEC)
+        g.input.tractor_release_tap_pending = true;
+    g.input.tractor_press_time = 0.0f;
+    g.input.tractor_press_active = false;
 }
 
 void set_notice(const char* fmt, ...) {
@@ -312,19 +334,24 @@ uint8_t input_intent_net_flags(const input_intent_t *intent) {
 
 /* Tractor: hold Space = grab, tap Space (< 200ms) = release. */
 static void sample_tractor(input_intent_t *intent) {
-    if (LOCAL_PLAYER.docked) {
+    if (LOCAL_PLAYER.docked || g.plan_mode_active) {
         g.input.tractor_press_time = 0.0f;
+        g.input.tractor_press_active = false;
+        g.input.tractor_release_tap_pending = false;
         return;
     }
-    if (is_key_down(SAPP_KEYCODE_SPACE) && !g.plan_mode_active) {
-        if (g.input.tractor_press_time == 0.0f)
-            g.input.tractor_press_time = g.world.time;
+    if (is_key_down(SAPP_KEYCODE_SPACE)) {
+        input_tractor_key_down();
         intent->tractor_hold = true;
         return;
     }
-    if (g.input.tractor_press_time > 0.0f) {
-        float held = g.world.time - g.input.tractor_press_time;
-        if (held < 0.2f) intent->release_tow = true;
+    /* Native tests and integrations may set key_down directly without going
+     * through the sapp event callback. Preserve that fallback while normal
+     * desktop/touch input records the up edge at event time. */
+    if (g.input.tractor_press_active) input_tractor_key_up();
+    if (g.input.tractor_release_tap_pending) {
+        intent->release_tow = true;
+        g.input.tractor_release_tap_pending = false;
         if (intent->release_tow &&
             (LOCAL_PLAYER.ship->towed_count > 0 ||
              LOCAL_PLAYER.ship->towed_pod_count > 0) &&
@@ -332,7 +359,6 @@ static void sample_tractor(input_intent_t *intent) {
             onboarding_mark_threw();
             set_notice("Throw calibrated. Band line predicts impact; tow another body to haul or fight.");
         }
-        g.input.tractor_press_time = 0.0f;
     }
 }
 

@@ -9304,11 +9304,18 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 step_predicted_towed_body_forces(w, sp, dt);
             } else {
                 /* Hold Space = tractor active; tap Space = release towed bodies. */
-                sp->ship->tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
+                    /* A release action can arrive on the one-shot lane before
+                     * the continuous key-up packet clears tractor_hold. Do
+                     * not detach and then reacquire the same bodies later in
+                     * this tick (or on the next tick from the stale hold). */
+                    sp->input.tractor_hold = false;
+                    sp->ship->tractor_active = false;
                     release_towed_fragments(w, sp);
                     release_towed_pods(w, sp);
                     release_towed_scaffold(w, sp);
+                } else {
+                    sp->ship->tractor_active = sp->input.tractor_hold;
                 }
                 step_towed_cleanup(w, sp);
                 if (sp->ship->tractor_active) {

@@ -2354,7 +2354,9 @@ TEST(test_space_release_slingshots_cargo_pod_like_fragment) {
     ASSERT(sp != NULL);
     sp->ship->angle = 0.0f;
     sp->ship->vel = v2(300.0f, 0.0f);
-    sp->input.tractor_hold = false;
+    /* The one-shot release lane may beat the continuous key-up packet. A
+     * stale hold must not reacquire the pod in the release tick. */
+    sp->input.tractor_hold = true;
     sp->input.release_tow = true;
 
     int pod_idx = spawn_cargo_pod(&w, v2_add(pos, v2(-100.0f, 0.0f)),
@@ -2367,6 +2369,8 @@ TEST(test_space_release_slingshots_cargo_pod_like_fragment) {
 
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), -1);
+    ASSERT(!sp->ship->tractor_active);
+    ASSERT(!sp->input.tractor_hold);
     ASSERT(w.cargo_pods[pod_idx].vel.x > sp->ship->vel.x + 30.0f);
     ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].vel.y, sp->ship->vel.y, 0.1f);
 }

@@ -246,7 +246,9 @@ void trade_page_range(const trade_row_t *rows, int row_count,
 typedef struct {
     bool key_down[KEY_COUNT];
     bool key_pressed[KEY_COUNT];
-    float tractor_press_time;  /* world time when Space was pressed, 0 = not held */
+    float tractor_press_time;  /* client monotonic time when Space was pressed */
+    bool tractor_press_active;
+    bool tractor_release_tap_pending;
     float self_destruct_hold_time; /* world time when X press began; 0 = not held */
     bool brake_stop_latched;   /* S/Down hold began while moving; do not reverse */
     bool reverse_thrust_active; /* S/Down hold began while stopped */

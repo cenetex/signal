@@ -13,6 +13,11 @@ void clear_input_state(void);
 /* Consume all one-shot key_pressed flags after processing. */
 void consume_pressed_input(void);
 
+/* Preserve Space down/up timing at the event boundary so a short tap cannot
+ * be lost or lengthened while the render/simulation loop is busy. */
+void input_tractor_key_down(void);
+void input_tractor_key_up(void);
+
 /* Query held key state. */
 bool is_key_down(sapp_keycode key);
 

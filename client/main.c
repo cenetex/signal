@@ -3111,6 +3111,179 @@ int get_net_motion_ack_recovery_tier(void) {
 
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_tow_lifecycle(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+
+    world_t *authority = &g.local_server.world;
+    server_player_t *server_player = &authority->players[player_idx];
+    server_player_t *client_player = &g.world.players[player_idx];
+    if (!server_player->connected || !server_player->ship ||
+        !client_player->connected || !client_player->ship) {
+        return 0;
+    }
+
+    const int target_idx = MAX_ASTEROIDS - 1;
+    const int pod_idx = MAX_CARGO_PODS - 1;
+    const vec2 test_pos = {
+        server_player->ship->pos.x + 600.0f,
+        server_player->ship->pos.y,
+    };
+
+    world_tow_links_clear_source(authority, server_player->ship_ref);
+    world_asteroid_clear_tractor(authority, target_idx);
+    memset(&authority->asteroids[target_idx], 0,
+           sizeof(authority->asteroids[target_idx]));
+    authority->asteroid_generation_live[target_idx] = false;
+    authority->asteroids[target_idx] = (asteroid_t){
+        .active = true,
+        .fracture_child = true,
+        .tier = ASTEROID_TIER_S,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .pos = {test_pos.x + 90.0f, test_pos.y},
+        .vel = {0.0f, 0.0f},
+        .hp = 8.0f,
+        .max_hp = 8.0f,
+        .ore = 3.0f,
+        .radius = 14.0f,
+        .grade = MINING_GRADE_COMMON,
+        .net_dirty = true,
+    };
+    world_cargo_pod_clear_tractor(authority, pod_idx);
+    memset(&authority->cargo_pods[pod_idx], 0,
+           sizeof(authority->cargo_pods[pod_idx]));
+    authority->cargo_pod_generation_live[pod_idx] = false;
+    authority->cargo_pods[pod_idx] = (cargo_pod_t){
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .pos = {test_pos.x - 90.0f, test_pos.y},
+        .vel = {0.0f, 0.0f},
+        .radius = 18.0f,
+        .quantity = 12,
+    };
+
+    server_player->session_ready = true;
+    server_player->docked = false;
+    server_player->in_dock_range = false;
+    server_player->nearby_station = -1;
+    server_player->ship->pos = test_pos;
+    server_player->ship->vel = v2(0.0f, 0.0f);
+    server_player->ship->tractor_active = false;
+    memset(&server_player->input, 0, sizeof(server_player->input));
+    server_player->movement_queue_count = 0;
+    server_player->replication->force_authoritative_resync = true;
+    g.local_server.private_snapshot_dirty = true;
+
+    client_player->docked = false;
+    client_player->in_dock_range = false;
+    client_player->nearby_station = -1;
+    client_player->ship->pos = test_pos;
+    client_player->ship->vel = v2(0.0f, 0.0f);
+    client_player->ship->tractor_active = false;
+    client_player->ship->towed_count = 0;
+    client_player->ship->towed_pod_count = 0;
+    memset(client_player->ship->towed_fragments, -1,
+           sizeof(client_player->ship->towed_fragments));
+    memset(client_player->ship->towed_pods, -1,
+           sizeof(client_player->ship->towed_pods));
+    memset(&g.world.asteroids[target_idx], 0,
+           sizeof(g.world.asteroids[target_idx]));
+    memset(&g.asteroid_interp.prev[target_idx], 0,
+           sizeof(g.asteroid_interp.prev[target_idx]));
+    memset(&g.asteroid_interp.curr[target_idx], 0,
+           sizeof(g.asteroid_interp.curr[target_idx]));
+    g.asteroid_interp.elapsed[target_idx] = 0.0f;
+    memset(&g.world.cargo_pods[pod_idx], 0,
+           sizeof(g.world.cargo_pods[pod_idx]));
+    memset(&g.cargo_pod_interp.prev[pod_idx], 0,
+           sizeof(g.cargo_pod_interp.prev[pod_idx]));
+    memset(&g.cargo_pod_interp.curr[pod_idx], 0,
+           sizeof(g.cargo_pod_interp.curr[pod_idx]));
+    g.cargo_pod_interp.elapsed[pod_idx] = 0.0f;
+    g.plan_mode_active = false;
+    g.death_cinematic.active = false;
+    g.input.tractor_press_time = 0.0f;
+    g.input.tractor_press_active = false;
+    g.input.tractor_release_tap_pending = false;
+    g.net_input_have_last = false;
+    return target_idx + 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_tow_lifecycle_state(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+    const int target_idx = MAX_ASTEROIDS - 1;
+    const int pod_idx = MAX_CARGO_PODS - 1;
+    const world_t *authority = &g.local_server.world;
+    const server_player_t *server_player = &authority->players[player_idx];
+    const server_player_t *client_player = &g.world.players[player_idx];
+    int state = 0;
+    if (authority->asteroids[target_idx].active) state |= 1 << 0;
+    if (g.world.asteroids[target_idx].active) state |= 1 << 1;
+    if (server_player->ship && server_player->ship->tractor_active)
+        state |= 1 << 2;
+    if (client_player->ship && client_player->ship->tractor_active)
+        state |= 1 << 3;
+    if (server_player->ship) {
+        for (int t = 0; t < server_player->ship->towed_count; t++) {
+            if (server_player->ship->towed_fragments[t] == target_idx) {
+                state |= 1 << 4;
+                break;
+            }
+        }
+    }
+    if (client_player->ship) {
+        for (int t = 0; t < client_player->ship->towed_count; t++) {
+            if (client_player->ship->towed_fragments[t] == target_idx) {
+                state |= 1 << 5;
+                break;
+            }
+        }
+    }
+    if (asteroid_tractor_player(&authority->asteroids[target_idx]) ==
+        player_idx) {
+        state |= 1 << 6;
+    }
+    if (g.input.tractor_press_active) state |= 1 << 7;
+    if (authority->cargo_pods[pod_idx].active) state |= 1 << 8;
+    if (g.world.cargo_pods[pod_idx].active) state |= 1 << 9;
+    if (server_player->ship) {
+        for (int t = 0; t < server_player->ship->towed_pod_count; t++) {
+            if (server_player->ship->towed_pods[t] == pod_idx) {
+                state |= 1 << 10;
+                break;
+            }
+        }
+    }
+    if (client_player->ship) {
+        for (int t = 0; t < client_player->ship->towed_pod_count; t++) {
+            if (client_player->ship->towed_pods[t] == pod_idx) {
+                state |= 1 << 11;
+                break;
+            }
+        }
+    }
+    if (cargo_pod_player_tractor(&authority->cargo_pods[pod_idx]) ==
+        player_idx) {
+        state |= 1 << 12;
+    }
+    if (cargo_pod_player_tractor(&g.cargo_pod_interp.curr[pod_idx]) ==
+        player_idx) {
+        state |= 1 << 13;
+    }
+    if (cargo_pod_player_tractor(&g.world.cargo_pods[pod_idx]) ==
+        player_idx) {
+        state |= 1 << 14;
+    }
+    if (g.input.tractor_release_tap_pending) state |= 1 << 17;
+    return state;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
     bool saved_net_authority_enabled = g.net_authority_enabled;
@@ -3266,6 +3439,29 @@ int signal_smoke_remote_towable_interp_check(void) {
     apply_remote_cargo_pods(&held_pod, 1);
     bool pod_roster_detach_ok =
         g.world.players[0].ship->towed_pod_count == 0;
+
+    /* Local tow prediction has already advanced the simulated pod to this
+     * pose. Adopting it into the render stream and then advancing the render
+     * clock once must reconstruct that same pose, not extrapolate by dt a
+     * second time. */
+    memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
+    memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+    g.net_input_tick_protocol = true;
+    g.world.players[0].docked = false;
+    held_pod.tractor_player = 0;
+    held_pod.pos_x = 200.0f;
+    held_pod.vel_x = 100.0f;
+    apply_remote_cargo_pods(&held_pod, 1);
+    g.world.cargo_pods[11] = g.cargo_pod_interp.curr[11];
+    g.world.cargo_pods[11].pos.x = 300.0f;
+    cargo_pod_clear_tractor(&g.world.cargo_pods[11]);
+    g.cargo_pod_interp.elapsed[11] = 0.10f;
+    net_adopt_local_tow_prediction(0.05f);
+    bool local_towed_pod_binding_preserved =
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    net_advance_cargo_pod_interpolation(0.05f);
+    interpolate_world_for_render();
+    float local_towed_pod_predicted_x = g.world.cargo_pods[11].pos.x;
 
     NetAsteroidState asteroid = {
         .index = 7,
@@ -3510,6 +3706,9 @@ int signal_smoke_remote_towable_interp_check(void) {
              pod_after_unrelated_x < 16.0f &&
              pod_roster_attach_ok &&
              pod_roster_detach_ok &&
+             local_towed_pod_binding_preserved &&
+             local_towed_pod_predicted_x > 299.9f &&
+             local_towed_pod_predicted_x < 300.1f &&
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
@@ -4162,6 +4361,8 @@ static void event(const sapp_event* event) {
                 g.input.key_down[kc] = true;
                 if (!event->key_repeat) {
                     g.input.key_pressed[kc] = true;
+                    if (event->key_code == SAPP_KEYCODE_SPACE)
+                        input_tractor_key_down();
                 }
             }
             if (event->key_code == SAPP_KEYCODE_ESCAPE &&
@@ -4178,6 +4379,8 @@ static void event(const sapp_event* event) {
         case SAPP_EVENTTYPE_KEY_UP: {
             int kc = (int)event->key_code;
             if (kc >= 0 && kc < KEY_COUNT) {
+                if (event->key_code == SAPP_KEYCODE_SPACE)
+                    input_tractor_key_up();
                 g.input.key_down[kc] = false;
             }
             break;
@@ -4577,11 +4780,14 @@ void signal_mobile_key(int action, int down) {
 
     if (down) {
         g_mobile_virtual_key_down[kc] = true;
-        if (!g.input.key_down[kc])
+        if (!g.input.key_down[kc]) {
             g.input.key_pressed[kc] = true;
+            if (kc == SAPP_KEYCODE_SPACE) input_tractor_key_down();
+        }
         g.input.key_down[kc] = true;
     } else {
         g_mobile_virtual_key_down[kc] = false;
+        if (kc == SAPP_KEYCODE_SPACE) input_tractor_key_up();
         g.input.key_down[kc] = false;
     }
 }

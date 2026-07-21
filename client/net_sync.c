@@ -843,14 +843,25 @@ static void net_adopt_local_cargo_pod_prediction(int idx, float elapsed) {
     const cargo_pod_t *predicted = &g.world.cargo_pods[idx];
     if (!predicted->active) return;
 
-    cargo_pod_t backdated = *predicted;
+    /* The interpolation record owns authoritative identity and tow metadata.
+     * Prediction owns only pose. Copying the whole rendered pod here allowed
+     * a stale client projection to erase a tractor binding that had just
+     * arrived in an identity delta. */
+    cargo_pod_t backdated = g.cargo_pod_interp.curr[idx];
+    backdated.active = predicted->active;
+    backdated.pos = predicted->pos;
+    backdated.vel = predicted->vel;
+    backdated.rotation = predicted->rotation;
     backdated.pos = v2_sub(predicted->pos,
                            v2_scale(predicted->vel, elapsed));
 
     g.cargo_pod_interp.prev[idx] = backdated;
     g.cargo_pod_interp.prev[idx].active = false;
     g.cargo_pod_interp.curr[idx] = backdated;
-    g.cargo_pod_interp.elapsed[idx] = elapsed;
+    /* Leave the slot clock at its pre-step value. sim_step advances every
+     * interpolation clock once after prediction; storing the future elapsed
+     * value here made held pods advance by dt twice and snap back on each
+     * authoritative correction. This mirrors the asteroid adoption path. */
 }
 
 static void net_adopt_local_scaffold_prediction(int idx, float elapsed) {

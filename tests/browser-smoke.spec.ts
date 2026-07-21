@@ -490,6 +490,55 @@ async function remoteTowableInterpCheck(page: Page): Promise<number> {
   });
 }
 
+async function prepareTowLifecycle(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_prepare_tow_lifecycle', 'number', [], []);
+  });
+}
+
+async function towLifecycleState(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_tow_lifecycle_state', 'number', [], []);
+  });
+}
+
+async function tapTowOnNextSample(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string | null, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') throw new Error('WASM ccall unavailable');
+    mod.ccall('signal_mobile_key', null, ['number', 'number'], [6, 1]);
+    await new Promise<void>((resolve, reject) => {
+      const deadline = performance.now() + 1_000;
+      const releaseWhenSampled = () => {
+        const state = mod.ccall!('signal_smoke_tow_lifecycle_state', 'number', [], []);
+        if ((state & 0b10000000) !== 0) {
+          mod.ccall!('signal_mobile_key', null, ['number', 'number'], [6, 0]);
+          resolve();
+          return;
+        }
+        if (performance.now() >= deadline) {
+          mod.ccall!('signal_mobile_key', null, ['number', 'number'], [6, 0]);
+          reject(new Error('tractor press was not sampled'));
+          return;
+        }
+        requestAnimationFrame(releaseWhenSampled);
+      };
+      requestAnimationFrame(releaseWhenSampled);
+    });
+    return mod.ccall('signal_smoke_tow_lifecycle_state', 'number', [], []);
+  });
+}
+
 async function remotePlayerScanned(page: Page, playerId: number): Promise<number> {
   return page.evaluate((id) => {
     const mod = (window as unknown as {
@@ -1608,6 +1657,64 @@ test.describe('Browser smoke tests', () => {
     await loadGame(page, false, { singleplayer: true });
 
     expect(await remoteTowableInterpCheck(page)).toBe(1);
+
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('hooks, holds, and releases a towable through the real loopback lifecycle', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+    await canvas.click();
+
+    expect(await prepareTowLifecycle(page)).toBeGreaterThan(0);
+    await expect
+      .poll(async () => (await towLifecycleState(page)) & 0b1100000011, {
+        timeout: 3_000,
+        message: 'the seeded fragment and cargo pod should reach both authority and client',
+      })
+      .toBe(0b1100000011);
+
+    await page.keyboard.down('Space');
+    try {
+      await expect
+        .poll(async () => (await towLifecycleState(page)) & 0b111110001111100, {
+          timeout: 3_000,
+          message: 'Space hold should activate both tractors and project both authoritative tow links to the client',
+        })
+        .toBe(0b111110001111100);
+      await page.waitForTimeout(300);
+    } finally {
+      await page.keyboard.up('Space');
+    }
+
+    await expect
+      .poll(async () => (await towLifecycleState(page)) & 0b1110001110000, {
+        timeout: 3_000,
+        message: 'a long hold release should keep both established tow links latched',
+      })
+      .toBe(0b1110001110000);
+    await expect
+      .poll(async () => (await towLifecycleState(page)) & 0b1100, {
+        timeout: 3_000,
+        message: 'the long-hold key-up should reach both tractor-active projections before the release tap',
+      })
+      .toBe(0);
+    await expect
+      .poll(async () => (await towLifecycleState(page)) & 0b10000000, {
+        timeout: 1_000,
+        message: 'the long-hold key-up must be sampled before starting a distinct release tap',
+      })
+      .toBe(0);
+
+    const tapState = await tapTowOnNextSample(page);
+    expect(tapState & 0b100000000000000000).toBe(0b100000000000000000);
+    await expect
+      .poll(async () => (await towLifecycleState(page)) & 0b1110001110000, {
+        timeout: 3_000,
+        message: 'a Space tap should clear both authoritative bindings and all tow-list projections',
+      })
+      .toBe(0);
 
     expectNoFatalErrors(logs);
   });

@@ -3081,6 +3081,17 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[1], 0);
 
+    cargo_pod_set_player_tractor(&pods[5], 0);
+    len = serialize_cargo_pods_q_for_player_delta(
+        buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
+        sent, sent_sig, false);
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS_Q);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, 2 + CARGO_POD_Q_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2], 5);
+    ASSERT_EQ_INT(buf[2 + 3], 0);
+    ASSERT_EQ_INT(remove[1], 0);
+
     pods[5].active = false;
     len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
