@@ -758,6 +758,16 @@ async function setSmokeLoopState(page: Page, state: number): Promise<void> {
   expect(ok).toBe(1);
 }
 
+async function constructionStateMask(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_construction_state_mask', 'number', [], []);
+  });
+}
+
 type TractorDrawTelemetry = {
   count: number;
   sourceType: number;
@@ -1881,6 +1891,10 @@ test.describe('Browser smoke tests', () => {
 
     await setSmokeLoopState(page, smokeLoopState.constructionConsequence);
     expect(
+      await constructionStateMask(page),
+      'construction tableau should include supply, active assembly, and complete material',
+    ).toBe(0b111);
+    expect(
       await hudHintText(page),
       'Construction consequence — what changed because I built this?',
     ).toContain('Signal relay online -- civilization reaches farther.');
@@ -1909,6 +1923,7 @@ test.describe('Browser smoke tests', () => {
     await attachPerceptionReview(testInfo, canvas, 'remembered-work', 'narrow');
 
     await setSmokeLoopState(page, smokeLoopState.constructionConsequence);
+    expect(await constructionStateMask(page)).toBe(0b111);
     expect(await hudHintText(page)).toContain(
       'Signal relay online -- civilization reaches farther.',
     );

@@ -3897,6 +3897,9 @@ enum {
 };
 
 static int smoke_remembered_work_mode = -1;
+static bool smoke_construction_snapshot_valid = false;
+static int smoke_construction_snapshot_indices[2] = {-1, -1};
+static station_module_t smoke_construction_snapshot_modules[2];
 
 static bool smoke_maintain_npc_motive_view(bool degraded) {
     if (g.world.station_count <= 1 ||
@@ -4022,6 +4025,30 @@ static bool smoke_maintain_construction_consequence_view(void) {
     station_module_t *relay = &st->modules[relay_idx];
     relay->scaffold = false;
     relay->build_progress = 1.0f;
+
+    /* Keep the perception-review tableau mixed: one module is still
+     * stocking amber members, one is actively welding finished material,
+     * and the relay is complete. This exercises all three structural states
+     * at desktop and narrow viewport sizes without inventing render-only
+     * progress semantics. */
+    if (!smoke_construction_snapshot_valid) {
+        int staged = 0;
+        for (int i = 0; i < st->module_count && staged < 2; i++) {
+            if (i == relay_idx) continue;
+            smoke_construction_snapshot_indices[staged] = i;
+            smoke_construction_snapshot_modules[staged] = st->modules[i];
+            staged++;
+        }
+        smoke_construction_snapshot_valid = staged == 2;
+    }
+    if (smoke_construction_snapshot_valid) {
+        for (int staged = 0; staged < 2; staged++) {
+            int i = smoke_construction_snapshot_indices[staged];
+            if (i < 0 || i >= st->module_count) continue;
+            st->modules[i].scaffold = true;
+            st->modules[i].build_progress = staged == 0 ? 0.55f : 1.55f;
+        }
+    }
     if (st->signal_range <= 0.0f) st->signal_range = 1600.0f;
 
     g.commission_timer = 1.5f;
@@ -4229,6 +4256,18 @@ static void smoke_set_onboarding_economy_progress(bool earned,
 static void smoke_clear_loop_state(void) {
     server_player_t *sp = &LOCAL_PLAYER;
     float max_hull = ship_max_hull(sp->ship);
+
+    if (smoke_construction_snapshot_valid && g.world.station_count > 0 &&
+        station_exists(&g.world.stations[0])) {
+        station_t *st = &g.world.stations[0];
+        for (int staged = 0; staged < 2; staged++) {
+            int i = smoke_construction_snapshot_indices[staged];
+            if (i >= 0 && i < st->module_count)
+                st->modules[i] = smoke_construction_snapshot_modules[staged];
+            smoke_construction_snapshot_indices[staged] = -1;
+        }
+        smoke_construction_snapshot_valid = false;
+    }
 
     g.local_server.active = true;
     g.world.interactions.count = 0;
@@ -4933,6 +4972,22 @@ int set_smoke_loop_state(int state) {
     int ok = smoke_apply_loop_state(state);
     smoke_loop_state_override = ok ? state : 0;
     return ok;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_construction_state_mask(void) {
+    if (g.world.station_count <= 0 ||
+        !station_exists(&g.world.stations[0])) return 0;
+    int mask = 0;
+    const station_t *st = &g.world.stations[0];
+    for (int i = 0; i < st->module_count; i++) {
+        switch (module_build_state(&st->modules[i])) {
+        case MODULE_BUILD_AWAITING_SUPPLY: mask |= 1 << 0; break;
+        case MODULE_BUILD_BUILDING:        mask |= 1 << 1; break;
+        case MODULE_BUILD_COMPLETE:        mask |= 1 << 2; break;
+        }
+    }
+    return mask;
 }
 #endif
 

@@ -1616,50 +1616,34 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
     sgl_scale(1.4f, 1.4f, 1.0f);
 
     if (scaffold) {
-        /* Wireframe outline circle — construction amber (#FFD977) */
+        /* Retired renderer kept for migration reference below
+         * draw_station_rings(). Keep its construction treatment physical:
+         * a deterministic hex of stocked struts, never a radial meter. */
         float amb_r = 1.0f, amb_g = 0.85f, amb_b = 0.47f;
         float pulse = 0.3f + 0.15f * sinf((float)(pos.x + pos.y) * 0.1f + progress * 10.0f);
-
-        /* Progress fill: partial circle from bottom */
         float fill = fminf(progress, 1.0f);
-        if (fill > 0.01f) {
-            int segs = (int)(16.0f * fill);
-            if (segs < 2) segs = 2;
-            sgl_begin_triangles();
-            sgl_c4f(amb_r * 0.3f, amb_g * 0.3f, amb_b * 0.3f, pulse * 0.6f);
-            float fill_angle = fill * TWO_PI_F;
-            float start = PI_F * 0.5f; /* bottom */
-            for (int i = 0; i < segs; i++) {
-                float a0 = start + fill_angle * (float)i / (float)segs;
-                float a1 = start + fill_angle * (float)(i + 1) / (float)segs;
-                sgl_v2f(0, 0);
-                sgl_v2f(cosf(a0) * 22.0f, sinf(a0) * 22.0f);
-                sgl_v2f(cosf(a1) * 22.0f, sinf(a1) * 22.0f);
-            }
-            sgl_end();
+        vec2 scaffold_vertices[6];
+        for (int i = 0; i < 6; i++) {
+            float a = -PI_F * 0.5f + (float)i * PI_F / 3.0f;
+            scaffold_vertices[i] = v2(cosf(a) * 22.0f, sinf(a) * 22.0f);
         }
-
-        /* Wireframe circle outline */
         sgl_begin_lines();
-        sgl_c4f(amb_r, amb_g, amb_b, pulse + 0.3f);
-        int wire_segs = 16;
-        for (int i = 0; i < wire_segs; i++) {
-            float a0 = TWO_PI_F * (float)i / (float)wire_segs;
-            float a1 = TWO_PI_F * (float)(i + 1) / (float)wire_segs;
-            sgl_v2f(cosf(a0) * 22.0f, sinf(a0) * 22.0f);
-            sgl_v2f(cosf(a1) * 22.0f, sinf(a1) * 22.0f);
+        sgl_c4f(amb_r, amb_g, amb_b, pulse * 0.45f);
+        for (int i = 0; i < 6; i++) {
+            sgl_v2f(scaffold_vertices[i].x, scaffold_vertices[i].y);
+            sgl_v2f(scaffold_vertices[(i + 1) % 6].x,
+                    scaffold_vertices[(i + 1) % 6].y);
         }
-        /* Cross-hatch for scaffolding feel */
-        sgl_v2f(-16, -16); sgl_v2f(16, 16);
-        sgl_v2f(-16, 16); sgl_v2f(16, -16);
         sgl_end();
-
-        /* Progress bar below */
-        if (fill > 0.01f) {
-            float bar_w = 48.0f * fill;
-            sgl_c4f(amb_r * 0.8f, amb_g * 0.8f, amb_b * 0.4f, 0.7f);
-            fill_quad(-24, 30, -24 + bar_w, 30, -24 + bar_w, 34, -24, 34);
+        int stocked = (int)ceilf(fill * 6.0f - 0.0001f);
+        sgl_begin_lines();
+        sgl_c4f(amb_r, amb_g, amb_b, pulse + 0.38f);
+        for (int i = 0; i < stocked && i < 6; i++) {
+            sgl_v2f(scaffold_vertices[i].x, scaffold_vertices[i].y);
+            sgl_v2f(scaffold_vertices[(i + 1) % 6].x,
+                    scaffold_vertices[(i + 1) % 6].y);
         }
+        sgl_end();
     } else {
         if (custom_hopper) {
             draw_hopper_shape(mr, mg, mb, hr, hg, hb, 0.92f);
@@ -1686,10 +1670,144 @@ static void station_cell_vertices(vec2 center, vec2 out[6]) {
     }
 }
 
+typedef enum {
+    STATION_STRUCTURE_LOD_CLOSE = 0,
+    STATION_STRUCTURE_LOD_NORMAL,
+    STATION_STRUCTURE_LOD_FAR,
+} station_structure_lod_t;
+
+/* Filled strips keep structural members opaque under camera motion. A line
+ * primitive is one screen pixel regardless of zoom and made repeated trusses
+ * collapse into shimmer. */
+static void draw_filled_strut(vec2 a, vec2 b, float half_width,
+                              float r, float g0, float b0, float alpha) {
+    vec2 delta = v2_sub(b, a);
+    float length = v2_len(delta);
+    if (length < 0.001f || half_width <= 0.0f || alpha <= 0.0f) return;
+    vec2 normal = v2_scale(v2(-delta.y, delta.x), half_width / length);
+    sgl_begin_quads();
+    sgl_c4f(r, g0, b0, alpha);
+    sgl_v2f(a.x + normal.x, a.y + normal.y);
+    sgl_v2f(b.x + normal.x, b.y + normal.y);
+    sgl_v2f(b.x - normal.x, b.y - normal.y);
+    sgl_v2f(a.x - normal.x, a.y - normal.y);
+    sgl_end();
+}
+
+static float structural_wear(vec2 a, vec2 b, int ordinal) {
+    float seed = a.x * 0.0137f + a.y * 0.0191f +
+                 b.x * 0.0073f + b.y * 0.0119f + (float)ordinal * 0.731f;
+    return 0.84f + 0.16f * fabsf(sinf(seed));
+}
+
+/* Completed material has a dark load-bearing body and two restrained weld
+ * seams. Module/commodity hue remains an accent rather than the state cue. */
+static void draw_finished_strut(vec2 a, vec2 b, float half_width,
+                                float r, float g0, float b0, float alpha,
+                                int ordinal) {
+    float wear = structural_wear(a, b, ordinal);
+    draw_filled_strut(a, b, half_width,
+                      0.085f + r * 0.145f,
+                      0.095f + g0 * 0.145f,
+                      0.110f + b0 * 0.145f,
+                      alpha * 0.96f);
+
+    vec2 delta = v2_sub(b, a);
+    float length = v2_len(delta);
+    if (length < 0.001f) return;
+    vec2 normal = v2_scale(v2(-delta.y, delta.x),
+                           half_width * 0.42f / length);
+    float seam_width = fmaxf(0.32f, half_width * 0.16f);
+    float sr = (0.32f + r * 0.48f) * wear;
+    float sg = (0.34f + g0 * 0.48f) * wear;
+    float sb = (0.38f + b0 * 0.48f) * wear;
+    draw_filled_strut(v2_add(a, normal), v2_add(b, normal), seam_width,
+                      sr, sg, sb, alpha * 0.78f);
+    draw_filled_strut(v2_sub(a, normal), v2_sub(b, normal), seam_width,
+                      sr, sg, sb, alpha * 0.62f);
+}
+
+static void draw_finished_joint(vec2 center, float radius,
+                                float r, float g0, float b0, float alpha) {
+    draw_circle_filled(center, radius, 6,
+                       0.10f + r * 0.16f,
+                       0.11f + g0 * 0.16f,
+                       0.13f + b0 * 0.16f,
+                       alpha * 0.98f);
+    draw_circle_filled(center, radius * 0.42f, 6,
+                       0.24f + r * 0.42f,
+                       0.26f + g0 * 0.42f,
+                       0.29f + b0 * 0.42f,
+                       alpha * 0.82f);
+}
+
+static void draw_scaffold_strut(vec2 a, vec2 b, float half_width,
+                                float alpha) {
+    draw_filled_strut(a, b, half_width, 1.0f, 0.74f, 0.24f, alpha);
+}
+
+static void draw_cell_face(vec2 center, const vec2 *vertices, int count,
+                           float r, float g0, float b0, float alpha) {
+    sgl_begin_triangles();
+    sgl_c4f(0.060f + r * 0.105f,
+            0.068f + g0 * 0.105f,
+            0.080f + b0 * 0.105f,
+            alpha * 0.90f);
+    for (int i = 0; i < count; i++) {
+        sgl_v2f(center.x, center.y);
+        sgl_v2f(vertices[i].x, vertices[i].y);
+        sgl_v2f(vertices[(i + 1) % count].x,
+                vertices[(i + 1) % count].y);
+    }
+    sgl_end();
+}
+
+static void draw_strut_sequence(const vec2 *starts, const vec2 *ends,
+                                int count, float fraction,
+                                bool finished_material,
+                                float r, float g0, float b0, float alpha) {
+    float scaled = clampf(fraction, 0.0f, 1.0f) * (float)count;
+    int active = (int)floorf(scaled);
+    float partial = scaled - (float)active;
+    for (int i = 0; i < count; i++) {
+        float amount = i < active ? 1.0f : (i == active ? partial : 0.0f);
+        if (amount <= 0.001f) continue;
+        vec2 end = v2_add(starts[i],
+                          v2_scale(v2_sub(ends[i], starts[i]), amount));
+        if (finished_material) {
+            draw_finished_strut(starts[i], end, 1.35f,
+                                r, g0, b0, alpha, i);
+            if (amount >= 0.999f) {
+                draw_finished_joint(ends[i], 1.75f,
+                                    r, g0, b0, alpha);
+            }
+        } else {
+            draw_scaffold_strut(starts[i], end, 0.72f, alpha);
+            if (amount >= 0.999f) {
+                draw_circle_filled(ends[i], 1.10f, 6,
+                                   1.0f, 0.76f, 0.28f, alpha);
+            }
+        }
+    }
+
+    /* Only the actively assembling member carries heat. The pulse is local
+     * to its weld, so progress remains physical and spatial. */
+    if (finished_material && fraction > 0.001f && fraction < 0.999f &&
+        active < count) {
+        vec2 weld = v2_add(starts[active],
+                           v2_scale(v2_sub(ends[active], starts[active]),
+                                    partial));
+        float pulse = 0.58f + 0.42f * sinf(g.world.time * 9.0f +
+                                           (float)active * 1.7f);
+        draw_circle_filled(weld, 1.4f + pulse * 1.2f, 8,
+                           1.0f, 0.52f, 0.18f, alpha * pulse);
+    }
+}
+
 /* Station cells keep the one-size grammar, while authored station sections
  * can span hundreds of world units. A megastructure span is therefore a
  * repeated open truss of standard-length struts, never a scaled-up cell. */
-static void draw_station_frame_span(vec2 a, vec2 b,
+static void draw_station_frame_span(vec2 a, vec2 b, bool detailed,
                                     float r, float g0, float b0,
                                     float alpha) {
     vec2 delta = v2_sub(b, a);
@@ -1702,8 +1820,6 @@ static void draw_station_frame_span(vec2 a, vec2 b,
     if (segments < 1) segments = 1;
     if (segments > 96) segments = 96;
 
-    sgl_begin_lines();
-    sgl_c4f(r, g0, b0, alpha);
     for (int i = 0; i < segments; i++) {
         float t0 = (float)i / (float)segments;
         float t1 = (float)(i + 1) / (float)segments;
@@ -1713,15 +1829,21 @@ static void draw_station_frame_span(vec2 a, vec2 b,
         vec2 p0b = v2_sub(p0, v2_scale(normal, half_width));
         vec2 p1a = v2_add(p1, v2_scale(normal, half_width));
         vec2 p1b = v2_sub(p1, v2_scale(normal, half_width));
-        sgl_v2f(p0a.x, p0a.y); sgl_v2f(p1a.x, p1a.y);
-        sgl_v2f(p0b.x, p0b.y); sgl_v2f(p1b.x, p1b.y);
-        if ((i & 1) == 0) {
-            sgl_v2f(p0a.x, p0a.y); sgl_v2f(p1b.x, p1b.y);
-        } else {
-            sgl_v2f(p0b.x, p0b.y); sgl_v2f(p1a.x, p1a.y);
+        draw_finished_strut(p0a, p1a, 0.95f, r, g0, b0, alpha, i * 3);
+        draw_finished_strut(p0b, p1b, 0.95f, r, g0, b0, alpha, i * 3 + 1);
+        if (detailed || (i & 1) == 0) {
+            if ((i & 1) == 0) {
+                draw_finished_strut(p0a, p1b, 0.66f, r, g0, b0,
+                                    alpha * 0.86f, i * 3 + 2);
+            } else {
+                draw_finished_strut(p0b, p1a, 0.66f, r, g0, b0,
+                                    alpha * 0.86f, i * 3 + 2);
+            }
         }
+        if (detailed || i == 0 || i == segments - 1)
+            draw_finished_joint(p0, 1.55f, r, g0, b0, alpha);
     }
-    sgl_end();
+    draw_finished_joint(b, 1.65f, r, g0, b0, alpha);
 }
 
 static void draw_corridor_arc(vec2 center, float ring_radius,
@@ -1733,36 +1855,45 @@ static void draw_station_cell(vec2 center, bool reinforced, bool scaffold,
                               float alpha) {
     vec2 vertices[6];
     station_cell_vertices(center, vertices);
-    float fill = scaffold ? clampf(progress, 0.0f, 1.0f) : 1.0f;
-    if (fill > 0.01f) {
-        int faces = (int)ceilf(fill * 6.0f);
-        sgl_begin_triangles();
-        sgl_c4f(r * 0.22f, g0 * 0.22f, b * 0.22f,
-                alpha * (scaffold ? 0.42f : 0.72f));
-        for (int i = 0; i < faces && i < 6; i++) {
-            sgl_v2f(center.x, center.y);
-            sgl_v2f(vertices[i].x, vertices[i].y);
-            sgl_v2f(vertices[(i + 1) % 6].x,
-                    vertices[(i + 1) % 6].y);
+    vec2 starts[12], ends[12];
+    int strut_count = 0;
+    for (int i = 0; i < 6; i++) {
+        starts[strut_count] = vertices[i];
+        ends[strut_count++] = vertices[(i + 1) % 6];
+    }
+    if (reinforced) {
+        for (int i = 0; i < 6; i++) {
+            starts[strut_count] = center;
+            ends[strut_count++] = vertices[i];
         }
-        sgl_end();
     }
 
-    int edge_count = scaffold ? (int)ceilf(fill * 6.0f) : 6;
-    sgl_begin_lines();
-    sgl_c4f(scaffold ? 1.0f : r,
-            scaffold ? 0.85f : g0,
-            scaffold ? 0.47f : b, alpha);
-    for (int i = 0; i < edge_count && i < 6; i++) {
-        sgl_v2f(vertices[i].x, vertices[i].y);
-        sgl_v2f(vertices[(i + 1) % 6].x,
-                vertices[(i + 1) % 6].y);
-        if (reinforced) {
-            sgl_v2f(center.x, center.y);
-            sgl_v2f(vertices[i].x, vertices[i].y);
-        }
+    if (!scaffold) {
+        draw_cell_face(center, vertices, 6, r, g0, b, alpha);
+        draw_strut_sequence(starts, ends, strut_count, 1.0f, true,
+                            r, g0, b, alpha);
+        for (int i = 0; i < 6; i++)
+            draw_finished_joint(vertices[i], 1.85f, r, g0, b, alpha);
+        if (reinforced)
+            draw_finished_joint(center, 2.25f, r, g0, b, alpha);
+        return;
     }
-    sgl_end();
+
+    /* A complete, light plan frame remains visible throughout both phases.
+     * 0..1 stocks amber members in legal edge/spoke order. 1..2 replaces
+     * those members with finished material in the same order. */
+    for (int i = 0; i < strut_count; i++)
+        draw_scaffold_strut(starts[i], ends[i], 0.38f, alpha * 0.24f);
+    float supply = clampf(progress, 0.0f, 1.0f);
+    float assembly = clampf(progress - 1.0f, 0.0f, 1.0f);
+    draw_strut_sequence(starts, ends, strut_count, supply, false,
+                        r, g0, b, alpha * 0.86f);
+    if (assembly > 0.001f) {
+        if (assembly * (float)strut_count >= 6.0f)
+            draw_cell_face(center, vertices, 6, r, g0, b, alpha * 0.76f);
+        draw_strut_sequence(starts, ends, strut_count, assembly, true,
+                            r, g0, b, alpha);
+    }
 }
 
 static void draw_station_triangle_cell_at(const cell_node_t *node,
@@ -1784,24 +1915,33 @@ static void draw_station_triangle_cell_at(const cell_node_t *node,
     vec2 base = v2_sub(center, v2_scale(outward, altitude / 3.0f));
     vec2 a = v2_add(base, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
     vec2 c = v2_sub(base, v2_scale(tangent, CELL_EDGE_LENGTH * 0.5f));
-    float fill = scaffold ? clampf(progress, 0.0f, 1.0f) : 1.0f;
-    if (fill > 0.01f) {
-        sgl_begin_triangles();
-        sgl_c4f(r * 0.25f, g0 * 0.25f, b * 0.25f, alpha * 0.72f);
-        sgl_v2f(a.x, a.y); sgl_v2f(c.x, c.y); sgl_v2f(tip.x, tip.y);
-        sgl_end();
-    }
-    int edges = scaffold ? (int)ceilf(fill * 3.0f) : 3;
     vec2 vertices[3] = {a, c, tip};
-    sgl_begin_lines();
-    sgl_c4f(scaffold ? 1.0f : r,
-            scaffold ? 0.85f : g0,
-            scaffold ? 0.47f : b, alpha);
-    for (int i = 0; i < edges && i < 3; i++) {
-        sgl_v2f(vertices[i].x, vertices[i].y);
-        sgl_v2f(vertices[(i + 1) % 3].x, vertices[(i + 1) % 3].y);
+    vec2 starts[3], ends[3];
+    for (int i = 0; i < 3; i++) {
+        starts[i] = vertices[i];
+        ends[i] = vertices[(i + 1) % 3];
     }
-    sgl_end();
+    if (!scaffold) {
+        draw_cell_face(center, vertices, 3, r, g0, b, alpha);
+        draw_strut_sequence(starts, ends, 3, 1.0f, true,
+                            r, g0, b, alpha);
+        for (int i = 0; i < 3; i++)
+            draw_finished_joint(vertices[i], 1.65f, r, g0, b, alpha);
+        return;
+    }
+
+    for (int i = 0; i < 3; i++)
+        draw_scaffold_strut(starts[i], ends[i], 0.38f, alpha * 0.24f);
+    float supply = clampf(progress, 0.0f, 1.0f);
+    float assembly = clampf(progress - 1.0f, 0.0f, 1.0f);
+    draw_strut_sequence(starts, ends, 3, supply, false,
+                        r, g0, b, alpha * 0.86f);
+    if (assembly > 0.001f) {
+        if (assembly >= 0.999f)
+            draw_cell_face(center, vertices, 3, r, g0, b, alpha * 0.76f);
+        draw_strut_sequence(starts, ends, 3, assembly, true,
+                            r, g0, b, alpha);
+    }
 }
 
 static void draw_station_cell_icon(const station_t *station,
@@ -1834,20 +1974,51 @@ static void draw_station_cell_icon(const station_t *station,
     sgl_pop_matrix();
 }
 
+static void draw_station_corridor_silhouette(vec2 center, float ring_radius,
+                                             float angle_a, float arc_delta,
+                                             float r, float g0, float b,
+                                             float alpha) {
+    int segments = (int)ceilf(fabsf(arc_delta) * ring_radius /
+                              (CELL_EDGE_LENGTH * 2.5f));
+    if (segments < 3) segments = 3;
+    if (segments > 24) segments = 24;
+    for (int i = 0; i < segments; i++) {
+        float a0 = angle_a + arc_delta * (float)i / (float)segments;
+        float a1 = angle_a + arc_delta * (float)(i + 1) / (float)segments;
+        vec2 p0 = v2_add(center,
+                         v2(cosf(a0) * ring_radius,
+                            sinf(a0) * ring_radius));
+        vec2 p1 = v2_add(center,
+                         v2(cosf(a1) * ring_radius,
+                            sinf(a1) * ring_radius));
+        draw_finished_strut(p0, p1, 1.75f, r, g0, b, alpha, i);
+    }
+}
+
 static void draw_station_cell_graph(const station_t *station,
-                                    bool detailed, float base_alpha) {
+                                    station_structure_lod_t lod,
+                                    float base_alpha) {
     station_geom_t geom;
     station_build_geom(station, &geom);
     if (geom.cell_count <= 0) return;
+    bool detailed = lod == STATION_STRUCTURE_LOD_CLOSE;
+    bool far = lod == STATION_STRUCTURE_LOD_FAR;
 
     /* Ring corridors are open trusses, not filled circular material. Their
      * rails coincide with the legacy collision band during migration. */
     for (int i = 0; i < geom.corridor_count; i++) {
         const geom_corridor_t *corridor = &geom.corridors[i];
-        draw_corridor_arc(station->pos, corridor->ring_radius,
-                          corridor->angle_a, corridor->arc_delta,
-                          0.30f, 0.48f, 0.55f,
-                          base_alpha * (detailed ? 0.58f : 0.32f));
+        if (far) {
+            draw_station_corridor_silhouette(
+                station->pos, corridor->ring_radius,
+                corridor->angle_a, corridor->arc_delta,
+                0.30f, 0.48f, 0.55f, base_alpha * 0.76f);
+        } else {
+            draw_corridor_arc(station->pos, corridor->ring_radius,
+                              corridor->angle_a, corridor->arc_delta,
+                              0.30f, 0.48f, 0.55f,
+                              base_alpha * (detailed ? 0.82f : 0.68f));
+        }
     }
 
     /* Every outer section is tied to the nearest populated inner section;
@@ -1866,8 +2037,19 @@ static void draw_station_cell_graph(const station_t *station,
             float d = v2_dist_sq(p, end);
             if (d < best) { best = d; start = p; }
         }
-        draw_station_frame_span(start, end, 0.30f, 0.48f, 0.55f,
-                                base_alpha * (detailed ? 0.66f : 0.36f));
+        if (far) {
+            /* Authored far silhouette: one opaque load path per section,
+             * without a bundle of sub-pixel diagonal braces. */
+            draw_finished_strut(start, end, 2.20f,
+                                0.30f, 0.48f, 0.55f,
+                                base_alpha * 0.88f, i);
+            draw_finished_joint(end, 2.10f, 0.30f, 0.48f, 0.55f,
+                                base_alpha * 0.88f);
+        } else {
+            draw_station_frame_span(start, end, detailed,
+                                    0.30f, 0.48f, 0.55f,
+                                    base_alpha * (detailed ? 0.88f : 0.76f));
+        }
     }
 
     for (int i = 0; i < geom.cell_count; i++) {
@@ -1891,12 +2073,12 @@ static void draw_station_cell_graph(const station_t *station,
         if (node->shape == CELL_SHAPE_TRIANGLE) {
             draw_station_triangle_cell_at(node, center, station->pos,
                                           scaffold, progress, r, g0, b,
-                                          base_alpha * (detailed ? 1.0f : 0.72f));
+                                          base_alpha * (far ? 0.90f : 1.0f));
         } else {
             draw_station_cell(center,
                               node->shape == CELL_SHAPE_REINFORCED_HEX,
                               scaffold, progress, r, g0, b,
-                              base_alpha * (detailed ? 1.0f : 0.72f));
+                              base_alpha * (far ? 0.90f : 1.0f));
         }
         if (detailed && module_index >= 0 &&
             module_index < station->module_count &&
@@ -1928,10 +2110,18 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
         return;
     }
 
-    /* The center is now a real reinforced cell, not an empty orbital marker.
-     * Nearby/current stations expose every authored cell and scaffold edge;
-     * distant stations collapse to one cheap six-edge assembly silhouette. */
-    draw_station_cell_graph(station, is_current || is_nearby,
+    /* LOD follows projected structural extent rather than module hue or
+     * station role. Far stations retain authored cells and load paths but
+     * shed repeated diagonals before those diagonals can shimmer. */
+    float extent = station_collision_envelope_radius(station);
+    float screen_ratio = g_cam_half_w > 0.0f ? extent / g_cam_half_w : 1.0f;
+    station_structure_lod_t lod = STATION_STRUCTURE_LOD_NORMAL;
+    if (screen_ratio < 0.24f) {
+        lod = STATION_STRUCTURE_LOD_FAR;
+    } else if ((is_current || is_nearby) && screen_ratio >= 0.48f) {
+        lod = STATION_STRUCTURE_LOD_CLOSE;
+    }
+    draw_station_cell_graph(station, lod,
                             is_current ? 0.95f : (is_nearby ? 0.78f : 0.52f));
 
     /* Faint ring orbit guides */
@@ -1979,8 +2169,6 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
     if (segments < CORRIDOR_ARC_SEGMENTS) segments = CORRIDOR_ARC_SEGMENTS;
     if (segments > 96) segments = 96;
 
-    sgl_begin_lines();
-    sgl_c4f(cr, cg, cb, alpha);
     for (int i = 0; i < segments; i++) {
         float t0 = (float)i / (float)segments;
         float t1 = (float)(i + 1) / (float)segments;
@@ -1990,15 +2178,19 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
         vec2 o0 = v2_add(center, v2(cosf(a0) * r_outer, sinf(a0) * r_outer));
         vec2 i1 = v2_add(center, v2(cosf(a1) * r_inner, sinf(a1) * r_inner));
         vec2 o1 = v2_add(center, v2(cosf(a1) * r_outer, sinf(a1) * r_outer));
-        sgl_v2f(i0.x, i0.y); sgl_v2f(i1.x, i1.y);
-        sgl_v2f(o0.x, o0.y); sgl_v2f(o1.x, o1.y);
+        draw_finished_strut(i0, i1, 0.90f, cr, cg, cb, alpha, i * 3);
+        draw_finished_strut(o0, o1, 0.90f, cr, cg, cb, alpha, i * 3 + 1);
         if ((i & 1) == 0) {
-            sgl_v2f(i0.x, i0.y); sgl_v2f(o1.x, o1.y);
+            draw_finished_strut(i0, o1, 0.62f, cr, cg, cb,
+                                alpha * 0.84f, i * 3 + 2);
         } else {
-            sgl_v2f(o0.x, o0.y); sgl_v2f(i1.x, i1.y);
+            draw_finished_strut(o0, i1, 0.62f, cr, cg, cb,
+                                alpha * 0.84f, i * 3 + 2);
         }
+        if ((i & 1) == 0)
+            draw_finished_joint(v2_scale(v2_add(i0, o0), 0.5f), 1.35f,
+                                cr, cg, cb, alpha);
     }
-    sgl_end();
 }
 
 /* Draw module rings (above ships in render order).  The code below the active
@@ -2686,37 +2878,18 @@ static void ship_cell_draw_hex(vec2 center, bool reinforced,
                                float r, float g0, float b, float alpha) {
     vec2 vertices[6];
     ship_cell_hex_vertices(center, CELL_EDGE_LENGTH, vertices);
-    sgl_begin_triangles();
-    sgl_c4f(r * 0.25f, g0 * 0.25f, b * 0.25f, alpha * 0.72f);
+    draw_cell_face(center, vertices, 6, r, g0, b, alpha);
     for (int i = 0; i < 6; i++) {
-        sgl_v2f(center.x, center.y);
-        sgl_v2f(vertices[i].x, vertices[i].y);
-        sgl_v2f(vertices[(i + 1) % 6].x, vertices[(i + 1) % 6].y);
-    }
-    sgl_end();
-
-    sgl_begin_lines();
-    sgl_c4f(r, g0, b, alpha);
-    for (int i = 0; i < 6; i++) {
-        sgl_v2f(vertices[i].x, vertices[i].y);
-        sgl_v2f(vertices[(i + 1) % 6].x, vertices[(i + 1) % 6].y);
+        draw_finished_strut(vertices[i], vertices[(i + 1) % 6], 1.20f,
+                            r, g0, b, alpha, i);
+        draw_finished_joint(vertices[i], 1.55f, r, g0, b, alpha);
         if (reinforced) {
-            sgl_v2f(center.x, center.y);
-            sgl_v2f(vertices[i].x, vertices[i].y);
+            draw_finished_strut(center, vertices[i], 1.05f,
+                                r, g0, b, alpha, 6 + i);
         }
     }
-    sgl_end();
-
-    if (reinforced) {
-        float joint = CELL_EDGE_LENGTH * 0.11f;
-        sgl_begin_quads();
-        sgl_c4f(r, g0, b, alpha);
-        sgl_v2f(center.x - joint, center.y - joint);
-        sgl_v2f(center.x + joint, center.y - joint);
-        sgl_v2f(center.x + joint, center.y + joint);
-        sgl_v2f(center.x - joint, center.y + joint);
-        sgl_end();
-    }
+    if (reinforced)
+        draw_finished_joint(center, 2.05f, r, g0, b, alpha);
 }
 
 static void ship_cell_draw_payload(vec2 center, float load,
@@ -2772,16 +2945,14 @@ static void ship_cell_draw_triangle(const cell_node_t *node, vec2 graph_center,
         break;
     }
 
-    sgl_begin_triangles();
-    sgl_c4f(r * 0.32f, g0 * 0.32f, bl * 0.32f, 0.90f);
-    sgl_v2f(a.x, a.y); sgl_v2f(b.x, b.y); sgl_v2f(tip.x, tip.y);
-    sgl_end();
-    sgl_begin_lines();
-    sgl_c4f(r, g0, bl, 0.98f);
-    sgl_v2f(a.x, a.y); sgl_v2f(b.x, b.y);
-    sgl_v2f(b.x, b.y); sgl_v2f(tip.x, tip.y);
-    sgl_v2f(tip.x, tip.y); sgl_v2f(a.x, a.y);
-    sgl_end();
+    vec2 triangle[3] = {a, b, tip};
+    vec2 triangle_center = v2_scale(v2_add(v2_add(a, b), tip), 1.0f / 3.0f);
+    draw_cell_face(triangle_center, triangle, 3, r, g0, bl, 0.96f);
+    for (int i = 0; i < 3; i++) {
+        draw_finished_strut(triangle[i], triangle[(i + 1) % 3], 1.10f,
+                            r, g0, bl, 0.98f, i);
+        draw_finished_joint(triangle[i], 1.40f, r, g0, bl, 0.96f);
+    }
 
     if (thrusting && node->role == CELL_ROLE_ENGINE) {
         float flicker = 7.0f + sinf(g.world.time * 42.0f + host.x) * 2.0f;
