@@ -1088,6 +1088,11 @@ void step_furnace_smelting(world_t *w, float dt) {
                         .beam = tractor_tow_beam(HOPPER_PULL_RANGE, 0.0f),
                     };
                     (void)tractor_link_apply(&link, dt);
+                    /* Station tractors continuously bend this fragment away
+                     * from the ordinary drag-only dead-reckoning model.
+                     * Keep the motion stream hot while the force is active
+                     * so clients reconcile the acceleration at tow cadence. */
+                    a->net_dirty = true;
                     float intensity = tractor_beam_range_fraction(
                         beam_sources[beam_idx], a->pos, &link.beam);
                     if (intensity <= 0.0f || beam_modules[beam_idx] < 0)

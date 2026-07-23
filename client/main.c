@@ -2438,11 +2438,39 @@ static void restore_local_towed_scaffold_render_pose(
     sc->age = save->age;
 }
 
+static int g_render_queued_vertices;
+static int g_render_queued_commands;
+static uint32_t g_render_sgl_error_mask;
+static float g_render_frame_duration_ms;
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+int signal_render_queued_vertices(void) {
+    return g_render_queued_vertices;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_render_queued_commands(void) {
+    return g_render_queued_commands;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_render_sgl_error_mask(void) {
+    return (int)g_render_sgl_error_mask;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_render_frame_duration_ms(void) {
+    return g_render_frame_duration_ms;
+}
+#endif
+
 static void render_frame(void) {
     interpolate_world_for_render();
     float frame_dt = (float)sapp_frame_duration();
     if (frame_dt <= 0.0f) frame_dt = 1.0f / 60.0f;
     if (frame_dt > 0.1f) frame_dt = 0.1f;
+    g_render_frame_duration_ms = frame_dt * 1000.0f;
     step_local_player_render_offset(frame_dt);
 
     /* Damage vignette back wave — sgl-queued before world geometry so
@@ -2497,6 +2525,17 @@ static void render_frame(void) {
         LOCAL_PLAYER.ship->angle = saved_ship_angle;
     }
     render_ui();
+
+    g_render_queued_vertices = sgl_num_vertices();
+    g_render_queued_commands = sgl_num_commands();
+    sgl_error_t render_error = sgl_error();
+    g_render_sgl_error_mask =
+        (render_error.vertices_full ? 1u << 0 : 0u) |
+        (render_error.uniforms_full ? 1u << 1 : 0u) |
+        (render_error.commands_full ? 1u << 2 : 0u) |
+        (render_error.stack_overflow ? 1u << 3 : 0u) |
+        (render_error.stack_underflow ? 1u << 4 : 0u) |
+        (render_error.no_context ? 1u << 5 : 0u);
 
     sg_begin_pass(&(sg_pass){
         .action = g.pass_action,
@@ -3410,6 +3449,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_curr[MAX_ASTEROIDS];
     float saved_asteroid_elapsed[MAX_ASTEROIDS];
+    sim_interactions_t saved_world_interactions = g.world.interactions;
     scaffold_t saved_world_scaffolds[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_prev[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_curr[MAX_SCAFFOLDS];
@@ -3450,6 +3490,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     }
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    memset(&g.world.interactions, 0, sizeof(g.world.interactions));
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
     g.scaffold_interp.interval = 0.1f;
@@ -3685,8 +3726,38 @@ int signal_smoke_remote_towable_interp_check(void) {
     bool settled_correction_retired =
         !g.asteroid_interp.prev[7].active;
 
+    /* Station tractors are authoritative interaction sources rather than
+     * asteroid ownership bindings. Their targets must still use the
+     * constant-velocity tow predictor between frequent motion updates. */
     memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.world.interactions.count = 1;
+    g.world.interactions.items[0] = (sim_interaction_t){
+        .type = SIM_INTERACTION_TRACTOR_BEAM,
+        .visual = SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+        .source = {
+            .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+            .index = 0,
+            .aux = 1,
+        },
+        .target = {
+            .type = SIM_INTERACTION_ENTITY_ASTEROID,
+            .index = 7,
+            .aux = -1,
+        },
+    };
+    asteroid_t station_pulled_asteroid = correction_base;
+    station_pulled_asteroid.pos = v2(0.0f, 270.0f);
+    station_pulled_asteroid.vel = v2(20.0f, 0.0f);
+    g.asteroid_interp.curr[7] = station_pulled_asteroid;
+    g.asteroid_interp.elapsed[7] = 2.0f;
+    interpolate_world_for_render();
+    float station_pulled_asteroid_x = g.world.asteroids[7].pos.x;
+    float station_pulled_asteroid_vx = g.world.asteroids[7].vel.x;
+
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    memset(&g.world.interactions, 0, sizeof(g.world.interactions));
     g.net_authority_enabled = true;
     g.net_input_tick_protocol = true;
     g.local_player_slot = 0;
@@ -3832,6 +3903,10 @@ int signal_smoke_remote_towable_interp_check(void) {
              long_gap_drag_x > 26.0f && long_gap_drag_x < 28.5f &&
              long_gap_drag_vx > 8.0f && long_gap_drag_vx < 9.5f &&
              settled_correction_retired &&
+             station_pulled_asteroid_x > 39.9f &&
+             station_pulled_asteroid_x < 40.1f &&
+             station_pulled_asteroid_vx > 19.9f &&
+             station_pulled_asteroid_vx < 20.1f &&
              local_towed_asteroid_x > 249.0f &&
              local_towed_asteroid_x < 251.0f &&
              local_towed_asteroid_vx > 19.0f &&
@@ -3851,6 +3926,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
     memcpy(g.asteroid_interp.elapsed, saved_asteroid_elapsed,
            sizeof(saved_asteroid_elapsed));
+    g.world.interactions = saved_world_interactions;
     memcpy(g.world.scaffolds, saved_world_scaffolds, sizeof(saved_world_scaffolds));
     memcpy(g.scaffold_interp.prev, saved_scaffold_prev, sizeof(saved_scaffold_prev));
     memcpy(g.scaffold_interp.curr, saved_scaffold_curr, sizeof(saved_scaffold_curr));

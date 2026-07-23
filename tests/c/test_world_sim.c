@@ -9271,6 +9271,39 @@ TEST(test_zero_signal_preserves_ship_momentum_without_boundary_pull) {
     ASSERT_EQ_FLOAT(sp->ship->vel.y, 0.0f, 0.001f);
 }
 
+TEST(test_player_only_prediction_preserves_authoritative_interactions) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->docked = false;
+    w.interactions.count = 1;
+    w.interactions.items[0] = (sim_interaction_t){
+        .type = SIM_INTERACTION_TRACTOR_BEAM,
+        .visual = SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+        .source = {
+            .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+            .index = 0,
+            .aux = 1,
+        },
+        .target = {
+            .type = SIM_INTERACTION_ENTITY_ASTEROID,
+            .index = 7,
+            .aux = -1,
+        },
+        .range = HOPPER_PULL_RANGE,
+        .intensity = 0.75f,
+    };
+
+    world_sim_step_player_only(&w, 0, SIM_DT);
+
+    ASSERT_EQ_INT(w.interactions.count, 1);
+    ASSERT_EQ_INT(w.interactions.items[0].visual,
+                  SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR);
+    ASSERT_EQ_INT(w.interactions.items[0].target.index, 7);
+}
+
 TEST(test_asteroid_outside_signal_despawns) {
     WORLD_DECL;
     world_reset(&w);
@@ -9958,6 +9991,7 @@ void register_world_sim_signal_tests(void) {
     RUN(test_signal_max_of_stations);
     RUN(test_ship_thrust_scales_with_signal);
     RUN(test_zero_signal_preserves_ship_momentum_without_boundary_pull);
+    RUN(test_player_only_prediction_preserves_authoritative_interactions);
     RUN(test_asteroid_outside_signal_despawns);
     RUN(test_npc_miners_avoid_zero_signal_asteroids);
     RUN(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock);

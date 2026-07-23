@@ -609,6 +609,25 @@ static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
         int idx = npc_towed_fragment_index(npc);
         if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
     }
+
+    /* Furnace/hopper tractors are published as interactions instead of a
+     * single asteroid ownership binding because two station modules pull the
+     * same fragment. Treat those targets as tow-driven for render prediction:
+     * constant-velocity extrapolation over the 10 Hz motion stream is much
+     * closer than applying ambient drag and snapping to every acceleration
+     * update. */
+    for (int i = 0; i < g.world.interactions.count; i++) {
+        const sim_interaction_t *interaction =
+            &g.world.interactions.items[i];
+        if (interaction->type != SIM_INTERACTION_TRACTOR_BEAM ||
+            interaction->visual !=
+                SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR ||
+            interaction->target.type != SIM_INTERACTION_ENTITY_ASTEROID) {
+            continue;
+        }
+        int idx = interaction->target.index;
+        if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
+    }
 }
 
 static void asteroid_predict_motion(const asteroid_t *base, float elapsed,

@@ -1042,6 +1042,25 @@ TEST(test_asteroid_delta_towed_fragments_use_tighter_motion_gate) {
     ASSERT_EQ_INT((int)motion_sent_tick[6], 112);
 }
 
+TEST(test_dirty_accelerated_asteroid_uses_tow_motion_cadence) {
+    asteroid_t asteroid = {0};
+    asteroid.active = true;
+    asteroid.tier = ASTEROID_TIER_S;
+    asteroid.fracture_child = true;
+    asteroid.net_dirty = true;
+    asteroid.pos = v2(12.0f, 0.0f);
+    asteroid.vel = v2(12.0f, 0.0f);
+
+    ASSERT(!asteroid_net_motion_should_send(
+        &asteroid, 12.0f * 12.0f, 12.0f * 12.0f,
+        100u, v2(0.0f, 0.0f), v2(12.0f, 0.0f),
+        100u + ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS - 1u));
+    ASSERT(asteroid_net_motion_should_send(
+        &asteroid, 12.0f * 12.0f, 12.0f * 12.0f,
+        100u, v2(0.0f, 0.0f), v2(12.0f, 0.0f),
+        100u + ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS));
+}
+
 TEST(test_asteroid_delta_throttles_far_slow_moving_repeat) {
     ASSERT_EQ_INT((int)ASTEROID_NET_FAR_SLOW_MOVING_REPEAT_TICKS, 240);
     ASSERT_EQ_INT((int)ASTEROID_NET_FAR_SLOW_MOTION_HEARTBEAT_TICKS, 1200);
@@ -8706,6 +8725,7 @@ void register_protocol_main_tests(void) {
     RUN(test_asteroid_delta_sends_dirty_or_moving_repeat);
     RUN(test_asteroid_delta_throttles_clean_moving_repeat_by_tick);
     RUN(test_asteroid_delta_towed_fragments_use_tighter_motion_gate);
+    RUN(test_dirty_accelerated_asteroid_uses_tow_motion_cadence);
     RUN(test_asteroid_delta_throttles_far_slow_moving_repeat);
     RUN(test_asteroid_delta_relaxes_outer_near_slow_motion);
     RUN(test_asteroid_delta_keeps_old_far_cadence_quiet);

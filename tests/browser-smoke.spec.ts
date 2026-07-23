@@ -812,6 +812,33 @@ async function tractorDrawTelemetry(
   }, visual);
 }
 
+type RenderQueueTelemetry = {
+  vertices: number;
+  commands: number;
+  errorMask: number;
+  frameMs: number;
+};
+
+async function renderQueueTelemetry(page: Page): Promise<RenderQueueTelemetry> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    const read = (name: string, returnType = 'number') => {
+      if (!mod || typeof mod.ccall !== 'function') return 0;
+      return Number(mod.ccall(name, returnType, [], [])) || 0;
+    };
+    return {
+      vertices: read('signal_render_queued_vertices'),
+      commands: read('signal_render_queued_commands'),
+      errorMask: read('signal_render_sgl_error_mask'),
+      frameMs: read('signal_render_frame_duration_ms'),
+    };
+  });
+}
+
 const smokeLoopState = {
   clear: 0,
   fragmentsNearby: 1,
@@ -850,6 +877,7 @@ const smokeLoopState = {
   rememberedWorkCrisp: 34,
   rememberedWorkDegraded: 35,
   constructionConsequence: 36,
+  stationFragmentTractor: 37,
 } as const;
 
 const mobileFlag = {
@@ -1613,6 +1641,23 @@ test.describe('Browser smoke tests', () => {
       rotatedModuleTractor.sourceX - moduleTractor.sourceX,
       rotatedModuleTractor.sourceY - moduleTractor.sourceY,
     )).toBeGreaterThan(1);
+
+    await setSmokeLoopState(page, smokeLoopState.stationFragmentTractor);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 2)).count, {
+        timeout: 3_000,
+        message: 'station fragment fixture should draw both tractor waves',
+      })
+      .toBeGreaterThanOrEqual(2);
+    const stationTractor = await tractorDrawTelemetry(page, 2);
+    expect(stationTractor.sourceType).toBe(1); // station module
+    expect(stationTractor.targetType).toBe(4); // asteroid
+    expect(stationTractor.span).toBeGreaterThan(80);
+    expect(stationTractor.intensity).toBeGreaterThan(0.5);
+    const renderQueue = await renderQueueTelemetry(page);
+    expect(renderQueue.errorMask, 'station scene must not overflow Sokol GL').toBe(0);
+    expect(renderQueue.vertices).toBeLessThan(65_536);
+    expect(renderQueue.commands).toBeLessThan(16_384);
 
     await setSmokeLoopState(page, smokeLoopState.hailReady);
     expect(await hudActionText(page)).toContain('123 prospect vouchers available // dock to spend');

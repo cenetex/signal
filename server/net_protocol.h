@@ -2002,12 +2002,21 @@ static inline bool asteroid_net_motion_should_send(
     uint32_t age_ticks = server_tick - last_tick;
     uint32_t repeat_ticks =
         asteroid_net_moving_repeat_ticks(dist_sq, speed_sq);
+    /* net_dirty on a moving body means a non-ballistic system changed its
+     * state. Station fragment tractors set it every force step, so do not
+     * leave those accelerated rocks on the ordinary 3.3 Hz/drag-only path. */
+    if (a->net_dirty &&
+        repeat_ticks > ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS) {
+        repeat_ticks = ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS;
+    }
     if (asteroid_net_tow_lifecycle_high_detail(a, dist_sq) &&
         repeat_ticks > ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS) {
         repeat_ticks = ASTEROID_NET_TOWED_MOVING_REPEAT_TICKS;
     }
     if (age_ticks < repeat_ticks)
         return false;
+    if (a->net_dirty)
+        return true;
     if (age_ticks >= asteroid_net_motion_heartbeat_ticks(dist_sq, speed_sq))
         return true;
 

@@ -3894,6 +3894,7 @@ enum {
     SMOKE_LOOP_STATE_REMEMBERED_WORK_CRISP = 34,
     SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED = 35,
     SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE = 36,
+    SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR = 37,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -4204,10 +4205,13 @@ static bool smoke_maintain_cargo_lineage_view(void) {
 
 void smoke_apply_loop_state_for_frame(void) {
     /* Most fixtures intentionally allow input and timers to evolve after
-     * setup. Only the module/cargo scene must overwrite streamed interaction
-     * state at the render boundary to keep its visual telemetry stable. */
+     * setup. Interaction fixtures must overwrite streamed state at the
+     * render boundary to keep their visual telemetry stable. */
     if (smoke_loop_state_override ==
         SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR) {
+        (void)smoke_apply_loop_state(smoke_loop_state_override);
+    } else if (smoke_loop_state_override ==
+               SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR) {
         (void)smoke_apply_loop_state(smoke_loop_state_override);
     } else if (smoke_loop_state_override ==
                SMOKE_LOOP_STATE_ROCK_SMELT_PATH) {
@@ -4562,6 +4566,87 @@ static int smoke_apply_loop_state(int state) {
         sp->ship->pos = v2_add(camera, v2_scale(tangent, 185.0f));
         sp->ship->vel = v2(0.0f, 0.0f);
         g.camera_pos = camera;
+        g.camera_initialized = true;
+        return 1;
+    }
+    case SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR: {
+        if (g.world.station_count <= 0 ||
+            !station_exists(&g.world.stations[0])) {
+            return 0;
+        }
+        /* Hold a real station/fragment interaction tableau at the render
+         * boundary. This exercises the exact beam resolver and draw order
+         * used by furnace/hopper tractors while keeping the scene stable
+         * enough to measure render-buffer pressure. */
+        g.local_server.active = false;
+        station_t *st = &g.world.stations[0];
+        int source_modules[2] = {-1, -1};
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].scaffold) continue;
+            if (source_modules[0] < 0) {
+                source_modules[0] = m;
+            } else {
+                source_modules[1] = m;
+                break;
+            }
+        }
+        if (source_modules[0] < 0 || source_modules[1] < 0) return 0;
+
+        vec2 source_a = module_world_pos_ring(
+            st, st->modules[source_modules[0]].ring,
+            st->modules[source_modules[0]].slot);
+        vec2 source_b = module_world_pos_ring(
+            st, st->modules[source_modules[1]].ring,
+            st->modules[source_modules[1]].slot);
+        vec2 midpoint = v2_scale(v2_add(source_a, source_b), 0.5f);
+        vec2 axis = v2_norm(v2_sub(source_b, source_a));
+        vec2 normal = v2(-axis.y, axis.x);
+        vec2 target = v2_add(midpoint, v2_scale(normal, 115.0f));
+        smoke_seed_asteroid(0, ASTEROID_TIER_S,
+                            COMMODITY_FERRITE_ORE, target,
+                            14.0f, 1.0f, 607.0f);
+        g.world.asteroids[0].fracture_child = true;
+
+        g.world.interactions.count = 0;
+        for (int beam = 0; beam < 2; beam++) {
+            int module_idx = source_modules[beam];
+            vec2 emitter = module_world_pos_ring(
+                st, st->modules[module_idx].ring,
+                st->modules[module_idx].slot);
+            if (!station_module_tractor_emitter(
+                    &g.world, 0, module_idx, target, &emitter)) {
+                return 0;
+            }
+            g.world.interactions.items[g.world.interactions.count++] =
+                (sim_interaction_t){
+                    .type = SIM_INTERACTION_TRACTOR_BEAM,
+                    .visual =
+                        SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR,
+                    .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+                    .source = {
+                        .type = SIM_INTERACTION_ENTITY_STATION_MODULE,
+                        .index = 0,
+                        .aux = (int16_t)module_idx,
+                    },
+                    .target = {
+                        .type = SIM_INTERACTION_ENTITY_ASTEROID,
+                        .index = 0,
+                        .aux = -1,
+                    },
+                    .source_pos = emitter,
+                    .target_pos = target,
+                    .range = HOPPER_PULL_RANGE,
+                    .intensity = 0.82f,
+                };
+        }
+
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->nearby_station = 0;
+        sp->in_dock_range = true;
+        sp->ship->pos = v2_add(midpoint, v2_scale(normal, 250.0f));
+        sp->ship->vel = v2(0.0f, 0.0f);
+        g.camera_pos = midpoint;
         g.camera_initialized = true;
         return 1;
     }

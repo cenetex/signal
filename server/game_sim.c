@@ -13550,7 +13550,11 @@ static void step_player_only_towed_body_drift(world_t *w,
 
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
-    sim_interactions_clear(w);
+    /* `w->interactions` is an authoritative presentation stream. Local
+     * player prediction never emits interactions, so clearing it here
+     * erased station tractor beams immediately after their packet arrived.
+     * The next semantic heartbeat can be many seconds away; preserve the
+     * stream until the network replaces it. */
     /* Do NOT advance w->time or w->tick — both are server-authoritative. */
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_idx];
