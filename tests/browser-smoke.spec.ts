@@ -490,6 +490,26 @@ async function remoteTowableInterpCheck(page: Page): Promise<number> {
   });
 }
 
+async function prepareKnownLedgerSync(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_prepare_known_ledger_sync', 'number', [], []);
+  });
+}
+
+async function knownLedgerSyncState(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_known_ledger_sync_state', 'number', [], []);
+  });
+}
+
 async function prepareTowLifecycle(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -1716,6 +1736,27 @@ test.describe('Browser smoke tests', () => {
       })
       .toBe(0);
 
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('projects recipient-scoped station balances through the multiplayer packet path', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+
+    expect(await prepareKnownLedgerSync(page)).toBe(1);
+    await expect
+      .poll(knownLedgerSyncState.bind(null, page), {
+        timeout: 4_000,
+        message: 'the private snapshot should carry only Prospect credit while the player is docked at zero-balance Helios',
+      })
+      .toBe(0x1ff);
+
+    const summary = await stationCreditPerceptionSummary(page);
+    expect(summary).toContain('Helios 0');
+    expect(summary).toContain('Prospect 123');
+    expect(summary).toContain('Prospect: buy > haul');
+    expect(summary).not.toMatch(/Local balances:.*(?:Kepler|Blackglass)/);
     expectNoFatalErrors(logs);
   });
 

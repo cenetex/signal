@@ -7091,6 +7091,14 @@ TEST(test_player_known_ledger_serializes_station_balances) {
     ledger_earn(&w.stations[0], sp->session_token, 123.0f);
     ledger_earn(&w.stations[2], sp->session_token, 45.0f);
 
+    server_player_t *other = &w.players[1];
+    player_init_ship(other, &w);
+    other->connected = true;
+    other->session_ready = true;
+    memcpy(other->session_token, "LEDGER02", 8);
+    ledger_earn(&w.stations[0], other->session_token, 900.0f);
+    ledger_earn(&w.stations[1], other->session_token, 88.0f);
+
     uint8_t buf[PLAYER_KNOWN_LEDGER_HEADER +
                 PLAYER_KNOWN_LEDGER_MAX_RECORDS *
                 PLAYER_KNOWN_LEDGER_RECORD_SIZE];
@@ -7099,6 +7107,22 @@ TEST(test_player_known_ledger_serializes_station_balances) {
     ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(len, PLAYER_KNOWN_LEDGER_HEADER +
                        2 * PLAYER_KNOWN_LEDGER_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 123.0f, 0.001f);
+    ASSERT_EQ_INT(buf[7], 2);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[8]), 45.0f, 0.001f);
+
+    /* The same stations contain another connected player's entries, but a
+     * private snapshot must serialize only the selected recipient's rows. */
+    len = serialize_player_known_ledger(buf, &w, other);
+    ASSERT_EQ_INT(buf[1], 2);
+    ASSERT_EQ_INT(buf[2], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 900.0f, 0.001f);
+    ASSERT_EQ_INT(buf[7], 1);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[8]), 88.0f, 0.001f);
+
+    len = serialize_player_known_ledger(buf, &w, sp);
+    ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(buf[2], 0);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[3]), 123.0f, 0.001f);
     ASSERT_EQ_INT(buf[7], 2);

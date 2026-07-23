@@ -989,8 +989,22 @@ static const char *hail_choose_message(int station_idx) {
 
 static bool local_station_balance_for_player(int station_idx, float *out) {
     if (out) *out = 0.0f;
-    if (g.net_authority_enabled) return false;
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
+    if (g.net_authority_enabled) {
+        int local_station = LOCAL_PLAYER.docked
+            ? LOCAL_PLAYER.current_station : LOCAL_PLAYER.nearby_station;
+        if (station_idx == local_station) {
+            if (out) *out = g.station_balance;
+            return true;
+        }
+        for (int i = 0; i < g.known_station_ledger_count; i++) {
+            const NetKnownLedgerEntry *entry = &g.known_station_ledger[i];
+            if (entry->station != (uint8_t)station_idx) continue;
+            if (out) *out = entry->balance;
+            return true;
+        }
+        return false;
+    }
     const station_t *st = &g.world.stations[station_idx];
     if (!station_exists(st)) return false;
     uint8_t pseudo[32];
@@ -1005,7 +1019,6 @@ static bool local_station_balance_for_player(int station_idx, float *out) {
 }
 
 static bool local_player_has_other_station_credit(int current_station) {
-    if (g.net_authority_enabled) return false;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (s == current_station) continue;
         float bal = 0.0f;
@@ -1019,7 +1032,6 @@ static int local_player_best_other_station_credit(int current_station,
                                                   float *out_balance)
 {
     if (out_balance) *out_balance = 0.0f;
-    if (g.net_authority_enabled) return -1;
     int best_station = -1;
     float best_balance = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -3110,6 +3122,103 @@ int get_net_motion_ack_recovery_tier(void) {
 }
 
 #ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_known_ledger_sync(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+
+    world_t *authority = &g.local_server.world;
+    server_player_t *server_player = &authority->players[player_idx];
+    server_player_t *client_player = &g.world.players[player_idx];
+    const int earned_station = 0;
+    const int current_station = 2;
+    if (!server_player->connected || !server_player->ship ||
+        !server_player->replication ||
+        !client_player->connected || !client_player->ship ||
+        !station_exists(&authority->stations[earned_station]) ||
+        !station_exists(&authority->stations[current_station])) {
+        return 0;
+    }
+
+    /* Seed only the recipient's Prospect balance. Helios is intentionally
+     * zero and every other station is absent, so the packet proves that
+     * unknown is not silently serialized as authoritative zero. */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        authority->stations[s].ledger_count = 0;
+        g.world.stations[s].ledger_count = 0;
+    }
+    if (server_player_can_use_pubkey_persistence(server_player)) {
+        ledger_earn_by_pubkey(&authority->stations[earned_station],
+                              server_player->pubkey, 123.0f);
+    } else {
+        ledger_earn(&authority->stations[earned_station],
+                    server_player->session_token, 123.0f);
+    }
+
+    server_player->session_ready = true;
+    server_player->docked = true;
+    server_player->docking_approach = false;
+    server_player->current_station = current_station;
+    server_player->nearby_station = current_station;
+    server_player->in_dock_range = true;
+    server_player->ship->pos = authority->stations[current_station].pos;
+    server_player->ship->vel = v2(0.0f, 0.0f);
+
+    client_player->docked = false;
+    client_player->current_station = -1;
+    client_player->nearby_station = -1;
+    client_player->in_dock_range = false;
+    g.known_station_ledger_count = 0;
+    memset(g.known_station_ledger, 0, sizeof(g.known_station_ledger));
+    g.station_balance = -999.0f;
+    g.action_predict_timer = 0.0f;
+    g.local_credit_hint_shown = false;
+    g.notice[0] = '\0';
+    g.notice_timer = 0.0f;
+    g.local_server.private_snapshot_dirty = true;
+    server_player->replication->force_authoritative_resync = true;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_known_ledger_sync_state(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int state = 0;
+    bool prospect_balance = false;
+    bool unexpected_station = false;
+    if (g.known_station_ledger_count == 1) state |= 1 << 0;
+    for (int i = 0; i < g.known_station_ledger_count; i++) {
+        const NetKnownLedgerEntry *entry = &g.known_station_ledger[i];
+        if (entry->station == 0 && fabsf(entry->balance - 123.0f) < 0.01f)
+            prospect_balance = true;
+        else
+            unexpected_station = true;
+    }
+    if (prospect_balance) state |= 1 << 1;
+    if (!unexpected_station) state |= 1 << 2;
+    if (LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station == 2)
+        state |= 1 << 3;
+    if (fabsf(g.station_balance) < 0.01f) state |= 1 << 4;
+
+    char summary[256];
+    if (station_credit_perception_summary(summary, sizeof(summary))) {
+        if (strstr(summary, "Prospect")) state |= 1 << 5;
+        if (strstr(summary, "Helios")) state |= 1 << 6;
+        if (strstr(summary, "buy > haul")) state |= 1 << 7;
+    }
+    if (prospect_balance && LOCAL_PLAYER.docked &&
+        LOCAL_PLAYER.current_station == 2 &&
+        fabsf(g.station_balance) < 0.01f) {
+        maybe_notice_local_credits_rule(2, g.station_balance);
+    }
+    if (g.local_credit_hint_shown && strstr(g.notice, "Credits stay local") &&
+        strstr(g.notice, "Prospect")) {
+        state |= 1 << 8;
+    }
+    return state;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_tow_lifecycle(void) {
     if (!g.local_server.active || !net_is_loopback()) return 0;

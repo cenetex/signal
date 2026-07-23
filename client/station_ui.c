@@ -947,8 +947,12 @@ static void ui_write_parts(char *out, size_t cap,
     ui_append_bounded(out, cap, &used, c);
 }
 
-static bool ui_remote_authority_enabled(void) {
-    return g.net_authority_enabled && !net_is_loopback();
+static bool ui_ledger_snapshot_enabled(void) {
+    /* Loopback deliberately uses the same serialized private-state lane as
+     * multiplayer. Reading its recipient-scoped snapshot here keeps the
+     * single-player acceptance path honest instead of falling back to a
+     * client-world ledger that a remote client never receives. */
+    return g.net_authority_enabled;
 }
 
 static bool ui_known_station_balance(int station_idx, float *out) {
@@ -967,7 +971,7 @@ static bool ui_local_player_pubkey(uint8_t out[32]) {
     if (!out) return false;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
         return false;
-    if (ui_remote_authority_enabled()) {
+    if (ui_ledger_snapshot_enabled()) {
         memset(out, 0, 32);
         return false;
     }
@@ -996,7 +1000,7 @@ static bool ui_station_balance_for_pubkey(int station_idx,
 
 static bool ui_station_balance_for_player(int station_idx, float *out) {
     if (out) *out = 0.0f;
-    if (ui_remote_authority_enabled())
+    if (ui_ledger_snapshot_enabled())
         return ui_known_station_balance(station_idx, out);
     uint8_t pubkey[32];
     if (!ui_local_player_pubkey(pubkey))

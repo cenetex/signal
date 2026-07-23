@@ -115,9 +115,8 @@ float player_current_balance(void) {
  * Fills `strongest_idx` with the station holding the largest pending
  * balance for the local player, `strongest_balance` with that amount,
  * and `other_count` with how many *other* stations also have a
- * positive balance. Returns true when there's any station-local balance to show.
- * Offline fallback only — the network stream exposes the current balance, not
- * every per-station ledger row. */
+ * positive balance. Returns true when there's any station-local balance to
+ * show. Network authority uses the recipient-scoped known-ledger snapshot. */
 static bool client_ledger_balance_summary(int *strongest_idx,
                                           float *strongest_balance,
                                           int *other_count);
@@ -3086,15 +3085,34 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
 /* Station-local balances, broken out per station. Reports the station holding
  * the largest player-owned balance plus how many *other* stations also have a
  * positive balance, so the HUD can show local-credit spread without flattening
- * it into one global number. Offline fallback only: the network stream doesn't
- * push every per-station ledger row and this returns false. Cheap O(stations × ledger) walk;
- * reused per-frame by both HUD variants. */
+ * it into one global number. Network authority reads only the recipient-scoped
+ * known-ledger snapshot; offline tools fall back to the mirrored ledger. */
 static bool client_ledger_balance_summary(int *strongest_idx,
                                           float *strongest_balance,
                                           int *other_count) {
     if (strongest_idx) *strongest_idx = -1;
     if (strongest_balance) *strongest_balance = 0.0f;
     if (other_count) *other_count = 0;
+    if (g.net_authority_enabled) {
+        int best_idx = -1;
+        float best_bal = 0.0f;
+        int positives = 0;
+        for (int i = 0; i < g.known_station_ledger_count; i++) {
+            const NetKnownLedgerEntry *entry = &g.known_station_ledger[i];
+            if (entry->station >= MAX_STATIONS || entry->balance <= 0.5f)
+                continue;
+            positives++;
+            if (entry->balance > best_bal) {
+                best_bal = entry->balance;
+                best_idx = (int)entry->station;
+            }
+        }
+        if (best_idx < 0) return false;
+        if (strongest_idx) *strongest_idx = best_idx;
+        if (strongest_balance) *strongest_balance = best_bal;
+        if (other_count) *other_count = positives - 1;
+        return true;
+    }
     if (!g.local_server.active) return false;
     uint8_t pseudo[32];
     client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
@@ -4528,6 +4546,11 @@ static int smoke_apply_loop_state(int state) {
             sp->session_ready = true;
         }
         ledger_earn(&g.world.stations[0], sp->session_token, 123.0f);
+        g.known_station_ledger_count = 1;
+        g.known_station_ledger[0] = (NetKnownLedgerEntry){
+            .station = 0,
+            .balance = 123.0f,
+        };
         return 1;
     }
     case SMOKE_LOOP_STATE_HAIL_NOTICE:
