@@ -436,8 +436,11 @@ test-tsan:
 # does NOT (missing libclang_rt.fuzzer_osx.a), so prefer Homebrew LLVM
 # when present. Override with FUZZ_CC=... . FUZZ_TIME bounds the run;
 # crash artifacts land in tests/fuzz/artifacts/ for standalone replay.
+# New coverage inputs land in the ignored build tree so routine fuzz runs
+# do not dirty the curated, tracked seed corpus.
 FUZZ_CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; else echo clang; fi)
 FUZZ_TIME ?= 60
+FUZZ_WORK_CORPUS ?= build-fuzz/corpus
 # Large enough for the ticket prefix plus HANDOFF_SHIP_SNAPSHOT_MAX_SIZE.
 # Without this override libFuzzer defaults to 4096 bytes and cannot reach
 # multi-cargo snapshots with full receipt chains.
@@ -446,8 +449,8 @@ fuzz-receipts:
 	cmake $(GENERATOR) -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 		-DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=$(FUZZ_CC)
 	cmake --build build-fuzz --parallel --target fuzz_cargo_receipt
-	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus
-	./build-fuzz/fuzz_cargo_receipt tests/fuzz/corpus \
+	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus $(FUZZ_WORK_CORPUS)
+	./build-fuzz/fuzz_cargo_receipt $(FUZZ_WORK_CORPUS) tests/fuzz/corpus \
 		-artifact_prefix=tests/fuzz/artifacts/ \
 		-max_total_time=$(FUZZ_TIME) -max_len=$(FUZZ_MAX_LEN) \
 		-print_final_stats=1

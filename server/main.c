@@ -931,13 +931,16 @@ static void spawn_server_bots(void) {
 /* ------------------------------------------------------------------ */
 
 static void ws_send(struct mg_connection *c, const void *data, size_t len) {
-    if (c && data && len > 0) {
-        uint8_t msg = ((const uint8_t *)data)[0];
-        net_tx_packets_total++;
-        net_tx_bytes_total += (uint64_t)len;
-        net_tx_packets_by_msg[msg]++;
-        net_tx_bytes_by_msg[msg] += (uint64_t)len;
-    }
+    /* mg_ws_send -> mg_send dereferences `c` unconditionally (reads
+     * c->mgr->ifp on entry). Guard the whole function, not just the
+     * accounting: a NULL/empty send must be dropped, not passed through
+     * to vendor code. */
+    if (!c || !data || len == 0) return;
+    uint8_t msg = ((const uint8_t *)data)[0];
+    net_tx_packets_total++;
+    net_tx_bytes_total += (uint64_t)len;
+    net_tx_packets_by_msg[msg]++;
+    net_tx_bytes_by_msg[msg] += (uint64_t)len;
     mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY);
 }
 
