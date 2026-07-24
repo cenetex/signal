@@ -153,6 +153,25 @@ compare it against the native replay binary:
 make replay-native-wasm
 ```
 
+CI also exports the same replay scenario set as stable artifacts on Linux x64,
+macOS ARM, and WASM. A final cross-runner job compares the manifests and every
+JSONL scenario byte-for-byte. Each bundle includes per-scenario SHA-256 and
+size metadata, and all three runner bundles are retained as workflow artifacts
+so a cross-platform mismatch can be inspected rather than reproduced blindly.
+Use the **Deterministic Replay** workflow's `scenario_set=long` dispatch to run
+the same artifact gate over the long-horizon probes.
+
+The bundle tools can also be used directly:
+
+```sh
+python3 scripts/build_replay_bundle.py \
+  ./build/signal_replay /tmp/replay-native --scenario-set fast
+python3 scripts/build_replay_bundle.py \
+  ./build-replay-wasm/signal_replay.js /tmp/replay-wasm --scenario-set fast
+python3 scripts/check_replay_bundles.py \
+  /tmp/replay-native /tmp/replay-wasm
+```
+
 Long-horizon drift probes live in a separate scenario set so day-to-day checks
 can stay quick while #588 work still has a hard accumulation test:
 

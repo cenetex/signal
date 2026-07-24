@@ -8,6 +8,8 @@ on:
       - 'shared/**'
       - 'tools/signal_replay.c'
       - 'scripts/check_deterministic_build_flags.py'
+      - 'scripts/build_replay_bundle.py'
+      - 'scripts/check_replay_bundles.py'
       - 'scripts/check_replay_repeatability.py'
       - 'scripts/check_replay_cross_build.py'
       - 'CMakeLists.txt'
@@ -21,6 +23,8 @@ on:
       - 'shared/**'
       - 'tools/signal_replay.c'
       - 'scripts/check_deterministic_build_flags.py'
+      - 'scripts/build_replay_bundle.py'
+      - 'scripts/check_replay_bundles.py'
       - 'scripts/check_replay_repeatability.py'
       - 'scripts/check_replay_cross_build.py'
       - 'CMakeLists.txt'
@@ -50,7 +54,7 @@ env:
 
 jobs:
   native-wasm-replay:
-    name: Native vs WASM replay
+    name: Linux x64 native and WASM replay
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -63,7 +67,7 @@ jobs:
 
       - name: Build native replay
         run: |
-          cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH=${GITHUB_SHA::7}
+          cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH="${GITHUB_SHA::7}"
           cmake --build build --target signal_replay --parallel
           python3 scripts/check_deterministic_build_flags.py build/compile_commands.json
 
@@ -84,15 +88,95 @@ jobs:
             '
           python3 scripts/check_deterministic_build_flags.py build-replay-wasm/compile_commands.json
 
-      - name: Compare native and WASM replay
+      - name: Export Linux x64 native replay bundle
         run: |
-          if [ "$SCENARIO_SET" = "long" ]; then
-            python3 scripts/check_replay_cross_build.py \
-              ./build/signal_replay \
-              ./build-replay-wasm/signal_replay.js \
-              --scenario-set long
-          else
-            python3 scripts/check_replay_cross_build.py \
-              ./build/signal_replay \
-              ./build-replay-wasm/signal_replay.js
-          fi
+          python3 scripts/build_replay_bundle.py \
+            ./build/signal_replay \
+            replay-bundles/linux-x64 \
+            --scenario-set "$SCENARIO_SET"
+
+      - name: Export WASM replay bundle
+        run: |
+          python3 scripts/build_replay_bundle.py \
+            ./build-replay-wasm/signal_replay.js \
+            replay-bundles/wasm \
+            --scenario-set "$SCENARIO_SET"
+
+      - name: Preserve native versus WASM gate
+        run: |
+          python3 scripts/check_replay_bundles.py \
+            replay-bundles/linux-x64 \
+            replay-bundles/wasm
+
+      - name: Upload Linux x64 replay bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-linux-x64
+          path: replay-bundles/linux-x64
+          retention-days: 14
+
+      - name: Upload WASM replay bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-wasm
+          path: replay-bundles/wasm
+          retention-days: 14
+
+  macos-arm-replay:
+    name: macOS ARM replay
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build native replay
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH="${GITHUB_SHA::7}"
+          cmake --build build --target signal_replay --parallel
+          python3 scripts/check_deterministic_build_flags.py build/compile_commands.json
+
+      - name: Export macOS ARM replay bundle
+        run: |
+          python3 scripts/build_replay_bundle.py \
+            ./build/signal_replay \
+            replay-bundles/macos-arm64 \
+            --scenario-set "$SCENARIO_SET"
+
+      - name: Upload macOS ARM replay bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-macos-arm64
+          path: replay-bundles/macos-arm64
+          retention-days: 14
+
+  cross-runner-replay:
+    name: Cross-runner replay bundle
+    needs: [native-wasm-replay, macos-arm-replay]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Linux x64 replay bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: replay-linux-x64
+          path: replay-bundles/linux-x64
+
+      - name: Download macOS ARM replay bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: replay-macos-arm64
+          path: replay-bundles/macos-arm64
+
+      - name: Download WASM replay bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: replay-wasm
+          path: replay-bundles/wasm
+
+      - name: Compare runner bundles
+        run: |
+          python3 scripts/check_replay_bundles.py \
+            replay-bundles/linux-x64 \
+            replay-bundles/macos-arm64 \
+            replay-bundles/wasm
