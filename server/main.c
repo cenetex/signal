@@ -1148,7 +1148,6 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     if (!sp) return;
     server_player_reset_authoritative_ack_state(sp);
     sp->replication->player_ship_cache.valid = false;
-    sp->replication->hold_ingots_cache.valid = false;
     sp->replication->player_manifest_cache.valid = false;
     sp->replication->inspect_snapshot_cache.valid = false;
     sp->replication->contracts_cache.valid = false;
@@ -1395,9 +1394,6 @@ static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
     switch (data[0]) {
     case NET_MSG_PLAYER_SHIP:
         cache = &sink->player->replication->player_ship_cache;
-        break;
-    case NET_MSG_HOLD_INGOTS:
-        cache = &sink->player->replication->hold_ingots_cache;
         break;
     case NET_MSG_PLAYER_MANIFEST:
         cache = &sink->player->replication->player_manifest_cache;
@@ -4768,8 +4764,6 @@ static const char *protocol_msg_name(uint8_t msg) {
     case NET_MSG_WORLD_STATIONS_Q: return "WORLD_STATIONS_Q";
     case NET_MSG_STATION_MANIFEST: return "STATION_MANIFEST";
     case NET_MSG_PLAYER_MANIFEST: return "PLAYER_MANIFEST";
-    case NET_MSG_STATION_INGOTS: return "STATION_INGOTS";
-    case NET_MSG_HOLD_INGOTS: return "HOLD_INGOTS";
     case NET_MSG_FRACTURE_CHALLENGE: return "FRACTURE_CHALLENGE";
     case NET_MSG_FRACTURE_CLAIM: return "FRACTURE_CLAIM";
     case NET_MSG_FRACTURE_RESOLVED: return "FRACTURE_RESOLVED";
@@ -6390,22 +6384,12 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         }
         station_identity_dirty[s] = false;
     }
-    /* RATi v2: per-station named-ingot snapshot (derived from the
-     * unified manifest) + per-(commodity, grade) manifest summary.
-     * Smaller payload than identity (~3KB worst case) so we send to
-     * everyone regardless of signal range — MARKET is global. */
+    /* Atomic per-station manifest summary + provenance detail. MARKET is
+     * global, so send the dirty snapshot to every gameplay-ready client. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!world.stations[s].manifest_dirty) continue;
         if (!station_exists(&world.stations[s])) continue;
-        uint8_t buf[STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
-        int len = serialize_station_ingots(buf, s, &world.stations[s]);
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!server_player_is_gameplay_ready(&world.players[p]) ||
-                !world.players[p].connection->conn) continue;
-            ws_send(world.players[p].connection->conn, buf, (size_t)len);
-        }
-        uint8_t mbuf[STATION_MANIFEST_HEADER +
-                     COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
+        uint8_t mbuf[STATION_MANIFEST_MAX_SIZE];
         int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
         for (int p = 0; p < MAX_PLAYERS; p++) {
             if (!server_player_is_gameplay_ready(&world.players[p]) ||

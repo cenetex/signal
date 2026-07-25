@@ -117,19 +117,20 @@ enum {
     NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: station hail/balance response */
     NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
-    NET_MSG_STATION_INGOTS  = 0x28, /* server -> client: station's named-ingot stockpile (RATi v2) */
-    NET_MSG_HOLD_INGOTS     = 0x29, /* server -> client: local player's hold ingots (RATi v2) */
+    /* 0x28 and 0x29 were the transition-era STATION_INGOTS/HOLD_INGOTS
+     * detail streams. Protocol v2 folds their provenance rows into the
+     * canonical manifest packets and deliberately leaves the ids retired. */
     NET_MSG_BUY_INGOT       = 0x2A, /* client -> server: [type:1][pubkey:32] purchase from current docked station */
     NET_MSG_DELIVER_INGOT   = 0x2B, /* client -> server: [type:1][hold_index:1] deposit to current docked station */
     NET_MSG_FRACTURE_CHALLENGE = 0x2C, /* server -> nearby clients: [type:1][fracture_id:u32][seed:32][deadline_ms:u32][burst_cap:u16] */
     NET_MSG_FRACTURE_CLAIM     = 0x2D, /* client -> server: [type:1][fracture_id:u32][burst_nonce:u32][claimed_grade:u8] */
     NET_MSG_FRACTURE_RESOLVED  = 0x2E, /* server -> nearby clients: [type:1][fracture_id:u32][fragment_pub:32][winner_pub:32][grade:u8] */
-    NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: per-station manifest summary grouped by (commodity, grade) — see STATION_MANIFEST_* below. */
+    NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: atomic per-station manifest summary + provenance detail. */
     NET_MSG_HIGHSCORES         = 0x30, /* server -> client: top-N leaderboard.
                                         * [type:1][count:1] + count × [callsign:8][credits_earned:f32]
                                         * [world_id:u32][world_seq:u32][build_id:u32][epoch_tick:u64]
                                         * [killed_by:8] (40 bytes/entry) */
-    NET_MSG_PLAYER_MANIFEST    = 0x31, /* server -> client: local player's ship manifest summary, same shape as STATION_MANIFEST minus station idx — see PLAYER_MANIFEST_* below. */
+    NET_MSG_PLAYER_MANIFEST    = 0x31, /* server -> client: atomic local-player manifest summary + provenance detail. */
     NET_MSG_REGISTER_PUBKEY    = 0x32, /* client -> server: [type:1][pubkey:32]. Layer A.2 of #479 — sent once per
                                         * connection BEFORE NET_MSG_SESSION so the server can remember the pubkey
                                         * assertion. Pubkey persistence/registry rebinding stays pending until
@@ -851,7 +852,7 @@ enum {
 /* Protocol discovery. Increment SIGNAL_PROTOCOL_VERSION only when a
  * compatibility decision is needed by external consumers; adding a new stream
  * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities. */
-#define SIGNAL_PROTOCOL_VERSION 1u
+#define SIGNAL_PROTOCOL_VERSION 2u
 
 enum {
     SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO   = 1u << 0,
@@ -1015,26 +1016,40 @@ enum {
     HIGHSCORE_HEADER     = 2,    /* type + count */
 };
 
-/* NET_MSG_STATION_MANIFEST wire layout:
- *   [type:1][station_idx:1][entry_count:u16]
- *     entry_count × [commodity:1][grade:1][count:u16]   (little-endian) */
+/* Canonical manifest snapshot. Summary rows keep the market/HUD payload
+ * compact; detail rows carry complete field-packed cargo_unit_t identity for
+ * concrete units, bounded to MANIFEST_DETAIL_MAX. Both sections are in one
+ * packet so a client never combines different ticks. Summary counts remain
+ * authoritative for any overflow beyond the detail bound.
+ *
+ * NET_MSG_STATION_MANIFEST:
+ *   [type:1][station_idx:1][summary_count:u16][detail_count:u16]
+ *   summary_count × [commodity:1][grade:1][count:u16]
+ *   detail_count × cargo_unit_t wire record
+ *
+ * NET_MSG_PLAYER_MANIFEST:
+ *   [type:1][summary_count:u16][detail_count:u16]
+ *   summary_count × [commodity:1][grade:1][count:u16]
+ *   detail_count × cargo_unit_t wire record
+ *
+ * Detail encoding is the canonical 80-byte field order declared by
+ * cargo_unit_wire_pack(), not an in-memory struct dump. */
 enum {
-    STATION_MANIFEST_HEADER = 4,
-    STATION_MANIFEST_ENTRY  = 4,
+    STATION_MANIFEST_HEADER = 6,
+    PLAYER_MANIFEST_HEADER = 5,
+    MANIFEST_SUMMARY_ENTRY = 4,
+    MANIFEST_DETAIL_ENTRY = 80,
+    MANIFEST_DETAIL_MAX = 256,
 };
 
-/* NET_MSG_PLAYER_MANIFEST wire layout (player is implicit — local pilot):
- *   [type:1][entry_count:u16]
- *     entry_count × [commodity:1][grade:1][count:u16]   (little-endian)
- * Lets the local client build SELL rows from a manifest count even when
- * the authoritative manifest mutations happened server-side (buy/sell/
- * smelt). The summary carries counts only; the dedicated
- * STATION_INGOTS / HOLD_INGOTS snapshots carry per-unit named-ingot
- * provenance when a row needs a representative cargo_unit_t. */
-enum {
-    PLAYER_MANIFEST_HEADER = 3,
-    PLAYER_MANIFEST_ENTRY  = 4,
-};
+#define STATION_MANIFEST_MAX_SIZE \
+    (STATION_MANIFEST_HEADER + \
+     COMMODITY_COUNT * MINING_GRADE_COUNT * MANIFEST_SUMMARY_ENTRY + \
+     MANIFEST_DETAIL_MAX * MANIFEST_DETAIL_ENTRY)
+#define PLAYER_MANIFEST_MAX_SIZE \
+    (PLAYER_MANIFEST_HEADER + \
+     COMMODITY_COUNT * MINING_GRADE_COUNT * MANIFEST_SUMMARY_ENTRY + \
+     MANIFEST_DETAIL_MAX * MANIFEST_DETAIL_ENTRY)
 
 /* Per-class buy price at any station's stockpile. RATi/commissioned
  * are an order of magnitude scarcer so they cost proportionally more.
@@ -1050,22 +1065,6 @@ enum {
 /* Delivery credit paid to the player when they deposit a named ingot
  * at a station's stockpile — small flat reward for transit. */
 #define INGOT_DELIVERY_CREDIT     100
-
-/* Named ingot wire record:
- *   [pubkey:32][prefix:1][metal:1][grade:1][_pad:1]
- *   [mined_block:8][origin:1][_pad2:7] = 52 bytes
- * The wire shape predates the named_ingot_t -> cargo_unit_t unification;
- * the server now projects the same fields off cargo_unit_t. The grade
- * byte reuses former padding without changing record size. Class
- * authorization is in the leading char(s) of base58(pubkey). */
-#define NAMED_INGOT_RECORD_SIZE 52
-
-/* NET_MSG_STATION_INGOTS layout:
- *   [type:1][station_id:1][count:1] + count × NAMED_INGOT_RECORD_SIZE
- * NET_MSG_HOLD_INGOTS layout (player is implicit — local pilot):
- *   [type:1][count:1] + count × NAMED_INGOT_RECORD_SIZE */
-#define STATION_INGOTS_HEADER 3
-#define HOLD_INGOTS_HEADER    2
 
 /* NET_MSG_INSPECT_SNAPSHOT wire layout:
  *   header:
@@ -1638,9 +1637,10 @@ enum {
  * treat ordinary live drift as non-semantic so it does not compete with the
  * ping/input-ack lane. */
 
-/* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
- *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */
-#define SCAFFOLD_RECORD_SIZE 28
+/* Scaffold record: [id:1][state:1][module_type:1][owner:1]
+ *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32]
+ *                  [built_at_station:i8] = 29 bytes */
+#define SCAFFOLD_RECORD_SIZE 29
 #define SCAFFOLD_REMOVE_MSG_HEADER 2
 #define SCAFFOLD_REMOVE_RECORD_SIZE 1
 #define SCAFFOLD_MOTION_Q_MSG_HEADER 2

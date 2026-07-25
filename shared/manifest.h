@@ -13,6 +13,16 @@ _Static_assert(offsetof(cargo_unit_t, pub) == 16, "cargo_unit_t pub offset chang
 _Static_assert(offsetof(cargo_unit_t, parent_merkle) == 48,
                "cargo_unit_t parent_merkle offset changed");
 
+#define CARGO_UNIT_WIRE_SIZE 80u
+
+/* Canonical field-packed cargo identity used by manifest replication and
+ * handoff snapshots. Keep persistence free to version independently; this
+ * encoding is explicitly little-endian and never relies on struct padding. */
+void cargo_unit_wire_pack(const cargo_unit_t *unit,
+                          uint8_t out[CARGO_UNIT_WIRE_SIZE]);
+void cargo_unit_wire_unpack(const uint8_t in[CARGO_UNIT_WIRE_SIZE],
+                            cargo_unit_t *out);
+
 const char *cargo_kind_name(cargo_kind_t kind);
 const recipe_def_t *recipe_get(recipe_id_t id);
 

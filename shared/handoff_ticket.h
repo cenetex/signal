@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "cargo_receipt.h"
+#include "manifest.h"
 #include "types.h"
 
 #ifdef __cplusplus
@@ -25,7 +26,7 @@ extern "C" {
 #define HANDOFF_TICKET_UNSIGNED_SIZE 188u
 #define HANDOFF_TICKET_SIZE          252u
 #define HANDOFF_SHIP_WIRE_SIZE       (24u + COMMODITY_COUNT * 4u + 16u + 1u + 20u + 2u + 4u + 4u)
-#define HANDOFF_CARGO_UNIT_WIRE_SIZE 80u
+#define HANDOFF_CARGO_UNIT_WIRE_SIZE CARGO_UNIT_WIRE_SIZE
 #define HANDOFF_SHIP_SNAPSHOT_HEADER_SIZE (HANDOFF_SHIP_WIRE_SIZE + 2u)
 #define HANDOFF_SHIP_SNAPSHOT_MAX_CARGO SHIP_MANIFEST_DEFAULT_CAP
 #define HANDOFF_SHIP_SNAPSHOT_MAX_SIZE \

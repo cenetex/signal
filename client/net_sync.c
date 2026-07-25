@@ -1461,74 +1461,58 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
     g.station_prev_seen[index] = station_exists(st);
 }
 
-/* Phase 2 wire: server → client station manifest summary. Fully
- * replaces the (commodity, grade) count matrix for this station so a
- * missing entry reads as zero. */
+static bool remote_manifest_detail_valid(const cargo_unit_t *unit) {
+    static const uint8_t zero_pub[32] = {0};
+    cargo_kind_t expected_kind;
+    if (!unit) return false;
+    if (unit->kind >= CARGO_KIND_COUNT) return false;
+    if (unit->commodity >= COMMODITY_COUNT) return false;
+    if (unit->grade >= MINING_GRADE_COUNT) return false;
+    if (unit->prefix_class >= INGOT_PREFIX_COUNT) return false;
+    if (unit->recipe_id >= RECIPE_COUNT || unit->quantity == 0) return false;
+    if (!cargo_kind_for_commodity(
+            (commodity_t)unit->commodity, &expected_kind) ||
+        expected_kind != (cargo_kind_t)unit->kind) {
+        return false;
+    }
+    if ((cargo_kind_t)unit->kind != CARGO_KIND_INGOT &&
+        (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+        return false;
+    }
+    return memcmp(unit->pub, zero_pub, sizeof(zero_pub)) != 0;
+}
+
+/* Server → client station manifest. The summary and exact provenance rows
+ * replace one another atomically because they were decoded from one packet. */
 void apply_remote_station_manifest(uint8_t station_id,
-                                   const NetStationManifestEntry *entries,
-                                   int count) {
+                                   const NetManifestSummaryEntry *summary,
+                                   int summary_count,
+                                   const cargo_unit_t *details,
+                                   int detail_count) {
     if (station_id >= MAX_STATIONS) return;
-    if (count < 0) count = 0;
+    if (summary_count < 0) summary_count = 0;
+    if (detail_count < 0) detail_count = 0;
+    if (detail_count > MANIFEST_DETAIL_MAX)
+        detail_count = MANIFEST_DETAIL_MAX;
     memset(&g.station_manifest_summary[station_id][0][0], 0,
            sizeof(g.station_manifest_summary[station_id]));
-    for (int i = 0; i < count; i++) {
-        uint8_t c = entries[i].commodity;
-        uint8_t gr = entries[i].grade;
+    for (int i = 0; i < summary_count; i++) {
+        uint8_t c = summary[i].commodity;
+        uint8_t gr = summary[i].grade;
         if (c >= COMMODITY_COUNT) continue;
         if (gr >= MINING_GRADE_COUNT) continue;
-        g.station_manifest_summary[station_id][c][gr] = entries[i].count;
+        g.station_manifest_summary[station_id][c][gr] = summary[i].count;
     }
-}
 
-static bool cargo_unit_from_named_ingot_entry(const NetNamedIngotEntry *entry,
-                                             cargo_unit_t *out) {
-    if (!entry || !out) return false;
-    if (entry->commodity >= COMMODITY_COUNT) return false;
-    if (entry->grade >= MINING_GRADE_COUNT) return false;
-    memset(out, 0, sizeof(*out));
-    out->kind = (uint8_t)CARGO_KIND_INGOT;
-    out->commodity = entry->commodity;
-    out->grade = entry->grade;
-    out->prefix_class = entry->prefix_class;
-    if (out->prefix_class >= INGOT_PREFIX_COUNT)
-        out->prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
-    out->recipe_id = (uint16_t)RECIPE_SMELT;
-    out->origin_station = entry->origin_station;
-    out->quantity = 1;
-    out->mined_block = entry->mined_block;
-    memcpy(out->pub, entry->pub, sizeof(out->pub));
-    return true;
-}
-
-/* Detailed station named-ingot snapshot. The station manifest remains a
- * partial provenance mirror under network authority: counts come from
- * g.station_manifest_summary, while this manifest holds only the named
- * ingot units needed for representative lineage strings. */
-void apply_remote_station_ingots(uint8_t station_id,
-                                 const NetNamedIngotEntry *entries,
-                                 int count) {
-    if (station_id >= MAX_STATIONS) return;
-    if (count < 0) count = 0;
-    if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
     station_t *st = &g.world.stations[station_id];
     if (!st->manifest.units && !station_manifest_bootstrap(st)) return;
     manifest_clear(&st->manifest);
     ship_receipts_t *station_receipts = station_get_receipts(st);
     if (station_receipts) ship_receipts_clear(station_receipts);
-    for (int i = 0; i < count; i++) {
-        cargo_unit_t unit = {0};
-        if (!cargo_unit_from_named_ingot_entry(&entries[i], &unit)) continue;
-        if (!station_manifest_push_with_chain(st, &unit, NULL)) break;
+    for (int i = 0; details && i < detail_count; i++) {
+        if (!remote_manifest_detail_valid(&details[i])) continue;
+        if (!station_manifest_push_with_chain(st, &details[i], NULL)) break;
     }
-}
-
-void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
-    if (count < 0) count = 0;
-    if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
-    g.remote_hold_named_ingot_count = 0;
-    if (!entries || count == 0) return;
-    for (int i = 0; i < count; i++)
-        g.remote_hold_named_ingots[g.remote_hold_named_ingot_count++] = entries[i];
 }
 
 static int remote_pending_receipt_find(const uint8_t cargo_pub[32]) {
@@ -1691,12 +1675,13 @@ void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
     g.highscore_count = count;
 }
 
-/* Replace the local player's ship.manifest with units that match the
- * server-authoritative count summary. HOLD_INGOTS supplies detailed
- * named-ingot provenance for units the protocol can describe; the rest
- * are synthesized legacy-migrate units so counts remain complete. */
-void apply_remote_player_manifest(const NetStationManifestEntry *entries,
-                                  int count) {
+/* Replace the local player's read-model manifest from one atomic packet.
+ * Exact units are installed first; compact summary remainder becomes
+ * deterministic presentation-only placeholders. */
+void apply_remote_player_manifest(const NetManifestSummaryEntry *summary,
+                                  int summary_count,
+                                  const cargo_unit_t *details,
+                                  int detail_count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     ship_t *ship = g.world.players[g.local_player_slot].ship;
     /* Always apply -- WORLD_STATE overwrites cargo[] every tick, so
@@ -1709,36 +1694,38 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
     manifest_clear(&ship->manifest);
     ship_receipts_t *receipts = ship_get_receipts(ship);
     if (receipts) ship_receipts_clear(receipts);
-    if (count <= 0) return;
+
+    uint16_t detailed[COMMODITY_COUNT][MINING_GRADE_COUNT];
+    memset(detailed, 0, sizeof(detailed));
+    if (detail_count < 0) detail_count = 0;
+    if (detail_count > MANIFEST_DETAIL_MAX)
+        detail_count = MANIFEST_DETAIL_MAX;
+    for (int i = 0; details && i < detail_count; i++) {
+        const cargo_unit_t *unit = &details[i];
+        if (!remote_manifest_detail_valid(unit)) continue;
+        if (!ship_manifest_push_with_chain(ship, unit, NULL)) return;
+        detailed[unit->commodity][unit->grade]++;
+        int pending_idx = remote_pending_receipt_find(unit->pub);
+        if (pending_idx >= 0)
+            (void)remote_attach_receipt_chain(
+                ship, &remote_pending_receipts[pending_idx]);
+    }
+
+    if (summary_count <= 0) return;
     uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
     uint16_t out_idx = 0;
-    bool named_used[NET_NAMED_INGOT_MAX] = { false };
-    for (int i = 0; i < count; i++) {
-        uint8_t c = entries[i].commodity;
-        uint8_t gr = entries[i].grade;
-        uint16_t n = entries[i].count;
+    for (int i = 0; i < summary_count; i++) {
+        uint8_t c = summary[i].commodity;
+        uint8_t gr = summary[i].grade;
+        uint16_t n = summary[i].count;
         if (c >= COMMODITY_COUNT) continue;
         if (gr >= MINING_GRADE_COUNT) continue;
         cargo_kind_t kind;
         if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
-        uint16_t remaining = n;
-        for (int j = 0; j < g.remote_hold_named_ingot_count && remaining > 0; j++) {
-            if (named_used[j]) continue;
-            const NetNamedIngotEntry *entry = &g.remote_hold_named_ingots[j];
-            if (entry->commodity != c || entry->grade != gr) continue;
-            if (ship->manifest.count >= ship->manifest.cap) return;
-            cargo_unit_t unit = {0};
-            if (!cargo_unit_from_named_ingot_entry(entry, &unit)) continue;
-            if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return;
-            int pending_idx = remote_pending_receipt_find(unit.pub);
-            if (pending_idx >= 0)
-                (void)remote_attach_receipt_chain(ship,
-                                                  &remote_pending_receipts[pending_idx]);
-            named_used[j] = true;
-            remaining--;
-        }
+        uint16_t remaining = detailed[c][gr] < n
+            ? (uint16_t)(n - detailed[c][gr])
+            : 0;
         for (uint16_t k = 0; k < remaining; k++) {
-            if (ship->manifest.count >= ship->manifest.cap) return;
             cargo_unit_t unit = {0};
             if (!hash_legacy_migrate_unit(origin, (commodity_t)c, out_idx++, &unit))
                 continue;
@@ -1943,22 +1930,11 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
         sc->vel = v2(received[i].vel_x, received[i].vel_y);
         sc->radius = received[i].radius;
         sc->build_amount = received[i].build_amount;
-        if (sc->state == SCAFFOLD_NASCENT) {
-            /* Nascent scaffolds need built_at_station so the SHIPYARD UI
-             * can match them. We don't network it explicitly; instead,
-             * derive from nearest station while NASCENT. */
-            float best_d = 1e18f;
-            int best_s = -1;
-            for (int s = 0; s < MAX_STATIONS; s++) {
-                const station_t *st = &g.world.stations[s];
-                if (!station_exists(st)) continue;
-                float d = v2_dist_sq(sc->pos, st->pos);
-                if (d < best_d) { best_d = d; best_s = s; }
-            }
-            sc->built_at_station = best_s;
-        } else {
-            sc->built_at_station = -1;
-        }
+        sc->built_at_station =
+            received[i].built_at_station >= 0 &&
+            received[i].built_at_station < MAX_STATIONS
+                ? received[i].built_at_station
+                : -1;
         seen[idx] = true;
     }
     if (replacement_snapshot) {

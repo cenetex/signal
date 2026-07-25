@@ -15,7 +15,8 @@ static int find_manifest_unit(const cargo_unit_t *m, uint16_t count,
     return -1;
 }
 
-static void manifest_remove(cargo_unit_t *m, uint16_t *count, uint16_t idx) {
+static void settlement_manifest_remove(cargo_unit_t *m, uint16_t *count,
+                                       uint16_t idx) {
     if (idx < *count - 1) m[idx] = m[*count - 1];
     (*count)--;
 }
@@ -164,7 +165,7 @@ bool settlement_apply_event(settlement_state_t *s,
         for (uint8_t j = 0; j < ic; j++) {
             int idx = find_manifest_unit(manifest, *mc, payload + 12 + j * 32);
             if (idx < 0) return false;
-            manifest_remove(manifest, mc, (uint16_t)idx);
+            settlement_manifest_remove(manifest, mc, (uint16_t)idx);
         }
         for (uint8_t j = 0; j < oc; j++) {
             if (*mc >= SETTL_MAX_MANIFEST_UNITS) return false;
@@ -182,7 +183,7 @@ bool settlement_apply_event(settlement_state_t *s,
         int idx = find_manifest_unit(manifest, *mc, payload);
         if (idx < 0) return false;
         cargo_unit_t unit = manifest[idx];
-        manifest_remove(manifest, mc, (uint16_t)idx);
+        settlement_manifest_remove(manifest, mc, (uint16_t)idx);
         /* Add to dest (same station for now) */
         if (*mc >= SETTL_MAX_MANIFEST_UNITS) return false;
         manifest[(*mc)++] = unit;
@@ -199,7 +200,7 @@ bool settlement_apply_event(settlement_state_t *s,
         if (dir == 0) { /* BUY: station→player, remove from manifest */
             int idx = find_manifest_unit(manifest, *mc, payload);
             if (idx < 0) return false;
-            manifest_remove(manifest, mc, (uint16_t)idx);
+            settlement_manifest_remove(manifest, mc, (uint16_t)idx);
             int li = find_ledger_entry(ledger, *lc, payload + 32);
             if (li >= 0) ledger[li].balance += (float)delta;
         } else { /* SELL: player→station, add to manifest */

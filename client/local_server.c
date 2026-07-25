@@ -427,10 +427,6 @@ static void local_server_emit_station_econ_snapshots(local_server_t *ls) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &ls->world.stations[s];
         if (!station_exists(st) || !st->manifest_dirty) continue;
-        int ingot_len = serialize_station_ingots(
-            local_server_station_snapshot_scratch.station_ingots, s, st);
-        local_server_send_to_client(
-            local_server_station_snapshot_scratch.station_ingots, ingot_len);
         int manifest_len = serialize_station_manifest(
             local_server_station_snapshot_scratch.station_manifest, s, st);
         local_server_send_to_client(

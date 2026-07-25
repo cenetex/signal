@@ -3140,9 +3140,10 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     scaffold_t scaffolds[MAX_SCAFFOLDS];
     memset(scaffolds, 0, sizeof(scaffolds));
     scaffolds[3].active = true;
-    scaffolds[3].state = SCAFFOLD_LOOSE;
+    scaffolds[3].state = SCAFFOLD_NASCENT;
     scaffolds[3].module_type = MODULE_DOCK;
     scaffolds[3].owner = -1;
+    scaffolds[3].built_at_station = 2;
     scaffolds[3].pos = v2(10.0f, 20.0f);
     scaffolds[3].radius = 30.0f;
     scaffolds[4] = scaffolds[3];
@@ -3165,6 +3166,7 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_SCAFFOLDS);
     ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(len, 2 + 2 * SCAFFOLD_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2 + 28], 2);
     ASSERT_EQ_INT(remove[0], NET_MSG_WORLD_SCAFFOLD_REMOVE);
     ASSERT_EQ_INT(remove[1], 0);
     ASSERT_EQ_INT(remove_len, SCAFFOLD_REMOVE_MSG_HEADER);
@@ -3179,6 +3181,16 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
         sent, sent_sig, motion_sig);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
+    ASSERT_EQ_INT(remove[1], 0);
+
+    scaffolds[4].built_at_station = 1;
+    len = serialize_scaffolds_for_player_delta(
+        buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
+        sent, sent_sig, motion_sig);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, 2 + SCAFFOLD_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2], 4);
+    ASSERT_EQ_INT(buf[2 + 28], 1);
     ASSERT_EQ_INT(remove[1], 0);
 
     scaffolds[3].active = false;
@@ -5133,23 +5145,21 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 8);
+    ASSERT_EQ_INT(cap.count, 7);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_PLAYER_SHIP);
-    ASSERT_EQ_INT(cap.type[1], NET_MSG_HOLD_INGOTS);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_PLAYER_MANIFEST);
-    ASSERT_EQ_INT(cap.type[3], NET_MSG_INSPECT_SNAPSHOT);
-    ASSERT_EQ_INT(cap.type[4], NET_MSG_PLAYER_KNOWN_CONTRACTS);
-    ASSERT_EQ_INT(cap.type[5], NET_MSG_PLAYER_MARKET_MEMORIES);
-    ASSERT_EQ_INT(cap.type[6], NET_MSG_PLAYER_KNOWN_LEDGER);
-    ASSERT_EQ_INT(cap.type[7], NET_MSG_DELIVERY_LEDGER);
+    ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_MANIFEST);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_PLAYER_KNOWN_CONTRACTS);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_PLAYER_MARKET_MEMORIES);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_PLAYER_KNOWN_LEDGER);
+    ASSERT_EQ_INT(cap.type[6], NET_MSG_DELIVERY_LEDGER);
     ASSERT(cap.len[0] > 16);
-    ASSERT(cap.len[1] >= HOLD_INGOTS_HEADER);
-    ASSERT(cap.len[2] >= PLAYER_MANIFEST_HEADER);
-    ASSERT(cap.len[3] > 0);
-    ASSERT_EQ_INT(cap.len[4], 5);
-    ASSERT(cap.len[5] >= PLAYER_MARKET_MEMORIES_HEADER);
-    ASSERT(cap.len[6] >= PLAYER_KNOWN_LEDGER_HEADER);
-    ASSERT(cap.len[7] >= DELIVERY_LEDGER_HEADER);
+    ASSERT(cap.len[1] >= PLAYER_MANIFEST_HEADER);
+    ASSERT(cap.len[2] > 0);
+    ASSERT_EQ_INT(cap.len[3], 5);
+    ASSERT(cap.len[4] >= PLAYER_MARKET_MEMORIES_HEADER);
+    ASSERT(cap.len[5] >= PLAYER_KNOWN_LEDGER_HEADER);
+    ASSERT(cap.len[6] >= DELIVERY_LEDGER_HEADER);
 }
 
 TEST(test_private_snapshot_emits_local_authoritative_baseline) {
@@ -5174,7 +5184,7 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 9);
+    ASSERT_EQ_INT(cap.count, 8);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_SHIP);
@@ -5240,17 +5250,15 @@ TEST(test_station_snapshot_emitter_sequence_shared) {
     server_emit_station_snapshot(&w, true, packet_capture_sink, &cap,
                                  &scratch);
 
-    ASSERT_EQ_INT(cap.count, 5);
+    ASSERT_EQ_INT(cap.count, 4);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATION_IDENTITY);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_STATION_DIAG);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_STATION_INGOTS);
-    ASSERT_EQ_INT(cap.type[3], NET_MSG_STATION_MANIFEST);
-    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_STATIONS);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_STATION_MANIFEST);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_STATIONS);
     ASSERT(cap.len[0] >= STATION_IDENTITY_SIZE);
     ASSERT_EQ_INT(cap.len[1], STATION_DIAG_SIZE);
-    ASSERT(cap.len[2] >= STATION_INGOTS_HEADER);
-    ASSERT(cap.len[3] >= STATION_MANIFEST_HEADER);
-    ASSERT_EQ_INT(cap.len[4], 2 + STATION_RECORD_SIZE);
+    ASSERT(cap.len[2] >= STATION_MANIFEST_HEADER);
+    ASSERT_EQ_INT(cap.len[3], 2 + STATION_RECORD_SIZE);
 }
 
 TEST(test_fracture_update_emitter_shared) {
@@ -7483,7 +7491,7 @@ TEST(test_roundtrip_player_ship) {
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + 3*4]), 20.0f, 0.1f); /* ferrite ingot */
 }
 
-TEST(test_named_ingot_record_serializes_grade) {
+TEST(test_manifest_detail_serializes_full_cargo_identity) {
     station_t st;
     memset(&st, 0, sizeof(st));
     ASSERT(station_manifest_bootstrap(&st));
@@ -7497,23 +7505,79 @@ TEST(test_named_ingot_record_serializes_grade) {
     unit.origin_station = 7;
     unit.quantity = 1;
     unit.mined_block = 0x0102030405060708ull;
-    for (int i = 0; i < 32; i++) unit.pub[i] = (uint8_t)(0xA0 + i);
+    for (int i = 0; i < 32; i++) {
+        unit.pub[i] = (uint8_t)(0xA0 + i);
+        unit.parent_merkle[i] = (uint8_t)(0x40 + i);
+    }
     ASSERT(manifest_push(&st.manifest, &unit));
 
-    uint8_t buf[STATION_INGOTS_HEADER + NAMED_INGOT_RECORD_SIZE];
-    int len = serialize_station_ingots(buf, 3, &st);
-    ASSERT_EQ_INT(len, STATION_INGOTS_HEADER + NAMED_INGOT_RECORD_SIZE);
-    ASSERT_EQ_INT(buf[0], NET_MSG_STATION_INGOTS);
-    ASSERT_EQ_INT(buf[1], 3);
-    ASSERT_EQ_INT(buf[2], 1);
+    cargo_unit_t frame = {0};
+    frame.kind = (uint8_t)CARGO_KIND_FRAME;
+    frame.commodity = (uint8_t)COMMODITY_FRAME;
+    frame.grade = (uint8_t)MINING_GRADE_FINE;
+    frame.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+    frame.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    frame.origin_station = 2;
+    frame.quantity = 1;
+    for (int i = 0; i < 32; i++) {
+        frame.pub[i] = (uint8_t)(0x20 + i);
+        frame.parent_merkle[i] = (uint8_t)(0x60 + i);
+    }
+    ASSERT(manifest_push(&st.manifest, &frame));
 
-    const uint8_t *p = &buf[STATION_INGOTS_HEADER];
-    ASSERT_EQ_INT(p[32], INGOT_PREFIX_M);
-    ASSERT_EQ_INT(p[33], COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(p[34], MINING_GRADE_RARE);
-    ASSERT_EQ_INT(p[44], 7);
-    ASSERT_EQ_INT(p[36], 0x08);
-    ASSERT_EQ_INT(p[43], 0x01);
+    uint8_t buf[STATION_MANIFEST_MAX_SIZE];
+    int len = serialize_station_manifest(buf, 3, &st);
+    ASSERT_EQ_INT(len, STATION_MANIFEST_HEADER +
+                       2 * MANIFEST_SUMMARY_ENTRY +
+                       2 * MANIFEST_DETAIL_ENTRY);
+    ASSERT_EQ_INT(buf[0], NET_MSG_STATION_MANIFEST);
+    ASSERT_EQ_INT(buf[1], 3);
+    ASSERT_EQ_INT(read_u16_le(&buf[2]), 2);
+    ASSERT_EQ_INT(read_u16_le(&buf[4]), 2);
+
+    const uint8_t *summary = &buf[STATION_MANIFEST_HEADER];
+    ASSERT_EQ_INT(summary[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(summary[1], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(read_u16_le(&summary[2]), 1);
+
+    const uint8_t *p = &summary[2 * MANIFEST_SUMMARY_ENTRY];
+    ASSERT_EQ_INT(p[0], CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(p[1], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[2], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(p[3], INGOT_PREFIX_M);
+    ASSERT_EQ_INT(read_u16_le(&p[4]), RECIPE_SMELT);
+    ASSERT_EQ_INT(p[6], 7);
+    ASSERT_EQ_INT(p[7], 1);
+    ASSERT_EQ_INT(p[8], 0x08);
+    ASSERT_EQ_INT(p[15], 0x01);
+    ASSERT_EQ_INT(p[16], 0xA0);
+    ASSERT_EQ_INT(p[47], 0xBF);
+    ASSERT_EQ_INT(p[48], 0x40);
+    ASSERT_EQ_INT(p[79], 0x5F);
+
+    const uint8_t *fp = &p[MANIFEST_DETAIL_ENTRY];
+    ASSERT_EQ_INT(fp[0], CARGO_KIND_FRAME);
+    ASSERT_EQ_INT(fp[1], COMMODITY_FRAME);
+    ASSERT_EQ_INT(fp[2], MINING_GRADE_FINE);
+    ASSERT_EQ_INT(fp[3], INGOT_PREFIX_ANONYMOUS);
+    ASSERT_EQ_INT(read_u16_le(&fp[4]), RECIPE_FRAME_BASIC);
+    ASSERT_EQ_INT(fp[6], 2);
+    ASSERT_EQ_INT(fp[16], 0x20);
+    ASSERT_EQ_INT(fp[48], 0x60);
+
+    cargo_unit_t decoded;
+    cargo_unit_wire_unpack(p, &decoded);
+    ASSERT_EQ_INT(decoded.kind, unit.kind);
+    ASSERT_EQ_INT(decoded.commodity, unit.commodity);
+    ASSERT_EQ_INT(decoded.grade, unit.grade);
+    ASSERT_EQ_INT(decoded.prefix_class, unit.prefix_class);
+    ASSERT_EQ_INT(decoded.recipe_id, unit.recipe_id);
+    ASSERT_EQ_INT(decoded.origin_station, unit.origin_station);
+    ASSERT_EQ_INT(decoded.quantity, unit.quantity);
+    ASSERT(decoded.mined_block == unit.mined_block);
+    ASSERT(memcmp(decoded.pub, unit.pub, sizeof(unit.pub)) == 0);
+    ASSERT(memcmp(decoded.parent_merkle, unit.parent_merkle,
+                  sizeof(unit.parent_merkle)) == 0);
 
     station_cleanup(&st);
 }
@@ -8556,7 +8620,10 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT(player_manifest != NULL);
     ASSERT(read_u16_le(&player_manifest[2]) & PROTOCOL_STREAM_FLAG_PER_PLAYER);
     ASSERT_EQ_INT(read_u16_le(&player_manifest[4]), PLAYER_MANIFEST_HEADER);
-    ASSERT_EQ_INT(read_u16_le(&player_manifest[6]), PLAYER_MANIFEST_ENTRY);
+    ASSERT_EQ_INT(read_u16_le(&player_manifest[6]), 0);
+    ASSERT_EQ_INT(read_u16_le(&player_manifest[8]), MANIFEST_DETAIL_MAX);
+    ASSERT(find_protocol_stream(buf, 0x28) == NULL);
+    ASSERT(find_protocol_stream(buf, 0x29) == NULL);
 
     const uint8_t *delivery_ledger = find_protocol_stream(buf, NET_MSG_DELIVERY_LEDGER);
     ASSERT(delivery_ledger != NULL);
@@ -8851,7 +8918,7 @@ void register_protocol_main_tests(void) {
     RUN(test_delivery_ledger_serializes_player_shipments);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);
-    RUN(test_named_ingot_record_serializes_grade);
+    RUN(test_manifest_detail_serializes_full_cargo_identity);
     RUN(test_parse_input_valid);
     RUN(test_parse_input_reverse_flag);
     RUN(test_parse_input_too_short);

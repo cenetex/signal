@@ -33,6 +33,9 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
 #define read_u64_le  wire_read_u64_le
 #define read_f32_le  wire_read_f32_le
 
+_Static_assert(MANIFEST_DETAIL_ENTRY == CARGO_UNIT_WIRE_SIZE,
+               "manifest detail wire size drifted from cargo identity");
+
 static inline uint64_t net_fnv1a64_update(uint64_t h, uint8_t byte) {
     h ^= (uint64_t)byte;
     return h * 1099511628211ull;
@@ -673,25 +676,14 @@ static inline int serialize_protocol_info(uint8_t *buf,
     ADD_PROTOCOL_STREAM(NET_MSG_STATION_MANIFEST, PROTOCOL_STREAM_CLASS_ECON,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
-                        STATION_MANIFEST_HEADER, STATION_MANIFEST_ENTRY,
-                        COMMODITY_COUNT * MINING_GRADE_COUNT, world_tick_ms);
+                        STATION_MANIFEST_HEADER, 0,
+                        MANIFEST_DETAIL_MAX, world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_MANIFEST, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
-                        PLAYER_MANIFEST_HEADER, PLAYER_MANIFEST_ENTRY,
-                        COMMODITY_COUNT * MINING_GRADE_COUNT, ship_tick_ms);
-    ADD_PROTOCOL_STREAM(NET_MSG_STATION_INGOTS, PROTOCOL_STREAM_CLASS_ECON,
-                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
-                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
-                        STATION_INGOTS_HEADER, NAMED_INGOT_RECORD_SIZE,
-                        255, world_tick_ms);
-    ADD_PROTOCOL_STREAM(NET_MSG_HOLD_INGOTS, PROTOCOL_STREAM_CLASS_PLAYER,
-                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
-                        PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
-                        PROTOCOL_STREAM_FLAG_PER_PLAYER,
-                        HOLD_INGOTS_HEADER, NAMED_INGOT_RECORD_SIZE,
-                        255, ship_tick_ms);
+                        PLAYER_MANIFEST_HEADER, 0,
+                        MANIFEST_DETAIL_MAX, ship_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_CONTRACTS, PROTOCOL_STREAM_CLASS_ECON,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY,
@@ -2562,55 +2554,16 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
-/* RATi v2 — write a single named-ingot wire record from a cargo_unit_t.
- * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition. The
- * record size is unchanged after the named_ingot_t -> cargo_unit_t
- * unification; p[34] was formerly padding and now carries grade so
- * clients can attach provenance to the correct market row. */
-static inline void write_named_ingot_unit(uint8_t *p, const cargo_unit_t *u) {
-    memset(p, 0, NAMED_INGOT_RECORD_SIZE);
-    memcpy(&p[0], u->pub, 32);
-    p[32] = u->prefix_class;
-    p[33] = u->commodity;
-    p[34] = u->grade;
-    /* p[35] pad */
-    for (int k = 0; k < 8; k++) p[36 + k] = (uint8_t)(u->mined_block >> (8 * k));
-    p[44] = u->origin_station;
-    /* p[45..51] pad */
+static inline bool manifest_unit_needs_detail(const cargo_unit_t *unit) {
+    static const uint8_t zero_pub[32] = {0};
+    return unit && memcmp(unit->pub, zero_pub, sizeof(zero_pub)) != 0;
 }
 
-/* Per-station named-ingot snapshot. Walks the station manifest and
- * surfaces every CARGO_KIND_INGOT unit whose prefix is non-anonymous
- * (the rest are bulk fungibles already covered by the manifest summary).
- * Cap at 255 (wire count is u8). */
-static inline int serialize_station_ingots(uint8_t *buf, int station_idx,
-                                           const station_t *st) {
-    int n = 0;
-    buf[0] = NET_MSG_STATION_INGOTS;
-    buf[1] = (uint8_t)station_idx;
-    if (st->manifest.units) {
-        for (uint16_t i = 0; i < st->manifest.count && n < 255; i++) {
-            const cargo_unit_t *u = &st->manifest.units[i];
-            if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT) continue;
-            if ((ingot_prefix_t)u->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
-            uint8_t *p = &buf[STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE];
-            write_named_ingot_unit(p, u);
-            n++;
-        }
-    }
-    buf[2] = (uint8_t)n;
-    return STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
-}
-
-/* Per-station manifest summary (Phase 2). Runs through every unit in
- * station.manifest, builds a per-(commodity, grade) count table, and
- * serializes only the non-zero slots.
- * Wire layout is defined in shared/protocol.h (STATION_MANIFEST_HEADER /
- * STATION_MANIFEST_ENTRY) so the client can decode. Sent per-station on
- * manifest change (cheapest) or on dock. */
+/* Per-station canonical manifest snapshot. Aggregate rows keep ordinary
+ * market stock compact; full cargo-unit rows preserve identity/provenance for
+ * every concrete unit within the bounded detail section. */
 static inline int serialize_station_manifest(uint8_t *buf, int station_idx,
                                              const station_t *st) {
-    /* Build the (commodity × grade) count table from the manifest. */
     uint16_t table[COMMODITY_COUNT][MINING_GRADE_COUNT];
     memset(table, 0, sizeof(table));
     if (st->manifest.units) {
@@ -2629,7 +2582,8 @@ static inline int serialize_station_manifest(uint8_t *buf, int station_idx,
         for (int g = 0; g < MINING_GRADE_COUNT; g++) {
             uint16_t count = table[c][g];
             if (count == 0) continue;
-            uint8_t *p = &buf[STATION_MANIFEST_HEADER + n * STATION_MANIFEST_ENTRY];
+            uint8_t *p = &buf[STATION_MANIFEST_HEADER +
+                              n * MANIFEST_SUMMARY_ENTRY];
             p[0] = (uint8_t)c;
             p[1] = (uint8_t)g;
             write_u16_le(&p[2], count);
@@ -2637,15 +2591,28 @@ static inline int serialize_station_manifest(uint8_t *buf, int station_idx,
         }
     }
     write_u16_le(&buf[2], (uint16_t)n);
-    return STATION_MANIFEST_HEADER + n * STATION_MANIFEST_ENTRY;
+
+    int detail_count = 0;
+    int detail_offset = STATION_MANIFEST_HEADER +
+                        n * MANIFEST_SUMMARY_ENTRY;
+    if (st->manifest.units) {
+        for (uint16_t i = 0;
+             i < st->manifest.count && detail_count < MANIFEST_DETAIL_MAX;
+             i++) {
+            const cargo_unit_t *unit = &st->manifest.units[i];
+            if (!manifest_unit_needs_detail(unit)) continue;
+            cargo_unit_wire_pack(
+                unit,
+                &buf[detail_offset +
+                     detail_count * MANIFEST_DETAIL_ENTRY]);
+            detail_count++;
+        }
+    }
+    write_u16_le(&buf[4], (uint16_t)detail_count);
+    return detail_offset + detail_count * MANIFEST_DETAIL_ENTRY;
 }
 
-/* Local player's manifest summary. Same (commodity × grade) count
- * shape as the station summary, with no station_idx (the recipient is
- * the implicit local player). Sent each tick alongside PLAYER_SHIP so
- * the trade UI's SELL rows reflect server-authoritative manifest state
- * (buy/sell/transfer mutations on the server side reach the client
- * without being lost). */
+/* Local-player shape is identical apart from the omitted station id. */
 static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
     uint16_t table[COMMODITY_COUNT][MINING_GRADE_COUNT];
     memset(table, 0, sizeof(table));
@@ -2664,7 +2631,8 @@ static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
         for (int g = 0; g < MINING_GRADE_COUNT; g++) {
             uint16_t count = table[c][g];
             if (count == 0) continue;
-            uint8_t *p = &buf[PLAYER_MANIFEST_HEADER + n * PLAYER_MANIFEST_ENTRY];
+            uint8_t *p = &buf[PLAYER_MANIFEST_HEADER +
+                              n * MANIFEST_SUMMARY_ENTRY];
             p[0] = (uint8_t)c;
             p[1] = (uint8_t)g;
             write_u16_le(&p[2], count);
@@ -2672,27 +2640,25 @@ static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
         }
     }
     write_u16_le(&buf[1], (uint16_t)n);
-    return PLAYER_MANIFEST_HEADER + n * PLAYER_MANIFEST_ENTRY;
-}
 
-/* Local player's hold-ingot snapshot, derived from the ship manifest.
- * Walks ship.manifest for non-anonymous CARGO_KIND_INGOT units. Cap at
- * 255 (wire count is u8). */
-static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
-    int n = 0;
-    buf[0] = NET_MSG_HOLD_INGOTS;
+    int detail_count = 0;
+    int detail_offset = PLAYER_MANIFEST_HEADER +
+                        n * MANIFEST_SUMMARY_ENTRY;
     if (ship && ship->manifest.units) {
-        for (uint16_t i = 0; i < ship->manifest.count && n < 255; i++) {
-            const cargo_unit_t *u = &ship->manifest.units[i];
-            if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT) continue;
-            if ((ingot_prefix_t)u->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
-            uint8_t *p = &buf[HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE];
-            write_named_ingot_unit(p, u);
-            n++;
+        for (uint16_t i = 0;
+             i < ship->manifest.count && detail_count < MANIFEST_DETAIL_MAX;
+             i++) {
+            const cargo_unit_t *unit = &ship->manifest.units[i];
+            if (!manifest_unit_needs_detail(unit)) continue;
+            cargo_unit_wire_pack(
+                unit,
+                &buf[detail_offset +
+                     detail_count * MANIFEST_DETAIL_ENTRY]);
+            detail_count++;
         }
     }
-    buf[1] = (uint8_t)n;
-    return HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
+    write_u16_le(&buf[3], (uint16_t)detail_count);
+    return detail_offset + detail_count * MANIFEST_DETAIL_ENTRY;
 }
 
 /* Laser/scan inspection snapshot. The target-only helper is used for
@@ -4033,7 +3999,7 @@ _Static_assert(
     "ASTEROID_STATE_Q_RECORD_SIZE must match serialized compact asteroid state layout"
 );
 _Static_assert(
-    4 + 6 * 4 == SCAFFOLD_RECORD_SIZE,
+    4 + 6 * 4 + 1 == SCAFFOLD_RECORD_SIZE,
     "SCAFFOLD_RECORD_SIZE must match serialized scaffold layout"
 );
 _Static_assert(
@@ -4593,8 +4559,9 @@ static inline int serialize_station_diag(uint8_t *buf, int index, const station_
 /*
  * WORLD_SCAFFOLDS message: active scaffold pool (NASCENT/LOOSE/TOWING/SNAPPING/PLACED).
  * [type:1][count:1] + count * SCAFFOLD_RECORD_SIZE
- * Per record: [id:1][state:1][module_type:1][owner:1][pos:2xf32][vel:2xf32][radius:f32][build_amount:f32]
- * = 28 bytes
+ * Per record: [id:1][state:1][module_type:1][owner:1][pos:2xf32]
+ * [vel:2xf32][radius:f32][build_amount:f32][built_at_station:i8]
+ * = 29 bytes
  */
 static inline void serialize_one_scaffold(uint8_t *p, int index, const scaffold_t *sc) {
     p[0] = (uint8_t)index;
@@ -4607,6 +4574,9 @@ static inline void serialize_one_scaffold(uint8_t *p, int index, const scaffold_
     write_f32_le(&p[16], sc->vel.y);
     write_f32_le(&p[20], sc->radius);
     write_f32_le(&p[24], sc->build_amount);
+    p[28] = (sc->built_at_station < 0)
+        ? 0xFFu
+        : (uint8_t)sc->built_at_station;
 }
 
 static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds) {
@@ -6753,11 +6723,7 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
 
 typedef struct {
     uint8_t player_ship[PLAYER_SHIP_SIZE + 4];
-    uint8_t hold_ingots[HOLD_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
-    uint8_t player_manifest[
-        PLAYER_MANIFEST_HEADER +
-        COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY
-    ];
+    uint8_t player_manifest[PLAYER_MANIFEST_MAX_SIZE];
     uint8_t inspect_snapshot[INSPECT_SNAPSHOT_MAX_SIZE];
     uint8_t known_contracts[5];
     uint8_t known_ledger[
@@ -6777,13 +6743,7 @@ typedef struct {
 typedef struct {
     uint8_t station_identity[STATION_IDENTITY_SIZE + 4];
     uint8_t station_diag[STATION_DIAG_SIZE];
-    uint8_t station_ingots[
-        STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE
-    ];
-    uint8_t station_manifest[
-        STATION_MANIFEST_HEADER +
-        COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY
-    ];
+    uint8_t station_manifest[STATION_MANIFEST_MAX_SIZE];
     uint8_t world_stations[2 + MAX_STATIONS * STATION_RECORD_SIZE];
 } server_station_snapshot_scratch_t;
 
@@ -6805,10 +6765,6 @@ static inline void server_emit_station_snapshot(
 
         int diag_len = serialize_station_diag(scratch->station_diag, s, st);
         send(send_user, scratch->station_diag, diag_len);
-
-        int ingot_len = serialize_station_ingots(
-            scratch->station_ingots, s, st);
-        send(send_user, scratch->station_ingots, ingot_len);
 
         int manifest_len = serialize_station_manifest(
             scratch->station_manifest, s, st);
@@ -6851,9 +6807,6 @@ static inline void server_emit_private_snapshot_for_player(
     int ship_len = serialize_player_ship_for_world(
         scratch->player_ship, (uint8_t)player_slot, w, sp);
     send(send_user, scratch->player_ship, ship_len);
-
-    int hold_len = serialize_hold_ingots(scratch->hold_ingots, sp->ship);
-    send(send_user, scratch->hold_ingots, hold_len);
 
     int manifest_len = serialize_player_manifest(
         scratch->player_manifest, sp->ship);

@@ -242,8 +242,6 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_station_manifest = apply_remote_station_manifest;
     cbs->on_player_manifest = apply_remote_player_manifest;
     cbs->on_cargo_receipt_bundle = apply_remote_cargo_receipt_bundle;
-    cbs->on_station_ingots = apply_remote_station_ingots;
-    cbs->on_hold_ingots = apply_remote_hold_ingots;
     cbs->on_inspect_snapshot = apply_remote_inspect_snapshot;
     cbs->on_highscores = apply_remote_highscores;
     cbs->on_action_ack = on_remote_action_ack;
@@ -3499,7 +3497,7 @@ int signal_smoke_remote_towable_interp_check(void) {
 
     NetScaffoldState scaffold = {
         .index = 3,
-        .state = SCAFFOLD_LOOSE,
+        .state = SCAFFOLD_NASCENT,
         .module_type = MODULE_DOCK,
         .owner = -1,
         .pos_x = 0.0f,
@@ -3508,8 +3506,11 @@ int signal_smoke_remote_towable_interp_check(void) {
         .vel_y = 0.0f,
         .radius = 30.0f,
         .build_amount = 0.0f,
+        .built_at_station = 2,
     };
     apply_remote_scaffolds(&scaffold, 1);
+    bool scaffold_station_authoritative =
+        g.scaffold_interp.curr[3].built_at_station == 2;
     g.scaffold_interp.t = 0.1f / fmaxf(g.scaffold_interp.interval, 0.001f);
     interpolate_world_for_render();
     float scaffold_first_x = g.world.scaffolds[3].pos.x;
@@ -3877,6 +3878,7 @@ int signal_smoke_remote_towable_interp_check(void) {
     int ok = scaffold_first_x > 9.0f && scaffold_first_x < 11.5f &&
              scaffold_blended_x > scaffold_first_x &&
              scaffold_blended_x < 95.0f &&
+             scaffold_station_authoritative &&
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
              pod_blended_x > pod_first_x &&
              pod_blended_x < 95.0f &&

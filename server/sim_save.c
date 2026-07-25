@@ -232,9 +232,9 @@
  * wipe v31 worlds on this bump.
  *
  * v35: dropped station.named_ingots[64] + named_ingots_count + the
- * named_ingot_t struct. Old saves are migrated by reading the legacy
- * named-ingot block (52B per slot, fixed layout) and converting each
- * non-empty entry into a manifest unit. */
+ * named_ingot_t struct. Those world saves are now below
+ * MIN_SAVE_VERSION; the matching legacy layout remains only for accepted
+ * PLY4 player saves. */
 /* Bumped to 49: per-hopper commodity tag changes station_module_t
  * shape. Catalog files persist modules so they need re-bootstrap.
  * Per-player saves under saves/pubkey/ live in their own files and
@@ -244,8 +244,8 @@
                               * byte offsets); read_npc lands them in
                               * n->ship->* identically for both versions. */
 
-/* Legacy named-ingot block layout — preserved here only so v25..v34
- * saves can be migrated forward. The original named_ingot_t was
+/* Legacy named-ingot block layout — preserved for accepted PLY4 player
+ * saves. The original named_ingot_t was
  * field-by-field WRITE_FIELD'd, so the on-disk record matches the
  * struct's natural layout with 8-byte alignment for mined_block. That
  * came out to 56 bytes per record (the 52-byte WIRE record packs
@@ -261,8 +261,7 @@ typedef struct {
     uint8_t  _pad2[7];        /* 49..55 */
 } legacy_named_ingot_t;
 _Static_assert(sizeof(legacy_named_ingot_t) == 56,
-               "legacy_named_ingot_t must match the on-disk v34 layout");
-#define LEGACY_STATION_NAMED_INGOTS_MAX 64
+               "legacy_named_ingot_t must match the accepted PLY4 layout");
 #define LEGACY_SHIP_HOLD_INGOTS_MAX     8
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -546,7 +545,7 @@ static bool write_station_session(FILE *f, const station_t *s) {
     }
     /* v35: named-ingot stockpile collapsed into manifest. The
      * v25..v34 dual-store fields (count + 64 × named_ingot_t) are no
-     * longer written. Migration on load converts old saves forward. */
+     * longer written; those world versions are below MIN_SAVE_VERSION. */
     /* Manifest (v29+, #339 slice A). Previously guarded to require
      * empty — now serialized as count + packed cargo_unit_t entries.
      * cap is NOT persisted; on load the manifest bootstraps at the
@@ -728,98 +727,38 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, s->arm_speed[a]);
         READ_FIELD(f, s->arm_omega[a]);
     }
-    /* v26..v34 wrote a named-ingot stockpile block (count + 64
-     * fixed-size records). v35 dropped the dual store; the manifest
-     * is now the single source of truth. We still read the legacy
-     * block off disk so subsequent fields stay byte-aligned, but its
-     * contents are migrated into the manifest only when the file
-     * predates the manifest (v26..v28); for v29..v34 the manifest
-     * already contains the same units (dual-write at smelt time) and
-     * the legacy block is discarded to avoid double-counting. */
-    if (g_loaded_save_version >= 26 && g_loaded_save_version <= 34) {
-        int legacy_count = 0;
-        legacy_named_ingot_t legacy[LEGACY_STATION_NAMED_INGOTS_MAX];
-        READ_FIELD(f, legacy_count);
-        for (int i = 0; i < LEGACY_STATION_NAMED_INGOTS_MAX; i++)
-            READ_FIELD(f, legacy[i]);
-        if (g_loaded_save_version < 29) {
-            /* No manifest in the file; lift the named records into the
-             * manifest as smelt-recipe units so the trade picker sees
-             * them after the world reset. parent_merkle is unknown for
-             * legacy entries — leave it zero. */
-            if (!station_manifest_bootstrap(s)) return false;
-            if (legacy_count < 0) legacy_count = 0;
-            if (legacy_count > LEGACY_STATION_NAMED_INGOTS_MAX)
-                legacy_count = LEGACY_STATION_NAMED_INGOTS_MAX;
-            for (int i = 0; i < legacy_count; i++) {
-                const legacy_named_ingot_t *src = &legacy[i];
-                /* Empty slots in the legacy array were zero-initialized
-                 * (pubkey all zero); skip those. */
-                static const uint8_t zero_pk[32] = {0};
-                if (memcmp(src->pubkey, zero_pk, 32) == 0) continue;
-                if (s->manifest.count >= s->manifest.cap) break;
-                cargo_unit_t u = {0};
-                u.kind = (uint8_t)CARGO_KIND_INGOT;
-                u.commodity = src->metal;
-                u.grade = (uint8_t)MINING_GRADE_COMMON;
-                u.prefix_class = src->prefix_class;
-                u.recipe_id = (uint16_t)RECIPE_SMELT;
-                u.origin_station = src->origin_station;
-                u.quantity = 1;
-                u.mined_block = src->mined_block;
-                memcpy(u.pub, src->pubkey, 32);
-                (void)station_manifest_push_with_chain(s, &u, NULL);
-            }
-        }
-        (void)legacy; /* silence unused warning when nothing is migrated */
-    }
-    /* Manifest (v29+). For v29+, allocate via bootstrap + reserve, then
-     * read entries. Pre-v29 saves get Slice D migration: their float
-     * inventory becomes synthetic RECIPE_LEGACY_MIGRATE units so the
-     * manifest layer sees a consistent state from tick 0. */
+    /* Every accepted world save (v49+) already uses the manifest layout.
+     * The v26-v34 station named-ingot block and pre-v29 float migration are
+     * unreachable below MIN_SAVE_VERSION and have been retired. */
     if (!station_manifest_bootstrap(s)) return false;
-    if (g_loaded_save_version >= 29) {
-        uint16_t manifest_count = 0;
-        ship_receipts_t *rcpts = station_get_receipts(s);
-        if (!rcpts) return false;
-        READ_FIELD(f, manifest_count);
-        manifest_clear(&s->manifest);
-        ship_receipts_clear(rcpts);
-        if (manifest_count > 0) {
-            if (!manifest_reserve(&s->manifest, manifest_count)) return false;
-            if (!ship_receipts_reserve(rcpts, manifest_count)) return false;
-            for (uint16_t u = 0; u < manifest_count; u++) {
-                cargo_unit_t unit = {0};
-                cargo_receipt_chain_t chain = {0};
-                READ_FIELD(f, unit);
-                if (g_loaded_save_version >= 53) {
-                    READ_FIELD(f, chain.len);
-                    if (chain.len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+    uint16_t manifest_count = 0;
+    ship_receipts_t *rcpts = station_get_receipts(s);
+    if (!rcpts) return false;
+    READ_FIELD(f, manifest_count);
+    manifest_clear(&s->manifest);
+    ship_receipts_clear(rcpts);
+    if (manifest_count > 0) {
+        if (!manifest_reserve(&s->manifest, manifest_count)) return false;
+        if (!ship_receipts_reserve(rcpts, manifest_count)) return false;
+        for (uint16_t u = 0; u < manifest_count; u++) {
+            cargo_unit_t unit = {0};
+            cargo_receipt_chain_t chain = {0};
+            READ_FIELD(f, unit);
+            if (g_loaded_save_version >= 53) {
+                READ_FIELD(f, chain.len);
+                if (chain.len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                    return false;
+                for (uint8_t k = 0; k < chain.len; k++) {
+                    if (fread(&chain.links[k], sizeof(chain.links[k]), 1, f) != 1) {
                         return false;
-                    for (uint8_t k = 0; k < chain.len; k++) {
-                        if (fread(&chain.links[k], sizeof(chain.links[k]), 1, f) != 1) {
-                            return false;
-                        }
                     }
                 }
-                if (!station_manifest_push_with_chain(s, &unit,
-                                                      chain.len > 0 ? &chain : NULL)) {
-                    return false;
-                }
             }
-            /* v45 repurposed cargo_unit_t._pad as quantity. v44 and earlier
-             * wrote zero there; rewrite to 1 so units stay addressable. */
-            if (g_loaded_save_version < 45)
-                manifest_migrate_quantity(&s->manifest);
+            if (!station_manifest_push_with_chain(
+                    s, &unit, chain.len > 0 ? &chain : NULL)) {
+                return false;
+            }
         }
-    } else {
-        /* Slice D: synthesize manifest entries from float inventory for
-         * pre-v29 saves. Origin salt = first 8 chars of station.name so
-         * the same save reloads to the same pubs deterministically. */
-        uint8_t origin[8] = {0};
-        memcpy(origin, s->name, sizeof(origin));
-        (void)manifest_migrate_legacy_inventory(&s->manifest, s->_inventory_cache,
-                                                COMMODITY_COUNT, origin);
     }
     /* v40: per-station Ed25519 pubkey + outpost provenance (#479 B).
      * v39 and earlier saves don't carry these fields — leave them

@@ -51,36 +51,6 @@ static bool is_zero32(const uint8_t p[32]) {
     return !p || memcmp(p, zero32, 32) == 0;
 }
 
-static void cargo_unit_pack_for_handoff(const cargo_unit_t *u, uint8_t out[80]) {
-    memset(out, 0, 80);
-    if (!u) return;
-    out[0] = u->kind;
-    out[1] = u->commodity;
-    out[2] = u->grade;
-    out[3] = u->prefix_class;
-    write_u16_le(&out[4], u->recipe_id);
-    out[6] = u->origin_station;
-    out[7] = u->quantity;
-    write_u64_le(&out[8], u->mined_block);
-    memcpy(&out[16], u->pub, 32);
-    memcpy(&out[48], u->parent_merkle, 32);
-}
-
-static void cargo_unit_unpack_for_handoff(const uint8_t in[80], cargo_unit_t *out) {
-    if (!in || !out) return;
-    memset(out, 0, sizeof(*out));
-    out->kind = in[0];
-    out->commodity = in[1];
-    out->grade = in[2];
-    out->prefix_class = in[3];
-    out->recipe_id = read_u16_le(&in[4]);
-    out->origin_station = in[6];
-    out->quantity = in[7];
-    out->mined_block = read_u64_le(&in[8]);
-    memcpy(out->pub, &in[16], 32);
-    memcpy(out->parent_merkle, &in[48], 32);
-}
-
 void handoff_ticket_unsigned_pack(
     const handoff_ticket_t *ticket,
     uint8_t out[HANDOFF_TICKET_UNSIGNED_SIZE]) {
@@ -172,7 +142,7 @@ void handoff_ticket_cargo_root(const ship_t *ship, uint8_t out[32]) {
     const ship_receipts_t *receipts = ship_get_receipts_const(ship);
     for (uint16_t i = 0; i < ship->manifest.count; i++) {
         uint8_t cargo_buf[80];
-        cargo_unit_pack_for_handoff(&ship->manifest.units[i], cargo_buf);
+        cargo_unit_wire_pack(&ship->manifest.units[i], cargo_buf);
         sha256_update(&c, cargo_buf, sizeof(cargo_buf));
         uint8_t len = 0;
         if (receipts && i < receipts->count)
@@ -252,7 +222,7 @@ bool handoff_ship_snapshot_pack(const ship_t *ship, uint8_t *out, size_t cap,
     receipts = ship_get_receipts_const(ship);
     for (uint16_t i = 0; i < count; i++) {
         uint8_t len = 0;
-        cargo_unit_pack_for_handoff(&ship->manifest.units[i], &out[off]);
+        cargo_unit_wire_pack(&ship->manifest.units[i], &out[off]);
         off += HANDOFF_CARGO_UNIT_WIRE_SIZE;
         if (receipts && i < receipts->count) len = receipts->chains[i].len;
         out[off++] = len;
@@ -308,7 +278,7 @@ bool handoff_ship_snapshot_unpack(const uint8_t *data, size_t len,
         uint8_t chain_len = 0;
         memset(&chain, 0, sizeof(chain));
         if (len - off < HANDOFF_CARGO_UNIT_WIRE_SIZE + 1u) goto fail;
-        cargo_unit_unpack_for_handoff(&data[off], &unit);
+        cargo_unit_wire_unpack(&data[off], &unit);
         off += HANDOFF_CARGO_UNIT_WIRE_SIZE;
         chain_len = data[off++];
         if (chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN) goto fail;

@@ -279,7 +279,6 @@ typedef struct {
     uint32_t fracture_resolved_sent_ids[MAX_PENDING_RESOLVES];
     uint8_t fracture_resolved_sent_cursor;
     net_payload_cache_t player_ship_cache;
-    net_payload_cache_t hold_ingots_cache;
     net_payload_cache_t player_manifest_cache;
     net_payload_cache_t inspect_snapshot_cache;
     net_payload_cache_t contracts_cache;

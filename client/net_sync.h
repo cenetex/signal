@@ -97,22 +97,19 @@ void apply_remote_hail_response(uint8_t station,
                                 int contract_index,
                                 const NetHailReason *reason);
 void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count);
-/* Phase 2 — station manifest summary (per-{commodity, grade} counts). */
+/* Atomic manifest summary plus canonical identity details. */
 void apply_remote_station_manifest(uint8_t station_id,
-                                   const NetStationManifestEntry *entries,
-                                   int count);
-/* Local player ship manifest summary (server-mirrored). */
-void apply_remote_player_manifest(const NetStationManifestEntry *entries,
-                                  int count);
+                                   const NetManifestSummaryEntry *summary,
+                                   int summary_count,
+                                   const cargo_unit_t *details,
+                                   int detail_count);
+void apply_remote_player_manifest(const NetManifestSummaryEntry *summary,
+                                  int summary_count,
+                                  const cargo_unit_t *details,
+                                  int detail_count);
 /* Portable cargo receipt bundle for the local player's carried manifest. */
 void apply_remote_cargo_receipt_bundle(const cargo_receipt_t *receipts,
                                        int count);
-/* Detailed named-ingot snapshots that supplement manifest summaries with
- * per-unit provenance for trade-row display. */
-void apply_remote_station_ingots(uint8_t station_id,
-                                 const NetNamedIngotEntry *entries,
-                                 int count);
-void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count);
 void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot);
 /* Global leaderboard snapshot. */
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count);

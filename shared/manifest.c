@@ -1,5 +1,6 @@
 #include "manifest.h"
 #include "cargo_receipt.h"  /* Layer D of #479 — ship receipt store */
+#include "wire_codec.h"
 
 #include <assert.h>
 #include <math.h>
@@ -26,6 +27,38 @@ enum {
 static const uint8_t MANIFEST_DOMAIN[8] = {
     'S', 'I', 'G', 'N', 'A', 'L', 'v', '1'
 };
+
+void cargo_unit_wire_pack(const cargo_unit_t *unit,
+                          uint8_t out[CARGO_UNIT_WIRE_SIZE]) {
+    memset(out, 0, CARGO_UNIT_WIRE_SIZE);
+    if (!unit) return;
+    out[0] = unit->kind;
+    out[1] = unit->commodity;
+    out[2] = unit->grade;
+    out[3] = unit->prefix_class;
+    wire_write_u16_le(&out[4], unit->recipe_id);
+    out[6] = unit->origin_station;
+    out[7] = unit->quantity;
+    wire_write_u64_le(&out[8], unit->mined_block);
+    memcpy(&out[16], unit->pub, 32);
+    memcpy(&out[48], unit->parent_merkle, 32);
+}
+
+void cargo_unit_wire_unpack(const uint8_t in[CARGO_UNIT_WIRE_SIZE],
+                            cargo_unit_t *out) {
+    if (!in || !out) return;
+    memset(out, 0, sizeof(*out));
+    out->kind = in[0];
+    out->commodity = in[1];
+    out->grade = in[2];
+    out->prefix_class = in[3];
+    out->recipe_id = wire_read_u16_le(&in[4]);
+    out->origin_station = in[6];
+    out->quantity = in[7];
+    out->mined_block = wire_read_u64_le(&in[8]);
+    memcpy(out->pub, &in[16], 32);
+    memcpy(out->parent_merkle, &in[48], 32);
+}
 
 static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
     [RECIPE_SMELT] = {

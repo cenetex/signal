@@ -406,13 +406,6 @@ typedef struct {
      * Offline mode refreshes the same view from station_inventory_amount(). */
     float station_stock_summary[MAX_STATIONS][COMMODITY_COUNT];
     bool  station_stock_summary_valid[MAX_STATIONS];
-    /* Network provenance mirror for the local hold. HOLD_INGOTS arrives
-     * just before PLAYER_MANIFEST; the latter rebuilds ship.manifest from
-     * summary counts and grafts these detailed named-ingot units back in
-     * where commodity+grade match. */
-    NetNamedIngotEntry remote_hold_named_ingots[NET_NAMED_INGOT_MAX];
-    int remote_hold_named_ingot_count;
-
     /* Batched sell summary for the bottom-right hint bar — every payout
      * flashes its paying station/currency even when the station is
      * off-camera. Events within settle_timer (~0.6s) accumulate into one

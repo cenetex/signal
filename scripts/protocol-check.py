@@ -28,6 +28,8 @@ REQUIRED_STREAMS = {
     "WORLD_ASTEROID_POSD_Q": {"class": "live", "header_size": 3, "record_size": 4},
     "WORLD_ASTEROID_POSD8_Q": {"class": "live", "header_size": 2, "record_size": 3},
     "WORLD_STATIONS_Q": {"class": "econ", "header_size": 2},
+    "STATION_MANIFEST": {"class": "econ", "header_size": 6, "record_size": 0},
+    "PLAYER_MANIFEST": {"class": "player", "header_size": 5, "record_size": 0},
     "WORLD_NPC_MOTION_Q": {"class": "live", "header_size": 2, "record_size": 12},
     "WORLD_NPC_MOTION8_Q": {"class": "live", "header_size": 2, "record_size": 9},
     "WORLD_NPC_POS_Q": {"class": "live", "header_size": 2, "record_size": 5},
@@ -35,13 +37,13 @@ REQUIRED_STREAMS = {
     "WORLD_NPC_LINEAR_Q": {"class": "live", "header_size": 2, "record_size": 9},
     "WORLD_NPC_STATUS": {"class": "live", "header_size": 2, "record_size": 6},
     "WORLD_NPC_STATUS8_Q": {"class": "live", "header_size": 2, "record_size": 4},
-    "WORLD_SCAFFOLDS": {"class": "live", "header_size": 2, "record_size": 28},
+    "WORLD_SCAFFOLDS": {"class": "live", "header_size": 2, "record_size": 29},
     "WORLD_SCAFFOLD_REMOVE": {"class": "live", "header_size": 2, "record_size": 1},
     "WORLD_SCAFFOLD_MOTION_Q": {"class": "live", "header_size": 2, "record_size": 9},
     "WORLD_CARGO_POD_MOTION_Q": {"class": "live", "header_size": 2, "record_size": 11},
     "WORLD_CARGO_POD_LINEAR_Q": {"class": "live", "header_size": 2, "record_size": 9},
     "WORLD_CARGO_POD_REMOVE": {"class": "live", "header_size": 2, "record_size": 1},
-    "WORLD_CARGO_PODS_Q": {"class": "live", "header_size": 2, "record_size": 28},
+    "WORLD_CARGO_PODS_Q": {"class": "live", "header_size": 2, "record_size": 29},
     "WORLD_INTERACTIONS": {"class": "live", "header_size": 2, "record_size": 38},
     "WORLD_INTERACTIONS_Q": {"class": "live", "header_size": 2, "record_size": 25},
     "WORLD_INTERACTION_DRIFT": {"class": "live", "header_size": 2, "record_size": 12},
@@ -52,6 +54,8 @@ REQUIRED_STREAMS = {
     "CARGO_RECEIPT_BUNDLE": {"class": "auth", "record_size": 208},
     "PRESENT_RECEIPT_CHAIN": {"class": "auth", "record_size": 208},
 }
+
+RETIRED_STREAMS = {"STATION_INGOTS", "HOLD_INGOTS"}
 
 
 def fetch_json(url: str) -> dict:
@@ -80,6 +84,9 @@ def check_protocol(info: dict, *, expect_version: int | None) -> list[str]:
             got = stream.get(key)
             if got != want:
                 errors.append(f"{name}.{key}: got {got!r}, want {want!r}")
+    for name in RETIRED_STREAMS:
+        if name in by_name:
+            errors.append(f"{name}: retired stream is still advertised")
     return errors
 
 
@@ -93,7 +100,7 @@ def main() -> int:
     parser.add_argument(
         "--expect-version",
         type=int,
-        default=1,
+        default=2,
         help="expected protocol discovery version; set to 0 to skip",
     )
     parser.add_argument("--json", action="store_true", help="print raw protocol JSON")

@@ -1766,9 +1766,8 @@ static const trade_lineage_view_t *trade_lineage_view_for_row(
  * longer needed. */
 
 /* Ship manifest helpers — iterate directly. In network-authoritative sessions,
- * net_sync.c rebuilds the local ship manifest from PLAYER_MANIFEST plus any
- * detailed HOLD_INGOTS provenance snapshot, so the trade UI can read the same
- * local manifest path in every mode. */
+ * net_sync.c rebuilds the local read model from one atomic PLAYER_MANIFEST
+ * summary/detail packet, so the trade UI can use the same path in every mode. */
 static int SIGNAL_MAYBE_UNUSED
 ship_manifest_count_cg(const ship_t *ship,
                        commodity_t commodity,

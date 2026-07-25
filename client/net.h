@@ -25,7 +25,6 @@
 
 enum {
     NET_MAX_PLAYERS = 32,
-    NET_NAMED_INGOT_MAX = 255,
 };
 
 #define NET_PLAYER_STATE_STATUS_ONLY 0x80u
@@ -303,6 +302,7 @@ typedef struct {
     float   vel_x, vel_y;
     float   radius;
     float   build_amount;
+    int16_t built_at_station; /* decoded u8; -1 means no source station */
 } NetScaffoldState;
 typedef struct {
     uint8_t index;
@@ -391,45 +391,26 @@ typedef struct {
 
 typedef void (*net_on_signal_channel_fn)(const NetSignalChannelMsg *msgs, int count);
 
-/* Phase 2 — per-station manifest summary. Each entry = one
- * {commodity, grade, count} triple with count > 0. */
+/* Compact manifest summary row. The same callback also receives canonical
+ * cargo-unit details for individually addressable provenance rows. */
 typedef struct {
     uint8_t  commodity;
     uint8_t  grade;
     uint16_t count;
-} NetStationManifestEntry;
+} NetManifestSummaryEntry;
 typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
-                                           const NetStationManifestEntry *entries,
-                                           int count);
+                                           const NetManifestSummaryEntry *summary,
+                                           int summary_count,
+                                           const cargo_unit_t *details,
+                                           int detail_count);
 
-/* Player manifest summary — same shape as the station summary, scoped
- * to the local pilot (no station_idx). Server-authoritative state
- * mirrored down each tick so the trade UI's SELL rows reflect actual
- * server-side ship.manifest contents in multiplayer. */
-typedef void (*net_on_player_manifest_fn)(const NetStationManifestEntry *entries,
-                                          int count);
+/* Player manifest shape is the same, scoped to the implicit local pilot. */
+typedef void (*net_on_player_manifest_fn)(const NetManifestSummaryEntry *summary,
+                                          int summary_count,
+                                          const cargo_unit_t *details,
+                                          int detail_count);
 typedef void (*net_on_cargo_receipt_bundle_fn)(const cargo_receipt_t *receipts,
                                                int count);
-
-/* Detailed named-ingot snapshot entry. These records supplement the
- * grade-grouped manifest summaries with per-unit provenance for the
- * representative cargo shown in trade rows. Only non-anonymous named
- * ingots are carried here; anonymous ingots and finished goods still
- * rely on the count summary. */
-typedef struct {
-    uint8_t  pub[32];
-    uint8_t  prefix_class;
-    uint8_t  commodity;
-    uint8_t  grade;
-    uint8_t  origin_station;
-    uint64_t mined_block;
-} NetNamedIngotEntry;
-
-typedef void (*net_on_station_ingots_fn)(uint8_t station_id,
-                                         const NetNamedIngotEntry *entries,
-                                         int count);
-typedef void (*net_on_hold_ingots_fn)(const NetNamedIngotEntry *entries,
-                                      int count);
 
 /* Laser/scan inspect snapshot. target_type mirrors the scan target
  * values in server_player_t: 0 none, 1 station/module, 2 NPC, 3 player.
@@ -559,8 +540,6 @@ typedef struct {
     net_on_station_manifest_fn on_station_manifest;
     net_on_player_manifest_fn  on_player_manifest;
     net_on_cargo_receipt_bundle_fn on_cargo_receipt_bundle;
-    net_on_station_ingots_fn   on_station_ingots;
-    net_on_hold_ingots_fn      on_hold_ingots;
     net_on_inspect_snapshot_fn on_inspect_snapshot;
     net_on_highscores_fn       on_highscores;
     net_on_action_ack_fn       on_action_ack;

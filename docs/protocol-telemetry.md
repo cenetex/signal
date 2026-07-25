@@ -56,8 +56,8 @@ staging endpoint.
   services, and station pubkey. It is dirty-driven with a fallback refresh.
 - `NET_MSG_STATION_DIAG` is live module flow state. It carries one byte per
   station module and is rate-limited independently from identity.
-- `NET_MSG_WORLD_STATIONS`, `NET_MSG_STATION_MANIFEST`, and
-  `NET_MSG_STATION_INGOTS` are economy/stock streams.
+- `NET_MSG_WORLD_STATIONS` and the atomic summary/detail
+  `NET_MSG_STATION_MANIFEST` are economy/stock streams.
 - `NET_MSG_WORLD_PLAYERS`, `NET_MSG_PLAYER_SHIP`, `NET_MSG_PLAYER_MANIFEST`,
   and `NET_MSG_INSPECT_SNAPSHOT` are player/scan streams with their own
   cadence.

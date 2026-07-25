@@ -489,6 +489,7 @@ deterministic-libm:
 
 doc-freshness:
 	python3 scripts/check_doc_freshness.py
+	python3 scripts/test_check_doc_freshness.py
 
 deterministic-build-flags:
 	python3 scripts/check_deterministic_build_flags.py $(COMPILE_COMMANDS)
