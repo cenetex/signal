@@ -2355,9 +2355,16 @@ TEST(test_space_release_slingshots_cargo_pod_like_fragment) {
     sp->ship->angle = 0.0f;
     sp->ship->vel = v2(300.0f, 0.0f);
     /* The one-shot release lane may beat the continuous key-up packet. A
-     * stale hold must not reacquire the pod in the release tick. */
+     * stale hold must not reacquire the pod in the release tick or from a
+     * future-scheduled movement packet. */
     sp->input.tractor_hold = true;
     sp->input.release_tow = true;
+    sp->movement_queue_count = 1;
+    sp->movement_queue[0] = (movement_input_cmd_t){
+        .apply_tick = w.tick + 2u,
+        .input_seq = 1,
+        .intent = { .tractor_hold = true },
+    };
 
     int pod_idx = spawn_cargo_pod(&w, v2_add(pos, v2(-100.0f, 0.0f)),
                                   v2(0.0f, 0.0f), COMMODITY_CRYSTAL_ORE,
@@ -2371,8 +2378,18 @@ TEST(test_space_release_slingshots_cargo_pod_like_fragment) {
     ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), -1);
     ASSERT(!sp->ship->tractor_active);
     ASSERT(!sp->input.tractor_hold);
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+    ASSERT(!sp->movement_queue[0].intent.tractor_hold);
     ASSERT(w.cargo_pods[pod_idx].vel.x > sp->ship->vel.x + 30.0f);
     ASSERT_EQ_FLOAT(w.cargo_pods[pod_idx].vel.y, sp->ship->vel.y, 0.1f);
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->movement_queue_count, 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), -1);
+    ASSERT(!sp->ship->tractor_active);
+    ASSERT(!sp->input.tractor_hold);
 }
 
 TEST(test_towed_fragment_loads_raw_contract_at_dock) {

@@ -6131,6 +6131,12 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
     }
 }
 
+static void cancel_queued_tractor_holds(server_player_t *sp) {
+    if (!sp) return;
+    for (int i = 0; i < (int)sp->movement_queue_count; i++)
+        sp->movement_queue[i].intent.tractor_hold = false;
+}
+
 static void apply_pod_band_force(server_player_t *sp, cargo_pod_t *pod, float dt) {
     vec2 source = ship_tow_hardpoint_world(sp->ship);
     int hardpoint = cargo_pod_tow_hardpoint(pod);
@@ -9306,10 +9312,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 /* Hold Space = tractor active; tap Space = release towed bodies. */
                 if (sp->input.release_tow) {
                     /* A release action can arrive on the one-shot lane before
-                     * the continuous key-up packet clears tractor_hold. Do
-                     * not detach and then reacquire the same bodies later in
-                     * this tick (or on the next tick from the stale hold). */
+                     * the continuous key-up packet clears tractor_hold. Future
+                     * tick-scheduled movement packets can also retain the old
+                     * hold bit, so fence it out of every packet already queued
+                     * before this ordered release action. A genuinely new hold
+                     * arrives after the release and is queued normally. */
                     sp->input.tractor_hold = false;
+                    cancel_queued_tractor_holds(sp);
                     sp->ship->tractor_active = false;
                     release_towed_fragments(w, sp);
                     release_towed_pods(w, sp);
