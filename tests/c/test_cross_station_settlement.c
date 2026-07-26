@@ -222,6 +222,180 @@ static bool crs_first_hop(world_t *w, station_t *st, const uint8_t player_pk[32]
     return id != 0;
 }
 
+static cargo_receipt_origin_proof_t crs_origin_proof(
+    const cargo_receipt_t *receipt,
+    cargo_receipt_origin_event_t event_type) {
+    cargo_receipt_origin_proof_t proof = {
+        .event_type = event_type,
+        .event_id = 1,
+        .epoch = receipt->epoch,
+    };
+    memcpy(proof.event_hash, receipt->prev_receipt_hash, 32);
+    memcpy(proof.output_cargo_pub, receipt->cargo_pub, 32);
+    memcpy(proof.authority, receipt->authoring_station, 32);
+    return proof;
+}
+
+TEST(test_receipt_trust_accepts_smelt_craft_and_rotated_authority) {
+    crs_setup("trust_accept");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD101);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x11);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x41);
+    cargo_receipt_t receipt;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &receipt));
+
+    cargo_receipt_origin_proof_t proof = crs_origin_proof(
+        &receipt, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+    cargo_receipt_trust_result_t result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_VALID_TRUSTED);
+    ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_OK);
+    ASSERT_EQ_INT(result.origin_event, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+    ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
+                  "valid_trusted");
+
+    proof.event_type = CARGO_RECEIPT_ORIGIN_EVENT_CRAFT;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_VALID_TRUSTED);
+    ASSERT_EQ_INT(result.origin_event, CARGO_RECEIPT_ORIGIN_EVENT_CRAFT);
+
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED);
+    ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
+                  "valid_trusted_rotated");
+    crs_teardown();
+}
+
+TEST(test_receipt_trust_distinguishes_origin_proof_failures) {
+    crs_setup("trust_origin_failures");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD102);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x12);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x42);
+    cargo_receipt_t receipt;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &receipt));
+    cargo_receipt_t receipt_before = receipt;
+    cargo_receipt_origin_proof_t valid = crs_origin_proof(
+        &receipt, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+    cargo_receipt_origin_proof_t proof_before = valid;
+
+    cargo_receipt_trust_result_t result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, NULL,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN);
+
+    cargo_receipt_origin_proof_t proof = valid;
+    proof.event_type = CARGO_RECEIPT_ORIGIN_EVENT_NONE;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE);
+
+    proof = valid;
+    proof.output_cargo_pub[0] ^= 0x80u;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO);
+
+    proof = valid;
+    proof.event_hash[1] ^= 0x40u;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN);
+
+    proof = valid;
+    proof.authority[2] ^= 0x20u;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY);
+
+    ASSERT(memcmp(&receipt, &receipt_before, sizeof(receipt)) == 0);
+    ASSERT(memcmp(&valid, &proof_before, sizeof(valid)) == 0);
+    crs_teardown();
+}
+
+TEST(test_receipt_trust_distinguishes_authority_policy) {
+    crs_setup("trust_authority");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD103);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x13);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x43);
+    cargo_receipt_t receipt;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &receipt));
+    cargo_receipt_origin_proof_t proof = crs_origin_proof(
+        &receipt, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+
+    cargo_receipt_trust_result_t result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof, CARGO_RECEIPT_AUTHORITY_UNKNOWN);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY);
+    ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
+                  "reject_unknown_authority");
+
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof, CARGO_RECEIPT_AUTHORITY_UNTRUSTED);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY);
+
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof, CARGO_RECEIPT_AUTHORITY_REVOKED);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY);
+    ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
+                  "reject_revoked_authority");
+
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        (cargo_receipt_authority_trust_t)99);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS);
+    ASSERT_STR_EQ(cargo_receipt_trust_status_name(
+                      (cargo_receipt_trust_status_t)99),
+                  "unknown");
+    crs_teardown();
+}
+
+TEST(test_receipt_trust_preserves_cryptographic_chain_failure) {
+    crs_setup("trust_chain_failure");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD104);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x14);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x44);
+    cargo_receipt_t receipt;
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &receipt));
+    cargo_receipt_origin_proof_t proof = crs_origin_proof(
+        &receipt, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+
+    cargo_receipt_t tampered = receipt;
+    tampered.signature[0] ^= 0x01u;
+    cargo_receipt_trust_result_t result = cargo_receipt_trust_verify(
+        &tampered, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_REJECT_CHAIN);
+    ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_REJECT_BAD_SIGNATURE);
+
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, NULL, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS);
+    ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_OK);
+    crs_teardown();
+}
+
 /* Helper: emit destination-station receipt for the second hop. */
 static bool crs_next_hop(world_t *w, station_t *dst, const uint8_t from_pk[32],
                          const uint8_t cargo_pk[32],
@@ -1121,6 +1295,10 @@ void register_cross_station_settlement_tests(void);
 void register_cross_station_settlement_tests(void) {
     TEST_SECTION("\n--- Cross-Station Settlement (#479 D) ---\n");
     RUN(test_cross_station_single_hop_receipt);
+    RUN(test_receipt_trust_accepts_smelt_craft_and_rotated_authority);
+    RUN(test_receipt_trust_distinguishes_origin_proof_failures);
+    RUN(test_receipt_trust_distinguishes_authority_policy);
+    RUN(test_receipt_trust_preserves_cryptographic_chain_failure);
     RUN(test_cross_station_two_hop_chain);
     RUN(test_cross_station_forged_receipt_rejected);
     RUN(test_cross_station_tampered_cargo_pub_rejected);

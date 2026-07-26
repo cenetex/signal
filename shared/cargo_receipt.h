@@ -139,6 +139,83 @@ cargo_receipt_result_t cargo_receipt_chain_verify(
     const cargo_receipt_t *chain, size_t count,
     const uint8_t *expected_cargo_pub /* nullable, 32 bytes */);
 
+/* ---------------- origin trust contract ---------------------------- */
+
+/*
+ * Data-only description of a cargo-producing event resolved from a verified
+ * station history. The resolver owns log/federation I/O and event signature
+ * verification; this shared layer checks that the resolved facts match the
+ * receipt's origin pin and the expected cargo.
+ */
+typedef enum {
+    CARGO_RECEIPT_ORIGIN_EVENT_NONE  = 0,
+    CARGO_RECEIPT_ORIGIN_EVENT_SMELT = 1,
+    CARGO_RECEIPT_ORIGIN_EVENT_CRAFT = 2
+} cargo_receipt_origin_event_t;
+
+typedef struct {
+    cargo_receipt_origin_event_t event_type;
+    uint64_t event_id;
+    uint64_t epoch;
+    uint8_t event_hash[32];
+    uint8_t output_cargo_pub[32];
+    uint8_t authority[32];
+} cargo_receipt_origin_proof_t;
+
+/*
+ * Explicit lifecycle decision supplied by the evaluating station's policy.
+ * TRUSTED_ROTATED means the historical key is accepted for this event even
+ * though it is no longer current. Revoked keys are never accepted here.
+ */
+typedef enum {
+    CARGO_RECEIPT_AUTHORITY_UNKNOWN         = 0,
+    CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT = 1,
+    CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED = 2,
+    CARGO_RECEIPT_AUTHORITY_UNTRUSTED       = 3,
+    CARGO_RECEIPT_AUTHORITY_REVOKED         = 4
+} cargo_receipt_authority_trust_t;
+
+/*
+ * Stable semantic verdict. Cryptographic chain rejection remains one status
+ * with the precise lower-level reason in cargo_receipt_trust_result_t.
+ */
+typedef enum {
+    CARGO_RECEIPT_TRUST_VALID_TRUSTED = 0,
+    CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED,
+    CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS,
+    CARGO_RECEIPT_TRUST_REJECT_CHAIN,
+    CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY
+} cargo_receipt_trust_status_t;
+
+typedef struct {
+    cargo_receipt_trust_status_t status;
+    cargo_receipt_result_t chain_result;
+    cargo_receipt_origin_event_t origin_event;
+    cargo_receipt_authority_trust_t authority_trust;
+} cargo_receipt_trust_result_t;
+
+/*
+ * Compose cryptographic receipt validity, a resolved origin event, and an
+ * explicit authority policy. This function performs no I/O, allocation, or
+ * mutation. expected_cargo_pub is required.
+ */
+cargo_receipt_trust_result_t cargo_receipt_trust_verify(
+    const cargo_receipt_t *chain,
+    size_t count,
+    const uint8_t expected_cargo_pub[32],
+    const cargo_receipt_origin_proof_t *origin,
+    cargo_receipt_authority_trust_t authority_trust);
+
+const char *cargo_receipt_trust_status_name(
+    cargo_receipt_trust_status_t status);
+
 /* ---------------- ship_receipts_t ---------------------------------- */
 
 /* Per-cargo receipt store running parallel to ship_t.manifest.

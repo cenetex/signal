@@ -16,6 +16,8 @@
 #include <string.h>
 
 #include "chain_log.h"
+#include "cargo_receipt.h"
+#include "cargo_receipt_issue.h"
 #include "fixpoint.h"
 #include "game_sim.h"
 #include "gossip.h"
@@ -209,6 +211,16 @@ typedef struct {
 } sr_hnn_eval_t;
 
 typedef struct {
+    cargo_receipt_trust_status_t trusted_smelt;
+    cargo_receipt_trust_status_t trusted_craft;
+    cargo_receipt_trust_status_t trusted_rotated;
+    cargo_receipt_trust_status_t unknown_authority;
+    cargo_receipt_trust_status_t revoked_authority;
+    cargo_receipt_trust_status_t missing_origin;
+    cargo_receipt_trust_status_t tampered_chain;
+} sr_receipt_trust_eval_t;
+
+typedef struct {
     bool ok;
     int candidate;
     int prefix_ticks;
@@ -236,6 +248,7 @@ typedef struct {
     sr_event_counts_t events;
     sr_ai_summary_t ai;
     sr_hnn_eval_t hnn;
+    sr_receipt_trust_eval_t receipt_trust;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
     uint8_t event_hash[32];
@@ -255,6 +268,78 @@ static const sr_action_def_t SR_ACTIONS[SR_ACTION_COUNT] = {
     {-1, -1, "SA"},
     { 1, -1, "SD"},
 };
+
+static bool sr_receipt_trust_known_vector(
+    const world_t *w,
+    int station_index,
+    sr_receipt_trust_eval_t *out) {
+    if (!w || !out || station_index < 0 || station_index >= MAX_STATIONS)
+        return false;
+
+    uint8_t cargo_pub[32];
+    uint8_t recipient_pub[32];
+    uint8_t origin_hash[32];
+    for (int i = 0; i < 32; i++) {
+        cargo_pub[i] = (uint8_t)(0x31 + i);
+        recipient_pub[i] = (uint8_t)(0x61 + i);
+        origin_hash[i] = (uint8_t)(0x91 + i);
+    }
+
+    const station_t *station = &w->stations[station_index];
+    cargo_receipt_t receipt;
+    if (!cargo_receipt_issue(station, 7u, 11u, cargo_pub, recipient_pub,
+                             origin_hash, &receipt)) {
+        return false;
+    }
+
+    cargo_receipt_origin_proof_t proof = {
+        .event_type = CARGO_RECEIPT_ORIGIN_EVENT_SMELT,
+        .event_id = 11u,
+        .epoch = 7u,
+    };
+    memcpy(proof.event_hash, origin_hash, sizeof(proof.event_hash));
+    memcpy(proof.output_cargo_pub, cargo_pub, sizeof(proof.output_cargo_pub));
+    memcpy(proof.authority, station->station_pubkey, sizeof(proof.authority));
+
+    memset(out, 0, sizeof(*out));
+    out->trusted_smelt = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+
+    proof.event_type = CARGO_RECEIPT_ORIGIN_EVENT_CRAFT;
+    out->trusted_craft = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    out->trusted_rotated = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED).status;
+    out->unknown_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_UNKNOWN).status;
+    out->revoked_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_REVOKED).status;
+    out->missing_origin = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, NULL,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+
+    cargo_receipt_t tampered = receipt;
+    tampered.signature[0] ^= 0x01u;
+    out->tampered_chain = cargo_receipt_trust_verify(
+        &tampered, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    return out->trusted_smelt == CARGO_RECEIPT_TRUST_VALID_TRUSTED &&
+           out->trusted_craft == CARGO_RECEIPT_TRUST_VALID_TRUSTED &&
+           out->trusted_rotated ==
+               CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED &&
+           out->unknown_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY &&
+           out->revoked_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY &&
+           out->missing_origin ==
+               CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN &&
+           out->tampered_chain == CARGO_RECEIPT_TRUST_REJECT_CHAIN;
+}
 
 static void sr_usage(FILE *fp)
 {
@@ -3401,6 +3486,12 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         free(w);
         return false;
     }
+    if (!sr_receipt_trust_known_vector(
+            w, config->station, &out->receipt_trust)) {
+        world_cleanup(w);
+        free(w);
+        return false;
+    }
     if (!sr_setup_provenance_script(config, w, sp)) {
         world_cleanup(w);
         free(w);
@@ -3863,6 +3954,22 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, &r->hnn);
     }
+    fprintf(out,
+            ",\"receipt_trust\":{\"schema\":\"signal.receipt_trust.v1\","
+            "\"trusted_smelt\":%d,"
+            "\"trusted_craft\":%d,"
+            "\"trusted_rotated\":%d,"
+            "\"unknown_authority\":%d,"
+            "\"revoked_authority\":%d,"
+            "\"missing_origin\":%d,"
+            "\"tampered_chain\":%d}",
+            (int)r->receipt_trust.trusted_smelt,
+            (int)r->receipt_trust.trusted_craft,
+            (int)r->receipt_trust.trusted_rotated,
+            (int)r->receipt_trust.unknown_authority,
+            (int)r->receipt_trust.revoked_authority,
+            (int)r->receipt_trust.missing_origin,
+            (int)r->receipt_trust.tampered_chain);
     fprintf(out, ",\"authority\":\"deterministic_seed_prefix_replay\"}\n");
 }
 
