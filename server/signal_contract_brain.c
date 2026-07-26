@@ -259,7 +259,7 @@ bool signal_contract_brain_load_checkpoint(const char *path,
                      : "<missing>",
                  g_contract_brain.feature_encoder_version,
                  SIGNAL_CONTRACT_FEATURE_SET,
-                 SIGNAL_CONTRACT_FEATURE_ENCODER_VERSION);
+                 (unsigned)SIGNAL_CONTRACT_FEATURE_ENCODER_VERSION);
         contract_brain_free();
         set_err(err, err_size, buf);
         return false;

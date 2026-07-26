@@ -256,7 +256,7 @@ bool signal_npc_worker_brain_load_checkpoint(const char *path,
                      : "<missing>",
                  g_worker_brain.feature_encoder_version,
                  SIGNAL_NPC_WORKER_FEATURE_SET,
-                 SIGNAL_NPC_WORKER_FEATURE_ENCODER_VERSION);
+                 (unsigned)SIGNAL_NPC_WORKER_FEATURE_ENCODER_VERSION);
         worker_brain_free();
         set_err(err, err_size, buf);
         return false;
