@@ -536,7 +536,11 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     cargo_unit_t unit = {0};
     unit.kind = CARGO_KIND_FRAME;
     unit.commodity = COMMODITY_FRAME;
-    unit.recipe_id = RECIPE_FRAME_BASIC;
+    /* This fixture bypasses the production/receipt pipeline on purpose; mark
+     * it as migrated legacy stock so the station applies its explicit
+     * unknown-provenance policy instead of treating it as forged modern
+     * cargo. */
+    unit.recipe_id = RECIPE_LEGACY_MIGRATE;
     for (int b = 0; b < 32; b++)
         unit.pub[b] = (uint8_t)(0xA0 + b);
     ASSERT(manifest_push(&ship.manifest, &unit));

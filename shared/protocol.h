@@ -1105,7 +1105,15 @@ enum {
  * bit1 = row is a grouped bulk/finished-good row with no individual cargo
  * identity; bit2 = row is a diagnostic row, not cargo; bit3 = receipt chain
  * was retrieved from local station storage rather than carried cargo; bit4 =
- * receipt chain was retrieved from another local relay/custodian ship. */
+ * receipt chain was retrieved from another local relay/custodian ship.
+ *
+ * Server-authored trust metadata reuses previously reserved bits without
+ * changing the 142-byte row: flags bits5..7 hold trust-code bits0..2,
+ * the row's chain/prefix byte bit7 holds trust-code bit3, and bit6 is the
+ * station-policy acceptance bit. The low five bits remain the receipt-chain
+ * length (or grouped-row prefix class). Trust code zero means not evaluated;
+ * otherwise code-1 is cargo_receipt_trust_status_t. Clients only decode these
+ * bits and never send this stream. */
 enum {
     INSPECT_TARGET_NONE    = 0,
     INSPECT_TARGET_STATION = 1,
@@ -1121,7 +1129,22 @@ enum {
     INSPECT_ROW_DIAGNOSTIC    = 1 << 2,
     INSPECT_ROW_STATION_RECEIPT = 1 << 3,
     INSPECT_ROW_RELAY_RECEIPT   = 1 << 4,
+    INSPECT_ROW_TRUST_CODE_LOW_MASK = 0xE0,
+    INSPECT_ROW_CHAIN_VALUE_MASK = 0x1F,
+    INSPECT_ROW_TRUST_ACCEPTED = 1 << 6,
+    INSPECT_ROW_TRUST_CODE_HIGH = 1 << 7,
 };
+
+static inline uint8_t inspect_snapshot_trust_code(uint8_t chain_value,
+                                                   uint8_t flags) {
+    return (uint8_t)(((flags >> 5) & 0x07u) |
+                     ((chain_value & INSPECT_ROW_TRUST_CODE_HIGH)
+                          ? 0x08u : 0u));
+}
+
+static inline uint8_t inspect_snapshot_chain_value(uint8_t wire_value) {
+    return (uint8_t)(wire_value & INSPECT_ROW_CHAIN_VALUE_MASK);
+}
 
 typedef enum {
     INSPECT_DIAG_NONE = 0,

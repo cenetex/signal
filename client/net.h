@@ -422,6 +422,9 @@ typedef struct {
     uint8_t  grade;
     uint8_t  chain_len;
     uint8_t  flags;
+    bool     trust_evaluated;
+    bool     trust_accepted;
+    uint8_t  trust_status; /* cargo_receipt_trust_status_t, 0xff = none */
     uint64_t event_id;
     uint16_t quantity;
     uint8_t  cargo_pub[32];

@@ -131,6 +131,7 @@ set(SIGNAL_SIM_SOURCES
     server/chain_log.c
     server/chain_log_verify.c
     server/cargo_receipt_issue.c
+    server/cargo_receipt_trust.c
     server/handoff_flow.c
     server/sim_asteroid.c
     server/sim_physics.c

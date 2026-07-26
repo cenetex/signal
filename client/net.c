@@ -2786,8 +2786,15 @@ static void handle_message(const uint8_t* data, int len) {
                 NetInspectSnapshotRow *row = &snap.rows[i];
                 row->commodity = p[0];
                 row->grade = p[1];
-                row->chain_len = p[2];
+                uint8_t trust_code =
+                    inspect_snapshot_trust_code(p[2], p[3]);
+                row->chain_len = inspect_snapshot_chain_value(p[2]);
                 row->flags = p[3];
+                row->trust_evaluated = trust_code != 0;
+                row->trust_accepted =
+                    (p[2] & INSPECT_ROW_TRUST_ACCEPTED) != 0;
+                row->trust_status = trust_code > 0
+                    ? (uint8_t)(trust_code - 1u) : 0xffu;
                 row->event_id = read_u64_le(&p[4]);
                 row->quantity = read_u16_le(&p[12]);
                 memcpy(row->cargo_pub, &p[14], 32);

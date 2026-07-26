@@ -48,6 +48,7 @@
 #include "sim_mining.h"
 #include "signal_model.h"
 #include "cargo_receipt_issue.h"
+#include "cargo_receipt_trust.h"
 #include "handoff_flow.h"
 #include "mining.h"
 #include "pubkey_proof.h"
@@ -840,7 +841,7 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
-static cargo_legality_result_t classify_ship_manifest_unit_at_station(
+static bool ship_manifest_unit_trusted_at_station(
     const world_t *w, const ship_t *ship, uint16_t index, int station_index);
 
 static bool cargo_unit_pub_nonzero(const cargo_unit_t *unit) {
@@ -878,7 +879,8 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
     int held = ship_finished_count(sp->ship, COMMODITY_FRAME) +
-               ship_towed_pods_manifest_count(w, sp->ship, COMMODITY_FRAME);
+               ship_towed_pods_trusted_manifest_count(
+                   w, sp->ship, COMMODITY_FRAME, sp->current_station);
     if (held <= 0) return;
     float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
     int needed = (int)ceilf(needed_f - 0.0001f);
@@ -891,11 +893,10 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
             const cargo_unit_t *unit = &sp->ship->manifest.units[i];
             if (!unit || unit->commodity != (uint8_t)COMMODITY_FRAME)
                 continue;
-            cargo_legality_result_t legality =
-                classify_ship_manifest_unit_at_station(
-                    w, sp->ship, i, sp->current_station);
-            if (legality.status == CARGO_LEGALITY_CONTRABAND)
+            if (!ship_manifest_unit_trusted_at_station(
+                    w, sp->ship, i, sp->current_station)) {
                 continue;
+            }
             idx = (int)i;
             break;
         }
@@ -914,8 +915,9 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     }
     while (accepted < request) {
         cargo_unit_t unit = {0};
-        if (!ship_towed_pods_take_manifest_unit(w, sp->ship,
-                                                COMMODITY_FRAME, &unit)) {
+        if (!ship_towed_pods_take_trusted_manifest_unit(
+                w, sp->ship, COMMODITY_FRAME,
+                sp->current_station, &unit)) {
             break;
         }
         float progress_after = st->scaffold_progress +
@@ -3195,6 +3197,70 @@ bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
     return false;
 }
 
+int ship_towed_pods_trusted_manifest_count(
+    const world_t *w, const ship_t *ship, commodity_t commodity,
+    int evaluating_station) {
+    if (!w || !ship || commodity >= COMMODITY_COUNT ||
+        evaluating_station < 0 ||
+        evaluating_station >= w->station_count ||
+        evaluating_station >= MAX_STATIONS) {
+        return 0;
+    }
+    int total = 0;
+    for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+        int idx = ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, evaluating_station, &pod->manifest_units[u], NULL);
+            if (evaluated.accepted) total++;
+        }
+    }
+    return total;
+}
+
+bool ship_towed_pods_take_trusted_manifest_unit(
+    world_t *w, ship_t *ship, commodity_t commodity,
+    int evaluating_station, cargo_unit_t *out_unit) {
+    if (!w || !ship || !out_unit || commodity >= COMMODITY_COUNT ||
+        evaluating_station < 0 ||
+        evaluating_station >= w->station_count ||
+        evaluating_station >= MAX_STATIONS) {
+        return false;
+    }
+    for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
+        int idx = ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &w->cargo_pods[idx];
+        if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
+        for (uint16_t u = 0; u < pod->manifest_count; u++) {
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, evaluating_station, &pod->manifest_units[u], NULL);
+            if (!evaluated.accepted) continue;
+            *out_unit = pod->manifest_units[u];
+            uint16_t last = (uint16_t)(pod->manifest_count - 1u);
+            for (uint16_t move = u; move < last; move++)
+                pod->manifest_units[move] = pod->manifest_units[move + 1u];
+            memset(&pod->manifest_units[last], 0,
+                   sizeof(pod->manifest_units[last]));
+            pod->manifest_count--;
+            pod->quantity--;
+            if (pod->manifest_count == 0) {
+                if (!cargo_pod_fold_shell_to_frame(pod)) {
+                    world_cargo_pod_clear_tractor(w, idx);
+                    memset(pod, 0, sizeof(*pod));
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind) {
     if (!w || commodity >= COMMODITY_COUNT || quantity == 0 ||
@@ -3599,6 +3665,32 @@ int world_ensure_starter_laser_module_reserve(world_t *w) {
 
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
                                           const contract_t *ct);
+static bool is_finished_good(commodity_t c);
+
+static bool cargo_pod_trusted_at_station(
+    const world_t *w, const cargo_pod_t *pod, int station_idx) {
+    if (!w || !pod || station_idx < 0 ||
+        station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    if (!is_finished_good(pod->commodity)) return true;
+    if (pod->manifest_count == 0 ||
+        pod->manifest_count != pod->quantity ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        const cargo_unit_t *unit = &pod->manifest_units[i];
+        if (unit->commodity != (uint8_t)pod->commodity)
+            return false;
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, station_idx, unit, NULL);
+        if (!evaluated.accepted) return false;
+    }
+    return true;
+}
 
 static float black_market_pod_quote(const station_t *st,
                                     const cargo_pod_t *pod) {
@@ -3649,6 +3741,8 @@ static float station_intake_pod_quote(world_t *w,
         pod->quantity == 0) {
         return 0.0f;
     }
+    if (!cargo_pod_trusted_at_station(w, pod, station_idx))
+        return 0.0f;
     commodity_t c = pod->commodity;
     int matched_contract = -1;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -3772,6 +3866,8 @@ try_sell_towed_pods(world_t *w, server_player_t *sp,
         commodity_t c = pod->commodity;
         if (c >= COMMODITY_COUNT) continue;
         if (filter != COMMODITY_COUNT && filter != c) continue;
+        if (!cargo_pod_trusted_at_station(w, pod, station_idx))
+            continue;
 
         int units = (int)pod->quantity;
         if (units <= 0) {
@@ -4440,22 +4536,18 @@ static const cargo_receipt_chain_t *ship_receipt_chain_at(
     return &receipts->chains[index];
 }
 
-static cargo_legality_result_t classify_ship_manifest_unit_at_station(
+static bool ship_manifest_unit_trusted_at_station(
     const world_t *w, const ship_t *ship, uint16_t index, int station_index) {
-    cargo_legality_result_t result = {
-        .status = CARGO_LEGALITY_SUSPICIOUS,
-        .origin_station = -1,
-        .black_market_station = -1,
-    };
     if (!w || !ship || !ship->manifest.units ||
         index >= ship->manifest.count ||
         station_index < 0 || station_index >= MAX_STATIONS) {
-        result.reasons = CARGO_LEGALITY_REASON_UNKNOWN_AUTHORITY;
-        return result;
+        return false;
     }
-    return cargo_legality_classify(
-        w->stations, MAX_STATIONS, station_index, &ship->manifest.units[index],
-        ship_receipt_chain_at(ship, index));
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            w, station_index, &ship->manifest.units[index],
+            ship_receipt_chain_at(ship, index));
+    return evaluated.accepted;
 }
 
 static bool is_finished_good(commodity_t c) {
@@ -4519,6 +4611,36 @@ static int delivery_towed_pod_slot_for_shipment(const world_t *w,
         return t;
     }
     return -1;
+}
+
+static bool delivery_shipment_range_trusted_at_station(
+    const world_t *w,
+    const delivery_shipment_t *shipment,
+    uint16_t cargo_offset,
+    uint16_t quantity,
+    int station_idx) {
+    if (!w || !shipment || quantity == 0 ||
+        station_idx < 0 || station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS ||
+        cargo_offset > shipment->quantity_bound ||
+        cargo_offset + quantity > shipment->quantity_bound ||
+        cargo_offset + quantity > MAX_DELIVERY_BOUND_CARGO) {
+        return false;
+    }
+    for (uint16_t i = 0; i < quantity; i++) {
+        uint16_t cargo_idx = (uint16_t)(cargo_offset + i);
+        const cargo_unit_t *unit = &shipment->cargo_units[cargo_idx];
+        if (unit->commodity != shipment->commodity ||
+            memcmp(unit->pub, shipment->cargo_pub[cargo_idx], 32) != 0) {
+            return false;
+        }
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, station_idx, unit,
+                &shipment->cargo_chains[cargo_idx]);
+        if (!evaluated.accepted) return false;
+    }
+    return true;
 }
 
 static bool delivery_materialize_pod_manifest(cargo_pod_t *pod,
@@ -4799,9 +4921,23 @@ static bool delivery_contract_has_source(const contract_t *ct) {
            ct->target_index < MAX_STATIONS;
 }
 
-static int delivery_find_source_stock_unit(const station_t *origin,
+static const cargo_receipt_chain_t *station_receipt_chain_at(
+    const station_t *station, uint16_t index) {
+    const ship_receipts_t *receipts = station_get_receipts_const(station);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static int delivery_find_source_stock_unit(const world_t *w,
+                                           int origin_index,
                                            const contract_t *ct) {
-    if (!origin || !ct || !origin->manifest.units) return -1;
+    if (!w || origin_index < 0 || origin_index >= w->station_count ||
+        origin_index >= MAX_STATIONS || !ct) {
+        return -1;
+    }
+    const station_t *origin = &w->stations[origin_index];
+    if (!origin->manifest.units) return -1;
     for (uint16_t i = 0; i < origin->manifest.count; i++) {
         const cargo_unit_t *unit = &origin->manifest.units[i];
         if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit))) continue;
@@ -4810,14 +4946,25 @@ static int delivery_find_source_stock_unit(const station_t *origin,
             (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
             continue;
         }
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, origin_index, unit,
+                station_receipt_chain_at(origin, i));
+        if (!evaluated.accepted) continue;
         return (int)i;
     }
     return -1;
 }
 
-static int delivery_source_stock_count(const station_t *origin,
+static int delivery_source_stock_count(const world_t *w,
+                                       int origin_index,
                                        const contract_t *ct) {
-    if (!origin || !ct || !origin->manifest.units) return 0;
+    if (!w || origin_index < 0 || origin_index >= w->station_count ||
+        origin_index >= MAX_STATIONS || !ct) {
+        return 0;
+    }
+    const station_t *origin = &w->stations[origin_index];
+    if (!origin->manifest.units) return 0;
     int count = 0;
     for (uint16_t i = 0; i < origin->manifest.count; i++) {
         const cargo_unit_t *unit = &origin->manifest.units[i];
@@ -4827,6 +4974,34 @@ static int delivery_source_stock_count(const station_t *origin,
             (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
             continue;
         }
+        count++;
+    }
+    return count;
+}
+
+static int delivery_trusted_source_stock_count(const world_t *w,
+                                               int origin_index,
+                                               const contract_t *ct) {
+    if (!w || origin_index < 0 || origin_index >= w->station_count ||
+        origin_index >= MAX_STATIONS || !ct) {
+        return 0;
+    }
+    const station_t *origin = &w->stations[origin_index];
+    if (!origin->manifest.units) return 0;
+    int count = 0;
+    for (uint16_t i = 0; i < origin->manifest.count; i++) {
+        const cargo_unit_t *unit = &origin->manifest.units[i];
+        if (!contract_fit_is_ok(contract_fit_cargo_unit(ct, unit))) continue;
+        if (ct->proof_flags == 0 &&
+            (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+            (ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+            continue;
+        }
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, origin_index, unit,
+                station_receipt_chain_at(origin, i));
+        if (!evaluated.accepted) continue;
         count++;
     }
     return count;
@@ -4858,7 +5033,7 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
         return 0;
     }
     if (ship_tow_body_space(sp->ship) <= 0) return 0;
-    int stock = delivery_source_stock_count(origin, ct);
+    int stock = delivery_trusted_source_stock_count(w, origin_idx, ct);
     if (stock <= 0) return 0;
     int needed = (int)ceilf(ct->quantity_needed);
     if (needed <= 0) needed = 1;
@@ -4884,7 +5059,7 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     int moved = 0;
     float debt = 0.0f;
     while (moved < take) {
-        int idx = delivery_find_source_stock_unit(origin, ct);
+        int idx = delivery_find_source_stock_unit(w, origin_idx, ct);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
         cargo_receipt_chain_t chain = {0};
@@ -4981,6 +5156,11 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
         if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[pod_idx];
         if (pod->quantity != remaining) continue;
+        if (!delivery_shipment_range_trusted_at_station(
+                w, shipment, shipment->quantity_delivered,
+                remaining, station_idx)) {
+            continue;
+        }
 
         float shipment_payout = 0.0f;
         bool ok = true;
@@ -8239,10 +8419,13 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             if (!station_exists(&w->stations[s])) { slot = s; break; }
         }
         if (slot >= 0) {
+            if (slot >= w->station_count) w->station_count = slot + 1;
             station_t *st = &w->stations[slot];
             station_cleanup(st);
             memset(st, 0, sizeof(*st));
             (void)station_manifest_bootstrap(st);
+            if (w->next_station_id == 0) w->next_station_id = 1;
+            st->id = w->next_station_id++;
             generate_outpost_name(st->name, sizeof(st->name), sc->pos, slot);
             st->pos = sc->pos;
             st->radius = OUTPOST_RADIUS;
@@ -8706,7 +8889,8 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
                 if (shipment && shipment->status == DELIVERY_SHIPMENT_DELIVERED) {
                     score += 1000.0f;
                 } else if (!shipment) {
-                    int stock = delivery_source_stock_count(&w->stations[origin], c);
+                    int stock = delivery_trusted_source_stock_count(
+                        w, origin, c);
                     if (stock <= 0) continue;
                     score += 800.0f + (float)stock * 10.0f;
                 } else {
@@ -9702,7 +9886,7 @@ static int delivery_best_source_for_contract(const world_t *w,
         if (s == dest) continue;
         const station_t *source = &w->stations[s];
         if (!station_exists(source)) continue;
-        int stock = delivery_source_stock_count(source, &fit);
+        int stock = delivery_source_stock_count(w, s, &fit);
         if (stock <= 0) continue;
         float d = v2_len(v2_sub(source->pos, w->stations[dest].pos));
         float score = (float)stock * 1000.0f - d;
@@ -9740,7 +9924,7 @@ static void delivery_maybe_post_credit_contracts(world_t *w) {
         contract_t fit = *demand;
         fit.action = CONTRACT_DELIVERY;
         fit.target_index = origin;
-        int stock = delivery_source_stock_count(&w->stations[origin], &fit);
+        int stock = delivery_source_stock_count(w, origin, &fit);
         if (stock <= 0) continue;
         int qty = (int)ceilf(demand->quantity_needed);
         if (qty <= 0) qty = 1;
@@ -12551,6 +12735,10 @@ static void server_dispatch_buy_named_ingot(
     if (station_receipts && slot < (int)station_receipts->count)
         station_chain = station_receipts->chains[slot];
     if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return;
+    cargo_receipt_station_evaluation_t trust =
+        cargo_receipt_evaluate_at_station(
+            w, sidx, src, &station_chain);
+    if (!trust.accepted) return;
     cargo_receipt_transfer_link_t transfer_link =
         cargo_receipt_prepare_transfer_link(st, src->pub, &station_chain);
     if (transfer_link.status != CARGO_RECEIPT_TRANSFER_LINK_READY)
@@ -12635,20 +12823,15 @@ static void server_dispatch_deliver_named_ingot(
     if (rcpts && hidx < (int)rcpts->count) {
         const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
         attached_chain = *attached;
-        if (attached->len > 0) {
-            cargo_receipt_result_t vr = cargo_receipt_chain_verify(
-                attached->links, attached->len, copy.pub);
-            if (vr != CARGO_RECEIPT_OK) {
-                printf("[server] receipt_chain_invalid: deliver from player %d, reason=%d\n",
-                       pid, (int)vr);
-                return;
-            }
-            if (attached->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
-                printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n",
-                       pid);
-                return;
-            }
-        }
+    }
+    cargo_receipt_station_evaluation_t trust =
+        cargo_receipt_evaluate_at_station(
+            w, sidx, &copy, &attached_chain);
+    if (!trust.accepted) return;
+    if (attached_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n",
+               pid);
+        return;
     }
 
     cargo_receipt_transfer_link_t transfer_link =
@@ -12812,8 +12995,16 @@ bool server_dispatch_receipt_presentation_message(
         (void)cargo_receipt_unpack(p, &chain[i]);
     }
 
-    cargo_receipt_present_result_t result = cargo_receipt_present_to_ship(
-        &w->players[player_idx], cargo_pub, chain, (uint8_t)chain_len);
+    server_player_t *sp = &w->players[player_idx];
+    cargo_receipt_present_result_t result =
+        CARGO_RECEIPT_PRESENT_REJECT_TRUST;
+    if (sp->docked && sp->current_station >= 0 &&
+        sp->current_station < w->station_count &&
+        sp->current_station < MAX_STATIONS) {
+        result = cargo_receipt_present_to_ship(
+            w, sp->current_station, sp, cargo_pub,
+            chain, (uint8_t)chain_len);
+    }
     if (out) {
         out->evaluated = true;
         out->result = result;

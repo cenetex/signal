@@ -304,19 +304,24 @@ static bool test_view_has_market_memory(const knowledge_view_t *view,
     return false;
 }
 
-static bool test_issue_world_station_receipt(station_t *st,
+static bool test_issue_world_station_receipt(world_t *w,
+                                             station_t *st,
                                              const uint8_t cargo_pub[32],
                                              uint64_t event_id,
                                              cargo_receipt_chain_t *out_chain) {
     uint8_t recipient[32];
-    uint8_t origin_pin[32];
     for (int i = 0; i < 32; i++) {
         recipient[i] = (uint8_t)(0x50 + i);
-        origin_pin[i] = (uint8_t)(0xA0 + i);
+    }
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pub, sizeof(smelt.ingot_pub));
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, sizeof(smelt)) == 0) {
+        return false;
     }
     memset(out_chain, 0, sizeof(*out_chain));
     if (!cargo_receipt_issue(st, 1, event_id, cargo_pub, recipient,
-                             origin_pin, &out_chain->links[0])) {
+                             st->chain_last_hash, &out_chain->links[0])) {
         return false;
     }
     out_chain->len = 1;
@@ -1182,6 +1187,9 @@ TEST(test_towed_shell_pod_keeps_shell_after_intake_custody_sale) {
     fragment_pub[31] = 0x5a;
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
                       fragment_pub, 0, &ingot));
+    /* This shell-custody fixture bypasses smelting; classify the synthetic
+     * ingot as migrated stock so the test remains about physical custody. */
+    ingot.recipe_id = RECIPE_LEGACY_MIGRATE;
     ASSERT(hash_legacy_migrate_unit(shell_origin, COMMODITY_FRAME, 0,
                                     &shell));
 
@@ -2934,7 +2942,7 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
         fragment_pub[31] = (uint8_t)(0x40 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        ASSERT(test_issue_world_station_receipt(home, units[i].pub,
+        ASSERT(test_issue_world_station_receipt(&w, home, units[i].pub,
                                                 (uint64_t)(700 + i),
                                                 &chains[i]));
         ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
@@ -3116,7 +3124,8 @@ TEST(test_black_market_contract_accepts_npc_module_delivery) {
     ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_TRACTOR_MODULE, 0,
                                     &unit));
     cargo_receipt_chain_t chain = {0};
-    ASSERT(test_issue_world_station_receipt(home, unit.pub, 910, &chain));
+    ASSERT(test_issue_world_station_receipt(
+        &w, home, unit.pub, 910, &chain));
     ASSERT(ship_manifest_push_with_chain(hauler_ship, &unit, &chain));
 
     w.contracts[0] = (contract_t){
@@ -4210,6 +4219,11 @@ TEST(test_frame_press_accepts_player_towed_ingot_pod_at_press) {
     memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
                       fragment_a, 0, &input));
+    input.origin_station = 1;
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, input.pub, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) != 0);
 
     vec2 press_pos = module_world_pos_ring(
         st, st->modules[press_idx].ring, st->modules[press_idx].slot);
@@ -4274,6 +4288,11 @@ TEST(test_station_hopper_accepts_player_towed_ingot_pod) {
 
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
                       fragment_a, 0, &input));
+    input.origin_station = 1;
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, input.pub, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) != 0);
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, 1, NULL) == 1);
 
     vec2 ferrite_hopper_pos = st->pos;

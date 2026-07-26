@@ -1,7 +1,6 @@
 #include "test_harness.h"
 #include "cargo_receipt_issue.h"
 #include "station_authority.h"
-#include "cargo_receipt_issue.h"
 #include "faction.h"
 #include "station_policy.h"
 #include "wire_codec.h"
@@ -5939,6 +5938,71 @@ TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     ship_cleanup(player.ship);
 }
 
+TEST(test_inspect_snapshot_exposes_server_authored_station_trust_verdict) {
+    WORLD_DECL;
+    w.rng = 0xD141u;
+    world_reset(&w);
+    for (int station = 0; station < 3; station++)
+        chain_log_reset(&w.stations[station]);
+
+    server_player_t *scanner = &w.players[0];
+    server_player_t *target = &w.players[1];
+    scanner->connected = true;
+    scanner->docked = true;
+    scanner->current_station = 1;
+    scanner->nearby_station = 1;
+    scanner->scan_active = true;
+    scanner->scan_target_type = INSPECT_TARGET_PLAYER;
+    scanner->scan_target_index = 1;
+    target->connected = true;
+    target->id = 1;
+    target->pubkey_set = true;
+    for (int i = 0; i < 32; i++)
+        target->pubkey[i] = (uint8_t)(0x70 + i);
+
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[0] = 0xA1;
+    cargo_unit_t unit = {0};
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_pub, 41, &unit));
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_H;
+    unit.origin_station = 2;
+
+    station_t *origin = &w.stations[2];
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, unit.pub, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(&w, origin, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) >= 1);
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(cargo_receipt_emit_transfer(
+               &w, origin, origin->station_pubkey, target->pubkey,
+               unit.pub, (uint8_t)CARGO_KIND_INGOT, &chain,
+               &chain.links[0]) >= 1);
+    chain.len = 1;
+    ASSERT(ship_manifest_push_with_chain(target->ship, &unit, &chain));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE] = {0};
+    int len = serialize_inspect_snapshot_for_world(buf, &w, scanner);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+    uint8_t *row = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(inspect_snapshot_chain_value(row[2]), 1);
+    ASSERT_EQ_INT(inspect_snapshot_trust_code(row[2], row[3]),
+                  CARGO_RECEIPT_TRUST_VALID_TRUSTED + 1);
+    ASSERT(row[2] & INSPECT_ROW_TRUST_ACCEPTED);
+
+    ASSERT(station_authority_registry_set_trust(
+        &w.stations[1], origin->station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+    w.tick += 120u;
+    len = serialize_inspect_snapshot_for_world(buf, &w, scanner);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+    row = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(inspect_snapshot_chain_value(row[2]), 1);
+    ASSERT_EQ_INT(inspect_snapshot_trust_code(row[2], row[3]),
+                  CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY + 1);
+    ASSERT(!(row[2] & INSPECT_ROW_TRUST_ACCEPTED));
+}
+
 TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
     npc_ship_t npc;
     ship_t npc_ship = {0};
@@ -8889,6 +8953,7 @@ void register_protocol_main_tests(void) {
     RUN(test_inspect_snapshot_npc_expands_matching_receipt_chain);
     RUN(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain);
     RUN(test_roundtrip_inspect_snapshot_player_manifest_chain);
+    RUN(test_inspect_snapshot_exposes_server_authored_station_trust_verdict);
     RUN(test_inspect_snapshot_npc_includes_market_memory_diagnostics);
     RUN(test_inspect_snapshot_npc_expands_matching_job_source_memory);
     RUN(test_inspect_snapshot_npc_includes_job_offer_diagnostics);

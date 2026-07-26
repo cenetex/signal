@@ -13,6 +13,7 @@
 
 #include "game_sim.h"
 #include "cargo_receipt.h"
+#include "cargo_receipt_trust.h"
 #include "handoff_ticket.h"
 #include "manifest.h"
 #include "sim_ai.h"
@@ -6502,10 +6503,129 @@ static inline int serialize_player_ship_for_world(
         buf, id, sp, server_player_station_balance_in_world(w, sp));
 }
 
+static inline int inspect_snapshot_evaluating_station(
+    const world_t *w, const server_player_t *sp) {
+    if (!w || !sp) return -1;
+    int station_idx = sp->docked
+        ? sp->current_station : sp->nearby_station;
+    if (station_idx < 0 || station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx])) {
+        return -1;
+    }
+    return station_idx;
+}
+
+static inline cargo_receipt_station_evaluation_t
+inspect_snapshot_evaluate_manifest_index(
+    const world_t *w, int station_idx, const ship_t *ship,
+    uint16_t manifest_idx) {
+    const ship_receipts_t *receipts = ship_get_receipts_const(ship);
+    const cargo_receipt_chain_t *chain =
+        receipts && manifest_idx < receipts->count
+            ? &receipts->chains[manifest_idx] : NULL;
+    return cargo_receipt_evaluate_at_station(
+        w, station_idx, &ship->manifest.units[manifest_idx], chain);
+}
+
+static inline void inspect_snapshot_refresh_trust_cache(
+    uint8_t *buf, int len, const world_t *w, server_player_t *sp,
+    const ship_t *target_ship) {
+    if (!buf || len < INSPECT_SNAPSHOT_HEADER || !w || !sp ||
+        !target_ship || !target_ship->manifest.units) {
+        return;
+    }
+    int station_idx = inspect_snapshot_evaluating_station(w, sp);
+    if (station_idx < 0) return;
+
+    uint8_t row_count = buf[8];
+    if (row_count > INSPECT_SNAPSHOT_MAX_ROWS)
+        row_count = INSPECT_SNAPSHOT_MAX_ROWS;
+    uint64_t signature = net_payload_hash(buf, (size_t)len);
+    signature = net_fnv1a64_update(signature, (uint8_t)station_idx);
+    uint32_t trust_epoch = w->tick / 120u;
+    for (int shift = 0; shift < 4; shift++)
+        signature = net_fnv1a64_update(
+            signature, (uint8_t)(trust_epoch >> (shift * 8)));
+
+    if (sp->inspect_trust_signature != signature ||
+        sp->inspect_trust_cache_row_count != row_count) {
+        memset(sp->inspect_trust_cache_code, 0,
+               sizeof(sp->inspect_trust_cache_code));
+        memset(sp->inspect_trust_cache_accepted, 0,
+               sizeof(sp->inspect_trust_cache_accepted));
+        sp->inspect_trust_signature = signature;
+        sp->inspect_trust_cache_row_count = row_count;
+
+        for (uint8_t row_idx = 0; row_idx < row_count; row_idx++) {
+            const uint8_t *row =
+                &buf[INSPECT_SNAPSHOT_HEADER +
+                     row_idx * INSPECT_SNAPSHOT_ROW];
+            if ((row[3] & INSPECT_ROW_DIAGNOSTIC) != 0) continue;
+
+            bool any = false;
+            bool accepted = true;
+            cargo_receipt_trust_status_t status =
+                CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS;
+            bool grouped = (row[3] & INSPECT_ROW_GROUPED) != 0;
+            for (uint16_t manifest_idx = 0;
+                 manifest_idx < target_ship->manifest.count;
+                 manifest_idx++) {
+                const cargo_unit_t *unit =
+                    &target_ship->manifest.units[manifest_idx];
+                bool matches;
+                if (grouped) {
+                    matches = inspect_snapshot_unit_is_groupable(unit) &&
+                              unit->commodity == row[0] &&
+                              unit->grade == row[1];
+                } else {
+                    matches = memcmp(unit->pub, &row[14], 32) == 0;
+                }
+                if (!matches) continue;
+                cargo_receipt_station_evaluation_t evaluated =
+                    inspect_snapshot_evaluate_manifest_index(
+                        w, station_idx, target_ship, manifest_idx);
+                if (!any || (accepted && !evaluated.accepted) ||
+                    (accepted == evaluated.accepted &&
+                     evaluated.trust.status > status)) {
+                    status = evaluated.trust.status;
+                }
+                any = true;
+                accepted = accepted && evaluated.accepted;
+                if (!grouped) break;
+            }
+            if (!any || status >
+                    CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY) {
+                continue;
+            }
+            sp->inspect_trust_cache_code[row_idx] =
+                (uint8_t)status + 1u;
+            sp->inspect_trust_cache_accepted[row_idx] =
+                accepted ? 1u : 0u;
+        }
+    }
+
+    for (uint8_t row_idx = 0; row_idx < row_count; row_idx++) {
+        uint8_t code = sp->inspect_trust_cache_code[row_idx];
+        if (code == 0) continue;
+        uint8_t *row =
+            &buf[INSPECT_SNAPSHOT_HEADER +
+                 row_idx * INSPECT_SNAPSHOT_ROW];
+        row[3] = (uint8_t)(
+            (row[3] & ~INSPECT_ROW_TRUST_CODE_LOW_MASK) |
+            ((code & 0x07u) << 5));
+        row[2] = (uint8_t)(
+            (row[2] & INSPECT_ROW_CHAIN_VALUE_MASK) |
+            ((code & 0x08u) ? INSPECT_ROW_TRUST_CODE_HIGH : 0u) |
+            (sp->inspect_trust_cache_accepted[row_idx]
+                 ? INSPECT_ROW_TRUST_ACCEPTED : 0u));
+    }
+}
+
 static inline int serialize_inspect_snapshot_for_world(
     uint8_t *buf,
     const world_t *w,
-    const server_player_t *sp) {
+    server_player_t *sp) {
     if (!buf) return 0;
     if (!w || !sp || !sp->scan_active ||
         sp->scan_target_type == INSPECT_TARGET_NONE) {
@@ -6518,17 +6638,24 @@ static inline int serialize_inspect_snapshot_for_world(
         sp->scan_target_index < MAX_NPC_SHIPS) {
         const npc_ship_t *npc = &w->npc_ships[sp->scan_target_index];
         ship_t *ship = world_npc_ship_for((world_t *)w, sp->scan_target_index);
-        return serialize_inspect_snapshot_npc_with_station_receipts(
+        int len = serialize_inspect_snapshot_npc_with_station_receipts(
             buf, (uint8_t)sp->scan_target_index, npc, ship,
             w->stations, MAX_STATIONS);
+        inspect_snapshot_refresh_trust_cache(buf, len, w, sp, ship);
+        return len;
     }
 
     if (sp->scan_target_type == INSPECT_TARGET_PLAYER &&
         sp->scan_target_index >= 0 &&
         sp->scan_target_index < MAX_PLAYERS) {
-        return serialize_inspect_snapshot_player(
+        const server_player_t *target =
+            &w->players[sp->scan_target_index];
+        int len = serialize_inspect_snapshot_player(
             buf, (uint8_t)sp->scan_target_index,
-            &w->players[sp->scan_target_index]);
+            target);
+        inspect_snapshot_refresh_trust_cache(
+            buf, len, w, sp, target->ship);
+        return len;
     }
 
     return serialize_inspect_snapshot_target(buf, sp->scan_target_type,

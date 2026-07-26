@@ -737,6 +737,14 @@ TEST(test_contract_delivery_requires_heritage_recipe) {
 
     w.cargo_pods[pod_idx].manifest_units[0].recipe_id =
         (uint16_t)RECIPE_FRAME_BASIC;
+    w.cargo_pods[pod_idx].manifest_units[0].origin_station = 1;
+    chain_payload_craft_t craft = {0};
+    craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    memcpy(craft.output_pub,
+           w.cargo_pods[pod_idx].manifest_units[0].pub,
+           sizeof(craft.output_pub));
+    ASSERT(chain_log_emit(&w, &w.stations[1], CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) != 0);
     world_sim_step(&w, SIM_DT);
 
     ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);
@@ -757,6 +765,12 @@ TEST(test_contract_delivery_bans_enemy_origin_station) {
     cargo_unit_t *unit = &w.cargo_pods[pod_idx].manifest_units[0];
     unit->recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
     unit->origin_station = 2;
+    chain_payload_craft_t enemy_craft = {0};
+    enemy_craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    memcpy(enemy_craft.output_pub, unit->pub,
+           sizeof(enemy_craft.output_pub));
+    ASSERT(chain_log_emit(&w, &w.stations[2], CHAIN_EVT_CRAFT,
+                          &enemy_craft, sizeof(enemy_craft)) != 0);
 
     w.contracts[0] = (contract_t){
         .active = true,
@@ -784,6 +798,12 @@ TEST(test_contract_delivery_bans_enemy_origin_station) {
 
     unit = &w.cargo_pods[pod_idx].manifest_units[0];
     unit->origin_station = 1;
+    chain_payload_craft_t local_craft = {0};
+    local_craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    memcpy(local_craft.output_pub, unit->pub,
+           sizeof(local_craft.output_pub));
+    ASSERT(chain_log_emit(&w, &w.stations[1], CHAIN_EVT_CRAFT,
+                          &local_craft, sizeof(local_craft)) != 0);
     world_sim_step(&w, SIM_DT);
 
     ASSERT_EQ_INT(w.players[0].ship->towed_pod_count, 0);

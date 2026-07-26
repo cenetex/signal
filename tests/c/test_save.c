@@ -4,18 +4,23 @@
 #include "faction.h"
 #include <stddef.h>
 
-static bool test_issue_station_receipt(station_t *st, const uint8_t cargo_pub[32],
+static bool test_issue_station_receipt(world_t *w, station_t *st,
+                                       const uint8_t cargo_pub[32],
                                        uint64_t event_id,
                                        cargo_receipt_chain_t *out_chain) {
     uint8_t recipient[32];
-    uint8_t origin_pin[32];
     for (int i = 0; i < 32; i++) {
         recipient[i] = (uint8_t)(0x30 + i);
-        origin_pin[i] = (uint8_t)(0x90 + i);
+    }
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pub, sizeof(smelt.ingot_pub));
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, sizeof(smelt)) == 0) {
+        return false;
     }
     memset(out_chain, 0, sizeof(*out_chain));
     if (!cargo_receipt_issue(st, 1, event_id, cargo_pub, recipient,
-                             origin_pin, &out_chain->links[0])) {
+                             st->chain_last_hash, &out_chain->links[0])) {
         return false;
     }
     out_chain->len = 1;
@@ -1011,7 +1016,8 @@ TEST(test_world_save_round_trips_station_manifest) {
     unit.pub[0] = 0xA5;
     unit.pub[31] = 0x5A;
     cargo_receipt_chain_t chain = {0};
-    ASSERT(test_issue_station_receipt(&w.stations[0], unit.pub, 4242, &chain));
+    ASSERT(test_issue_station_receipt(
+        &w, &w.stations[0], unit.pub, 4242, &chain));
     ASSERT(station_manifest_push_with_chain(&w.stations[0], &unit, &chain));
     ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
     ASSERT(world_save(&w, TMP("test_manifest_roundtrip.sav")));
@@ -1601,7 +1607,7 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
         fragment_pub[31] = (uint8_t)(0x60 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        ASSERT(test_issue_station_receipt(home, units[i].pub,
+        ASSERT(test_issue_station_receipt(w, home, units[i].pub,
                                           (uint64_t)(900 + i), &chains[i]));
         ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }

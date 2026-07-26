@@ -8,7 +8,7 @@
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
-#include "cargo_legality.h"
+#include "cargo_receipt_trust.h"
 #include "mining.h"            /* grade roll at smelt time */
 #include "fixpoint.h"
 #include "sha256.h"
@@ -1631,15 +1631,6 @@ void step_module_flow(world_t *w, float dt) {
 /* Module delivery (docked ship -> scaffold)                           */
 /* ------------------------------------------------------------------ */
 
-static int manifest_find_first_commodity(const manifest_t *manifest, commodity_t c) {
-    if (!manifest || !manifest->units) return -1;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        if (manifest->units[i].commodity == (uint8_t)c)
-            return (int)i;
-    }
-    return -1;
-}
-
 static const cargo_receipt_chain_t *production_ship_receipt_chain_at(
     const ship_t *ship, uint16_t index) {
     const ship_receipts_t *receipts = ship_get_receipts_const(ship);
@@ -1648,17 +1639,43 @@ static const cargo_receipt_chain_t *production_ship_receipt_chain_at(
     return &receipts->chains[index];
 }
 
-static bool ship_manifest_unit_legal_for_station(
+static const cargo_receipt_chain_t *production_station_receipt_chain_at(
+    const station_t *station, uint16_t index) {
+    const ship_receipts_t *receipts =
+        station_get_receipts_const(station);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static int station_manifest_find_first_trusted_commodity(
+    const world_t *w, const station_t *station, int station_idx,
+    commodity_t commodity) {
+    if (!w || !station || !station->manifest.units) return -1;
+    for (uint16_t i = 0; i < station->manifest.count; i++) {
+        const cargo_unit_t *unit = &station->manifest.units[i];
+        if (unit->commodity != (uint8_t)commodity) continue;
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, station_idx, unit,
+                production_station_receipt_chain_at(station, i));
+        if (evaluated.accepted) return (int)i;
+    }
+    return -1;
+}
+
+static bool ship_manifest_unit_trusted_for_station(
     const world_t *w, const ship_t *ship, uint16_t index, int station_idx) {
     if (!w || !ship || !ship->manifest.units ||
         index >= ship->manifest.count ||
         station_idx < 0 || station_idx >= MAX_STATIONS) {
         return false;
     }
-    cargo_legality_result_t result = cargo_legality_classify(
-        w->stations, MAX_STATIONS, station_idx, &ship->manifest.units[index],
-        production_ship_receipt_chain_at(ship, index));
-    return result.status != CARGO_LEGALITY_CONTRABAND;
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            w, station_idx, &ship->manifest.units[index],
+            production_ship_receipt_chain_at(ship, index));
+    return evaluated.accepted;
 }
 
 static int ship_manifest_count_legal_commodity(const world_t *w,
@@ -1669,7 +1686,7 @@ static int ship_manifest_count_legal_commodity(const world_t *w,
     int count = 0;
     for (uint16_t i = 0; i < ship->manifest.count; i++) {
         if (ship->manifest.units[i].commodity != (uint8_t)c) continue;
-        if (!ship_manifest_unit_legal_for_station(w, ship, i, station_idx))
+        if (!ship_manifest_unit_trusted_for_station(w, ship, i, station_idx))
             continue;
         count++;
     }
@@ -1683,7 +1700,7 @@ static int ship_manifest_find_first_legal_commodity(const world_t *w,
     if (!ship || !ship->manifest.units) return -1;
     for (uint16_t i = 0; i < ship->manifest.count; i++) {
         if (ship->manifest.units[i].commodity != (uint8_t)c) continue;
-        if (!ship_manifest_unit_legal_for_station(w, ship, i, station_idx))
+        if (!ship_manifest_unit_trusted_for_station(w, ship, i, station_idx))
             continue;
         return (int)i;
     }
@@ -1750,7 +1767,8 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
         if (needed < 0.01f) continue;
 
         int pod_units = ship
-            ? ship_towed_pods_manifest_count(w, ship, mat) : 0;
+            ? ship_towed_pods_trusted_manifest_count(
+                w, ship, mat, station_idx) : 0;
         if (pod_units > 0) {
             int whole = (int)ceilf(needed - 0.0001f);
             if (whole > pod_units) whole = pod_units;
@@ -1760,8 +1778,8 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
                 int removed = 0;
                 while (removed < whole) {
                     cargo_unit_t unit = {0};
-                    if (!ship_towed_pods_take_manifest_unit(w, ship,
-                                                            mat, &unit)) {
+                    if (!ship_towed_pods_take_trusted_manifest_unit(
+                            w, ship, mat, station_idx, &unit)) {
                         break;
                     }
                     m->build_progress += 1.0f / cost;
@@ -1815,8 +1833,9 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
             if (whole < 0) whole = 0;
             int removed = 0;
             while (removed < whole) {
-                int cargo_idx = manifest_find_first_commodity(
-                    &st->manifest, mat);
+                int cargo_idx =
+                    station_manifest_find_first_trusted_commodity(
+                        w, st, station_idx, mat);
                 if (cargo_idx < 0) break;
                 cargo_unit_t unit = {0};
                 if (!station_manifest_remove_with_chain(

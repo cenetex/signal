@@ -18,6 +18,7 @@
 
 #include "cargo_receipt.h"
 #include "cargo_receipt_issue.h"
+#include "cargo_receipt_trust.h"
 #include "chain_log.h"
 #include "handoff_flow.h"
 #include "handoff_ticket.h"
@@ -151,6 +152,32 @@ static bool crs_prepare_player_carrier(world_t *w,
     return ship_manifest_push_with_chain(sp->ship, &cu, chain);
 }
 
+static void crs_assert_cargo_store_equal(const cargo_store_t *actual,
+                                         const cargo_store_t *expected) {
+    ASSERT(actual != NULL);
+    ASSERT(expected != NULL);
+    ASSERT_EQ_INT(actual->manifest.count, expected->manifest.count);
+    ASSERT_EQ_INT(actual->manifest.cap, expected->manifest.cap);
+    if (actual->manifest.count > 0) {
+        ASSERT(memcmp(actual->manifest.units, expected->manifest.units,
+                      (size_t)actual->manifest.count *
+                          sizeof(actual->manifest.units[0])) == 0);
+    }
+    const ship_receipts_t *actual_receipts =
+        cargo_store_receipts_const(actual);
+    const ship_receipts_t *expected_receipts =
+        cargo_store_receipts_const(expected);
+    ASSERT_EQ_INT(actual_receipts != NULL, expected_receipts != NULL);
+    if (!actual_receipts || !expected_receipts) return;
+    ASSERT_EQ_INT(actual_receipts->count, expected_receipts->count);
+    ASSERT_EQ_INT(actual_receipts->cap, expected_receipts->cap);
+    if (actual_receipts->count > 0) {
+        ASSERT(memcmp(actual_receipts->chains, expected_receipts->chains,
+                      (size_t)actual_receipts->count *
+                          sizeof(actual_receipts->chains[0])) == 0);
+    }
+}
+
 static void crs_init_foreign_station(station_t *foreign) {
     memset(foreign, 0, sizeof(*foreign));
     snprintf(foreign->name, sizeof(foreign->name), "Foreign");
@@ -237,6 +264,13 @@ static cargo_receipt_origin_proof_t crs_origin_proof(
     memcpy(proof.authority, receipt->authoring_station, 32);
     return proof;
 }
+
+static bool crs_next_hop(world_t *w, station_t *dst,
+                         const uint8_t from_pk[32],
+                         const uint8_t cargo_pk[32],
+                         const cargo_receipt_t *incoming,
+                         uint8_t incoming_len,
+                         cargo_receipt_t *out);
 
 TEST(test_local_origin_resolver_distinguishes_history_states) {
     crs_setup("origin_resolver_states");
@@ -483,6 +517,185 @@ TEST(test_receipt_trust_preserves_cryptographic_chain_failure) {
     ASSERT_EQ_INT(result.status,
                   CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS);
     ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_OK);
+    crs_teardown();
+}
+
+static cargo_unit_t crs_test_ingot(const uint8_t cargo_pk[32]) {
+    cargo_unit_t unit = {
+        .kind = CARGO_KIND_INGOT,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .grade = MINING_GRADE_COMMON,
+        .recipe_id = RECIPE_SMELT,
+        .prefix_class = INGOT_PREFIX_M,
+        .quantity = 1,
+    };
+    memcpy(unit.pub, cargo_pk, sizeof(unit.pub));
+    return unit;
+}
+
+TEST(test_station_trust_evaluator_accepts_current_and_local_origin) {
+    crs_setup("station_eval_current_local");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD105);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x15);
+    uint8_t remote_pub[32]; fill_test_pubkey(remote_pub, 0x45);
+    cargo_receipt_t receipt = {0};
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk,
+                         remote_pub, &receipt));
+    cargo_unit_t remote = crs_test_ingot(remote_pub);
+    cargo_receipt_chain_t remote_chain = {.len = 1};
+    remote_chain.links[0] = receipt;
+
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            w, 1, &remote, &remote_chain);
+    ASSERT(evaluated.accepted);
+    ASSERT(!evaluated.local_origin_without_receipt);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_VALID_TRUSTED);
+    ASSERT_EQ_INT(evaluated.origin_status,
+                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(evaluated.origin_station, 2);
+
+    uint8_t local_pub[32]; fill_test_pubkey(local_pub, 0x75);
+    chain_payload_craft_t craft = {0};
+    craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    memcpy(craft.output_pub, local_pub, sizeof(craft.output_pub));
+    ASSERT(chain_log_emit(w, &w->stations[1], CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) >= 1);
+    cargo_unit_t local = crs_test_ingot(local_pub);
+    local.kind = CARGO_KIND_FRAME;
+    local.commodity = COMMODITY_FRAME;
+    local.recipe_id = RECIPE_FRAME_BASIC;
+    cargo_receipt_chain_t empty = {0};
+    evaluated = cargo_receipt_evaluate_at_station(w, 1, &local, &empty);
+    ASSERT(evaluated.accepted);
+    ASSERT(evaluated.local_origin_without_receipt);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_VALID_TRUSTED);
+    ASSERT_EQ_INT(evaluated.origin_station, 1);
+
+    uint8_t missing_pub[32]; fill_test_pubkey(missing_pub, 0xA5);
+    cargo_unit_t missing = crs_test_ingot(missing_pub);
+    evaluated = cargo_receipt_evaluate_at_station(
+        w, 1, &missing, &empty);
+    ASSERT(!evaluated.accepted);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN);
+    crs_teardown();
+}
+
+TEST(test_station_trust_evaluator_accepts_rotated_origin_key) {
+    crs_setup("station_eval_rotated");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD106);
+    station_t historical = {0};
+    crs_init_foreign_station(&historical);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x16);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x46);
+    cargo_receipt_t receipt = {0};
+    ASSERT(crs_first_hop(w, &historical, player_pk, cargo_pk, &receipt));
+
+    station_t *owner = &w->stations[2];
+    ASSERT_EQ_INT(owner->authority_registry_count, 1);
+    memcpy(owner->authority_registry[1].pubkey,
+           historical.station_pubkey, 32);
+    owner->authority_registry[1].state =
+        STATION_AUTHORITY_TRUST_ROTATED;
+    owner->authority_registry_count = 2;
+    ASSERT(station_authority_registry_validate(owner));
+
+    cargo_unit_t unit = crs_test_ingot(cargo_pk);
+    cargo_receipt_chain_t chain = {.len = 1};
+    chain.links[0] = receipt;
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(w, 1, &unit, &chain);
+    ASSERT(evaluated.accepted);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED);
+    ASSERT_EQ_INT(evaluated.origin_station, 2);
+    crs_teardown();
+}
+
+TEST(test_station_trust_evaluator_applies_unknown_untrusted_and_revoked_policy) {
+    crs_setup("station_eval_policy");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD107);
+    station_t foreign = {0};
+    crs_init_foreign_station(&foreign);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x17);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x47);
+    cargo_receipt_t receipt = {0};
+    ASSERT(crs_first_hop(w, &foreign, player_pk, cargo_pk, &receipt));
+    cargo_unit_t unit = crs_test_ingot(cargo_pk);
+    cargo_receipt_chain_t chain = {.len = 1};
+    chain.links[0] = receipt;
+
+    int viewer_idx = -1;
+    for (int i = 0; i < w->station_count; i++) {
+        if (!cargo_legality_station_tolerates_contraband(
+                &w->stations[i], i)) {
+            viewer_idx = i;
+            break;
+        }
+    }
+    ASSERT(viewer_idx >= 0);
+    station_t *viewer = &w->stations[viewer_idx];
+    bool screens = cargo_legality_station_screens(viewer, viewer_idx);
+
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            w, viewer_idx, &unit, &chain);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY);
+    ASSERT_EQ_INT(evaluated.accepted, !screens);
+
+    ASSERT(station_authority_registry_set_trust(
+        viewer, foreign.station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
+    evaluated = cargo_receipt_evaluate_at_station(
+        w, viewer_idx, &unit, &chain);
+    ASSERT(!evaluated.accepted);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY);
+
+    ASSERT(station_authority_registry_set_trust(
+        viewer, foreign.station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+    evaluated = cargo_receipt_evaluate_at_station(
+        w, viewer_idx, &unit, &chain);
+    ASSERT(!evaluated.accepted);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY);
+    crs_teardown();
+}
+
+TEST(test_station_trust_evaluator_rejects_revoked_intermediate_author) {
+    crs_setup("station_eval_revoked_intermediate");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD108);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x18);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0x48);
+    cargo_receipt_t first = {0};
+    cargo_receipt_t second = {0};
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk,
+                         cargo_pk, &first));
+    ASSERT(crs_next_hop(w, &w->stations[0], player_pk,
+                        cargo_pk, &first, 1, &second));
+    ASSERT(station_authority_registry_set_trust(
+        &w->stations[1], w->stations[0].station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+
+    cargo_unit_t unit = crs_test_ingot(cargo_pk);
+    cargo_receipt_chain_t chain = {.len = 2};
+    chain.links[0] = first;
+    chain.links[1] = second;
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(w, 1, &unit, &chain);
+    ASSERT(!evaluated.accepted);
+    ASSERT_EQ_INT(evaluated.first_rejected_link, 1);
+    ASSERT_EQ_INT(evaluated.trust.status,
+                  CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY);
     crs_teardown();
 }
 
@@ -850,7 +1063,7 @@ TEST(test_present_receipt_chain_to_carried_cargo) {
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
 
     server_player_t *sp = &w->players[0];
-    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+    ASSERT(cargo_receipt_present_to_ship(w, 2, sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_OK);
 
     ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
@@ -873,6 +1086,8 @@ TEST(test_present_receipt_chain_dispatch_attaches) {
     cargo_receipt_t r1;
     ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &r1));
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+    w->players[0].docked = true;
+    w->players[0].current_station = 2;
 
     uint8_t msg[35 + CARGO_RECEIPT_SIZE];
     msg[0] = NET_MSG_PRESENT_RECEIPT_CHAIN;
@@ -922,8 +1137,19 @@ TEST(test_present_foreign_authority_receipt_chain) {
                                        &empty_chain, &r1) != 0);
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
 
+    int evaluating_station = -1;
+    for (int i = 0; i < w->station_count; i++) {
+        if (!cargo_legality_station_screens(&w->stations[i], i) ||
+            cargo_legality_station_tolerates_contraband(
+                &w->stations[i], i)) {
+            evaluating_station = i;
+            break;
+        }
+    }
+    ASSERT(evaluating_station >= 0);
     server_player_t *sp = &w->players[0];
-    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+    ASSERT(cargo_receipt_present_to_ship(
+               w, evaluating_station, sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_OK);
     ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
@@ -948,7 +1174,7 @@ TEST(test_present_receipt_chain_rejects_wrong_recipient) {
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
 
     server_player_t *sp = &w->players[0];
-    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &r1, 1)
+    ASSERT(cargo_receipt_present_to_ship(w, 2, sp, cargo_pk, &r1, 1)
            == CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT);
     ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
@@ -977,13 +1203,146 @@ TEST(test_present_receipt_chain_rejects_existing_mismatch) {
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, &existing));
 
     server_player_t *sp = &w->players[0];
-    ASSERT(cargo_receipt_present_to_ship(sp, cargo_pk, &alternate, 1)
+    ASSERT(cargo_receipt_present_to_ship(
+               w, 2, sp, cargo_pk, &alternate, 1)
            == CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH);
     ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
     ASSERT_EQ_INT((int)rcpts->chains[0].len, 1);
     ASSERT(memcmp(&rcpts->chains[0].links[0], &original, sizeof(original)) == 0);
 
+    crs_teardown();
+}
+
+TEST(test_present_receipt_chain_trust_rejection_is_transactionally_inert) {
+    crs_setup("present_trust_atomic");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD020);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA4);
+    uint8_t cargo_pk[32]; fill_test_pubkey(cargo_pk, 0xD4);
+    cargo_receipt_t receipt = {0};
+    ASSERT(crs_first_hop(w, &w->stations[2], player_pk,
+                         cargo_pk, &receipt));
+    ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
+    ASSERT(station_authority_registry_set_trust(
+        &w->stations[1], w->stations[2].station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+
+    cargo_store_t before = {0};
+    ASSERT(cargo_store_clone(
+        &before, &w->players[0].ship->cargo_store));
+    ASSERT_EQ_INT(
+        cargo_receipt_present_to_ship(
+            w, 1, &w->players[0], cargo_pk, &receipt, 1),
+        CARGO_RECEIPT_PRESENT_REJECT_TRUST);
+    crs_assert_cargo_store_equal(
+        &w->players[0].ship->cargo_store, &before);
+    cargo_store_cleanup(&before);
+    crs_teardown();
+}
+
+TEST(test_named_trade_trust_rejection_preserves_cargo_and_ledger) {
+    crs_setup("named_trade_trust_atomic");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD021);
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xA5);
+    uint8_t buy_pub[32]; fill_test_pubkey(buy_pub, 0xD5);
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_identity_finalized = true;
+    memcpy(sp->pubkey, player_pk, sizeof(sp->pubkey));
+    sp->docked = true;
+    sp->current_station = 1;
+    ASSERT(ship_manifest_bootstrap(sp->ship));
+
+    cargo_receipt_t buy_receipt = {0};
+    ASSERT(crs_first_hop(w, &w->stations[2],
+                         w->stations[1].station_pubkey,
+                         buy_pub, &buy_receipt));
+    cargo_receipt_chain_t buy_chain = {.len = 1};
+    buy_chain.links[0] = buy_receipt;
+    cargo_unit_t buy_unit = crs_test_ingot(buy_pub);
+    ASSERT(station_manifest_push_with_chain(
+        &w->stations[1], &buy_unit, &buy_chain));
+    ledger_earn_by_pubkey(&w->stations[1], player_pk, 10000.0f);
+    ASSERT(station_authority_registry_set_trust(
+        &w->stations[1], w->stations[2].station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+
+    cargo_store_t station_before = {0};
+    cargo_store_t ship_before = {0};
+    ASSERT(cargo_store_clone(
+        &station_before, &w->stations[1].cargo_store));
+    ASSERT(cargo_store_clone(&ship_before, &sp->ship->cargo_store));
+    float balance_before =
+        ledger_balance_by_pubkey(&w->stations[1], player_pk);
+    server_signed_action_dispatch_result_t dispatch = {0};
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_BUY_INGOT, buy_pub, sizeof(buy_pub),
+        NULL, NULL, &dispatch));
+    crs_assert_cargo_store_equal(
+        &w->stations[1].cargo_store, &station_before);
+    crs_assert_cargo_store_equal(&sp->ship->cargo_store, &ship_before);
+    ASSERT_EQ_FLOAT(
+        ledger_balance_by_pubkey(&w->stations[1], player_pk),
+        balance_before, 0.001f);
+    cargo_store_cleanup(&station_before);
+    cargo_store_cleanup(&ship_before);
+
+    /* Use a fresh world because revoked lifecycle state is monotonic. */
+    crs_teardown();
+    crs_setup("named_deliver_trust_atomic");
+    WORLD_HEAP delivery_world = calloc(1, sizeof(world_t));
+    ASSERT(delivery_world != NULL);
+    crs_world_init(delivery_world, 0xD022);
+    uint8_t deliver_pub[32]; fill_test_pubkey(deliver_pub, 0xE5);
+    cargo_receipt_t deliver_receipt = {0};
+    ASSERT(crs_first_hop(
+        delivery_world, &delivery_world->stations[2],
+        player_pk, deliver_pub, &deliver_receipt));
+    cargo_receipt_chain_t deliver_chain = {.len = 1};
+    deliver_chain.links[0] = deliver_receipt;
+    ASSERT(crs_prepare_player_carrier(
+        delivery_world, player_pk, deliver_pub, &deliver_chain));
+    server_player_t *deliverer = &delivery_world->players[0];
+    deliverer->pubkey_proof_ok = true;
+    deliverer->pubkey_identity_finalized = true;
+    deliverer->docked = true;
+    deliverer->current_station = 1;
+    ASSERT(station_manifest_bootstrap(&delivery_world->stations[1]));
+    ASSERT(station_authority_registry_set_trust(
+        &delivery_world->stations[1],
+        delivery_world->stations[2].station_pubkey,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+
+    station_before = (cargo_store_t){0};
+    ship_before = (cargo_store_t){0};
+    ASSERT(cargo_store_clone(
+        &station_before,
+        &delivery_world->stations[1].cargo_store));
+    ASSERT(cargo_store_clone(
+        &ship_before, &deliverer->ship->cargo_store));
+    balance_before = ledger_balance_by_pubkey(
+        &delivery_world->stations[1], player_pk);
+    uint8_t target = 0;
+    ASSERT(server_dispatch_signed_action_payload(
+        delivery_world, 0, SIGNED_ACTION_DELIVER,
+        &target, sizeof(target), NULL, NULL, &dispatch));
+    crs_assert_cargo_store_equal(
+        &delivery_world->stations[1].cargo_store, &station_before);
+    crs_assert_cargo_store_equal(
+        &deliverer->ship->cargo_store, &ship_before);
+    ASSERT_EQ_FLOAT(
+        ledger_balance_by_pubkey(
+            &delivery_world->stations[1], player_pk),
+        balance_before, 0.001f);
+    cargo_store_cleanup(&station_before);
+    cargo_store_cleanup(&ship_before);
     crs_teardown();
 }
 
@@ -1410,6 +1769,10 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_receipt_trust_distinguishes_origin_proof_failures);
     RUN(test_receipt_trust_distinguishes_authority_policy);
     RUN(test_receipt_trust_preserves_cryptographic_chain_failure);
+    RUN(test_station_trust_evaluator_accepts_current_and_local_origin);
+    RUN(test_station_trust_evaluator_accepts_rotated_origin_key);
+    RUN(test_station_trust_evaluator_applies_unknown_untrusted_and_revoked_policy);
+    RUN(test_station_trust_evaluator_rejects_revoked_intermediate_author);
     RUN(test_local_origin_resolver_distinguishes_history_states);
     RUN(test_cross_station_two_hop_chain);
     RUN(test_cross_station_forged_receipt_rejected);
@@ -1424,6 +1787,8 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_present_foreign_authority_receipt_chain);
     RUN(test_present_receipt_chain_rejects_wrong_recipient);
     RUN(test_present_receipt_chain_rejects_existing_mismatch);
+    RUN(test_present_receipt_chain_trust_rejection_is_transactionally_inert);
+    RUN(test_named_trade_trust_rejection_preserves_cargo_and_ledger);
     RUN(test_handoff_ticket_roundtrip_verifies_ship_and_cargo);
     RUN(test_handoff_ticket_rejects_tampered_ship_state);
     RUN(test_handoff_ticket_rejects_tampered_cargo_root);

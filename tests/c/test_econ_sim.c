@@ -874,6 +874,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
         units[i].kind = CARGO_KIND_INGOT;
         units[i].grade = (uint8_t)grades[i];
         units[i].prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+        units[i].recipe_id = RECIPE_LEGACY_MIGRATE;
         units[i].pub[0] = (uint8_t)(i + 1);
     }
     int pod_idx = spawn_cargo_pod_with_manifest(

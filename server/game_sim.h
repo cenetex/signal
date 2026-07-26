@@ -33,6 +33,7 @@ enum {
     MAX_DELIVERY_SHIPMENTS = 24,
     MAX_DELIVERY_BOUND_CARGO = 16,
     MAX_DESTROYED_ROCKS = 4096,
+    SERVER_INSPECT_TRUST_CACHE_ROWS = 8,
 };
 
 enum {
@@ -481,6 +482,13 @@ typedef struct {
      * PROVE_PUBKEY arrives; when it does, skip the pubkey save reload that
      * would otherwise overwrite the live transferred ship state. */
     bool    preserve_live_state_on_pubkey_finalize;
+    /* Runtime-only server-authored inspection verdict cache. Row-aligned
+     * with the last serialized eight-row scan snapshot; refreshed when the
+     * snapshot changes or at least once per second. */
+    uint64_t inspect_trust_signature;
+    uint8_t inspect_trust_cache_row_count;
+    uint8_t inspect_trust_cache_code[SERVER_INSPECT_TRUST_CACHE_ROWS];
+    uint8_t inspect_trust_cache_accepted[SERVER_INSPECT_TRUST_CACHE_ROWS];
     /* Layer A.3 of #479 — monotonic per-player nonce for NET_MSG_SIGNED_ACTION.
      * Persisted in the player save (PLY6+). Any signed action whose nonce is
      * <= this value is rejected as a replay; on accept, this becomes the
@@ -1200,6 +1208,12 @@ int ship_towed_pods_manifest_count(const world_t *w, const ship_t *ship,
 bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
                                         commodity_t commodity,
                                         cargo_unit_t *out_unit);
+int ship_towed_pods_trusted_manifest_count(
+    const world_t *w, const ship_t *ship, commodity_t commodity,
+    int evaluating_station);
+bool ship_towed_pods_take_trusted_manifest_unit(
+    world_t *w, ship_t *ship, commodity_t commodity,
+    int evaluating_station, cargo_unit_t *out_unit);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 /* Apply stock migrations that are keyed only by the decoded save version.

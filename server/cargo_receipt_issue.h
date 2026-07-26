@@ -59,6 +59,15 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
     const uint8_t cargo_pub[32],
     cargo_receipt_origin_proof_t *out_proof);
 
+/* Resolve an origin against the exact authority key that authored the first
+ * receipt. This is the historical-key form of the resolver: rotated station
+ * keys have their own immutable log path and must not be looked up through a
+ * station's newer current key. */
+cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_origin_for_authority(
+    const uint8_t authority[32],
+    const uint8_t cargo_pub[32],
+    cargo_receipt_origin_proof_t *out_proof);
+
 const char *cargo_receipt_origin_resolve_status_name(
     cargo_receipt_origin_resolve_status_t status);
 
@@ -106,16 +115,20 @@ typedef enum {
     CARGO_RECEIPT_PRESENT_REJECT_VERIFY,
     CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT,
     CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH,
-    CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE
+    CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE,
+    CARGO_RECEIPT_PRESENT_REJECT_TRUST
 } cargo_receipt_present_result_t;
 
 /* Accept a peer-presented receipt chain for cargo currently carried by `sp`.
  *
  * The chain must verify for `cargo_pub`, its head recipient must be the
- * player's registered pubkey, and any already-attached local chain must be
- * an exact prefix of the presented chain. On success the chain is stored in
- * the ship's parallel receipt store at the matching manifest index. */
+ * player's registered pubkey, pass the named station's composed trust
+ * evaluator, and extend any already-attached exact prefix. Installation is
+ * staged in a cloned cargo store, so every rejection leaves the manifest and
+ * receipt store byte-identical. */
 cargo_receipt_present_result_t cargo_receipt_present_to_ship(
+    const world_t *world,
+    int evaluating_station,
     server_player_t *sp,
     const uint8_t cargo_pub[32],
     const cargo_receipt_t *chain,

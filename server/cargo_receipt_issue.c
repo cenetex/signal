@@ -7,6 +7,7 @@
  */
 #include "cargo_receipt_issue.h"
 
+#include "cargo_receipt_trust.h"
 #include "game_sim.h"
 #include "manifest.h"
 #include "station_authority.h"
@@ -78,19 +79,24 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
     return event_id;
 }
 
-cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
-    const station_t *station,
+cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_origin_for_authority(
+    const uint8_t authority[32],
     const uint8_t cargo_pub[32],
     cargo_receipt_origin_proof_t *out_proof) {
     static const uint8_t zero32[32] = {0};
     if (out_proof) memset(out_proof, 0, sizeof(*out_proof));
-    if (!station || !cargo_pub || !out_proof ||
+    if (!authority || !cargo_pub || !out_proof ||
+        memcmp(authority, zero32, sizeof(zero32)) == 0 ||
         memcmp(cargo_pub, zero32, sizeof(zero32)) == 0) {
         return CARGO_RECEIPT_ORIGIN_RESOLVE_BAD_ARGUMENTS;
     }
 
+    station_t authority_view = {0};
+    memcpy(authority_view.station_pubkey, authority,
+           sizeof(authority_view.station_pubkey));
+
     char path[256];
-    if (!chain_log_path_for(station->station_pubkey, path, sizeof(path)))
+    if (!chain_log_path_for(authority, path, sizeof(path)))
         return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE;
     FILE *history = fopen(path, "rb");
     if (!history)
@@ -98,11 +104,11 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
     fclose(history);
 
     chain_log_verify_report_t report;
-    if (!chain_log_verify_station(station, NULL, NULL, &report))
+    if (!chain_log_verify_station(&authority_view, NULL, NULL, &report))
         return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_INVALID;
 
     chain_cargo_transform_t transform;
-    if (!chain_log_find_cargo_transform(station, cargo_pub, &transform))
+    if (!chain_log_find_cargo_transform(&authority_view, cargo_pub, &transform))
         return CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND;
 
     switch ((chain_event_type_t)transform.type) {
@@ -126,6 +132,18 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
     memcpy(out_proof->authority, transform.authority,
            sizeof(out_proof->authority));
     return CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED;
+}
+
+cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
+    const station_t *station,
+    const uint8_t cargo_pub[32],
+    cargo_receipt_origin_proof_t *out_proof) {
+    if (!station) {
+        if (out_proof) memset(out_proof, 0, sizeof(*out_proof));
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_BAD_ARGUMENTS;
+    }
+    return cargo_receipt_resolve_origin_for_authority(
+        station->station_pubkey, cargo_pub, out_proof);
 }
 
 const char *cargo_receipt_origin_resolve_status_name(
@@ -207,13 +225,15 @@ static bool receipt_chain_prefix_matches(const cargo_receipt_chain_t *existing,
 }
 
 cargo_receipt_present_result_t cargo_receipt_present_to_ship(
+    const world_t *world,
+    int evaluating_station,
     server_player_t *sp,
     const uint8_t cargo_pub[32],
     const cargo_receipt_t *chain,
     uint8_t chain_len) {
     static const uint8_t zero32[32] = {0};
 
-    if (!sp || !cargo_pub || !chain || chain_len == 0 ||
+    if (!world || !sp || !cargo_pub || !chain || chain_len == 0 ||
         chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
         return CARGO_RECEIPT_PRESENT_REJECT_BAD_ARGS;
     }
@@ -229,29 +249,43 @@ cargo_receipt_present_result_t cargo_receipt_present_to_ship(
     if (memcmp(chain[chain_len - 1].recipient_pubkey, sp->pubkey, 32) != 0)
         return CARGO_RECEIPT_PRESENT_REJECT_RECIPIENT;
 
-    if (!ship_manifest_bootstrap(sp->ship))
-        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
-
     int idx = manifest_find(&sp->ship->manifest, cargo_pub);
     if (idx < 0) return CARGO_RECEIPT_PRESENT_REJECT_NOT_CARRIED;
 
-    ship_receipts_t *receipts = ship_get_receipts(sp->ship);
-    if (!receipts) return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
-    if ((uint16_t)idx >= receipts->count) {
-        if (!ship_receipts_reserve(receipts, sp->ship->manifest.count))
-            return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
-        while (receipts->count < sp->ship->manifest.count) {
-            if (!ship_receipts_push_empty(receipts))
-                return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
-        }
+    cargo_receipt_chain_t presented = {.len = chain_len};
+    memcpy(presented.links, chain,
+           (size_t)chain_len * sizeof(presented.links[0]));
+    cargo_receipt_station_evaluation_t trust =
+        cargo_receipt_evaluate_at_station(
+            world, evaluating_station,
+            &sp->ship->manifest.units[idx], &presented);
+    if (!trust.accepted) return CARGO_RECEIPT_PRESENT_REJECT_TRUST;
+
+    cargo_store_t staged = {0};
+    if (!cargo_store_clone(&staged, &sp->ship->cargo_store))
+        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+    uint16_t default_cap = staged.manifest.cap > 0
+        ? staged.manifest.cap : SHIP_MANIFEST_DEFAULT_CAP;
+    if (!cargo_store_bootstrap(&staged, default_cap)) {
+        cargo_store_cleanup(&staged);
+        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
     }
 
+    ship_receipts_t *receipts = cargo_store_receipts(&staged);
+    if (!receipts || (uint16_t)idx >= receipts->count) {
+        cargo_store_cleanup(&staged);
+        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+    }
     cargo_receipt_chain_t *slot = &receipts->chains[idx];
-    if (!receipt_chain_prefix_matches(slot, chain, chain_len))
+    if (!receipt_chain_prefix_matches(slot, chain, chain_len)) {
+        cargo_store_cleanup(&staged);
         return CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH;
+    }
 
     memset(slot, 0, sizeof(*slot));
     memcpy(slot->links, chain, (size_t)chain_len * sizeof(chain[0]));
     slot->len = chain_len;
+    cargo_store_cleanup(&sp->ship->cargo_store);
+    sp->ship->cargo_store = staged;
     return CARGO_RECEIPT_PRESENT_OK;
 }

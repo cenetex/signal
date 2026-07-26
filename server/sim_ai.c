@@ -26,7 +26,7 @@
 #include "chain_log.h"
 #include "sha256.h"
 #include "station_authority.h"
-#include "cargo_legality.h"
+#include "cargo_receipt_trust.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -845,6 +845,11 @@ static bool hauler_contract_matches_summary(const contract_t *ct,
                   sizeof(ct->required_parent)) == 0;
 }
 
+static const cargo_receipt_chain_t *npc_station_receipt_chain_at(
+    const station_t *station, uint16_t index);
+static const cargo_receipt_chain_t *npc_ship_receipt_chain_at(
+    const ship_t *ship, uint16_t index);
+
 static contract_t *hauler_pickup_contract_from_summary(
     world_t *w, const contract_summary_t *cs, const manifest_t *manifest) {
     if (!w || !cs || !manifest || !cs->active) return NULL;
@@ -889,6 +894,7 @@ static void npc_update_manifest_rarity_tint(npc_ship_t *npc, float dt) {
 }
 
 static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
+                                                  int source_station,
                                                   station_t *src, ship_t *dst,
                                                   const contract_t *contract,
                                                   int n) {
@@ -909,11 +915,16 @@ static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
         if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
-                                                           &src->manifest.units[i]))) {
-                idx = (int)i;
-                break;
-            }
+            const cargo_unit_t *candidate = &src->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(contract, candidate))) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, source_station, candidate,
+                    npc_station_receipt_chain_at(src, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
@@ -935,7 +946,8 @@ static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
 }
 
 static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
-                                                 ship_t *src, station_t *dst,
+                                                 ship_t *src, int dest_station,
+                                                 station_t *dst,
                                                  const contract_t *contract,
                                                  int n) {
     if (!w || !src || !dst || !contract || n <= 0) return 0;
@@ -953,11 +965,16 @@ static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
         if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
-                                                           &src->manifest.units[i]))) {
-                idx = (int)i;
-                break;
-            }
+            const cargo_unit_t *candidate = &src->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(contract, candidate))) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, dest_station, candidate,
+                    npc_ship_receipt_chain_at(src, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
@@ -4384,6 +4401,52 @@ static int npc_delivery_find_bound_ship_unit(const ship_t *ship,
     return -1;
 }
 
+static const cargo_receipt_chain_t *npc_station_receipt_chain_at(
+    const station_t *station, uint16_t index) {
+    const ship_receipts_t *receipts =
+        station_get_receipts_const(station);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static const cargo_receipt_chain_t *npc_ship_receipt_chain_at(
+    const ship_t *ship, uint16_t index) {
+    const ship_receipts_t *receipts =
+        ship_get_receipts_const(ship);
+    if (!receipts || !receipts->chains || index >= receipts->count)
+        return NULL;
+    return &receipts->chains[index];
+}
+
+static bool npc_delivery_remaining_trusted_at_station(
+    const world_t *w, const ship_t *ship,
+    const delivery_shipment_t *shipment, int station_idx) {
+    if (!w || !ship || !shipment || station_idx < 0 ||
+        station_idx >= w->station_count || station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    for (uint16_t cargo_idx = shipment->quantity_delivered;
+         cargo_idx < shipment->quantity_total; cargo_idx++) {
+        if (cargo_idx >= shipment->quantity_bound ||
+            cargo_idx >= MAX_DELIVERY_BOUND_CARGO) {
+            return false;
+        }
+        int manifest_idx = manifest_find(
+            &ship->manifest, shipment->cargo_pub[cargo_idx]);
+        if (manifest_idx < 0) return false;
+        const cargo_unit_t *unit = &ship->manifest.units[manifest_idx];
+        if (unit->commodity != shipment->commodity) return false;
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, station_idx, unit,
+                npc_ship_receipt_chain_at(
+                    ship, (uint16_t)manifest_idx));
+        if (!evaluated.accepted) return false;
+    }
+    return true;
+}
+
 static void npc_delivery_emit_receipt_memory(world_t *w,
                                              npc_ship_t *npc,
                                              station_t *dest,
@@ -4501,11 +4564,16 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     while (moved < take && ship->manifest.count < ship->manifest.cap) {
         int idx = -1;
         for (uint16_t i = 0; i < origin->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(
-                    ct, &origin->manifest.units[i]))) {
-                idx = (int)i;
-                break;
-            }
+            const cargo_unit_t *candidate = &origin->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(ct, candidate))) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, ct->target_index, candidate,
+                    npc_station_receipt_chain_at(origin, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
@@ -4525,6 +4593,8 @@ static int npc_delivery_pickup_from_origin(world_t *w,
             break;
         }
         memcpy(shipment->cargo_pub[moved], unit.pub, 32);
+        shipment->cargo_units[moved] = unit;
+        shipment->cargo_chains[moved] = outgoing;
         moved++;
         float unit_debt = station_sell_price(origin, ct->commodity);
         if (unit_debt <= 0.0f)
@@ -4574,6 +4644,11 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
         uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
             ? (uint16_t)(shipment->quantity_total - shipment->quantity_delivered)
             : 0;
+        if (remaining == 0 ||
+            !npc_delivery_remaining_trusted_at_station(
+                w, ship, shipment, station_idx)) {
+            continue;
+        }
         float shipment_payout = 0.0f;
         while (remaining > 0 && dest->manifest.count < dest->manifest.cap) {
             int idx = npc_delivery_find_bound_ship_unit(ship, shipment, c);
@@ -5540,7 +5615,7 @@ static int npc_hauler_load_from_source(world_t *w,
     if (take_units <= 0) return 0;
     if (!hauler_ship) return 0;
     int moved = hauler_load_station_units_for_contract(
-        w, npc_slot, src, hauler_ship, ct, take_units);
+        w, npc_slot, source_station, src, hauler_ship, ct, take_units);
     if (moved > 0) {
         station_finished_sync(src, commodity);
         ship_finished_sync(hauler_ship, commodity);
@@ -5704,7 +5779,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     int request = held < space_units ? held : space_units;
                     if (request > needed) request = needed;
                     int moved = hauler_unload_ship_units_for_contract(
-                        w, n, hauler_ship, dest, ct, request);
+                        w, n, hauler_ship, unload_station,
+                        dest, ct, request);
                     if (moved <= 0) continue;
                     station_finished_sync(dest, cargo);
                     ship_finished_sync(hauler_ship, cargo);
