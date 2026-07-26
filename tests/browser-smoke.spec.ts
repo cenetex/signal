@@ -81,6 +81,37 @@ type PlayerStateSnapshot = {
   docked: number;
 };
 
+type LiveTowSnapshot = {
+  sampledAt: number;
+  localPlayer: number;
+  localReady: number;
+  netAuthority: number;
+  loopback: number;
+  docked: number;
+  targetActive: number;
+  targetInterpActive: number;
+  towSnapshotReceived: number;
+  tractorActive: number;
+  compatCount: number;
+  compatOccurrences: number;
+  targetLinks: number;
+  localTargetLinks: number;
+  targetTractor: number;
+  interpTargetTractor: number;
+  towRevision: number;
+  snapshotRevision: number;
+  linkRevision: number;
+  linkState: number;
+  linkSlot: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  elapsed: number;
+  playerX: number;
+  playerY: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -528,6 +559,66 @@ async function towLifecycleState(page: Page): Promise<number> {
     if (!mod || typeof mod.ccall !== 'function') return 0;
     return mod.ccall('signal_smoke_tow_lifecycle_state', 'number', [], []);
   });
+}
+
+async function liveTowSnapshot(page: Page): Promise<LiveTowSnapshot> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (
+          name: string,
+          returnType: string,
+          argTypes: unknown[],
+          args: unknown[],
+        ) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') {
+      throw new Error('WASM ccall unavailable for live tow telemetry');
+    }
+    const raw = mod.ccall('signal_smoke_live_tow_summary', 'string', [], []);
+    return {
+      ...(JSON.parse(raw) as Omit<LiveTowSnapshot, 'sampledAt'>),
+      sampledAt: performance.now(),
+    };
+  });
+}
+
+function liveTowIsAttached(snapshot: LiveTowSnapshot): boolean {
+  return snapshot.targetLinks === 1 &&
+    snapshot.localTargetLinks === 1 &&
+    snapshot.compatCount === 1 &&
+    snapshot.compatOccurrences === 1 &&
+    snapshot.targetTractor === snapshot.localPlayer &&
+    snapshot.interpTargetTractor === snapshot.localPlayer &&
+    snapshot.linkState === 2 &&
+    snapshot.linkSlot === 0;
+}
+
+function liveTowIsReleased(snapshot: LiveTowSnapshot): boolean {
+  return snapshot.targetLinks === 0 &&
+    snapshot.localTargetLinks === 0 &&
+    snapshot.compatCount === 0 &&
+    snapshot.compatOccurrences === 0 &&
+    snapshot.targetTractor === -1 &&
+    snapshot.interpTargetTractor === -1 &&
+    snapshot.tractorActive === 0;
+}
+
+async function waitForLiveTowState(
+  page: Page,
+  predicate: (snapshot: LiveTowSnapshot) => boolean,
+  timeoutMs: number,
+  message: string,
+): Promise<LiveTowSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let last: LiveTowSnapshot | null = null;
+  while (Date.now() < deadline) {
+    last = await liveTowSnapshot(page);
+    if (predicate(last)) return last;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`${message}; last state: ${JSON.stringify(last)}`);
 }
 
 async function tapTowOnNextSample(page: Page): Promise<number> {
@@ -2130,6 +2221,213 @@ test.describe('Browser smoke tests', () => {
     await expectTouchControlsFit(page);
 
     expectNoFatalErrors(logs);
+  });
+
+  test('authoritative tow stays atomic and smooth through adverse network faults', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_TOW_ADVERSE_ASSERT,
+      'set SMOKE_TOW_ADVERSE_ASSERT=1 with the server tow fixture and adverse proxy',
+    );
+    test.setTimeout(100_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, true);
+    await canvas.click();
+
+    await expect
+      .poll(async () => {
+        const state = await liveTowSnapshot(page);
+        return state.localReady === 1 &&
+          state.netAuthority === 1 &&
+          state.loopback === 0 &&
+          state.docked === 0 &&
+          state.targetActive === 1 &&
+          state.targetInterpActive === 1 &&
+          state.towSnapshotReceived === 1 &&
+          liveTowIsReleased(state);
+      }, {
+        timeout: 15_000,
+        message: 'the isolated live fixture should arrive with one released tow target',
+      })
+      .toBe(true);
+
+    await page.keyboard.down('Space');
+    try {
+      await waitForLiveTowState(
+        page,
+        liveTowIsAttached,
+        15_000,
+        'Space hold should converge on exactly one canonical live tow link',
+      );
+      await page.waitForTimeout(500);
+    } finally {
+      await page.keyboard.up('Space');
+    }
+
+    await expect
+      .poll(async () => {
+        const state = await liveTowSnapshot(page);
+        return state.tractorActive === 0 && liveTowIsAttached(state);
+      }, {
+        timeout: 10_000,
+        message: 'key-up should stop reaching while keeping the authoritative tow latched',
+      })
+      .toBe(true);
+
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'the latched authoritative relation should render one tractor beam',
+      })
+      .toBe(1);
+    const initialBeam = await tractorDrawTelemetry(page, 0);
+    expect(initialBeam.sourceType).toBe(3);
+    expect(initialBeam.targetType).toBe(4);
+    expect(initialBeam.span).toBeGreaterThan(20);
+
+    const samples: LiveTowSnapshot[] = [];
+    await page.keyboard.down('W');
+    await page.keyboard.down('A');
+    await page.keyboard.down('Shift');
+    try {
+      for (let i = 0; i < 60; i++) {
+        if (i === 5) await page.keyboard.up('Shift');
+        if (i === 20) {
+          await page.keyboard.up('A');
+          await page.keyboard.down('D');
+        }
+        if (i === 42) await page.keyboard.up('D');
+        samples.push(await liveTowSnapshot(page));
+        await page.waitForTimeout(50);
+      }
+    } finally {
+      await page.keyboard.up('Shift');
+      await page.keyboard.up('D');
+      await page.keyboard.up('A');
+      await page.keyboard.up('W');
+    }
+
+    const nonAtomic = samples.find((sample) => !liveTowIsAttached(sample));
+    expect(nonAtomic, `tow relation changed atomically: ${JSON.stringify(nonAtomic)}`).toBeUndefined();
+
+    let pathLength = 0;
+    let maxStep = 0;
+    let maxResidual = 0;
+    let maxVelocityJump = 0;
+    let maxJerk = 0;
+    let maxElapsed = 0;
+    let maxTowDistance = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      maxElapsed = Math.max(maxElapsed, sample.elapsed);
+      maxTowDistance = Math.max(
+        maxTowDistance,
+        Math.hypot(sample.x - sample.playerX, sample.y - sample.playerY),
+      );
+      if (i === 0) continue;
+      const previous = samples[i - 1];
+      const dt = Math.max(0.001, (sample.sampledAt - previous.sampledAt) / 1000);
+      const step = Math.hypot(sample.x - previous.x, sample.y - previous.y);
+      const previousSpeed = Math.hypot(previous.vx, previous.vy);
+      const speed = Math.hypot(sample.vx, sample.vy);
+      const residual = Math.abs(step - (previousSpeed + speed) * 0.5 * dt);
+      const velocityJump = Math.hypot(sample.vx - previous.vx, sample.vy - previous.vy);
+      pathLength += step;
+      maxStep = Math.max(maxStep, step);
+      maxResidual = Math.max(maxResidual, residual);
+      maxVelocityJump = Math.max(maxVelocityJump, velocityJump);
+      maxJerk = Math.max(maxJerk, velocityJump / dt);
+    }
+    const lastSample = samples[samples.length - 1];
+    const displacement = Math.hypot(
+      lastSample.x - samples[0].x,
+      lastSample.y - samples[0].y,
+    );
+    const motion = {
+      samples: samples.length,
+      pathLength,
+      displacement,
+      maxStep,
+      maxResidual,
+      maxVelocityJump,
+      maxJerk,
+      maxElapsed,
+      maxTowDistance,
+    };
+    console.log(`[tow-adverse] ${JSON.stringify(motion)}`);
+
+    expect(pathLength).toBeGreaterThan(250);
+    expect(displacement).toBeGreaterThan(200);
+    expect(maxStep).toBeLessThanOrEqual(35);
+    expect(maxResidual).toBeLessThanOrEqual(18);
+    expect(maxVelocityJump).toBeLessThanOrEqual(100);
+    expect(maxJerk).toBeLessThanOrEqual(2_500);
+    expect(maxElapsed).toBeLessThanOrEqual(0.5);
+    expect(maxTowDistance).toBeLessThan(180);
+
+    await page.waitForTimeout(800);
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(100);
+    await page.keyboard.up('Space');
+    await expect
+      .poll(async () => liveTowIsReleased(await liveTowSnapshot(page)), {
+        timeout: 15_000,
+        message: 'a distinct tap should clear canonical, projected, and rendered tow state',
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'the tractor beam should disappear after authoritative release',
+      })
+      .toBe(0);
+
+    await page.keyboard.down('Space');
+    try {
+      await expect
+        .poll(async () => liveTowIsAttached(await liveTowSnapshot(page)), {
+          timeout: 15_000,
+          message: 'the just-released target should immediately reattach exactly once',
+        })
+        .toBe(true);
+      await page.waitForTimeout(350);
+    } finally {
+      await page.keyboard.up('Space');
+    }
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'the reattached target should restore exactly one visible beam',
+      })
+      .toBe(1);
+
+    await expect
+      .poll(async () => {
+        const state = await liveTowSnapshot(page);
+        return state.tractorActive === 0 && liveTowIsAttached(state);
+      }, {
+        timeout: 10_000,
+        message: 'reattach key-up should latch one relation before final release',
+      })
+      .toBe(true);
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(100);
+    await page.keyboard.up('Space');
+    await expect
+      .poll(async () => liveTowIsReleased(await liveTowSnapshot(page)), {
+        timeout: 15_000,
+        message: 'final release should leave no stale canonical link, compatibility entry, or target binding',
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'final release should leave no stale tractor beam',
+      })
+      .toBe(0);
+
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
   test('high-latency multiplayer correction telemetry stays bounded', async ({ page }) => {

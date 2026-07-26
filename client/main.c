@@ -3431,6 +3431,108 @@ int signal_smoke_tow_lifecycle_state(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+const char *signal_smoke_live_tow_summary(void) {
+    static char summary[768];
+    const int target_idx = MAX_ASTEROIDS - 1;
+    const asteroid_t *target = &g.world.asteroids[target_idx];
+    const asteroid_t *target_interp = &g.asteroid_interp.curr[target_idx];
+    int player_idx = g.local_player_slot;
+    const server_player_t *sp =
+        (player_idx >= 0 && player_idx < MAX_PLAYERS)
+            ? &g.world.players[player_idx]
+            : NULL;
+
+    int compat_occurrences = 0;
+    int compat_count = 0;
+    int target_links = 0;
+    int local_target_links = 0;
+    int link_state = 0;
+    int link_slot = -1;
+    uint32_t link_revision = 0;
+    bool tractor_active = false;
+    bool docked = true;
+    bool local_ready = false;
+    float player_x = 0.0f;
+    float player_y = 0.0f;
+
+    if (sp && sp->ship) {
+        local_ready = sp->connected;
+        docked = sp->docked;
+        tractor_active = sp->ship->tractor_active;
+        compat_count = sp->ship->towed_count;
+        player_x = sp->ship->pos.x;
+        player_y = sp->ship->pos.y;
+        for (int i = 0; i < 10; i++) {
+            if (sp->ship->towed_fragments[i] == target_idx)
+                compat_occurrences++;
+        }
+    }
+
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &g.world.tow_links[i];
+        if (!link->active ||
+            link->target.kind != ENTITY_KIND_ASTEROID ||
+            link->target.index != target_idx ||
+            link->target.part != -1) {
+            continue;
+        }
+        target_links++;
+        if (sp &&
+            link->source.kind == ENTITY_KIND_SHIP &&
+            link->source.index == WORLD_PLAYER_SHIP_BASE + player_idx &&
+            link->source.part == -1 &&
+            link->profile == TOW_PROFILE_SHIP_FRAGMENT) {
+            local_target_links++;
+            link_state = link->state;
+            link_slot = link->slot;
+            link_revision = link->revision;
+        }
+    }
+
+    snprintf(
+        summary, sizeof(summary),
+        "{\"localPlayer\":%d,\"localReady\":%d,"
+        "\"netAuthority\":%d,\"loopback\":%d,"
+        "\"docked\":%d,\"targetActive\":%d,\"targetInterpActive\":%d,"
+        "\"towSnapshotReceived\":%d,\"tractorActive\":%d,"
+        "\"compatCount\":%d,\"compatOccurrences\":%d,"
+        "\"targetLinks\":%d,\"localTargetLinks\":%d,"
+        "\"targetTractor\":%d,\"interpTargetTractor\":%d,"
+        "\"towRevision\":%u,\"snapshotRevision\":%u,"
+        "\"linkRevision\":%u,\"linkState\":%d,\"linkSlot\":%d,"
+        "\"x\":%.6f,\"y\":%.6f,\"vx\":%.6f,\"vy\":%.6f,"
+        "\"elapsed\":%.6f,\"playerX\":%.6f,\"playerY\":%.6f}",
+        player_idx,
+        local_ready ? 1 : 0,
+        g.net_authority_enabled ? 1 : 0,
+        net_is_loopback() ? 1 : 0,
+        docked ? 1 : 0,
+        target->active ? 1 : 0,
+        target_interp->active ? 1 : 0,
+        g.tow_snapshot_received ? 1 : 0,
+        tractor_active ? 1 : 0,
+        compat_count,
+        compat_occurrences,
+        target_links,
+        local_target_links,
+        asteroid_tractor_player(target),
+        asteroid_tractor_player(target_interp),
+        g.world.tow_revision,
+        g.tow_snapshot_revision,
+        link_revision,
+        link_state,
+        link_slot,
+        target->pos.x,
+        target->pos.y,
+        target->vel.x,
+        target->vel.y,
+        g.asteroid_interp.elapsed[target_idx],
+        player_x,
+        player_y);
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
     bool saved_net_authority_enabled = g.net_authority_enabled;

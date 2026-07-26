@@ -1222,6 +1222,82 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     sp->replication->fracture_resolved_sent_cursor = 0;
 }
 
+/*
+ * Browser-only adverse-network fixture for #617.  The latency suite gives
+ * each run an isolated data directory and opts in explicitly, so production
+ * sessions never enter this path.  Seed the target before the first
+ * authoritative bundle: that makes attach, motion, release, and reattach use
+ * the real WebSocket/session/replication path rather than a client-side
+ * loopback mutation.
+ */
+static void server_apply_tow_smoke_fixture(server_player_t *sp) {
+    const char *enabled = getenv("SIGNAL_TOW_SMOKE_FIXTURE");
+    if (!enabled || strcmp(enabled, "1") != 0 || !sp || !sp->ship)
+        return;
+
+    const int target_idx = MAX_ASTEROIDS - 1;
+    const vec2 ship_pos = { 2400.0f, -2400.0f };
+    const vec2 target_pos = { ship_pos.x - 90.0f, ship_pos.y };
+    const float clear_radius_sq = 400.0f * 400.0f;
+
+    world_tow_links_clear_source(&world, sp->ship_ref);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &world.asteroids[i];
+        if (!a->active || i == target_idx ||
+            v2_dist_sq(a->pos, ship_pos) > clear_radius_sq) {
+            continue;
+        }
+        world_asteroid_clear_tractor(&world, i);
+        memset(a, 0, sizeof(*a));
+        world.asteroid_generation_live[i] = false;
+    }
+
+    world_asteroid_clear_tractor(&world, target_idx);
+    memset(&world.asteroids[target_idx], 0,
+           sizeof(world.asteroids[target_idx]));
+    world.asteroid_generation_live[target_idx] = false;
+    world.asteroids[target_idx] = (asteroid_t){
+        .active = true,
+        .fracture_child = true,
+        .tier = ASTEROID_TIER_S,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .pos = target_pos,
+        .vel = { 0.0f, 0.0f },
+        .hp = 8.0f,
+        .max_hp = 8.0f,
+        .ore = 3.0f,
+        .max_ore = 3.0f,
+        .radius = 14.0f,
+        .grade = MINING_GRADE_COMMON,
+        .net_dirty = true,
+    };
+    (void)world_entity_ref_for_slot(
+        &world, ENTITY_KIND_ASTEROID, target_idx, -1);
+
+    server_player_clear_transient_input(sp);
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->docking_approach = false;
+    sp->in_dock_range = false;
+    sp->nearby_station = -1;
+    sp->dock_berth = -1;
+    sp->ship->pos = ship_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
+    sp->ship->hull = ship_max_hull(sp->ship);
+    sp->ship->tractor_active = false;
+    sp->ship->towed_count = 0;
+    sp->ship->towed_pod_count = 0;
+    sp->ship->towed_scaffold = -1;
+    memset(sp->ship->towed_fragments, -1,
+           sizeof(sp->ship->towed_fragments));
+    memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+    sp->replication->force_authoritative_resync = true;
+
+    printf("[server] seeded adverse-network tow fixture for player %d\n",
+           sp->id);
+}
+
 static void force_player_authoritative_resync(server_player_t *sp) {
     if (sp) sp->replication->force_authoritative_resync = true;
 }
@@ -3003,6 +3079,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             finalize_verified_pubkey_identity(c, pid, now,
                                               reattached_live_state);
             server_player_t *ready_sp = &world.players[pid];
+            server_apply_tow_smoke_fixture(ready_sp);
             server_player_reset_input_stream(ready_sp);
             invalidate_player_authoritative_caches(ready_sp);
             (void)server_emit_authoritative_player_state_snapshot(

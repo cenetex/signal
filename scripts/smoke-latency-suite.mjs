@@ -12,6 +12,7 @@ const isWindows = process.platform === 'win32';
 const signalServerBin = path.join(repoRoot, 'build', isWindows ? 'signal_server.exe' : 'signal_server');
 const npxBin = isWindows ? 'npx.cmd' : 'npx';
 const configuredPlaywrightBin = process.env.SIGNAL_PLAYWRIGHT_BIN || '';
+const requestedCase = process.env.SIGNAL_LATENCY_SUITE_CASE || '';
 
 const children = [];
 const tempDirs = [];
@@ -201,20 +202,45 @@ async function runLatencyCase({
   grep,
   envFlag,
   httpPort,
-  serverPort,
   proxyArgs,
+  serverEnv = {},
 }) {
-  const proxy = startBackground(name, process.execPath, [
-    'scripts/ws-latency-proxy.mjs',
-    '--listen=127.0.0.1:0',
-    `--upstream=ws://127.0.0.1:${serverPort}/ws`,
-    ...proxyArgs,
-  ]);
-  const proxyPort = await waitForProxy(proxy);
-  const smokeUrl =
-    `http://127.0.0.1:${httpPort}/play.html?server=ws://127.0.0.1:${proxyPort}/ws`;
+  if (requestedCase && !name.includes(requestedCase)) {
+    log(`skipping ${name} (SIGNAL_LATENCY_SUITE_CASE=${requestedCase})`);
+    return;
+  }
+  const serverPort = await freePort();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'signal-latency-smoke-'));
+  tempDirs.push(dataDir);
+  log(`starting ${name} signal_server on :${serverPort}`);
+  const server = startBackground(`${name} signal_server`, signalServerBin, [], {
+    env: {
+      PORT: String(serverPort),
+      SIGNAL_DATA_DIR: dataDir,
+      SIGNAL_WORLD_SEED: '2037',
+      SIGNAL_WORLD_SEQ: '1',
+      SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET: '1',
+      ...serverEnv,
+    },
+  });
+  await waitForHttp(
+    `http://127.0.0.1:${serverPort}/health`,
+    `${name} signal_server`,
+    [server],
+    30000,
+  );
 
+  let proxy;
   try {
+    proxy = startBackground(name, process.execPath, [
+      'scripts/ws-latency-proxy.mjs',
+      '--listen=127.0.0.1:0',
+      `--upstream=ws://127.0.0.1:${serverPort}/ws`,
+      ...proxyArgs,
+    ]);
+    const proxyPort = await waitForProxy(proxy);
+    const smokeUrl =
+      `http://127.0.0.1:${httpPort}/play.html?server=ws://127.0.0.1:${proxyPort}/ws`;
     const command = configuredPlaywrightBin || npxBin;
     const commandPrefix = configuredPlaywrightBin ? [] : ['playwright'];
     await runForeground(`running ${name}`, command, [
@@ -230,26 +256,12 @@ async function runLatencyCase({
     });
   } finally {
     await stopProcess(proxy);
+    await stopProcess(server);
   }
 }
 
 await withCleanup(async () => {
-  const serverPort = await freePort();
   const httpPort = await freePort();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'signal-latency-smoke-'));
-  tempDirs.push(dataDir);
-
-  log(`starting signal_server on :${serverPort}`);
-  const server = startBackground('signal_server', signalServerBin, [], {
-    env: {
-      PORT: String(serverPort),
-      SIGNAL_DATA_DIR: dataDir,
-      SIGNAL_WORLD_SEED: '2037',
-      SIGNAL_WORLD_SEQ: '1',
-      SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET: '1',
-    },
-  });
-  await waitForHttp(`http://127.0.0.1:${serverPort}/health`, 'signal_server', [server], 30000);
 
   log(`starting static build-web server on :${httpPort}`);
   const staticServer = startBackground('static-http', 'python3', [
@@ -261,14 +273,18 @@ await withCleanup(async () => {
     '--directory',
     path.join(repoRoot, 'build-web'),
   ]);
-  await waitForHttp(`http://127.0.0.1:${httpPort}/play.html`, 'static server', [server, staticServer], 10000);
+  await waitForHttp(
+    `http://127.0.0.1:${httpPort}/play.html`,
+    'static server',
+    [staticServer],
+    10000,
+  );
 
   await runLatencyCase({
     name: 'high-latency proxy smoke',
     grep: 'high-latency',
     envFlag: 'SMOKE_LATENCY_ASSERT',
     httpPort,
-    serverPort,
     proxyArgs: [
       '--client-ms=450',
       '--server-ms=450',
@@ -281,7 +297,25 @@ await withCleanup(async () => {
     grep: 'high-latency',
     envFlag: 'SMOKE_LATENCY_ASSERT',
     httpPort,
-    serverPort,
+    proxyArgs: [
+      '--client-ms=160',
+      '--server-ms=160',
+      '--jitter-ms=90',
+      '--seed=2037',
+      '--server-drop-every=11',
+      '--server-duplicate-every=7',
+      '--server-reorder-every=5',
+    ],
+  });
+
+  await runLatencyCase({
+    name: 'authoritative tow adverse-network smoke',
+    grep: 'authoritative tow stays atomic',
+    envFlag: 'SMOKE_TOW_ADVERSE_ASSERT',
+    httpPort,
+    serverEnv: {
+      SIGNAL_TOW_SMOKE_FIXTURE: '1',
+    },
     proxyArgs: [
       '--client-ms=160',
       '--server-ms=160',
@@ -298,7 +332,6 @@ await withCleanup(async () => {
     grep: 'low-ping high-ack',
     envFlag: 'SMOKE_ACK_LAG_ASSERT',
     httpPort,
-    serverPort,
     proxyArgs: [
       '--client-ms=20',
       '--server-ms=20',
