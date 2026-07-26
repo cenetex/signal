@@ -28,8 +28,10 @@
 #define ASTEROID_AMBIENT_DRAG 0.42f
 #define ASTEROID_RENDER_CORRECTION_CUTOFF_SEC \
     (ASTEROID_RENDER_CORRECTION_SEC * 4.0f)
-#define NPC_RENDER_CORRECTION_SEC 0.18f
+#define NPC_RENDER_CORRECTION_SEC 0.50f
 #define NPC_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
+#define NPC_RENDER_CORRECTION_CUTOFF_SEC \
+    (NPC_RENDER_CORRECTION_SEC * 4.0f)
 #define REMOTE_PLAYER_RENDER_CORRECTION_SEC 0.18f
 #define REMOTE_PLAYER_RENDER_EXTRAPOLATE_MAX_SEC 2.25f
 #define SCAFFOLD_RENDER_CORRECTION_SEC 0.18f
@@ -711,12 +713,32 @@ static client_npc_render_state_t npc_render_state_at(int slot, float elapsed) {
     out.pos.y += curr->vel.y * elapsed;
 
     if (prev->active) {
+        /* Preserve both position and velocity across a late sparse update,
+         * then critically damp the visual offset. A position-only lerp
+         * visibly kicks tractor emitters after a long extrapolation gap. */
+        float omega = 4.0f / NPC_RENDER_CORRECTION_SEC;
+        float decay = expf(-omega * elapsed);
+        vec2 pos_error = v2_sub(prev->pos, curr->pos);
+        vec2 vel_error = v2_sub(prev->vel, curr->vel);
+        vec2 c = v2_add(vel_error, v2_scale(pos_error, omega));
+        vec2 offset = v2_scale(
+            v2_add(pos_error, v2_scale(c, elapsed)), decay);
+        vec2 offset_vel = v2_scale(
+            v2_sub(vel_error, v2_scale(c, omega * elapsed)), decay);
+        out.pos = v2_add(out.pos, offset);
+        out.vel = v2_add(out.vel, offset_vel);
         float blend = clampf(elapsed / NPC_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
-        out.pos.x = lerpf(prev->pos.x, out.pos.x, blend);
-        out.pos.y = lerpf(prev->pos.y, out.pos.y, blend);
         out.angle = lerp_angle(prev->angle, out.angle, blend);
     }
     return out;
+}
+
+static void npc_interp_begin_update(int slot) {
+    if (slot < 0 || slot >= MAX_NPC_SHIPS) return;
+    float elapsed = clampf(g.npc_interp.elapsed[slot], 0.0f,
+                           NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+    g.npc_interp.prev[slot] = npc_render_state_at(slot, elapsed);
+    g.npc_interp.elapsed[slot] = 0.0f;
 }
 
 static scaffold_t scaffold_render_state_at(int slot, float elapsed) {
@@ -736,6 +758,15 @@ static scaffold_t scaffold_render_state_at(int slot, float elapsed) {
         out.pos.y = lerpf(prev->pos.y, out.pos.y, blend);
     }
     return out;
+}
+
+static void scaffold_interp_begin_update(int slot) {
+    if (slot < 0 || slot >= MAX_SCAFFOLDS) return;
+    float elapsed = clampf(g.scaffold_interp.elapsed[slot], 0.0f,
+                           SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
+    g.scaffold_interp.prev[slot] =
+        scaffold_render_state_at(slot, elapsed);
+    g.scaffold_interp.elapsed[slot] = 0.0f;
 }
 
 static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
@@ -809,14 +840,6 @@ static bool net_local_player_towing_asteroid(int idx) {
         if (sp->ship->towed_fragments[t] == idx) return true;
     }
     return false;
-}
-
-static float net_prediction_future_elapsed(float t, float interval,
-                                           float dt, float max_elapsed) {
-    if (!isfinite(interval) || interval <= 0.0f) interval = 0.01f;
-    float elapsed = (isfinite(t) && t > 0.0f) ? t * interval : 0.0f;
-    if (isfinite(dt) && dt > 0.0f) elapsed += dt;
-    return clampf(elapsed, 0.0f, max_elapsed);
 }
 
 static void net_adopt_local_asteroid_prediction_base(int idx, float elapsed,
@@ -931,11 +954,14 @@ void net_adopt_local_tow_prediction(float dt) {
         net_adopt_local_cargo_pod_prediction(idx, elapsed);
     }
 
-    float scaffold_elapsed = net_prediction_future_elapsed(
-        g.scaffold_interp.t, g.scaffold_interp.interval, dt,
-        SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
-    net_adopt_local_scaffold_prediction(sp->ship->towed_scaffold,
-                                        scaffold_elapsed);
+    int scaffold_idx = sp->ship->towed_scaffold;
+    if (scaffold_idx >= 0 && scaffold_idx < MAX_SCAFFOLDS) {
+        float elapsed = g.scaffold_interp.elapsed[scaffold_idx];
+        if (isfinite(dt) && dt > 0.0f) elapsed += dt;
+        elapsed = clampf(elapsed, 0.0f,
+                         SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
+        net_adopt_local_scaffold_prediction(scaffold_idx, elapsed);
+    }
 }
 
 void net_advance_asteroid_interpolation(float dt) {
@@ -960,6 +986,43 @@ void net_advance_asteroid_interpolation(float dt) {
         if (prev->active &&
             elapsed >= ASTEROID_RENDER_CORRECTION_CUTOFF_SEC)
             prev->active = false;
+    }
+}
+
+void net_advance_npc_interpolation(float dt) {
+    if (!isfinite(dt) || dt <= 0.0f) return;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        client_npc_render_state_t *curr = &g.npc_interp.curr[i];
+        client_npc_render_state_t *prev = &g.npc_interp.prev[i];
+        if (!curr->active) {
+            g.npc_interp.elapsed[i] = 0.0f;
+            prev->active = false;
+            continue;
+        }
+        float elapsed = g.npc_interp.elapsed[i] + dt;
+        g.npc_interp.elapsed[i] = clampf(
+            elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
+        if (prev->active &&
+            g.npc_interp.elapsed[i] >=
+                NPC_RENDER_CORRECTION_CUTOFF_SEC) {
+            prev->active = false;
+        }
+    }
+}
+
+void net_advance_scaffold_interpolation(float dt) {
+    if (!isfinite(dt) || dt <= 0.0f) return;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        scaffold_t *curr = &g.scaffold_interp.curr[i];
+        scaffold_t *prev = &g.scaffold_interp.prev[i];
+        if (!curr->active) {
+            g.scaffold_interp.elapsed[i] = 0.0f;
+            prev->active = false;
+            continue;
+        }
+        float elapsed = g.scaffold_interp.elapsed[i] + dt;
+        g.scaffold_interp.elapsed[i] = clampf(
+            elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
     }
 }
 
@@ -1055,11 +1118,9 @@ void reset_remote_dynamic_sync(void) {
         memset(&g.world.npc_ships[i], 0, sizeof(g.world.npc_ships[i]));
     }
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
-    g.npc_interp.interval = 0.1f;
 
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
-    g.scaffold_interp.interval = 0.1f;
 
     memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
@@ -1259,15 +1320,6 @@ static int16_t remote_npc_asteroid_index(int value) {
 }
 
 void apply_remote_npcs(const NetNpcState* npcs, int count) {
-    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++)
-        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
-
-    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
-    g.npc_interp.t = 0.0f;
-
     bool received[MAX_NPC_SHIPS];
     memset(received, 0, sizeof(received));
 
@@ -1276,6 +1328,7 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         if (idx >= MAX_NPC_SHIPS) continue;
         received[idx] = true;
 
+        npc_interp_begin_update(idx);
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
@@ -1303,7 +1356,8 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
     }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (!received[i]) {
+        if (!received[i] && g.npc_interp.curr[i].active) {
+            npc_interp_begin_update(i);
             g.npc_interp.curr[i].active = false;
         }
     }
@@ -1312,21 +1366,13 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
 }
 
 void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
-    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++)
-        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
-
-    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
-    g.npc_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        npc_interp_begin_update(idx);
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
@@ -1341,21 +1387,13 @@ void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
 void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
     if (!npcs || count <= 0) return;
 
-    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++)
-        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
-
-    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
-    g.npc_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        npc_interp_begin_update(idx);
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
     }
@@ -1364,21 +1402,13 @@ void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
 void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
     if (!npcs || count <= 0) return;
 
-    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++)
-        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
-
-    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
-    g.npc_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        npc_interp_begin_update(idx);
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->angle = npcs[i].angle;
@@ -1388,21 +1418,13 @@ void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
 void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count) {
     if (!npcs || count <= 0) return;
 
-    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
-    npc_elapsed = clampf(npc_elapsed, 0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_NPC_SHIPS; i++)
-        g.npc_interp.prev[i] = npc_render_state_at(i, npc_elapsed);
-
-    float packet_interval = clampf(npc_elapsed, 0.05f, 0.2f);
-    g.npc_interp.interval = lerpf(g.npc_interp.interval, packet_interval, 0.3f);
-    g.npc_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = npcs[i].index;
         if (idx >= MAX_NPC_SHIPS) continue;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        npc_interp_begin_update(idx);
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->vel.x = npcs[i].vx;
@@ -1915,15 +1937,6 @@ void apply_remote_station_diag(uint8_t station_id, const uint8_t *diag,
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
-    float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_SCAFFOLDS; i++)
-        g.scaffold_interp.prev[i] = scaffold_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
-    g.scaffold_interp.interval = lerpf(g.scaffold_interp.interval, packet_interval, 0.3f);
-    g.scaffold_interp.t = 0.0f;
-
     bool seen[MAX_SCAFFOLDS] = { false };
     const NetProtocolInfo *info = net_protocol_info();
     bool replacement_snapshot = !info ||
@@ -1931,6 +1944,7 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_SCAFFOLDS) continue;
+        scaffold_interp_begin_update(idx);
         scaffold_t *sc = &g.scaffold_interp.curr[idx];
         sc->active = true;
         sc->state = (scaffold_state_t)received[i].state;
@@ -1949,7 +1963,10 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     }
     if (replacement_snapshot) {
         for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-            if (!seen[i]) g.scaffold_interp.curr[i].active = false;
+            if (!seen[i] && g.scaffold_interp.curr[i].active) {
+                scaffold_interp_begin_update(i);
+                g.scaffold_interp.curr[i].active = false;
+            }
         }
     }
 }
@@ -1957,19 +1974,10 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
 void apply_remote_scaffold_remove(const uint8_t* indices, int count) {
     if (!indices || count <= 0) return;
 
-    float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_SCAFFOLDS; i++)
-        g.scaffold_interp.prev[i] = scaffold_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.2f);
-    g.scaffold_interp.interval = lerpf(g.scaffold_interp.interval,
-                                       packet_interval, 0.3f);
-    g.scaffold_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = indices[i];
         if (idx >= MAX_SCAFFOLDS) continue;
+        scaffold_interp_begin_update(idx);
         g.scaffold_interp.curr[idx].active = false;
     }
 }
@@ -1978,21 +1986,12 @@ void apply_remote_scaffold_motion(const NetScaffoldMotionState* received,
                                   int count) {
     if (!received || count <= 0) return;
 
-    float elapsed = g.scaffold_interp.t * g.scaffold_interp.interval;
-    elapsed = clampf(elapsed, 0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < MAX_SCAFFOLDS; i++)
-        g.scaffold_interp.prev[i] = scaffold_render_state_at(i, elapsed);
-
-    float packet_interval = clampf(elapsed, 0.05f, 0.3f);
-    g.scaffold_interp.interval = lerpf(g.scaffold_interp.interval,
-                                       packet_interval, 0.3f);
-    g.scaffold_interp.t = 0.0f;
-
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_SCAFFOLDS) continue;
         scaffold_t *sc = &g.scaffold_interp.curr[idx];
         if (!sc->active) continue;
+        scaffold_interp_begin_update(idx);
         sc->pos = v2(received[i].pos_x, received[i].pos_y);
         sc->vel = v2(received[i].vel_x, received[i].vel_y);
     }
@@ -3008,8 +3007,6 @@ void interpolate_world_for_render(void) {
             i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
     }
 
-    float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,
-                               0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const client_npc_render_state_t *curr = &g.npc_interp.curr[i];
         const client_npc_render_state_t *prev = &g.npc_interp.prev[i];
@@ -3021,7 +3018,8 @@ void interpolate_world_for_render(void) {
             }
             continue;
         }
-        client_npc_render_state_t render = npc_render_state_at(i, npc_elapsed);
+        client_npc_render_state_t render = npc_render_state_at(
+            i, g.npc_interp.elapsed[i]);
         if (!g.world.npc_ships[i].ship &&
             !world_npc_ship_slot_activate(&g.world, i)) {
             continue;
@@ -3046,8 +3044,6 @@ void interpolate_world_for_render(void) {
         dst->ship->towed_scaffold = render.towed_scaffold;
     }
 
-    float scaffold_elapsed = clampf(g.scaffold_interp.t * g.scaffold_interp.interval,
-                                    0.0f, SCAFFOLD_RENDER_EXTRAPOLATE_MAX_SEC);
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         const scaffold_t *curr = &g.scaffold_interp.curr[i];
         const scaffold_t *prev = &g.scaffold_interp.prev[i];
@@ -3056,7 +3052,8 @@ void interpolate_world_for_render(void) {
             continue;
         }
         scaffold_t *dst = &g.world.scaffolds[i];
-        *dst = scaffold_render_state_at(i, scaffold_elapsed);
+        *dst = scaffold_render_state_at(
+            i, g.scaffold_interp.elapsed[i]);
     }
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {

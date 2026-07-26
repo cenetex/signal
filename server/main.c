@@ -1396,6 +1396,113 @@ static void server_apply_station_tow_smoke_fixture(server_player_t *sp) {
            sp->id);
 }
 
+/*
+ * Exercise the NPC owner and scaffold target paths together.  The fixture
+ * starts one live NPC in its normal scaffold delivery state, so the same AI
+ * tow physics, canonical relation, compact NPC/scaffold streams, client
+ * interpolation, and remote tether renderer used by production all run.
+ */
+static void server_apply_npc_scaffold_tow_smoke_fixture(
+    server_player_t *sp) {
+    const char *enabled =
+        getenv("SIGNAL_NPC_SCAFFOLD_TOW_SMOKE_FIXTURE");
+    if (!enabled || strcmp(enabled, "1") != 0 || !sp || !sp->ship)
+        return;
+
+    int npc_idx = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (world.npc_ships[i].active && world.npc_ships[i].ship) {
+            npc_idx = i;
+            break;
+        }
+    }
+    if (npc_idx < 0) return;
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (world.npc_ships[i].active && world.npc_ships[i].ship)
+            world_tow_links_clear_source(
+                &world, world.npc_ships[i].ship_ref);
+    }
+    world_tow_links_clear_source(&world, sp->ship_ref);
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (world.scaffolds[i].active)
+            world_scaffold_clear_tractor(&world, i);
+        memset(&world.scaffolds[i], 0, sizeof(world.scaffolds[i]));
+        world.scaffold_generation_live[i] = false;
+    }
+
+    const int station_idx = 0;
+    const int target_idx = MAX_SCAFFOLDS - 1;
+    const vec2 npc_pos =
+        v2_add(world.stations[station_idx].pos, v2(2400.0f, -1400.0f));
+    const vec2 scaffold_pos = v2_add(npc_pos, v2(110.0f, 0.0f));
+    const vec2 player_pos = v2_add(npc_pos, v2(0.0f, 180.0f));
+    const float clear_radius_sq = 450.0f * 450.0f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &world.asteroids[i];
+        if (!a->active || v2_dist_sq(a->pos, npc_pos) > clear_radius_sq)
+            continue;
+        world_asteroid_clear_tractor(&world, i);
+        memset(a, 0, sizeof(*a));
+        world.asteroid_generation_live[i] = false;
+    }
+
+    scaffold_t *scaffold = &world.scaffolds[target_idx];
+    *scaffold = (scaffold_t){
+        .active = true,
+        .module_type = MODULE_FRAME_PRESS,
+        .state = SCAFFOLD_TOWING,
+        .owner = -1,
+        .pos = scaffold_pos,
+        .vel = { 0.0f, 0.0f },
+        .radius = 32.0f,
+        .spin = 0.3f,
+        .placed_station = -1,
+        .placed_ring = -1,
+        .placed_slot = -1,
+        .built_at_station = -1,
+    };
+    (void)world_entity_ref_for_slot(
+        &world, ENTITY_KIND_SCAFFOLD, target_idx, -1);
+
+    npc_ship_t *npc = &world.npc_ships[npc_idx];
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->state_timer = 0.0f;
+    npc->home_station = station_idx;
+    npc->dest_station = station_idx;
+    npc->target_asteroid = -1;
+    npc->pickup_station = -1;
+    npc->pickup_commodity = COMMODITY_COUNT;
+    npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    npc->ship->pos = npc_pos;
+    npc->ship->vel = v2(0.0f, 0.0f);
+    npc->ship->angle = PI_F;
+    npc->ship->hull = npc_max_hull(npc);
+    if (!world_scaffold_set_npc_tractor(
+            &world, target_idx, npc_idx)) {
+        memset(scaffold, 0, sizeof(*scaffold));
+        world.scaffold_generation_live[target_idx] = false;
+        return;
+    }
+
+    server_player_clear_transient_input(sp);
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->docking_approach = false;
+    sp->in_dock_range = false;
+    sp->nearby_station = -1;
+    sp->dock_berth = -1;
+    sp->ship->pos = player_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
+    sp->ship->hull = ship_max_hull(sp->ship);
+    sp->ship->tractor_active = false;
+    sp->replication->force_authoritative_resync = true;
+
+    printf("[server] seeded adverse-network NPC scaffold tow fixture "
+           "for player %d with NPC %d\n", sp->id, npc_idx);
+}
+
 static void force_player_authoritative_resync(server_player_t *sp) {
     if (sp) sp->replication->force_authoritative_resync = true;
 }
@@ -3179,6 +3286,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             server_player_t *ready_sp = &world.players[pid];
             server_apply_tow_smoke_fixture(ready_sp);
             server_apply_station_tow_smoke_fixture(ready_sp);
+            server_apply_npc_scaffold_tow_smoke_fixture(ready_sp);
             server_player_reset_input_stream(ready_sp);
             invalidate_player_authoritative_caches(ready_sp);
             (void)server_emit_authoritative_player_state_snapshot(

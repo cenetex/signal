@@ -134,6 +134,32 @@ type LiveStationTowSnapshot = {
   elapsed: number;
 };
 
+type LiveNpcScaffoldTowSnapshot = {
+  sampledAt: number;
+  targetActive: number;
+  targetInterpActive: number;
+  towSnapshotReceived: number;
+  npc: number;
+  interpNpc: number;
+  npcActive: number;
+  interpNpcActive: number;
+  targetLinks: number;
+  npcTargetLinks: number;
+  npcTowedScaffold: number;
+  interpNpcTowedScaffold: number;
+  towRevision: number;
+  snapshotRevision: number;
+  linkRevision: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  npcX: number;
+  npcY: number;
+  elapsed: number;
+  npcElapsed: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -634,6 +660,36 @@ async function liveStationTowSnapshot(page: Page): Promise<LiveStationTowSnapsho
   });
 }
 
+async function liveNpcScaffoldTowSnapshot(
+  page: Page,
+): Promise<LiveNpcScaffoldTowSnapshot> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (
+          name: string,
+          returnType: string,
+          argTypes: unknown[],
+          args: unknown[],
+        ) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') {
+      throw new Error('WASM ccall unavailable for live NPC scaffold telemetry');
+    }
+    const raw = mod.ccall(
+      'signal_smoke_live_npc_scaffold_tow_summary',
+      'string',
+      [],
+      [],
+    );
+    return {
+      ...(JSON.parse(raw) as Omit<LiveNpcScaffoldTowSnapshot, 'sampledAt'>),
+      sampledAt: performance.now(),
+    };
+  });
+}
+
 function liveTowIsAttached(snapshot: LiveTowSnapshot): boolean {
   return snapshot.targetLinks === 1 &&
     snapshot.localTargetLinks === 1 &&
@@ -656,6 +712,22 @@ function liveStationTowIsBound(snapshot: LiveStationTowSnapshot): boolean {
     snapshot.targetLinks === 1 &&
     snapshot.moduleTargetLinks === 1 &&
     snapshot.interactionMatches === 1;
+}
+
+function liveNpcScaffoldTowIsBound(
+  snapshot: LiveNpcScaffoldTowSnapshot,
+): boolean {
+  return snapshot.targetActive === 1 &&
+    snapshot.targetInterpActive === 1 &&
+    snapshot.towSnapshotReceived === 1 &&
+    snapshot.npc >= 0 &&
+    snapshot.interpNpc === snapshot.npc &&
+    snapshot.npcActive === 1 &&
+    snapshot.interpNpcActive === 1 &&
+    snapshot.targetLinks === 1 &&
+    snapshot.npcTargetLinks === 1 &&
+    snapshot.npcTowedScaffold >= 0 &&
+    snapshot.interpNpcTowedScaffold === snapshot.npcTowedScaffold;
 }
 
 function liveTowIsReleased(snapshot: LiveTowSnapshot): boolean {
@@ -2610,6 +2682,164 @@ test.describe('Browser smoke tests', () => {
     expect(maxElapsed).toBeLessThanOrEqual(0.5);
     expect(maxBeamSourceStep).toBeLessThanOrEqual(4);
     expect(maxSpanJump).toBeLessThanOrEqual(15);
+
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('NPC scaffold tow stays visible and smooth through adverse network faults', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_NPC_SCAFFOLD_TOW_ADVERSE_ASSERT,
+      'set SMOKE_NPC_SCAFFOLD_TOW_ADVERSE_ASSERT=1 with the NPC scaffold fixture and adverse proxy',
+    );
+    test.setTimeout(80_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, true);
+
+    await expect
+      .poll(async () => liveNpcScaffoldTowIsBound(
+        await liveNpcScaffoldTowSnapshot(page),
+      ), {
+        timeout: 15_000,
+        message: 'the NPC-owned scaffold should converge on one canonical relation and both source/target projections',
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'the authoritative NPC-scaffold relation should render one tether',
+      })
+      .toBe(1);
+    const initialBeam = await tractorDrawTelemetry(page, 0);
+    expect(initialBeam.sourceType).toBe(3);
+    expect(initialBeam.targetType).toBe(5);
+    expect(initialBeam.span).toBeGreaterThan(20);
+    expect(initialBeam.intensity).toBeGreaterThan(0);
+
+    const samples: LiveNpcScaffoldTowSnapshot[] = [];
+    const beams: TractorDrawTelemetry[] = [];
+    for (let i = 0; i < 60; i++) {
+      samples.push(await liveNpcScaffoldTowSnapshot(page));
+      beams.push(await tractorDrawTelemetry(page, 0));
+      await page.waitForTimeout(50);
+    }
+
+    const nonAtomic = samples.find(
+      (sample) => !liveNpcScaffoldTowIsBound(sample),
+    );
+    expect(
+      nonAtomic,
+      `NPC-scaffold tow relation or projection disappeared: ${JSON.stringify(nonAtomic)}`,
+    ).toBeUndefined();
+    const missingBeam = beams.find(
+      (beam) => beam.count !== 1 || beam.sourceType !== 3 ||
+        beam.targetType !== 5 || beam.intensity <= 0,
+    );
+    expect(
+      missingBeam,
+      `NPC-scaffold tether disappeared or changed identity: ${JSON.stringify(missingBeam)}`,
+    ).toBeUndefined();
+
+    let pathLength = 0;
+    let npcPathLength = 0;
+    let maxStep = 0;
+    let maxResidual = 0;
+    let maxVelocityJump = 0;
+    let maxJerk = 0;
+    let maxElapsed = 0;
+    let maxNpcElapsed = 0;
+    let maxNpcStep = 0;
+    let maxBeamSourceStep = 0;
+    let maxSpanJump = 0;
+    let maxTowDistance = 0;
+    let maxBeamSourceError = 0;
+    let maxBeamTargetError = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      const beam = beams[i];
+      maxElapsed = Math.max(maxElapsed, sample.elapsed);
+      maxNpcElapsed = Math.max(maxNpcElapsed, sample.npcElapsed);
+      maxTowDistance = Math.max(
+        maxTowDistance,
+        Math.hypot(sample.x - sample.npcX, sample.y - sample.npcY),
+      );
+      maxBeamSourceError = Math.max(
+        maxBeamSourceError,
+        Math.hypot(beam.sourceX - sample.npcX, beam.sourceY - sample.npcY),
+      );
+      maxBeamTargetError = Math.max(
+        maxBeamTargetError,
+        Math.hypot(beam.targetX - sample.x, beam.targetY - sample.y),
+      );
+      if (i === 0) continue;
+      const previous = samples[i - 1];
+      const previousBeam = beams[i - 1];
+      const dt = Math.max(0.001, (sample.sampledAt - previous.sampledAt) / 1000);
+      const step = Math.hypot(sample.x - previous.x, sample.y - previous.y);
+      const npcStep = Math.hypot(
+        sample.npcX - previous.npcX,
+        sample.npcY - previous.npcY,
+      );
+      const speed = Math.hypot(sample.vx, sample.vy);
+      const previousSpeed = Math.hypot(previous.vx, previous.vy);
+      const residual = Math.abs(step - (previousSpeed + speed) * 0.5 * dt);
+      const velocityJump = Math.hypot(sample.vx - previous.vx, sample.vy - previous.vy);
+      const sourceStep = Math.hypot(
+        beam.sourceX - previousBeam.sourceX,
+        beam.sourceY - previousBeam.sourceY,
+      );
+      pathLength += step;
+      npcPathLength += npcStep;
+      maxStep = Math.max(maxStep, step);
+      maxResidual = Math.max(maxResidual, residual);
+      maxVelocityJump = Math.max(maxVelocityJump, velocityJump);
+      maxJerk = Math.max(maxJerk, velocityJump / dt);
+      maxNpcStep = Math.max(maxNpcStep, npcStep);
+      maxBeamSourceStep = Math.max(maxBeamSourceStep, sourceStep);
+      maxSpanJump = Math.max(maxSpanJump, Math.abs(beam.span - previousBeam.span));
+    }
+    const firstSample = samples[0];
+    const lastSample = samples[samples.length - 1];
+    const displacement = Math.hypot(
+      lastSample.x - firstSample.x,
+      lastSample.y - firstSample.y,
+    );
+    const motion = {
+      samples: samples.length,
+      pathLength,
+      displacement,
+      npcPathLength,
+      maxStep,
+      maxResidual,
+      maxVelocityJump,
+      maxJerk,
+      maxElapsed,
+      maxNpcElapsed,
+      maxNpcStep,
+      maxBeamSourceStep,
+      maxSpanJump,
+      maxTowDistance,
+      maxBeamSourceError,
+      maxBeamTargetError,
+    };
+    console.log(`[npc-scaffold-tow-adverse] ${JSON.stringify(motion)}`);
+
+    expect(pathLength).toBeGreaterThan(25);
+    expect(displacement).toBeGreaterThan(20);
+    expect(npcPathLength).toBeGreaterThan(40);
+    expect(maxStep).toBeLessThanOrEqual(12);
+    expect(maxResidual).toBeLessThanOrEqual(6);
+    expect(maxVelocityJump).toBeLessThanOrEqual(30);
+    expect(maxJerk).toBeLessThanOrEqual(500);
+    expect(maxElapsed).toBeLessThanOrEqual(0.6);
+    expect(maxNpcElapsed).toBeLessThanOrEqual(2.2);
+    expect(maxNpcStep).toBeLessThanOrEqual(18);
+    expect(maxBeamSourceStep).toBeLessThanOrEqual(18);
+    expect(maxSpanJump).toBeLessThanOrEqual(18);
+    expect(maxTowDistance).toBeLessThan(150);
+    expect(maxBeamSourceError).toBeLessThanOrEqual(6);
+    expect(maxBeamTargetError).toBeLessThanOrEqual(4);
 
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });

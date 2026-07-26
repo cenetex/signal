@@ -3246,6 +3246,28 @@ void draw_npc_ships(void) {
                                          1.0f);
             }
         }
+        int towed_scaffold = tnpc->ship->towed_scaffold;
+        if (towed_scaffold >= 0 && towed_scaffold < MAX_SCAFFOLDS) {
+            const scaffold_t *sc = &g.world.scaffolds[towed_scaffold];
+            if (sc->active && sc->state == SCAFFOLD_TOWING &&
+                scaffold_tractor_npc(sc) == i) {
+                float tr = ship_tractor_range(tnpc->ship);
+                tractor_beam_t beam = tractor_tow_beam(
+                    tr, TRACTOR_TOW_BAND_REST_LENGTH);
+                float stretch = tractor_beam_tautness(
+                    tnpc->ship->pos, sc->pos, &beam);
+                float pulse = 0.5f + 0.2f *
+                    sinf(g.world.time * 3.0f + (float)i * 1.5f);
+                draw_tractor_tether_wave(
+                    tnpc->ship->pos, sc->pos,
+                    0.5f, 0.85f, 0.75f, pulse,
+                    stretch, (float)i * 2.3f,
+                    SIM_INTERACTION_ENTITY_PLAYER_SHIP,
+                    SIM_INTERACTION_ENTITY_SCAFFOLD,
+                    SIM_INTERACTION_VISUAL_DEFAULT_TRACTOR,
+                    1.0f);
+            }
+        }
         if (i == scan_npc) {
             /* Hug the visible ship: ship_radius is the collision radius
              * and the rendered triangle sits within it, so a tight

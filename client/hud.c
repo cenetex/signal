@@ -4807,8 +4807,7 @@ static int smoke_apply_loop_state(int state) {
                sizeof(g.asteroid_interp.elapsed));
         memset(g.npc_interp.curr, 0, sizeof(g.npc_interp.curr));
         memset(g.npc_interp.prev, 0, sizeof(g.npc_interp.prev));
-        g.npc_interp.t = 0.0f;
-        g.npc_interp.interval = 0.1f;
+        memset(g.npc_interp.elapsed, 0, sizeof(g.npc_interp.elapsed));
         return 1;
     }
     case SMOKE_LOOP_STATE_CUPRITE_GATE:
