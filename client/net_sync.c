@@ -10,6 +10,7 @@
 #include "contract_objective.h"
 #include "net_input_lead.h"
 #include "net_clock.h"
+#include "state_digest.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -263,6 +264,142 @@ static int net_replay_first_after(uint32_t server_tick) {
 static bool net_replay_missing_prefix(uint32_t server_tick, int first_after) {
     if (first_after < 0) return false;
     return net_replay_frame_at(first_after)->tick != server_tick + 1u;
+}
+
+static uint16_t net_replay_input_seq_at_tick(uint32_t tick)
+{
+    for (int i = 0; i < (int)g.net_replay_count; i++) {
+        const input_replay_frame_t *frame = net_replay_frame_at(i);
+        if (frame->tick == tick) return frame->input_seq;
+    }
+    return g.net_input_seq;
+}
+
+static net_reconcile_pose_bits_t net_reconcile_predicted_pose(
+    const server_player_t *sp)
+{
+    if (!sp || !sp->ship)
+        return net_reconcile_pose_bits(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    return net_reconcile_pose_bits(
+        sp->ship->pos.x, sp->ship->pos.y,
+        sp->ship->vel.x, sp->ship->vel.y,
+        sp->ship->angle);
+}
+
+static bool net_reconcile_motion_changed(float old_x,
+                                         float old_y,
+                                         float old_vx,
+                                         float old_vy,
+                                         float old_angle,
+                                         float new_x,
+                                         float new_y,
+                                         float new_vx,
+                                         float new_vy,
+                                         float new_angle)
+{
+    net_reconcile_pose_bits_t old_pose = net_reconcile_pose_bits(
+        old_x, old_y, old_vx, old_vy, old_angle);
+    net_reconcile_pose_bits_t new_pose = net_reconcile_pose_bits(
+        new_x, new_y, new_vx, new_vy, new_angle);
+    return !net_reconcile_pose_equal(&old_pose, &new_pose);
+}
+
+static bool net_loopback_input_frontier_differs(
+    const NetPlayerState *state,
+    const server_player_t *predicted_player)
+{
+    if (!state || !predicted_player ||
+        !g.local_server.active ||
+        !net_is_loopback() ||
+        g.local_server.world.tick != state->server_tick ||
+        state->player_id >= MAX_PLAYERS) {
+        return false;
+    }
+
+    const input_intent_t *predicted = &predicted_player->input;
+    for (int i = 0; i < (int)g.net_replay_count; i++) {
+        const input_replay_frame_t *frame = net_replay_frame_at(i);
+        if (frame->tick == state->server_tick) {
+            predicted = &frame->intent;
+            break;
+        }
+    }
+    const input_intent_t *authoritative =
+        &g.local_server.world.players[state->player_id].input;
+    return !net_reconcile_movement_intent_equal(predicted, authoritative);
+}
+
+static void net_observe_local_reconciliation(
+    const NetPlayerState *state,
+    net_reconcile_pose_bits_t predicted,
+    bool bootstrap,
+    bool input_frontier,
+    bool semantic_discontinuity,
+    bool transport_recovery)
+{
+    if (!state) return;
+
+    net_reconcile_sample_t sample = {
+        .bootstrap = bootstrap,
+        .input_frontier = input_frontier,
+        .semantic_discontinuity = semantic_discontinuity,
+        .transport_recovery = transport_recovery,
+        .entity_id = state->player_id,
+        .server_tick = state->server_tick,
+        .prediction_tick =
+            g.net_prediction_tick_valid ? g.net_prediction_tick : 0,
+        .predicted_input_seq =
+            net_replay_input_seq_at_tick(state->server_tick),
+        .authoritative_input_seq = state->input_seq_ack,
+        .predicted = predicted,
+        .authoritative = net_reconcile_pose_bits(
+            state->x, state->y, state->vx, state->vy, state->angle),
+        .authoritative_root = NULL,
+    };
+
+    net_reconcile_class_t classification = net_reconcile_classify(&sample);
+    if (classification == NET_RECONCILE_NUMERIC_DRIFT &&
+        g.net_reconcile_frontier_tainted) {
+        sample.input_frontier = true;
+        classification = NET_RECONCILE_INPUT_FRONTIER;
+    }
+
+    uint8_t root[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    if (classification == NET_RECONCILE_NUMERIC_DRIFT &&
+        !g.net_reconcile.first_numeric_drift_valid &&
+        g.local_server.active &&
+        net_is_loopback() &&
+        g.local_server.world.tick == state->server_tick) {
+        signal_authoritative_state_digest(&g.local_server.world, root);
+        sample.authoritative_root = root;
+    }
+
+    classification =
+        net_reconcile_diagnostics_observe(&g.net_reconcile, &sample);
+    if (classification == NET_RECONCILE_EXACT ||
+        classification == NET_RECONCILE_BOOTSTRAP ||
+        classification == NET_RECONCILE_TRANSPORT_RECOVERY) {
+        g.net_reconcile_frontier_tainted = false;
+    } else if (classification == NET_RECONCILE_INPUT_FRONTIER ||
+               classification == NET_RECONCILE_SEMANTIC) {
+        g.net_reconcile_frontier_tainted = true;
+    }
+    if (classification == NET_RECONCILE_NUMERIC_DRIFT &&
+        g.net_reconcile.class_count[NET_RECONCILE_NUMERIC_DRIFT] == 1u) {
+        fprintf(stderr,
+                "[net-drift] class=%s tick=%u prediction_tick=%u "
+                "input_seq=%u ack=%u entity=player:%u domain=%s "
+                "predicted_bits=0x%08x authoritative_bits=0x%08x\n",
+                net_reconcile_class_name(classification),
+                (unsigned)g.net_reconcile.first_server_tick,
+                (unsigned)g.net_reconcile.first_prediction_tick,
+                (unsigned)g.net_reconcile.first_predicted_input_seq,
+                (unsigned)g.net_reconcile.first_authoritative_input_seq,
+                (unsigned)g.net_reconcile.first_entity_id,
+                net_reconcile_domain_name(g.net_reconcile.first_domain),
+                (unsigned)g.net_reconcile.first_predicted_bits,
+                (unsigned)g.net_reconcile.first_authoritative_bits);
+    }
 }
 
 float net_prediction_latency_blend(void) {
@@ -1021,6 +1158,10 @@ void net_reset_local_input_stream(void) {
     memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
     memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    net_reconcile_diagnostics_reset(&g.net_reconcile);
+    g.net_reconcile_frontier_tainted = false;
+    g.net_reconcile_semantic_pending = false;
+    g.net_reconcile_last_authoritative_input_seq = 0;
     g.net_motion.input_lead_margin_ticks =
         NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     g.local_player_render_offset = v2(0.0f, 0.0f);
@@ -1122,6 +1263,12 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 
         asteroid_t* a = &g.asteroid_interp.curr[idx];
         bool was_active = a->active;
+        bool motion_changed = was_active &&
+            (asteroids[i].flags & 1) != 0 &&
+            net_reconcile_motion_changed(
+                a->pos.x, a->pos.y, a->vel.x, a->vel.y, 0.0f,
+                asteroids[i].x, asteroids[i].y,
+                asteroids[i].vx, asteroids[i].vy, 0.0f);
         bool was_child = a->fracture_child;
         asteroid_tier_t was_tier = a->tier;
         commodity_t was_commodity = a->commodity;
@@ -1160,6 +1307,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         }
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
+        if (motion_changed)
+            g.net_reconcile.asteroid_motion_samples++;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
 
@@ -1206,10 +1355,18 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         vec2 carried_vel = visual.vel;
         bool keep_velocity =
             !isfinite(asteroids[i].vx) || !isfinite(asteroids[i].vy);
+        float next_vx = keep_velocity ? carried_vel.x : asteroids[i].vx;
+        float next_vy = keep_velocity ? carried_vel.y : asteroids[i].vy;
+        if (net_reconcile_motion_changed(
+                a->pos.x, a->pos.y, a->vel.x, a->vel.y, 0.0f,
+                asteroids[i].x, asteroids[i].y,
+                next_vx, next_vy, 0.0f)) {
+            g.net_reconcile.asteroid_motion_samples++;
+        }
         a->pos.x = asteroids[i].x;
         a->pos.y = asteroids[i].y;
-        a->vel.x = keep_velocity ? carried_vel.x : asteroids[i].vx;
-        a->vel.y = keep_velocity ? carried_vel.y : asteroids[i].vy;
+        a->vel.x = next_vx;
+        a->vel.y = next_vy;
         a->age = carried_age;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
@@ -1271,6 +1428,12 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         received[idx] = true;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
+        bool motion_changed = n->active &&
+            (npcs[i].flags & 1) != 0 &&
+            net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                npcs[i].angle);
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
@@ -1292,6 +1455,8 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         memcpy(n->session_token, npcs[i].session_token, sizeof(n->session_token));
         n->home_station = (npcs[i].home_station == 0xFFu)
             ? -1 : (int)npcs[i].home_station;
+        if (motion_changed)
+            g.net_reconcile.npc_motion_samples++;
     }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -1319,6 +1484,12 @@ void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                npcs[i].angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
@@ -1348,6 +1519,11 @@ void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, n->vel.x, n->vel.y, n->angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
     }
@@ -1371,6 +1547,12 @@ void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, n->vel.x, n->vel.y,
+                npcs[i].angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->angle = npcs[i].angle;
@@ -1395,6 +1577,12 @@ void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                n->angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->vel.x = npcs[i].vx;
@@ -2474,6 +2662,18 @@ void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id == net_local_id()) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
+        net_reconcile_pose_bits_t predicted_pose =
+            net_reconcile_predicted_pose(sp);
+        bool input_ack_transition =
+            state->input_seq_ack != 0 &&
+            state->input_seq_ack !=
+                g.net_reconcile_last_authoritative_input_seq;
+        bool semantic_pending = g.net_reconcile_semantic_pending;
+        g.net_reconcile_semantic_pending = false;
+        if (state->input_seq_ack != 0) {
+            g.net_reconcile_last_authoritative_input_seq =
+                state->input_seq_ack;
+        }
         vec2 before_pos = sp->ship->pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
         bool force_rebase = false;
@@ -2515,21 +2715,31 @@ void apply_remote_player_state(const NetPlayerState* state) {
         sync_local_tow_state_from_authority(state, sp);
 
         if (!g.net_local_state_ready) {
+            net_observe_local_reconciliation(
+                state, predicted_pose, true, false,
+                semantic_pending, false);
             accept_initial_local_player_state(state, sp);
             return;
         }
 
         bool state_docked = (state->flags & 4) != 0;
         if (state_docked && sp->docked) {
+            net_observe_local_reconciliation(
+                state, predicted_pose, false, false, true, false);
             accept_docked_local_player_state(state, sp);
             return;
         }
         if (!state_docked && sp->docked) {
+            net_observe_local_reconciliation(
+                state, predicted_pose, false, false, true, false);
             accept_authoritative_local_launch_state(state, sp);
             return;
         }
         if (g.local_server.active && net_is_loopback() &&
             !net_replay_enabled()) {
+            net_observe_local_reconciliation(
+                state, predicted_pose, false, false,
+                semantic_pending, true);
             apply_authoritative_local_motion(state, sp);
             sync_local_dock_state_from_authority(state, sp);
             apply_local_player_remote_flags(state, sp);
@@ -2566,6 +2776,17 @@ void apply_remote_player_state(const NetPlayerState* state) {
         bool defer_motion_correction = false;
         bool defer_predicted_undock =
             state_docked && !sp->docked && g.action_predict_timer > 0.0f;
+        net_observe_local_reconciliation(
+            state,
+            predicted_pose,
+            false,
+            input_ack_transition ||
+                has_unacked_input ||
+                !g.net_prediction_tick_valid ||
+                g.net_prediction_tick != state->server_tick ||
+                net_loopback_input_frontier_differs(state, sp),
+            semantic_pending || defer_predicted_undock,
+            force_rebase);
         if (force_rebase) {
             apply_authoritative_local_motion(state, sp);
             net_replay_clear_frames();
@@ -2843,6 +3064,8 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
                      uint8_t respawn_station, float respawn_fee) {
     if ((int)player_id != g.local_player_slot) return;
     net_replay_reset();
+    g.net_reconcile.death_respawn_events++;
+    g.net_reconcile_semantic_pending = true;
     float impact_speed = sqrtf(vel_x * vel_x + vel_y * vel_y);
     float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
     uint32_t spin_seed = ((uint32_t)player_id << 24) ^

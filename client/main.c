@@ -25,6 +25,7 @@
 #include "net_input_lead.h"
 #include "net_clock.h"
 #include "client_log.h"
+#include "state_digest.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -2684,6 +2685,10 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 int reset_net_motion_telemetry(void) {
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    net_reconcile_diagnostics_reset(&g.net_reconcile);
+    g.net_reconcile_frontier_tainted = false;
+    g.net_reconcile_semantic_pending = false;
+    g.net_reconcile_last_authoritative_input_seq = g.net_last_server_ack;
     g.net_motion.input_lead_margin_ticks =
         NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     net_latency_stats_reset(&g.net_ack_latency);
@@ -2705,6 +2710,249 @@ int reset_net_motion_telemetry(void) {
     g.net_ack_recovery_tier = NET_LATENCY_ACK_RECOVERY_STEADY;
     g.net_max_ack_rtt_5s = 0.0f;
     return 1;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_exact_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_EXACT];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_bootstrap_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_BOOTSTRAP];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_input_frontier_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_INPUT_FRONTIER];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_semantic_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_SEMANTIC];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_transport_recovery_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_TRANSPORT_RECOVERY];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_numeric_drift_samples(void) {
+    return (int)g.net_reconcile.class_count[NET_RECONCILE_NUMERIC_DRIFT];
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_asteroid_motion_samples(void) {
+    return (int)g.net_reconcile.asteroid_motion_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_npc_motion_samples(void) {
+    return (int)g.net_reconcile.npc_motion_samples;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int get_net_reconcile_death_respawn_events(void) {
+    return (int)g.net_reconcile.death_respawn_events;
+}
+
+static float net_reconcile_float_from_bits(uint32_t bits)
+{
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+const char *get_net_reconcile_first_drift_json(void) {
+    static char json[1024];
+    const net_reconcile_diagnostics_t *diagnostics = &g.net_reconcile;
+    if (!diagnostics->first_numeric_drift_valid) {
+        snprintf(json, sizeof(json), "{}");
+        return json;
+    }
+
+    char root_hex[NET_RECONCILE_ROOT_SIZE * 2u + 1u];
+    if (diagnostics->first_authoritative_root_valid) {
+        static const char hex[] = "0123456789abcdef";
+        for (size_t i = 0; i < NET_RECONCILE_ROOT_SIZE; i++) {
+            uint8_t byte = diagnostics->first_authoritative_root[i];
+            root_hex[i * 2u] = hex[byte >> 4];
+            root_hex[i * 2u + 1u] = hex[byte & 0x0Fu];
+        }
+        root_hex[sizeof(root_hex) - 1u] = '\0';
+    } else {
+        root_hex[0] = '\0';
+    }
+
+    snprintf(
+        json, sizeof(json),
+        "{\"class\":\"numeric-drift\",\"server_tick\":%u,"
+        "\"prediction_tick\":%u,\"predicted_input_seq\":%u,"
+        "\"authoritative_input_seq\":%u,\"entity\":\"player:%u\","
+        "\"domain\":\"%s\",\"predicted\":%.9g,\"authoritative\":%.9g,"
+        "\"predicted_pose\":{\"x\":%.9g,\"y\":%.9g,\"vx\":%.9g,"
+        "\"vy\":%.9g,\"angle\":%.9g},"
+        "\"authoritative_pose\":{\"x\":%.9g,\"y\":%.9g,\"vx\":%.9g,"
+        "\"vy\":%.9g,\"angle\":%.9g},"
+        "\"predicted_bits\":\"0x%08x\","
+        "\"authoritative_bits\":\"0x%08x\","
+        "\"root_schema\":\"%s\",\"authoritative_root\":\"%s\"}",
+        (unsigned)diagnostics->first_server_tick,
+        (unsigned)diagnostics->first_prediction_tick,
+        (unsigned)diagnostics->first_predicted_input_seq,
+        (unsigned)diagnostics->first_authoritative_input_seq,
+        (unsigned)diagnostics->first_entity_id,
+        net_reconcile_domain_name(diagnostics->first_domain),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_bits),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_bits),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_pose.pos_x),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_pose.pos_y),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_pose.vel_x),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_pose.vel_y),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_predicted_pose.angle),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_pose.pos_x),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_pose.pos_y),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_pose.vel_x),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_pose.vel_y),
+        (double)net_reconcile_float_from_bits(
+            diagnostics->first_authoritative_pose.angle),
+        (unsigned)diagnostics->first_predicted_bits,
+        (unsigned)diagnostics->first_authoritative_bits,
+        signal_authoritative_state_digest_schema(),
+        root_hex);
+    return json;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int signal_zero_latency_perturb_player_x_lsb(void) {
+    if (!g.local_server.active || !net_is_loopback() ||
+        !g.net_local_state_ready ||
+        g.local_player_slot < 0 ||
+        g.local_player_slot >= MAX_PLAYERS ||
+        !g.net_prediction_tick_valid) {
+        return -1;
+    }
+
+    ship_t *ship = g.world.players[g.local_player_slot].ship;
+    if (!ship || !isfinite(ship->pos.x)) return -3;
+
+    server_player_t *predicted_player =
+        &g.world.players[g.local_player_slot];
+    server_player_t *authority_player =
+        &g.local_server.world.players[g.local_player_slot];
+    const input_intent_t *predicted_input = &predicted_player->input;
+    const input_intent_t *authority_input = &authority_player->input;
+    if (net_unacked_input_count() != 0 ||
+        authority_player->movement_queue_count != 0) {
+        return -7;
+    }
+    if (!net_reconcile_movement_intent_equal(
+            predicted_input, authority_input)) {
+        return -8;
+    }
+
+    if (g.net_reconcile_frontier_tainted) {
+        bool throttled = g.local_server.throttled_snapshots;
+        g.local_server.throttled_snapshots = false;
+        net_replay_reset();
+        net_anchor_prediction_tick(g.local_server.world.tick, true);
+        authority_player->replication->force_authoritative_resync = true;
+        local_server_send_initial_snapshot(
+            &g.local_server, g.local_player_slot);
+        g.local_server.throttled_snapshots = throttled;
+
+        /* Build one ordinary predicted step from the freshly decoded
+         * authoritative baseline. This is the same movement path submit_input
+         * uses, without introducing a new network input frontier. */
+        input_intent_t stable_input = *authority_input;
+        predicted_player->input = stable_input;
+        g.net_reconcile_frontier_tainted = false;
+        net_replay_record_prediction(&stable_input, SIM_DT);
+        world_sim_step_player_only(
+            &g.world, g.local_player_slot, SIM_DT);
+        net_adopt_local_tow_prediction(SIM_DT);
+    }
+
+    uint32_t next_authority_tick = g.local_server.world.tick + 1u;
+    if (g.net_prediction_tick != next_authority_tick) return -2;
+
+    for (int i = 0; i < (int)g.net_replay_count; i++) {
+        int index = ((int)g.net_replay_start + i) % NET_REPLAY_FRAME_CAP;
+        const input_replay_frame_t *frame = &g.net_replay[index];
+        if (frame->tick == next_authority_tick) {
+            if (frame->input_seq != authority_player->last_input_seq)
+                return -9;
+            const input_intent_t *frame_input = &frame->intent;
+            if (!net_reconcile_movement_intent_equal(
+                    frame_input, authority_input)) {
+                return -10;
+            }
+        }
+    }
+
+    uint32_t perturbed_bits = 0;
+    memcpy(&perturbed_bits, &ship->pos.x, sizeof(perturbed_bits));
+    perturbed_bits ^= 1u;
+    memcpy(&ship->pos.x, &perturbed_bits, sizeof(ship->pos.x));
+
+    uint32_t drift_before =
+        g.net_reconcile.class_count[NET_RECONCILE_NUMERIC_DRIFT];
+    uint32_t frontier_before =
+        g.net_reconcile.class_count[NET_RECONCILE_INPUT_FRONTIER];
+    uint32_t exact_before =
+        g.net_reconcile.class_count[NET_RECONCILE_EXACT];
+    bool throttled = g.local_server.throttled_snapshots;
+    g.local_server.throttled_snapshots = false;
+    local_server_step_loopback(
+        &g.local_server, g.local_player_slot, SIM_DT);
+    g.local_server.throttled_snapshots = throttled;
+
+    if (g.net_reconcile.class_count[NET_RECONCILE_NUMERIC_DRIFT] >
+        drift_before) {
+        return 1;
+    }
+    if (g.net_reconcile.class_count[NET_RECONCILE_INPUT_FRONTIER] >
+        frontier_before) {
+        return -4;
+    }
+    if (g.net_reconcile.class_count[NET_RECONCILE_EXACT] > exact_before)
+        return -5;
+    return -6;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -3159,6 +3407,110 @@ int get_net_motion_ack_recovery_tier(void) {
 }
 
 #ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_drift_flight(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+
+    world_t *authority = &g.local_server.world;
+    server_player_t *server_player = &authority->players[player_idx];
+    server_player_t *client_player = &g.world.players[player_idx];
+    if (!server_player->connected || !server_player->ship ||
+        !server_player->replication ||
+        !client_player->connected || !client_player->ship) {
+        return 0;
+    }
+
+    const vec2 start = v2(2400.0f, -2400.0f);
+    const float clear_radius_sq = 3600.0f * 3600.0f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (authority->asteroids[i].active &&
+            v2_dist_sq(authority->asteroids[i].pos, start) <
+                clear_radius_sq) {
+            world_asteroid_clear_tractor(authority, i);
+            memset(&authority->asteroids[i], 0,
+                   sizeof(authority->asteroids[i]));
+            authority->asteroid_generation_live[i] = false;
+        }
+        if (g.world.asteroids[i].active &&
+            v2_dist_sq(g.world.asteroids[i].pos, start) <
+                clear_radius_sq) {
+            memset(&g.world.asteroids[i], 0,
+                   sizeof(g.world.asteroids[i]));
+        }
+        memset(&g.asteroid_interp.prev[i], 0,
+               sizeof(g.asteroid_interp.prev[i]));
+        memset(&g.asteroid_interp.curr[i], 0,
+               sizeof(g.asteroid_interp.curr[i]));
+        g.asteroid_interp.elapsed[i] = 0.0f;
+    }
+
+    world_tow_links_clear_source(authority, server_player->ship_ref);
+    server_player->docked = false;
+    server_player->docking_approach = false;
+    server_player->in_dock_range = false;
+    server_player->nearby_station = -1;
+    server_player->ship->pos = start;
+    server_player->ship->vel = v2(0.0f, 0.0f);
+    server_player->ship->angle = 0.0f;
+    server_player->ship->tractor_active = false;
+    server_player->boost_hold_timer = 0.0f;
+    memset(&server_player->input, 0, sizeof(server_player->input));
+    server_player->input.mining_target_hint = -1;
+    server_player->movement_queue_count = 0;
+    server_player->replication->force_authoritative_resync = true;
+
+    client_player->docked = false;
+    client_player->docking_approach = false;
+    client_player->in_dock_range = false;
+    client_player->nearby_station = -1;
+    client_player->ship->pos = start;
+    client_player->ship->vel = v2(0.0f, 0.0f);
+    client_player->ship->angle = 0.0f;
+    client_player->ship->tractor_active = false;
+    client_player->ship->towed_count = 0;
+    client_player->ship->towed_pod_count = 0;
+    client_player->ship->towed_scaffold = -1;
+    memset(client_player->ship->towed_fragments, -1,
+           sizeof(client_player->ship->towed_fragments));
+    memset(client_player->ship->towed_pods, -1,
+           sizeof(client_player->ship->towed_pods));
+    client_player->boost_hold_timer = 0.0f;
+    memset(&client_player->input, 0, sizeof(client_player->input));
+    client_player->input.mining_target_hint = -1;
+
+    g.local_server.private_snapshot_dirty = true;
+    g.local_player_render_offset = v2(0.0f, 0.0f);
+    g.net_input_have_last = false;
+    net_replay_reset();
+    net_anchor_prediction_tick(authority->tick, true);
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prime_death_respawn(void) {
+    if (!g.local_server.active || !net_is_loopback()) return 0;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+
+    server_player_t *server_player =
+        &g.local_server.world.players[player_idx];
+    server_player_t *client_player = &g.world.players[player_idx];
+    if (!server_player->connected || !server_player->ship ||
+        server_player->docked ||
+        !client_player->connected || !client_player->ship) {
+        return 0;
+    }
+
+    /* The ordinary boost-turn drain will cross zero on the next applied
+     * input and route through emergency_recover_ship, NET_MSG_DEATH, and
+     * the authoritative respawn snapshot. */
+    server_player->ship->hull = 0.01f;
+    client_player->ship->hull = 0.01f;
+    return 1;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_known_ledger_sync(void) {
     if (!g.local_server.active || !net_is_loopback()) return 0;

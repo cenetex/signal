@@ -26,6 +26,7 @@
 #include "identity.h"
 #include "trade_paging.h"
 #include "npc_radio.h"
+#include "reconciliation_diagnostics.h"
 
 static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t out[32]) {
     memset(out, 0, 32);
@@ -752,6 +753,10 @@ typedef struct {
         uint32_t total_lerp_samples;
         uint32_t total_input_acks;
     } net_motion;
+    net_reconcile_diagnostics_t net_reconcile;
+    bool net_reconcile_frontier_tainted;
+    bool net_reconcile_semantic_pending;
+    uint16_t net_reconcile_last_authoritative_input_seq;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
         asteroid_t curr[MAX_ASTEROIDS];

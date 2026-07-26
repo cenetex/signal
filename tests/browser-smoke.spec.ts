@@ -64,6 +64,15 @@ type NetMotionSnapshot = {
   replayDepth: number;
   unackedInputs: number;
   actionQueueDepth: number;
+  reconcileExact: number;
+  reconcileBootstrap: number;
+  reconcileInputFrontier: number;
+  reconcileSemantic: number;
+  reconcileTransportRecovery: number;
+  reconcileNumericDrift: number;
+  reconcileAsteroidMotion: number;
+  reconcileNpcMotion: number;
+  reconcileDeathRespawnEvents: number;
 };
 
 type PlayerCameraSnapshot = {
@@ -368,6 +377,15 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
         replayDepth: 0,
         unackedInputs: 0,
         actionQueueDepth: 0,
+        reconcileExact: 0,
+        reconcileBootstrap: 0,
+        reconcileInputFrontier: 0,
+        reconcileSemantic: 0,
+        reconcileTransportRecovery: 0,
+        reconcileNumericDrift: 0,
+        reconcileAsteroidMotion: 0,
+        reconcileNpcMotion: 0,
+        reconcileDeathRespawnEvents: 0,
       };
     }
 
@@ -420,6 +438,15 @@ async function netMotionSnapshot(page: Page): Promise<NetMotionSnapshot> {
       replayDepth: read('get_net_motion_replay_depth'),
       unackedInputs: read('get_net_motion_unacked_inputs'),
       actionQueueDepth: read('get_net_motion_action_queue_depth'),
+      reconcileExact: read('get_net_reconcile_exact_samples'),
+      reconcileBootstrap: read('get_net_reconcile_bootstrap_samples'),
+      reconcileInputFrontier: read('get_net_reconcile_input_frontier_samples'),
+      reconcileSemantic: read('get_net_reconcile_semantic_samples'),
+      reconcileTransportRecovery: read('get_net_reconcile_transport_recovery_samples'),
+      reconcileNumericDrift: read('get_net_reconcile_numeric_drift_samples'),
+      reconcileAsteroidMotion: read('get_net_reconcile_asteroid_motion_samples'),
+      reconcileNpcMotion: read('get_net_reconcile_npc_motion_samples'),
+      reconcileDeathRespawnEvents: read('get_net_reconcile_death_respawn_events'),
     };
   });
 }
@@ -437,6 +464,54 @@ async function resetNetMotionTelemetry(page: Page): Promise<void> {
     } else if (mod && typeof mod.ccall === 'function') {
       mod.ccall('reset_net_motion_telemetry', 'number', [], []);
     }
+  });
+}
+
+async function firstNetDriftJson(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '{}';
+    return mod.ccall('get_net_reconcile_first_drift_json', 'string', [], []) || '{}';
+  });
+}
+
+async function perturbLoopbackPlayerX(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_zero_latency_perturb_player_x_lsb', 'number', [], []);
+  });
+}
+
+async function prepareDriftFlight(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_prepare_drift_flight', 'number', [], []);
+  });
+}
+
+async function primeDeathRespawn(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_prime_death_respawn', 'number', [], []);
   });
 }
 
@@ -1083,6 +1158,7 @@ test.describe('Browser smoke tests', () => {
 
     await expect.poll(async () => (await playerStateSnapshot(page))?.docked ?? -1)
       .toBe(1);
+    await resetNetMotionTelemetry(page);
     await tap(page, 'E');
     await expect
       .poll(async () => (await playerStateSnapshot(page))?.docked ?? -1, {
@@ -1099,6 +1175,12 @@ test.describe('Browser smoke tests', () => {
         timeout: 8_000,
       })
       .toBe(1);
+    const dockMotion = await netMotionSnapshot(page);
+    expect(
+      dockMotion.reconcileNumericDrift,
+      `first launch/dock drift: ${await firstNetDriftJson(page)}`,
+    ).toBe(0);
+    expect(dockMotion.reconcileSemantic).toBeGreaterThan(0);
 
     expectNoFatalErrors(logs);
   });
@@ -1146,9 +1228,15 @@ test.describe('Browser smoke tests', () => {
       })
       .toBe(0);
 
+    expect(await prepareDriftFlight(page)).toBe(1);
+    await page.waitForTimeout(250);
     await resetNetMotionTelemetry(page);
     const acksBefore = (await netMotionSnapshot(page)).inputAcks;
-    await hold(page, 'W', 2_500);
+    await hold(page, 'W', 1_800);
+    await hold(page, 'A', 350);
+    await hold(page, 'D', 350);
+    await hold(page, 'Shift', 500);
+    await hold(page, 'M', 350);
 
     await expect
       .poll(async () => (await netMotionSnapshot(page)).inputAcks, {
@@ -1172,6 +1260,84 @@ test.describe('Browser smoke tests', () => {
     expect(motion.maxRenderOffset).toBeLessThan(40);
     expect(motion.snapSamples).toBe(0);
     expect(motion.maxTickSkewAbs).toBeLessThan(12);
+    expect(
+      motion.reconcileNumericDrift,
+      `first loopback drift: ${await firstNetDriftJson(page)}`,
+    ).toBe(0);
+    expect(motion.reconcileExact).toBeGreaterThan(0);
+    expect(motion.reconcileNpcMotion).toBeGreaterThan(0);
+
+    await expect
+      .poll(async () => perturbLoopbackPlayerX(page), {
+        timeout: 5_000,
+        message: 'one-bit local pose perturbation should be observed at the same tick frontier',
+      })
+      .toBe(1);
+    const perturbedMotion = await netMotionSnapshot(page);
+    expect(perturbedMotion.reconcileNumericDrift).toBe(1);
+    const firstDrift = JSON.parse(await firstNetDriftJson(page)) as {
+      class?: string;
+      server_tick?: number;
+      prediction_tick?: number;
+      domain?: string;
+      predicted_bits?: string;
+      authoritative_bits?: string;
+      root_schema?: string;
+      authoritative_root?: string;
+    };
+    expect(firstDrift.class).toBe('numeric-drift');
+    expect(firstDrift.server_tick).toBe(firstDrift.prediction_tick);
+    expect(firstDrift.domain).toBe('player.ship.pos.x');
+    expect(firstDrift.predicted_bits).not.toBe(firstDrift.authoritative_bits);
+    expect(firstDrift.root_schema).toBe('signal.authoritative_state.v1');
+    expect(firstDrift.authoritative_root).toMatch(/^[0-9a-f]{64}$/);
+
+    expectNoFatalErrors(logs);
+  });
+
+  test('classifies authoritative death and respawn as a semantic transition', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer loopback');
+    test.setTimeout(30_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page);
+
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? 1, {
+        timeout: 8_000,
+        message: 'local loopback launch should leave dock before the death fixture',
+      })
+      .toBe(0);
+
+    expect(await prepareDriftFlight(page)).toBe(1);
+    await page.waitForTimeout(250);
+    await resetNetMotionTelemetry(page);
+    expect(await primeDeathRespawn(page)).toBe(1);
+
+    await page.keyboard.down('Shift');
+    await page.keyboard.down('A');
+    try {
+      await expect
+        .poll(async () => (await playerStateSnapshot(page))?.docked ?? 0, {
+          timeout: 8_000,
+          message: 'boost-turn hull drain should traverse real death and authoritative respawn',
+        })
+        .toBe(1);
+    } finally {
+      await page.keyboard.up('A');
+      await page.keyboard.up('Shift');
+    }
+
+    const motion = await netMotionSnapshot(page);
+    expect(
+      motion.reconcileNumericDrift,
+      `first death/respawn drift: ${await firstNetDriftJson(page)}`,
+    ).toBe(0);
+    expect(motion.reconcileDeathRespawnEvents).toBe(1);
 
     expectNoFatalErrors(logs);
   });
@@ -1749,6 +1915,7 @@ test.describe('Browser smoke tests', () => {
         message: 'the seeded fragment and cargo pod should reach both authority and client',
       })
       .toBe(0b1100000011);
+    await resetNetMotionTelemetry(page);
 
     await page.keyboard.down('Space');
     try {
@@ -1790,6 +1957,13 @@ test.describe('Browser smoke tests', () => {
         message: 'a Space tap should clear both authoritative bindings and all tow-list projections',
       })
       .toBe(0);
+    const towMotion = await netMotionSnapshot(page);
+    expect(
+      towMotion.reconcileNumericDrift,
+      `first towing drift: ${await firstNetDriftJson(page)}`,
+    ).toBe(0);
+    expect(towMotion.reconcileExact).toBeGreaterThan(0);
+    expect(towMotion.reconcileAsteroidMotion).toBeGreaterThan(0);
 
     expectNoFatalErrors(logs);
   });

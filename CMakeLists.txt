@@ -175,6 +175,7 @@ set(SIGNAL_SIM_HELPERS
 set(SIGNAL_CLIENT_SOURCES
     client/main.c
     client/client_log.c
+    client/reconciliation_diagnostics.c
     client/net.c
     client/station_ui.c
     client/hud.c
@@ -311,10 +312,12 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_rock_usefulness.c
         tests/c/test_signal_field.c
         tests/c/test_state_digest.c
+        tests/c/test_reconciliation_diagnostics.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         client/identity.c
         client/client_log.c
+        client/reconciliation_diagnostics.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
@@ -746,6 +749,19 @@ if(EMSCRIPTEN)
         "'_get_net_motion_replay_depth'"
         "'_get_net_motion_unacked_inputs'"
         "'_get_net_motion_action_queue_depth'"
+        "'_get_net_reconcile_exact_samples'"
+        "'_get_net_reconcile_bootstrap_samples'"
+        "'_get_net_reconcile_input_frontier_samples'"
+        "'_get_net_reconcile_semantic_samples'"
+        "'_get_net_reconcile_transport_recovery_samples'"
+        "'_get_net_reconcile_numeric_drift_samples'"
+        "'_get_net_reconcile_asteroid_motion_samples'"
+        "'_get_net_reconcile_npc_motion_samples'"
+        "'_get_net_reconcile_death_respawn_events'"
+        "'_get_net_reconcile_first_drift_json'"
+        "'_signal_zero_latency_perturb_player_x_lsb'"
+        "'_signal_smoke_prepare_drift_flight'"
+        "'_signal_smoke_prime_death_respawn'"
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"

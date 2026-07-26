@@ -466,8 +466,15 @@ static void local_server_emit_private_snapshots(local_server_t *ls,
                                                 int player_slot) {
     if (!ls || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &ls->world.players[player_slot];
-    if (sp->replication->force_authoritative_resync)
+    /* Per-tick diagnostic mode promises an authoritative local pose on every
+     * step. The private snapshot helper normally suppresses unchanged poses
+     * while its prior baseline remains valid, so explicitly invalidate that
+     * baseline here. Default throttled loopback keeps the normal heartbeat
+     * and correction cadence used by the dedicated server. */
+    if (!ls->throttled_snapshots ||
+        sp->replication->force_authoritative_resync) {
         server_player_reset_authoritative_ack_state(sp);
+    }
     server_emit_private_snapshot_for_player(
         &ls->world, player_slot, ls->throttled_snapshots,
         local_server_send_packet, NULL,
