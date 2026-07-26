@@ -18,11 +18,18 @@
 #include <string.h>
 
 enum {
-    SCB_FEATURE_COUNT = 40,
     SCB_LAYER_COUNT = 4,
     SCB_HIDDEN0 = 32,
     SCB_HIDDEN1 = 16,
 };
+
+_Static_assert(SIGNAL_CONTRACT_FEATURE_COUNT == 40,
+               "contract action changes require an explicit feature schema update");
+_Static_assert(
+    SIGNAL_CONTRACT_FEATURE_ACTION_ONE_HOT_END -
+        SIGNAL_CONTRACT_FEATURE_ACTION_ONE_HOT_BEGIN ==
+        SIGNAL_CONTRACT_ACTION_COUNT,
+    "every contract action needs a distinct feature");
 
 typedef struct {
     size_t previous;
@@ -180,9 +187,28 @@ bool signal_contract_brain_load_checkpoint(const char *path,
               read_u64_le(fp, &layer_count) &&
               layer_count == SCB_LAYER_COUNT;
     for (int i = 0; ok && i < SCB_LAYER_COUNT; i++) ok = read_u64_le(fp, &sizes[i]);
-    ok = ok && sizes[0] == SCB_FEATURE_COUNT && sizes[1] == SCB_HIDDEN0 &&
-         sizes[2] == SCB_HIDDEN1 && sizes[3] == 1 &&
-         read_u32_le(fp, &g_contract_brain.hidden_activation) &&
+    if (!ok) {
+        fclose(fp);
+        contract_brain_free();
+        set_err(err, err_size,
+                "unsupported or truncated signal-contract checkpoint header");
+        return false;
+    }
+    if (sizes[0] != SIGNAL_CONTRACT_FEATURE_COUNT ||
+        sizes[1] != SCB_HIDDEN0 || sizes[2] != SCB_HIDDEN1 ||
+        sizes[3] != 1) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "incompatible signal-contract checkpoint shape "
+                 "(input=%llu, expected %d); legacy checkpoints must be retrained",
+                 (unsigned long long)sizes[0],
+                 SIGNAL_CONTRACT_FEATURE_COUNT);
+        fclose(fp);
+        contract_brain_free();
+        set_err(err, err_size, buf);
+        return false;
+    }
+    ok = read_u32_le(fp, &g_contract_brain.hidden_activation) &&
          read_u32_le(fp, &g_contract_brain.output_activation) &&
          read_u32_le(fp, &loss);
     (void)loss;
@@ -221,10 +247,21 @@ bool signal_contract_brain_load_checkpoint(const char *path,
         set_err(err, err_size, "unsupported or truncated signal-contract checkpoint");
         return false;
     }
-    if (g_contract_brain.feature_encoder_version != 1u ||
-        strcmp(g_contract_brain.feature_set, "signal-contract-live-v1") != 0) {
+    if (g_contract_brain.feature_encoder_version !=
+            SIGNAL_CONTRACT_FEATURE_ENCODER_VERSION ||
+        strcmp(g_contract_brain.feature_set, SIGNAL_CONTRACT_FEATURE_SET) != 0) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "checkpoint feature contract is %s encoder %u; expected %s "
+                 "encoder %u (retrain legacy checkpoints)",
+                 g_contract_brain.feature_set[0] != '\0'
+                     ? g_contract_brain.feature_set
+                     : "<missing>",
+                 g_contract_brain.feature_encoder_version,
+                 SIGNAL_CONTRACT_FEATURE_SET,
+                 SIGNAL_CONTRACT_FEATURE_ENCODER_VERSION);
         contract_brain_free();
-        set_err(err, err_size, "checkpoint is not signal-contract-live-v1");
+        set_err(err, err_size, buf);
         return false;
     }
 
@@ -263,11 +300,18 @@ static double signed_scale(double x, double denom) {
     return denom > 0.0 ? clip(x / denom, -1.0, 1.0) : 0.0;
 }
 
-static void fill_features(const world_t *w,
-                          const server_player_t *sp,
-                          const signal_contract_candidate_t *c,
-                          double row[SCB_FEATURE_COUNT]) {
-    memset(row, 0, SCB_FEATURE_COUNT * sizeof(*row));
+bool signal_contract_build_features(
+    const world_t *w,
+    const server_player_t *sp,
+    const signal_contract_candidate_t *c,
+    float row[SIGNAL_CONTRACT_FEATURE_COUNT]) {
+    if (!w || !sp || !sp->ship || !c || !row ||
+        c->action < 0 || c->action >= SIGNAL_CONTRACT_ACTION_COUNT ||
+        c->commodity < 0 || c->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+
+    memset(row, 0, SIGNAL_CONTRACT_FEATURE_COUNT * sizeof(*row));
     float profit = c->contract_price - c->source_price;
     int src = c->source_station;
     int dst = c->dest_station;
@@ -278,49 +322,82 @@ static void fill_features(const world_t *w,
         ? ship_finished_count(sp->ship, c->commodity)
         : 0;
 
-    row[0] = 1.0;
-    row[1] = scale((double)c->action, 3.0);
-    row[2] = scale((double)(src + 1), (double)(MAX_STATIONS + 1));
-    row[3] = scale((double)(dst + 1), (double)(MAX_STATIONS + 1));
-    row[4] = (src == dst) ? 1.0 : 0.0;
-    row[5] = scale((double)c->commodity, (double)(COMMODITY_COUNT - 1));
-    row[6] = scale(c->source_stock, MAX_PRODUCT_STOCK);
-    row[7] = scale(c->dest_stock, MAX_PRODUCT_STOCK);
-    row[8] = scale(c->quantity_needed, MAX_PRODUCT_STOCK);
-    row[9] = scale(c->contract_price, 100.0);
-    row[10] = scale(c->source_price, 100.0);
-    row[11] = scale(profit > 0.0f ? profit : 0.0f, 100.0);
-    row[12] = signed_scale(c->ledger_balance, 1000.0);
-    row[13] = c->ledger_balance + 0.01f >= c->source_price ? 1.0 : 0.0;
-    row[14] = held > 0 ? 1.0 : 0.0;
-    row[15] = scale(c->free_cargo, capacity > 0.0f ? capacity : 1.0f);
-    row[16] = scale(c->distance, 9000.0);
-    row[17] = scale(c->age, 300.0);
-    row[18] = clip(c->hull_ratio, 0.0, 1.0);
-    row[19] = scale((double)ship_towed_body_count(sp->ship), 10.0);
-    row[20] = (src_st && station_produces(src_st, c->commodity)) ? 1.0 : 0.0;
-    row[21] = (dst_st && station_consumes(dst_st, c->commodity)) ? 1.0 : 0.0;
-    row[22] = (src == 0) ? 1.0 : 0.0;
-    row[23] = (src == 1) ? 1.0 : 0.0;
-    row[24] = (src == 2) ? 1.0 : 0.0;
-    row[25] = (dst == 0) ? 1.0 : 0.0;
-    row[26] = (dst == 1) ? 1.0 : 0.0;
-    row[27] = (dst == 2) ? 1.0 : 0.0;
-    row[28] = scale((double)w->time, 900.0);
-    row[29] = scale((double)w->tick, 120000.0);
-    row[30] = scale(c->teacher_score, 100.0);
-    row[31] = c->action == SIGNAL_CONTRACT_ACTION_DELIVER_LOCAL ? 1.0 : 0.0;
-    row[32] = c->action == SIGNAL_CONTRACT_ACTION_BUY_AND_DELIVER ? 1.0 : 0.0;
-    row[33] = c->action == SIGNAL_CONTRACT_ACTION_WAIT_FOR_STOCK ? 1.0 : 0.0;
-    row[34] = c->commodity == COMMODITY_FERRITE_INGOT ? 1.0 : 0.0;
-    row[35] = c->commodity == COMMODITY_FRAME ? 1.0 : 0.0;
-    row[36] = c->commodity == COMMODITY_LASER_MODULE ? 1.0 : 0.0;
-    row[37] = c->commodity == COMMODITY_TRACTOR_MODULE ? 1.0 : 0.0;
-    row[38] = c->commodity == COMMODITY_REPAIR_KIT ? 1.0 : 0.0;
-    row[39] = 1.0 - scale(c->distance, 9000.0);
+    row[SIGNAL_CONTRACT_FEATURE_BIAS] = 1.0f;
+    row[SIGNAL_CONTRACT_FEATURE_ACTION_ORDINAL] =
+        (float)scale((double)c->action,
+                     (double)(SIGNAL_CONTRACT_ACTION_COUNT - 1));
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_ACTIVE] =
+        src_st && station_is_active(src_st) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_DEST_ACTIVE] =
+        dst_st && station_is_active(dst_st) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_SAME_STATION] =
+        src_st && dst_st && src == dst ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_ORDINAL] =
+        (float)scale((double)c->commodity, (double)(COMMODITY_COUNT - 1));
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_STOCK] =
+        (float)scale(c->source_stock, MAX_PRODUCT_STOCK);
+    row[SIGNAL_CONTRACT_FEATURE_DEST_STOCK] =
+        (float)scale(c->dest_stock, MAX_PRODUCT_STOCK);
+    row[SIGNAL_CONTRACT_FEATURE_QUANTITY_NEEDED] =
+        (float)scale(c->quantity_needed, MAX_PRODUCT_STOCK);
+    row[SIGNAL_CONTRACT_FEATURE_CONTRACT_PRICE] =
+        (float)scale(c->contract_price, 100.0);
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_PRICE] =
+        (float)scale(c->source_price, 100.0);
+    row[SIGNAL_CONTRACT_FEATURE_PROFIT] =
+        (float)scale(profit > 0.0f ? profit : 0.0f, 100.0);
+    row[SIGNAL_CONTRACT_FEATURE_LEDGER_BALANCE] =
+        (float)signed_scale(c->ledger_balance, 1000.0);
+    row[SIGNAL_CONTRACT_FEATURE_CAN_AFFORD] =
+        c->ledger_balance + 0.01f >= c->source_price ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_HAS_CARGO] = held > 0 ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_FREE_CARGO] =
+        (float)scale(c->free_cargo, capacity > 0.0f ? capacity : 1.0f);
+    row[SIGNAL_CONTRACT_FEATURE_DISTANCE] =
+        (float)scale(c->distance, 9000.0);
+    row[SIGNAL_CONTRACT_FEATURE_AGE] = (float)scale(c->age, 300.0);
+    row[SIGNAL_CONTRACT_FEATURE_HULL_RATIO] =
+        (float)clip(c->hull_ratio, 0.0, 1.0);
+    row[SIGNAL_CONTRACT_FEATURE_TOWED_BODY_COUNT] =
+        (float)scale((double)ship_towed_body_count(sp->ship), 10.0);
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_PRODUCES] =
+        src_st && station_produces(src_st, c->commodity) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_DEST_CONSUMES] =
+        dst_st && station_consumes(dst_st, c->commodity) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_HAS_DOCK] =
+        src_st && station_has_module(src_st, MODULE_DOCK) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_HAS_FURNACE] =
+        src_st && station_has_module(src_st, MODULE_FURNACE) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_SOURCE_HAS_SHIPYARD] =
+        src_st && station_has_module(src_st, MODULE_SHIPYARD) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_DEST_HAS_DOCK] =
+        dst_st && station_has_module(dst_st, MODULE_DOCK) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_DEST_HAS_FURNACE] =
+        dst_st && station_has_module(dst_st, MODULE_FURNACE) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_DEST_HAS_SHIPYARD] =
+        dst_st && station_has_module(dst_st, MODULE_SHIPYARD) ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_WORLD_TIME] =
+        (float)scale((double)w->time, 900.0);
+    row[SIGNAL_CONTRACT_FEATURE_WORLD_TICK] =
+        (float)scale((double)w->tick, 120000.0);
+    row[SIGNAL_CONTRACT_FEATURE_TEACHER_SCORE] =
+        (float)signed_scale(c->teacher_score, 100.0);
+    row[SIGNAL_CONTRACT_FEATURE_ACTION_ONE_HOT_BEGIN + c->action] = 1.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_FERRITE] =
+        c->commodity == COMMODITY_FERRITE_INGOT ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_FRAME] =
+        c->commodity == COMMODITY_FRAME ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_LASER] =
+        c->commodity == COMMODITY_LASER_MODULE ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_TRACTOR] =
+        c->commodity == COMMODITY_TRACTOR_MODULE ? 1.0f : 0.0f;
+    row[SIGNAL_CONTRACT_FEATURE_COMMODITY_REPAIR_KIT] =
+        c->commodity == COMMODITY_REPAIR_KIT ? 1.0f : 0.0f;
+    return true;
 }
 
-static double forward_model(const double input[SCB_FEATURE_COUNT]) {
+static double forward_model(
+    const double input[SIGNAL_CONTRACT_FEATURE_COUNT]) {
     double hidden0[SCB_HIDDEN0] = {0.0};
     double hidden1[SCB_HIDDEN1] = {0.0};
     double output[1] = {0.0};
@@ -380,8 +457,16 @@ int signal_contract_brain_choose_with_scores(
     }
 
     for (int i = 0; i < count; i++) {
-        double row[SCB_FEATURE_COUNT];
-        fill_features(w, sp, &candidates[i], row);
+        float features[SIGNAL_CONTRACT_FEATURE_COUNT];
+        double row[SIGNAL_CONTRACT_FEATURE_COUNT];
+        if (!signal_contract_build_features(w, sp, &candidates[i], features)) {
+            if (scores && i < score_count) scores[i] = -1.0e300;
+            continue;
+        }
+        for (int feature = 0; feature < SIGNAL_CONTRACT_FEATURE_COUNT;
+             feature++) {
+            row[feature] = features[feature];
+        }
         double score = forward_model(row);
         if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {

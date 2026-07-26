@@ -17,10 +17,19 @@ Signal client integration work.
   - Feature set: `signal-mining-grammar-v1`
   - Encoder version: `3`
   - Shape: `70 -> 32 -> 16 -> 1`
-- `signal_client_strategic.*`: strategic NPC worker option scorer.
+- `signal_client_strategic.*`: legacy strategic NPC worker experiment.
   - Feature set: `signal-npc-worker-v2`
   - Encoder version: `1`
   - Shape: `78 -> 32 -> 16 -> 1`
+
+The checked-in strategic artifact predates the topology-safe server contract.
+Although its feature-set string says `signal-npc-worker-v2`, encoder version
+`1` includes station/faction slot identity. The authoritative server encoder is
+now `signal-npc-worker-v2` encoder version `2`, defined by
+`signal_npc_worker_build_features(...)`. The server rejects this legacy
+artifact and all 56-input v1 checkpoints with a retraining error. Keep the
+artifact only for historical client shadow comparisons; do not score
+encoder-version-2 rows with it.
 
 Each `.c` file contains the neuron weights and biases as aligned `static const`
 float arrays. The hot path has no checkpoint parser, no heap allocation, no temp
@@ -131,6 +140,8 @@ needs an explicit feature-contract bridge before active use.
 Run from `/Users/ratimics/develop/crlplrimes`:
 
 ```sh
+# Legacy strategic artifact reproduction only. A promoted export must be
+# retrained from the server's encoder-version-2 feature contract first.
 node scripts/export_signal_client_brain.mjs \
   --checkpoint build/signal_flight.nnckpt \
   --out ../signal/client/integration/work/signal \

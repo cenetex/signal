@@ -1,8 +1,9 @@
 /*
  * signal_npc_worker_brain.c -- Optional neural NPC worker scorer.
  *
- * This loader accepts crlplrimes signal-npc-worker-v1 .nnckpt files and
- * evaluates the 56-feature strategic worker candidate encoder.
+ * Checkpoints are accepted only when they declare the topology-safe
+ * signal-npc-worker-v2 encoder contract. Slot-indexed v1 rows and the earlier
+ * encoder-version-1 "v2" experiment are intentionally rejected.
  */
 #include "signal_npc_worker_brain.h"
 
@@ -15,11 +16,18 @@
 #include <string.h>
 
 enum {
-    SNWB_FEATURE_COUNT = 56,
     SNWB_LAYER_COUNT = 4,
     SNWB_HIDDEN0 = 32,
     SNWB_HIDDEN1 = 16,
 };
+
+_Static_assert(SIGNAL_NPC_WORKER_FEATURE_COUNT == 78,
+               "worker option changes require an explicit feature schema update");
+_Static_assert(
+    SIGNAL_NPC_WORKER_FEATURE_OPTION_ONE_HOT_END -
+        SIGNAL_NPC_WORKER_FEATURE_OPTION_ONE_HOT_BEGIN ==
+        SIGNAL_NPC_WORKER_OPTION_COUNT,
+    "every worker option needs a distinct feature");
 
 typedef struct {
     size_t previous;
@@ -177,9 +185,28 @@ bool signal_npc_worker_brain_load_checkpoint(const char *path,
               read_u64_le(fp, &layer_count) &&
               layer_count == SNWB_LAYER_COUNT;
     for (int i = 0; ok && i < SNWB_LAYER_COUNT; i++) ok = read_u64_le(fp, &sizes[i]);
-    ok = ok && sizes[0] == SNWB_FEATURE_COUNT && sizes[1] == SNWB_HIDDEN0 &&
-         sizes[2] == SNWB_HIDDEN1 && sizes[3] == 1 &&
-         read_u32_le(fp, &g_worker_brain.hidden_activation) &&
+    if (!ok) {
+        fclose(fp);
+        worker_brain_free();
+        set_err(err, err_size,
+                "unsupported or truncated signal-npc-worker checkpoint header");
+        return false;
+    }
+    if (sizes[0] != SIGNAL_NPC_WORKER_FEATURE_COUNT ||
+        sizes[1] != SNWB_HIDDEN0 || sizes[2] != SNWB_HIDDEN1 ||
+        sizes[3] != 1) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "incompatible signal-npc-worker checkpoint shape "
+                 "(input=%llu, expected %d); v1 checkpoints must be retrained",
+                 (unsigned long long)sizes[0],
+                 SIGNAL_NPC_WORKER_FEATURE_COUNT);
+        fclose(fp);
+        worker_brain_free();
+        set_err(err, err_size, buf);
+        return false;
+    }
+    ok = read_u32_le(fp, &g_worker_brain.hidden_activation) &&
          read_u32_le(fp, &g_worker_brain.output_activation) &&
          read_u32_le(fp, &loss);
     (void)loss;
@@ -216,10 +243,22 @@ bool signal_npc_worker_brain_load_checkpoint(const char *path,
         set_err(err, err_size, "unsupported or truncated signal-npc-worker checkpoint");
         return false;
     }
-    if (g_worker_brain.feature_encoder_version != 1u ||
-        strcmp(g_worker_brain.feature_set, "signal-npc-worker-v1") != 0) {
+    if (g_worker_brain.feature_encoder_version !=
+            SIGNAL_NPC_WORKER_FEATURE_ENCODER_VERSION ||
+        strcmp(g_worker_brain.feature_set,
+               SIGNAL_NPC_WORKER_FEATURE_SET) != 0) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "checkpoint feature contract is %s encoder %u; expected %s "
+                 "encoder %u (retrain legacy checkpoints)",
+                 g_worker_brain.feature_set[0] != '\0'
+                     ? g_worker_brain.feature_set
+                     : "<missing>",
+                 g_worker_brain.feature_encoder_version,
+                 SIGNAL_NPC_WORKER_FEATURE_SET,
+                 SIGNAL_NPC_WORKER_FEATURE_ENCODER_VERSION);
         worker_brain_free();
-        set_err(err, err_size, "checkpoint is not signal-npc-worker-v1");
+        set_err(err, err_size, buf);
         return false;
     }
 
@@ -269,67 +308,156 @@ static double clip(double x, double lo, double hi) {
     return x;
 }
 
-static void fill_features(const signal_npc_worker_candidate_t *c,
-                          double row[SNWB_FEATURE_COUNT]) {
-    memset(row, 0, SNWB_FEATURE_COUNT * sizeof(*row));
+bool signal_npc_worker_build_features(
+    const signal_npc_worker_candidate_t *c,
+    float row[SIGNAL_NPC_WORKER_FEATURE_COUNT]) {
+    if (!c || !row || c->option < 0 ||
+        c->option >= SIGNAL_NPC_WORKER_OPTION_COUNT) {
+        return false;
+    }
+
+    memset(row, 0, SIGNAL_NPC_WORKER_FEATURE_COUNT * sizeof(*row));
     int opt = (int)c->option;
-    int v1_opt = opt;
-    if (v1_opt < 0 || v1_opt >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
-        v1_opt = (int)SIGNAL_NPC_WORKER_OPTION_HAUL_CONTRACT;
-    row[0] = 1.0;
-    row[1] = clip((double)v1_opt /
-                      (double)(SIGNAL_NPC_WORKER_OPTION_V1_COUNT - 1),
-                  0.0, 1.0);
-    if (opt >= 0 && opt < SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
-        row[2 + opt] = 1.0;
-    row[10] = c->role == NPC_ROLE_MINER ? 1.0 : 0.0;
-    row[11] = c->role == NPC_ROLE_HAULER ? 1.0 : 0.0;
-    row[12] = clip((double)c->mining_level, 0.0, 5.0) / 5.0;
-    row[13] = clip((double)c->hold_level, 0.0, 5.0) / 5.0;
-    row[14] = clip((double)c->tractor_level, 0.0, 5.0) / 5.0;
-    row[15] = clip((double)c->home_station / 2.0, 0.0, 4.0);
-    row[16] = clip((double)c->home_balance / 1500.0, 0.0, 1.5);
-    row[17] = clip((double)c->home_refit_stock / 24.0, 0.0, 4.0);
-    row[18] = clip((double)c->remote_refit_stock / 24.0, 0.0, 4.0);
-    row[19] = clip((double)c->desired_units / 20.0, 0.0, 4.0);
-    row[20] = clip((double)c->refit_cost / 1500.0, 0.0, 2.0);
-    row[21] = c->home_balance + 0.01f >= c->refit_cost ? 1.0 : 0.0;
-    row[22] = c->desired_upgrade == SHIP_UPGRADE_MINING ? 1.0 : 0.0;
-    row[23] = c->desired_upgrade == SHIP_UPGRADE_HOLD ? 1.0 : 0.0;
-    row[24] = c->desired_upgrade == SHIP_UPGRADE_TRACTOR ? 1.0 : 0.0;
-    row[25] = c->desired_commodity == COMMODITY_FRAME ? 1.0 : 0.0;
-    row[26] = c->desired_commodity == COMMODITY_LASER_MODULE ? 1.0 : 0.0;
-    row[27] = c->desired_commodity == COMMODITY_TRACTOR_MODULE ? 1.0 : 0.0;
-    row[28] = clip((double)c->best_contract_value / 600.0, 0.0, 2.0);
-    row[29] = clip((double)c->best_contract_stock / 24.0, 0.0, 4.0);
-    row[30] = c->best_contract_dest >= 0 &&
-              c->best_contract_dest != c->home_station ? 1.0 : 0.0;
-    row[31] = c->mine_pressure ? 1.0 : 0.0;
-    row[32] = clip(c->persona_risk, 0.0, 1.0);
-    row[33] = clip(c->persona_growth, 0.0, 1.0);
-    row[34] = clip(c->persona_patience, 0.0, 1.0);
-    row[35] = clip((double)c->route_km / 20.0, 0.0, 1.0);
-    row[36] = c->home_has_dock ? 1.0 : 0.0;
-    row[37] = c->home_has_shipyard ? 1.0 : 0.0;
-    row[38] = c->home_has_furnace ? 1.0 : 0.0;
-    row[39] = c->home_has_frame_press ? 1.0 : 0.0;
-    row[40] = c->home_has_laser_fab ? 1.0 : 0.0;
-    row[41] = c->home_has_tractor_fab ? 1.0 : 0.0;
-    row[42] = c->option == SIGNAL_NPC_WORKER_OPTION_WAIT ? 1.0 : 0.0;
-    row[43] = c->option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
-              c->home_refit_stock >= (float)c->desired_units ? 1.0 : 0.0;
-    row[44] = c->import_module ? 1.0 : 0.0;
-    row[45] = c->legal ? 1.0 : 0.0;
-    row[46] = c->travel ? 1.0 : 0.0;
-    row[47] = c->self_upgrade ? 1.0 : 0.0;
-    row[48] = c->import_module ? 1.0 : 0.0;
-    row[49] = clip((double)c->credit_delta / 1000.0, -1.5, 2.0);
-    row[50] = clip(c->refit_progress, 0.0, 1.0);
-    row[51] = clip((double)c->contract_value / 600.0, 0.0, 2.0);
-    row[52] = clip((double)c->cargo_moved / 16.0, 0.0, 1.0);
-    row[53] = c->best_contract_commodity == COMMODITY_FERRITE_INGOT ? 1.0 : 0.0;
-    row[54] = c->best_contract_commodity == COMMODITY_CUPRITE_INGOT ? 1.0 : 0.0;
-    row[55] = c->best_contract_commodity == COMMODITY_CRYSTAL_INGOT ? 1.0 : 0.0;
+    bool import_option =
+        c->option == SIGNAL_NPC_WORKER_OPTION_IMPORT_FRAME ||
+        c->option == SIGNAL_NPC_WORKER_OPTION_IMPORT_LASER ||
+        c->option == SIGNAL_NPC_WORKER_OPTION_IMPORT_TRACTOR;
+
+    row[SIGNAL_NPC_WORKER_FEATURE_BIAS] = 1.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_OPTION_ORDINAL] =
+        (float)opt / (float)(SIGNAL_NPC_WORKER_OPTION_COUNT - 1);
+    row[SIGNAL_NPC_WORKER_FEATURE_OPTION_ONE_HOT_BEGIN + opt] = 1.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_ROLE_MINER] =
+        c->role == NPC_ROLE_MINER ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_ROLE_HAULER] =
+        c->role == NPC_ROLE_HAULER ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_MINING_LEVEL] =
+        (float)(clip((double)c->mining_level, 0.0, 5.0) / 5.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_HOLD_LEVEL] =
+        (float)(clip((double)c->hold_level, 0.0, 5.0) / 5.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_TRACTOR_LEVEL] =
+        (float)(clip((double)c->tractor_level, 0.0, 5.0) / 5.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_HAS_BEST_CONTRACT] =
+        c->best_contract_dest >= 0 ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_BALANCE] =
+        (float)clip((double)c->home_balance / 1500.0, 0.0, 1.5);
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_REFIT_STOCK] =
+        (float)clip((double)c->home_refit_stock / 24.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_REMOTE_REFIT_STOCK] =
+        (float)clip((double)c->remote_refit_stock / 24.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_DESIRED_UNITS] =
+        (float)clip((double)c->desired_units / 20.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_REFIT_COST] =
+        (float)clip((double)c->refit_cost / 1500.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_CAN_PAY_REFIT] =
+        c->home_balance + 0.01f >= c->refit_cost ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_UPGRADE_MINING] =
+        c->desired_upgrade == SHIP_UPGRADE_MINING ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_UPGRADE_HOLD] =
+        c->desired_upgrade == SHIP_UPGRADE_HOLD ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_UPGRADE_TRACTOR] =
+        c->desired_upgrade == SHIP_UPGRADE_TRACTOR ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_DESIRED_FRAME] =
+        c->desired_commodity == COMMODITY_FRAME ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_DESIRED_LASER] =
+        c->desired_commodity == COMMODITY_LASER_MODULE ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_DESIRED_TRACTOR] =
+        c->desired_commodity == COMMODITY_TRACTOR_MODULE ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_CONTRACT_VALUE] =
+        (float)clip((double)c->best_contract_value / 600.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_CONTRACT_STOCK] =
+        (float)clip((double)c->best_contract_stock / 24.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_CONTRACT_REMOTE] =
+        c->best_contract_dest >= 0 &&
+                c->best_contract_dest != c->home_station
+            ? 1.0f
+            : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_MINE_PRESSURE] =
+        c->mine_pressure ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_PERSONA_RISK] =
+        (float)clip(c->persona_risk, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_PERSONA_GROWTH] =
+        (float)clip(c->persona_growth, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_PERSONA_PATIENCE] =
+        (float)clip(c->persona_patience, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_ROUTE_DISTANCE] =
+        (float)clip((double)c->route_km / 20.0, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_DOCK] =
+        c->home_has_dock ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_SHIPYARD] =
+        c->home_has_shipyard ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_FURNACE] =
+        c->home_has_furnace ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_FRAME_PRESS] =
+        c->home_has_frame_press ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_LASER_FAB] =
+        c->home_has_laser_fab ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_HAS_TRACTOR_FAB] =
+        c->home_has_tractor_fab ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_OPTION_WAIT] =
+        c->option == SIGNAL_NPC_WORKER_OPTION_WAIT ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_HOME_REFIT_READY] =
+        c->option == SIGNAL_NPC_WORKER_OPTION_SELF_REFIT_HOME &&
+                c->home_refit_stock >= (float)c->desired_units
+            ? 1.0f
+            : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_OPTION_IMPORT] =
+        import_option ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_LEGAL] = c->legal ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_TRAVEL] = c->travel ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_SELF_UPGRADE] =
+        c->self_upgrade ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_IMPORT_MODULE] =
+        c->import_module ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_CREDIT_DELTA] =
+        (float)clip((double)c->credit_delta / 1000.0, -1.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_REFIT_PROGRESS] =
+        (float)clip(c->refit_progress, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_CONTRACT_VALUE] =
+        (float)clip((double)c->contract_value / 600.0, 0.0, 2.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_CARGO_MOVED] =
+        (float)clip((double)c->cargo_moved / 16.0, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_FRONTIER_PRESSURE] =
+        (float)clip(c->frontier_pressure, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_ROUTE_SUCCESS] =
+        (float)clip(c->route_success_memory, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_ROUTE_DANGER] =
+        (float)clip(c->route_danger_memory, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_ROUTE_PROOF] =
+        (float)clip(c->route_proof_memory, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_HOLOGRAM_RESONANCE] =
+        (float)clip(c->hologram_resonance, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_SOURCE_MEMORY] =
+        (float)clip(c->source_memory, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_PROVENANCE_PRESSURE] =
+        (float)clip(c->provenance_pressure, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_TRUST_BIAS] =
+        (float)clip(c->trust_bias, -1.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_BLACK_MARKET_ACCEPTANCE] =
+        (float)clip(c->black_market_acceptance, 0.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_ESCORT_BONUS] =
+        (float)clip(c->escort_bonus, -1.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_CONVOY_BONUS] =
+        (float)clip(c->convoy_bonus, -1.0, 1.0);
+    row[SIGNAL_NPC_WORKER_FEATURE_POLICY_SCREENING] =
+        c->policy_screening ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_BLACK_MARKET_STATION] =
+        c->black_market_station ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_CONTRABAND_OPPORTUNITY] =
+        c->contraband_opportunity ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_FRONTIER_SUPPLY] =
+        c->frontier_supply ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_ESCORT] = c->escort ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_PATROL] = c->patrol ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_RISKY_PROFIT] =
+        c->risky_profit ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_FERRITE_CONTRACT] =
+        c->best_contract_commodity == COMMODITY_FERRITE_INGOT ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_CUPRITE_CONTRACT] =
+        c->best_contract_commodity == COMMODITY_CUPRITE_INGOT ? 1.0f : 0.0f;
+    row[SIGNAL_NPC_WORKER_FEATURE_BEST_CRYSTAL_CONTRACT] =
+        c->best_contract_commodity == COMMODITY_CRYSTAL_INGOT ? 1.0f : 0.0f;
+    return true;
 }
 
 static double teacher_augmented_score(const signal_npc_worker_candidate_t *c) {
@@ -366,7 +494,8 @@ static double teacher_augmented_score(const signal_npc_worker_candidate_t *c) {
     return score;
 }
 
-static double forward_model(const double input[SNWB_FEATURE_COUNT]) {
+static double forward_model(
+    const double input[SIGNAL_NPC_WORKER_FEATURE_COUNT]) {
     double hidden0[SNWB_HIDDEN0] = {0.0};
     double hidden1[SNWB_HIDDEN1] = {0.0};
     double output[1] = {0.0};
@@ -422,11 +551,18 @@ int signal_npc_worker_brain_choose_with_scores(
     }
 
     for (int i = 0; i < count; i++) {
-        double row[SNWB_FEATURE_COUNT];
-        fill_features(&candidates[i], row);
+        float features[SIGNAL_NPC_WORKER_FEATURE_COUNT];
+        double row[SIGNAL_NPC_WORKER_FEATURE_COUNT];
+        if (!signal_npc_worker_build_features(&candidates[i], features)) {
+            if (scores && i < score_count) scores[i] = -1.0e300;
+            continue;
+        }
+        for (int feature = 0;
+             feature < SIGNAL_NPC_WORKER_FEATURE_COUNT;
+             feature++) {
+            row[feature] = features[feature];
+        }
         double score = forward_model(row);
-        if ((int)candidates[i].option >= SIGNAL_NPC_WORKER_OPTION_V1_COUNT)
-            score = teacher_augmented_score(&candidates[i]);
         if (scores && i < score_count) scores[i] = score;
         if (best < 0 || score > best_score) {
             best = i;
