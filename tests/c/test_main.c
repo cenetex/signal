@@ -84,6 +84,7 @@ void register_settlement_engine_tests(void);
 void register_signal_field_tests(void);
 void register_gossip_tests(void);
 void register_npc_radio_tests(void);
+void register_ai_feature_contract_tests(void);
 
 static int parse_shard_arg(const char *arg, int *out_index, int *out_total) {
     char *slash = NULL;
@@ -213,6 +214,7 @@ int main(int argc, char **argv) {
     register_signal_field_tests();
     register_gossip_tests();
     register_npc_radio_tests();
+    register_ai_feature_contract_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);
