@@ -153,6 +153,7 @@ static inline bool net_msg_is_deferable_snapshot(uint8_t msg) {
     case NET_MSG_WORLD_INTERACTIONS:
     case NET_MSG_WORLD_INTERACTIONS_Q:
     case NET_MSG_WORLD_INTERACTION_DRIFT:
+    case NET_MSG_WORLD_TOW_LINKS:
         return true;
     default:
         return false;
@@ -660,6 +661,10 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         INTERACTION_DRIFT_MSG_HEADER,
                         INTERACTION_DRIFT_RECORD_SIZE, SIM_MAX_INTERACTIONS,
                         world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_TOW_LINKS, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        TOW_LINKS_MSG_HEADER_SIZE, TOW_LINK_RECORD_SIZE,
+                        MAX_TOW_LINKS, world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -5497,6 +5502,38 @@ static inline int serialize_interaction_drift_for_player(
            count * INTERACTION_DRIFT_RECORD_SIZE;
 }
 
+static inline void serialize_entity_ref(uint8_t *buf, entity_ref_t ref) {
+    buf[0] = ref.kind;
+    write_u16_le(&buf[1], (uint16_t)ref.index);
+    write_u16_le(&buf[3], (uint16_t)ref.part);
+    write_u16_le(&buf[5], ref.generation);
+}
+
+static inline int serialize_tow_links(uint8_t *buf, const world_t *w) {
+    if (!buf || !w) return 0;
+    int count = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &w->tow_links[i];
+        if (!link->active) continue;
+        uint8_t *record = &buf[TOW_LINKS_MSG_HEADER_SIZE +
+                               count * TOW_LINK_RECORD_SIZE];
+        serialize_entity_ref(&record[0], link->source);
+        serialize_entity_ref(&record[7], link->target);
+        record[14] = link->profile;
+        record[15] = link->slot;
+        record[16] = link->state;
+        record[17] = 0;
+        write_u32_le(&record[18], link->attached_tick);
+        write_u32_le(&record[22], link->revision);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_TOW_LINKS;
+    write_u16_le(&buf[1], (uint16_t)count);
+    write_u32_le(&buf[3], w->tow_revision);
+    write_u32_le(&buf[7], w->tick);
+    return TOW_LINKS_MSG_HEADER_SIZE + count * TOW_LINK_RECORD_SIZE;
+}
+
 static inline uint64_t net_world_interactions_semantic_hash(const uint8_t *data,
                                                             int len) {
     if (!data || len <= 0) return 0;
@@ -5820,6 +5857,7 @@ typedef struct {
     uint8_t interactions_q[2 + SIM_MAX_INTERACTIONS * INTERACTION_Q_RECORD_SIZE];
     uint8_t interaction_drift[INTERACTION_DRIFT_MSG_HEADER +
                               SIM_MAX_INTERACTIONS * INTERACTION_DRIFT_RECORD_SIZE];
+    uint8_t tow_links[TOW_LINKS_MAX_SIZE];
     uint8_t world_time[5];
 } server_world_snapshot_scratch_t;
 
@@ -5976,6 +6014,10 @@ static inline void server_emit_world_snapshot_for_player(
         if (idrift_len > INTERACTION_DRIFT_MSG_HEADER)
             send(send_user, scratch->interaction_drift, idrift_len);
     }
+
+    int tow_len = serialize_tow_links(scratch->tow_links, w);
+    if (tow_len >= TOW_LINKS_MSG_HEADER_SIZE)
+        send(send_user, scratch->tow_links, tow_len);
 
     if (!sp->replication->world_time_sent ||
         (uint32_t)(w->tick - sp->replication->world_time_last_sent_tick) >=

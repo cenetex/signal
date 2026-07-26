@@ -489,10 +489,6 @@ typedef struct {
     uint64_t last_signed_nonce;
 } server_player_t;
 
-enum {
-    MAX_TOW_LINKS = 512,
-};
-
 typedef struct {
     bool active;
     uint16_t shipment_id;
@@ -666,6 +662,7 @@ typedef struct {
     /* Live tractor ownership. Target bindings and ship tow arrays are
      * compatibility projections rebuilt from this relationship pool. */
     tow_link_t tow_links[MAX_TOW_LINKS];
+    uint32_t tow_revision;
     uint16_t asteroid_generation[MAX_ASTEROIDS];
     uint16_t cargo_pod_generation[MAX_CARGO_PODS];
     uint16_t scaffold_generation[MAX_SCAFFOLDS];

@@ -360,6 +360,7 @@ static void sync_local_tow_state_from_authority(const NetPlayerState *state,
                                                 server_player_t *sp) {
     if (!state || !sp) return;
     sp->ship->tractor_level = (int)state->tractor_level;
+    if (g.tow_snapshot_received) return;
 
     int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
                         sizeof(sp->ship->towed_fragments[0]));
@@ -1029,6 +1030,11 @@ void net_reset_local_input_stream(void) {
 
 void reset_remote_dynamic_sync(void) {
     net_reset_local_input_stream();
+    g.tow_snapshot_received = false;
+    g.tow_snapshot_revision = 0;
+    g.tow_snapshot_server_tick = 0;
+    memset(g.world.tow_links, 0, sizeof(g.world.tow_links));
+    g.world.tow_revision = 0;
     g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
@@ -1283,9 +1289,11 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->angle = npcs[i].angle;
         n->target_asteroid =
             remote_npc_asteroid_index(npcs[i].target_asteroid);
-        n->towed_fragment =
-            remote_npc_asteroid_index(npcs[i].towed_fragment);
-        n->towed_scaffold = -1;
+        if (!g.tow_snapshot_received) {
+            n->towed_fragment =
+                remote_npc_asteroid_index(npcs[i].towed_fragment);
+            n->towed_scaffold = -1;
+        }
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
         n->tint_b = (float)npcs[i].tint_b / 255.0f;
@@ -1414,9 +1422,11 @@ void apply_remote_npc_status(const NetNpcStatusState* npcs, int count) {
         n->hull_class = npc_default_hull_class_for_role(n->role);
         n->target_asteroid =
             remote_npc_asteroid_index(npcs[i].target_asteroid);
-        n->towed_fragment =
-            remote_npc_asteroid_index(npcs[i].towed_fragment);
-        n->towed_scaffold = -1;
+        if (!g.tow_snapshot_received) {
+            n->towed_fragment =
+                remote_npc_asteroid_index(npcs[i].towed_fragment);
+            n->towed_scaffold = -1;
+        }
     }
 }
 
@@ -2001,7 +2011,7 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->active = true;
         pod->kind = (cargo_pod_kind_t)received[i].kind;
         pod->commodity = (commodity_t)received[i].commodity;
-        cargo_pod_clear_tractor(pod);
+        if (!g.tow_snapshot_received) cargo_pod_clear_tractor(pod);
         pod->pos = v2(received[i].pos_x, received[i].pos_y);
         pod->vel = v2(received[i].vel_x, received[i].vel_y);
         pod->radius = received[i].radius;
@@ -2012,13 +2022,15 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->shipment_id = received[i].shipment_id;
         pod->summary_flags = received[i].summary_flags;
         pod->summary_grade = received[i].summary_grade;
-        if (received[i].tractor_player >= 0) {
-            cargo_pod_set_player_tractor(pod, received[i].tractor_player);
-        } else if (received[i].tractor_station > 0 &&
-                   received[i].tractor_module > 0) {
-            cargo_pod_set_module_tractor(
-                pod, (int)received[i].tractor_station - 1,
-                (int)received[i].tractor_module - 1);
+        if (!g.tow_snapshot_received) {
+            if (received[i].tractor_player >= 0) {
+                cargo_pod_set_player_tractor(pod, received[i].tractor_player);
+            } else if (received[i].tractor_station > 0 &&
+                       received[i].tractor_module > 0) {
+                cargo_pod_set_module_tractor(
+                    pod, (int)received[i].tractor_station - 1,
+                    (int)received[i].tractor_module - 1);
+            }
         }
         pod->tow_hardpoint_tag = received[i].tow_hardpoint_tag <=
                 CARGO_POD_HARDPOINT_COUNT
@@ -2032,7 +2044,8 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
             g.cargo_pod_interp.curr[i].active = false;
         }
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (!g.tow_snapshot_received)
+        sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
@@ -2044,7 +2057,8 @@ void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
         cargo_pod_interp_begin_update(idx);
         g.cargo_pod_interp.curr[idx].active = false;
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (!g.tow_snapshot_received)
+        sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* received,
@@ -2105,6 +2119,229 @@ void apply_remote_interaction_drift(const NetInteractionDriftState *items,
         it->range = items[i].range;
         it->intensity = items[i].intensity;
     }
+}
+
+static bool net_tow_revision_before(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) < 0;
+}
+
+static bool net_tow_link_shape_valid(const tow_link_t *link) {
+    if (!link || !link->active || entity_ref_is_none(link->source) ||
+        entity_ref_is_none(link->target) || link->target.part != -1) {
+        return false;
+    }
+    bool target_valid =
+        (link->target.kind == ENTITY_KIND_ASTEROID &&
+         link->target.index >= 0 && link->target.index < MAX_ASTEROIDS) ||
+        (link->target.kind == ENTITY_KIND_CARGO_POD &&
+         link->target.index >= 0 && link->target.index < MAX_CARGO_PODS) ||
+        (link->target.kind == ENTITY_KIND_SCAFFOLD &&
+         link->target.index >= 0 && link->target.index < MAX_SCAFFOLDS);
+    if (!target_valid) return false;
+    if (link->source.kind == ENTITY_KIND_SHIP) {
+        if (link->source.index < WORLD_PLAYER_SHIP_BASE ||
+            link->source.index >= WORLD_SHIP_CAP ||
+            link->source.part != -1) {
+            return false;
+        }
+        if (link->profile == TOW_PROFILE_SHIP_FRAGMENT)
+            return link->target.kind == ENTITY_KIND_ASTEROID &&
+                   link->slot < 10;
+        if (link->profile == TOW_PROFILE_SHIP_POD)
+            return link->target.kind == ENTITY_KIND_CARGO_POD &&
+                   link->source.index < WORLD_NPC_SHIP_BASE &&
+                   link->slot < 10;
+        if (link->profile == TOW_PROFILE_SHIP_SCAFFOLD)
+            return link->target.kind == ENTITY_KIND_SCAFFOLD &&
+                   link->slot == 0;
+        return false;
+    }
+    return link->source.kind == ENTITY_KIND_STATION_MODULE &&
+           link->source.index >= 0 &&
+           link->source.index < MAX_STATIONS &&
+           link->source.part >= 0 &&
+           link->source.part < MAX_MODULES_PER_STATION &&
+           link->profile == TOW_PROFILE_MODULE_POD &&
+           link->target.kind == ENTITY_KIND_CARGO_POD &&
+           link->slot == 0;
+}
+
+static tractor_binding_t net_tow_binding_for_source(entity_ref_t source) {
+    tractor_binding_t binding;
+    tractor_binding_clear(&binding);
+    if (source.kind == ENTITY_KIND_SHIP &&
+        source.index >= WORLD_PLAYER_SHIP_BASE &&
+        source.index < WORLD_NPC_SHIP_BASE) {
+        binding.kind = TRACTOR_SOURCE_PLAYER;
+        binding.source_index =
+            (int16_t)(source.index - WORLD_PLAYER_SHIP_BASE);
+    } else if (source.kind == ENTITY_KIND_SHIP &&
+               source.index >= WORLD_NPC_SHIP_BASE &&
+               source.index < WORLD_SHIP_CAP) {
+        binding.kind = TRACTOR_SOURCE_NPC;
+        binding.source_index =
+            (int16_t)(source.index - WORLD_NPC_SHIP_BASE);
+    } else if (source.kind == ENTITY_KIND_STATION_MODULE) {
+        binding.kind = TRACTOR_SOURCE_STATION_MODULE;
+        binding.source_index = source.index;
+        binding.source_part = source.part;
+    }
+    binding.source_generation = source.generation;
+    return binding;
+}
+
+static void net_clear_tow_projections(void) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        tractor_binding_clear(&g.world.asteroids[i].tractor);
+        tractor_binding_clear(&g.asteroid_interp.prev[i].tractor);
+        tractor_binding_clear(&g.asteroid_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        tractor_binding_clear(&g.world.cargo_pods[i].tractor);
+        tractor_binding_clear(&g.cargo_pod_interp.prev[i].tractor);
+        tractor_binding_clear(&g.cargo_pod_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        tractor_binding_clear(&g.world.scaffolds[i].tractor);
+        tractor_binding_clear(&g.scaffold_interp.prev[i].tractor);
+        tractor_binding_clear(&g.scaffold_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        if (!g.world.ships[i].active) continue;
+        ship_t *ship = &g.world.ships[i].component;
+        ship->towed_count = 0;
+        ship->towed_pod_count = 0;
+        ship->towed_scaffold = -1;
+        memset(ship->towed_fragments, -1, sizeof(ship->towed_fragments));
+        memset(ship->towed_pods, -1, sizeof(ship->towed_pods));
+    }
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        g.player_interp.prev[i].towed_count = 0;
+        g.player_interp.curr[i].towed_count = 0;
+        for (int slot = 0; slot < 10; slot++) {
+            g.player_interp.prev[i].towed_fragments[slot] = 0xFFFFu;
+            g.player_interp.curr[i].towed_fragments[slot] = 0xFFFFu;
+        }
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        g.npc_interp.prev[i].towed_fragment = -1;
+        g.npc_interp.curr[i].towed_fragment = -1;
+        g.npc_interp.prev[i].towed_scaffold = -1;
+        g.npc_interp.curr[i].towed_scaffold = -1;
+    }
+}
+
+static void net_project_tow_target(entity_ref_t target,
+                                   tractor_binding_t binding) {
+    if (target.kind == ENTITY_KIND_ASTEROID &&
+        target.index >= 0 && target.index < MAX_ASTEROIDS) {
+        g.world.asteroids[target.index].tractor = binding;
+        g.asteroid_interp.prev[target.index].tractor = binding;
+        g.asteroid_interp.curr[target.index].tractor = binding;
+    } else if (target.kind == ENTITY_KIND_CARGO_POD &&
+               target.index >= 0 && target.index < MAX_CARGO_PODS) {
+        g.world.cargo_pods[target.index].tractor = binding;
+        g.cargo_pod_interp.prev[target.index].tractor = binding;
+        g.cargo_pod_interp.curr[target.index].tractor = binding;
+    } else if (target.kind == ENTITY_KIND_SCAFFOLD &&
+               target.index >= 0 && target.index < MAX_SCAFFOLDS) {
+        g.world.scaffolds[target.index].tractor = binding;
+        g.scaffold_interp.prev[target.index].tractor = binding;
+        g.scaffold_interp.curr[target.index].tractor = binding;
+    }
+}
+
+static void net_project_tow_source(const tow_link_t *link) {
+    if (!link || link->source.kind != ENTITY_KIND_SHIP) return;
+    int ship_slot = link->source.index;
+    ship_t *ship = g.world.ships[ship_slot].active
+        ? &g.world.ships[ship_slot].component : NULL;
+    if (link->profile == TOW_PROFILE_SHIP_FRAGMENT) {
+        if (ship) {
+            ship->towed_fragments[link->slot] = link->target.index;
+            if (ship->towed_count <= link->slot)
+                ship->towed_count = (uint8_t)(link->slot + 1);
+        }
+        if (ship_slot < WORLD_NPC_SHIP_BASE) {
+            int player = ship_slot - WORLD_PLAYER_SHIP_BASE;
+            g.player_interp.prev[player].towed_fragments[link->slot] =
+                (uint16_t)link->target.index;
+            g.player_interp.curr[player].towed_fragments[link->slot] =
+                (uint16_t)link->target.index;
+            if (g.player_interp.prev[player].towed_count <= link->slot)
+                g.player_interp.prev[player].towed_count =
+                    (uint8_t)(link->slot + 1);
+            if (g.player_interp.curr[player].towed_count <= link->slot)
+                g.player_interp.curr[player].towed_count =
+                    (uint8_t)(link->slot + 1);
+        } else {
+            int npc = ship_slot - WORLD_NPC_SHIP_BASE;
+            g.npc_interp.prev[npc].towed_fragment = link->target.index;
+            g.npc_interp.curr[npc].towed_fragment = link->target.index;
+        }
+    } else if (link->profile == TOW_PROFILE_SHIP_POD && ship) {
+        ship->towed_pods[link->slot] = link->target.index;
+        if (ship->towed_pod_count <= link->slot)
+            ship->towed_pod_count = (uint8_t)(link->slot + 1);
+    } else if (link->profile == TOW_PROFILE_SHIP_SCAFFOLD) {
+        if (ship) ship->towed_scaffold = link->target.index;
+        if (ship_slot >= WORLD_NPC_SHIP_BASE) {
+            int npc = ship_slot - WORLD_NPC_SHIP_BASE;
+            g.npc_interp.prev[npc].towed_scaffold = link->target.index;
+            g.npc_interp.curr[npc].towed_scaffold = link->target.index;
+        }
+    }
+}
+
+void apply_remote_tow_links(const tow_link_t *links, int count,
+                            uint32_t revision, uint32_t server_tick) {
+    if (count < 0 || count > MAX_TOW_LINKS || (count > 0 && !links)) return;
+    if (g.tow_snapshot_received &&
+        revision != g.tow_snapshot_revision &&
+        net_tow_revision_before(revision, g.tow_snapshot_revision)) {
+        return;
+    }
+
+    tow_link_t accepted[MAX_TOW_LINKS];
+    int accepted_count = 0;
+    if (g.tow_snapshot_received && revision == g.tow_snapshot_revision) {
+        /* Equal revisions are duplicate delivery, not a new command. Reuse
+         * the accepted relation set so a same-version packet with different
+         * bytes cannot mutate authority, while still re-projecting after a
+         * target identity enters relevance. */
+        for (int i = 0; i < MAX_TOW_LINKS; i++) {
+            if (g.world.tow_links[i].active)
+                accepted[accepted_count++] = g.world.tow_links[i];
+        }
+    } else {
+        for (int i = 0; i < count; i++) {
+            if (!net_tow_link_shape_valid(&links[i])) continue;
+            bool duplicate_target = false;
+            for (int j = 0; j < accepted_count; j++) {
+                if (accepted[j].target.kind == links[i].target.kind &&
+                    accepted[j].target.index == links[i].target.index &&
+                    accepted[j].target.part == links[i].target.part) {
+                    duplicate_target = true;
+                    break;
+                }
+            }
+            if (!duplicate_target) accepted[accepted_count++] = links[i];
+        }
+    }
+
+    net_clear_tow_projections();
+    memset(g.world.tow_links, 0, sizeof(g.world.tow_links));
+    for (int i = 0; i < accepted_count; i++) {
+        g.world.tow_links[i] = accepted[i];
+        net_project_tow_source(&accepted[i]);
+        net_project_tow_target(
+            accepted[i].target,
+            net_tow_binding_for_source(accepted[i].source));
+    }
+    g.world.tow_revision = revision;
+    g.tow_snapshot_received = true;
+    g.tow_snapshot_revision = revision;
+    g.tow_snapshot_server_tick = server_tick;
 }
 
 /* Defined in main.c — process events for audio + UI */
@@ -2657,6 +2894,13 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 }
             }
         }
+        if (g.tow_snapshot_received) {
+            const NetPlayerState *tow =
+                &g.player_interp.curr[state->player_id];
+            next.towed_count = tow->towed_count;
+            memcpy(next.towed_fragments, tow->towed_fragments,
+                   sizeof(next.towed_fragments));
+        }
         g.player_interp.curr[state->player_id] = next;
         /* First time we see this player with a callsign — show join notice */
         if (!was_active && next.active && next.callsign[0])
@@ -2689,10 +2933,14 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
             sp->ship->cargo[c] = state->cargo[c];
         sp->nearby_fragments = (int)state->nearby_fragments;
         sp->tractor_fragments = (int)state->tractor_fragments;
-        sp->ship->towed_count = state->towed_count;
-        for (int t = 0; t < 10; t++)
-            sp->ship->towed_fragments[t] = (state->towed_fragments[t] == 0xFFFFu)
-                ? -1 : (int16_t)state->towed_fragments[t];
+        if (!g.tow_snapshot_received) {
+            sp->ship->towed_count = state->towed_count;
+            for (int t = 0; t < 10; t++) {
+                sp->ship->towed_fragments[t] =
+                    (state->towed_fragments[t] == 0xFFFFu)
+                        ? -1 : (int16_t)state->towed_fragments[t];
+            }
+        }
         /* Autopilot is also predict-protected: the [O] press triggers an
          * optimistic local toggle, and stale PLAYER_SHIP messages can
          * arrive carrying the pre-toggle value before the server has
@@ -2823,7 +3071,8 @@ void interpolate_world_for_render(void) {
             i, clampf(g.cargo_pod_interp.elapsed[i], 0.0f,
                       CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC));
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (!g.tow_snapshot_received)
+        sync_local_towed_pods_from_cargo_authority();
 }
 
 const NetPlayerState* net_get_interpolated_players(void) {

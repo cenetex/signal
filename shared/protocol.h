@@ -363,6 +363,18 @@ enum {
                                             * This is the private wire mirror of
                                             * KNOW_MARKET items only; authoritative
                                             * contracts retain their visibility mask. */
+    NET_MSG_WORLD_TOW_LINKS        = 0x70, /* server -> client. Atomic replacement
+                                            * snapshot of canonical live towing
+                                            * relationships.
+                                            *
+                                            *   [type:1][count:u16]
+                                            *   [revision:u32][server_tick:u32]
+                                            *     count x TOW_LINK_RECORD_SIZE
+                                            *
+                                            * Legacy ship/target tow fields remain
+                                            * compatibility projections. Clients that
+                                            * understand this stream rebuild those
+                                            * projections only from this snapshot. */
     NET_MSG_WORLD_ASTEROID_MOTION  = 0x4B, /* server -> client. Compact live asteroid
                                             * motion correction for already-known clean
                                             * rocks.
@@ -1501,6 +1513,15 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 #define PLAYER_DOCK_MSG_HEADER 2  /* type + count */
 #define PLAYER_DOCK_RECORD_SIZE 2 /* id + compact status flags byte */
 #define PLAYER_DOCK_STATUS_FLAGS_MASK 0x05u /* thrusting + docked */
+
+/* Canonical tow relationship snapshot. Each entity reference is encoded as
+ * [kind:u8][index:i16][part:i16][generation:u16]. The record then carries
+ * [profile:u8][slot:u8][state:u8][reserved:u8]
+ * [attached_tick:u32][revision:u32]. */
+#define TOW_LINKS_MSG_HEADER_SIZE 11
+#define TOW_LINK_RECORD_SIZE 26
+#define TOW_LINKS_MAX_SIZE \
+    (TOW_LINKS_MSG_HEADER_SIZE + MAX_TOW_LINKS * TOW_LINK_RECORD_SIZE)
 
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32]
  * [smelt:u8][grade:u8][crystal_stage:u8][phase:u8] */

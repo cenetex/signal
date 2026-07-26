@@ -92,6 +92,8 @@ void apply_remote_cargo_pod_linear(const NetCargoPodLinearState* pods,
 void apply_remote_interactions(const sim_interaction_t *items, int count);
 void apply_remote_interaction_drift(const NetInteractionDriftState *items,
                                     int count);
+void apply_remote_tow_links(const tow_link_t *links, int count,
+                            uint32_t revision, uint32_t server_tick);
 void apply_remote_hail_response(uint8_t station,
                                 float credits,
                                 int contract_index,

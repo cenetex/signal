@@ -228,6 +228,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_cargo_pod_linear = apply_remote_cargo_pod_linear;
     cbs->on_interactions = apply_remote_interactions;
     cbs->on_interaction_drift = apply_remote_interaction_drift;
+    cbs->on_tow_links = apply_remote_tow_links;
     cbs->on_hail_response = apply_remote_hail_response;
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
@@ -3434,6 +3435,11 @@ int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
     bool saved_net_authority_enabled = g.net_authority_enabled;
     bool saved_net_input_tick_protocol = g.net_input_tick_protocol;
+    bool saved_tow_snapshot_received = g.tow_snapshot_received;
+    uint32_t saved_tow_snapshot_revision = g.tow_snapshot_revision;
+    uint32_t saved_tow_snapshot_server_tick = g.tow_snapshot_server_tick;
+    uint32_t saved_world_tow_revision = g.world.tow_revision;
+    tow_link_t saved_world_tow_links[MAX_TOW_LINKS];
     int saved_local_player_slot = g.local_player_slot;
     bool saved_player0_connected = g.world.players[0].connected;
     bool saved_player0_docked = g.world.players[0].docked;
@@ -3464,6 +3470,8 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_player0_towed_pods,
            g.world.players[0].ship->towed_pods,
            sizeof(saved_player0_towed_pods));
+    memcpy(saved_world_tow_links, g.world.tow_links,
+           sizeof(saved_world_tow_links));
     memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
     memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
            sizeof(saved_local_server_asteroids));
@@ -3481,6 +3489,9 @@ int signal_smoke_remote_towable_interp_check(void) {
            sizeof(saved_cargo_pod_elapsed));
 
     g.local_server.active = false;
+    /* This smoke exercises the compatibility packet paths directly. The
+     * atomic tow snapshot is covered by the real loopback lifecycle smoke. */
+    g.tow_snapshot_received = false;
     g.world.players[0].ship->towed_count = 0;
     g.world.players[0].ship->towed_pod_count = 0;
     for (int i = 0; i < 10; i++) {
@@ -3613,6 +3624,43 @@ int signal_smoke_remote_towable_interp_check(void) {
     net_advance_cargo_pod_interpolation(0.05f);
     interpolate_world_for_render();
     float local_towed_pod_predicted_x = g.world.cargo_pods[11].pos.x;
+
+    tow_link_t atomic_link = {
+        .active = true,
+        .source = g.world.players[0].ship_ref,
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = 11,
+            .part = -1,
+            .generation = 1,
+        },
+        .profile = TOW_PROFILE_SHIP_POD,
+        .slot = 0,
+        .state = TOW_LINK_HELD,
+        .attached_tick = 400,
+        .revision = 40,
+    };
+    apply_remote_tow_links(&atomic_link, 1, 40, 400);
+    bool atomic_attach_ok =
+        g.tow_snapshot_received &&
+        g.tow_snapshot_revision == 40 &&
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 39, 401);
+    bool stale_release_rejected =
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 40, 402);
+    bool conflicting_duplicate_idempotent =
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 41, 403);
+    bool newer_release_applied =
+        !g.world.tow_links[0].active &&
+        !cargo_pod_has_player_tractor(&g.cargo_pod_interp.curr[11]);
+    bool atomic_tow_snapshot_ok =
+        atomic_attach_ok && stale_release_rejected &&
+        conflicting_duplicate_idempotent && newer_release_applied;
 
     NetAsteroidState asteroid = {
         .index = 7,
@@ -3891,6 +3939,7 @@ int signal_smoke_remote_towable_interp_check(void) {
              local_towed_pod_binding_preserved &&
              local_towed_pod_predicted_x > 299.9f &&
              local_towed_pod_predicted_x < 300.1f &&
+             atomic_tow_snapshot_ok &&
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
@@ -3942,6 +3991,12 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.local_server.active = saved_local_server_active;
     g.net_authority_enabled = saved_net_authority_enabled;
     g.net_input_tick_protocol = saved_net_input_tick_protocol;
+    g.tow_snapshot_received = saved_tow_snapshot_received;
+    g.tow_snapshot_revision = saved_tow_snapshot_revision;
+    g.tow_snapshot_server_tick = saved_tow_snapshot_server_tick;
+    g.world.tow_revision = saved_world_tow_revision;
+    memcpy(g.world.tow_links, saved_world_tow_links,
+           sizeof(saved_world_tow_links));
     g.local_player_slot = saved_local_player_slot;
     g.world.players[0].connected = saved_player0_connected;
     g.world.players[0].docked = saved_player0_docked;

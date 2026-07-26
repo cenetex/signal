@@ -2559,6 +2559,58 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_TOW_LINKS:
+        if (len >= TOW_LINKS_MSG_HEADER_SIZE &&
+            net_state.callbacks.on_tow_links) {
+            int count = (int)read_u16_le(&data[1]);
+            if (count > MAX_TOW_LINKS) break;
+            int expected = TOW_LINKS_MSG_HEADER_SIZE +
+                count * TOW_LINK_RECORD_SIZE;
+            if (len < expected) break;
+            tow_link_t links[MAX_TOW_LINKS];
+            memset(links, 0, sizeof(links));
+            bool valid = true;
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p =
+                    &data[TOW_LINKS_MSG_HEADER_SIZE +
+                          i * TOW_LINK_RECORD_SIZE];
+                tow_link_t *link = &links[i];
+                link->active = true;
+                link->source = (entity_ref_t){
+                    .kind = p[0],
+                    .index = (int16_t)read_u16_le(&p[1]),
+                    .part = (int16_t)read_u16_le(&p[3]),
+                    .generation = read_u16_le(&p[5]),
+                };
+                link->target = (entity_ref_t){
+                    .kind = p[7],
+                    .index = (int16_t)read_u16_le(&p[8]),
+                    .part = (int16_t)read_u16_le(&p[10]),
+                    .generation = read_u16_le(&p[12]),
+                };
+                link->profile = p[14];
+                link->slot = p[15];
+                link->state = p[16];
+                link->attached_tick = read_u32_le(&p[18]);
+                link->revision = read_u32_le(&p[22]);
+                if (entity_ref_is_none(link->source) ||
+                    entity_ref_is_none(link->target) ||
+                    link->profile <= TOW_PROFILE_NONE ||
+                    link->profile > TOW_PROFILE_MODULE_POD ||
+                    link->state <= TOW_LINK_INACTIVE ||
+                    link->state > TOW_LINK_RELEASING) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) {
+                net_state.callbacks.on_tow_links(
+                    links, count, read_u32_le(&data[3]),
+                    read_u32_le(&data[7]));
+            }
+        }
+        break;
+
     case NET_MSG_HAIL_RESPONSE:
         if (len >= 6 && net_state.callbacks.on_hail_response) {
             uint8_t station = data[1];

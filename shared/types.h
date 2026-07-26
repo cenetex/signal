@@ -38,6 +38,7 @@ enum {
     MAX_NPC_SHIPS = 100,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
+    MAX_TOW_LINKS = 512, /* canonical live source -> towable relationships */
     CARGO_POD_MANIFEST_CAP = 200, /* one rich ore fragment can become one full smelt pod */
     CARGO_POD_UNIT_CAPACITY = CELL_HEX_PAYLOAD_CAPACITY,
     AUDIO_VOICE_COUNT = 24,
@@ -86,6 +87,8 @@ typedef struct {
     uint8_t slot;       /* source-local formation/hold slot */
     uint8_t state;      /* tow_link_state_t */
     uint8_t _pad;
+    uint32_t attached_tick;
+    uint32_t revision;
 } tow_link_t;
 
 static inline entity_ref_t entity_ref_none(void) {

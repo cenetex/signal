@@ -1497,6 +1497,26 @@ static bool world_tow_link_capacity_allows(const world_t *w,
     return fragments + pods < ship_tow_body_capacity(ship);
 }
 
+static uint32_t world_tow_next_revision(world_t *w) {
+    if (!w) return 0;
+    w->tow_revision++;
+    if (w->tow_revision == 0) w->tow_revision++;
+    return w->tow_revision;
+}
+
+static void world_tow_link_retire(world_t *w, tow_link_t *link) {
+    if (!w || !link || !link->active) return;
+    (void)world_tow_next_revision(w);
+    memset(link, 0, sizeof(*link));
+}
+
+static void world_tow_link_set_slot(world_t *w, tow_link_t *link,
+                                    uint8_t slot) {
+    if (!w || !link || link->slot == slot) return;
+    link->slot = slot;
+    link->revision = world_tow_next_revision(w);
+}
+
 static bool world_tow_link_store(world_t *w, entity_ref_t source,
                                  entity_ref_t target, tow_profile_t profile,
                                  int slot, tow_link_state_t state) {
@@ -1517,6 +1537,16 @@ static bool world_tow_link_store(world_t *w, entity_ref_t source,
         }
     }
     if (!link) return false;
+    bool same_attachment = link->active &&
+        entity_ref_equal(link->source, source) &&
+        entity_ref_equal(link->target, target);
+    if (same_attachment && link->profile == (uint8_t)profile &&
+        link->slot == (uint8_t)slot && link->state == (uint8_t)state) {
+        return true;
+    }
+    uint32_t attached_tick =
+        same_attachment ? link->attached_tick : w->tick;
+    uint32_t revision = world_tow_next_revision(w);
     *link = (tow_link_t){
         .active = true,
         .source = source,
@@ -1524,6 +1554,8 @@ static bool world_tow_link_store(world_t *w, entity_ref_t source,
         .profile = (uint8_t)profile,
         .slot = (uint8_t)slot,
         .state = (uint8_t)state,
+        .attached_tick = attached_tick,
+        .revision = revision,
     };
     return true;
 }
@@ -1543,7 +1575,7 @@ bool world_tow_link_clear_target(world_t *w, entity_ref_t target) {
     if (!w || entity_ref_is_none(target)) return false;
     tow_link_t *link = world_tow_link_for_target(w, target);
     bool found = link != NULL;
-    if (link) memset(link, 0, sizeof(*link));
+    world_tow_link_retire(w, link);
     world_tow_rebuild_projections(w);
     return found;
 }
@@ -1554,7 +1586,7 @@ void world_tow_links_clear_source(world_t *w, entity_ref_t source) {
     for (int i = 0; i < MAX_TOW_LINKS; i++) {
         tow_link_t *link = &w->tow_links[i];
         if (link->active && entity_ref_equal(link->source, source)) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
             cleared = true;
         }
     }
@@ -1570,7 +1602,7 @@ static void world_tow_links_clear_target_slot(world_t *w,
         tow_link_t *link = &w->tow_links[i];
         if (link->active && link->target.kind == (uint8_t)kind &&
             link->target.index == index && link->target.part == part) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
         }
     }
     world_tow_rebuild_projections(w);
@@ -2115,8 +2147,10 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
 
     for (int i = 0; i < MAX_TOW_LINKS; i++) {
         tow_link_t *link = &w->tow_links[i];
-        if (link->active && entity_ref_equal(link->source, src_ship_ref))
+        if (link->active && entity_ref_equal(link->source, src_ship_ref)) {
             link->source = dst_ship_ref;
+            link->revision = world_tow_next_revision(w);
+        }
     }
 
     src->ship_asset_id = SHIP_ASSET_ID_NONE;
@@ -2867,13 +2901,13 @@ static void world_tow_import_target_projection(world_t *w,
     if (!binding) return;
     tow_link_t *existing = world_tow_link_for_target(w, target);
     if (binding->kind == TRACTOR_SOURCE_NONE) {
-        if (existing) memset(existing, 0, sizeof(*existing));
+        world_tow_link_retire(w, existing);
         return;
     }
     entity_ref_t source = world_tow_source_ref_from_binding(w, *binding);
     tow_profile_t profile = world_tow_profile_for(source, target);
     if (entity_ref_is_none(source) || profile == TOW_PROFILE_NONE) {
-        if (existing) memset(existing, 0, sizeof(*existing));
+        world_tow_link_retire(w, existing);
         tractor_binding_clear(binding);
         return;
     }
@@ -2899,13 +2933,13 @@ static bool world_tow_project_link(world_t *w, tow_link_t *link) {
         if (!ship) return false;
         if (link->source.index >= WORLD_NPC_SHIP_BASE) {
             if (ship->towed_count > 0) return false;
-            link->slot = 0;
+            world_tow_link_set_slot(w, link, 0);
         } else {
             int cap = (int)(sizeof(ship->towed_fragments) /
                             sizeof(ship->towed_fragments[0]));
             if (ship->towed_count >= cap || ship_tow_body_space(ship) <= 0)
                 return false;
-            link->slot = ship->towed_count;
+            world_tow_link_set_slot(w, link, ship->towed_count);
         }
         ship->towed_fragments[ship->towed_count++] = link->target.index;
         break;
@@ -2915,17 +2949,17 @@ static bool world_tow_project_link(world_t *w, tow_link_t *link) {
                         sizeof(ship->towed_pods[0]));
         if (ship->towed_pod_count >= cap || ship_tow_body_space(ship) <= 0)
             return false;
-        link->slot = ship->towed_pod_count;
+        world_tow_link_set_slot(w, link, ship->towed_pod_count);
         ship->towed_pods[ship->towed_pod_count++] = link->target.index;
         break;
     }
     case TOW_PROFILE_SHIP_SCAFFOLD:
         if (!ship || ship->towed_scaffold >= 0) return false;
-        link->slot = 0;
+        world_tow_link_set_slot(w, link, 0);
         ship->towed_scaffold = link->target.index;
         break;
     case TOW_PROFILE_MODULE_POD:
-        link->slot = 0;
+        world_tow_link_set_slot(w, link, 0);
         break;
     default:
         return false;
@@ -2970,7 +3004,7 @@ static void world_tow_rebuild_projections(world_t *w) {
     for (int i = 0; i < count; i++) {
         tow_link_t *link = ordered[i];
         if (!world_tow_project_link(w, link))
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
     }
 }
 
@@ -2983,7 +3017,7 @@ void world_tow_links_refresh(world_t *w) {
         if (!link->active) continue;
         if (!world_tow_source_is_live(w, link->source) ||
             !world_entity_ref_is_live(w, link->target)) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
         }
     }
 

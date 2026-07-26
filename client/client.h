@@ -449,6 +449,9 @@ typedef struct {
     char identity_pub_b58[48];   /* base58 of pubkey, null-terminated */
     /* --- Network authority (remote WebSocket or local loopback) --- */
     bool net_authority_enabled;
+    bool tow_snapshot_received;
+    uint32_t tow_snapshot_revision;
+    uint32_t tow_snapshot_server_tick;
     float net_send_timer;
     bool scanned_players[NET_MAX_PLAYERS];
     uint8_t pending_net_action;

@@ -363,6 +363,8 @@ typedef struct {
 typedef void (*net_on_interactions_fn)(const sim_interaction_t *items, int count);
 typedef void (*net_on_interaction_drift_fn)(const NetInteractionDriftState *items,
                                             int count);
+typedef void (*net_on_tow_links_fn)(const tow_link_t *links, int count,
+                                    uint32_t revision, uint32_t server_tick);
 
 typedef struct {
     uint32_t flags;
@@ -522,6 +524,7 @@ typedef struct {
     net_on_cargo_pod_linear_fn on_cargo_pod_linear;
     net_on_interactions_fn on_interactions;
     net_on_interaction_drift_fn on_interaction_drift;
+    net_on_tow_links_fn on_tow_links;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;

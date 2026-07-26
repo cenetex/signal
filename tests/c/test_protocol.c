@@ -4844,18 +4844,20 @@ TEST(test_world_snapshot_emitter_sequence_shared) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 5);
+    ASSERT_EQ_INT(cap.count, 6);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_PLAYERS);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_INTERACTIONS_Q);
-    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
     ASSERT_EQ_INT(cap.len[1], 2);
     ASSERT_EQ_INT(cap.len[2], 2);
     ASSERT_EQ_INT(cap.len[3], 2);
-    ASSERT_EQ_INT(cap.len[4], 5);
+    ASSERT_EQ_INT(cap.len[4], TOW_LINKS_MSG_HEADER_SIZE);
+    ASSERT_EQ_INT(cap.len[5], 5);
 
     ASSERT(w.asteroids[2].net_dirty);
     server_clear_asteroid_net_dirty(&w);
@@ -4890,14 +4892,15 @@ TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.count, 5);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROID_POSD8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID_POSD8_Q_MSG_HEADER + ASTEROID_POSD8_Q_RECORD_SIZE);
     ASSERT_EQ_INT((int)w.players[0].replication->asteroid_motion_sent_tick[2],
                   100 + ASTEROID_NET_MOVING_REPEAT_TICKS);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_NPCS);
-    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TIME);
 }
 
 TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
@@ -4931,7 +4934,7 @@ TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.count, 5);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
@@ -5100,8 +5103,9 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 3);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
     ASSERT(w.players[0].replication->world_time_sent);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
 
@@ -5111,7 +5115,7 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 2);
+    ASSERT_EQ_INT(cap.count, 3);
     for (int i = 0; i < cap.count; i++)
         ASSERT(cap.type[i] != NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
@@ -5122,8 +5126,9 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 3);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick,
                   100 + WORLD_TIME_REPEAT_TICKS);
 }
@@ -7977,6 +7982,56 @@ TEST(test_latency_pong_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[17]), (int)0x01020304u);
 }
 
+TEST(test_atomic_tow_link_snapshot_roundtrip) {
+    WORLD_DECL;
+    memset(&w, 0, sizeof(w));
+    w.tick = 0x11223344u;
+    w.tow_revision = 0x55667788u;
+    w.tow_links[3] = (tow_link_t){
+        .active = true,
+        .source = {
+            .kind = ENTITY_KIND_SHIP,
+            .index = 2,
+            .part = -1,
+            .generation = 9,
+        },
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = 17,
+            .part = -1,
+            .generation = 12,
+        },
+        .profile = TOW_PROFILE_SHIP_POD,
+        .slot = 4,
+        .state = TOW_LINK_HELD,
+        .attached_tick = 0x01020304u,
+        .revision = 0x05060708u,
+    };
+
+    uint8_t buf[TOW_LINKS_MAX_SIZE];
+    int len = serialize_tow_links(buf, &w);
+    ASSERT_EQ_INT(len, TOW_LINKS_MSG_HEADER_SIZE + TOW_LINK_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(read_u16_le(&buf[1]), 1);
+    ASSERT(read_u32_le(&buf[3]) == w.tow_revision);
+    ASSERT(read_u32_le(&buf[7]) == w.tick);
+
+    const uint8_t *p = &buf[TOW_LINKS_MSG_HEADER_SIZE];
+    ASSERT_EQ_INT(p[0], ENTITY_KIND_SHIP);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[1]), 2);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[3]), -1);
+    ASSERT_EQ_INT(read_u16_le(&p[5]), 9);
+    ASSERT_EQ_INT(p[7], ENTITY_KIND_CARGO_POD);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[8]), 17);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[10]), -1);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 12);
+    ASSERT_EQ_INT(p[14], TOW_PROFILE_SHIP_POD);
+    ASSERT_EQ_INT(p[15], 4);
+    ASSERT_EQ_INT(p[16], TOW_LINK_HELD);
+    ASSERT(read_u32_le(&p[18]) == 0x01020304u);
+    ASSERT(read_u32_le(&p[22]) == 0x05060708u);
+}
+
 static const uint8_t *find_protocol_stream(const uint8_t *buf, uint8_t msg) {
     int count = buf[7];
     for (int i = 0; i < count; i++) {
@@ -8036,6 +8091,17 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT(read_u16_le(&diag[6]), 1);
     ASSERT_EQ_INT(read_u16_le(&diag[8]), MAX_MODULES_PER_STATION);
     ASSERT_EQ_INT(read_u16_le(&diag[10]), 300);
+
+    const uint8_t *tow_links = find_protocol_stream(
+        buf, NET_MSG_WORLD_TOW_LINKS);
+    ASSERT(tow_links != NULL);
+    ASSERT_EQ_INT(tow_links[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT(read_u16_le(&tow_links[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[4]), TOW_LINKS_MSG_HEADER_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[6]), TOW_LINK_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[8]), MAX_TOW_LINKS);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[10]), 100);
 
     const uint8_t *latency_pong = find_protocol_stream(
         buf, NET_MSG_LATENCY_PONG);
@@ -8935,6 +9001,7 @@ void register_protocol_main_tests(void) {
     RUN(test_input_applied_roundtrip);
     RUN(test_cargo_receipt_bundle_roundtrip);
     RUN(test_latency_pong_roundtrip);
+    RUN(test_atomic_tow_link_snapshot_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);
     RUN(test_buy_event_serializes_cost_and_quantity);
     RUN(test_events_for_recipient_filters_local_only_damage);

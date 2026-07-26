@@ -156,6 +156,55 @@ TEST(test_tow_target_generation_changes_after_recycle) {
     ASSERT(second.generation != first.generation);
 }
 
+TEST(test_tow_link_revision_is_monotonic_and_idempotent) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    int pod = MAX_CARGO_PODS - 2;
+    w.cargo_pods[pod].active = true;
+    w.cargo_pods[pod].kind = CARGO_POD_CARGO;
+    w.tick = 1234;
+    entity_ref_t target = world_entity_ref_for_slot(
+        &w, ENTITY_KIND_CARGO_POD, pod, -1);
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD));
+    const tow_link_t *link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    uint32_t first_world_revision = w.tow_revision;
+    uint32_t first_link_revision = link->revision;
+    ASSERT(first_world_revision != 0);
+    ASSERT(first_link_revision == first_world_revision);
+    ASSERT(link->attached_tick == 1234u);
+
+    w.tick = 1235;
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD));
+    link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    ASSERT(w.tow_revision == first_world_revision);
+    ASSERT(link->revision == first_link_revision);
+    ASSERT(link->attached_tick == 1234u);
+
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0,
+        TOW_LINK_RELEASING));
+    link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    ASSERT(w.tow_revision > first_world_revision);
+    ASSERT(link->revision == w.tow_revision);
+    ASSERT(link->attached_tick == 1234u);
+
+    uint32_t release_revision = w.tow_revision;
+    ASSERT(world_tow_link_clear_target(&w, target));
+    ASSERT(world_tow_link_for_target_const(&w, target) == NULL);
+    ASSERT(w.tow_revision > release_revision);
+}
+
 TEST(test_tow_links_ignore_stale_projection_capacity_and_collect_stably) {
     WORLD_DECL;
     world_reset(&w);
@@ -490,6 +539,7 @@ void register_tractor_tests(void) {
     RUN(test_tractor_binding_has_one_source_at_a_time);
     RUN(test_tow_link_pool_is_authority_for_ship_projections);
     RUN(test_tow_target_generation_changes_after_recycle);
+    RUN(test_tow_link_revision_is_monotonic_and_idempotent);
     RUN(test_tow_links_ignore_stale_projection_capacity_and_collect_stably);
     RUN(test_ship_pointer_cache_rebinds_and_clears_stale_views);
     RUN(test_tractor_pull_engages_beyond_rest);
