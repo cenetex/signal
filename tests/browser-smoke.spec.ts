@@ -1563,6 +1563,9 @@ test.describe('Browser smoke tests', () => {
     const refitSummary = await laserRefitSummary(page);
     expect(refitSummary).toContain('Laser Modules: Crystal Ingots + Frames');
     expect(refitSummary).toContain('Crystal source requires L3 laser');
+    expect(refitSummary).toContain('Kepler has 8');
+    expect(refitSummary).toContain('0 cr starter refit');
+    expect(refitSummary).toContain('dock + [M]');
 
     const productionSummary = await stationProductionSummary(page);
     expect(productionSummary).toContain('Ferrite Ore -> Ferrite Ingots');

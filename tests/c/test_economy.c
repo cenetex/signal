@@ -1245,24 +1245,24 @@ TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
     helios->_inventory_cache[COMMODITY_CUPRITE_ORE] = 0.0f;
     helios->_inventory_cache[COMMODITY_CRYSTAL_ORE] = 0.0f;
     ASSERT(test_set_station_finished_units(
-        helios, COMMODITY_CUPRITE_INGOT, 0));
+        helios, COMMODITY_CUPRITE_INGOT, 12));
     ASSERT(test_set_station_finished_units(
         helios, COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(
-        helios, COMMODITY_CRYSTAL_INGOT, 12));
+        helios, COMMODITY_CRYSTAL_INGOT, 0));
     ASSERT(test_set_station_finished_units(
         helios, COMMODITY_TRACTOR_MODULE, 12));
 
     world_sim_step(&w, SIM_DT);
 
-    bool found_cuprite = false;
+    bool found_crystal = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w.contracts[k].active || w.contracts[k].station_index != 2) continue;
-        if (w.contracts[k].commodity == COMMODITY_CUPRITE_ORE)
-            found_cuprite = true;
-        ASSERT(w.contracts[k].commodity != COMMODITY_CRYSTAL_ORE);
+        if (w.contracts[k].commodity == COMMODITY_CRYSTAL_ORE)
+            found_crystal = true;
+        ASSERT(w.contracts[k].commodity != COMMODITY_CUPRITE_ORE);
     }
-    ASSERT(found_cuprite);
+    ASSERT(found_crystal);
 }
 
 TEST(test_sell_price_uses_contract_price) {
@@ -3818,6 +3818,41 @@ TEST(test_top_demand_severity_clamped_zero_to_one) {
     ASSERT(d.commodity != COMMODITY_FERRITE_ORE);
 }
 
+TEST(test_raw_ore_chain_demand_matches_advanced_fab_recipes) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *helios = &w.stations[2];
+
+    /* Isolate the downstream finished-good pressure. Laser fabs consume
+     * Crystal Ingots; tractor fabs consume Cuprite Ingots. A historical
+     * swap here asked Helios for the wrong ore and could starve the only
+     * repeatable source of starter Laser Modules. */
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CRYSTAL_INGOT, 12));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_CUPRITE_INGOT, 12));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_TRACTOR_MODULE, 12));
+
+    ASSERT(station_raw_ore_chain_need_score(
+               helios, COMMODITY_CRYSTAL_ORE) > 0.99f);
+    ASSERT_EQ_FLOAT(station_raw_ore_chain_need_score(
+                        helios, COMMODITY_CUPRITE_ORE),
+                    0.0f, 0.001f);
+
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_LASER_MODULE, 12));
+    ASSERT(test_set_station_finished_units(
+        helios, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT_EQ_FLOAT(station_raw_ore_chain_need_score(
+                        helios, COMMODITY_CRYSTAL_ORE),
+                    0.0f, 0.001f);
+    ASSERT(station_raw_ore_chain_need_score(
+               helios, COMMODITY_CUPRITE_ORE) > 0.99f);
+}
+
 /* Demand pricing: a station that's starving for an ingot should post a
  * higher contract price than one that's stocked. Pool_factor and the
  * existing 1.15× content premium stay; the new demand multiplier
@@ -3922,6 +3957,7 @@ void register_economy_demand_tests(void) {
     RUN(test_top_demand_picks_starving_commodity);
     RUN(test_top_demand_skips_self_produced_commodities);
     RUN(test_top_demand_severity_clamped_zero_to_one);
+    RUN(test_raw_ore_chain_demand_matches_advanced_fab_recipes);
     RUN(test_contract_price_scales_with_demand);
     RUN(test_supply_need_policy_owns_open_refill_and_close_targets);
 }

@@ -13789,9 +13789,18 @@ static void world_seed_genesis_ship_assets(world_t *w) {
     (void)world_ship_asset_mint(
         w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
         1, 1, SHIP_ASSET_PROVENANCE_GENESIS, false, 1, NULL, NULL);
-    (void)world_ship_asset_mint(
+    ship_asset_t *helios_miner = world_ship_asset_mint(
         w, HULL_CLASS_NPC_MINER, SHIP_ASSET_OWNER_STATION,
         2, 2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2, NULL, NULL);
+    if (helios_miner) {
+        /* Helios is the advanced-beamworks endpoint in the starter
+         * economy. Its resident industrial workboat is the honest,
+         * repeatable source of Crystal that closes the first laser-refit
+         * loop after Kepler's finite reserve is consumed. Player loaners
+         * still start at L1; only this station-owned genesis hull carries
+         * the L3 mining head needed by the documented supply route. */
+        helios_miner->stored_ship.mining_level = 2;
+    }
     (void)world_ship_asset_mint(
         w, HULL_CLASS_DRONE_TRACTOR, SHIP_ASSET_OWNER_STATION,
         2, 2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2, NULL, NULL);

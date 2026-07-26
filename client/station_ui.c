@@ -412,6 +412,89 @@ static bool ui_upgrade_input_gate_label(ship_upgrade_t upgrade,
     return true;
 }
 
+static bool ui_upgrade_stock_source_label(ship_upgrade_t upgrade,
+                                          const ship_t *ship,
+                                          int station_units,
+                                          char *out,
+                                          size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!ship || station_units <= 0) return false;
+
+    commodity_t product = ui_upgrade_product_commodity(upgrade);
+    if (product >= COMMODITY_COUNT) return false;
+
+    int best_station = -1;
+    int best_stock = 0;
+    bool best_subsidy = false;
+    float best_distance_sq = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *candidate = &g.world.stations[s];
+        if (!station_exists(candidate)) continue;
+        int stock = (int)floorf(client_station_stock_amount(candidate, product)
+                                + FLOAT_EPSILON);
+        if (stock < station_units) continue;
+        bool subsidy =
+            upgrade == SHIP_UPGRADE_MINING &&
+            ship->mining_level == 0 &&
+            strcmp(candidate->station_slug, "kepler") == 0;
+        float distance_sq = v2_dist_sq(ship->pos, candidate->pos);
+        if (best_station < 0 ||
+            (subsidy && !best_subsidy) ||
+            (subsidy == best_subsidy && distance_sq < best_distance_sq)) {
+            best_station = s;
+            best_stock = stock;
+            best_subsidy = subsidy;
+            best_distance_sq = distance_sq;
+        }
+    }
+    if (best_station < 0) return false;
+
+    char station_name[16];
+    ui_station_name_short(best_station, station_name, sizeof(station_name));
+    if (best_subsidy) {
+        snprintf(out, cap, "%s has %d; 0 cr starter refit; dock + [M]",
+                 station_name, best_stock);
+    } else {
+        const station_t *source = &g.world.stations[best_station];
+        float fill = fminf(1.0f, (float)best_stock / MAX_PRODUCT_STOCK);
+        float deficit = 1.0f - fill;
+        float unit_price = source->base_price[product] *
+                           (1.0f + deficit * deficit);
+        int price = (int)lroundf((float)station_units * unit_price);
+        snprintf(out, cap, "%s has %d; %d cr; dock + [M]",
+                 station_name, best_stock, price);
+    }
+    return true;
+}
+
+static bool ui_upgrade_production_source_label(ship_upgrade_t upgrade,
+                                               char *out,
+                                               size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    commodity_t product = ui_upgrade_product_commodity(upgrade);
+    module_type_t producer = ui_product_producer_module(product);
+    if (product >= COMMODITY_COUNT || producer >= MODULE_COUNT)
+        return false;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *candidate = &g.world.stations[s];
+        if (!station_exists(candidate) ||
+            !station_has_module(candidate, producer)) {
+            continue;
+        }
+        char station_name[16];
+        ui_station_name_short(s, station_name, sizeof(station_name));
+        snprintf(out, cap, "%s production pending; check WORK / haul",
+                 station_name);
+        return true;
+    }
+    return false;
+}
+
 static int ui_required_mining_level_for_tier(asteroid_tier_t tier)
 {
     switch (tier) {
@@ -497,6 +580,7 @@ bool station_laser_refit_summary(char *out, size_t out_size)
 
     char source[112];
     char gate[80];
+    char supply[96];
     bool has_source = ui_upgrade_source_label(SHIP_UPGRADE_MINING,
                                               source, sizeof(source));
     bool has_gate = ui_upgrade_input_gate_label(SHIP_UPGRADE_MINING, ship,
@@ -509,18 +593,35 @@ bool station_laser_refit_summary(char *out, size_t out_size)
              ? ui.mining_units_needed
              : ui.mining_units_in_cargo);
     if (from_station < 0) from_station = 0;
+    bool has_supply = ui_upgrade_stock_source_label(
+        SHIP_UPGRADE_MINING, ship, from_station, supply, sizeof(supply));
+    if (!has_supply) {
+        has_supply = ui_upgrade_production_source_label(
+            SHIP_UPGRADE_MINING, supply, sizeof(supply));
+    }
 
     if (upgrade_uses_starter_refit_subsidy(ui.station, ship,
                                            SHIP_UPGRADE_MINING,
                                            from_station)) {
         snprintf(out, out_size,
-                 "Kepler starter reserve ready: %d Laser Modules; %s",
+                 "Kepler starter reserve ready: %d Laser Modules; "
+                 "0 cr; press M; %s",
                  ui.mining_units_at_station,
                  ui_upgrade_effect_label(SHIP_UPGRADE_MINING, ship));
         return true;
     }
 
-    if (has_source && has_gate) {
+    if (has_supply && has_source && has_gate) {
+        snprintf(out, out_size,
+                 "need %d Laser Modules; ship %d station %d; %s; %s; %s",
+                 short_by, ui.mining_units_in_cargo,
+                 ui.mining_units_at_station, supply, source, gate);
+    } else if (has_supply && has_source) {
+        snprintf(out, out_size,
+                 "need %d Laser Modules; ship %d station %d; %s; %s",
+                 short_by, ui.mining_units_in_cargo,
+                 ui.mining_units_at_station, supply, source);
+    } else if (has_source && has_gate) {
         snprintf(out, out_size,
                  "need %d Laser Modules; ship %d station %d; %s; %s",
                  short_by, ui.mining_units_in_cargo,
@@ -4763,6 +4864,22 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                 draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
                             COL_FADED,
                             ui_upgrade_effect_label(refit[i].upgrade, ship));
+                my += row_h;
+            }
+            char supply[96];
+            int station_units = needed -
+                (needed < refit[i].in_cargo ? needed : refit[i].in_cargo);
+            bool has_supply = ui_upgrade_stock_source_label(
+                refit[i].upgrade, ship, station_units,
+                supply, sizeof(supply));
+            if (!has_supply) {
+                has_supply = ui_upgrade_production_source_label(
+                    refit[i].upgrade, supply, sizeof(supply));
+            }
+            if (has_supply &&
+                my + row_h + remaining_primary * row_h <= content_bottom) {
+                draw_row_lr(cx, my, inner_right, COL_DIM, "available",
+                            COL_FADED, supply);
                 my += row_h;
             }
             char source[112];

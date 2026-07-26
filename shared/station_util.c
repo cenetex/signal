@@ -787,14 +787,14 @@ float station_raw_ore_chain_need_score(const station_t *st, commodity_t ore) {
                           shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
-    case COMMODITY_CUPRITE_ORE:
+    case COMMODITY_CRYSTAL_ORE:
         if (station_has_module(st, MODULE_LASER_FAB)) {
             score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_LASER_MODULE),
                                       12.0f),
                           shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
-    case COMMODITY_CRYSTAL_ORE:
+    case COMMODITY_CUPRITE_ORE:
         if (station_has_module(st, MODULE_TRACTOR_FAB)) {
             score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_TRACTOR_MODULE),
                                       12.0f),

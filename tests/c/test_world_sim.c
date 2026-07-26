@@ -9052,12 +9052,38 @@ TEST(test_fresh_world_kepler_starter_laser_refit_bootstrap) {
     ASSERT_EQ_INT(need, 8);
     ASSERT_EQ_INT(station_finished_count(kepler,
                                          COMMODITY_LASER_MODULE), need);
+
+    /* Kepler's reserve is finite. Helios's station-owned L3 workboat is
+     * the repeatable physical Crystal source that replenishes modules
+     * through the normal fab + contract route after that reserve is used. */
+    npc_ship_t *helios_miner = NULL;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        npc_ship_t *npc = &w.npc_ships[n];
+        if (!npc->active || npc->role != NPC_ROLE_MINER ||
+            npc->home_station != 2) {
+            continue;
+        }
+        helios_miner = npc;
+        break;
+    }
+    ASSERT(helios_miner != NULL);
+    ASSERT_EQ_INT(helios_miner->ship->mining_level, 2);
+    test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
+    ASSERT(mining_level_can_fracture_asteroid(
+        helios_miner->ship->mining_level, &w.asteroids[0]));
+
     ASSERT(upgrade_uses_starter_refit_subsidy(
         kepler, sp->ship, SHIP_UPGRADE_MINING, need));
     ASSERT_EQ_FLOAT(upgrade_station_credit_cost(
         kepler, sp->ship, SHIP_UPGRADE_MINING, need), 0.0f, 0.001f);
     ASSERT(can_afford_upgrade(kepler, sp->ship,
                               SHIP_UPGRADE_MINING, 0.0f));
+
+    /* A temporary Helios shutdown must not remove the independent finite
+     * reserve path. The station is restored below before testing the
+     * repeatable post-depletion route. */
+    float helios_signal_range = w.stations[2].signal_range;
+    w.stations[2].signal_range = 0.0f;
 
     test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
     ASSERT(!mining_level_can_fracture_asteroid(sp->ship->mining_level,
@@ -9079,6 +9105,31 @@ TEST(test_fresh_world_kepler_starter_laser_refit_bootstrap) {
     ASSERT_EQ_INT(sp->ship->mining_level, 1);
     ASSERT_EQ_INT(station_finished_count(kepler,
                                          COMMODITY_LASER_MODULE), 0);
+    w.stations[2].signal_range = helios_signal_range;
+
+    /* Once the reserve is depleted, Kepler must advertise an ordinary,
+     * recipe-provenanced Laser Module import instead of deadlocking the
+     * next starter. Top up the other kit inputs so this tick selects the
+     * missing laser dependency deterministically. */
+    memset(w.contracts, 0, sizeof(w.contracts));
+    ASSERT(test_set_station_finished_units(kepler, COMMODITY_FRAME, 12));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_TRACTOR_MODULE, 12));
+    world_sim_step(&w, SIM_DT);
+    contract_t *laser_import = NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w.contracts[k];
+        if (!ct->active || ct->action != CONTRACT_TRACTOR ||
+            ct->station_index != 1 ||
+            ct->commodity != COMMODITY_LASER_MODULE) {
+            continue;
+        }
+        laser_import = ct;
+        break;
+    }
+    ASSERT(laser_import != NULL);
+    ASSERT((laser_import->proof_flags & CONTRACT_PROOF_REQUIRE_RECIPE) != 0);
+    ASSERT_EQ_INT(laser_import->required_recipe_id, RECIPE_LASER_BASIC);
 
     test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CUPRITE_ORE);
     ASSERT(mining_level_can_fracture_asteroid(sp->ship->mining_level,
@@ -9086,6 +9137,31 @@ TEST(test_fresh_world_kepler_starter_laser_refit_bootstrap) {
     test_seed_gate_asteroid(&w, ASTEROID_TIER_M, COMMODITY_CRYSTAL_ORE);
     ASSERT(!mining_level_can_fracture_asteroid(sp->ship->mining_level,
                                                &w.asteroids[0]));
+}
+
+TEST(test_starter_laser_bootstrap_is_seed_independent) {
+    WORLD_DECL;
+    const uint32_t seeds[] = { 1u, 2037u, 0x7fffffffu, 0xffffffffu };
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); i++) {
+        w.rng = seeds[i];
+        world_reset(&w);
+        ASSERT_EQ_INT(w.belt_seed, seeds[i]);
+        ASSERT_EQ_INT(station_finished_count(
+                          &w.stations[1], COMMODITY_LASER_MODULE),
+                      8);
+
+        bool found_l3_helios_miner = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            npc_ship_t *npc = &w.npc_ships[n];
+            if (!npc->active || npc->role != NPC_ROLE_MINER ||
+                npc->home_station != 2) {
+                continue;
+            }
+            found_l3_helios_miner = npc->ship->mining_level >= 2;
+            break;
+        }
+        ASSERT(found_l3_helios_miner);
+    }
 }
 
 TEST(test_scenario_emergency_recovery) {
@@ -9382,17 +9458,17 @@ TEST(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock) {
     helios->_inventory_cache[COMMODITY_CUPRITE_ORE] = 0.0f;
     helios->_inventory_cache[COMMODITY_CRYSTAL_ORE] = 0.0f;
     ASSERT(test_set_station_finished_units(helios,
-                                           COMMODITY_CUPRITE_INGOT, 0));
+                                           COMMODITY_CUPRITE_INGOT, 12));
     ASSERT(test_set_station_finished_units(helios,
                                            COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(helios,
-                                           COMMODITY_CRYSTAL_INGOT, 12));
+                                           COMMODITY_CRYSTAL_INGOT, 0));
     ASSERT(test_set_station_finished_units(helios,
                                            COMMODITY_TRACTOR_MODULE, 12));
 
     w.asteroids[0].active = true;
     w.asteroids[0].tier = ASTEROID_TIER_L;
-    w.asteroids[0].commodity = COMMODITY_CRYSTAL_ORE;
+    w.asteroids[0].commodity = COMMODITY_CUPRITE_ORE;
     w.asteroids[0].radius = 50.0f;
     w.asteroids[0].hp = 120.0f;
     w.asteroids[0].max_hp = 120.0f;
@@ -9400,7 +9476,7 @@ TEST(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock) {
 
     w.asteroids[1].active = true;
     w.asteroids[1].tier = ASTEROID_TIER_L;
-    w.asteroids[1].commodity = COMMODITY_CUPRITE_ORE;
+    w.asteroids[1].commodity = COMMODITY_CRYSTAL_ORE;
     w.asteroids[1].radius = 50.0f;
     w.asteroids[1].hp = 120.0f;
     w.asteroids[1].max_hp = 120.0f;
@@ -9897,6 +9973,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_mining_laser_size_gate_starts_at_m);
     RUN(test_mining_laser_material_gate_requires_upgrades);
     RUN(test_fresh_world_kepler_starter_laser_refit_bootstrap);
+    RUN(test_starter_laser_bootstrap_is_seed_independent);
     RUN(test_world_sim_step_laser_scans_cargo_pod);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_hopper_path_retired);
