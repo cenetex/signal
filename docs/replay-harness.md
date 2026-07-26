@@ -78,8 +78,9 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 - Motion metrics: end position, velocity, speed, angle, goal distance, progress,
   and scalar utility.
 - `receipt_trust`: an always-on `signal.receipt_trust.v1` contract vector for
-  trusted SMELT/CRAFT origins, an accepted historical rotated key, unknown and
-  revoked authorities, a missing origin proof, and a tampered receipt chain.
+  trusted SMELT/CRAFT origins, an accepted historical rotated key, unknown,
+  untrusted, and revoked authorities, a missing origin proof, and a tampered
+  receipt chain.
   Replay aborts if any vector produces a different semantic verdict; the
   native/WASM and cross-runner gates compare the emitted codes exactly.
 - Optional `hnn` object when `--hnn-trace` is set: flat trace contract,

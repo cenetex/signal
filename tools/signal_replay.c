@@ -215,6 +215,7 @@ typedef struct {
     cargo_receipt_trust_status_t trusted_craft;
     cargo_receipt_trust_status_t trusted_rotated;
     cargo_receipt_trust_status_t unknown_authority;
+    cargo_receipt_trust_status_t untrusted_authority;
     cargo_receipt_trust_status_t revoked_authority;
     cargo_receipt_trust_status_t missing_origin;
     cargo_receipt_trust_status_t tampered_chain;
@@ -316,6 +317,9 @@ static bool sr_receipt_trust_known_vector(
     out->unknown_authority = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pub, &proof,
         CARGO_RECEIPT_AUTHORITY_UNKNOWN).status;
+    out->untrusted_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &proof,
+        CARGO_RECEIPT_AUTHORITY_UNTRUSTED).status;
     out->revoked_authority = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pub, &proof,
         CARGO_RECEIPT_AUTHORITY_REVOKED).status;
@@ -334,6 +338,8 @@ static bool sr_receipt_trust_known_vector(
                CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED &&
            out->unknown_authority ==
                CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY &&
+           out->untrusted_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY &&
            out->revoked_authority ==
                CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY &&
            out->missing_origin ==
@@ -3960,6 +3966,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             "\"trusted_craft\":%d,"
             "\"trusted_rotated\":%d,"
             "\"unknown_authority\":%d,"
+            "\"untrusted_authority\":%d,"
             "\"revoked_authority\":%d,"
             "\"missing_origin\":%d,"
             "\"tampered_chain\":%d}",
@@ -3967,6 +3974,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             (int)r->receipt_trust.trusted_craft,
             (int)r->receipt_trust.trusted_rotated,
             (int)r->receipt_trust.unknown_authority,
+            (int)r->receipt_trust.untrusted_authority,
             (int)r->receipt_trust.revoked_authority,
             (int)r->receipt_trust.missing_origin,
             (int)r->receipt_trust.tampered_chain);

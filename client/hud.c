@@ -1478,41 +1478,9 @@ static bool hud_market_source_chain_label(const NetInspectSnapshotRow *row,
 static const char *hud_cargo_trust_label(
     const NetInspectSnapshotRow *row) {
     if (!row || !row->trust_evaluated) return "";
-    if (row->trust_accepted) {
-        switch ((cargo_receipt_trust_status_t)row->trust_status) {
-        case CARGO_RECEIPT_TRUST_VALID_TRUSTED:
-            return "trusted";
-        case CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED:
-            return "trusted/rotated";
-        case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
-            return "accepted/unknown";
-        case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
-            return "accepted/untrusted";
-        default:
-            return "accepted";
-        }
-    }
-    switch ((cargo_receipt_trust_status_t)row->trust_status) {
-    case CARGO_RECEIPT_TRUST_REJECT_CHAIN:
-        return "rejected/chain";
-    case CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN:
-        return "rejected/no-origin";
-    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE:
-    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO:
-    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN:
-        return "rejected/origin";
-    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY:
-        return "rejected/authority";
-    case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
-        return "rejected/unknown";
-    case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
-        return "rejected/untrusted";
-    case CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY:
-        return "rejected/revoked";
-    case CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS:
-    default:
-        return "rejected";
-    }
+    return cargo_receipt_trust_semantic_label(
+        (cargo_receipt_trust_status_t)row->trust_status,
+        row->trust_accepted);
 }
 
 static void hud_job_reason_label(const NetInspectSnapshotRow *row,

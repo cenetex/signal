@@ -15,7 +15,9 @@
 #include "chain_log.h"
 #include "station_authority.h"
 #include "game_sim.h"
+#include "cargo_receipt.h"
 #include "sha256.h"
+#include "signal_crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -425,6 +427,25 @@ static const char *sv_find_signal_rati_receipt_bin(void) {
     return NULL;
 }
 
+static const char *sv_find_signal_receipt_verify_bin(void) {
+    static const char *candidates[] = {
+        "build-test/signal_receipt_verify",
+        "build-coverage/signal_receipt_verify",
+        "build/signal_receipt_verify",
+        "./signal_receipt_verify",
+        "../build-test/signal_receipt_verify",
+        "../build-coverage/signal_receipt_verify",
+        "../build/signal_receipt_verify",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        fclose(f);
+        return candidates[i];
+    }
+    return NULL;
+}
+
 static void sv_hex32(const uint8_t in[32], char out[65]) {
     static const char h[] = "0123456789abcdef";
     for (int i = 0; i < 32; i++) {
@@ -748,6 +769,126 @@ TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
 
     sv_teardown();
 }
+
+TEST(test_signal_receipt_verify_cli_semantic_vectors) {
+    const char *verify_bin = sv_find_signal_receipt_verify_bin();
+    if (!verify_bin) {
+        TEST_WARN("signal_receipt_verify binary not built; skipping CLI vectors");
+        return;
+    }
+
+    uint8_t seed[32];
+    uint8_t cargo_pub[32];
+    for (int i = 0; i < 32; i++) {
+        seed[i] = (uint8_t)(0x21 + i);
+        cargo_pub[i] = (uint8_t)(0x71 + i);
+    }
+    uint8_t authority[32], secret[64], origin_hash[32];
+    signal_crypto_keypair_from_seed(seed, authority, secret);
+    sha256_bytes(cargo_pub, sizeof(cargo_pub), origin_hash);
+
+    cargo_receipt_t receipt = {0};
+    memcpy(receipt.cargo_pub, cargo_pub, 32);
+    memcpy(receipt.authoring_station, authority, 32);
+    memset(receipt.recipient_pubkey, 0x44, 32);
+    receipt.event_id = 8;
+    receipt.epoch = 12;
+    memcpy(receipt.prev_receipt_hash, origin_hash, 32);
+    uint8_t unsigned_receipt[CARGO_RECEIPT_UNSIGNED_SIZE];
+    cargo_receipt_unsigned_pack(&receipt, unsigned_receipt);
+    signal_crypto_sign(receipt.signature, unsigned_receipt,
+                       sizeof(unsigned_receipt), secret);
+
+    char chain_path[256];
+    snprintf(chain_path, sizeof(chain_path), "%s_receipt-trust.bin",
+             TMP("receipt"));
+    uint8_t packed[CARGO_RECEIPT_SIZE];
+    cargo_receipt_pack(&receipt, packed);
+    FILE *chain_file = fopen(chain_path, "wb");
+    ASSERT(chain_file != NULL);
+    ASSERT(fwrite(packed, 1, sizeof(packed), chain_file) == sizeof(packed));
+    ASSERT(fclose(chain_file) == 0);
+
+    char cargo_hex[65], origin_hex[65], authority_hex[65];
+    sv_hex32(cargo_pub, cargo_hex);
+    sv_hex32(origin_hash, origin_hex);
+    sv_hex32(authority, authority_hex);
+    char base[1536];
+    snprintf(base, sizeof(base),
+             "%s --report=json --cargo-pub=%s --origin-event=smelt "
+             "--origin-hash=%s --origin-authority=%s "
+             "--origin-event-id=7 --origin-epoch=11",
+             verify_bin, cargo_hex, origin_hex, authority_hex);
+
+    static const struct {
+        const char *policy;
+        unsigned status_code;
+        bool accepted;
+        const char *semantic;
+    } policy_vectors[] = {
+        {"current", 0, true, "accepted/trusted"},
+        {"rotated", 1, true, "accepted/rotated"},
+        {"unknown", 9, false, "rejected/unknown"},
+        {"untrusted", 10, false, "rejected/untrusted"},
+        {"revoked", 11, false, "rejected/revoked"},
+    };
+    for (size_t i = 0;
+         i < sizeof(policy_vectors) / sizeof(policy_vectors[0]); i++) {
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd), "%s --authority-trust=%s %s 2>/dev/null",
+                 base, policy_vectors[i].policy, chain_path);
+        FILE *p = popen(cmd, "r");
+        ASSERT(p != NULL);
+        char output[8192] = {0};
+        ASSERT(fread(output, 1, sizeof(output) - 1, p) > 0);
+        (void)pclose(p);
+        char status_field[64];
+        snprintf(status_field, sizeof(status_field),
+                 "\"status_code\":%u", policy_vectors[i].status_code);
+        ASSERT(strstr(output,
+                      "\"schema\":\"signal.cargo_receipt_trust.v1\"") != NULL);
+        ASSERT(strstr(output, status_field) != NULL);
+        ASSERT(strstr(output, policy_vectors[i].accepted
+                                 ? "\"accepted\":true"
+                                 : "\"accepted\":false") != NULL);
+        ASSERT(strstr(output, policy_vectors[i].semantic) != NULL);
+        ASSERT(strstr(output, cargo_hex) != NULL);
+        ASSERT(strstr(output, origin_hex) != NULL);
+        ASSERT(strstr(output, authority_hex) != NULL);
+    }
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "%s --report=json --cargo-pub=%s --origin-event=missing "
+             "--authority-trust=current %s 2>/dev/null",
+             verify_bin, cargo_hex, chain_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[8192] = {0};
+    ASSERT(fread(output, 1, sizeof(output) - 1, p) > 0);
+    (void)pclose(p);
+    ASSERT(strstr(output, "\"status_code\":4") != NULL);
+    ASSERT(strstr(output, "rejected/no-origin") != NULL);
+    ASSERT(strstr(output, "\"origin_hash\":null") != NULL);
+
+    receipt.signature[0] ^= 0x01u;
+    cargo_receipt_pack(&receipt, packed);
+    chain_file = fopen(chain_path, "wb");
+    ASSERT(chain_file != NULL);
+    ASSERT(fwrite(packed, 1, sizeof(packed), chain_file) == sizeof(packed));
+    ASSERT(fclose(chain_file) == 0);
+    snprintf(cmd, sizeof(cmd), "%s --authority-trust=current %s 2>/dev/null",
+             base, chain_path);
+    p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    memset(output, 0, sizeof(output));
+    ASSERT(fread(output, 1, sizeof(output) - 1, p) > 0);
+    (void)pclose(p);
+    ASSERT(strstr(output, "\"status_code\":3") != NULL);
+    ASSERT(strstr(output, "\"chain_code\":3") != NULL);
+    ASSERT(strstr(output, "rejected/witness") != NULL);
+    memset(secret, 0, sizeof(secret));
+}
 #endif
 
 void register_signal_verify_tests(void);
@@ -765,5 +906,6 @@ void register_signal_verify_tests(void) {
     RUN(test_signal_verify_tower_chain_invariant_detects_orphan);
     RUN(test_signal_chain_assets_lineage_cli_prints_craft_tree);
     RUN(test_signal_rati_receipt_cli_emits_smelt_receipt);
+    RUN(test_signal_receipt_verify_cli_semantic_vectors);
 #endif
 }

@@ -218,6 +218,47 @@ const char *cargo_receipt_trust_status_name(
     }
 }
 
+const char *cargo_receipt_trust_semantic_label(
+    cargo_receipt_trust_status_t status,
+    bool accepted) {
+    if (accepted) {
+        switch (status) {
+        case CARGO_RECEIPT_TRUST_VALID_TRUSTED:
+            return "accepted/trusted";
+        case CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED:
+            return "accepted/rotated";
+        case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
+            return "accepted/unknown";
+        case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
+            return "accepted/untrusted";
+        default:
+            return "accepted";
+        }
+    }
+    switch (status) {
+    case CARGO_RECEIPT_TRUST_REJECT_CHAIN:
+        return "rejected/witness";
+    case CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN:
+        return "rejected/no-origin";
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE:
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO:
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN:
+        return "rejected/origin";
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY:
+        return "rejected/seal";
+    case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
+        return "rejected/unknown";
+    case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
+        return "rejected/untrusted";
+    case CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY:
+        return "rejected/revoked";
+    case CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS:
+        return "rejected/evidence";
+    default:
+        return "rejected";
+    }
+}
+
 /* ---------------- ship_receipts_t storage --------------------------- */
 
 bool ship_receipts_init(ship_receipts_t *r, uint16_t cap) {

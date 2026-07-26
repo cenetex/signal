@@ -396,6 +396,23 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(signal_rati_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_receipt_verify
+        tools/signal_receipt_verify.c
+        shared/cargo_receipt.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_receipt_verify PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_receipt_verify PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_receipt_verify PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_receipt_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(flight_trace
         tools/flight_trace.c
         ${SIGNAL_SIM_SOURCES}

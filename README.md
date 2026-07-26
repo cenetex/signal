@@ -108,6 +108,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   server/operator setup, station copy sync, chain health, and troubleshooting.
 - [`docs/decentralization.md`](docs/decentralization.md): station identity,
   signed chain logs, cargo receipts, and the off-chain trust model.
+- [`docs/cargo-receipt-trust.md`](docs/cargo-receipt-trust.md): what portable
+  receipts prove, station-policy limits, and semantic CLI verification.
 - [`docs/cargo-architecture.md`](docs/cargo-architecture.md): canonical cargo
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
 - [`docs/holographic-gossip-network.md`](docs/holographic-gossip-network.md):

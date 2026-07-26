@@ -379,6 +379,8 @@ TEST(test_receipt_trust_accepts_smelt_craft_and_rotated_authority) {
     ASSERT_EQ_INT(result.origin_event, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
     ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
                   "valid_trusted");
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, true),
+                  "accepted/trusted");
 
     proof.event_type = CARGO_RECEIPT_ORIGIN_EVENT_CRAFT;
     result = cargo_receipt_trust_verify(
@@ -394,6 +396,8 @@ TEST(test_receipt_trust_accepts_smelt_craft_and_rotated_authority) {
                   CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED);
     ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
                   "valid_trusted_rotated");
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, true),
+                  "accepted/rotated");
     crs_teardown();
 }
 
@@ -415,6 +419,8 @@ TEST(test_receipt_trust_distinguishes_origin_proof_failures) {
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
     ASSERT_EQ_INT(result.status,
                   CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN);
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/no-origin");
 
     cargo_receipt_origin_proof_t proof = valid;
     proof.event_type = CARGO_RECEIPT_ORIGIN_EVENT_NONE;
@@ -423,6 +429,8 @@ TEST(test_receipt_trust_distinguishes_origin_proof_failures) {
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
     ASSERT_EQ_INT(result.status,
                   CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE);
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/origin");
 
     proof = valid;
     proof.output_cargo_pub[0] ^= 0x80u;
@@ -445,6 +453,8 @@ TEST(test_receipt_trust_distinguishes_origin_proof_failures) {
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
     ASSERT_EQ_INT(result.status,
                   CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY);
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/seal");
 
     ASSERT(memcmp(&receipt, &receipt_before, sizeof(receipt)) == 0);
     ASSERT(memcmp(&valid, &proof_before, sizeof(valid)) == 0);
@@ -468,11 +478,15 @@ TEST(test_receipt_trust_distinguishes_authority_policy) {
                   CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY);
     ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
                   "reject_unknown_authority");
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/unknown");
 
     result = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pk, &proof, CARGO_RECEIPT_AUTHORITY_UNTRUSTED);
     ASSERT_EQ_INT(result.status,
                   CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY);
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/untrusted");
 
     result = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pk, &proof, CARGO_RECEIPT_AUTHORITY_REVOKED);
@@ -480,6 +494,8 @@ TEST(test_receipt_trust_distinguishes_authority_policy) {
                   CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY);
     ASSERT_STR_EQ(cargo_receipt_trust_status_name(result.status),
                   "reject_revoked_authority");
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/revoked");
 
     result = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pk, &proof,
@@ -510,6 +526,8 @@ TEST(test_receipt_trust_preserves_cryptographic_chain_failure) {
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
     ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_REJECT_CHAIN);
     ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_REJECT_BAD_SIGNATURE);
+    ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(result.status, false),
+                  "rejected/witness");
 
     result = cargo_receipt_trust_verify(
         &receipt, 1, NULL, &proof,
@@ -518,6 +536,46 @@ TEST(test_receipt_trust_preserves_cryptographic_chain_failure) {
                   CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS);
     ASSERT_EQ_INT(result.chain_result, CARGO_RECEIPT_OK);
     crs_teardown();
+}
+
+TEST(test_receipt_trust_semantic_labels_cover_stable_verdict_contract) {
+    static const struct {
+        cargo_receipt_trust_status_t status;
+        bool accepted;
+        const char *label;
+    } vectors[] = {
+        {CARGO_RECEIPT_TRUST_VALID_TRUSTED, true, "accepted/trusted"},
+        {CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED, true,
+         "accepted/rotated"},
+        {CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS, false,
+         "rejected/evidence"},
+        {CARGO_RECEIPT_TRUST_REJECT_CHAIN, false, "rejected/witness"},
+        {CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN, false,
+         "rejected/no-origin"},
+        {CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE, false,
+         "rejected/origin"},
+        {CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO, false,
+         "rejected/origin"},
+        {CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN, false,
+         "rejected/origin"},
+        {CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY, false,
+         "rejected/seal"},
+        {CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY, false,
+         "rejected/unknown"},
+        {CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY, false,
+         "rejected/untrusted"},
+        {CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY, false,
+         "rejected/revoked"},
+        {CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY, true,
+         "accepted/unknown"},
+        {CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY, true,
+         "accepted/untrusted"},
+    };
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+        ASSERT_STR_EQ(cargo_receipt_trust_semantic_label(
+                          vectors[i].status, vectors[i].accepted),
+                      vectors[i].label);
+    }
 }
 
 static cargo_unit_t crs_test_ingot(const uint8_t cargo_pk[32]) {
@@ -1769,6 +1827,7 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_receipt_trust_distinguishes_origin_proof_failures);
     RUN(test_receipt_trust_distinguishes_authority_policy);
     RUN(test_receipt_trust_preserves_cryptographic_chain_failure);
+    RUN(test_receipt_trust_semantic_labels_cover_stable_verdict_contract);
     RUN(test_station_trust_evaluator_accepts_current_and_local_origin);
     RUN(test_station_trust_evaluator_accepts_rotated_origin_key);
     RUN(test_station_trust_evaluator_applies_unknown_untrusted_and_revoked_policy);

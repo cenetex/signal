@@ -216,6 +216,11 @@ cargo_receipt_trust_result_t cargo_receipt_trust_verify(
 const char *cargo_receipt_trust_status_name(
     cargo_receipt_trust_status_t status);
 
+/* Compact semantic copy shared by gameplay inspection and audit tools. */
+const char *cargo_receipt_trust_semantic_label(
+    cargo_receipt_trust_status_t status,
+    bool accepted);
+
 /* ---------------- ship_receipts_t ---------------------------------- */
 
 /* Per-cargo receipt store running parallel to ship_t.manifest.

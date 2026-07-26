@@ -354,6 +354,12 @@ presented chain from a peer or foreign operator. The shared handoff ticket
 format can bind those proofs to cross-zone ship state; the remaining federation
 gap is consuming that ticket during an actual authority handoff.
 
+For an offline cargo decision, run `signal_receipt_verify` with the packed
+receipt chain, resolved producing-event proof, and your explicit authority
+lifecycle decision. See [cargo receipt trust](cargo-receipt-trust.md) for the
+binary input, stable JSON schema, and the boundary between a valid witness
+chain and station-local acceptance policy.
+
 Until #480 lands, federation is "informal" against Byzantine operators. The
 off-chain receipt chain can prove cargo history, but without a public
 chain-tip anchor an operator can still fork their own history for different
