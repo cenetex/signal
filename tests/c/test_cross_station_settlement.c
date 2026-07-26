@@ -40,10 +40,12 @@
 static void crs_setup(const char *suffix) {
     char path[256];
     snprintf(path, sizeof(path), "%s_crs_%s", TMP("crs"), suffix);
+    chain_log_set_disk_enabled(true);
     chain_log_set_dir(path);
 }
 
 static void crs_teardown(void) {
+    chain_log_set_disk_enabled(true);
     chain_log_set_dir(NULL);
 }
 
@@ -167,38 +169,35 @@ TEST(test_cross_station_single_hop_receipt) {
     uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0x10);
     uint8_t cargo_pk[32];  fill_test_pubkey(cargo_pk,  0x40);
 
-    /* Helios (idx 2) issues a receipt for cargo to the player. */
+    /* Helios cannot issue a first-hop receipt without a matching local
+     * production event. */
     station_t *helios = &w->stations[2];
-    cargo_receipt_t r;
+    cargo_receipt_t r = {0};
+    cargo_receipt_chain_t empty_chain = {0};
     uint64_t event_id = cargo_receipt_emit_transfer(
         w, helios,
         helios->station_pubkey, player_pk,
         cargo_pk, (uint8_t)CARGO_KIND_INGOT,
-        helios->chain_last_hash, /* origin pin to event already in log? — empty log → 0
-                                    * — use a non-zero string-of-zeros placeholder via SMELT first */
-        &r);
-    /* chain_last_hash is all-zero for an empty log; the helper uses it
-     * as the origin pin. cargo_receipt_chain_verify rejects all-zero
-     * pins, so first emit a synthetic "anchor" event so the receipt's
-     * origin pin is the hash of THAT event. */
-    ASSERT(event_id == 0 || event_id >= 1);
-    /* If the empty-log path triggered, redo with a SMELT seed first. */
-    if (event_id != 0) {
-        /* Receipt was issued; verify signature in isolation first. */
-        ASSERT(cargo_receipt_verify_signature(&r));
-        /* prev_receipt_hash equals the post-emit chain_last_hash, which
-         * is the hash of THIS transfer event itself (anchored). */
-    } else {
-        /* Re-emit a SMELT first so the chain has a non-zero last hash. */
-        ASSERT(chain_log_emit(w, helios, CHAIN_EVT_SMELT, "x", 1) >= 1);
-        event_id = cargo_receipt_emit_transfer(
-            w, helios,
-            helios->station_pubkey, player_pk,
-            cargo_pk, (uint8_t)CARGO_KIND_INGOT,
-            helios->chain_last_hash, &r);
-        ASSERT(event_id >= 1);
-        ASSERT(cargo_receipt_verify_signature(&r));
-    }
+        &empty_chain, &r);
+    ASSERT_EQ_INT((int)event_id, 0);
+
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pk, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(w, helios, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) >= 1);
+    uint8_t origin_hash[32];
+    memcpy(origin_hash, helios->chain_last_hash, sizeof(origin_hash));
+    ASSERT(chain_log_emit(w, helios, CHAIN_EVT_LEDGER, "later", 5) >= 1);
+    event_id = cargo_receipt_emit_transfer(
+        w, helios,
+        helios->station_pubkey, player_pk,
+        cargo_pk, (uint8_t)CARGO_KIND_INGOT,
+        &empty_chain, &r);
+    ASSERT(event_id >= 1);
+    ASSERT(cargo_receipt_verify_signature(&r));
+    ASSERT(memcmp(r.prev_receipt_hash, origin_hash, sizeof(origin_hash)) == 0);
+    ASSERT(memcmp(r.prev_receipt_hash, helios->chain_last_hash,
+                  sizeof(origin_hash)) != 0);
     /* Receipt fields are populated correctly. */
     ASSERT(memcmp(r.cargo_pub, cargo_pk, 32) == 0);
     ASSERT(memcmp(r.recipient_pubkey, player_pk, 32) == 0);
@@ -214,11 +213,14 @@ TEST(test_cross_station_single_hop_receipt) {
 /* Helper: emit cargo issuance from station + first hop receipt for player. */
 static bool crs_first_hop(world_t *w, station_t *st, const uint8_t player_pk[32],
                           const uint8_t cargo_pk[32], cargo_receipt_t *out) {
-    /* Anchor: emit a synthetic SMELT first so chain_last_hash is non-zero. */
-    if (chain_log_emit(w, st, CHAIN_EVT_SMELT, "smelt", 5) == 0) return false;
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pk, sizeof(smelt.ingot_pub));
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, sizeof(smelt)) == 0) return false;
+    cargo_receipt_chain_t empty_chain = {0};
     uint64_t id = cargo_receipt_emit_transfer(
         w, st, st->station_pubkey, player_pk, cargo_pk,
-        (uint8_t)CARGO_KIND_INGOT, st->chain_last_hash, out);
+        (uint8_t)CARGO_KIND_INGOT, &empty_chain, out);
     return id != 0;
 }
 
@@ -234,6 +236,94 @@ static cargo_receipt_origin_proof_t crs_origin_proof(
     memcpy(proof.output_cargo_pub, receipt->cargo_pub, 32);
     memcpy(proof.authority, receipt->authoring_station, 32);
     return proof;
+}
+
+TEST(test_local_origin_resolver_distinguishes_history_states) {
+    crs_setup("origin_resolver_states");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    crs_world_init(w, 0xD016);
+    station_t *st = &w->stations[2];
+
+    uint8_t smelt_pub[32];
+    uint8_t craft_pub[32];
+    uint8_t unknown_pub[32];
+    fill_test_pubkey(smelt_pub, 0x31);
+    fill_test_pubkey(craft_pub, 0x61);
+    fill_test_pubkey(unknown_pub, 0x91);
+    cargo_receipt_origin_proof_t proof = {0};
+
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(st, smelt_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE);
+    ASSERT(strcmp(cargo_receipt_origin_resolve_status_name(
+                      CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE),
+                  "history_unavailable") == 0);
+
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, smelt_pub, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 1);
+    uint8_t smelt_hash[32];
+    memcpy(smelt_hash, st->chain_last_hash, sizeof(smelt_hash));
+
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(st, smelt_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(proof.event_type, CARGO_RECEIPT_ORIGIN_EVENT_SMELT);
+    ASSERT_EQ_INT((int)proof.event_id, 1);
+    ASSERT(memcmp(proof.event_hash, smelt_hash, sizeof(smelt_hash)) == 0);
+    ASSERT(memcmp(proof.output_cargo_pub, smelt_pub, sizeof(smelt_pub)) == 0);
+    ASSERT(memcmp(proof.authority, st->station_pubkey, 32) == 0);
+
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(st, unknown_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND);
+
+    chain_payload_craft_t craft = {0};
+    craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
+    craft.input_count = 1;
+    memcpy(craft.input_pubs[0], smelt_pub, sizeof(smelt_pub));
+    memcpy(craft.output_pub, craft_pub, sizeof(craft.output_pub));
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) == 2);
+    uint8_t craft_hash[32];
+    memcpy(craft_hash, st->chain_last_hash, sizeof(craft_hash));
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(st, craft_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(proof.event_type, CARGO_RECEIPT_ORIGIN_EVENT_CRAFT);
+    ASSERT_EQ_INT((int)proof.event_id, 2);
+    ASSERT(memcmp(proof.event_hash, craft_hash, sizeof(craft_hash)) == 0);
+    ASSERT(memcmp(proof.output_cargo_pub, craft_pub, sizeof(craft_pub)) == 0);
+
+    char path[256];
+    ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "r+b");
+    ASSERT(f != NULL);
+    ASSERT(fseek(f, CHAIN_EVENT_HEADER_SIZE + (long)sizeof(uint16_t) + 5,
+                 SEEK_SET) == 0);
+    int byte = fgetc(f);
+    ASSERT(byte != EOF);
+    ASSERT(fseek(f, -1, SEEK_CUR) == 0);
+    ASSERT(fputc(byte ^ 0x01, f) != EOF);
+    ASSERT(fclose(f) == 0);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(st, smelt_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_INVALID);
+
+    station_t *memory_only = &w->stations[1];
+    chain_log_set_disk_enabled(false);
+    chain_payload_smelt_t memory_smelt = {0};
+    memcpy(memory_smelt.ingot_pub, unknown_pub,
+           sizeof(memory_smelt.ingot_pub));
+    ASSERT(chain_log_emit(w, memory_only, CHAIN_EVT_SMELT,
+                          &memory_smelt, sizeof(memory_smelt)) == 1);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(memory_only, unknown_pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE);
+    chain_log_set_disk_enabled(true);
+
+    crs_teardown();
 }
 
 TEST(test_receipt_trust_accepts_smelt_craft_and_rotated_authority) {
@@ -399,12 +489,19 @@ TEST(test_receipt_trust_preserves_cryptographic_chain_failure) {
 /* Helper: emit destination-station receipt for the second hop. */
 static bool crs_next_hop(world_t *w, station_t *dst, const uint8_t from_pk[32],
                          const uint8_t cargo_pk[32],
-                         const cargo_receipt_t *prev, cargo_receipt_t *out) {
-    uint8_t prev_hash[32];
-    cargo_receipt_hash(prev, prev_hash);
+                         const cargo_receipt_t *incoming, uint8_t incoming_len,
+                         cargo_receipt_t *out) {
+    if (!incoming || incoming_len == 0 ||
+        incoming_len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return false;
+    }
+    cargo_receipt_chain_t chain = {0};
+    memcpy(chain.links, incoming,
+           (size_t)incoming_len * sizeof(chain.links[0]));
+    chain.len = incoming_len;
     uint64_t id = cargo_receipt_emit_transfer(
         w, dst, from_pk, dst->station_pubkey, cargo_pk,
-        (uint8_t)CARGO_KIND_INGOT, prev_hash, out);
+        (uint8_t)CARGO_KIND_INGOT, &chain, out);
     return id != 0;
 }
 
@@ -425,7 +522,7 @@ TEST(test_cross_station_two_hop_chain) {
      * prev_receipt_hash = SHA-256(r1). */
     station_t *kepler = &w->stations[1];
     cargo_receipt_t r2;
-    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, &r2));
+    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, 1, &r2));
 
     /* Two-hop chain verifies. */
     cargo_receipt_t chain[2] = { r1, r2 };
@@ -508,17 +605,21 @@ TEST(test_cross_station_broken_linkage_rejected) {
     station_t *kepler = &w->stations[1];
     cargo_receipt_t r1, r2;
     ASSERT(crs_first_hop(w, helios, player_pk, cargo_pk, &r1));
-    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, &r2));
+    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, 1, &r2));
 
     /* Replace r1 with a different first-hop receipt issued by Helios
      * for the same cargo but in a fresh chain (different chain_last_hash
      * → different prev_receipt_hash). r2's prev_receipt_hash still
      * points at the original r1, so the linkage check must fail. */
     cargo_receipt_t r1_alt;
-    ASSERT(chain_log_emit(w, helios, CHAIN_EVT_SMELT, "alt", 3) >= 1);
+    chain_payload_smelt_t alt_smelt = {0};
+    memcpy(alt_smelt.ingot_pub, cargo_pk, sizeof(alt_smelt.ingot_pub));
+    ASSERT(chain_log_emit(w, helios, CHAIN_EVT_SMELT,
+                          &alt_smelt, sizeof(alt_smelt)) >= 1);
+    cargo_receipt_chain_t empty_chain = {0};
     uint64_t alt_id = cargo_receipt_emit_transfer(
         w, helios, helios->station_pubkey, player_pk, cargo_pk,
-        (uint8_t)CARGO_KIND_INGOT, helios->chain_last_hash, &r1_alt);
+        (uint8_t)CARGO_KIND_INGOT, &empty_chain, &r1_alt);
     ASSERT(alt_id != 0);
     /* Sanity: the alternative receipt verifies on its own. */
     ASSERT(cargo_receipt_verify_signature(&r1_alt));
@@ -548,11 +649,13 @@ TEST(test_cross_station_three_hop_chain) {
     cargo_receipt_t r1, r2, r3;
     ASSERT(crs_first_hop(w, prospect, player_pk, cargo_pk, &r1));
     /* Hop 2: player -> Kepler. */
-    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, &r2));
+    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, 1, &r2));
     /* Hop 3: player -> Helios (re-extract from Kepler back through
      * the player; in real flow Kepler issues to player, player carries
      * to Helios). */
-    ASSERT(crs_next_hop(w, helios, player_pk, cargo_pk, &r2, &r3));
+    cargo_receipt_t first_two[2] = {r1, r2};
+    ASSERT(crs_next_hop(w, helios, player_pk, cargo_pk,
+                        first_two, 2, &r3));
 
     cargo_receipt_t chain[3] = { r1, r2, r3 };
     ASSERT(cargo_receipt_chain_verify(chain, 3, cargo_pk) == CARGO_RECEIPT_OK);
@@ -582,7 +685,7 @@ TEST(test_cross_station_npc_mediated_transfer) {
 
     cargo_receipt_t r1, r2;
     ASSERT(crs_first_hop(w, helios, npc_pk, cargo_pk, &r1));
-    ASSERT(crs_next_hop(w, kepler, npc_pk, cargo_pk, &r1, &r2));
+    ASSERT(crs_next_hop(w, kepler, npc_pk, cargo_pk, &r1, 1, &r2));
 
     /* Kepler accepts: chain validates. */
     cargo_receipt_t chain[2] = { r1, r2 };
@@ -627,7 +730,7 @@ TEST(test_cross_station_save_load_preserves_receipts) {
 
     cargo_receipt_t r1, r2;
     ASSERT(crs_first_hop(w, helios, player_pk, cargo_pk, &r1));
-    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, &r2));
+    ASSERT(crs_next_hop(w, kepler, player_pk, cargo_pk, &r1, 1, &r2));
     cargo_receipt_t chain[2] = { r1, r2 };
     ASSERT(ship_receipts_push_chain(rcpts, chain, 2));
     /* Parity: receipts.count == manifest.count == 1. */
@@ -699,17 +802,21 @@ TEST(test_cross_station_chain_length_cap) {
      * by ship_receipts_extend (cap = 16). We check both: the verifier
      * rejects a 17-element chain and ship_receipts_extend refuses to
      * grow beyond 16. */
-    cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN + 1];
+    cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN + 1] = {0};
 
     station_t *st = &w->stations[2];
     ASSERT(crs_first_hop(w, st, player_pk, cargo_pk, &chain[0]));
-    for (int i = 1; i <= CARGO_RECEIPT_CHAIN_MAX_LEN; i++) {
+    for (int i = 1; i < CARGO_RECEIPT_CHAIN_MAX_LEN; i++) {
         /* Alternate stations 1 and 2 for each subsequent hop so each
          * hop is signed by a real keyed station. */
         station_t *next = &w->stations[(i % 2 == 0) ? 2 : 1];
         ASSERT(crs_next_hop(w, next, player_pk, cargo_pk,
-                            &chain[i - 1], &chain[i]));
+                            chain, i, &chain[i]));
     }
+    station_t *overflow = &w->stations[1];
+    ASSERT(!crs_next_hop(w, overflow, player_pk, cargo_pk,
+                         chain, CARGO_RECEIPT_CHAIN_MAX_LEN,
+                         &chain[CARGO_RECEIPT_CHAIN_MAX_LEN]));
     /* The 17-element chain trips the TOO_LONG cap in chain_verify. */
     ASSERT(cargo_receipt_chain_verify(chain, CARGO_RECEIPT_CHAIN_MAX_LEN + 1,
                                       cargo_pk)
@@ -803,12 +910,16 @@ TEST(test_present_foreign_authority_receipt_chain) {
                       w->stations[i].station_pubkey, 32) != 0);
     }
 
-    ASSERT(chain_log_emit(w, &foreign, CHAIN_EVT_SMELT, "foreign", 7) >= 1);
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pk, sizeof(smelt.ingot_pub));
+    ASSERT(chain_log_emit(w, &foreign, CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) >= 1);
+    cargo_receipt_chain_t empty_chain = {0};
     cargo_receipt_t r1;
     ASSERT(cargo_receipt_emit_transfer(w, &foreign,
                                        foreign.station_pubkey, player_pk,
                                        cargo_pk, (uint8_t)CARGO_KIND_INGOT,
-                                       foreign.chain_last_hash, &r1) != 0);
+                                       &empty_chain, &r1) != 0);
     ASSERT(crs_prepare_player_carrier(w, player_pk, cargo_pk, NULL));
 
     server_player_t *sp = &w->players[0];
@@ -1299,6 +1410,7 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_receipt_trust_distinguishes_origin_proof_failures);
     RUN(test_receipt_trust_distinguishes_authority_policy);
     RUN(test_receipt_trust_preserves_cryptographic_chain_failure);
+    RUN(test_local_origin_resolver_distinguishes_history_states);
     RUN(test_cross_station_two_hop_chain);
     RUN(test_cross_station_forged_receipt_rejected);
     RUN(test_cross_station_tampered_cargo_pub_rejected);

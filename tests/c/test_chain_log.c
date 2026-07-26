@@ -937,6 +937,8 @@ TEST(test_chain_log_cargo_transform_reader) {
     smelt.mined_block = 4422;
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
                           &smelt, sizeof(smelt)) == 1);
+    uint8_t smelt_hash[32];
+    memcpy(smelt_hash, w->stations[0].chain_last_hash, sizeof(smelt_hash));
 
     chain_payload_craft_t craft = {0};
     craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
@@ -946,12 +948,16 @@ TEST(test_chain_log_cargo_transform_reader) {
         craft.output_pub[i] = (uint8_t)(0xA0 + i);
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
                           &craft, sizeof(craft)) == 2);
+    uint8_t craft_hash[32];
+    memcpy(craft_hash, w->stations[0].chain_last_hash, sizeof(craft_hash));
 
     chain_cargo_transform_t found = {0};
     ASSERT(chain_log_find_cargo_transform(&w->stations[0],
                                           craft.output_pub, &found));
     ASSERT_EQ_INT(found.type, CHAIN_EVT_CRAFT);
     ASSERT_EQ_INT((int)found.event_id, 2);
+    ASSERT(memcmp(found.header_hash, craft_hash, sizeof(craft_hash)) == 0);
+    ASSERT(memcmp(found.authority, w->stations[0].station_pubkey, 32) == 0);
     ASSERT_EQ_INT(found.craft.recipe_id, RECIPE_FRAME_BASIC);
     ASSERT(memcmp(found.craft.input_pubs[0], smelt.ingot_pub, 32) == 0);
 
@@ -960,6 +966,8 @@ TEST(test_chain_log_cargo_transform_reader) {
                                           smelt.ingot_pub, &found));
     ASSERT_EQ_INT(found.type, CHAIN_EVT_SMELT);
     ASSERT_EQ_INT((int)found.event_id, 1);
+    ASSERT(memcmp(found.header_hash, smelt_hash, sizeof(smelt_hash)) == 0);
+    ASSERT(memcmp(found.authority, w->stations[0].station_pubkey, 32) == 0);
     ASSERT_EQ_INT((int)found.smelt.mined_block, 4422);
     ASSERT(memcmp(found.smelt.fragment_pub, smelt.fragment_pub, 32) == 0);
 

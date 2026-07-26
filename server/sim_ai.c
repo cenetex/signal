@@ -668,18 +668,11 @@ static bool append_station_transfer_receipt(world_t *w, station_t *author,
     if (npc_hash32_is_zero(unit->pub)) return false;
     if (chain->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
 
-    uint8_t prev_hash[32] = {0};
-    const uint8_t *prev = author->chain_last_hash;
-    if (chain->len > 0) {
-        cargo_receipt_hash(&chain->links[chain->len - 1], prev_hash);
-        prev = prev_hash;
-    }
-
     cargo_receipt_t receipt = {0};
     uint64_t xfer_id = cargo_receipt_emit_transfer(w, author,
                                                    from_pubkey, to_pubkey,
                                                    unit->pub, unit->kind,
-                                                   prev, &receipt);
+                                                   chain, &receipt);
     if (xfer_id == 0) return false;
     chain->links[chain->len++] = receipt;
     return true;

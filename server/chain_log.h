@@ -446,12 +446,16 @@ typedef struct {
 
 /* Read model for one cargo-producing event. A player-facing lineage view can
  * follow a cargo pubkey back through CRAFT outputs and SMELT outputs without
- * treating the chain log as inventory authority. The payload matching `type`
- * is populated; the other payload stays zeroed. */
+ * treating the chain log as inventory authority. header_hash is the exact
+ * signed record hash used for receipt origin pins; authority is copied from
+ * the event header. The payload matching `type` is populated and the other
+ * payload stays zeroed. */
 typedef struct {
     uint8_t type; /* CHAIN_EVT_SMELT or CHAIN_EVT_CRAFT */
     uint64_t event_id;
     uint64_t epoch;
+    uint8_t header_hash[32];
+    uint8_t authority[32];
     chain_payload_smelt_t smelt;
     chain_payload_craft_t craft;
 } chain_cargo_transform_t;

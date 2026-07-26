@@ -510,6 +510,9 @@ bool chain_log_find_cargo_transform(const station_t *s,
                 out->type = CHAIN_EVT_SMELT;
                 out->event_id = hdr.event_id;
                 out->epoch = hdr.epoch;
+                chain_event_header_hash(&hdr, out->header_hash);
+                memcpy(out->authority, hdr.authority,
+                       sizeof(out->authority));
                 out->smelt = payload;
                 found = true;
             }
@@ -522,6 +525,9 @@ bool chain_log_find_cargo_transform(const station_t *s,
                 out->type = CHAIN_EVT_CRAFT;
                 out->event_id = hdr.event_id;
                 out->epoch = hdr.epoch;
+                chain_event_header_hash(&hdr, out->header_hash);
+                memcpy(out->authority, hdr.authority,
+                       sizeof(out->authority));
                 out->craft = payload;
                 found = true;
             }

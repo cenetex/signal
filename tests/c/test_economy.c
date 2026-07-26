@@ -93,12 +93,15 @@ static bool economy_issue_single_receipt(world_t *w,
         return false;
     station_t *st = &w->stations[station_idx];
     memset(out, 0, sizeof(*out));
-    if (chain_log_emit(w, st, CHAIN_EVT_SMELT, "legality", 8) == 0)
+    chain_payload_smelt_t smelt = {0};
+    memcpy(smelt.ingot_pub, cargo_pub, sizeof(smelt.ingot_pub));
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, (uint16_t)sizeof(smelt)) == 0)
         return false;
     cargo_receipt_t receipt = {0};
     if (cargo_receipt_emit_transfer(w, st, st->station_pubkey, recipient,
                                     cargo_pub, (uint8_t)CARGO_KIND_INGOT,
-                                    st->chain_last_hash, &receipt) == 0) {
+                                    out, &receipt) == 0) {
         return false;
     }
     out->links[0] = receipt;

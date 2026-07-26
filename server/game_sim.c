@@ -12551,6 +12551,10 @@ static void server_dispatch_buy_named_ingot(
     if (station_receipts && slot < (int)station_receipts->count)
         station_chain = station_receipts->chains[slot];
     if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return;
+    cargo_receipt_transfer_link_t transfer_link =
+        cargo_receipt_prepare_transfer_link(st, src->pub, &station_chain);
+    if (transfer_link.status != CARGO_RECEIPT_TRANSFER_LINK_READY)
+        return;
 
     bool spent = server_player_can_use_pubkey_persistence(sp)
         ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
@@ -12564,18 +12568,14 @@ static void server_dispatch_buy_named_ingot(
     }
 
     cargo_receipt_t receipt = {0};
-    uint8_t prev_hash[32] = {0};
     cargo_receipt_chain_t outgoing_chain = station_chain;
-    if (station_chain.len > 0)
-        cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
-                           prev_hash);
     uint64_t xfer_id = cargo_receipt_emit_transfer(
         w, st,
         st->station_pubkey,
         sp->pubkey,
         copy.pub,
         (uint8_t)CARGO_KIND_INGOT,
-        station_chain.len > 0 ? prev_hash : st->chain_last_hash,
+        &station_chain,
         &receipt);
     if (xfer_id != 0 && outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
         outgoing_chain.links[outgoing_chain.len++] = receipt;
@@ -12651,6 +12651,11 @@ static void server_dispatch_deliver_named_ingot(
         }
     }
 
+    cargo_receipt_transfer_link_t transfer_link =
+        cargo_receipt_prepare_transfer_link(st, copy.pub, &attached_chain);
+    if (transfer_link.status != CARGO_RECEIPT_TRANSFER_LINK_READY)
+        return;
+
     if (st->manifest.count >= st->manifest.cap) {
         cargo_unit_t evicted = {0};
         if (station_manifest_remove_with_chain(st, 0, &evicted, NULL) &&
@@ -12662,14 +12667,6 @@ static void server_dispatch_deliver_named_ingot(
                      ev_cs);
             signal_channel_post(w, sidx, ev_msg, "");
         }
-    }
-
-    uint8_t prev_hash[32] = {0};
-    bool have_prev = false;
-    if (attached_chain.len > 0) {
-        cargo_receipt_hash(&attached_chain.links[attached_chain.len - 1],
-                           prev_hash);
-        have_prev = true;
     }
 
     cargo_receipt_chain_t removed_chain = {0};
@@ -12686,7 +12683,7 @@ static void server_dispatch_deliver_named_ingot(
         st->station_pubkey,
         copy.pub,
         (uint8_t)CARGO_KIND_INGOT,
-        have_prev ? prev_hash : st->chain_last_hash,
+        &removed_chain,
         &receipt);
     if (xfer_id != 0 && station_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
         station_chain.links[station_chain.len++] = receipt;

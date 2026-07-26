@@ -11,6 +11,7 @@
 #include "manifest.h"
 #include "station_authority.h"
 
+#include <stdio.h>
 #include <string.h>
 
 bool cargo_receipt_issue(const station_t *s,
@@ -44,9 +45,15 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
                                      const uint8_t to_pubkey[32],
                                      const uint8_t cargo_pub[32],
                                      uint8_t cargo_kind,
-                                     const uint8_t prev_receipt_hash[32],
+                                     const cargo_receipt_chain_t *incoming_chain,
                                      cargo_receipt_t *out_receipt) {
     if (!s || !out_receipt) return 0;
+    cargo_receipt_transfer_link_t link =
+        cargo_receipt_prepare_transfer_link(s, cargo_pub, incoming_chain);
+    if (link.status != CARGO_RECEIPT_TRANSFER_LINK_READY) {
+        memset(out_receipt, 0, sizeof(*out_receipt));
+        return 0;
+    }
     /* Wire-stable EVT_TRANSFER payload — typedef'd in chain_log.h so
      * the on-disk byte format has a single source of truth across
      * every emit site. */
@@ -66,9 +73,123 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
     uint64_t epoch_ticks = w ? (uint64_t)(w->time * 120.0) : 0;
     if (!cargo_receipt_issue(s, epoch_ticks, event_id, cargo_pub,
                              to_pubkey ? to_pubkey : (const uint8_t[32]){0},
-                             prev_receipt_hash, out_receipt))
+                             link.prev_receipt_hash, out_receipt))
         return 0;
     return event_id;
+}
+
+cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
+    const station_t *station,
+    const uint8_t cargo_pub[32],
+    cargo_receipt_origin_proof_t *out_proof) {
+    static const uint8_t zero32[32] = {0};
+    if (out_proof) memset(out_proof, 0, sizeof(*out_proof));
+    if (!station || !cargo_pub || !out_proof ||
+        memcmp(cargo_pub, zero32, sizeof(zero32)) == 0) {
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_BAD_ARGUMENTS;
+    }
+
+    char path[256];
+    if (!chain_log_path_for(station->station_pubkey, path, sizeof(path)))
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE;
+    FILE *history = fopen(path, "rb");
+    if (!history)
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE;
+    fclose(history);
+
+    chain_log_verify_report_t report;
+    if (!chain_log_verify_station(station, NULL, NULL, &report))
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_INVALID;
+
+    chain_cargo_transform_t transform;
+    if (!chain_log_find_cargo_transform(station, cargo_pub, &transform))
+        return CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND;
+
+    switch ((chain_event_type_t)transform.type) {
+        case CHAIN_EVT_SMELT:
+            out_proof->event_type = CARGO_RECEIPT_ORIGIN_EVENT_SMELT;
+            memcpy(out_proof->output_cargo_pub, transform.smelt.ingot_pub,
+                   sizeof(out_proof->output_cargo_pub));
+            break;
+        case CHAIN_EVT_CRAFT:
+            out_proof->event_type = CARGO_RECEIPT_ORIGIN_EVENT_CRAFT;
+            memcpy(out_proof->output_cargo_pub, transform.craft.output_pub,
+                   sizeof(out_proof->output_cargo_pub));
+            break;
+        default:
+            return CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND;
+    }
+    out_proof->event_id = transform.event_id;
+    out_proof->epoch = transform.epoch;
+    memcpy(out_proof->event_hash, transform.header_hash,
+           sizeof(out_proof->event_hash));
+    memcpy(out_proof->authority, transform.authority,
+           sizeof(out_proof->authority));
+    return CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED;
+}
+
+const char *cargo_receipt_origin_resolve_status_name(
+    cargo_receipt_origin_resolve_status_t status) {
+    switch (status) {
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_NOT_ATTEMPTED:
+            return "not_attempted";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED:
+            return "verified";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_BAD_ARGUMENTS:
+            return "bad_arguments";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE:
+            return "history_unavailable";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_INVALID:
+            return "history_invalid";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND:
+            return "transform_not_found";
+        default:
+            return "unknown";
+    }
+}
+
+cargo_receipt_transfer_link_t cargo_receipt_prepare_transfer_link(
+    const station_t *station,
+    const uint8_t cargo_pub[32],
+    const cargo_receipt_chain_t *incoming_chain) {
+    cargo_receipt_transfer_link_t out = {
+        .status = CARGO_RECEIPT_TRANSFER_LINK_REJECT_BAD_ARGUMENTS,
+        .chain_result = CARGO_RECEIPT_REJECT_EMPTY,
+        .origin_status = CARGO_RECEIPT_ORIGIN_RESOLVE_BAD_ARGUMENTS,
+    };
+    if (!station || !cargo_pub) return out;
+
+    if (incoming_chain && incoming_chain->len > 0) {
+        if (incoming_chain->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            out.status = CARGO_RECEIPT_TRANSFER_LINK_REJECT_CHAIN_FULL;
+            return out;
+        }
+        out.chain_result = cargo_receipt_chain_verify(
+            incoming_chain->links, incoming_chain->len, cargo_pub);
+        if (out.chain_result != CARGO_RECEIPT_OK) {
+            out.status = CARGO_RECEIPT_TRANSFER_LINK_REJECT_CHAIN;
+            return out;
+        }
+        cargo_receipt_hash(
+            &incoming_chain->links[incoming_chain->len - 1],
+            out.prev_receipt_hash);
+        out.origin_status = CARGO_RECEIPT_ORIGIN_RESOLVE_NOT_ATTEMPTED;
+        out.status = CARGO_RECEIPT_TRANSFER_LINK_READY;
+        return out;
+    }
+
+    cargo_receipt_origin_proof_t proof;
+    out.origin_status = cargo_receipt_resolve_local_origin(
+        station, cargo_pub, &proof);
+    if (out.origin_status != CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED) {
+        out.status = CARGO_RECEIPT_TRANSFER_LINK_REJECT_ORIGIN;
+        return out;
+    }
+    memcpy(out.prev_receipt_hash, proof.event_hash,
+           sizeof(out.prev_receipt_hash));
+    out.chain_result = CARGO_RECEIPT_OK;
+    out.status = CARGO_RECEIPT_TRANSFER_LINK_READY;
+    return out;
 }
 
 static bool receipt_chain_prefix_matches(const cargo_receipt_chain_t *existing,
