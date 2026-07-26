@@ -9,11 +9,18 @@ import json
 import sys
 from pathlib import Path
 
+from ai_episode_outcomes import (
+    DECISION_MODES,
+    OUTCOME_REPORT_SCHEMA,
+    OUTCOME_REPORT_VERSION,
+    OutcomeReportError,
+    load_episode_report,
+)
 from ai_eval_corpus import CORPUS_VERSION, GENERATOR_VERSION
 from check_replay_cross_build import first_diff
 
 
-BUNDLE_SCHEMA = "signal.replay_bundle.v2"
+BUNDLE_SCHEMA = "signal.replay_bundle.v3"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +50,13 @@ def load_bundle(path: Path) -> tuple[dict[str, object], dict[str, bytes]] | None
     ):
         print(
             f"replay bundle version mismatch in {manifest_path}",
+            file=sys.stderr,
+        )
+        return None
+    decision_mode = manifest.get("decision_mode")
+    if decision_mode not in DECISION_MODES:
+        print(
+            f"replay bundle decision mode missing in {manifest_path}",
             file=sys.stderr,
         )
         return None
@@ -91,6 +105,48 @@ def load_bundle(path: Path) -> tuple[dict[str, object], dict[str, bytes]] | None
             print(f"replay scenario digest mismatch: {output_path}", file=sys.stderr)
             return None
         outputs[filename] = output_bytes
+
+    outcome_entry = manifest.get("outcomes")
+    if not isinstance(outcome_entry, dict):
+        print(f"replay bundle outcomes missing in {manifest_path}", file=sys.stderr)
+        return None
+    outcome_filename = outcome_entry.get("file")
+    if (
+        not isinstance(outcome_filename, str)
+        or Path(outcome_filename).name != outcome_filename
+        or not outcome_filename.endswith(".json")
+    ):
+        print(
+            f"unsafe outcome filename in {manifest_path}: {outcome_filename}",
+            file=sys.stderr,
+        )
+        return None
+    if (
+        outcome_entry.get("schema") != OUTCOME_REPORT_SCHEMA
+        or outcome_entry.get("report_version") != OUTCOME_REPORT_VERSION
+    ):
+        print(
+            f"replay bundle outcome version mismatch in {manifest_path}",
+            file=sys.stderr,
+        )
+        return None
+    outcome_path = path / outcome_filename
+    if not outcome_path.is_file():
+        print(f"replay outcome report not found: {outcome_path}", file=sys.stderr)
+        return None
+    outcome_bytes = outcome_path.read_bytes()
+    if (
+        hashlib.sha256(outcome_bytes).hexdigest() != outcome_entry.get("sha256")
+        or len(outcome_bytes) != outcome_entry.get("size")
+    ):
+        print(f"replay outcome digest mismatch: {outcome_path}", file=sys.stderr)
+        return None
+    try:
+        load_episode_report(outcome_path, expected_mode=decision_mode)
+    except OutcomeReportError as exc:
+        print(f"invalid replay outcome report {outcome_path}: {exc}", file=sys.stderr)
+        return None
+    outputs[outcome_filename] = outcome_bytes
     return manifest, outputs
 
 
@@ -133,7 +189,9 @@ def main() -> int:
                 )
             return 1
 
-    scenario_count = len(baseline_outputs)
+    scenario_count = len(
+        [filename for filename in baseline_outputs if filename.endswith(".jsonl")]
+    )
     print(
         f"signal replay bundle check passed "
         f"({len(loaded)} runners, {scenario_count} scenarios)"

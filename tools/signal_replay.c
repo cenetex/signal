@@ -9,6 +9,7 @@
  */
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include "sim_ai.h"
 #include "sim_asteroid.h"
 #include "sim_construction.h"
+#include "signal_intelligence.h"
 #include "sim_nav.h"
 #include "sim_physics.h"
 #include "station_authority.h"
@@ -33,12 +35,18 @@
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_AI_EVAL_SCHEMA "signal.ai_eval_world.v1"
+#define SR_OUTCOME_FACTS_SCHEMA "signal.ai_outcome_facts.v1"
 #define SR_AI_EVAL_CORPUS_VERSION 1u
 #define SR_AI_EVAL_GENERATOR_VERSION 1u
+#define SR_OUTCOME_REPORT_VERSION 1u
 #define SR_ACTION_COUNT 9
 #define SR_MAX_PREFIX 4096
 #define SR_MAX_HORIZON_TICKS 120000
 #define SR_EVAL_MAX_OUTPOSTS 8
+#define SR_ROUTE_CELL_CAP 256
+#define SR_ROUTE_CELL_SIZE 256.0f
+#define SR_STUCK_TICK_THRESHOLD 120
+#define SR_GOAL_COMPLETION_RADIUS 250.0f
 
 typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
@@ -79,6 +87,16 @@ typedef struct {
 } sr_action_def_t;
 
 typedef struct {
+    int x;
+    int y;
+} sr_route_cell_t;
+
+typedef struct {
+    int npc_slot;
+    sr_route_cell_t cell;
+} sr_worker_route_visit_t;
+
+typedef struct {
     uint32_t seed;
     int station;
     bool spawn_set;
@@ -114,6 +132,12 @@ typedef struct {
     int fracture_events;
     int outpost_placed_events;
     int scaffold_ready_events;
+    int contract_complete_events;
+    int order_rejected_events;
+    uint32_t first_contract_complete_tick;
+    bool first_contract_complete_tick_set;
+    uint32_t first_repair_tick;
+    bool first_repair_tick_set;
     int pickup_fragments;
     float pickup_ore;
     float damage_amount;
@@ -141,6 +165,11 @@ typedef struct {
     int worker_scaffold_motion_ticks;
     int worker_delivery_shipment_ticks;
     int worker_useful_outcome_ticks;
+    int first_worker_completion_tick;
+    int worker_stuck_ticks;
+    int worker_recovery_events;
+    int worker_loop_revisits;
+    bool worker_stuck_latched;
 } sr_ai_branch_summary_t;
 
 typedef struct {
@@ -245,6 +274,15 @@ typedef struct {
 } sr_eval_summary_t;
 
 typedef struct {
+    int manifest_count;
+    int receipt_count;
+    int missing_receipt_chains;
+    int invalid_receipt_chains;
+    bool receipt_manifest_parity;
+    uint8_t identity_hash[32];
+} sr_lineage_summary_t;
+
+typedef struct {
     bool ok;
     int candidate;
     int prefix_ticks;
@@ -268,6 +306,24 @@ typedef struct {
     float end_angle;
     bool end_docked;
     int end_current_station;
+    int ticks_executed;
+    int goal_completion_tick;
+    int contract_completion_tick;
+    int repair_completion_tick;
+    float route_start_dist;
+    float travel_distance;
+    float route_efficiency;
+    int stuck_ticks;
+    int recovery_events;
+    int loop_revisits;
+    int start_active_contracts;
+    int end_active_contracts;
+    uint64_t contract_decisions;
+    uint64_t contract_teacher_decisions;
+    uint64_t worker_decisions;
+    uint64_t worker_teacher_decisions;
+    sr_lineage_summary_t start_lineage;
+    sr_lineage_summary_t end_lineage;
     uint16_t end_manifest_count;
     sr_event_counts_t events;
     sr_ai_summary_t ai;
@@ -1848,6 +1904,136 @@ static void sr_hash_ship_cargo_identity(sha256_ctx_t *ctx, const ship_t *ship)
     sr_hash_receipts(ctx, &ship->manifest, ship_get_receipts_const(ship));
 }
 
+static void sr_collect_lineage_summary(const ship_t *ship,
+                                       sr_lineage_summary_t *summary)
+{
+    sha256_ctx_t ctx;
+    const ship_receipts_t *receipts;
+    if (!summary) return;
+    memset(summary, 0, sizeof(*summary));
+    sha256_init(&ctx);
+    sha256_update(&ctx, "signal-ai-outcome-lineage-v1",
+                  sizeof("signal-ai-outcome-lineage-v1") - 1u);
+    if (!ship) {
+        sha256_final(&ctx, summary->identity_hash);
+        return;
+    }
+
+    sr_hash_ship_cargo_identity(&ctx, ship);
+    sha256_final(&ctx, summary->identity_hash);
+
+    summary->manifest_count = ship->manifest.count;
+    receipts = ship_get_receipts_const(ship);
+    summary->receipt_count = receipts ? receipts->count : 0;
+    summary->receipt_manifest_parity =
+        summary->manifest_count == summary->receipt_count;
+    for (int i = 0; i < summary->manifest_count; i++) {
+        if (!receipts || !receipts->chains || i >= receipts->count ||
+            receipts->chains[i].len == 0) {
+            summary->missing_receipt_chains++;
+            continue;
+        }
+        const cargo_receipt_chain_t *chain = &receipts->chains[i];
+        if (cargo_receipt_chain_verify(
+                chain->links, chain->len, ship->manifest.units[i].pub) !=
+            CARGO_RECEIPT_OK) {
+            summary->invalid_receipt_chains++;
+        }
+    }
+}
+
+static int sr_active_contract_count(const world_t *w)
+{
+    int count = 0;
+    if (!w) return 0;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (w->contracts[i].active) count++;
+    }
+    return count;
+}
+
+static sr_route_cell_t sr_route_cell_for(vec2 pos)
+{
+    return (sr_route_cell_t){
+        .x = (int)floorf(pos.x / SR_ROUTE_CELL_SIZE),
+        .y = (int)floorf(pos.y / SR_ROUTE_CELL_SIZE),
+    };
+}
+
+static bool sr_route_cell_equal(sr_route_cell_t left, sr_route_cell_t right)
+{
+    return left.x == right.x && left.y == right.y;
+}
+
+static bool sr_route_observe_cell(sr_route_cell_t cells[SR_ROUTE_CELL_CAP],
+                                  int *cell_count,
+                                  sr_route_cell_t cell)
+{
+    if (!cells || !cell_count) return false;
+    for (int i = 0; i < *cell_count; i++) {
+        if (sr_route_cell_equal(cells[i], cell)) return true;
+    }
+    if (*cell_count < SR_ROUTE_CELL_CAP) {
+        cells[*cell_count] = cell;
+        (*cell_count)++;
+    }
+    return false;
+}
+
+static bool sr_npc_has_selected_assignment(const npc_ship_t *npc)
+{
+    if (!npc || !npc->active) return false;
+    int diag_count = npc->job_diag_count;
+    if (diag_count > 4) diag_count = 4;
+    for (int i = 0; i < diag_count; i++) {
+        if (npc->job_diag_selected[i] >= 200) return true;
+    }
+    return false;
+}
+
+static void sr_observe_worker_routes(
+    const world_t *w,
+    sr_worker_route_visit_t visits[SR_ROUTE_CELL_CAP],
+    int *visit_count,
+    sr_route_cell_t previous_cells[MAX_NPC_SHIPS],
+    bool previous_cell_set[MAX_NPC_SHIPS],
+    sr_ai_branch_summary_t *summary)
+{
+    if (!w || !visits || !visit_count || !previous_cells ||
+        !previous_cell_set || !summary) {
+        return;
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &w->npc_ships[i];
+        if (!sr_npc_has_selected_assignment(npc) || !npc->ship) continue;
+        sr_route_cell_t cell = sr_route_cell_for(npc->ship->pos);
+        if (previous_cell_set[i] &&
+            sr_route_cell_equal(previous_cells[i], cell)) {
+            continue;
+        }
+
+        bool revisited = false;
+        for (int j = 0; j < *visit_count; j++) {
+            if (visits[j].npc_slot == i &&
+                sr_route_cell_equal(visits[j].cell, cell)) {
+                revisited = true;
+                break;
+            }
+        }
+        if (revisited && summary->worker_loop_revisits < 65535) {
+            summary->worker_loop_revisits++;
+        } else if (!revisited && *visit_count < SR_ROUTE_CELL_CAP) {
+            visits[*visit_count] = (sr_worker_route_visit_t){
+                .npc_slot = i,
+                .cell = cell,
+            };
+            (*visit_count)++;
+        }
+        previous_cells[i] = cell;
+        previous_cell_set[i] = true;
+    }
+}
+
 static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
 {
     int count = st->ledger_count;
@@ -2481,6 +2667,12 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         sr_hash_i32(ctx, ev->scaffold_ready.station);
         sr_hash_i32(ctx, ev->scaffold_ready.module_type);
         break;
+    case SIM_EVENT_CONTRACT_COMPLETE:
+        sr_hash_u8(ctx, (uint8_t)ev->contract_complete.action);
+        break;
+    case SIM_EVENT_ORDER_REJECTED:
+        sr_hash_u8(ctx, ev->order_rejected.reason);
+        break;
     case SIM_EVENT_MINING_TICK:
         break;
     case SIM_EVENT_REPAIR:
@@ -2529,6 +2721,10 @@ static void sr_accumulate_events(const world_t *w,
             counts->sell_bonus += ev->sell.bonus_cr;
             break;
         case SIM_EVENT_REPAIR:
+            if (!counts->first_repair_tick_set) {
+                counts->first_repair_tick = w->tick;
+                counts->first_repair_tick_set = true;
+            }
             counts->repair_events++;
             break;
         case SIM_EVENT_MINING_TICK:
@@ -2542,6 +2738,16 @@ static void sr_accumulate_events(const world_t *w,
             break;
         case SIM_EVENT_SCAFFOLD_READY:
             counts->scaffold_ready_events++;
+            break;
+        case SIM_EVENT_CONTRACT_COMPLETE:
+            if (!counts->first_contract_complete_tick_set) {
+                counts->first_contract_complete_tick = w->tick;
+                counts->first_contract_complete_tick_set = true;
+            }
+            counts->contract_complete_events++;
+            break;
+        case SIM_EVENT_ORDER_REJECTED:
+            counts->order_rejected_events++;
             break;
         default:
             break;
@@ -3117,7 +3323,8 @@ static void sr_count_selected_job(sr_ai_summary_t *out,
 }
 
 static void sr_ai_branch_observe(sr_ai_summary_t *out,
-                                 const sr_ai_summary_t *sample)
+                                 const sr_ai_summary_t *sample,
+                                 int relative_tick)
 {
     if (!out || !sample || !sample->enabled) return;
     sr_ai_branch_summary_t *b = &out->branch;
@@ -3191,6 +3398,18 @@ static void sr_ai_branch_observe(sr_ai_summary_t *out,
     if (scaffold_motion > 0) b->worker_scaffold_motion_ticks++;
     if (delivery_work > 0) b->worker_delivery_shipment_ticks++;
     if (useful > 0) b->worker_useful_outcome_ticks++;
+    if (assignments > 0 && motion == 0 && useful == 0) {
+        b->worker_stuck_ticks++;
+        b->worker_stuck_latched = true;
+    } else if (b->worker_stuck_latched && (motion > 0 || useful > 0)) {
+        b->worker_recovery_events++;
+        b->worker_stuck_latched = false;
+    }
+    if (b->first_worker_completion_tick < 0 &&
+        (sample->npc_delivery_shipments_cleared > 0 ||
+         sample->scaffolds_placed > 0)) {
+        b->first_worker_completion_tick = relative_tick;
+    }
 }
 
 static int sr_station_remote_known_contracts(
@@ -3741,12 +3960,32 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     hnn_holonet_t *hnn_net_ptr = NULL;
     hnn_action_table_t *hnn_actions_ptr = NULL;
     sha256_ctx_t event_hash;
+    sr_route_cell_t route_cells[SR_ROUTE_CELL_CAP];
+    sr_route_cell_t previous_cell = {0};
+    sr_worker_route_visit_t worker_route_visits[SR_ROUTE_CELL_CAP];
+    sr_route_cell_t worker_previous_cells[MAX_NPC_SHIPS];
+    bool worker_previous_cell_set[MAX_NPC_SHIPS] = {false};
+    vec2 previous_pos = v2(0.0f, 0.0f);
+    float previous_dist = 0.0f;
+    int route_cell_count = 0;
+    int worker_route_visit_count = 0;
+    int consecutive_stuck_ticks = 0;
+    bool stuck_latched = false;
+    uint32_t episode_start_tick = 0;
+    uint64_t contract_decisions_start = 0;
+    uint64_t contract_teacher_start = 0;
+    uint64_t worker_decisions_start = 0;
+    uint64_t worker_teacher_start = 0;
     bool ok = false;
 
     memset(out, 0, sizeof(*out));
     out->candidate = candidate;
     out->prefix_ticks = config->prefix_count;
     out->horizon_ticks = config->horizon_ticks;
+    out->goal_completion_tick = -1;
+    out->contract_completion_tick = -1;
+    out->repair_completion_tick = -1;
+    out->ai.branch.first_worker_completion_tick = -1;
 
     w = (world_t *)calloc(1, sizeof(*w));
     if (!w) {
@@ -3788,6 +4027,17 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->start_hull = sp->ship->hull;
     out->start_cargo = ship_total_cargo(sp->ship);
     out->start_balance = sr_player_station_balance(w, sp);
+    out->start_active_contracts = sr_active_contract_count(w);
+    sr_collect_lineage_summary(sp->ship, &out->start_lineage);
+    episode_start_tick = w->tick;
+    contract_decisions_start =
+        signal_intelligence_contract_decision_count();
+    contract_teacher_start =
+        signal_intelligence_contract_teacher_decision_count();
+    worker_decisions_start =
+        signal_intelligence_npc_worker_decision_count();
+    worker_teacher_start =
+        signal_intelligence_npc_worker_teacher_decision_count();
     sr_state_hash(w, sp, out->prefix_state_hash);
 
     sha256_init(&event_hash);
@@ -3797,25 +4047,80 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         free(w);
         return false;
     }
+    if (config->provenance_script == SR_PROVENANCE_SCRIPT_WORKER_TOW_HNN ||
+        config->provenance_script == SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN) {
+        out->ai.branch.first_worker_completion_tick =
+            (int)(w->tick - episode_start_tick);
+    }
     if (config->hnn_trace) {
         sr_hnn_evaluate_branch(w, sp, goal, candidate,
                                hnn_mem_ptr, hnn_net_ptr, hnn_actions_ptr,
                                config->hnn_cleanup_steps,
                                &out->hnn);
     }
+    previous_pos = sp->ship->pos;
+    previous_dist = v2_len(v2_sub(goal, previous_pos));
+    out->route_start_dist = previous_dist;
+    previous_cell = sr_route_cell_for(previous_pos);
+    route_cells[route_cell_count++] = previous_cell;
+    if (previous_dist <= SR_GOAL_COMPLETION_RADIUS)
+        out->goal_completion_tick = 0;
     if (config->active_workers) {
         sr_ai_summary_t sample;
         sr_collect_ai_summary(w, &sample);
-        sr_ai_branch_observe(&out->ai, &sample);
+        sr_ai_branch_observe(
+            &out->ai, &sample, (int)(w->tick - episode_start_tick));
+        sr_observe_worker_routes(
+            w, worker_route_visits, &worker_route_visit_count,
+            worker_previous_cells, worker_previous_cell_set,
+            &out->ai.branch);
     }
     for (int i = 0; i < config->horizon_ticks; i++) {
         sr_apply_action(sp, candidate);
         world_sim_step(w, SIM_DT);
+        out->ticks_executed = i + 1;
         sr_accumulate_events(w, &out->events, &event_hash);
+        vec2 current_pos = sp->ship->pos;
+        float step_distance = v2_len(v2_sub(current_pos, previous_pos));
+        float current_dist = v2_len(v2_sub(goal, current_pos));
+        out->travel_distance += step_distance;
+        if (step_distance <= 0.05f &&
+            fabsf(current_dist - previous_dist) <= 0.05f) {
+            consecutive_stuck_ticks++;
+            if (consecutive_stuck_ticks >= SR_STUCK_TICK_THRESHOLD) {
+                out->stuck_ticks++;
+                stuck_latched = true;
+            }
+        } else {
+            if (stuck_latched && step_distance > 0.5f)
+                out->recovery_events++;
+            consecutive_stuck_ticks = 0;
+            stuck_latched = false;
+        }
+        sr_route_cell_t current_cell = sr_route_cell_for(current_pos);
+        if (!sr_route_cell_equal(current_cell, previous_cell)) {
+            if (sr_route_observe_cell(
+                    route_cells, &route_cell_count, current_cell) &&
+                out->loop_revisits < 65535) {
+                out->loop_revisits++;
+            }
+            previous_cell = current_cell;
+        }
+        if (out->goal_completion_tick < 0 &&
+            current_dist <= SR_GOAL_COMPLETION_RADIUS) {
+            out->goal_completion_tick = i + 1;
+        }
+        previous_pos = current_pos;
+        previous_dist = current_dist;
         if (config->active_workers) {
             sr_ai_summary_t sample;
             sr_collect_ai_summary(w, &sample);
-            sr_ai_branch_observe(&out->ai, &sample);
+            sr_ai_branch_observe(
+                &out->ai, &sample, (int)(w->tick - episode_start_tick));
+            sr_observe_worker_routes(
+                w, worker_route_visits, &worker_route_visit_count,
+                worker_previous_cells, worker_previous_cell_set,
+                &out->ai.branch);
         }
         if (out->events.death_events > 0 || sp->ship->hull <= 0.0f) {
             break;
@@ -3837,6 +4142,37 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->end_docked = sp->docked;
     out->end_current_station = sp->current_station;
     out->end_manifest_count = sp->ship->manifest.count;
+    out->end_active_contracts = sr_active_contract_count(w);
+    sr_collect_lineage_summary(sp->ship, &out->end_lineage);
+    out->contract_decisions =
+        signal_intelligence_contract_decision_count() -
+        contract_decisions_start;
+    out->contract_teacher_decisions =
+        signal_intelligence_contract_teacher_decision_count() -
+        contract_teacher_start;
+    out->worker_decisions =
+        signal_intelligence_npc_worker_decision_count() -
+        worker_decisions_start;
+    out->worker_teacher_decisions =
+        signal_intelligence_npc_worker_teacher_decision_count() -
+        worker_teacher_start;
+    if (out->events.first_contract_complete_tick_set) {
+        out->contract_completion_tick =
+            (int)(out->events.first_contract_complete_tick -
+                  episode_start_tick);
+    }
+    if (out->events.first_repair_tick_set) {
+        out->repair_completion_tick =
+            (int)(out->events.first_repair_tick - episode_start_tick);
+    }
+    {
+        float route_progress = out->route_start_dist - out->end_dist;
+        if (route_progress > 0.0f && out->travel_distance > 0.0001f) {
+            out->route_efficiency =
+                sr_feature_clamp(
+                    route_progress / out->travel_distance, 0.0f, 1.0f);
+        }
+    }
     out->utility = ((double)out->progress / 1000.0) -
                    ((double)out->hull_loss * 0.45) -
                    ((double)out->events.damage_amount * 0.25) -
@@ -4161,6 +4497,171 @@ static void sr_write_eval_summary(FILE *out,
     fprintf(out, "}");
 }
 
+static void sr_write_optional_tick(FILE *out, int tick)
+{
+    if (tick >= 0) fprintf(out, "%d", tick);
+    else fprintf(out, "null");
+}
+
+static void sr_write_lineage_summary(FILE *out,
+                                     const sr_lineage_summary_t *lineage)
+{
+    fprintf(out,
+            "{\"manifest_count\":%d,"
+            "\"receipt_count\":%d,"
+            "\"missing_receipt_chains\":%d,"
+            "\"invalid_receipt_chains\":%d,"
+            "\"receipt_manifest_parity\":%s,",
+            lineage->manifest_count,
+            lineage->receipt_count,
+            lineage->missing_receipt_chains,
+            lineage->invalid_receipt_chains,
+            lineage->receipt_manifest_parity ? "true" : "false");
+    sr_json_hash(out, "identity_hash", lineage->identity_hash);
+    fprintf(out, "}");
+}
+
+static void sr_write_outcome_facts(FILE *out, const sr_result_t *r)
+{
+    bool lineage_integrity_preserved =
+        r->start_lineage.receipt_manifest_parity &&
+        r->end_lineage.receipt_manifest_parity &&
+        r->start_lineage.invalid_receipt_chains == 0 &&
+        r->end_lineage.invalid_receipt_chains == 0 &&
+        r->start_lineage.missing_receipt_chains == 0 &&
+        r->end_lineage.missing_receipt_chains == 0;
+    bool identity_unchanged =
+        memcmp(r->start_lineage.identity_hash,
+               r->end_lineage.identity_hash,
+               sizeof(r->start_lineage.identity_hash)) == 0;
+    int safety_overrides = r->events.order_rejected_events;
+    int worker_completion_tick =
+        r->ai.branch.first_worker_completion_tick;
+    float worker_route_efficiency = 0.0f;
+    if (r->repair_completion_tick >= 0 &&
+        (worker_completion_tick < 0 ||
+         r->repair_completion_tick < worker_completion_tick)) {
+        worker_completion_tick = r->repair_completion_tick;
+    }
+    if (r->hnn.enabled && !r->hnn.candidate_allowed)
+        safety_overrides++;
+    if (r->ai.branch.worker_assignment_ticks > 0) {
+        worker_route_efficiency = sr_feature_clamp(
+            (float)r->ai.branch.worker_useful_outcome_ticks /
+                (float)r->ai.branch.worker_assignment_ticks,
+            0.0f, 1.0f);
+    }
+
+    fprintf(out,
+            ",\"outcome_facts\":{\"schema\":\"%s\","
+            "\"report_version\":%u,"
+            "\"feature_contracts\":{"
+            "\"flight\":{\"feature_set\":\"%s\","
+            "\"encoder_version\":%u,\"model_loaded\":%s},"
+            "\"contract\":{\"feature_set\":\"%s\","
+            "\"encoder_version\":%u,\"model_loaded\":%s},"
+            "\"worker\":{\"feature_set\":\"%s\","
+            "\"encoder_version\":%u,\"model_loaded\":%s}},"
+            "\"ticks_executed\":%d,"
+            "\"goal_completion_tick\":",
+            SR_OUTCOME_FACTS_SCHEMA,
+            SR_OUTCOME_REPORT_VERSION,
+            signal_intelligence_flight_feature_set(),
+            signal_intelligence_flight_feature_encoder_version(),
+            signal_intelligence_flight_loaded() ? "true" : "false",
+            SIGNAL_CONTRACT_FEATURE_SET,
+            (unsigned)SIGNAL_CONTRACT_FEATURE_ENCODER_VERSION,
+            signal_intelligence_contract_loaded() ? "true" : "false",
+            SIGNAL_NPC_WORKER_FEATURE_SET,
+            (unsigned)SIGNAL_NPC_WORKER_FEATURE_ENCODER_VERSION,
+            signal_intelligence_npc_worker_loaded() ? "true" : "false",
+            r->ticks_executed);
+    sr_write_optional_tick(out, r->goal_completion_tick);
+    fprintf(out, ",\"contract_completion_tick\":");
+    sr_write_optional_tick(out, r->contract_completion_tick);
+    fprintf(out, ",\"worker_completion_tick\":");
+    sr_write_optional_tick(out, worker_completion_tick);
+    fprintf(out,
+            ",\"route\":{\"start_distance\":%.3f,"
+            "\"end_distance\":%.3f,"
+            "\"distance_traveled\":%.3f,"
+            "\"progress\":%.3f,"
+            "\"efficiency\":%.9f,"
+            "\"stuck_ticks\":%d,"
+            "\"recovery_events\":%d,"
+            "\"loop_revisits\":%d},"
+            "\"worker_route\":{\"assignment_ticks\":%d,"
+            "\"motion_ticks\":%d,"
+            "\"route_support_ticks\":%d,"
+            "\"useful_outcome_ticks\":%d,"
+            "\"efficiency\":%.9f,"
+            "\"stuck_ticks\":%d,"
+            "\"recovery_events\":%d,"
+            "\"loop_revisits\":%d},"
+            "\"safety\":{\"collision_events\":%d,"
+            "\"damage_amount\":%.3f,"
+            "\"death_events\":%d,"
+            "\"safety_overrides\":%d,"
+            "\"order_rejected_events\":%d},"
+            "\"decisions\":{\"flight\":1,"
+            "\"contract\":%" PRIu64 ","
+            "\"contract_teacher_fallbacks\":%" PRIu64 ","
+            "\"worker\":%" PRIu64 ","
+            "\"worker_teacher_fallbacks\":%" PRIu64 "},"
+            "\"contracts\":{\"start_active\":%d,"
+            "\"end_active\":%d,"
+            "\"completed\":%d},"
+            "\"station_need\":{\"contract_completions\":%d,"
+            "\"sell_events\":%d,"
+            "\"sell_value\":%d,"
+            "\"delivery_cleared\":%d,"
+            "\"repair_events\":%d,"
+            "\"scaffolds_placed\":%d},"
+            "\"cargo\":{\"start\":",
+            r->route_start_dist,
+            r->end_dist,
+            r->travel_distance,
+            r->route_start_dist - r->end_dist,
+            r->route_efficiency,
+            r->stuck_ticks,
+            r->recovery_events,
+            r->loop_revisits,
+            r->ai.branch.worker_assignment_ticks,
+            r->ai.branch.worker_motion_ticks,
+            r->ai.branch.worker_route_support_ticks,
+            r->ai.branch.worker_useful_outcome_ticks,
+            worker_route_efficiency,
+            r->ai.branch.worker_stuck_ticks,
+            r->ai.branch.worker_recovery_events,
+            r->ai.branch.worker_loop_revisits,
+            r->events.damage_events,
+            r->events.damage_amount,
+            r->events.death_events,
+            safety_overrides,
+            r->events.order_rejected_events,
+            r->contract_decisions,
+            r->contract_teacher_decisions,
+            r->worker_decisions,
+            r->worker_teacher_decisions,
+            r->start_active_contracts,
+            r->end_active_contracts,
+            r->events.contract_complete_events,
+            r->events.contract_complete_events,
+            r->events.sell_events,
+            r->events.sell_base,
+            r->ai.npc_delivery_shipments_cleared,
+            r->events.repair_events,
+            r->ai.scaffolds_placed);
+    sr_write_lineage_summary(out, &r->start_lineage);
+    fprintf(out, ",\"end\":");
+    sr_write_lineage_summary(out, &r->end_lineage);
+    fprintf(out,
+            ",\"identity_unchanged\":%s,"
+            "\"lineage_integrity_preserved\":%s}}",
+            identity_unchanged ? "true" : "false",
+            lineage_integrity_preserved ? "true" : "false");
+}
+
 static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t *r)
 {
     fprintf(out,
@@ -4271,6 +4772,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
         sr_write_hnn_eval(out, &r->hnn);
     }
     sr_write_eval_summary(out, config, &r->evaluation);
+    sr_write_outcome_facts(out, r);
     fprintf(out, ",\"authority\":\"deterministic_seed_prefix_replay\"}\n");
 }
 

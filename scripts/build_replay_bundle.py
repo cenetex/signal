@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
+from ai_episode_outcomes import (
+    DECISION_MODES,
+    OUTCOME_CORPUS_NAME,
+    OutcomeReportError,
+    build_episode_report,
+    serialize_episode_report,
+)
 from ai_eval_corpus import (
     CORPUS_NAME,
     CORPUS_VERSION,
@@ -25,7 +33,7 @@ from check_replay_repeatability import (
 )
 
 
-BUNDLE_SCHEMA = "signal.replay_bundle.v2"
+BUNDLE_SCHEMA = "signal.replay_bundle.v3"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,7 +45,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario-set",
         default="fast",
-        choices=("fast", "long", "all", "ai-eval-fast", "ai-eval-long"),
+        choices=(
+            "fast",
+            "long",
+            "all",
+            "ai-eval-fast",
+            "ai-eval-long",
+            "ai-outcomes-fast",
+        ),
+    )
+    parser.add_argument(
+        "--decision-mode",
+        default="teacher",
+        choices=DECISION_MODES,
+        help="label and configure the decision policy used for outcome reports",
     )
     return parser.parse_args()
 
@@ -64,11 +85,16 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_scenarios: list[dict[str, object]] = []
     evaluation_outputs: dict[str, Path] = {}
+    run_env = os.environ.copy()
+    run_env["SIGNAL_NPC_WORKER_BRAIN_MODE"] = (
+        "shadow" if args.decision_mode in ("teacher", "shadow")
+        else args.decision_mode
+    )
 
     for index, scenario_args in enumerate(scenarios):
         filename = f"scenario-{index:03d}.jsonl"
         output = output_dir / filename
-        if not run_once(binary, scenario_args, output):
+        if not run_once(binary, scenario_args, output, env=run_env):
             print(
                 f"signal_replay scenario {index} failed while building bundle",
                 file=sys.stderr,
@@ -130,14 +156,42 @@ def main() -> int:
         )
         return 1
 
+    if args.scenario_set == "ai-outcomes-fast":
+        corpus = OUTCOME_CORPUS_NAME
+    elif args.scenario_set.startswith("ai-eval-"):
+        corpus = CORPUS_NAME
+    else:
+        corpus = "signal-replay-default"
+    try:
+        outcome_report = build_episode_report(
+            decision_mode=args.decision_mode,
+            corpus=corpus,
+            corpus_version=CORPUS_VERSION,
+            generator_version=GENERATOR_VERSION,
+            scenario_entries=(
+                (entry, output_dir / str(entry["file"]))
+                for entry in manifest_scenarios
+            ),
+        )
+        outcome_bytes = serialize_episode_report(outcome_report)
+    except OutcomeReportError as exc:
+        print(f"AI episode outcome report failed: {exc}", file=sys.stderr)
+        return 1
+    outcome_filename = "outcomes.json"
+    (output_dir / outcome_filename).write_bytes(outcome_bytes)
+
     manifest = {
-        "corpus": (
-            CORPUS_NAME
-            if args.scenario_set.startswith("ai-eval-")
-            else "signal-replay-default"
-        ),
+        "corpus": corpus,
         "corpus_version": CORPUS_VERSION,
+        "decision_mode": args.decision_mode,
         "generator_version": GENERATOR_VERSION,
+        "outcomes": {
+            "file": outcome_filename,
+            "report_version": outcome_report["report_version"],
+            "schema": outcome_report["schema"],
+            "sha256": hashlib.sha256(outcome_bytes).hexdigest(),
+            "size": len(outcome_bytes),
+        },
         "scenario_set": args.scenario_set,
         "scenarios": manifest_scenarios,
         "schema": BUNDLE_SCHEMA,

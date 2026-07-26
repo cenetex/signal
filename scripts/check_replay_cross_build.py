@@ -9,8 +9,10 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
+from ai_episode_outcomes import validate_outcome_output
 from ai_eval_corpus import (
     evaluation_world,
     validate_evaluation_output,
@@ -29,7 +31,13 @@ def runner_for(binary: Path) -> list[str]:
     return [str(binary)]
 
 
-def run_once(binary: Path, args: tuple[str, ...], out: Path) -> bool:
+def run_once(
+    binary: Path,
+    args: tuple[str, ...],
+    out: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
     cmd = [*runner_for(binary), *args, "--out", str(out)]
     result = subprocess.run(
         cmd,
@@ -37,6 +45,7 @@ def run_once(binary: Path, args: tuple[str, ...], out: Path) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     if result.returncode != 0 or not out.exists():
         print(
@@ -84,7 +93,8 @@ def main() -> int:
     if len(args) != 2:
         print(
             "usage: check_replay_cross_build.py LEFT_SIGNAL_REPLAY RIGHT_SIGNAL_REPLAY "
-            "[--scenario-set fast|long|all|ai-eval-fast|ai-eval-long]",
+            "[--scenario-set fast|long|all|ai-eval-fast|ai-eval-long|"
+            "ai-outcomes-fast]",
             file=sys.stderr,
         )
         return 2
@@ -138,6 +148,14 @@ def main() -> int:
                 return 1
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
+                return 1
+            outcome_failure = validate_outcome_output(left)
+            if outcome_failure is not None:
+                print(
+                    f"signal_replay scenario {i} failed outcome facts: "
+                    f"{outcome_failure}",
+                    file=sys.stderr,
+                )
                 return 1
             evaluation_failure = validate_evaluation_output(left, scenario_args)
             if evaluation_failure is not None:

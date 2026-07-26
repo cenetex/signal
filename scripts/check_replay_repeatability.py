@@ -9,6 +9,10 @@ import tempfile
 import json
 from pathlib import Path
 
+from ai_episode_outcomes import (
+    AI_OUTCOME_FAST_SCENARIOS,
+    validate_outcome_output,
+)
 from ai_eval_corpus import (
     AI_EVAL_FAST_SCENARIOS,
     AI_EVAL_LONG_SCENARIOS,
@@ -219,6 +223,7 @@ SCENARIO_SETS = {
     "all": FAST_SCENARIOS + LONG_SCENARIOS,
     "ai-eval-fast": AI_EVAL_FAST_SCENARIOS,
     "ai-eval-long": AI_EVAL_LONG_SCENARIOS,
+    "ai-outcomes-fast": AI_OUTCOME_FAST_SCENARIOS,
 }
 
 
@@ -410,7 +415,8 @@ def main() -> int:
     if len(args) > 1:
         print(
             "usage: check_replay_repeatability.py [SIGNAL_REPLAY] "
-            "[--scenario-set fast|long|all|ai-eval-fast|ai-eval-long]",
+            "[--scenario-set fast|long|all|ai-eval-fast|ai-eval-long|"
+            "ai-outcomes-fast]",
             file=sys.stderr,
         )
         return 2
@@ -444,6 +450,14 @@ def main() -> int:
                 return 1
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
+                return 1
+            outcome_failure = validate_outcome_output(left)
+            if outcome_failure is not None:
+                print(
+                    f"signal_replay scenario {i} failed outcome facts: "
+                    f"{outcome_failure}",
+                    file=sys.stderr,
+                )
                 return 1
             evaluation_failure = validate_evaluation_output(left, scenario_args)
             if evaluation_failure is not None:

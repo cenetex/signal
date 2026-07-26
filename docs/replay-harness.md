@@ -108,7 +108,72 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
   disconnected station counts, production and consumption edge counts,
   outpost slots, a slot-sensitive topology hash, and a slot-invariant semantic
   topology hash.
+- `outcome_facts`: strict `signal.ai_outcome_facts.v1` evidence used to derive
+  per-head episode outcomes. It records feature-contract versions, bounded
+  completion ticks, player and worker route progress, collision/death/stuck/
+  recovery/loop counters, safety fallbacks, station needs served, and cargo
+  manifest/receipt-chain integrity at both episode boundaries.
 - `authority`: currently `deterministic_seed_prefix_replay`.
+
+## AI Episode Outcome Contract
+
+Every replay bundle uses schema `signal.replay_bundle.v3` and contains a
+strictly validated `outcomes.json` report with schema
+`signal.ai_episode_report.v1`. Each report has one
+`signal.ai_episode_outcome.v1` record per replay row and intelligence head:
+`flight`, `contract`, and `worker`.
+
+Episode boundaries are deliberately narrower than an entire game session:
+
+- a flight episode begins after the shared seed, prefix, and provenance setup,
+  and ends at goal arrival, ship death, or the candidate horizon;
+- a contract episode begins when a contract decision or completion/delivery
+  event is observed, and ends at completion, a terminal rejection, or the
+  horizon; rows with no contract evidence are `not_attempted`;
+- a worker episode begins with a selected assignment and ends when the bounded
+  fixture clears a delivery, completes a scaffold move, finishes a kit-backed
+  repair, defaults a shipment, or reaches the horizon; rows with no assignment
+  evidence are `not_attempted`.
+
+Statuses are `not_attempted`, `in_progress`, `completed`, and `failed`.
+`in_progress` is explicitly marked as truncated; reaching the horizon is never
+silently scored as success or failure. A completed contract or worker episode
+must have a deterministic completion tick or report construction fails.
+
+Replay IDs hash the corpus/version, generator version, scenario index, and
+exact scenario arguments. Episode IDs additionally hash the candidate, head,
+and outcome report version. The four decision modes therefore operate on
+exactly the same episode IDs:
+
+- `teacher` is the authoritative deterministic fallback;
+- `shadow` records the requested comparison mode while teacher decisions
+  remain authoritative;
+- `mixed` and `active` configure the worker brain accordingly, but every
+  episode records effective mode, model decisions, and teacher fallbacks;
+- flight remains a replay counterfactual candidate in all four modes and says
+  so explicitly rather than claiming an active model decision.
+
+Unknown fact/report schemas, encoder-version drift, malformed route metrics,
+non-finite values, or broken cargo lineage fail closed. Attempted-episode
+summaries include completion rate/ticks, collision and death events, stuck and
+recovery counts, repeated route cells, safety overrides, route efficiency,
+behavioral diversity, station need served, and receipt-chain failures.
+`not_attempted` rows are counted but do not pollute those metric totals.
+The short corpus exercises both completed and horizon-truncated flight
+episodes plus completed contract, tow, repair, and delivery-proof episodes.
+
+Run the short deterministic gates with:
+
+```sh
+make replay-ai-outcome-repeatability
+make replay-ai-outcome-native-wasm
+make replay-ai-outcome-modes
+```
+
+The first also runs schema/version unit tests. The native/WASM gate compares
+the raw facts byte-for-byte, including `outcomes.json`. The four-mode gate
+requires identical episode IDs before emitting
+`signal.ai_episode_comparison.v1` summaries.
 
 ## AI Evaluation World Corpus
 
@@ -149,9 +214,10 @@ make replay-ai-eval-repeatability-long
 
 The Deterministic Replay workflow accepts `ai-eval-fast` and `ai-eval-long`
 manual scenario sets. Its weekly scheduled job exports the long native bundle
-as a 30-day artifact. Bundle manifests use `signal.replay_bundle.v2`; every
+as a 30-day artifact. Bundle manifests use `signal.replay_bundle.v3`; every
 scenario entry records the corpus/generator versions and expected invariants,
-and every JSONL row repeats those versions with its measured topology summary.
+every JSONL row repeats those versions with its measured topology summary, and
+the manifest authenticates the versioned `outcomes.json` report.
 
 The fast repeatability gate includes focused active-worker fixtures for
 `worker-tow-hnn`, `worker-repair-hnn`, `worker-delivery-proof-hnn`, and
