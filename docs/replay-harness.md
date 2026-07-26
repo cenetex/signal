@@ -70,6 +70,10 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 
 - `prefix_state_hash`: hash after replaying the shared input prefix.
 - `state_hash`: hash after the candidate branch horizon.
+- `state_digest_schema`: version of the canonical peer/quorum digest.
+- `state_digest_version`: numeric canonical digest version.
+- `prefix_state_root`: canonical authoritative root at the branch point.
+- `state_root`: canonical authoritative root after the branch horizon.
 - `event_hash`: hash of branch events in simulator order.
 - Safety metrics: hull, hull loss, damage events, death events, dock/launch
   events, and repair events.
@@ -113,13 +117,13 @@ one station and fails unless a worker physically carries that contract and its
 market-memory impression into a different station, where the spatial
 signal-field records the received demand locally.
 
-The hashes include the world tick/time, belt seed, player ship state, cargo
-manifest, station identity, station inventory cache, fracture claim windows,
-player ledger balance by session token and pubkey, and station chain tail.
-Float fields are hashed as their exact IEEE-754 bits, not rounded display
-values, so one-bit native/WASM or cross-build drift fails the diff. This makes
-repeated runs with the same seed and prefix cheap to diff and safe to ingest
-from CRLPLRIMES-style experiments.
+The legacy `*_state_hash` fields remain replay diagnostics. The versioned
+`*_state_root` fields use the audited coverage and exclusions in
+[`authoritative-state-digest.md`](authoritative-state-digest.md). Float fields
+are hashed as their exact IEEE-754 bits, not rounded display values, so one-bit
+native/WASM or cross-build drift fails the diff. This makes repeated runs with
+the same seed and prefix cheap to diff and safe to ingest from
+CRLPLRIMES-style experiments.
 
 ## Determinism Check
 

@@ -116,6 +116,7 @@ endif()
 # local_server.c). New server sim files go here.
 set(SIGNAL_SIM_SOURCES
     server/game_sim.c
+    server/state_digest.c
     server/sim_ai.c
     server/gossip.c
     server/sim_autopilot.c
@@ -309,6 +310,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_route_history_labels.c
         tests/c/test_rock_usefulness.c
         tests/c/test_signal_field.c
+        tests/c/test_state_digest.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         client/identity.c

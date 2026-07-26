@@ -28,6 +28,7 @@
 #include "sim_nav.h"
 #include "sim_physics.h"
 #include "station_util.h"
+#include "state_digest.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
 #define SR_ACTION_COUNT 9
@@ -238,6 +239,8 @@ typedef struct {
     sr_hnn_eval_t hnn;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
+    uint8_t prefix_state_root[32];
+    uint8_t state_root[32];
     uint8_t event_hash[32];
 } sr_result_t;
 
@@ -3431,6 +3434,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->start_cargo = ship_total_cargo(sp->ship);
     out->start_balance = sr_player_station_balance(w, sp);
     sr_state_hash(w, sp, out->prefix_state_hash);
+    signal_authoritative_state_digest(w, out->prefix_state_root);
 
     sha256_init(&event_hash);
     sha256_update(&event_hash, "signal-replay-events-v2-float-bits", 34);
@@ -3490,6 +3494,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         out->ai.branch = branch;
     }
     sr_state_hash(w, sp, out->state_hash);
+    signal_authoritative_state_digest(w, out->state_root);
     out->ok = true;
     ok = true;
 
@@ -3764,7 +3769,9 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             "\"prefix_ticks\":%d,"
             "\"horizon_ticks\":%d,"
             "\"candidate\":%d,"
-            "\"candidate_name\":\"%s\",",
+            "\"candidate_name\":\"%s\","
+            "\"state_digest_schema\":\"%s\","
+            "\"state_digest_version\":%" PRIu32 ",",
             SR_SCHEMA,
             config->seed,
             config->station,
@@ -3772,10 +3779,16 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->prefix_ticks,
             r->horizon_ticks,
             r->candidate,
-            SR_ACTIONS[r->candidate].name);
+            SR_ACTIONS[r->candidate].name,
+            signal_authoritative_state_digest_schema(),
+            signal_authoritative_state_digest_version());
     sr_json_hash(out, "prefix_state_hash", r->prefix_state_hash);
     fprintf(out, ",");
     sr_json_hash(out, "state_hash", r->state_hash);
+    fprintf(out, ",");
+    sr_json_hash(out, "prefix_state_root", r->prefix_state_root);
+    fprintf(out, ",");
+    sr_json_hash(out, "state_root", r->state_root);
     fprintf(out, ",");
     sr_json_hash(out, "event_hash", r->event_hash);
     fprintf(out,
