@@ -438,7 +438,9 @@ endif()
 
 # ------------------------------------------------------------------
 # Fuzz targets (libFuzzer, clang only). Off by default; enable with
-# -DSIGNAL_BUILD_FUZZERS=ON. Harnesses live in tests/fuzz/ and probe
+# -DSIGNAL_BUILD_FUZZERS=ON. Headless builders should also set
+# -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF so decoder fuzzing never discovers
+# desktop audio/window dependencies. Harnesses live in tests/fuzz/ and probe
 # untrusted decode paths (cargo receipts, handoff tickets/snapshots).
 # See REMEDIATION_PLAN.md §12.
 # ------------------------------------------------------------------

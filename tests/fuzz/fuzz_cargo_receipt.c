@@ -13,7 +13,8 @@
  *
  * Build (clang only):  make fuzz-receipts
  * Or manually:
- *   cmake -S . -B build-fuzz -DSIGNAL_BUILD_FUZZERS=ON
+ *   cmake -S . -B build-fuzz -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF \
+ *     -DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=clang
  *   cmake --build build-fuzz
  *   ./build-fuzz/fuzz_cargo_receipt -max_total_time=300 corpus_dir
  *

@@ -437,7 +437,8 @@ test-tsan:
 # when present. Override with FUZZ_CC=... . FUZZ_TIME bounds the run;
 # crash artifacts land in tests/fuzz/artifacts/ for standalone replay.
 # New coverage inputs land in the ignored build tree so routine fuzz runs
-# do not dirty the curated, tracked seed corpus.
+# do not dirty the curated, tracked seed corpus. Keep this configuration
+# headless: decoder fuzzing must not depend on desktop audio/window libraries.
 FUZZ_CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; else echo clang; fi)
 FUZZ_TIME ?= 60
 FUZZ_WORK_CORPUS ?= build-fuzz/corpus
@@ -447,6 +448,7 @@ FUZZ_WORK_CORPUS ?= build-fuzz/corpus
 FUZZ_MAX_LEN ?= 131072
 fuzz-receipts:
 	cmake $(GENERATOR) -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF \
 		-DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=$(FUZZ_CC)
 	cmake --build build-fuzz --parallel --target fuzz_cargo_receipt
 	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus $(FUZZ_WORK_CORPUS)
