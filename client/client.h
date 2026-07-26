@@ -393,6 +393,10 @@ typedef struct {
         } rows[16];
         int row_count;
     } scoreboard;
+    /* Healthy build/network telemetry is deliberately hidden during play.
+     * F3 exposes it for diagnostics; actionable connection trouble remains
+     * visible even while this is false. */
+    bool hud_debug_visible;
     /* Per-station manifest summary — [commodity][grade] unit counts.
      * Unified read path for the TRADE UI. Network-authoritative sessions
      * populate it from server manifest-summary broadcasts; the offline
@@ -848,6 +852,7 @@ void draw_ui_meter(float x, float y, float width, float height, float fill, floa
 void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h,
     float* bottom_x, float* bottom_y, float* bottom_w, float* bottom_h);
 bool hud_should_draw_message_panel(void);
+const char *hud_attention_current_surface_name(void);
 void get_hud_message_panel_rect(float* x, float* y, float* width, float* height);
 void get_station_panel_rect(float* x, float* y, float* width, float* height);
 

@@ -20,6 +20,7 @@
 #include "sim_ship.h"
 #include "tractor.h"
 #include "npc_radio.h"
+#include "hud_attention.h"
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
@@ -4195,6 +4196,7 @@ void draw_npc_chatter(void) {
 
     hail_asteroid_tag_t tags[HAIL_SCAN_ASTEROID_TAG_LIMIT];
     int tag_count = 0;
+    int asteroid_budget = hud_scan_asteroid_budget(ui_screen_width());
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &g.world.asteroids[i];
@@ -4207,13 +4209,13 @@ void draw_npc_chatter(void) {
         if (reveal <= 0.01f) continue;
         float relevance = hail_asteroid_relevance(a, i, dist_sq);
 
-        if (tag_count < HAIL_SCAN_ASTEROID_TAG_LIMIT) {
+        if (tag_count < asteroid_budget) {
             tags[tag_count++] = (hail_asteroid_tag_t){
                 i, dist_sq, reveal, relevance
             };
         } else {
             int worst = 0;
-            for (int j = 1; j < HAIL_SCAN_ASTEROID_TAG_LIMIT; j++) {
+            for (int j = 1; j < asteroid_budget; j++) {
                 if (tags[j].relevance < tags[worst].relevance) worst = j;
             }
             if (relevance > tags[worst].relevance) {
@@ -4271,13 +4273,43 @@ void draw_npc_chatter(void) {
         }
     }
 
+    typedef struct {
+        int index;
+        float relevance;
+    } hail_npc_tag_t;
+    hail_npc_tag_t npc_tags[4];
+    int npc_tag_count = 0;
+    int npc_budget = hud_scan_npc_budget(ui_screen_width());
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
         if (!on_screen(npc->ship->pos.x, npc->ship->pos.y, 50.0f)) continue;
-        if (v2_dist_sq(npc->ship->pos, g.hail_ping_origin) > hail_range_sq) continue;
+        float dist_sq = v2_dist_sq(npc->ship->pos, g.hail_ping_origin);
+        if (dist_sq > hail_range_sq) continue;
+        if (hail_scan_reveal_alpha(npc->ship->pos) <= 0.01f) continue;
+        float relevance = hail_range_sq - dist_sq;
+        if (LOCAL_PLAYER.scan_target_type == INSPECT_TARGET_NPC &&
+            LOCAL_PLAYER.scan_target_index == i)
+            relevance += hail_range_sq * 4.0f;
+        if (hail_conversation_entry_for_npc(i))
+            relevance += hail_range_sq * 2.0f;
+        if (npc_tag_count < npc_budget) {
+            npc_tags[npc_tag_count++] = (hail_npc_tag_t){i, relevance};
+        } else {
+            int worst = 0;
+            for (int j = 1; j < npc_budget; j++) {
+                if (npc_tags[j].relevance < npc_tags[worst].relevance)
+                    worst = j;
+            }
+            if (relevance > npc_tags[worst].relevance)
+                npc_tags[worst] = (hail_npc_tag_t){i, relevance};
+        }
+    }
+
+    for (int tag = 0; tag < npc_tag_count; tag++) {
+        int i = npc_tags[tag].index;
+        const npc_ship_t *npc = &g.world.npc_ships[i];
         float reveal = hail_scan_reveal_alpha(npc->ship->pos);
-        if (reveal <= 0.01f) continue;
 
         const hail_conversation_entry_t *entry =
             hail_conversation_entry_for_npc(i);

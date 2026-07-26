@@ -311,6 +311,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_signal_field.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
+        tests/c/test_hud_attention.c
         client/identity.c
         client/client_log.c
         ${SIGNAL_SIM_SOURCES}

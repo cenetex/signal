@@ -61,6 +61,10 @@ These items moved from direction to implemented baseline:
   shipyard, dock, storage, or service consequences.
 - Fragment usefulness first pass: tracked contract fit, direct station demand,
   and rare grade fallback in the target/tow HUD.
+- HUD attention budget: death, station, inspect, scoreboard, message, and
+  flight surfaces have deterministic precedence; scoreboard is modal, scan
+  labels contract with viewport width, and healthy build/network telemetry is
+  available on F3 instead of occupying the play surface.
 
 The next work should not repaint those shipped cues. It should stabilize NPC
 motive, summarize station memory, and deepen rock value beyond direct demand.
