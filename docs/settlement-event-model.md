@@ -200,7 +200,7 @@ typedef struct {
     uint8_t  kind;
     uint8_t  direction;   /* 0 = BUY (station→player), 1 = SELL (player→station) */
     uint8_t  _pad[6];
-} settlement_payload_trade_t;  /* 144 bytes */
+} settlement_payload_trade_t;  /* 112 bytes */
 ```
 
 ### ISSUE_CREDIT_NOTE (0x12) / REDEEM_CREDIT_NOTE (0x13)
@@ -241,7 +241,7 @@ Input cargo consumed to advance scaffold build progress.
 typedef struct {
     uint8_t  scaffold_id[32];
     uint8_t  station_pubkey[32];
-    uint8_t  input_pubs[4][32];
+    uint8_t  input_pubs[3][32];
     uint8_t  input_count;
     uint8_t  module_type;
     uint8_t  ring;

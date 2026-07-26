@@ -4,6 +4,20 @@
 #include <string.h>
 #include <stdlib.h>
 
+enum {
+    SETTL_EVT_TRANSFER_CARGO = 0x04,
+    SETTL_EVT_SELL = 0x11,
+    SETTL_EVT_DELIVER_CONSTRUCTION_INPUT = 0x21,
+    SETTL_TRANSFER_PAYLOAD_SIZE = 144,
+    SETTL_TRADE_PAYLOAD_SIZE = 112,
+    SETTL_TRADE_DIRECTION_OFFSET = 105,
+    SETTL_MAX_CONSTRUCTION_INPUTS = 3,
+    SETTL_CONSTRUCTION_INPUT_COUNT_OFFSET =
+        32 + 32 + SETTL_MAX_CONSTRUCTION_INPUTS * 32,
+    SETTL_CONSTRUCTION_INPUT_PAYLOAD_SIZE =
+        SETTL_CONSTRUCTION_INPUT_COUNT_OFFSET + 8
+};
+
 static int cmp_u8_32(const void *a, const void *b) {
     return memcmp(a, b, 32);
 }
@@ -30,6 +44,39 @@ static int find_ledger_entry(const settl_ledger_entry_t *ledger,
 
 void settlement_state_init(settlement_state_t *s) {
     memset(s, 0, sizeof(*s));
+}
+
+const char *settlement_import_status_name(settlement_import_status_t status) {
+    switch (status) {
+    case SETTL_IMPORT_OK: return "ok";
+    case SETTL_IMPORT_REJECT_BAD_ARGUMENTS: return "reject_bad_arguments";
+    case SETTL_IMPORT_REJECT_PAYLOAD_HASH: return "reject_payload_hash";
+    case SETTL_IMPORT_REJECT_MISSING_EVIDENCE: return "reject_missing_evidence";
+    case SETTL_IMPORT_REJECT_EVIDENCE_COUNT: return "reject_evidence_count";
+    case SETTL_IMPORT_REJECT_EVIDENCE_EVENT: return "reject_evidence_event";
+    case SETTL_IMPORT_REJECT_EVIDENCE_CARGO: return "reject_evidence_cargo";
+    case SETTL_IMPORT_REJECT_TRUST_BAD_ARGUMENTS:
+        return "reject_trust_bad_arguments";
+    case SETTL_IMPORT_REJECT_TRUST_CHAIN: return "reject_trust_chain";
+    case SETTL_IMPORT_REJECT_TRUST_MISSING_ORIGIN:
+        return "reject_trust_missing_origin";
+    case SETTL_IMPORT_REJECT_TRUST_ORIGIN_EVENT_TYPE:
+        return "reject_trust_origin_event_type";
+    case SETTL_IMPORT_REJECT_TRUST_ORIGIN_CARGO:
+        return "reject_trust_origin_cargo";
+    case SETTL_IMPORT_REJECT_TRUST_ORIGIN_PIN:
+        return "reject_trust_origin_pin";
+    case SETTL_IMPORT_REJECT_TRUST_ORIGIN_AUTHORITY:
+        return "reject_trust_origin_authority";
+    case SETTL_IMPORT_REJECT_TRUST_UNKNOWN_AUTHORITY:
+        return "reject_trust_unknown_authority";
+    case SETTL_IMPORT_REJECT_TRUST_UNTRUSTED_AUTHORITY:
+        return "reject_trust_untrusted_authority";
+    case SETTL_IMPORT_REJECT_TRUST_REVOKED_AUTHORITY:
+        return "reject_trust_revoked_authority";
+    case SETTL_IMPORT_REJECT_EVENT: return "reject_event";
+    default: return "unknown";
+    }
 }
 
 /* ---- state root ---- */
@@ -110,11 +157,28 @@ void settlement_compute_root(const settlement_state_t *s, uint8_t root_out[32]) 
 
 /* ---- event application ---- */
 
-bool settlement_apply_event(settlement_state_t *s,
-                            const void *hdr_arg,
-                            const uint8_t *payload,
-                            uint16_t payload_len) {
+static bool settlement_payload_hash_matches(const chain_event_header_t *hdr,
+                                            const uint8_t *payload,
+                                            uint16_t payload_len) {
+    if (!hdr || !payload) return false;
+    uint8_t hash[32];
+    sha256_bytes(payload, payload_len, hash);
+    return memcmp(hash, hdr->payload_hash, sizeof(hash)) == 0;
+}
+
+static bool settlement_event_requires_trust(uint8_t type) {
+    return type == SETTL_EVT_TRANSFER_CARGO ||
+           type == SETTL_EVT_SELL ||
+           type == SETTL_EVT_DELIVER_CONSTRUCTION_INPUT;
+}
+
+static bool settlement_apply_event_preflighted(settlement_state_t *s,
+                                               const void *hdr_arg,
+                                               const uint8_t *payload,
+                                               uint16_t payload_len) {
     const chain_event_header_t *hdr = (const chain_event_header_t *)hdr_arg;
+    if (!s || !settlement_payload_hash_matches(hdr, payload, payload_len))
+        return false;
     int st = 0; /* single-station for now — extended in multi-station world */
     cargo_unit_t *manifest = s->station_manifests[st];
     uint16_t *mc = &s->station_manifest_counts[st];
@@ -178,8 +242,8 @@ bool settlement_apply_event(settlement_state_t *s,
         return true;
     }
 
-    case 0x04: { /* TRANSFER_CARGO */
-        if (payload_len < 96) return false;
+    case SETTL_EVT_TRANSFER_CARGO: { /* TRANSFER_CARGO */
+        if (payload_len < SETTL_TRANSFER_PAYLOAD_SIZE) return false;
         int idx = find_manifest_unit(manifest, *mc, payload);
         if (idx < 0) return false;
         cargo_unit_t unit = manifest[idx];
@@ -191,11 +255,14 @@ bool settlement_apply_event(settlement_state_t *s,
     }
 
     case 0x10: /* BUY */
-    case 0x11: { /* SELL */
-        if (payload_len < 112) return false;
+    case SETTL_EVT_SELL: { /* SELL */
+        if (payload_len < SETTL_TRADE_PAYLOAD_SIZE) return false;
         int64_t delta;
         memcpy(&delta, payload + 96, 8);
-        uint8_t dir = payload[104];
+        uint8_t dir = payload[SETTL_TRADE_DIRECTION_OFFSET];
+        if ((hdr->type == 0x10 && dir != 0) ||
+            (hdr->type == SETTL_EVT_SELL && dir != 1))
+            return false;
 
         if (dir == 0) { /* BUY: station→player, remove from manifest */
             int idx = find_manifest_unit(manifest, *mc, payload);
@@ -259,16 +326,44 @@ bool settlement_apply_event(settlement_state_t *s,
         return true;
     }
 
-    case 0x21: { /* DELIVER_CONSTRUCTION_INPUT */
-        if (payload_len < 168) return false;
-        for (uint16_t i = 0; i < s->construction_site_count; i++)
-            if (memcmp(s->construction_sites[i].scaffold_id, payload, 32) == 0) {
-                s->construction_sites[i].build_progress += 0.1f;
-                if (s->construction_sites[i].build_progress > 1.0f)
-                    s->construction_sites[i].build_progress = 1.0f;
-                return true;
+    case SETTL_EVT_DELIVER_CONSTRUCTION_INPUT: {
+        /* DELIVER_CONSTRUCTION_INPUT */
+        if (payload_len < SETTL_CONSTRUCTION_INPUT_PAYLOAD_SIZE) return false;
+        uint8_t input_count = payload[SETTL_CONSTRUCTION_INPUT_COUNT_OFFSET];
+        if (input_count == 0 || input_count > SETTL_MAX_CONSTRUCTION_INPUTS)
+            return false;
+
+        int site_idx = -1;
+        for (uint16_t i = 0; i < s->construction_site_count; i++) {
+            if (memcmp(s->construction_sites[i].scaffold_id, payload, 32) == 0 &&
+                s->construction_sites[i].active) {
+                site_idx = (int)i;
+                break;
             }
-        return false;
+        }
+        if (site_idx < 0) return false;
+
+        /*
+         * Validate the whole input set before removal. Duplicate pubs would
+         * otherwise make a direct event application partially consume cargo.
+         */
+        for (uint8_t i = 0; i < input_count; i++) {
+            const uint8_t *pub = payload + 64 + i * 32;
+            if (find_manifest_unit(manifest, *mc, pub) < 0) return false;
+            for (uint8_t j = 0; j < i; j++)
+                if (memcmp(pub, payload + 64 + j * 32, 32) == 0)
+                    return false;
+        }
+        for (uint8_t i = 0; i < input_count; i++) {
+            int idx = find_manifest_unit(
+                manifest, *mc, payload + 64 + i * 32);
+            settlement_manifest_remove(manifest, mc, (uint16_t)idx);
+        }
+
+        settl_construction_site_t *site = &s->construction_sites[site_idx];
+        site->build_progress += 0.1f * (float)input_count;
+        if (site->build_progress > 1.0f) site->build_progress = 1.0f;
+        return true;
     }
 
     case 0x22: { /* COMPLETE_STATION_MODULE */
@@ -305,30 +400,214 @@ bool settlement_apply_event(settlement_state_t *s,
     }
 }
 
+bool settlement_apply_event(settlement_state_t *s,
+                            const void *hdr_arg,
+                            const uint8_t *payload,
+                            uint16_t payload_len) {
+    const chain_event_header_t *hdr = (const chain_event_header_t *)hdr_arg;
+    if (!hdr || settlement_event_requires_trust(hdr->type)) return false;
+    return settlement_apply_event_preflighted(
+        s, hdr_arg, payload, payload_len);
+}
+
+static settlement_import_status_t settlement_status_from_trust(
+    cargo_receipt_trust_status_t status) {
+    switch (status) {
+    case CARGO_RECEIPT_TRUST_VALID_TRUSTED:
+    case CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED:
+        return SETTL_IMPORT_OK;
+    case CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS:
+        return SETTL_IMPORT_REJECT_TRUST_BAD_ARGUMENTS;
+    case CARGO_RECEIPT_TRUST_REJECT_CHAIN:
+        return SETTL_IMPORT_REJECT_TRUST_CHAIN;
+    case CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN:
+        return SETTL_IMPORT_REJECT_TRUST_MISSING_ORIGIN;
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE:
+        return SETTL_IMPORT_REJECT_TRUST_ORIGIN_EVENT_TYPE;
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO:
+        return SETTL_IMPORT_REJECT_TRUST_ORIGIN_CARGO;
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN:
+        return SETTL_IMPORT_REJECT_TRUST_ORIGIN_PIN;
+    case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY:
+        return SETTL_IMPORT_REJECT_TRUST_ORIGIN_AUTHORITY;
+    case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
+        return SETTL_IMPORT_REJECT_TRUST_UNKNOWN_AUTHORITY;
+    case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
+        return SETTL_IMPORT_REJECT_TRUST_UNTRUSTED_AUTHORITY;
+    case CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY:
+        return SETTL_IMPORT_REJECT_TRUST_REVOKED_AUTHORITY;
+    default:
+        return SETTL_IMPORT_REJECT_TRUST_BAD_ARGUMENTS;
+    }
+}
+
+static void settlement_result_set(settlement_import_result_t *result,
+                                  settlement_import_status_t status,
+                                  uint32_t event_index,
+                                  uint8_t cargo_index,
+                                  cargo_receipt_result_t chain_result) {
+    if (!result) return;
+    result->status = status;
+    result->event_index = event_index;
+    result->cargo_index = cargo_index;
+    result->chain_result = chain_result;
+}
+
+static bool settlement_preflight_event(
+    const chain_event_header_t *hdr,
+    const uint8_t *payload,
+    uint16_t payload_len,
+    const settlement_event_trust_evidence_t *evidence,
+    uint32_t event_index,
+    settlement_import_result_t *result) {
+    if (!settlement_payload_hash_matches(hdr, payload, payload_len)) {
+        settlement_result_set(result, SETTL_IMPORT_REJECT_PAYLOAD_HASH,
+                              event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+        return false;
+    }
+
+    const uint8_t *cargo_pubs[SETTL_MAX_CONSTRUCTION_INPUTS] = {0};
+    uint8_t cargo_count = 0;
+    switch (hdr->type) {
+    case SETTL_EVT_TRANSFER_CARGO:
+        if (payload_len < SETTL_TRANSFER_PAYLOAD_SIZE) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVENT,
+                                  event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        cargo_pubs[cargo_count++] = payload;
+        break;
+    case SETTL_EVT_SELL:
+        if (payload_len < SETTL_TRADE_PAYLOAD_SIZE) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVENT,
+                                  event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        cargo_pubs[cargo_count++] = payload;
+        break;
+    case SETTL_EVT_DELIVER_CONSTRUCTION_INPUT:
+        if (payload_len < SETTL_CONSTRUCTION_INPUT_PAYLOAD_SIZE) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVENT,
+                                  event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        cargo_count = payload[SETTL_CONSTRUCTION_INPUT_COUNT_OFFSET];
+        if (cargo_count == 0 ||
+            cargo_count > SETTL_MAX_CONSTRUCTION_INPUTS) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVENT,
+                                  event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        for (uint8_t i = 0; i < cargo_count; i++)
+            cargo_pubs[i] = payload + 64 + i * 32;
+        break;
+    default:
+        if (evidence && evidence->cargo_count != 0) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVIDENCE_COUNT,
+                                  event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        return true;
+    }
+
+    if (!evidence || evidence->cargo_count == 0 || !evidence->cargo) {
+        settlement_result_set(result, SETTL_IMPORT_REJECT_MISSING_EVIDENCE,
+                              event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+        return false;
+    }
+    if (evidence->cargo_count != cargo_count) {
+        settlement_result_set(result, SETTL_IMPORT_REJECT_EVIDENCE_COUNT,
+                              event_index, UINT8_MAX, CARGO_RECEIPT_OK);
+        return false;
+    }
+
+    for (uint8_t i = 0; i < cargo_count; i++) {
+        const settlement_cargo_trust_evidence_t *item =
+            &evidence->cargo[i];
+        if (item->event_id != hdr->event_id) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVIDENCE_EVENT,
+                                  event_index, i, CARGO_RECEIPT_OK);
+            return false;
+        }
+        if (memcmp(item->cargo_pub, cargo_pubs[i], 32) != 0) {
+            settlement_result_set(result, SETTL_IMPORT_REJECT_EVIDENCE_CARGO,
+                                  event_index, i, CARGO_RECEIPT_OK);
+            return false;
+        }
+
+        cargo_receipt_trust_result_t trust = cargo_receipt_trust_verify(
+            item->receipt_chain, item->receipt_count, cargo_pubs[i],
+            item->origin_present ? &item->origin : NULL,
+            item->authority_trust);
+        settlement_import_status_t status =
+            settlement_status_from_trust(trust.status);
+        if (status != SETTL_IMPORT_OK) {
+            settlement_result_set(result, status, event_index, i,
+                                  trust.chain_result);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool settlement_apply_segment_trusted(
+    settlement_state_t *s,
+    const void *events_arg,
+    const uint8_t **payloads,
+    const uint16_t *payload_lens,
+    const settlement_event_trust_evidence_t *evidence,
+    uint32_t event_count,
+    settlement_checkpoint_t *cp_out,
+    settlement_import_result_t *result_out) {
+    const chain_event_header_t *events = (const chain_event_header_t *)events_arg;
+    settlement_result_set(result_out, SETTL_IMPORT_OK, UINT32_MAX,
+                          UINT8_MAX, CARGO_RECEIPT_OK);
+    if (!s || !cp_out ||
+        (event_count > 0 && (!events || !payloads || !payload_lens))) {
+        settlement_result_set(result_out, SETTL_IMPORT_REJECT_BAD_ARGUMENTS,
+                              UINT32_MAX, UINT8_MAX, CARGO_RECEIPT_OK);
+        return false;
+    }
+
+    for (uint32_t i = 0; i < event_count; i++) {
+        const settlement_event_trust_evidence_t *event_evidence =
+            evidence ? &evidence[i] : NULL;
+        if (!settlement_preflight_event(
+                &events[i], payloads[i], payload_lens[i], event_evidence,
+                i, result_out))
+            return false;
+    }
+
+    settlement_state_t next = *s;
+    for (uint32_t i = 0; i < event_count; i++) {
+        if (!settlement_apply_event_preflighted(
+                &next, &events[i], payloads[i], payload_lens[i])) {
+            settlement_result_set(result_out, SETTL_IMPORT_REJECT_EVENT,
+                                  i, UINT8_MAX, CARGO_RECEIPT_OK);
+            return false;
+        }
+        next.last_event_id = events[i].event_id;
+    }
+
+    settlement_checkpoint_t next_cp = {0};
+    settlement_compute_root(s, next_cp.prev_segment_root);
+    next.segment_index++;
+    next_cp.segment_index = next.segment_index;
+    next_cp.event_count = event_count;
+    next_cp.last_event_id = next.last_event_id;
+    settlement_compute_root(&next, next_cp.state_root);
+
+    *s = next;
+    *cp_out = next_cp;
+    return true;
+}
+
 bool settlement_apply_segment(settlement_state_t *s,
                               const void *events_arg,
                               const uint8_t **payloads,
                               const uint16_t *payload_lens,
                               uint32_t event_count,
                               settlement_checkpoint_t *cp_out) {
-    const chain_event_header_t *events = (const chain_event_header_t *)events_arg;
-    settlement_state_t snapshot = *s;
-    uint32_t applied = 0;
-
-    for (uint32_t i = 0; i < event_count; i++) {
-        if (!settlement_apply_event(s, &events[i], payloads[i], payload_lens[i])) {
-            *s = snapshot;
-            return false;
-        }
-        applied++;
-        s->last_event_id = events[i].event_id;
-    }
-
-    s->segment_index++;
-    memset(cp_out, 0, sizeof(*cp_out));
-    cp_out->segment_index = s->segment_index;
-    cp_out->event_count = applied;
-    cp_out->last_event_id = s->last_event_id;
-    settlement_compute_root(s, cp_out->state_root);
-    return true;
+    return settlement_apply_segment_trusted(
+        s, events_arg, payloads, payload_lens, NULL, event_count, cp_out, NULL);
 }
