@@ -9,10 +9,11 @@ import json
 import sys
 from pathlib import Path
 
+from ai_eval_corpus import CORPUS_VERSION, GENERATOR_VERSION
 from check_replay_cross_build import first_diff
 
 
-BUNDLE_SCHEMA = "signal.replay_bundle.v1"
+BUNDLE_SCHEMA = "signal.replay_bundle.v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +37,15 @@ def load_bundle(path: Path) -> tuple[dict[str, object], dict[str, bytes]] | None
     if not isinstance(manifest, dict) or manifest.get("schema") != BUNDLE_SCHEMA:
         print(f"unsupported replay bundle schema in {manifest_path}", file=sys.stderr)
         return None
+    if (
+        manifest.get("corpus_version") != CORPUS_VERSION
+        or manifest.get("generator_version") != GENERATOR_VERSION
+    ):
+        print(
+            f"replay bundle version mismatch in {manifest_path}",
+            file=sys.stderr,
+        )
+        return None
 
     scenarios = manifest.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
@@ -50,6 +60,7 @@ def load_bundle(path: Path) -> tuple[dict[str, object], dict[str, bytes]] | None
         filename = entry.get("file")
         expected_hash = entry.get("sha256")
         expected_size = entry.get("size")
+        evaluation = entry.get("evaluation")
         if (
             not isinstance(filename, str)
             or Path(filename).name != filename
@@ -57,6 +68,16 @@ def load_bundle(path: Path) -> tuple[dict[str, object], dict[str, bytes]] | None
         ):
             print(
                 f"unsafe scenario filename in {manifest_path}: {filename}",
+                file=sys.stderr,
+            )
+            return None
+        if (
+            not isinstance(evaluation, dict)
+            or evaluation.get("corpus_version") != CORPUS_VERSION
+            or evaluation.get("generator_version") != GENERATOR_VERSION
+        ):
+            print(
+                f"replay scenario version metadata missing in {manifest_path}",
                 file=sys.stderr,
             )
             return None

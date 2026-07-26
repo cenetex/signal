@@ -81,6 +81,7 @@ SIGNAL_REPLAY_CANDIDATES ?= NONE,W,A,D,S,WA,WD,SA,SD
 SIGNAL_REPLAY_OUT ?= /tmp/signal-replay.jsonl
 SIGNAL_REPLAY_HNN_TRACE ?=
 SIGNAL_REPLAY_ACTIVE_WORKERS ?=
+SIGNAL_REPLAY_EVALUATION_WORLD ?=
 SIGNAL_REPLAY_HNN_CLEANUP_STEPS ?= 3
 SIGNAL_REPLAY_DEBUG_BUILD ?= build-replay-debug
 SIGNAL_REPLAY_RELEASE_BUILD ?= build-replay-release
@@ -99,6 +100,7 @@ signal-replay: build-signal-replay
 		--candidates "$(SIGNAL_REPLAY_CANDIDATES)" \
 		$(if $(SIGNAL_REPLAY_HNN_TRACE),--hnn-trace --hnn-cleanup-steps $(SIGNAL_REPLAY_HNN_CLEANUP_STEPS),) \
 		$(if $(SIGNAL_REPLAY_ACTIVE_WORKERS),--active-workers,) \
+		$(if $(SIGNAL_REPLAY_EVALUATION_WORLD),--evaluation-world $(SIGNAL_REPLAY_EVALUATION_WORLD),) \
 		--out $(SIGNAL_REPLAY_OUT)
 
 replay-repeatability: build-signal-replay
@@ -106,6 +108,14 @@ replay-repeatability: build-signal-replay
 
 replay-repeatability-long: build-signal-replay
 	python3 scripts/check_replay_repeatability.py ./build/signal_replay --scenario-set long
+
+replay-ai-eval-repeatability: build-signal-replay
+	python3 scripts/check_replay_repeatability.py \
+		./build/signal_replay --scenario-set ai-eval-fast
+
+replay-ai-eval-repeatability-long: build-signal-replay
+	python3 scripts/check_replay_repeatability.py \
+		./build/signal_replay --scenario-set ai-eval-long
 
 signal-no-omniscience-soak: build-signal-replay
 	python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
@@ -148,6 +158,12 @@ replay-native-wasm-long: build-signal-replay build-signal-replay-wasm
 		./build/signal_replay \
 		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js \
 		--scenario-set long
+
+replay-ai-eval-native-wasm: build-signal-replay build-signal-replay-wasm
+	python3 scripts/check_replay_cross_build.py \
+		./build/signal_replay \
+		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js \
+		--scenario-set ai-eval-fast
 
 # --- Chain asset inventory export ---
 CHAIN_ASSETS_FORMAT ?= json

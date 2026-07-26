@@ -11,6 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ai_eval_corpus import (
+    evaluation_world,
+    validate_evaluation_output,
+    validate_permutation_pair,
+)
 from check_replay_repeatability import (
     ROOT,
     scenarios_for_name,
@@ -79,7 +84,7 @@ def main() -> int:
     if len(args) != 2:
         print(
             "usage: check_replay_cross_build.py LEFT_SIGNAL_REPLAY RIGHT_SIGNAL_REPLAY "
-            "[--scenario-set fast|long|all]",
+            "[--scenario-set fast|long|all|ai-eval-fast|ai-eval-long]",
             file=sys.stderr,
         )
         return 2
@@ -100,6 +105,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="signal-replay-cross-build-") as tmp:
         tmpdir = Path(tmp)
+        evaluation_outputs: dict[str, Path] = {}
         for i, scenario_args in enumerate(scenarios):
             left = tmpdir / f"scenario-{i}-left.jsonl"
             right = tmpdir / f"scenario-{i}-right.jsonl"
@@ -133,6 +139,20 @@ def main() -> int:
             if not left_bytes:
                 print(f"signal_replay scenario {i} produced no output", file=sys.stderr)
                 return 1
+            evaluation_failure = validate_evaluation_output(left, scenario_args)
+            if evaluation_failure is not None:
+                print(
+                    f"signal_replay scenario {i} failed evaluation coverage: "
+                    f"{evaluation_failure}",
+                    file=sys.stderr,
+                )
+                print(f"  scenario set: {scenario_set_name}", file=sys.stderr)
+                print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
+                print(f"  output: {left}", file=sys.stderr)
+                return 1
+            world = evaluation_world(scenario_args)
+            if world != "none":
+                evaluation_outputs[world] = left
             if "--active-workers" in scenario_args:
                 failure = validate_active_worker_output(
                     left,
@@ -148,6 +168,14 @@ def main() -> int:
                     print(f"  args: {' '.join(scenario_args)}", file=sys.stderr)
                     print(f"  left output: {left}", file=sys.stderr)
                     return 1
+        permutation_failure = validate_permutation_pair(evaluation_outputs)
+        if permutation_failure is not None:
+            print(
+                f"signal replay station-permutation gate failed: "
+                f"{permutation_failure}",
+                file=sys.stderr,
+            )
+            return 1
 
     print(
         f"signal replay cross-build check passed "
