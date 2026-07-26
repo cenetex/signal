@@ -364,6 +364,12 @@ economy.
 Acceptance:
 
 - native and WASM replay agree over active-worker scenarios
+- replay bundles carry versioned per-head episode outcomes for task
+  completion/failure, safety, route efficiency, stuck/recovery behavior,
+  station need served, and cargo receipt-chain integrity
+- teacher, shadow, mixed, and active reports compare the same stable replay and
+  episode IDs, while requested mode, effective mode, model decisions, and
+  teacher fallbacks remain explicit
 - the fast gate includes selected worker tow, repair, and delivery-proof
   diagnostics, HNN-backed rows, scaffold pickup counters, kit-backed hull
   recovery, cleared NPC delivery shipments, and shared job-family outcome
