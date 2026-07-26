@@ -740,6 +740,18 @@ function liveTowIsReleased(snapshot: LiveTowSnapshot): boolean {
     snapshot.tractorActive === 0;
 }
 
+function liveTowTargetIsRetired(snapshot: LiveTowSnapshot): boolean {
+  return snapshot.targetActive === 0 &&
+    snapshot.targetInterpActive === 0 &&
+    snapshot.towSnapshotReceived === 1 &&
+    snapshot.targetLinks === 0 &&
+    snapshot.localTargetLinks === 0 &&
+    snapshot.compatCount === 0 &&
+    snapshot.compatOccurrences === 0 &&
+    snapshot.targetTractor === -1 &&
+    snapshot.interpTargetTractor === -1;
+}
+
 async function waitForLiveTowState(
   page: Page,
   predicate: (snapshot: LiveTowSnapshot) => boolean,
@@ -2683,6 +2695,98 @@ test.describe('Browser smoke tests', () => {
     expect(maxBeamSourceStep).toBeLessThanOrEqual(4);
     expect(maxSpanJump).toBeLessThanOrEqual(15);
 
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('authoritative target retirement clears tow and beam through adverse network faults', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_TOW_RETIRE_ADVERSE_ASSERT,
+      'set SMOKE_TOW_RETIRE_ADVERSE_ASSERT=1 with the tow retirement fixture and adverse proxy',
+    );
+    test.setTimeout(60_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, true);
+    await canvas.click();
+
+    await expect
+      .poll(async () => {
+        const state = await liveTowSnapshot(page);
+        return state.localReady === 1 &&
+          state.netAuthority === 1 &&
+          state.loopback === 0 &&
+          state.docked === 0 &&
+          state.targetActive === 1 &&
+          state.targetInterpActive === 1 &&
+          liveTowIsReleased(state);
+      }, {
+        timeout: 15_000,
+        message: 'the retirement fixture should begin with one released live target',
+      })
+      .toBe(true);
+
+    let attached: LiveTowSnapshot;
+    await page.keyboard.down('Space');
+    try {
+      attached = await waitForLiveTowState(
+        page,
+        liveTowIsAttached,
+        15_000,
+        'the live target should attach exactly once before retirement',
+      );
+      await expect
+        .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+          timeout: 5_000,
+          message: 'the attached target should render exactly one beam before retirement',
+        })
+        .toBe(1);
+
+      await waitForLiveTowState(
+        page,
+        liveTowTargetIsRetired,
+        15_000,
+        'target retirement should clear the target, canonical relation, both compatibility projections, and target binding',
+      );
+    } finally {
+      await page.keyboard.up('Space');
+    }
+
+    const retired = await liveTowSnapshot(page);
+    expect(retired.snapshotRevision).toBeGreaterThan(attached.snapshotRevision);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 5_000,
+        message: 'target retirement should remove the visible beam',
+      })
+      .toBe(0);
+
+    const cleanSamples: LiveTowSnapshot[] = [];
+    const cleanBeams: TractorDrawTelemetry[] = [];
+    for (let i = 0; i < 30; i++) {
+      cleanSamples.push(await liveTowSnapshot(page));
+      cleanBeams.push(await tractorDrawTelemetry(page, 0));
+      await page.waitForTimeout(50);
+    }
+    const staleState = cleanSamples.find(
+      (sample) => !liveTowTargetIsRetired(sample),
+    );
+    expect(
+      staleState,
+      `retired target or tow state reappeared: ${JSON.stringify(staleState)}`,
+    ).toBeUndefined();
+    const staleBeam = cleanBeams.find((beam) => beam.count !== 0);
+    expect(
+      staleBeam,
+      `retired target left or resurrected a beam: ${JSON.stringify(staleBeam)}`,
+    ).toBeUndefined();
+
+    await expect
+      .poll(async () => (await liveTowSnapshot(page)).tractorActive, {
+        timeout: 10_000,
+        message: 'key-up should reach authority after the retirement cleanup',
+      })
+      .toBe(0);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 

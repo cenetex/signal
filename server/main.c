@@ -1255,6 +1255,8 @@ static void server_apply_tow_smoke_fixture(server_player_t *sp) {
     world_asteroid_clear_tractor(&world, target_idx);
     memset(&world.asteroids[target_idx], 0,
            sizeof(world.asteroids[target_idx]));
+    memset(&world.asteroid_origin[target_idx], 0,
+           sizeof(world.asteroid_origin[target_idx]));
     world.asteroid_generation_live[target_idx] = false;
     world.asteroids[target_idx] = (asteroid_t){
         .active = true,
@@ -1296,6 +1298,59 @@ static void server_apply_tow_smoke_fixture(server_player_t *sp) {
 
     printf("[server] seeded adverse-network tow fixture for player %d\n",
            sp->id);
+}
+
+/*
+ * Retire the live tow fixture through the same authoritative target cleanup
+ * used by production consumption/despawn paths.  Waiting two simulated
+ * seconds after the canonical attach gives the adverse client enough time to
+ * observe the held relation before the target, relation, projections, and
+ * beam must disappear.
+ */
+static void server_tick_tow_retirement_smoke_fixture(void) {
+    static bool initialized = false;
+    static bool enabled = false;
+    static bool retired = false;
+    static uint32_t attached_tick = 0;
+    if (!initialized) {
+        const char *value = getenv("SIGNAL_TOW_RETIRE_SMOKE_FIXTURE");
+        enabled = value && strcmp(value, "1") == 0;
+        initialized = true;
+    }
+    if (!enabled || retired) return;
+
+    const int target_idx = MAX_ASTEROIDS - 1;
+    asteroid_t *target = &world.asteroids[target_idx];
+    if (!target->active) return;
+
+    bool attached = false;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &world.tow_links[i];
+        if (link->active &&
+            link->target.kind == ENTITY_KIND_ASTEROID &&
+            link->target.index == target_idx &&
+            link->target.part == -1 &&
+            link->state == TOW_LINK_HELD) {
+            attached = true;
+            break;
+        }
+    }
+    if (!attached) {
+        attached_tick = 0;
+        return;
+    }
+    if (attached_tick == 0) attached_tick = world.tick;
+    const uint32_t retire_delay_ticks = (uint32_t)(2.0f / SIM_DT);
+    if (world.tick - attached_tick < retire_delay_ticks) return;
+
+    world_asteroid_clear_tractor(&world, target_idx);
+    memset(target, 0, sizeof(*target));
+    memset(&world.asteroid_origin[target_idx], 0,
+           sizeof(world.asteroid_origin[target_idx]));
+    world.asteroid_generation_live[target_idx] = false;
+    retired = true;
+    printf("[server] retired attached adverse-network tow target at tick %u\n",
+           (unsigned)world.tick);
 }
 
 /*
@@ -1755,6 +1810,7 @@ static void send_initial_world_bundle_to_player(struct mg_connection *c,
             sp->replication->asteroid_motion_sent_vel, sp->replication->asteroid_identity_sent_sig,
             NULL, NULL, NULL,
             world.tick,
+            false,
             asteroid_net_background_identity_budget_at_tick(world.tick));
         if (sync_len > ASTEROID_MSG_HEADER)
             ws_send(c, world_snapshot_scratch.asteroids, (size_t)sync_len);
@@ -6529,6 +6585,7 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
     int steps = 0;
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
+        server_tick_tow_retirement_smoke_fixture();
         mark_station_identity_dirty_for_hull_inventory_changes();
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];

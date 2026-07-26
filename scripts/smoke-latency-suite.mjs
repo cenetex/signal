@@ -348,6 +348,26 @@ await withCleanup(async () => {
   });
 
   await runLatencyCase({
+    name: 'authoritative tow target retirement adverse-network smoke',
+    grep: 'authoritative target retirement clears tow',
+    envFlag: 'SMOKE_TOW_RETIRE_ADVERSE_ASSERT',
+    httpPort,
+    serverEnv: {
+      SIGNAL_TOW_SMOKE_FIXTURE: '1',
+      SIGNAL_TOW_RETIRE_SMOKE_FIXTURE: '1',
+    },
+    proxyArgs: [
+      '--client-ms=160',
+      '--server-ms=160',
+      '--jitter-ms=90',
+      '--seed=2037',
+      '--server-drop-every=11',
+      '--server-duplicate-every=7',
+      '--server-reorder-every=5',
+    ],
+  });
+
+  await runLatencyCase({
     name: 'NPC scaffold tow adverse-network smoke',
     grep: 'NPC scaffold tow stays visible',
     envFlag: 'SMOKE_NPC_SCAFFOLD_TOW_ADVERSE_ASSERT',

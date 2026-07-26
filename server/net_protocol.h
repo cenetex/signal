@@ -1585,6 +1585,7 @@ static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
 #define ASTEROID_NET_VERY_FAR_MOVING_REPEAT_TICKS 360u /* 0.33 Hz for fast edge-of-view drift */
 #define ASTEROID_NET_VERY_FAR_SLOW_MOVING_REPEAT_TICKS 1200u /* 0.1 Hz ordinary edge drift */
 #define ASTEROID_NET_MOTION_HEARTBEAT_TICKS 240u /* 0.5 Hz safety refresh */
+#define ASTEROID_REMOVE_HEARTBEAT_TICKS 120u /* 1 Hz tombstone reconciliation */
 #define ASTEROID_NET_CRAWL_MOTION_HEARTBEAT_TICKS 4800u /* 0.025 Hz crawl safety refresh */
 #define ASTEROID_NET_SLOW_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz slow near safety refresh */
 #define ASTEROID_NET_FAR_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz far-field safety refresh */
@@ -1985,6 +1986,7 @@ static inline void server_player_invalidate_asteroid_stream_caches(
            sizeof(sp->replication->asteroid_state_sent_sig));
     memset(sp->replication->asteroid_state_sent_semantic_sig, 0,
            sizeof(sp->replication->asteroid_state_sent_semantic_sig));
+    sp->replication->asteroid_remove_heartbeat_tick = 0u;
 }
 
 static inline bool asteroid_net_motion_should_send(
@@ -2084,6 +2086,7 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
     uint32_t *state_sent_tick,
     uint32_t *state_sent_sig, uint32_t *state_sent_semantic_sig,
     uint32_t server_tick,
+    bool removal_heartbeat,
     int background_identity_budget) {
     int count = 0;
     int asteroids_q_count = 0;
@@ -2331,21 +2334,31 @@ static inline int serialize_asteroids_for_player_split_ext_state_budget_at_tick(
                 a, i, state_sent_tick, state_sent_sig,
                 state_sent_semantic_sig, server_tick);
         } else if (sent[i] && !in_view) {
-            if (remove_buf) {
-                uint8_t *p = &remove_buf[
-                    ASTEROID_REMOVE_MSG_HEADER +
-                    remove_count * ASTEROID_REMOVE_RECORD_SIZE];
-                write_u16_le(p, (uint16_t)i);
-                remove_count++;
-            } else {
-                uint8_t *p = &buf[
-                    ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
-                memset(p, 0, ASTEROID_RECORD_SIZE);
-                write_u16_le(&p[0], (uint16_t)i);
-                p[2] = 0; /* active = false */
-                count++;
+            bool durable_tombstone = identity_sent_sig != NULL;
+            bool first_removal = !durable_tombstone ||
+                identity_sent_sig[i] != 0u;
+            if (first_removal || removal_heartbeat) {
+                if (remove_buf) {
+                    uint8_t *p = &remove_buf[
+                        ASTEROID_REMOVE_MSG_HEADER +
+                        remove_count * ASTEROID_REMOVE_RECORD_SIZE];
+                    write_u16_le(p, (uint16_t)i);
+                    remove_count++;
+                } else {
+                    uint8_t *p = &buf[
+                        ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
+                    memset(p, 0, ASTEROID_RECORD_SIZE);
+                    write_u16_le(&p[0], (uint16_t)i);
+                    p[2] = 0; /* active = false */
+                    count++;
+                }
             }
-            sent[i] = false;
+            /* With identity signatures, retain knowledge that this client
+             * may still own the slot and periodically reconcile the
+             * tombstone. A zero signature forces a full identity upsert if
+             * the slot becomes relevant again. Compatibility callers without
+             * signatures keep the historical one-shot sent bit behavior. */
+            sent[i] = durable_tombstone;
             if (motion_sent_tick) {
                 motion_sent_tick[i] = 0u;
                 if (motion_sent_pos) motion_sent_pos[i] = v2(0.0f, 0.0f);
@@ -2469,7 +2482,7 @@ static inline int serialize_asteroids_for_player_split_ext_state_at_tick(
         state_q_buf, state_q_len_out, remove_buf, remove_len_out,
         asteroids, player_pos, sent, motion_sent_tick, motion_sent_pos,
         motion_sent_vel, NULL, state_sent_tick, state_sent_sig,
-        state_sent_semantic_sig, server_tick, -1);
+        state_sent_semantic_sig, server_tick, false, -1);
 }
 
 static inline int serialize_asteroids_for_player_split_ext_at_tick(
@@ -5900,6 +5913,11 @@ static inline void server_emit_world_snapshot_for_player(
         int background_identity_budget =
             asteroid_net_background_identity_budget_at_tick_for_players(
                 w->tick, server_live_asteroid_recipient_count(w));
+        uint32_t last_remove_heartbeat =
+            sp->replication->asteroid_remove_heartbeat_tick;
+        bool removal_heartbeat = last_remove_heartbeat == 0u ||
+            (uint32_t)(w->tick - last_remove_heartbeat) >=
+                ASTEROID_REMOVE_HEARTBEAT_TICKS;
         server_prioritize_towed_asteroid_streams(sp, w->asteroids, w->tick);
         int alen = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
             scratch->asteroids,
@@ -5918,7 +5936,10 @@ static inline void server_emit_world_snapshot_for_player(
             sp->replication->asteroid_motion_sent_vel, sp->replication->asteroid_identity_sent_sig,
             sp->replication->asteroid_state_sent_tick,
             sp->replication->asteroid_state_sent_sig, sp->replication->asteroid_state_sent_semantic_sig,
-            w->tick, background_identity_budget);
+            w->tick, removal_heartbeat, background_identity_budget);
+        if (removal_heartbeat)
+            sp->replication->asteroid_remove_heartbeat_tick =
+                w->tick != 0u ? w->tick : 1u;
         if (alen > ASTEROID_MSG_HEADER)
             send(send_user, scratch->asteroids, alen);
         if (asteroids8_q_len > ASTEROID8_Q_MSG_HEADER)

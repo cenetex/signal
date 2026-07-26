@@ -275,6 +275,9 @@ typedef struct {
     uint32_t asteroid_state_sent_tick[MAX_ASTEROIDS];
     uint32_t asteroid_state_sent_sig[MAX_ASTEROIDS];
     uint32_t asteroid_state_sent_semantic_sig[MAX_ASTEROIDS];
+    /* Tombstone heartbeat keeps relevance exits and retirements convergent
+     * even when an application-level world frame is lost. */
+    uint32_t asteroid_remove_heartbeat_tick;
     uint32_t fracture_challenge_sent_id[MAX_ASTEROIDS];
     uint32_t fracture_resolved_sent_ids[MAX_PENDING_RESOLVES];
     uint8_t fracture_resolved_sent_cursor;
