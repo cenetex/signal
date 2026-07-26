@@ -11,6 +11,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const isWindows = process.platform === 'win32';
 const signalServerBin = path.join(repoRoot, 'build', isWindows ? 'signal_server.exe' : 'signal_server');
 const npxBin = isWindows ? 'npx.cmd' : 'npx';
+const configuredPlaywrightBin = process.env.SIGNAL_PLAYWRIGHT_BIN || '';
 
 const children = [];
 const tempDirs = [];
@@ -214,8 +215,10 @@ async function runLatencyCase({
     `http://127.0.0.1:${httpPort}/play.html?server=ws://127.0.0.1:${proxyPort}/ws`;
 
   try {
-    await runForeground(`running ${name}`, npxBin, [
-      'playwright',
+    const command = configuredPlaywrightBin || npxBin;
+    const commandPrefix = configuredPlaywrightBin ? [] : ['playwright'];
+    await runForeground(`running ${name}`, command, [
+      ...commandPrefix,
       'test',
       'tests/browser-smoke.spec.ts',
       '--project=chromium',
@@ -270,6 +273,23 @@ await withCleanup(async () => {
       '--client-ms=450',
       '--server-ms=450',
       '--jitter-ms=150',
+    ],
+  });
+
+  await runLatencyCase({
+    name: 'loss, duplication, and reordering proxy smoke',
+    grep: 'high-latency',
+    envFlag: 'SMOKE_LATENCY_ASSERT',
+    httpPort,
+    serverPort,
+    proxyArgs: [
+      '--client-ms=160',
+      '--server-ms=160',
+      '--jitter-ms=90',
+      '--seed=2037',
+      '--server-drop-every=11',
+      '--server-duplicate-every=7',
+      '--server-reorder-every=5',
     ],
   });
 

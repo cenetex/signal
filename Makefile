@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite test-latency-proxy relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -532,7 +532,10 @@ smoke-latency:
 smoke-ack-lag:
 	SMOKE_URL="$(SMOKE_LATENCY_URL)" SMOKE_ACK_LAG_ASSERT=1 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "low-ping high-ack"
 
-smoke-latency-suite: build-web build-server
+test-latency-proxy:
+	node scripts/test-ws-frame-impairment.mjs
+
+smoke-latency-suite: build-web build-server test-latency-proxy
 	node scripts/smoke-latency-suite.mjs
 
 RELAY_PROBE_URL ?= ws://127.0.0.1:9091/ws
