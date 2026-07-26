@@ -1190,6 +1190,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
            sizeof(sp->replication->scaffold_sent_sig));
     memset(sp->replication->scaffold_motion_sent_sig, 0,
            sizeof(sp->replication->scaffold_motion_sent_sig));
+    sp->replication->scaffold_remove_heartbeat_tick = 0u;
     sp->replication->world_cargo_pods_cache.valid = false;
     sp->replication->world_cargo_pod_motion_cache.valid = false;
     sp->replication->world_cargo_pods_semantic_hash = 0;
@@ -1199,6 +1200,7 @@ static void invalidate_player_authoritative_caches(server_player_t *sp) {
     memset(sp->replication->cargo_pod_sent, 0, sizeof(sp->replication->cargo_pod_sent));
     memset(sp->replication->cargo_pod_sent_sig, 0,
            sizeof(sp->replication->cargo_pod_sent_sig));
+    sp->replication->cargo_pod_remove_heartbeat_tick = 0u;
     sp->replication->world_interactions_cache.valid = false;
     sp->replication->world_interaction_drift_cache.valid = false;
     sp->replication->world_interactions_semantic_hash = 0;
@@ -1449,6 +1451,70 @@ static void server_apply_station_tow_smoke_fixture(server_player_t *sp) {
 
     printf("[server] seeded adverse-network station tow fixture for player %d\n",
            sp->id);
+}
+
+/*
+ * Move the station-fixture recipient across the normal 3000-unit relevance
+ * boundary, hold it outside long enough to lose and retry removal frames,
+ * then return it to the original observation point.  Authority and the tow
+ * relation never change; only recipient relevance does.
+ */
+static void server_tick_station_relevance_smoke_fixture(void) {
+    static bool initialized = false;
+    static bool enabled = false;
+    static bool started = false;
+    static uint32_t start_tick = 0;
+    static vec2 near_pos;
+    static vec2 far_pos;
+    static int stage = -1;
+    if (!initialized) {
+        const char *value =
+            getenv("SIGNAL_STATION_RELEVANCE_SMOKE_FIXTURE");
+        enabled = value && strcmp(value, "1") == 0;
+        initialized = true;
+    }
+    if (!enabled) return;
+
+    server_player_t *sp = NULL;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (server_player_is_gameplay_ready(&world.players[i]) &&
+            world.players[i].ship && world.players[i].replication) {
+            sp = &world.players[i];
+            break;
+        }
+    }
+    if (!sp) return;
+
+    const int target_idx = MAX_CARGO_PODS - 1;
+    int station_idx = -1;
+    int module_idx = -1;
+    if (!world.cargo_pods[target_idx].active ||
+        !cargo_pod_module_tractor_indices(
+            &world.cargo_pods[target_idx], &station_idx, &module_idx)) {
+        return;
+    }
+
+    if (!started) {
+        near_pos = sp->ship->pos;
+        far_pos = v2_add(near_pos, v2(4200.0f, 0.0f));
+        start_tick = world.tick;
+        started = true;
+    }
+
+    uint32_t elapsed = world.tick - start_tick;
+    const uint32_t near_ticks = (uint32_t)(8.0f / SIM_DT);
+    const uint32_t return_ticks = (uint32_t)(18.0f / SIM_DT);
+    int next_stage = elapsed < near_ticks ? 0 :
+        (elapsed < return_ticks ? 1 : 2);
+    if (next_stage != stage) {
+        stage = next_stage;
+        server_player_clear_transient_input(sp);
+        sp->ship->vel = v2(0.0f, 0.0f);
+        printf("[server] station relevance smoke entered stage %d at tick %u\n",
+               stage, (unsigned)world.tick);
+    }
+    sp->ship->pos = stage == 1 ? far_pos : near_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
 }
 
 /*
@@ -6586,6 +6652,7 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
     while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
         world_sim_step(&world, SIM_DT);
         server_tick_tow_retirement_smoke_fixture();
+        server_tick_station_relevance_smoke_fixture();
         mark_station_identity_dirty_for_hull_inventory_changes();
         for (int p = 0; p < MAX_PLAYERS; p++) {
             const server_player_t *sp = &world.players[p];

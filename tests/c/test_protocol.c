@@ -3097,7 +3097,7 @@ TEST(test_cargo_pod_delta_uses_compact_removal_stream_when_available) {
 
     int len = serialize_cargo_pods_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS);
     ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(len, 2 + 2 * CARGO_POD_RECORD_SIZE);
@@ -3107,7 +3107,7 @@ TEST(test_cargo_pod_delta_uses_compact_removal_stream_when_available) {
 
     len = serialize_cargo_pods_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[1], 0);
@@ -3115,7 +3115,7 @@ TEST(test_cargo_pod_delta_uses_compact_removal_stream_when_available) {
     pods[5].active = false;
     len = serialize_cargo_pods_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[0], NET_MSG_WORLD_CARGO_POD_REMOVE);
@@ -3123,12 +3123,12 @@ TEST(test_cargo_pod_delta_uses_compact_removal_stream_when_available) {
     ASSERT_EQ_INT(remove_len, CARGO_POD_REMOVE_MSG_HEADER +
                             CARGO_POD_REMOVE_RECORD_SIZE);
     ASSERT_EQ_INT(remove[CARGO_POD_REMOVE_MSG_HEADER], 5);
-    ASSERT(!sent[5]);
+    ASSERT(sent[5]);
 
     pods[6].quantity = 6;
     len = serialize_cargo_pods_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[1], 1);
     ASSERT_EQ_INT(len, 2 + CARGO_POD_RECORD_SIZE);
     ASSERT_EQ_INT(buf[2], 6);
@@ -3160,7 +3160,7 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
 
     int len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS_Q);
     ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(len, 2 + 2 * CARGO_POD_Q_RECORD_SIZE);
@@ -3170,7 +3170,7 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
 
     len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[1], 0);
@@ -3178,7 +3178,7 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
     cargo_pod_set_player_tractor(&pods[5], 0);
     len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS_Q);
     ASSERT_EQ_INT(buf[1], 1);
     ASSERT_EQ_INT(len, 2 + CARGO_POD_Q_RECORD_SIZE);
@@ -3189,7 +3189,7 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
     pods[5].active = false;
     len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[0], NET_MSG_WORLD_CARGO_POD_REMOVE);
@@ -3197,18 +3197,36 @@ TEST(test_cargo_pod_q_delta_uses_compact_identity_and_removal) {
     ASSERT_EQ_INT(remove_len, CARGO_POD_REMOVE_MSG_HEADER +
                             CARGO_POD_REMOVE_RECORD_SIZE);
     ASSERT_EQ_INT(remove[CARGO_POD_REMOVE_MSG_HEADER], 5);
-    ASSERT(!sent[5]);
+    ASSERT(sent[5]);
 
     pods[6].quantity = 6;
     len = serialize_cargo_pods_q_for_player_delta(
         buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
-        sent, sent_sig, false);
+        sent, sent_sig, false, false);
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_CARGO_PODS_Q);
     ASSERT_EQ_INT(buf[1], 1);
     ASSERT_EQ_INT(len, 2 + CARGO_POD_Q_RECORD_SIZE);
     ASSERT_EQ_INT(buf[2], 6);
     ASSERT_EQ_INT(read_u16_le(&buf[2 + 18]), 6);
     ASSERT_EQ_INT(remove[1], 0);
+
+    len = serialize_cargo_pods_q_for_player_delta(
+        buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
+        sent, sent_sig, false, true);
+    ASSERT_EQ_INT(buf[1], 0);
+    ASSERT_EQ_INT(remove[1], 1);
+    ASSERT_EQ_INT(remove[CARGO_POD_REMOVE_MSG_HEADER], 5);
+    ASSERT(sent[5]);
+
+    pods[5].active = true;
+    cargo_pod_clear_tractor(&pods[5]);
+    len = serialize_cargo_pods_q_for_player_delta(
+        buf, remove, &remove_len, pods, v2(0.0f, 0.0f),
+        sent, sent_sig, false, false);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(buf[2], 5);
+    ASSERT_EQ_INT(remove[1], 0);
+    ASSERT(sent_sig[5] != 0u);
 }
 
 TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
@@ -3237,7 +3255,7 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
 
     int len = serialize_scaffolds_for_player_delta(
         buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
-        sent, sent_sig, motion_sig);
+        sent, sent_sig, motion_sig, false);
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_SCAFFOLDS);
     ASSERT_EQ_INT(buf[1], 2);
     ASSERT_EQ_INT(len, 2 + 2 * SCAFFOLD_RECORD_SIZE);
@@ -3253,7 +3271,7 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
 
     len = serialize_scaffolds_for_player_delta(
         buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
-        sent, sent_sig, motion_sig);
+        sent, sent_sig, motion_sig, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[1], 0);
@@ -3261,7 +3279,7 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     scaffolds[4].built_at_station = 1;
     len = serialize_scaffolds_for_player_delta(
         buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
-        sent, sent_sig, motion_sig);
+        sent, sent_sig, motion_sig, false);
     ASSERT_EQ_INT(buf[1], 1);
     ASSERT_EQ_INT(len, 2 + SCAFFOLD_RECORD_SIZE);
     ASSERT_EQ_INT(buf[2], 4);
@@ -3271,7 +3289,7 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     scaffolds[3].active = false;
     len = serialize_scaffolds_for_player_delta(
         buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
-        sent, sent_sig, motion_sig);
+        sent, sent_sig, motion_sig, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[0], NET_MSG_WORLD_SCAFFOLD_REMOVE);
@@ -3279,13 +3297,13 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     ASSERT_EQ_INT(remove_len, SCAFFOLD_REMOVE_MSG_HEADER +
                             SCAFFOLD_REMOVE_RECORD_SIZE);
     ASSERT_EQ_INT(remove[SCAFFOLD_REMOVE_MSG_HEADER], 3);
-    ASSERT(!sent[3]);
+    ASSERT(sent[3]);
 
     scaffolds[4].pos.x = -25.0f;
     scaffolds[4].vel = v2(2.0f, -1.0f);
     len = serialize_scaffolds_for_player_delta(
         buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
-        sent, sent_sig, motion_sig);
+        sent, sent_sig, motion_sig, false);
     ASSERT_EQ_INT(buf[1], 0);
     ASSERT_EQ_INT(len, 2);
     ASSERT_EQ_INT(remove[1], 0);
@@ -3303,6 +3321,23 @@ TEST(test_scaffold_delta_uses_compact_removal_stream_when_available) {
     ASSERT_EQ_FLOAT((float)(int16_t)read_u16_le(&p[5]) *
                     SCAFFOLD_MOTION_Q_VEL_SCALE,
                     2.0f, SCAFFOLD_MOTION_Q_VEL_SCALE);
+
+    len = serialize_scaffolds_for_player_delta(
+        buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
+        sent, sent_sig, motion_sig, true);
+    ASSERT_EQ_INT(buf[1], 0);
+    ASSERT_EQ_INT(remove[1], 1);
+    ASSERT_EQ_INT(remove[SCAFFOLD_REMOVE_MSG_HEADER], 3);
+    ASSERT(sent[3]);
+
+    scaffolds[3].active = true;
+    len = serialize_scaffolds_for_player_delta(
+        buf, remove, &remove_len, scaffolds, v2(0.0f, 0.0f),
+        sent, sent_sig, motion_sig, false);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(buf[2], 3);
+    ASSERT_EQ_INT(remove[1], 0);
+    ASSERT(sent_sig[3] != 0u);
 }
 
 TEST(test_cargo_pod_motion_stream_uses_relevance_filter) {

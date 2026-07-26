@@ -327,6 +327,7 @@ typedef struct {
     bool scaffold_sent[MAX_SCAFFOLDS];
     uint64_t scaffold_sent_sig[MAX_SCAFFOLDS];
     uint64_t scaffold_motion_sent_sig[MAX_SCAFFOLDS];
+    uint32_t scaffold_remove_heartbeat_tick;
     net_payload_cache_t world_cargo_pods_cache;
     net_payload_cache_t world_cargo_pod_motion_cache;
     uint64_t world_cargo_pods_semantic_hash;
@@ -335,6 +336,7 @@ typedef struct {
     uint32_t world_cargo_pod_motion_last_sent_tick;
     bool cargo_pod_sent[MAX_CARGO_PODS];
     uint64_t cargo_pod_sent_sig[MAX_CARGO_PODS];
+    uint32_t cargo_pod_remove_heartbeat_tick;
     uint32_t cargo_pod_motion_sent_tick[MAX_CARGO_PODS];
     vec2 cargo_pod_motion_sent_pos[MAX_CARGO_PODS];
     vec2 cargo_pod_motion_sent_vel[MAX_CARGO_PODS];

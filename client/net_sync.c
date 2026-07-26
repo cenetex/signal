@@ -486,6 +486,133 @@ static void accept_authoritative_local_launch_state(const NetPlayerState *state,
     frame_camera_on_authoritative_baseline(sp);
 }
 
+typedef struct {
+    int index;
+    vec2 pos;
+    vec2 vel;
+    float rotation;
+    float spin;
+    float age;
+} net_replay_tow_pose_t;
+
+typedef struct {
+    int asteroid_count;
+    net_replay_tow_pose_t asteroids[10];
+    int cargo_pod_count;
+    net_replay_tow_pose_t cargo_pods[10];
+    bool scaffold_active;
+    net_replay_tow_pose_t scaffold;
+} net_replay_tow_snapshot_t;
+
+static void net_replay_capture_local_tow_poses(
+    const server_player_t *sp, net_replay_tow_snapshot_t *snapshot) {
+    if (!sp || !sp->ship || !snapshot) return;
+    memset(snapshot, 0, sizeof(*snapshot));
+
+    int asteroid_cap =
+        (int)(sizeof(sp->ship->towed_fragments) /
+              sizeof(sp->ship->towed_fragments[0]));
+    int asteroid_count = sp->ship->towed_count;
+    if (asteroid_count > asteroid_cap) asteroid_count = asteroid_cap;
+    for (int i = 0; i < asteroid_count; i++) {
+        if (snapshot->asteroid_count >=
+            (int)(sizeof(snapshot->asteroids) /
+                  sizeof(snapshot->asteroids[0]))) {
+            break;
+        }
+        int idx = sp->ship->towed_fragments[i];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active) continue;
+        snapshot->asteroids[snapshot->asteroid_count++] =
+            (net_replay_tow_pose_t){
+                .index = idx,
+                .pos = a->pos,
+                .vel = a->vel,
+                .rotation = a->rotation,
+                .spin = a->spin,
+                .age = a->age,
+            };
+    }
+
+    int pod_cap =
+        (int)(sizeof(sp->ship->towed_pods) /
+              sizeof(sp->ship->towed_pods[0]));
+    int pod_count = sp->ship->towed_pod_count;
+    if (pod_count > pod_cap) pod_count = pod_cap;
+    for (int i = 0; i < pod_count; i++) {
+        if (snapshot->cargo_pod_count >=
+            (int)(sizeof(snapshot->cargo_pods) /
+                  sizeof(snapshot->cargo_pods[0]))) {
+            break;
+        }
+        int idx = sp->ship->towed_pods[i];
+        if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[idx];
+        if (!pod->active) continue;
+        snapshot->cargo_pods[snapshot->cargo_pod_count++] =
+            (net_replay_tow_pose_t){
+                .index = idx,
+                .pos = pod->pos,
+                .vel = pod->vel,
+                .rotation = pod->rotation,
+                .spin = pod->spin,
+                .age = pod->age,
+            };
+    }
+
+    int scaffold_idx = sp->ship->towed_scaffold;
+    if (scaffold_idx >= 0 && scaffold_idx < MAX_SCAFFOLDS &&
+        g.world.scaffolds[scaffold_idx].active) {
+        const scaffold_t *scaffold = &g.world.scaffolds[scaffold_idx];
+        snapshot->scaffold_active = true;
+        snapshot->scaffold = (net_replay_tow_pose_t){
+            .index = scaffold_idx,
+            .pos = scaffold->pos,
+            .vel = scaffold->vel,
+            .rotation = scaffold->rotation,
+            .spin = scaffold->spin,
+            .age = scaffold->age,
+        };
+    }
+}
+
+static void net_replay_restore_local_tow_poses(
+    const net_replay_tow_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    for (int i = 0; i < snapshot->asteroid_count; i++) {
+        const net_replay_tow_pose_t *pose = &snapshot->asteroids[i];
+        asteroid_t *a = &g.world.asteroids[pose->index];
+        if (!a->active) continue;
+        a->pos = pose->pos;
+        a->vel = pose->vel;
+        a->rotation = pose->rotation;
+        a->spin = pose->spin;
+        a->age = pose->age;
+    }
+    for (int i = 0; i < snapshot->cargo_pod_count; i++) {
+        const net_replay_tow_pose_t *pose = &snapshot->cargo_pods[i];
+        cargo_pod_t *pod = &g.world.cargo_pods[pose->index];
+        if (!pod->active) continue;
+        pod->pos = pose->pos;
+        pod->vel = pose->vel;
+        pod->rotation = pose->rotation;
+        pod->spin = pose->spin;
+        pod->age = pose->age;
+    }
+    if (snapshot->scaffold_active) {
+        const net_replay_tow_pose_t *pose = &snapshot->scaffold;
+        scaffold_t *scaffold = &g.world.scaffolds[pose->index];
+        if (scaffold->active) {
+            scaffold->pos = pose->pos;
+            scaffold->vel = pose->vel;
+            scaffold->rotation = pose->rotation;
+            scaffold->spin = pose->spin;
+            scaffold->age = pose->age;
+        }
+    }
+}
+
 static bool net_replay_reconcile_local_player(const NetPlayerState *state,
                                               server_player_t *sp,
                                               int *out_replayed) {
@@ -509,6 +636,15 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
         return false;
     if (net_replay_missing_prefix(server_tick, first_after)) return false;
 
+    /*
+     * Player snapshots rewind only the owner. Towed bodies are already at
+     * the client's current predicted time, so replaying the same unacked
+     * frames on them again creates a forward jump on every reconciliation.
+     * Preserve their current pose while replay reconstructs the ship, then
+     * let subsequent live prediction frames resume tow physics normally.
+     */
+    net_replay_tow_snapshot_t tow_snapshot;
+    net_replay_capture_local_tow_poses(sp, &tow_snapshot);
     sim_events_t saved_events = g.world.events;
     apply_authoritative_local_motion(state, sp);
     uint32_t last_tick = server_tick;
@@ -520,6 +656,7 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
         last_tick = frame->tick;
         (*out_replayed)++;
     }
+    net_replay_restore_local_tow_poses(&tow_snapshot);
     net_adopt_local_tow_prediction(0.0f);
     g.world.events = saved_events;
 

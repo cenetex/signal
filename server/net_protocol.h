@@ -1585,7 +1585,7 @@ static inline bool world_players_semantic_heartbeat_due(uint64_t last_sent_ms,
 #define ASTEROID_NET_VERY_FAR_MOVING_REPEAT_TICKS 360u /* 0.33 Hz for fast edge-of-view drift */
 #define ASTEROID_NET_VERY_FAR_SLOW_MOVING_REPEAT_TICKS 1200u /* 0.1 Hz ordinary edge drift */
 #define ASTEROID_NET_MOTION_HEARTBEAT_TICKS 240u /* 0.5 Hz safety refresh */
-#define ASTEROID_REMOVE_HEARTBEAT_TICKS 120u /* 1 Hz tombstone reconciliation */
+#define WORLD_REMOVE_TOMBSTONE_HEARTBEAT_TICKS 120u /* 1 Hz reconciliation */
 #define ASTEROID_NET_CRAWL_MOTION_HEARTBEAT_TICKS 4800u /* 0.025 Hz crawl safety refresh */
 #define ASTEROID_NET_SLOW_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz slow near safety refresh */
 #define ASTEROID_NET_FAR_MOTION_HEARTBEAT_TICKS 720u /* 0.17 Hz far-field safety refresh */
@@ -4674,7 +4674,8 @@ static inline int serialize_scaffolds_for_player_delta(
     vec2 player_pos,
     bool *sent,
     uint64_t *sent_sig,
-    uint64_t *motion_sent_sig) {
+    uint64_t *motion_sent_sig,
+    bool removal_heartbeat) {
     int count = 0;
     int remove_count = 0;
     if (remove_len_out) *remove_len_out = 0;
@@ -4696,13 +4697,14 @@ static inline int serialize_scaffolds_for_player_delta(
                     motion_sent_sig[i] = scaffold_motion_q_sig(i, sc);
             }
         } else if (sent[i]) {
-            if (remove_buf) {
+            if ((sent_sig[i] != 0u || removal_heartbeat) && remove_buf) {
                 remove_buf[SCAFFOLD_REMOVE_MSG_HEADER +
                            remove_count * SCAFFOLD_REMOVE_RECORD_SIZE] =
                     (uint8_t)i;
                 remove_count++;
             }
-            sent[i] = false;
+            /* Retain a tombstone until a full relevance re-entry upsert. */
+            sent[i] = true;
             sent_sig[i] = 0;
             if (motion_sent_sig) motion_sent_sig[i] = 0;
         }
@@ -4930,7 +4932,8 @@ static inline int serialize_cargo_pods_for_player_delta(
     vec2 player_pos,
     bool *sent,
     uint64_t *sent_sig,
-    bool refresh_all_known) {
+    bool refresh_all_known,
+    bool removal_heartbeat) {
     int count = 0;
     int remove_count = 0;
     if (remove_len_out) *remove_len_out = 0;
@@ -4950,13 +4953,14 @@ static inline int serialize_cargo_pods_for_player_delta(
                 sent_sig[i] = sig;
             }
         } else if (sent[i]) {
-            if (remove_buf) {
+            if ((sent_sig[i] != 0u || removal_heartbeat) && remove_buf) {
                 remove_buf[CARGO_POD_REMOVE_MSG_HEADER +
                            remove_count * CARGO_POD_REMOVE_RECORD_SIZE] =
                     (uint8_t)i;
                 remove_count++;
             }
-            sent[i] = false;
+            /* Retain a tombstone until a full relevance re-entry upsert. */
+            sent[i] = true;
             sent_sig[i] = 0;
         }
     }
@@ -4982,7 +4986,8 @@ static inline int serialize_cargo_pods_q_for_player_delta(
     vec2 player_pos,
     bool *sent,
     uint64_t *sent_sig,
-    bool refresh_all_known) {
+    bool refresh_all_known,
+    bool removal_heartbeat) {
     int count = 0;
     int remove_count = 0;
     if (remove_len_out) *remove_len_out = 0;
@@ -5002,13 +5007,14 @@ static inline int serialize_cargo_pods_q_for_player_delta(
                 sent_sig[i] = sig;
             }
         } else if (sent[i]) {
-            if (remove_buf) {
+            if ((sent_sig[i] != 0u || removal_heartbeat) && remove_buf) {
                 remove_buf[CARGO_POD_REMOVE_MSG_HEADER +
                            remove_count * CARGO_POD_REMOVE_RECORD_SIZE] =
                     (uint8_t)i;
                 remove_count++;
             }
-            sent[i] = false;
+            /* Retain a tombstone until a full relevance re-entry upsert. */
+            sent[i] = true;
             sent_sig[i] = 0;
         }
     }
@@ -5917,7 +5923,7 @@ static inline void server_emit_world_snapshot_for_player(
             sp->replication->asteroid_remove_heartbeat_tick;
         bool removal_heartbeat = last_remove_heartbeat == 0u ||
             (uint32_t)(w->tick - last_remove_heartbeat) >=
-                ASTEROID_REMOVE_HEARTBEAT_TICKS;
+                WORLD_REMOVE_TOMBSTONE_HEARTBEAT_TICKS;
         server_prioritize_towed_asteroid_streams(sp, w->asteroids, w->tick);
         int alen = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
             scratch->asteroids,
@@ -5991,11 +5997,21 @@ static inline void server_emit_world_snapshot_for_player(
     }
 
     int scaffold_remove_len = 0;
+    uint32_t last_scaffold_remove_heartbeat =
+        sp->replication->scaffold_remove_heartbeat_tick;
+    bool scaffold_remove_heartbeat =
+        last_scaffold_remove_heartbeat == 0u ||
+        (uint32_t)(w->tick - last_scaffold_remove_heartbeat) >=
+            WORLD_REMOVE_TOMBSTONE_HEARTBEAT_TICKS;
     int slen = serialize_scaffolds_for_player_delta(
         scratch->scaffolds, scratch->scaffold_remove, &scaffold_remove_len,
         w->scaffolds, sp->ship->pos, sp->replication->scaffold_sent,
         sp->replication->scaffold_sent_sig,
-        sp->replication->scaffold_motion_sent_sig);
+        sp->replication->scaffold_motion_sent_sig,
+        scaffold_remove_heartbeat);
+    if (scaffold_remove_heartbeat)
+        sp->replication->scaffold_remove_heartbeat_tick =
+            w->tick != 0u ? w->tick : 1u;
     if (slen > 2)
         send(send_user, scratch->scaffolds, slen);
     if (scaffold_remove_len > SCAFFOLD_REMOVE_MSG_HEADER)
@@ -6009,12 +6025,22 @@ static inline void server_emit_world_snapshot_for_player(
     }
 
     int cargo_remove_len = 0;
+    uint32_t last_cargo_remove_heartbeat =
+        sp->replication->cargo_pod_remove_heartbeat_tick;
+    bool cargo_remove_heartbeat =
+        last_cargo_remove_heartbeat == 0u ||
+        (uint32_t)(w->tick - last_cargo_remove_heartbeat) >=
+            WORLD_REMOVE_TOMBSTONE_HEARTBEAT_TICKS;
     bool cargo_refresh_due = cargo_pod_net_metadata_refresh_due(
         sp->replication->world_cargo_pods_last_sent_tick, w->tick);
     int clen = serialize_cargo_pods_q_for_player_delta(
         scratch->cargo_pods_q, scratch->cargo_pod_remove, &cargo_remove_len,
         w->cargo_pods, sp->ship->pos, sp->replication->cargo_pod_sent,
-        sp->replication->cargo_pod_sent_sig, cargo_refresh_due);
+        sp->replication->cargo_pod_sent_sig, cargo_refresh_due,
+        cargo_remove_heartbeat);
+    if (cargo_remove_heartbeat)
+        sp->replication->cargo_pod_remove_heartbeat_tick =
+            w->tick != 0u ? w->tick : 1u;
     if (clen > 2)
         send(send_user, scratch->cargo_pods_q, clen);
     if (cargo_remove_len > CARGO_POD_REMOVE_MSG_HEADER)

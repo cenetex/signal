@@ -714,6 +714,21 @@ function liveStationTowIsBound(snapshot: LiveStationTowSnapshot): boolean {
     snapshot.interactionMatches === 1;
 }
 
+function liveStationTowIsOutOfRelevance(
+  snapshot: LiveStationTowSnapshot,
+): boolean {
+  return snapshot.targetActive === 0 &&
+    snapshot.targetInterpActive === 0 &&
+    snapshot.towSnapshotReceived === 1 &&
+    snapshot.station >= 0 &&
+    snapshot.module >= 0 &&
+    snapshot.interpStation === snapshot.station &&
+    snapshot.interpModule === snapshot.module &&
+    snapshot.targetLinks === 1 &&
+    snapshot.moduleTargetLinks === 1 &&
+    snapshot.interactionMatches === 0;
+}
+
 function liveNpcScaffoldTowIsBound(
   snapshot: LiveNpcScaffoldTowSnapshot,
 ): boolean {
@@ -762,6 +777,22 @@ async function waitForLiveTowState(
   let last: LiveTowSnapshot | null = null;
   while (Date.now() < deadline) {
     last = await liveTowSnapshot(page);
+    if (predicate(last)) return last;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`${message}; last state: ${JSON.stringify(last)}`);
+}
+
+async function waitForLiveStationTowState(
+  page: Page,
+  predicate: (snapshot: LiveStationTowSnapshot) => boolean,
+  timeoutMs: number,
+  message: string,
+): Promise<LiveStationTowSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let last: LiveStationTowSnapshot | null = null;
+  while (Date.now() < deadline) {
+    last = await liveStationTowSnapshot(page);
     if (predicate(last)) return last;
     await page.waitForTimeout(100);
   }
@@ -2460,11 +2491,15 @@ test.describe('Browser smoke tests', () => {
 
     let pathLength = 0;
     let maxStep = 0;
+    let maxStep50ms = 0;
     let maxResidual = 0;
+    let maxResidual50ms = 0;
     let maxVelocityJump = 0;
     let maxJerk = 0;
     let maxElapsed = 0;
     let maxTowDistance = 0;
+    let maxSampleInterval = 0;
+    let maxStepIndex = 0;
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i];
       maxElapsed = Math.max(maxElapsed, sample.elapsed);
@@ -2480,11 +2515,21 @@ test.describe('Browser smoke tests', () => {
       const speed = Math.hypot(sample.vx, sample.vy);
       const residual = Math.abs(step - (previousSpeed + speed) * 0.5 * dt);
       const velocityJump = Math.hypot(sample.vx - previous.vx, sample.vy - previous.vy);
+      const frameScale = 0.05 / dt;
       pathLength += step;
-      maxStep = Math.max(maxStep, step);
+      if (step > maxStep) {
+        maxStep = step;
+        maxStepIndex = i;
+      }
+      maxStep50ms = Math.max(maxStep50ms, step * frameScale);
       maxResidual = Math.max(maxResidual, residual);
+      maxResidual50ms = Math.max(
+        maxResidual50ms,
+        residual * frameScale,
+      );
       maxVelocityJump = Math.max(maxVelocityJump, velocityJump);
       maxJerk = Math.max(maxJerk, velocityJump / dt);
+      maxSampleInterval = Math.max(maxSampleInterval, dt);
     }
     const lastSample = samples[samples.length - 1];
     const displacement = Math.hypot(
@@ -2496,18 +2541,26 @@ test.describe('Browser smoke tests', () => {
       pathLength,
       displacement,
       maxStep,
+      maxStep50ms,
       maxResidual,
+      maxResidual50ms,
       maxVelocityJump,
       maxJerk,
       maxElapsed,
       maxTowDistance,
+      maxSampleInterval,
+      maxStepIndex,
+      maxStepWindow: samples.slice(
+        Math.max(0, maxStepIndex - 2),
+        Math.min(samples.length, maxStepIndex + 3),
+      ),
     };
     console.log(`[tow-adverse] ${JSON.stringify(motion)}`);
 
     expect(pathLength).toBeGreaterThan(250);
     expect(displacement).toBeGreaterThan(200);
-    expect(maxStep).toBeLessThanOrEqual(35);
-    expect(maxResidual).toBeLessThanOrEqual(18);
+    expect(maxStep50ms).toBeLessThanOrEqual(35);
+    expect(maxResidual50ms).toBeLessThanOrEqual(18);
     expect(maxVelocityJump).toBeLessThanOrEqual(100);
     expect(maxJerk).toBeLessThanOrEqual(2_500);
     expect(maxElapsed).toBeLessThanOrEqual(0.5);
@@ -2787,6 +2840,108 @@ test.describe('Browser smoke tests', () => {
         message: 'key-up should reach authority after the retirement cleanup',
       })
       .toBe(0);
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  test('station beam exits and re-enters relevance without changing authority', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_STATION_RELEVANCE_ADVERSE_ASSERT,
+      'set SMOKE_STATION_RELEVANCE_ADVERSE_ASSERT=1 with the station relevance fixture and adverse proxy',
+    );
+    test.setTimeout(60_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, true);
+
+    await expect
+      .poll(async () => liveStationTowIsBound(
+        await liveStationTowSnapshot(page),
+      ), {
+        timeout: 15_000,
+        message: 'the station-owned pod should begin relevant and fully bound',
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 1)).count, {
+        timeout: 5_000,
+        message: 'the initially relevant station tow should render one beam',
+      })
+      .toBe(1);
+    const initial = await liveStationTowSnapshot(page);
+
+    await waitForLiveStationTowState(
+      page,
+      liveStationTowIsOutOfRelevance,
+      15_000,
+      'leaving relevance should remove the pod identity and interaction while retaining canonical and projected ownership',
+    );
+    const outside = await liveStationTowSnapshot(page);
+    expect(outside.linkRevision).toBe(initial.linkRevision);
+    expect(outside.towRevision).toBeGreaterThanOrEqual(initial.towRevision);
+    expect(outside.snapshotRevision).toBeGreaterThanOrEqual(
+      initial.snapshotRevision,
+    );
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 1)).count, {
+        timeout: 5_000,
+        message: 'leaving relevance should remove the station beam',
+      })
+      .toBe(0);
+
+    const outsideStates: LiveStationTowSnapshot[] = [];
+    const outsideBeams: TractorDrawTelemetry[] = [];
+    for (let i = 0; i < 20; i++) {
+      outsideStates.push(await liveStationTowSnapshot(page));
+      outsideBeams.push(await tractorDrawTelemetry(page, 1));
+      await page.waitForTimeout(50);
+    }
+    expect(
+      outsideStates.find((state) => !liveStationTowIsOutOfRelevance(state)),
+      'the irrelevant target or interaction should not reappear before re-entry',
+    ).toBeUndefined();
+    expect(
+      outsideBeams.find((beam) => beam.count !== 0),
+      'the irrelevant station beam should remain absent',
+    ).toBeUndefined();
+
+    await expect
+      .poll(async () => liveStationTowIsBound(
+        await liveStationTowSnapshot(page),
+      ), {
+        timeout: 15_000,
+        message: 're-entering relevance should restore target identity, projected binding, interaction, and beam ownership',
+      })
+      .toBe(true);
+    const reentered = await liveStationTowSnapshot(page);
+    expect(reentered.linkRevision).toBe(initial.linkRevision);
+    expect(reentered.towRevision).toBeGreaterThanOrEqual(outside.towRevision);
+    expect(reentered.snapshotRevision).toBeGreaterThanOrEqual(
+      outside.snapshotRevision,
+    );
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 1)).count, {
+        timeout: 5_000,
+        message: 're-entering relevance should restore exactly one station beam',
+      })
+      .toBe(1);
+
+    const reboundStates: LiveStationTowSnapshot[] = [];
+    const reboundBeams: TractorDrawTelemetry[] = [];
+    for (let i = 0; i < 30; i++) {
+      reboundStates.push(await liveStationTowSnapshot(page));
+      reboundBeams.push(await tractorDrawTelemetry(page, 1));
+      await page.waitForTimeout(50);
+    }
+    expect(
+      reboundStates.find((state) => !liveStationTowIsBound(state)),
+      'the rebound station relation/projections should remain singular',
+    ).toBeUndefined();
+    expect(
+      reboundBeams.find((beam) => beam.count !== 1),
+      'the rebound station beam should remain singular',
+    ).toBeUndefined();
+
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 

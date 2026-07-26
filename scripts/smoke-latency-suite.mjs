@@ -368,6 +368,27 @@ await withCleanup(async () => {
   });
 
   await runLatencyCase({
+    name: 'station tractor relevance exit and re-entry smoke',
+    grep: 'station beam exits and re-enters relevance',
+    envFlag: 'SMOKE_STATION_RELEVANCE_ADVERSE_ASSERT',
+    httpPort,
+    serverEnv: {
+      SIGNAL_STATION_TOW_SMOKE_FIXTURE: '1',
+      SIGNAL_STATION_RELEVANCE_SMOKE_FIXTURE: '1',
+    },
+    proxyArgs: [
+      '--client-ms=160',
+      '--server-ms=160',
+      '--jitter-ms=90',
+      '--seed=2037',
+      '--server-drop-every=11',
+      '--server-duplicate-every=7',
+      '--server-reorder-every=5',
+      '--server-interaction-faults',
+    ],
+  });
+
+  await runLatencyCase({
     name: 'NPC scaffold tow adverse-network smoke',
     grep: 'NPC scaffold tow stays visible',
     envFlag: 'SMOKE_NPC_SCAFFOLD_TOW_ADVERSE_ASSERT',
