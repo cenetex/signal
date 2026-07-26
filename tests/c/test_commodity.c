@@ -101,7 +101,7 @@ TEST(test_commodity_color_u8_all_branches) {
 }
 
 TEST(test_ship_total_cargo) {
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     uint8_t origin[8] = {0};
@@ -114,7 +114,7 @@ TEST(test_ship_total_cargo) {
 }
 
 TEST(test_ship_cargo_amount) {
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
     ship.cargo[COMMODITY_CUPRITE_ORE] = 42.0f;
     ASSERT_EQ_FLOAT(ship_cargo_amount(&ship, COMMODITY_CUPRITE_ORE), 42.0f, 0.01f);

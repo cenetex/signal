@@ -12,6 +12,8 @@ on:
       - 'Makefile'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '23 8 * * 2'
 
 permissions:
   contents: read
@@ -59,3 +61,28 @@ jobs:
           name: fuzz-cargo-receipt-artifacts
           path: tests/fuzz/artifacts/
           if-no-files-found: ignore
+
+  memory-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install MemorySanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check instrumentable native core for uninitialized reads
+        run: make memzero-codegen test-msan
+
+  thread-sanitizer:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ThreadSanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check reentrant simulation and HNN state
+        run: make test-tsan

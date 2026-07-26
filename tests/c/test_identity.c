@@ -78,9 +78,22 @@ TEST(test_identity_corrupt_file_renamed_to_bad) {
     remove(bad_path);
 }
 
+TEST(test_identity_clear_wipes_private_material) {
+    player_identity_t id;
+    signal_crypto_keypair(id.pubkey, id.secret);
+    uint8_t zero_secret[SIGNAL_CRYPTO_SECRET_BYTES] = {0};
+    uint8_t zero_pub[SIGNAL_CRYPTO_PUBKEY_BYTES] = {0};
+
+    ASSERT(memcmp(id.secret, zero_secret, sizeof(zero_secret)) != 0);
+    identity_clear(&id);
+    ASSERT(memcmp(id.secret, zero_secret, sizeof(zero_secret)) == 0);
+    ASSERT(memcmp(id.pubkey, zero_pub, sizeof(zero_pub)) == 0);
+}
+
 void register_identity_tests(void);
 void register_identity_tests(void) {
     TEST_SECTION("\nIdentity (player keypair) tests:\n");
     RUN(test_identity_save_then_load);
     RUN(test_identity_corrupt_file_renamed_to_bad);
+    RUN(test_identity_clear_wipes_private_material);
 }

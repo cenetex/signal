@@ -25,11 +25,19 @@ typedef struct {
     float vec[HNN_DIM];
 } hnn_key_cache_entry_t;
 
+#if defined(_MSC_VER)
+#define SIGNAL_THREAD_LOCAL __declspec(thread)
+#else
+#define SIGNAL_THREAD_LOCAL _Thread_local
+#endif
+
 /* A tiny PRNG for deterministic key generation (xorshift32). */
-static uint32_t hnn_rand_state;
-static hnn_key_cache_entry_t g_hnn_key_cache[HNN_KEY_CACHE_SIZE];
-static float g_hnn_feature_keys[HNN_FEATURE_COUNT][HNN_DIM];
-static bool g_hnn_feature_keys_initialized = false;
+static SIGNAL_THREAD_LOCAL uint32_t hnn_rand_state;
+static SIGNAL_THREAD_LOCAL hnn_key_cache_entry_t
+    g_hnn_key_cache[HNN_KEY_CACHE_SIZE];
+static SIGNAL_THREAD_LOCAL float
+    g_hnn_feature_keys[HNN_FEATURE_COUNT][HNN_DIM];
+static SIGNAL_THREAD_LOCAL bool g_hnn_feature_keys_initialized = false;
 
 typedef struct {
     const char *name;

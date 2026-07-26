@@ -1,5 +1,6 @@
 #include "manifest.h"
 #include "cargo_receipt.h"  /* Layer D of #479 — ship receipt store */
+#include "signal_memzero.h"
 #include "wire_codec.h"
 
 #include <assert.h>
@@ -496,6 +497,12 @@ void ship_cleanup(ship_t *ship) {
     cargo_store_cleanup(&ship->cargo_store);
 }
 
+void ship_reset(ship_t *ship) {
+    if (!ship) return;
+    ship_cleanup(ship);
+    memset(ship, 0, sizeof(*ship));
+}
+
 bool ship_manifest_bootstrap(ship_t *ship) {
     return ship && cargo_store_bootstrap(
         &ship->cargo_store, SHIP_MANIFEST_DEFAULT_CAP);
@@ -538,6 +545,14 @@ int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n) {
 void station_cleanup(station_t *station) {
     if (!station) return;
     cargo_store_cleanup(&station->cargo_store);
+    signal_memzero_explicit(station->station_secret,
+                            sizeof(station->station_secret));
+}
+
+void station_reset(station_t *station) {
+    if (!station) return;
+    station_cleanup(station);
+    memset(station, 0, sizeof(*station));
 }
 
 bool station_manifest_bootstrap(station_t *station) {

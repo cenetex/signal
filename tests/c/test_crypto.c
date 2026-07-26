@@ -4,6 +4,17 @@
 
 #include "base64.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
+
+TEST(test_signal_memzero_explicit_runtime_contract) {
+    uint8_t secret[96];
+    memset(secret, 0xa5, sizeof(secret));
+    signal_memzero_explicit(secret, sizeof(secret));
+    for (size_t i = 0; i < sizeof(secret); i++) ASSERT_EQ_INT(secret[i], 0);
+    ASSERT(signal_memzero_backend() != NULL);
+    ASSERT(signal_memzero_backend()[0] != '\0');
+    signal_memzero_explicit(NULL, 0);
+}
 
 TEST(test_crypto_keypair_distinct) {
     uint8_t pub_a[SIGNAL_CRYPTO_PUBKEY_BYTES];
@@ -89,6 +100,17 @@ TEST(test_crypto_verify_rejects_pub_tamper) {
     ASSERT(!signal_crypto_verify(sig, msg, sizeof(msg), pub));
 }
 
+TEST(test_crypto_rejects_overflowing_message_length) {
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES] = {0};
+    uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES] = {0};
+    memset(sig, 0xa5, sizeof(sig));
+
+    signal_crypto_sign(sig, NULL, SIZE_MAX, sec);
+    for (size_t i = 0; i < sizeof(sig); i++) ASSERT_EQ_INT(sig[i], 0);
+    ASSERT(!signal_crypto_verify(sig, NULL, SIZE_MAX, pub));
+}
+
 TEST(test_base64_decode_rejects_short_output_buffer) {
     const uint8_t raw[3] = {1, 2, 3};
     char encoded[8];
@@ -105,11 +127,13 @@ TEST(test_base64_decode_rejects_short_output_buffer) {
 void register_crypto_tests(void);
 void register_crypto_tests(void) {
     TEST_SECTION("\nCrypto (Ed25519) tests:\n");
+    RUN(test_signal_memzero_explicit_runtime_contract);
     RUN(test_crypto_keypair_distinct);
     RUN(test_crypto_random_bytes_distinct_and_nonzero);
     RUN(test_crypto_sign_verify_roundtrip);
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);
     RUN(test_crypto_verify_rejects_pub_tamper);
+    RUN(test_crypto_rejects_overflowing_message_length);
     RUN(test_base64_decode_rejects_short_output_buffer);
 }

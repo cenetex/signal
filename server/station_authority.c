@@ -6,11 +6,13 @@
 #include "station_authority.h"
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "base58.h"
 #include "sha256.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 
 /* Domain-separation strings. Bumping these (e.g. "-v2") would
  * invalidate every previously-derived station pubkey, so keep them
@@ -24,6 +26,7 @@ static const char DEV_SECRET[]           = "signal-dev-station-authority-secret"
 
 static uint8_t station_auth_secret_root[32];
 static bool station_auth_secret_ready = false;
+static bool station_auth_cleanup_registered = false;
 
 static void station_authority_hash_secret(const char *secret,
                                           uint8_t out_root[32]) {
@@ -32,18 +35,33 @@ static void station_authority_hash_secret(const char *secret,
     sha256_update(&c, SECRET_SEED_DOMAIN, sizeof(SECRET_SEED_DOMAIN) - 1);
     sha256_update(&c, secret, strlen(secret));
     sha256_final(&c, out_root);
+    signal_memzero_explicit(&c, sizeof(c));
 }
 
 bool station_authority_configure_secret(const char *secret) {
     if (!secret || secret[0] == '\0') return false;
-    station_authority_hash_secret(secret, station_auth_secret_root);
+    if (!station_auth_cleanup_registered) {
+        station_auth_cleanup_registered =
+            atexit(station_authority_clear_secret) == 0;
+    }
+    uint8_t next_root[32];
+    station_authority_hash_secret(secret, next_root);
+    signal_memzero_explicit(station_auth_secret_root,
+                            sizeof(station_auth_secret_root));
+    memcpy(station_auth_secret_root, next_root, sizeof(next_root));
+    signal_memzero_explicit(next_root, sizeof(next_root));
     station_auth_secret_ready = true;
     return true;
 }
 
+void station_authority_clear_secret(void) {
+    signal_memzero_explicit(station_auth_secret_root,
+                            sizeof(station_auth_secret_root));
+    station_auth_secret_ready = false;
+}
+
 void station_authority_use_dev_secret(void) {
-    station_authority_hash_secret(DEV_SECRET, station_auth_secret_root);
-    station_auth_secret_ready = true;
+    (void)station_authority_configure_secret(DEV_SECRET);
 }
 
 static const uint8_t *station_authority_secret_root(void) {
@@ -112,6 +130,7 @@ void station_authority_init_seeded(station_t *s,
     uint8_t seed[32];
     station_authority_seeded_seed(world_seed, station_index, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    signal_memzero_explicit(seed, sizeof(seed));
     /* Seeded stations have no founder / planted_tick provenance. */
     memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
     s->outpost_planted_tick = 0;
@@ -130,6 +149,7 @@ void station_authority_init_outpost(station_t *s,
     station_authority_outpost_seed(s->outpost_founder_pubkey, s->name,
                                     planted_tick, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    signal_memzero_explicit(seed, sizeof(seed));
 }
 
 bool station_authority_rederive_secret(station_t *s,
@@ -148,6 +168,7 @@ bool station_authority_rederive_secret(station_t *s,
     }
     uint8_t derived_pub[32];
     signal_crypto_keypair_from_seed(seed, derived_pub, s->station_secret);
+    signal_memzero_explicit(seed, sizeof(seed));
     /* If the saved pubkey is zero (pre-v40 save with no station
      * identity field), stamp the rederived pubkey so the station has a
      * usable identity. If a non-zero saved pubkey no longer matches the

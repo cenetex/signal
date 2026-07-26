@@ -1477,8 +1477,9 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
                               SIGNAL_FIELD_KIND_HOLOGRAM, 0) > 0.0f);
 }
 
-static void test_reset_holographic_pilot(npc_ship_t *npc) {
-    memset(npc, 0, sizeof(*npc));
+static npc_ship_t *test_reset_holographic_pilot(world_t *w, int npc_slot) {
+    if (!test_world_npc_slot_reset(w, npc_slot)) return NULL;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
     npc->active = true;
     npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
     npc->home_station = 0;
@@ -1486,6 +1487,7 @@ static void test_reset_holographic_pilot(npc_ship_t *npc) {
     npc->hnn_experience_uploaded_station = 0xffu;
     npc->hnn_experience_uploaded_source_station = 0xffu;
     hnn_memory_init(&npc->hnn_mem);
+    return npc;
 }
 
 static void test_reset_station_hnn_experience(station_t *st) {
@@ -1510,8 +1512,8 @@ TEST(test_holographic_pilot_uploads_experience_once) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x1234u, 0x5678u);
     npc->hnn_experience_local_version++;
     ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
@@ -1541,8 +1543,8 @@ TEST(test_holographic_pilot_transports_station_cell) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x2234u, 0x6678u);
     npc->hnn_experience_local_version++;
 
@@ -1569,8 +1571,8 @@ TEST(test_holographic_pilot_rejects_unproven_trace_cargo) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x3234u, 0x7678u);
     npc->hnn_experience_station = 0;
     npc->hnn_experience_version = 2;
@@ -1594,8 +1596,8 @@ TEST(test_holographic_pilot_rejects_low_fidelity_trace_cargo) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x4234u, 0x8678u);
     npc->hnn_mem.last_retrieval_similarity = -1.0f;
     npc->hnn_mem.last_margin = 0.0f;

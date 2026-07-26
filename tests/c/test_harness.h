@@ -74,6 +74,11 @@ void test_prepare_case(const char *name);
 extern int g_soak_enabled;
 extern int g_only_soak;
 
+typedef struct {
+    station_t *stations;
+    size_t count;
+} station_array_cleanup_t;
+
 /* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
  * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
  * acceptable in tests (no cleanup on early ASSERT return). */
@@ -83,6 +88,7 @@ extern int g_only_soak;
 #define WORLD_HEAP world_t *
 #define SHIP_DECL(name) ship_t name = {0}
 #define STATION_DECL(name) station_t name = {0}
+#define STATION_ARRAY(name, count) station_t name[(count)] = {0}
 #define SERVER_PLAYER_DECL(name) \
     ship_t name##_ship_backing = {0}; \
     server_connection_t name##_connection_backing = {0}; \
@@ -119,6 +125,11 @@ static inline void world_ptr_auto_cleanup(world_t **wp) {
 }
 static inline void ship_auto_cleanup(ship_t *ship) { ship_cleanup(ship); }
 static inline void station_auto_cleanup(station_t *station) { station_cleanup(station); }
+static inline void station_array_auto_cleanup(station_array_cleanup_t *guard) {
+    if (!guard || !guard->stations) return;
+    for (size_t i = 0; i < guard->count; i++)
+        station_cleanup(&guard->stations[i]);
+}
 static inline void server_player_auto_cleanup(server_player_t *sp) {
     if (sp && sp->ship) ship_cleanup(sp->ship);
 }
@@ -130,6 +141,10 @@ static inline void npc_ship_auto_cleanup(npc_ship_t *npc) {
 #define WORLD_HEAP __attribute__((cleanup(world_ptr_auto_cleanup))) world_t *
 #define SHIP_DECL(name) ship_t __attribute__((cleanup(ship_auto_cleanup))) name = {0}
 #define STATION_DECL(name) station_t __attribute__((cleanup(station_auto_cleanup))) name = {0}
+#define STATION_ARRAY(name, count) \
+    station_t name[(count)] = {0}; \
+    station_array_cleanup_t name##_cleanup \
+        __attribute__((cleanup(station_array_auto_cleanup))) = {name, (count)}
 #define SERVER_PLAYER_DECL(name) \
     ship_t name##_ship_backing = {0}; \
     server_connection_t name##_connection_backing = {0}; \
@@ -172,6 +187,20 @@ static inline void test_world_bind_ship_slots(world_t *w) {
     }
     for (int i = 0; i < MAX_NPC_SHIPS; i++)
         (void)world_npc_ship_slot_activate(w, i);
+}
+
+static inline bool test_world_npc_slot_reset(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return false;
+    world_npc_ship_slot_release(w, npc_slot);
+    memset(&w->npc_ships[npc_slot], 0, sizeof(w->npc_ships[npc_slot]));
+    return world_npc_ship_slot_activate(w, npc_slot);
+}
+
+static inline void test_world_clear_npcs(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        world_npc_ship_slot_release(w, i);
+    memset(w->npc_ships, 0, sizeof(w->npc_ships));
 }
 
 #if defined(_MSC_VER)

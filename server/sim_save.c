@@ -2849,13 +2849,17 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
     encode_v4_ship(&ship_disk, sp->ship);
-    player_save_data_t data = {
-        .magic = PLAYER_MAGIC,
-        .ship = ship_disk,
-        .last_station = sp->current_station,
-        .last_pos = sp->ship->pos,
-        .last_angle = sp->ship->angle,
-    };
+    /*
+     * This legacy fixed-width record is checksummed and written as raw bytes,
+     * including ABI padding. A designated initializer initializes members but
+     * not padding, so start from a fully defined representation.
+     */
+    player_save_data_t data = {0};
+    data.magic = PLAYER_MAGIC;
+    data.ship = ship_disk;
+    data.last_station = sp->current_station;
+    data.last_pos = sp->ship->pos;
+    data.last_angle = sp->ship->angle;
     bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
     uint32_t crc = ok ? crc32_update(0, &data, sizeof(data)) : 0;
     /* Manifest tail (PLY5). Count + entries; CRC accumulates both. */

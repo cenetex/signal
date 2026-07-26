@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "signal_memzero.h"
+
 #if defined(__EMSCRIPTEN__)
   #include <emscripten.h>
 #elif defined(_WIN32)
@@ -118,10 +120,12 @@ static bool read_secret_file(const char *path,
     int eof = feof(fp);
     fclose(fp);
     if (got != SIGNAL_CRYPTO_SECRET_BYTES || !eof) {
+        signal_memzero_explicit(buf, sizeof(buf));
         *out_corrupt = true;
         return false;
     }
     memcpy(out, buf, SIGNAL_CRYPTO_SECRET_BYTES);
+    signal_memzero_explicit(buf, sizeof(buf));
     return true;
 }
 
@@ -265,14 +269,16 @@ bool identity_save_to(const player_identity_t *id, const char *path) {
     (void)path;
     char enc[128];
     b64_encode(id->secret, SIGNAL_CRYPTO_SECRET_BYTES, enc);
-    return signal_localstorage_save(enc) == 1;
+    bool saved = signal_localstorage_save(enc) == 1;
+    signal_memzero_explicit(enc, sizeof(enc));
+    return saved;
 #else
     return write_secret_file(path, id->secret);
 #endif
 }
 
 bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
-    memset(out, 0, sizeof(*out));
+    signal_memzero_explicit(out, sizeof(*out));
 
 #if defined(__EMSCRIPTEN__)
     (void)path;
@@ -288,27 +294,33 @@ bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
                    out->secret + (SIGNAL_CRYPTO_SECRET_BYTES -
                                   SIGNAL_CRYPTO_PUBKEY_BYTES),
                    SIGNAL_CRYPTO_PUBKEY_BYTES);
+            signal_memzero_explicit(dec, sizeof(dec));
+            signal_memzero_explicit(enc, sizeof(enc));
             return true;
         }
+        signal_memzero_explicit(dec, sizeof(dec));
         /* Corrupt — preserve as .bad before regenerating. */
         fprintf(stderr,
                 "[identity] localStorage entry corrupt; "
                 "moving to signal:identity.bad\n");
         signal_localstorage_rename_bad();
     }
+    signal_memzero_explicit(enc, sizeof(enc));
     signal_crypto_keypair(out->pubkey, out->secret);
     return identity_save_to(out, path);
 #else
     bool corrupt = false;
-    uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES];
+    uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES] = {0};
     if (read_secret_file(path, secret, &corrupt)) {
         memcpy(out->secret, secret, SIGNAL_CRYPTO_SECRET_BYTES);
         memcpy(out->pubkey,
                out->secret + (SIGNAL_CRYPTO_SECRET_BYTES -
                               SIGNAL_CRYPTO_PUBKEY_BYTES),
                SIGNAL_CRYPTO_PUBKEY_BYTES);
+        signal_memzero_explicit(secret, sizeof(secret));
         return true;
     }
+    signal_memzero_explicit(secret, sizeof(secret));
     if (corrupt) {
         fprintf(stderr,
                 "[identity] %s is not 64 bytes; moving to %s.bad\n",
@@ -337,4 +349,10 @@ bool identity_load_or_generate(player_identity_t *out) {
     }
     return identity_load_or_generate_at(out, path);
 #endif
+}
+
+void identity_clear(player_identity_t *id) {
+    if (!id) return;
+    signal_memzero_explicit(id->secret, sizeof(id->secret));
+    memset(id->pubkey, 0, sizeof(id->pubkey));
 }

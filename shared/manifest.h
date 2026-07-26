@@ -122,6 +122,9 @@ void ship_finished_sync(ship_t *ship, commodity_t c);
 int ship_finished_drain(ship_t *ship, commodity_t c, int n);
 
 void ship_cleanup(ship_t *ship);
+
+/* Release owned cargo/receipt storage and return the whole value to zero. */
+void ship_reset(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
 
@@ -139,6 +142,9 @@ bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
                                      cargo_receipt_chain_t *out_chain);
 int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n);
 void station_cleanup(station_t *station);
+
+/* Release owned cargo/receipt storage, wipe the signing key, and zero state. */
+void station_reset(station_t *station);
 bool station_manifest_bootstrap(station_t *station);
 bool station_copy(station_t *dst, const station_t *src);
 ship_receipts_t *station_get_receipts(station_t *station);

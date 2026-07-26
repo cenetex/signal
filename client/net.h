@@ -592,6 +592,9 @@ bool net_has_identity_pubkey(void);
  * signatures + pubkey. */
 void net_set_identity_secret(const uint8_t secret[64]);
 
+/* Clear the long-lived in-memory identity copy during final client teardown. */
+void net_clear_identity(void);
+
 /* Send a signed state-changing action.
  *
  * Returns true if the message was queued onto the wire; false if the

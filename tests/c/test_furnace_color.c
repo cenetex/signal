@@ -32,7 +32,7 @@ static void make_station(station_t *st,
                          const module_type_t *types,
                          const uint8_t *rings,
                          int count) {
-    memset(st, 0, sizeof(*st));
+    station_reset(st);
     st->module_count = (uint16_t)count;
     for (int i = 0; i < count; i++) {
         st->modules[i].type = types[i];

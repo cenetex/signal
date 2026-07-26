@@ -10,6 +10,7 @@
 #include "manifest.h"
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 #include "net_clock.h"
 #include "wire_codec.h"
 
@@ -446,6 +447,7 @@ bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id) {
     memset(&net_state, 0, sizeof(net_state));
     restore_identity(saved_pubkey, saved_secret,
                      saved_pub_ready, saved_secret_ready);
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
     if (callbacks) net_state.callbacks = *callbacks;
     net_state.local_id = local_id;
     net_state.connected = true;
@@ -704,12 +706,21 @@ void net_set_identity_pubkey(const uint8_t pubkey[32]) {
 
 void net_set_identity_secret(const uint8_t secret[64]) {
     if (!secret) {
-        memset(net_state.identity_secret, 0, sizeof(net_state.identity_secret));
+        signal_memzero_explicit(net_state.identity_secret,
+                                sizeof(net_state.identity_secret));
         net_state.identity_secret_ready = false;
         return;
     }
     memcpy(net_state.identity_secret, secret, 64);
     net_state.identity_secret_ready = true;
+}
+
+void net_clear_identity(void) {
+    signal_memzero_explicit(net_state.identity_secret,
+                            sizeof(net_state.identity_secret));
+    memset(net_state.identity_pubkey, 0, sizeof(net_state.identity_pubkey));
+    net_state.identity_secret_ready = false;
+    net_state.identity_pubkey_ready = false;
 }
 
 bool net_has_identity_secret(void) {
@@ -783,6 +794,7 @@ bool net_send_signed_action(uint8_t action_type,
     int total = SIGNED_ACTION_HEADER_SIZE + (int)payload_len +
                 (int)SIGNED_ACTION_SIG_SIZE;
     ws_send_binary(buf, total);
+    signal_memzero_explicit(buf, sizeof(buf));
     return true;
 }
 
@@ -806,6 +818,9 @@ bool net_send_claim_legacy_save(const char *token_basename) {
     memcpy(&buf[2], token_basename, hex_len);
     memcpy(&buf[2 + hex_len], sig, SIGNAL_CRYPTO_SIG_BYTES);
     ws_send_binary(buf, (int)(2 + hex_len + SIGNAL_CRYPTO_SIG_BYTES));
+    signal_memzero_explicit(msg, sizeof(msg));
+    signal_memzero_explicit(sig, sizeof(sig));
+    signal_memzero_explicit(buf, sizeof(buf));
     printf("[net] sent legacy-save claim for %s\n", token_basename);
     return true;
 }
@@ -3398,6 +3413,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
     net_state.identity_pubkey_ready = saved_pub_ready;
     net_state.identity_secret_ready = saved_secret_ready;
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
@@ -3579,6 +3595,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
     net_state.identity_pubkey_ready = saved_pub_ready;
     net_state.identity_secret_ready = saved_secret_ready;
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");

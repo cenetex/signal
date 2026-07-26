@@ -1687,8 +1687,7 @@ static bool world_ship_slot_activate(world_t *w, int ship_slot) {
     ship_slot_t *slot = &w->ships[ship_slot];
     if (slot->active) return true;
     uint16_t generation = ship_slot_next_generation(slot->generation);
-    ship_cleanup(&slot->component);
-    memset(&slot->component, 0, sizeof(slot->component));
+    ship_reset(&slot->component);
     if (!ship_manifest_bootstrap(&slot->component)) return false;
     slot->generation = generation;
     slot->active = true;
@@ -1700,8 +1699,7 @@ static void world_ship_slot_release(world_t *w, int ship_slot) {
     ship_slot_t *slot = &w->ships[ship_slot];
     if (slot->active)
         world_tow_links_clear_source(w, world_ship_ref_for_slot(w, ship_slot));
-    if (slot->active) ship_cleanup(&slot->component);
-    memset(&slot->component, 0, sizeof(slot->component));
+    ship_reset(&slot->component);
     slot->active = false;
 }
 
@@ -4168,11 +4166,10 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 /* Ship collision                                                     */
 /* ================================================================== */
 
-static int ship_collision_count; /* per-frame overlap counter for crush detection */
-
-static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
+static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center,
+                                float radius, int *collision_count) {
     float impact = resolve_ship_circle_pushback(sp->ship, center, radius);
-    if (impact > 0.0f) ship_collision_count++;
+    if (impact > 0.0f) (*collision_count)++;
     if (impact <= 0.0f || sp->docked || w->player_only_mode) return;
     float dmg = collision_damage_for(impact, 1.0f);
     if (dmg > 0.0f) {
@@ -4192,7 +4189,9 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
  *      on the rebound.
  *   3. Damage scales with rock radius. An XL rock hits ~2.5× harder
  *      than an S-tier fragment. Free signal that bigger rocks matter. */
-static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
+static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp,
+                                            asteroid_t *a,
+                                            int *collision_count) {
     /* Geometric push-out + mass-equal bounce live in sim_ship now;
      * player-only attribution / self-damage suppression sits on top. */
     vec2 asteroid_vel_before = a->vel;
@@ -4203,7 +4202,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
         a->net_dirty = asteroid_dirty_before;
     }
     if (impact <= 0.0f) return;
-    ship_collision_count++;
+    (*collision_count)++;
     if (w->player_only_mode) return;
 
     /* Self-damage skip: your own ballistic rock can't hurt you. The
@@ -5469,7 +5468,9 @@ static bool ship_near_station_collision_envelope(const server_player_t *sp,
     return v2_dist_sq(sp->ship->pos, st->pos) <= reach * reach;
 }
 
-static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+static void resolve_module_collisions(world_t *w, server_player_t *sp,
+                                      const station_t *st,
+                                      int *collision_count) {
     station_geom_t geom;
     station_build_geom(st, &geom);
     float ship_r = ship_hull_def(sp->ship)->ship_radius;
@@ -5479,7 +5480,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
 
     /* Module circles */
     for (int i = 0; i < geom.circle_count; i++)
-        resolve_ship_circle(w, sp, geom.circles[i].center, geom.circles[i].radius);
+        resolve_ship_circle(w, sp, geom.circles[i].center,
+                            geom.circles[i].radius, collision_count);
 
     /* Near-module suppression: if ship is angularly close to any module
      * on a corridor's ring, skip corridor tests (module circle takes priority,
@@ -5516,13 +5518,13 @@ static bool is_already_towed(world_t *w, const server_player_t *sp,
                              int asteroid_idx);
 
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
-    ship_collision_count = 0;
+    int collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
         if (!ship_near_station_collision_envelope(sp, &w->stations[i])) continue;
         /* Skip collision with docking target during approach lerp */
         if (sp->docking_approach && i == sp->nearby_station) continue;
-        resolve_module_collisions(w, sp, &w->stations[i]);
+        resolve_module_collisions(w, sp, &w->stations[i], &collision_count);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
@@ -5534,12 +5536,13 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
          * damage; a tractored fragment dragged INTO a third ship hits
          * normally. The owner's own tow doesn't self-damage thanks to
          * the session-token check in resolve_ship_asteroid_collision. */
-        resolve_ship_asteroid_collision(w, sp, &w->asteroids[i]);
+        resolve_ship_asteroid_collision(w, sp, &w->asteroids[i],
+                                        &collision_count);
     }
     /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules
      * on the same ring is normal, only crush when truly trapped) */
-    if (!w->player_only_mode && !sp->docked && ship_collision_count >= 3) {
-        float crush = (float)(ship_collision_count - 2) * 2.0f;
+    if (!w->player_only_mode && !sp->docked && collision_count >= 3) {
+        float crush = (float)(collision_count - 2) * 2.0f;
         apply_ship_damage(w, sp, crush);
     }
 }
@@ -13584,7 +13587,7 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 void world_cleanup(world_t *w) {
     if (!w) return;
     for (int i = 0; i < WORLD_SHIP_CAP; i++)
-        if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
+        ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
@@ -13627,8 +13630,7 @@ void world_ensure_seeded_freeport(world_t *w) {
     station_t *st = &w->stations[SIGNAL_FREEPORT_STATION_INDEX];
     if (station_exists(st)) return;
 
-    station_cleanup(st);
-    memset(st, 0, sizeof(*st));
+    station_reset(st);
     (void)station_manifest_bootstrap(st);
     station_authority_init_seeded(st, w->belt_seed,
                                   (uint32_t)SIGNAL_FREEPORT_STATION_INDEX);
@@ -13814,7 +13816,7 @@ void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
     for (int i = 0; i < WORLD_SHIP_CAP; i++)
-        if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
+        ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)

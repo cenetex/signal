@@ -263,7 +263,7 @@ TEST(test_manifest_rarity_tint_blends_grade_average) {
 }
 
 TEST(test_station_manifest_receipts_track_push_remove) {
-    station_t st = {0};
+    STATION_DECL(st);
     cargo_unit_t first = {0};
     cargo_unit_t second = {0};
     cargo_receipt_chain_t chain = {0};
@@ -301,7 +301,7 @@ TEST(test_station_manifest_receipts_track_push_remove) {
 }
 
 TEST(test_station_manifest_rejects_unverified_receipt_chain) {
-    station_t st = {0};
+    STATION_DECL(st);
     cargo_unit_t unit = {0};
     cargo_receipt_chain_t chain = {0};
 

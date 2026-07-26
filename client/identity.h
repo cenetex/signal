@@ -52,6 +52,9 @@ bool identity_load_or_generate(player_identity_t *out);
 bool identity_load_or_generate_at(player_identity_t *out, const char *path);
 bool identity_save_to(const player_identity_t *id, const char *path);
 
+/* Wipe the in-memory keypair at application/test lifecycle boundaries. */
+void identity_clear(player_identity_t *id);
+
 #ifdef __cplusplus
 }
 #endif

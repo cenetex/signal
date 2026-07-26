@@ -4529,6 +4529,8 @@ static void cleanup(void) {
     if (g.net_authority_enabled) {
         net_shutdown();
     }
+    net_clear_identity();
+    identity_clear(&g.identity);
     saudio_shutdown();
     sdtx_shutdown();
     hull_fog_shutdown();

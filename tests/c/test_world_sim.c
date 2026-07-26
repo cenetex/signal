@@ -3286,7 +3286,7 @@ TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
     frontier_virtual_pilots_set(w, 0);
     int zero_budget_station = SIGNAL_FIRST_OUTPOST_INDEX;
     station_t *zero_budget = &w->stations[zero_budget_station];
-    memset(zero_budget, 0, sizeof(*zero_budget));
+    station_reset(zero_budget);
     snprintf(zero_budget->name, sizeof(zero_budget->name),
              "Zero Budget Outpost");
     zero_budget->pos = v2(5200.0f, 2500.0f);
@@ -3325,7 +3325,7 @@ TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
          s < SIGNAL_FIRST_OUTPOST_INDEX + 7 && s < MAX_STATIONS;
          s++) {
         station_t *st = &w->stations[s];
-        memset(st, 0, sizeof(*st));
+        station_reset(st);
         snprintf(st->name, sizeof(st->name), "Budget Outpost %d", s);
         st->pos = v2(6000.0f + (float)(s - SIGNAL_FIRST_OUTPOST_INDEX) * 900.0f,
                      3000.0f);
@@ -3563,7 +3563,7 @@ TEST(test_world_sim_step_laser_scans_cargo_pod) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.asteroids, 0, sizeof(w.asteroids));
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     server_player_t *sp = &w.players[0];
     player_init_ship(sp, &w);
@@ -4933,9 +4933,7 @@ TEST(test_holographic_npc_bootstrap_gate_blocks_forward_thrust) {
     signal_brain_holographic_init();
 
     npc_ship_t *npc = &w.npc_ships[0];
-    world_npc_ship_slot_release(&w, 0);
-    memset(npc, 0, sizeof(*npc));
-    ASSERT(world_npc_ship_slot_activate(&w, 0));
+    ASSERT(test_world_npc_slot_reset(&w, 0));
 
     station_t *st = &w.stations[0];
     ASSERT(station_exists(st));

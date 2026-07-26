@@ -8,6 +8,7 @@
  * Public domain. Layer A.1 of #479.
  */
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,10 @@ void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                         const uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]) {
     /* crypto_sign writes (sig||msg) into a buffer of size len + 64. */
     unsigned long long smlen = 0;
+    if (len > SIZE_MAX - SIGNAL_CRYPTO_SIG_BYTES) {
+        memset(sig, 0, SIGNAL_CRYPTO_SIG_BYTES);
+        return;
+    }
     /* Stack alloc up to a small bound; otherwise heap. The signing
      * buffer is bounded by message size + 64. */
     uint8_t  stack_buf[1024];
@@ -50,6 +55,7 @@ void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
     }
     crypto_sign(sm, &smlen, msg, (unsigned long long)len, secret);
     memcpy(sig, sm, SIGNAL_CRYPTO_SIG_BYTES);
+    signal_memzero_explicit(sm, len + SIGNAL_CRYPTO_SIG_BYTES);
     if (sm != stack_buf) free(sm);
 }
 
@@ -57,6 +63,7 @@ bool signal_crypto_verify(const uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                           const uint8_t *msg, size_t len,
                           const uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES]) {
     /* Re-build a (sig || msg) buffer for crypto_sign_open. */
+    if (len > SIZE_MAX - SIGNAL_CRYPTO_SIG_BYTES) return false;
     uint8_t  stack_sm[1024];
     uint8_t  stack_m [1024];
     uint8_t *sm = stack_sm;
@@ -74,6 +81,8 @@ bool signal_crypto_verify(const uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
     int rc = crypto_sign_open(m, &mlen,
                               sm, (unsigned long long)smlen_in,
                               pub);
+    signal_memzero_explicit(sm, smlen_in);
+    signal_memzero_explicit(m, smlen_in);
     if (sm != stack_sm) { free(sm); free(m); }
     return rc == 0;
 }

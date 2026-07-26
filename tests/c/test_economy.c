@@ -387,7 +387,7 @@ static void test_setup_delivery_player(world_t *w, server_player_t **out_sp) {
 }
 
 TEST(test_station_production_yard_makes_frames) {
-    station_t station = {0};
+    STATION_DECL(station);
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FERRITE_INGOT, 5));
     step_station_production(&station, 1, 1.0f);
@@ -402,7 +402,7 @@ TEST(test_station_production_yard_makes_frames) {
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
-    station_t station = {0};
+    STATION_DECL(station);
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_LASER_FAB };
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
     ASSERT(test_set_station_finished_units(&station, COMMODITY_CUPRITE_INGOT, 5));
@@ -1625,7 +1625,7 @@ TEST(test_dynamic_ore_price_deficit) {
 }
 
 TEST(test_product_price_tracks_ore) {
-    station_t st = {0};
+    STATION_DECL(st);
     st.base_price[COMMODITY_FRAME] = 20.0f;
     /* Sell price: empty=2× base, full=1× base */
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
@@ -3316,7 +3316,7 @@ TEST(test_commodity_volume_kit_dense) {
 
 TEST(test_ship_total_cargo_kit_density) {
     /* 100 kits + 5 frames = 100 * 0.1 + 5 * 1.0 = 15 cargo units. */
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
     uint8_t origin[8] = {0};
     float legacy[COMMODITY_COUNT] = {0};

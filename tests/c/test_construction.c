@@ -530,7 +530,7 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     m->scaffold = true;
     m->build_progress = 0.0f;
 
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ASSERT(manifest_init(&ship.manifest, 4));
     ship.cargo[COMMODITY_FRAME] = 1.0f;
     cargo_unit_t unit = {0};
@@ -686,6 +686,7 @@ TEST(test_docked_buy_one_unit_per_intent) {
     sp->docked = true;
     sp->current_station = 1;
     memset(sp->session_token, 0xAA, sizeof(sp->session_token));
+    manifest_free(&sp->ship->manifest);
     ASSERT(manifest_init(&sp->ship->manifest, 16));
     ledger_credit_supply(st, sp->session_token, 5000.0f);
     float bal_before = ledger_balance(st, sp->session_token);
@@ -3848,7 +3849,7 @@ TEST(test_module_flow_diag_slow_feed) {
 }
 
 TEST(test_module_flow_diag_storage_consumer_full) {
-    station_t st = {0};
+    STATION_DECL(st);
     st.signal_range = 1.0f;
     st.module_count = 2;
     st.modules[0] = (station_module_t){
@@ -4202,8 +4203,7 @@ TEST(test_pair_satisfied_cross_ring) {
     world_reset(w);
 
     station_t *st = &w->stations[5]; /* unused slot, completely empty */
-    station_cleanup(st);
-    memset(st, 0, sizeof(*st));
+    station_reset(st);
     st->signal_range = 1.0f;
 
     /* Empty station — no hoppers, LASER_FAB cannot be paired. */
@@ -4219,8 +4219,7 @@ TEST(test_pair_satisfied_cross_ring) {
 
     /* FURNACE accepts ANY ore, but the hopper has to sit on an adjacent ring. */
     station_t *st2 = &w->stations[6];
-    station_cleanup(st2);
-    memset(st2, 0, sizeof(*st2));
+    station_reset(st2);
     st2->signal_range = 1.0f;
     ASSERT(!station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
     add_hopper_for(st2, 2, 1, COMMODITY_FERRITE_ORE);

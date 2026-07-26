@@ -120,6 +120,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   multiplayer relay deployment on Fly.io.
 - [`docs/replay-harness.md`](docs/replay-harness.md): deterministic
   seed+prefix counterfactual replay harness for agent experiments.
+- [`docs/c_safety_policy.md`](docs/c_safety_policy.md): native ownership,
+  sanitizer lanes, vendor scope, and explicit secret-wipe policy.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current
   in-engine milestone-video playback architecture and remaining work.
 - [`docs/space-mining-3d-v1.md`](docs/space-mining-3d-v1.md): draft v1

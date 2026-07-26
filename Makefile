@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san build-msan test-msan build-tsan test-tsan memzero-codegen build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -400,6 +400,13 @@ test-serial: build-test
 SANITIZER ?= address,undefined
 SAN_BUILD_DIR ?= build-san
 SAN_TEST_FLAGS ?= --quiet --no-soak
+ifeq ($(UNAME_S),Linux)
+ASAN_DETECT_LEAKS ?= 1
+else
+# LeakSanitizer is not available in Apple's ASan runtime. Linux CI is the
+# authoritative leak gate; keep local macOS ASan/UBSan usable.
+ASAN_DETECT_LEAKS ?= 0
+endif
 
 build-san:
 	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
@@ -410,26 +417,64 @@ build-san:
 	cmake --build $(SAN_BUILD_DIR) --parallel
 
 test-san: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
-# Legacy fixtures frequently clear seeded station/NPC arrays with memset,
-# discarding fixture-owned manifests before WORLD_DECL cleanup runs. Keep this
-# gate focused on address/undefined behavior until those fixture leaks are
-# migrated to cleanup-aware reset helpers.
-test-san: TEST_ENV=ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test-san: TEST_ENV=ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS):halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 test-san: TEST_PREFIX=$(TEST_STACK_PREFIX)
 test-san: build-san
 	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
-test-tsan: TEST_BIN=./build-tsan/signal_test
-test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
-test-tsan: TEST_PREFIX=$(TEST_STACK_PREFIX)
-test-tsan:
-	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+MSAN_CC ?= clang
+MSAN_BUILD_DIR ?= build-msan
+MSAN_TEST_FILTERS ?= memzero identity station_authority signed_action
+
+build-msan:
+	cmake $(GENERATOR) -S . -B $(MSAN_BUILD_DIR) \
+		-DCMAKE_C_COMPILER=$(MSAN_CC) -DCMAKE_BUILD_TYPE=Debug \
 		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
-		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
-		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
-	@ln -sf build-tsan/compile_commands.json compile_commands.json
-	cmake --build build-tsan --parallel
-	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -fPIE" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=2 -pie"
+	@ln -sf $(MSAN_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(MSAN_BUILD_DIR) --target signal_test --parallel
+
+test-msan: build-msan
+	@set -e; \
+	for filter in $(MSAN_TEST_FILTERS); do \
+		echo "MSan: $$filter"; \
+		$(TEST_STACK_PREFIX) MSAN_OPTIONS=halt_on_error=1:exit_code=86:poison_in_dtor=1 \
+			./$(MSAN_BUILD_DIR)/signal_test --quiet --no-soak \
+			--filter=$$filter; \
+	done
+
+MEMZERO_CC ?= clang
+MEMZERO_IR ?= build-safety/signal_memzero.ll
+
+memzero-codegen:
+	@mkdir -p $(@D) $(dir $(MEMZERO_IR))
+	$(MEMZERO_CC) -std=c11 -O3 -S -emit-llvm -Ishared \
+		shared/signal_memzero.c -o $(MEMZERO_IR)
+	@grep -Eq 'store volatile i8 0,' $(MEMZERO_IR) || { \
+		echo "explicit wipe fallback lost its volatile byte stores"; \
+		exit 1; \
+	}
+
+TSAN_CC ?= clang
+TSAN_BUILD_DIR ?= build-tsan
+TSAN_TEST_FLAGS ?= --quiet --no-soak --filter=native_safety_thread
+
+build-tsan:
+	cmake $(GENERATOR) -S . -B $(TSAN_BUILD_DIR) \
+		-DCMAKE_C_COMPILER=$(TSAN_CC) -DCMAKE_BUILD_TYPE=Debug \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer -fPIE" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -pie"
+	@ln -sf $(TSAN_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(TSAN_BUILD_DIR) --target signal_test --parallel
+
+test-tsan: TEST_BIN=./$(TSAN_BUILD_DIR)/signal_test
+test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
+test-tsan: TEST_PREFIX=$(TEST_STACK_PREFIX)
+test-tsan: TEST_SHARDS=1
+test-tsan: build-tsan
+	$(call RUN_PARALLEL_TESTS,$(TSAN_TEST_FLAGS))
 
 # libFuzzer harness for untrusted receipt/handoff decode paths.
 # Requires a clang that ships the libFuzzer runtime — Xcode CLT clang

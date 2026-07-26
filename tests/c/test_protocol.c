@@ -5630,8 +5630,7 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     cargo_unit_t unit;
@@ -5696,8 +5695,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_receipt_chain) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     cargo_unit_t unit;
@@ -5806,8 +5804,7 @@ TEST(test_inspect_snapshot_npc_retrieves_matching_station_receipt_chain) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     WORLD_DECL;
@@ -5979,8 +5976,7 @@ TEST(test_inspect_snapshot_npc_includes_market_memory_diagnostics) {
     }
     memcpy(item->payload, &memory, sizeof(memory));
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
@@ -6080,8 +6076,7 @@ TEST(test_inspect_snapshot_npc_expands_matching_job_source_memory) {
     }
     memcpy(item->payload, &route, sizeof(route));
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
@@ -6157,8 +6152,7 @@ TEST(test_inspect_snapshot_npc_includes_job_offer_diagnostics) {
     npc.job_diag_commodity[1] = (uint8_t)COMMODITY_FERRITE_ORE;
     npc.job_diag_hint[1] = 6;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
@@ -6232,8 +6226,7 @@ TEST(test_inspect_snapshot_npc_includes_hnn_trace_diagnostics) {
 
     hnn_memory_contract_t contract = hnn_memory_contract(&npc.hnn_mem);
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
@@ -6287,8 +6280,7 @@ TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t fragment_pub[32] = {0};
@@ -6358,8 +6350,7 @@ TEST(test_inspect_snapshot_groups_finished_goods_by_grade) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     const struct {
@@ -6425,8 +6416,7 @@ TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
     npc.home_station = 0;
     npc.dest_station = 1;
 
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
+    SHIP_DECL(ship);
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t fragment_pub[32] = {0};
@@ -6480,8 +6470,7 @@ TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
 }
 
 TEST(test_roundtrip_stations) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
 
     /* Mark station 0 as active so it gets serialized */
     stations[0].signal_range = 2200.0f;
@@ -6512,8 +6501,7 @@ TEST(test_roundtrip_stations) {
 }
 
 TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
     ASSERT(station_manifest_bootstrap(&stations[0]));
@@ -6543,8 +6531,7 @@ TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
 }
 
 TEST(test_world_stations_q_omits_zero_inventory_slots) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
     ASSERT(station_manifest_bootstrap(&stations[0]));
@@ -6580,8 +6567,7 @@ TEST(test_world_stations_q_omits_zero_inventory_slots) {
 }
 
 TEST(test_station_identity_serializes_module_commodities) {
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     st.services = STATION_SERVICE_REPAIR;
     st.pos = v2(10.0f, -20.0f);
     st.radius = 60.0f;
@@ -6631,8 +6617,7 @@ TEST(test_station_identity_serializes_module_commodities) {
 }
 
 TEST(test_station_identity_serializes_operator_text) {
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     st.signal_range = 1000.0f;
     snprintf(st.name, sizeof(st.name), "Voice Test");
     snprintf(st.hail_message, sizeof(st.hail_message), "station motd");
@@ -6669,8 +6654,7 @@ TEST(test_station_identity_serializes_operator_text) {
 }
 
 TEST(test_station_identity_q_compacts_sparse_text_and_lists) {
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     st.services = 0x12345678u;
     st.signal_range = 1000.0f;
     st.pos = v2(10.0f, -20.0f);
@@ -7019,8 +7003,7 @@ TEST(test_bug92_station_record_size_matches_buffer) {
      * STATION_RECORD_SIZE is validated at compile time via _Static_assert,
      * but verify at runtime that serialize_stations writes exactly the
      * expected number of bytes. */
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     /* Empty stations should produce 0 records */
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
@@ -7423,7 +7406,7 @@ TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.asteroids, 0, sizeof(w.asteroids));
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -7492,8 +7475,7 @@ TEST(test_roundtrip_player_ship) {
 }
 
 TEST(test_manifest_detail_serializes_full_cargo_identity) {
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     ASSERT(station_manifest_bootstrap(&st));
 
     cargo_unit_t unit = {0};

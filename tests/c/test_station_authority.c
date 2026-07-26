@@ -10,6 +10,7 @@
 
 #include "station_authority.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 #include "net_protocol.h"
 
 TEST(test_station_authority_seeded_determinism) {
@@ -80,8 +81,7 @@ TEST(test_station_authority_outpost_derivation) {
     /* Place an outpost (manually constructed to avoid driving the full
      * scaffold-tow flow) and assert the pubkey matches an independent
      * recomputation from the same (founder, name, tick) triple. */
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     snprintf(st.name, sizeof(st.name), "Outpost Alpha");
     uint8_t founder[32];
     for (int i = 0; i < 32; i++) founder[i] = (uint8_t)(0x10 + i);
@@ -100,6 +100,28 @@ TEST(test_station_authority_outpost_derivation) {
     /* Provenance fields stamped for save/load rederivation. */
     ASSERT(memcmp(st.outpost_founder_pubkey, founder, 32) == 0);
     ASSERT_EQ_INT((int)st.outpost_planted_tick, (int)tick);
+    signal_memzero_explicit(expected_seed, sizeof(expected_seed));
+    signal_memzero_explicit(expected_secret, sizeof(expected_secret));
+}
+
+TEST(test_station_authority_cleanup_wipes_private_material) {
+    STATION_DECL(st);
+    station_authority_init_seeded(&st, 4242u, 0);
+    uint8_t zero_secret[sizeof(st.station_secret)] = {0};
+    ASSERT(memcmp(st.station_secret, zero_secret, sizeof(zero_secret)) != 0);
+
+    station_cleanup(&st);
+    ASSERT(memcmp(st.station_secret, zero_secret, sizeof(zero_secret)) == 0);
+
+    station_authority_configure_secret("temporary-operator-secret");
+    station_authority_clear_secret();
+    uint8_t cleared_seed[32], dev_seed[32];
+    station_authority_seeded_seed(4242u, 0, cleared_seed);
+    station_authority_use_dev_secret();
+    station_authority_seeded_seed(4242u, 0, dev_seed);
+    ASSERT(memcmp(cleared_seed, dev_seed, sizeof(dev_seed)) == 0);
+    signal_memzero_explicit(cleared_seed, sizeof(cleared_seed));
+    signal_memzero_explicit(dev_seed, sizeof(dev_seed));
 }
 
 TEST(test_station_authority_sign_verify_roundtrip) {
@@ -254,6 +276,7 @@ void register_station_authority_tests(void) {
     RUN(test_station_authority_seeded_distinct_seeds);
     RUN(test_station_authority_operator_secret_affects_pubkey);
     RUN(test_station_authority_outpost_derivation);
+    RUN(test_station_authority_cleanup_wipes_private_material);
     RUN(test_station_authority_sign_verify_roundtrip);
     RUN(test_station_authority_save_load_rederives_secret);
     RUN(test_station_authority_wire_omits_secret);

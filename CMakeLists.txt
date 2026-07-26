@@ -19,10 +19,14 @@ if(NOT SIGNAL_CRYPTO_BACKEND STREQUAL "tweetnacl")
         "use 'tweetnacl'.")
 endif()
 
-set(SIGNAL_CRYPTO_SOURCES
+set(SIGNAL_CRYPTO_VENDOR_SOURCES
     vendor/tweetnacl/tweetnacl.c
     vendor/tweetnacl/randombytes.c
     vendor/tweetnacl/signal_crypto_tweetnacl.c
+)
+set(SIGNAL_CRYPTO_SOURCES
+    shared/signal_memzero.c
+    ${SIGNAL_CRYPTO_VENDOR_SOURCES}
 )
 set(SIGNAL_CRYPTO_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tweetnacl"
@@ -38,10 +42,10 @@ set(SIGNAL_CRYPTO_INCLUDE_DIR
 # the project's own code remains under full UBSan scrutiny.
 # `-fno-sanitize=...` is silently accepted in non-sanitized builds.
 if(MSVC)
-    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+    set_source_files_properties(${SIGNAL_CRYPTO_VENDOR_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/W0")
 else()
-    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+    set_source_files_properties(${SIGNAL_CRYPTO_VENDOR_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=shift;-fno-sanitize=signed-integer-overflow")
 endif()
 
@@ -311,6 +315,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_signal_field.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
+        tests/c/test_native_safety.c
         client/identity.c
         client/client_log.c
         ${SIGNAL_SIM_SOURCES}
@@ -322,6 +327,8 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     signal_apply_sim_profile(signal_test)
+    find_package(Threads REQUIRED)
+    target_link_libraries(signal_test PRIVATE Threads::Threads)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
