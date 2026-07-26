@@ -2053,8 +2053,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * tractor_module; two starter pods add four bytes.
              * v75: 64 station residue arrays add 5,120 bytes.
              * v76: each active pod persists its named tow hardpoint; two
-             * starter pods add two bytes. */
-			#define EXPECTED_SAVE_SIZE 772770
+             * starter pods add two bytes.
+             * v77: +296B per station for the fixed public station-authority
+             * lifecycle registry, × MAX_STATIONS=128. */
+			#define EXPECTED_SAVE_SIZE 810658
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2091,7 +2093,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 76);
+    ASSERT_EQ_INT((int)version, 77);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

@@ -247,6 +247,219 @@ TEST(test_station_authority_outpost_save_load) {
     remove(TMP("test_outpost_auth.sav"));
 }
 
+TEST(test_station_authority_registry_current_and_unknown) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w);
+    w->rng = 638u;
+    world_reset(w);
+
+    for (int i = 0; i < SIGNAL_SEEDED_STATION_COUNT; i++) {
+        const station_t *st = &w->stations[i];
+        ASSERT(station_authority_registry_validate(st));
+        ASSERT_EQ_INT(st->authority_registry_version,
+                      STATION_AUTHORITY_REGISTRY_VERSION);
+        ASSERT_EQ_INT(st->authority_registry_count, 1);
+        ASSERT(memcmp(st->authority_registry[0].pubkey,
+                      st->station_pubkey, 32) == 0);
+        ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                          st, st->station_pubkey),
+                      CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    }
+
+    uint8_t unknown[32];
+    memset(unknown, 0xA5, sizeof(unknown));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &w->stations[0], unknown),
+                  CARGO_RECEIPT_AUTHORITY_UNKNOWN);
+
+    station_t empty;
+    memset(&empty, 0, sizeof(empty));
+    ASSERT(station_authority_registry_validate(&empty));
+}
+
+TEST(test_station_authority_registry_rekey_and_monotonic_distrust) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    station_authority_configure_secret("registry-operator-alpha");
+    station_authority_init_seeded(&st, 638u, 0);
+
+    uint8_t alpha_pub[32];
+    memcpy(alpha_pub, st.station_pubkey, sizeof(alpha_pub));
+
+    station_authority_configure_secret("registry-operator-beta");
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_REKEYED);
+    uint8_t beta_pub[32];
+    memcpy(beta_pub, st.station_pubkey, sizeof(beta_pub));
+    ASSERT(memcmp(alpha_pub, beta_pub, 32) != 0);
+    ASSERT(station_authority_registry_validate(&st));
+    ASSERT_EQ_INT(st.authority_registry_count, 2);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, beta_pub),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, alpha_pub),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+
+    /* A deliberate rollback to a verified historical key is a rotation,
+     * not a duplicate row. */
+    station_authority_configure_secret("registry-operator-alpha");
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_REKEYED);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, alpha_pub),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, beta_pub),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+    ASSERT_EQ_INT(st.authority_registry_count, 2);
+
+    /* Rotate away once more, then make alpha's distrust monotonic. */
+    station_authority_configure_secret("registry-operator-beta");
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_REKEYED);
+    ASSERT(station_authority_registry_set_trust(
+        &st, alpha_pub, CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, alpha_pub),
+                  CARGO_RECEIPT_AUTHORITY_UNTRUSTED);
+    ASSERT(station_authority_registry_set_trust(
+        &st, alpha_pub, CARGO_RECEIPT_AUTHORITY_REVOKED));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, alpha_pub),
+                  CARGO_RECEIPT_AUTHORITY_REVOKED);
+    ASSERT(!station_authority_registry_set_trust(
+        &st, alpha_pub, CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
+
+    /* Reconfiguring the operator secret must not reactivate a revoked
+     * key or overwrite the in-memory secret before rejection. */
+    uint8_t beta_secret[64];
+    memcpy(beta_secret, st.station_secret, sizeof(beta_secret));
+    station_authority_configure_secret("registry-operator-alpha");
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_REJECTED);
+    ASSERT(memcmp(st.station_pubkey, beta_pub, 32) == 0);
+    ASSERT(memcmp(st.station_secret, beta_secret, 64) == 0);
+
+    station_authority_use_dev_secret();
+}
+
+TEST(test_station_authority_registry_duplicate_fails_closed) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    station_authority_init_seeded(&st, 638u, 0);
+    st.authority_registry_count = 2;
+    st.authority_registry[1] = st.authority_registry[0];
+    st.authority_registry[1].state = STATION_AUTHORITY_TRUST_REVOKED;
+
+    ASSERT(!station_authority_registry_validate(&st));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &st, st.station_pubkey),
+                  CARGO_RECEIPT_AUTHORITY_REVOKED);
+}
+
+TEST(test_station_authority_registry_capacity_preserves_distrust) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    station_authority_configure_secret("registry-capacity-alpha");
+    station_authority_init_seeded(&st, 638u, 0);
+
+    uint8_t denied[STATION_AUTHORITY_REGISTRY_CAP - 1][32];
+    for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP - 1; i++) {
+        memset(denied[i], 0, sizeof(denied[i]));
+        denied[i][0] = (uint8_t)(0x40 + i);
+        denied[i][31] = (uint8_t)(0xA0 + i);
+        ASSERT(station_authority_registry_set_trust(
+            &st, denied[i], CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
+    }
+    ASSERT_EQ_INT(st.authority_registry_count,
+                  STATION_AUTHORITY_REGISTRY_CAP);
+
+    /* With no rotated row to evict, a rekey must reject rather than
+     * erase an explicit deny-list decision. */
+    station_authority_configure_secret("registry-capacity-beta");
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_REJECTED);
+    for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP - 1; i++) {
+        ASSERT_EQ_INT(station_authority_trust_for_pubkey(&st, denied[i]),
+                      CARGO_RECEIPT_AUTHORITY_UNTRUSTED);
+    }
+    station_authority_use_dev_secret();
+}
+
+TEST(test_station_authority_registry_legacy_synthesizes_current_only) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    station_authority_init_seeded(&st, 638u, 0);
+    memset(st.authority_registry, 0, sizeof(st.authority_registry));
+    memset(st.authority_registry_pad, 0, sizeof(st.authority_registry_pad));
+    st.authority_registry_version = 0;
+    st.authority_registry_count = 0;
+
+    ASSERT_EQ_INT(station_authority_rederive_secret(&st, 638u, 0),
+                  STATION_AUTHORITY_REDERIVE_UNCHANGED);
+    ASSERT(station_authority_registry_validate(&st));
+    ASSERT_EQ_INT(st.authority_registry_count, 1);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &st, st.station_pubkey),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    station_authority_use_dev_secret();
+}
+
+TEST(test_station_authority_registry_save_load_lifecycle) {
+    const char *first_path = TMP("test_auth_registry_first.sav");
+    const char *second_path = TMP("test_auth_registry_second.sav");
+    station_authority_configure_secret("save-registry-alpha");
+
+    WORLD_HEAP original = calloc(1, sizeof(world_t));
+    ASSERT(original);
+    original->rng = 638u;
+    world_reset(original);
+    uint8_t old_station0[32];
+    uint8_t old_station1[32];
+    memcpy(old_station0, original->stations[0].station_pubkey, 32);
+    memcpy(old_station1, original->stations[1].station_pubkey, 32);
+    ASSERT(world_save(original, first_path));
+
+    station_authority_configure_secret("save-registry-beta");
+    WORLD_HEAP rotated = calloc(1, sizeof(world_t));
+    ASSERT(rotated);
+    ASSERT(world_load(rotated, first_path));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &rotated->stations[0], old_station0),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &rotated->stations[1], old_station1),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+
+    uint8_t current_station0[32];
+    memcpy(current_station0, rotated->stations[0].station_pubkey, 32);
+    uint8_t denied_unknown[32];
+    memset(denied_unknown, 0xD3, sizeof(denied_unknown));
+    ASSERT(station_authority_registry_set_trust(
+        &rotated->stations[0], old_station0,
+        CARGO_RECEIPT_AUTHORITY_REVOKED));
+    ASSERT(station_authority_registry_set_trust(
+        &rotated->stations[0], denied_unknown,
+        CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
+    ASSERT(world_save(rotated, second_path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded);
+    ASSERT(world_load(loaded, second_path));
+    ASSERT(station_authority_registry_validate(&loaded->stations[0]));
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &loaded->stations[0], current_station0),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &loaded->stations[0], old_station0),
+                  CARGO_RECEIPT_AUTHORITY_REVOKED);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &loaded->stations[0], denied_unknown),
+                  CARGO_RECEIPT_AUTHORITY_UNTRUSTED);
+    ASSERT_EQ_INT(station_authority_trust_for_pubkey(
+                      &loaded->stations[1], old_station1),
+                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+
+    station_authority_use_dev_secret();
+    remove(first_path);
+    remove(second_path);
+}
+
 void register_station_authority_tests(void);
 void register_station_authority_tests(void) {
     TEST_SECTION("\n--- Station Authority (#479 B) ---\n");
@@ -258,4 +471,10 @@ void register_station_authority_tests(void) {
     RUN(test_station_authority_save_load_rederives_secret);
     RUN(test_station_authority_wire_omits_secret);
     RUN(test_station_authority_outpost_save_load);
+    RUN(test_station_authority_registry_current_and_unknown);
+    RUN(test_station_authority_registry_rekey_and_monotonic_distrust);
+    RUN(test_station_authority_registry_duplicate_fails_closed);
+    RUN(test_station_authority_registry_capacity_preserves_distrust);
+    RUN(test_station_authority_registry_legacy_synthesizes_current_only);
+    RUN(test_station_authority_registry_save_load_lifecycle);
 }

@@ -118,13 +118,19 @@ station's private key:
 
 For stations you operate yourself, keep the same station authority secret
 available across restarts and replicas. Changing it intentionally rekeys
-stations; on load, the server starts a fresh chain identity for any station
-whose saved pubkey no longer matches the configured secret.
+stations; on load, the server records the saved key as trusted-rotated and
+starts a fresh chain identity under the newly derived current key. The public
+registry is bounded and persisted with the world save. Explicitly untrusted or
+revoked historical keys are never reactivated: a configured secret that would
+derive one causes the load to fail closed.
 
 The private key is never written to disk and never sent over the wire. Layer B
 keeps `station_secret` as the last field of `station_t` and re-derives it on
 load via `station_authority_rederive_secret`
 ([`server/station_authority.h`](../server/station_authority.h)).
+Only public current/rotated/untrusted/revoked key records are saved. A v76 or
+earlier world synthesizes one current record from each station's saved pubkey;
+it does not invent historical trust.
 
 ### 3. Wire your station's pubkey into the world
 

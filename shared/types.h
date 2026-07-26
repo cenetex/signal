@@ -191,6 +191,29 @@ typedef enum {
     CHAIN_HEALTH_FAILED = 6,
 } chain_health_status_t;
 
+enum {
+    STATION_AUTHORITY_REGISTRY_VERSION = 1,
+    STATION_AUTHORITY_REGISTRY_CAP = 8,
+};
+
+/* Public trust lifecycle for station signing keys. Values deliberately match
+ * cargo_receipt_authority_trust_t for the four non-unknown decisions; the
+ * server asserts that contract where it maps registry rows into receipt
+ * verdicts. */
+typedef enum {
+    STATION_AUTHORITY_TRUST_EMPTY = 0,
+    STATION_AUTHORITY_TRUST_CURRENT = 1,
+    STATION_AUTHORITY_TRUST_ROTATED = 2,
+    STATION_AUTHORITY_TRUST_UNTRUSTED = 3,
+    STATION_AUTHORITY_TRUST_REVOKED = 4,
+} station_authority_trust_state_t;
+
+typedef struct {
+    uint8_t pubkey[32];
+    uint8_t state; /* station_authority_trust_state_t */
+    uint8_t _pad[3];
+} station_authority_record_t;
+
 typedef struct {
     const char* name;
     float max_hull;
@@ -854,6 +877,14 @@ typedef struct {
     uint8_t  station_pubkey[32];
     uint8_t  outpost_founder_pubkey[32];
     uint64_t outpost_planted_tick;
+    /* Persisted public authority lifecycle. Record zero is the live current
+     * key for a healthy occupied station; later rows retain historical or
+     * explicitly distrusted keys. No private material is stored here. */
+    uint8_t authority_registry_version;
+    uint8_t authority_registry_count;
+    uint8_t authority_registry_pad[6];
+    station_authority_record_t
+        authority_registry[STATION_AUTHORITY_REGISTRY_CAP];
     /* Layer C of #479 — signed event chain log state.
      *
      * `chain_last_hash` is the SHA256 of the most recent event header

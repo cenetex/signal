@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cargo_receipt.h"
 #include "types.h"
 
 #ifdef __cplusplus
@@ -92,13 +93,44 @@ void station_authority_init_outpost_keypair(station_t *s,
 
 /* Re-populate s->station_secret from operator secret + already-set
  * identity material. Called by the world loader so the secret never
- * has to be written to disk. Returns true when a non-zero saved pubkey
- * did not match the currently configured operator secret and was
- * replaced with the derived pubkey; callers should treat that as an
- * intentional station rekey and start a fresh chain head. */
-bool station_authority_rederive_secret(station_t *s,
-                                       uint32_t world_seed,
-                                       int station_index);
+ * has to be written to disk. A changed operator secret rotates the
+ * previous current key into verified history. Rekey is rejected when
+ * it would reactivate an explicitly untrusted/revoked key or when the
+ * bounded registry cannot preserve explicit distrust. */
+typedef enum {
+    STATION_AUTHORITY_REDERIVE_UNCHANGED = 0,
+    STATION_AUTHORITY_REDERIVE_REKEYED,
+    STATION_AUTHORITY_REDERIVE_REJECTED
+} station_authority_rederive_result_t;
+
+station_authority_rederive_result_t station_authority_rederive_secret(
+    station_t *s,
+    uint32_t world_seed,
+    int station_index);
+
+/* Initialize the public lifecycle registry from station_pubkey. This is the
+ * v76-and-earlier migration rule too: preserve the one saved current key, but
+ * never invent historical trust. */
+void station_authority_registry_init(station_t *s);
+
+/* Strict canonical-layout validation used by persistence. Empty station slots
+ * may have an all-zero registry; occupied stations require record zero to be
+ * the live trusted-current key and reject duplicate or malformed rows. */
+bool station_authority_registry_validate(const station_t *s);
+
+/* Resolve one signing key into the shared receipt-trust lifecycle. Malformed
+ * registries and duplicate/conflicting rows fail closed as revoked. */
+cargo_receipt_authority_trust_t station_authority_trust_for_pubkey(
+    const station_t *s,
+    const uint8_t pubkey[32]);
+
+/* Mark a non-current key explicitly untrusted or revoked. Distrust is
+ * monotonic: revoked cannot be downgraded and current keys must rotate before
+ * they can be distrusted. Unknown keys may be added as deny-list entries. */
+bool station_authority_registry_set_trust(
+    station_t *s,
+    const uint8_t pubkey[32],
+    cargo_receipt_authority_trust_t trust);
 
 /* Sign msg[0..len) with station s's private key. Writes 64 bytes to
  * sig. The station must have a populated secret — pass through the

@@ -12,6 +12,19 @@
 #include "sha256.h"
 #include "signal_crypto.h"
 
+_Static_assert((int)STATION_AUTHORITY_TRUST_CURRENT ==
+                   (int)CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT,
+               "station current trust must match receipt trust");
+_Static_assert((int)STATION_AUTHORITY_TRUST_ROTATED ==
+                   (int)CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED,
+               "station rotated trust must match receipt trust");
+_Static_assert((int)STATION_AUTHORITY_TRUST_UNTRUSTED ==
+                   (int)CARGO_RECEIPT_AUTHORITY_UNTRUSTED,
+               "station untrusted state must match receipt trust");
+_Static_assert((int)STATION_AUTHORITY_TRUST_REVOKED ==
+                   (int)CARGO_RECEIPT_AUTHORITY_REVOKED,
+               "station revoked state must match receipt trust");
+
 /* Domain-separation strings. Bumping these (e.g. "-v2") would
  * invalidate every previously-derived station pubkey, so keep them
  * frozen unless a deliberate identity migration is in flight. */
@@ -24,6 +37,240 @@ static const char DEV_SECRET[]           = "signal-dev-station-authority-secret"
 
 static uint8_t station_auth_secret_root[32];
 static bool station_auth_secret_ready = false;
+
+static bool station_authority_pubkey_is_zero(const uint8_t pubkey[32]) {
+    static const uint8_t zero[32] = {0};
+    return !pubkey || memcmp(pubkey, zero, sizeof(zero)) == 0;
+}
+
+static void station_authority_record_clear(station_authority_record_t *record) {
+    if (record) memset(record, 0, sizeof(*record));
+}
+
+static bool station_authority_record_is_zero(
+    const station_authority_record_t *record) {
+    static const station_authority_record_t zero = {0};
+    return record && memcmp(record, &zero, sizeof(zero)) == 0;
+}
+
+static int station_authority_registry_find(const station_t *s,
+                                           const uint8_t pubkey[32]) {
+    if (!s || !pubkey ||
+        s->authority_registry_count > STATION_AUTHORITY_REGISTRY_CAP) {
+        return -1;
+    }
+    for (uint8_t i = 0; i < s->authority_registry_count; i++) {
+        if (memcmp(s->authority_registry[i].pubkey, pubkey, 32) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+void station_authority_registry_init(station_t *s) {
+    if (!s) return;
+    s->authority_registry_version = STATION_AUTHORITY_REGISTRY_VERSION;
+    s->authority_registry_count = 0;
+    memset(s->authority_registry_pad, 0,
+           sizeof(s->authority_registry_pad));
+    memset(s->authority_registry, 0, sizeof(s->authority_registry));
+    if (station_authority_pubkey_is_zero(s->station_pubkey)) return;
+    memcpy(s->authority_registry[0].pubkey, s->station_pubkey, 32);
+    s->authority_registry[0].state = STATION_AUTHORITY_TRUST_CURRENT;
+    s->authority_registry_count = 1;
+}
+
+bool station_authority_registry_validate(const station_t *s) {
+    if (!s) return false;
+    bool station_empty =
+        station_authority_pubkey_is_zero(s->station_pubkey);
+    if (station_empty && s->authority_registry_version == 0 &&
+        s->authority_registry_count == 0) {
+        static const uint8_t zero_pad[
+            sizeof(s->authority_registry_pad)] = {0};
+        if (memcmp(s->authority_registry_pad, zero_pad,
+                   sizeof(s->authority_registry_pad)) != 0) {
+            return false;
+        }
+        for (uint8_t i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+            if (!station_authority_record_is_zero(
+                    &s->authority_registry[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (s->authority_registry_version !=
+            STATION_AUTHORITY_REGISTRY_VERSION ||
+        s->authority_registry_count > STATION_AUTHORITY_REGISTRY_CAP) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(s->authority_registry_pad); i++) {
+        if (s->authority_registry_pad[i] != 0) return false;
+    }
+    if (station_empty) {
+        if (s->authority_registry_count != 0) return false;
+        for (uint8_t i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+            if (!station_authority_record_is_zero(
+                    &s->authority_registry[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (s->authority_registry_count == 0 ||
+        memcmp(s->authority_registry[0].pubkey,
+               s->station_pubkey, 32) != 0 ||
+        s->authority_registry[0].state !=
+            STATION_AUTHORITY_TRUST_CURRENT) {
+        return false;
+    }
+    for (uint8_t i = 0; i < s->authority_registry_count; i++) {
+        const station_authority_record_t *record =
+            &s->authority_registry[i];
+        if (station_authority_pubkey_is_zero(record->pubkey))
+            return false;
+        if (record->state < STATION_AUTHORITY_TRUST_CURRENT ||
+            record->state > STATION_AUTHORITY_TRUST_REVOKED) {
+            return false;
+        }
+        if (i > 0 && record->state == STATION_AUTHORITY_TRUST_CURRENT)
+            return false;
+        for (size_t p = 0; p < sizeof(record->_pad); p++) {
+            if (record->_pad[p] != 0) return false;
+        }
+        for (uint8_t prior = 0; prior < i; prior++) {
+            if (memcmp(s->authority_registry[prior].pubkey,
+                       record->pubkey, 32) == 0) {
+                return false;
+            }
+        }
+    }
+    for (uint8_t i = s->authority_registry_count;
+         i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+        if (!station_authority_record_is_zero(
+                &s->authority_registry[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+cargo_receipt_authority_trust_t station_authority_trust_for_pubkey(
+    const station_t *s,
+    const uint8_t pubkey[32]) {
+    if (!s || station_authority_pubkey_is_zero(pubkey))
+        return CARGO_RECEIPT_AUTHORITY_UNKNOWN;
+    if (!station_authority_registry_validate(s))
+        return CARGO_RECEIPT_AUTHORITY_REVOKED;
+    int found = station_authority_registry_find(s, pubkey);
+    if (found < 0) return CARGO_RECEIPT_AUTHORITY_UNKNOWN;
+    return (cargo_receipt_authority_trust_t)
+        s->authority_registry[found].state;
+}
+
+static void station_authority_registry_remove(station_t *s, int index) {
+    if (!s || index < 0 ||
+        index >= (int)s->authority_registry_count) {
+        return;
+    }
+    for (int i = index + 1; i < (int)s->authority_registry_count; i++)
+        s->authority_registry[i - 1] = s->authority_registry[i];
+    s->authority_registry_count--;
+    station_authority_record_clear(
+        &s->authority_registry[s->authority_registry_count]);
+}
+
+static int station_authority_registry_oldest_rotated(
+    const station_t *s) {
+    if (!s) return -1;
+    for (int i = (int)s->authority_registry_count - 1; i >= 1; i--) {
+        if (s->authority_registry[i].state ==
+            STATION_AUTHORITY_TRUST_ROTATED) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool station_authority_registry_rekey(
+    station_t *s,
+    const uint8_t new_pubkey[32]) {
+    if (!station_authority_registry_validate(s) ||
+        station_authority_pubkey_is_zero(new_pubkey)) {
+        return false;
+    }
+    if (memcmp(s->station_pubkey, new_pubkey, 32) == 0)
+        return true;
+
+    int existing = station_authority_registry_find(s, new_pubkey);
+    if (existing >= 0) {
+        uint8_t state = s->authority_registry[existing].state;
+        if (state == STATION_AUTHORITY_TRUST_UNTRUSTED ||
+            state == STATION_AUTHORITY_TRUST_REVOKED ||
+            existing == 0) {
+            return false;
+        }
+        station_authority_registry_remove(s, existing);
+    }
+
+    if (s->authority_registry_count >=
+        STATION_AUTHORITY_REGISTRY_CAP) {
+        int evict = station_authority_registry_oldest_rotated(s);
+        if (evict < 0) return false;
+        station_authority_registry_remove(s, evict);
+    }
+
+    for (int i = (int)s->authority_registry_count; i > 1; i--)
+        s->authority_registry[i] = s->authority_registry[i - 1];
+    s->authority_registry[1] = s->authority_registry[0];
+    s->authority_registry[1].state =
+        STATION_AUTHORITY_TRUST_ROTATED;
+    memcpy(s->authority_registry[0].pubkey, new_pubkey, 32);
+    s->authority_registry[0].state =
+        STATION_AUTHORITY_TRUST_CURRENT;
+    memset(s->authority_registry[0]._pad, 0,
+           sizeof(s->authority_registry[0]._pad));
+    memcpy(s->station_pubkey, new_pubkey, 32);
+    s->authority_registry_count++;
+    return true;
+}
+
+bool station_authority_registry_set_trust(
+    station_t *s,
+    const uint8_t pubkey[32],
+    cargo_receipt_authority_trust_t trust) {
+    if (!station_authority_registry_validate(s) ||
+        station_authority_pubkey_is_zero(pubkey) ||
+        (trust != CARGO_RECEIPT_AUTHORITY_UNTRUSTED &&
+         trust != CARGO_RECEIPT_AUTHORITY_REVOKED)) {
+        return false;
+    }
+    int found = station_authority_registry_find(s, pubkey);
+    if (found == 0) return false;
+    if (found > 0) {
+        uint8_t current = s->authority_registry[found].state;
+        if (current == STATION_AUTHORITY_TRUST_REVOKED)
+            return trust == CARGO_RECEIPT_AUTHORITY_REVOKED;
+        if (current == STATION_AUTHORITY_TRUST_UNTRUSTED &&
+            trust != CARGO_RECEIPT_AUTHORITY_REVOKED) {
+            return trust == CARGO_RECEIPT_AUTHORITY_UNTRUSTED;
+        }
+        s->authority_registry[found].state = (uint8_t)trust;
+        return true;
+    }
+
+    int slot = (int)s->authority_registry_count;
+    if (slot >= STATION_AUTHORITY_REGISTRY_CAP) {
+        slot = station_authority_registry_oldest_rotated(s);
+        if (slot < 0) return false;
+    } else {
+        s->authority_registry_count++;
+    }
+    station_authority_record_clear(&s->authority_registry[slot]);
+    memcpy(s->authority_registry[slot].pubkey, pubkey, 32);
+    s->authority_registry[slot].state = (uint8_t)trust;
+    return true;
+}
 
 static void station_authority_hash_secret(const char *secret,
                                           uint8_t out_root[32]) {
@@ -112,6 +359,7 @@ void station_authority_init_seeded(station_t *s,
     uint8_t seed[32];
     station_authority_seeded_seed(world_seed, station_index, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    station_authority_registry_init(s);
     /* Seeded stations have no founder / planted_tick provenance. */
     memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
     s->outpost_planted_tick = 0;
@@ -130,12 +378,14 @@ void station_authority_init_outpost(station_t *s,
     station_authority_outpost_seed(s->outpost_founder_pubkey, s->name,
                                     planted_tick, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    station_authority_registry_init(s);
 }
 
-bool station_authority_rederive_secret(station_t *s,
-                                       uint32_t world_seed,
-                                       int station_index) {
-    if (!s) return false;
+station_authority_rederive_result_t station_authority_rederive_secret(
+    station_t *s,
+    uint32_t world_seed,
+    int station_index) {
+    if (!s) return STATION_AUTHORITY_REDERIVE_REJECTED;
     uint8_t seed[32];
     if (station_index >= 0 && station_index < SIGNAL_SEEDED_STATION_COUNT) {
         station_authority_seeded_seed(world_seed,
@@ -147,20 +397,49 @@ bool station_authority_rederive_secret(station_t *s,
                                         s->outpost_planted_tick, seed);
     }
     uint8_t derived_pub[32];
-    signal_crypto_keypair_from_seed(seed, derived_pub, s->station_secret);
+    uint8_t derived_secret[64];
+    signal_crypto_keypair_from_seed(seed, derived_pub, derived_secret);
     /* If the saved pubkey is zero (pre-v40 save with no station
      * identity field), stamp the rederived pubkey so the station has a
      * usable identity. If a non-zero saved pubkey no longer matches the
      * configured operator secret, rotate it deliberately instead of
      * keeping a public key that cannot verify signatures from the
      * rederived private key. */
-    static const uint8_t zero_pub[32] = {0};
-    bool saved_zero = memcmp(s->station_pubkey, zero_pub, 32) == 0;
-    bool rekeyed = !saved_zero && memcmp(s->station_pubkey, derived_pub, 32) != 0;
-    if (saved_zero || rekeyed) {
+    bool saved_zero = station_authority_pubkey_is_zero(s->station_pubkey);
+    if (saved_zero) {
         memcpy(s->station_pubkey, derived_pub, 32);
+        memcpy(s->station_secret, derived_secret, 64);
+        station_authority_registry_init(s);
+        return STATION_AUTHORITY_REDERIVE_UNCHANGED;
     }
-    return rekeyed;
+
+    /* A v76-and-earlier load synthesizes this registry in the reader.
+     * Also accept the exact all-zero legacy representation here so
+     * focused callers cannot accidentally create an unusable station. */
+    if (s->authority_registry_version == 0 &&
+        s->authority_registry_count == 0) {
+        static const uint8_t zero_registry[
+            sizeof(s->authority_registry)] = {0};
+        static const uint8_t zero_pad[
+            sizeof(s->authority_registry_pad)] = {0};
+        if (memcmp(s->authority_registry, zero_registry,
+                   sizeof(s->authority_registry)) == 0 &&
+            memcmp(s->authority_registry_pad, zero_pad,
+                   sizeof(s->authority_registry_pad)) == 0) {
+            station_authority_registry_init(s);
+        }
+    }
+    if (!station_authority_registry_validate(s))
+        return STATION_AUTHORITY_REDERIVE_REJECTED;
+
+    if (memcmp(s->station_pubkey, derived_pub, 32) == 0) {
+        memcpy(s->station_secret, derived_secret, 64);
+        return STATION_AUTHORITY_REDERIVE_UNCHANGED;
+    }
+    if (!station_authority_registry_rekey(s, derived_pub))
+        return STATION_AUTHORITY_REDERIVE_REJECTED;
+    memcpy(s->station_secret, derived_secret, 64);
+    return STATION_AUTHORITY_REDERIVE_REKEYED;
 }
 
 void station_sign(const station_t *s, const uint8_t *msg, size_t len,
@@ -205,4 +484,5 @@ void station_authority_init_outpost_keypair(station_t *s,
     memcpy(s->station_secret, nacl_secret, 64);
     memcpy(s->station_pubkey, nacl_secret + 32, 32);
     s->outpost_planted_tick = 0; /* imported keypair */
+    station_authority_registry_init(s);
 }
