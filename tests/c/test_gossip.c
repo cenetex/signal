@@ -446,6 +446,162 @@ TEST(test_hnn_state_encoding_is_deterministic_and_nonzero) {
         ASSERT_EQ_FLOAT(a[i], b[i], 0.0f);
 }
 
+TEST(test_hnn_state_encoding_preserves_continuous_magnitude) {
+    hnn_pilot_features_t low = {.target_dist = 0.1f};
+    hnn_pilot_features_t mid = {.target_dist = 0.5f};
+    hnn_pilot_features_t high = {.target_dist = 1.0f};
+    float low_vec[HNN_DIM];
+    float mid_vec[HNN_DIM];
+    float high_vec[HNN_DIM];
+
+    hnn_encode_state(&low, low_vec);
+    hnn_encode_state(&mid, mid_vec);
+    hnn_encode_state(&high, high_vec);
+
+    float low_mid = hnn_similarity(low_vec, mid_vec);
+    float mid_high = hnn_similarity(mid_vec, high_vec);
+    float low_high = hnn_similarity(low_vec, high_vec);
+    ASSERT(low_mid < 0.9999f);
+    ASSERT(mid_high < 0.9999f);
+    ASSERT(low_high < low_mid);
+    ASSERT(low_high < mid_high);
+}
+
+TEST(test_hnn_state_encoding_defines_zero_sign_and_clipping) {
+    hnn_pilot_features_t negative = {.heading_error = -0.5f};
+    hnn_pilot_features_t zero = {0};
+    hnn_pilot_features_t positive = {.heading_error = 0.5f};
+    hnn_pilot_features_t positive_max = {.heading_error = 1.0f};
+    hnn_pilot_features_t positive_over = {.heading_error = 7.0f};
+    hnn_pilot_features_t negative_max = {.heading_error = -1.0f};
+    hnn_pilot_features_t negative_over = {.heading_error = -7.0f};
+    hnn_pilot_features_t not_finite = {.heading_error = NAN};
+    float negative_vec[HNN_DIM];
+    float zero_vec[HNN_DIM];
+    float positive_vec[HNN_DIM];
+    float positive_max_vec[HNN_DIM];
+    float positive_over_vec[HNN_DIM];
+    float negative_max_vec[HNN_DIM];
+    float negative_over_vec[HNN_DIM];
+    float not_finite_vec[HNN_DIM];
+
+    hnn_encode_state(&negative, negative_vec);
+    hnn_encode_state(&zero, zero_vec);
+    hnn_encode_state(&positive, positive_vec);
+    hnn_encode_state(&positive_max, positive_max_vec);
+    hnn_encode_state(&positive_over, positive_over_vec);
+    hnn_encode_state(&negative_max, negative_max_vec);
+    hnn_encode_state(&negative_over, negative_over_vec);
+    hnn_encode_state(&not_finite, not_finite_vec);
+
+    ASSERT(hnn_similarity(negative_vec, positive_vec) < 0.9999f);
+    ASSERT(hnn_similarity(negative_vec, zero_vec) < 0.9999f);
+    ASSERT(hnn_similarity(positive_vec, zero_vec) < 0.9999f);
+    for (int i = 0; i < HNN_DIM; i++) {
+        ASSERT_EQ_FLOAT(positive_max_vec[i], positive_over_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(negative_max_vec[i], negative_over_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(zero_vec[i], not_finite_vec[i], 0.0f);
+    }
+}
+
+TEST(test_hnn_magnitude_sensitive_action_retrieval) {
+    hnn_action_table_t actions;
+    hnn_memory_t distance_memory;
+    hnn_memory_t signal_memory;
+    hnn_pilot_features_t near = {.target_dist = 0.1f};
+    hnn_pilot_features_t far = {.target_dist = 0.9f};
+    hnn_pilot_features_t weak = {.signal_quality = 0.1f};
+    hnn_pilot_features_t strong = {.signal_quality = 0.9f};
+    float state_vec[HNN_DIM];
+
+    hnn_action_table_init(&actions);
+    hnn_memory_init(&distance_memory);
+    hnn_encode_state(&near, state_vec);
+    hnn_memory_store(&distance_memory, state_vec, actions.vecs[4]);
+    hnn_encode_state(&far, state_vec);
+    hnn_memory_store(&distance_memory, state_vec, actions.vecs[1]);
+    ASSERT_EQ_INT(hnn_select_action(&distance_memory, &actions, &near, NULL), 4);
+    ASSERT_EQ_INT(hnn_select_action(&distance_memory, &actions, &far, NULL), 1);
+
+    hnn_memory_init(&signal_memory);
+    hnn_encode_state(&weak, state_vec);
+    hnn_memory_store(&signal_memory, state_vec, actions.vecs[0]);
+    hnn_encode_state(&strong, state_vec);
+    hnn_memory_store(&signal_memory, state_vec, actions.vecs[3]);
+    ASSERT_EQ_INT(hnn_select_action(&signal_memory, &actions, &weak, NULL), 0);
+    ASSERT_EQ_INT(hnn_select_action(&signal_memory, &actions, &strong, NULL), 3);
+}
+
+static hnn_pilot_features_t hnn_capacity_probe_state(int i) {
+    hnn_pilot_features_t f = {0};
+    f.target_dist = (float)((i * 37) % 101) / 100.0f;
+    f.heading_error = (float)(((i * 53) % 201) - 100) / 100.0f;
+    f.heading_cos = (float)(((i * 71) % 201) - 100) / 100.0f;
+    f.heading_sin = (float)(((i * 89) % 201) - 100) / 100.0f;
+    f.speed = (float)((i * 29) % 101) / 100.0f;
+    f.forward_speed = (float)(((i * 43) % 201) - 100) / 100.0f;
+    f.lateral_speed = (float)(((i * 61) % 201) - 100) / 100.0f;
+    f.brake_distance = (float)((i * 17) % 101) / 100.0f;
+    f.fwd_clear = (float)((i * 23) % 101) / 100.0f;
+    f.left_clear = (float)((i * 31) % 101) / 100.0f;
+    f.right_clear = (float)((i * 47) % 101) / 100.0f;
+    f.signal_quality = (float)((i * 59) % 101) / 100.0f;
+    f.hull_ratio = (float)((i * 67) % 101) / 100.0f;
+    f.goal_close = 1.0f - f.target_dist;
+    return f;
+}
+
+TEST(test_hnn_capacity_preserves_action_signal_through_limit) {
+    static const int checkpoints[] = {1, 16, 32, 64, 128};
+    /*
+     * Encoder-v2 deterministic baseline with three cleanup steps is
+     * 1/1, 4/16, 6/32, 10/64, and 17/128 correct. Keep conservative
+     * floors here so the configured capacity cannot silently fall to
+     * chance while still allowing future fidelity improvements.
+     */
+    static const int minimum_correct[] = {1, 3, 5, 9, 15};
+    hnn_action_table_t actions;
+    hnn_memory_t memory;
+    int checkpoint = 0;
+
+    hnn_action_table_init(&actions);
+    hnn_memory_init(&memory);
+    for (int count = 1; count <= (int)HNN_TRACE_CAPACITY; count++) {
+        hnn_pilot_features_t state = hnn_capacity_probe_state(count - 1);
+        float state_vec[HNN_DIM];
+        hnn_encode_state(&state, state_vec);
+        hnn_memory_store(&memory, state_vec,
+                         actions.vecs[(count - 1) % HNN_ACTION_COUNT]);
+
+        if (count != checkpoints[checkpoint]) continue;
+
+        int correct = 0;
+        float margin_sum = 0.0f;
+        float fidelity_sum = 0.0f;
+        for (int query = 0; query < count; query++) {
+            hnn_pilot_features_t probe = hnn_capacity_probe_state(query);
+            float margin = 0.0f;
+            float fidelity = 0.0f;
+            int selected = hnn_score_actions(
+                &memory, &actions, &probe, NULL, &margin, &fidelity, 3);
+            if (selected == query % HNN_ACTION_COUNT) correct++;
+            margin_sum += margin;
+            fidelity_sum += fidelity;
+        }
+
+        ASSERT(correct >= minimum_correct[checkpoint]);
+        ASSERT(correct * HNN_ACTION_COUNT > count);
+        ASSERT(margin_sum > 0.0f);
+        ASSERT(fidelity_sum > 0.0f);
+        ASSERT_EQ_FLOAT(hnn_memory_capacity_load(&memory),
+                        (float)count / (float)HNN_TRACE_CAPACITY,
+                        0.000001f);
+        checkpoint++;
+    }
+    ASSERT_EQ_INT(checkpoint,
+                  (int)(sizeof(checkpoints) / sizeof(checkpoints[0])));
+}
+
 TEST(test_hnn_memory_contract_reports_trace_diagnostics) {
     hnn_memory_t hnn;
     hnn_memory_init(&hnn);
@@ -1672,6 +1828,10 @@ void register_gossip_tests(void) {
     RUN(test_signal_intelligence_worker_reason_records_route_risk);
     RUN(test_hnn_core_key_cache_preserves_bind_round_trip);
     RUN(test_hnn_state_encoding_is_deterministic_and_nonzero);
+    RUN(test_hnn_state_encoding_preserves_continuous_magnitude);
+    RUN(test_hnn_state_encoding_defines_zero_sign_and_clipping);
+    RUN(test_hnn_magnitude_sensitive_action_retrieval);
+    RUN(test_hnn_capacity_preserves_action_signal_through_limit);
     RUN(test_hnn_memory_contract_reports_trace_diagnostics);
     RUN(test_hnn_holonet_single_cell_matches_flat_trace);
     RUN(test_hnn_holonet_routes_novel_states_to_distinct_cells);
