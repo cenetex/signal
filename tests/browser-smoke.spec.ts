@@ -112,6 +112,28 @@ type LiveTowSnapshot = {
   playerY: number;
 };
 
+type LiveStationTowSnapshot = {
+  sampledAt: number;
+  targetActive: number;
+  targetInterpActive: number;
+  towSnapshotReceived: number;
+  station: number;
+  module: number;
+  interpStation: number;
+  interpModule: number;
+  targetLinks: number;
+  moduleTargetLinks: number;
+  interactionMatches: number;
+  towRevision: number;
+  snapshotRevision: number;
+  linkRevision: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  elapsed: number;
+};
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -584,6 +606,34 @@ async function liveTowSnapshot(page: Page): Promise<LiveTowSnapshot> {
   });
 }
 
+async function liveStationTowSnapshot(page: Page): Promise<LiveStationTowSnapshot> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (
+          name: string,
+          returnType: string,
+          argTypes: unknown[],
+          args: unknown[],
+        ) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') {
+      throw new Error('WASM ccall unavailable for live station tow telemetry');
+    }
+    const raw = mod.ccall(
+      'signal_smoke_live_station_tow_summary',
+      'string',
+      [],
+      [],
+    );
+    return {
+      ...(JSON.parse(raw) as Omit<LiveStationTowSnapshot, 'sampledAt'>),
+      sampledAt: performance.now(),
+    };
+  });
+}
+
 function liveTowIsAttached(snapshot: LiveTowSnapshot): boolean {
   return snapshot.targetLinks === 1 &&
     snapshot.localTargetLinks === 1 &&
@@ -593,6 +643,19 @@ function liveTowIsAttached(snapshot: LiveTowSnapshot): boolean {
     snapshot.interpTargetTractor === snapshot.localPlayer &&
     snapshot.linkState === 2 &&
     snapshot.linkSlot === 0;
+}
+
+function liveStationTowIsBound(snapshot: LiveStationTowSnapshot): boolean {
+  return snapshot.targetActive === 1 &&
+    snapshot.targetInterpActive === 1 &&
+    snapshot.towSnapshotReceived === 1 &&
+    snapshot.station === 0 &&
+    snapshot.module >= 0 &&
+    snapshot.interpStation === snapshot.station &&
+    snapshot.interpModule === snapshot.module &&
+    snapshot.targetLinks === 1 &&
+    snapshot.moduleTargetLinks === 1 &&
+    snapshot.interactionMatches === 1;
 }
 
 function liveTowIsReleased(snapshot: LiveTowSnapshot): boolean {
@@ -2430,6 +2493,127 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
+  test('station tractor beam stays visible and smooth through adverse network faults', async ({ page }) => {
+    test.skip(
+      !process.env.SMOKE_STATION_TOW_ADVERSE_ASSERT,
+      'set SMOKE_STATION_TOW_ADVERSE_ASSERT=1 with the station tow fixture and adverse proxy',
+    );
+    test.setTimeout(80_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, true);
+
+    await expect
+      .poll(async () => liveStationTowIsBound(await liveStationTowSnapshot(page)), {
+        timeout: 15_000,
+        message: 'the station-owned pod should converge on one canonical module relation and one published interaction',
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 1)).count, {
+        timeout: 5_000,
+        message: 'the authoritative station-module relation should render one cargo beam',
+      })
+      .toBe(1);
+    const initialBeam = await tractorDrawTelemetry(page, 1);
+    expect(initialBeam.sourceType).toBe(1);
+    expect(initialBeam.targetType).toBe(2);
+    expect(initialBeam.span).toBeGreaterThan(20);
+    expect(initialBeam.intensity).toBeGreaterThan(0);
+
+    const samples: LiveStationTowSnapshot[] = [];
+    const beams: TractorDrawTelemetry[] = [];
+    for (let i = 0; i < 60; i++) {
+      samples.push(await liveStationTowSnapshot(page));
+      beams.push(await tractorDrawTelemetry(page, 1));
+      await page.waitForTimeout(50);
+    }
+
+    const nonAtomic = samples.find((sample) => !liveStationTowIsBound(sample));
+    expect(
+      nonAtomic,
+      `station tow relation or interaction disappeared: ${JSON.stringify(nonAtomic)}`,
+    ).toBeUndefined();
+    const missingBeam = beams.find(
+      (beam) => beam.count !== 1 || beam.sourceType !== 1 ||
+        beam.targetType !== 2 || beam.intensity <= 0,
+    );
+    expect(
+      missingBeam,
+      `station tractor beam disappeared or changed identity: ${JSON.stringify(missingBeam)}`,
+    ).toBeUndefined();
+
+    let pathLength = 0;
+    let sourcePathLength = 0;
+    let maxStep = 0;
+    let maxResidual = 0;
+    let maxVelocityJump = 0;
+    let maxJerk = 0;
+    let maxElapsed = 0;
+    let maxBeamSourceStep = 0;
+    let maxSpanJump = 0;
+    for (let i = 0; i < samples.length; i++) {
+      maxElapsed = Math.max(maxElapsed, samples[i].elapsed);
+      if (i === 0) continue;
+      const sample = samples[i];
+      const previous = samples[i - 1];
+      const beam = beams[i];
+      const previousBeam = beams[i - 1];
+      const dt = Math.max(0.001, (sample.sampledAt - previous.sampledAt) / 1000);
+      const step = Math.hypot(sample.x - previous.x, sample.y - previous.y);
+      const speed = Math.hypot(sample.vx, sample.vy);
+      const previousSpeed = Math.hypot(previous.vx, previous.vy);
+      const residual = Math.abs(step - (previousSpeed + speed) * 0.5 * dt);
+      const velocityJump = Math.hypot(sample.vx - previous.vx, sample.vy - previous.vy);
+      const sourceStep = Math.hypot(
+        beam.sourceX - previousBeam.sourceX,
+        beam.sourceY - previousBeam.sourceY,
+      );
+      pathLength += step;
+      sourcePathLength += sourceStep;
+      maxStep = Math.max(maxStep, step);
+      maxResidual = Math.max(maxResidual, residual);
+      maxVelocityJump = Math.max(maxVelocityJump, velocityJump);
+      maxJerk = Math.max(maxJerk, velocityJump / dt);
+      maxBeamSourceStep = Math.max(maxBeamSourceStep, sourceStep);
+      maxSpanJump = Math.max(maxSpanJump, Math.abs(beam.span - previousBeam.span));
+    }
+    const firstSample = samples[0];
+    const lastSample = samples[samples.length - 1];
+    const displacement = Math.hypot(
+      lastSample.x - firstSample.x,
+      lastSample.y - firstSample.y,
+    );
+    const motion = {
+      samples: samples.length,
+      pathLength,
+      displacement,
+      sourcePathLength,
+      maxStep,
+      maxResidual,
+      maxVelocityJump,
+      maxJerk,
+      maxElapsed,
+      maxBeamSourceStep,
+      maxSpanJump,
+    };
+    console.log(`[station-tow-adverse] ${JSON.stringify(motion)}`);
+
+    expect(pathLength).toBeGreaterThan(80);
+    expect(displacement).toBeGreaterThan(70);
+    expect(sourcePathLength).toBeGreaterThan(15);
+    expect(maxStep).toBeLessThanOrEqual(15);
+    expect(maxResidual).toBeLessThanOrEqual(8);
+    expect(maxVelocityJump).toBeLessThanOrEqual(20);
+    expect(maxJerk).toBeLessThanOrEqual(400);
+    expect(maxElapsed).toBeLessThanOrEqual(0.5);
+    expect(maxBeamSourceStep).toBeLessThanOrEqual(4);
+    expect(maxSpanJump).toBeLessThanOrEqual(15);
+
+    expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
   test('high-latency multiplayer correction telemetry stays bounded', async ({ page }) => {
     test.skip(
       !process.env.SMOKE_LATENCY_ASSERT,
@@ -2464,7 +2648,6 @@ test.describe('Browser smoke tests', () => {
     // A one-client authority can suppress unchanged recipient-excluded player
     // batches after the initial baseline. Local correction samples below are
     // the meaningful repeated-authority signal for this case.
-    expect(motion.playerBatches).toBeGreaterThan(0);
     expect(motion.inputAcks).toBeGreaterThan(0);
     expect(motion.pingSamples).toBeGreaterThan(0);
     expect(motion.lastPingRttMs).toBeGreaterThan(250);
@@ -2473,7 +2656,9 @@ test.describe('Browser smoke tests', () => {
     expect(motion.maxAckRttMs).toBeGreaterThan(250);
     expect(motion.lastAckGapMs).toBeGreaterThanOrEqual(0);
     expect(motion.pingServerTurnaroundMs).toBeGreaterThanOrEqual(0);
-    expect(motion.maxPlayerIntervalMs).toBeGreaterThan(0);
+    if (motion.playerBatches > 0) {
+      expect(motion.maxPlayerIntervalMs).toBeGreaterThan(0);
+    }
     expect(motion.maxPlayerIntervalMs).toBeLessThanOrEqual(150);
     expect(motion.maxTickSkewAbs).toBeLessThan(720);
     expect(motion.actionQueueDepth).toBeLessThanOrEqual(1);

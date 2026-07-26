@@ -328,6 +328,26 @@ await withCleanup(async () => {
   });
 
   await runLatencyCase({
+    name: 'station tractor adverse-network smoke',
+    grep: 'station tractor beam stays visible',
+    envFlag: 'SMOKE_STATION_TOW_ADVERSE_ASSERT',
+    httpPort,
+    serverEnv: {
+      SIGNAL_STATION_TOW_SMOKE_FIXTURE: '1',
+    },
+    proxyArgs: [
+      '--client-ms=160',
+      '--server-ms=160',
+      '--jitter-ms=90',
+      '--seed=2037',
+      '--server-drop-every=11',
+      '--server-duplicate-every=7',
+      '--server-reorder-every=5',
+      '--server-interaction-faults',
+    ],
+  });
+
+  await runLatencyCase({
     name: 'low-ping high-ack proxy smoke',
     grep: 'low-ping high-ack',
     envFlag: 'SMOKE_ACK_LAG_ASSERT',

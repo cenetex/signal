@@ -30,6 +30,8 @@ Options:
   --server-duplicate-every=N  duplicate every Nth selected server world frame (default: 0)
   --server-reorder-every=N    swap every Nth selected server world frame with
                               the next selected frame (default: 0)
+  --server-interaction-faults include interaction identity/drift frames in the
+                              selected server world fault schedule (default: off)
   --log-frames                log forwarded frame sizes
 `);
 }
@@ -74,6 +76,11 @@ const SERVER_ADVERSE_WORLD_TYPES = new Set([
   0x6E, // WORLD_PLAYER_MOTIONM_Q
   0x70, // WORLD_TOW_LINKS
 ]);
+const SERVER_ADVERSE_INTERACTION_TYPES = new Set([
+  0x49, // WORLD_INTERACTIONS
+  0x50, // WORLD_INTERACTION_DRIFT
+  0x61, // WORLD_INTERACTIONS_Q
+]);
 
 function parseArgs(argv) {
   const out = {
@@ -88,6 +95,7 @@ function parseArgs(argv) {
     serverDropEvery: 0,
     serverDuplicateEvery: 0,
     serverReorderEvery: 0,
+    serverInteractionFaults: false,
     logFrames: false,
   };
 
@@ -117,6 +125,8 @@ function parseArgs(argv) {
       out.serverDuplicateEvery = Number(arg.slice('--server-duplicate-every='.length));
     } else if (arg.startsWith('--server-reorder-every=')) {
       out.serverReorderEvery = Number(arg.slice('--server-reorder-every='.length));
+    } else if (arg === '--server-interaction-faults') {
+      out.serverInteractionFaults = true;
     } else if (arg === '--log-frames') {
       out.logFrames = true;
     } else {
@@ -385,8 +395,12 @@ async function handleClient(client, opts) {
         dropEvery: opts.serverDropEvery,
         duplicateEvery: opts.serverDuplicateEvery,
         reorderEvery: opts.serverReorderEvery,
-        isSelected: (frame) =>
-          SERVER_ADVERSE_WORLD_TYPES.has(websocketPayloadInfo(frame).type),
+        isSelected: (frame) => {
+          const type = websocketPayloadInfo(frame).type;
+          return SERVER_ADVERSE_WORLD_TYPES.has(type) ||
+            (opts.serverInteractionFaults &&
+              SERVER_ADVERSE_INTERACTION_TYPES.has(type));
+        },
         onEvent: (action, ordinal) => {
           if (opts.logFrames) {
             console.error(

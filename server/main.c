@@ -1298,6 +1298,104 @@ static void server_apply_tow_smoke_fixture(server_player_t *sp) {
            sp->id);
 }
 
+/*
+ * Keep the station-beam regression independent from player towing.  A
+ * station-owned market pod on a real dock exercises the normal module tow
+ * relation, rotating hold anchor, interaction publication, relevance filter,
+ * compact cargo motion stream, and browser beam renderer.
+ */
+static void server_apply_station_tow_smoke_fixture(server_player_t *sp) {
+    const char *enabled = getenv("SIGNAL_STATION_TOW_SMOKE_FIXTURE");
+    if (!enabled || strcmp(enabled, "1") != 0 || !sp || !sp->ship)
+        return;
+
+    const int station_idx = 0;
+    const int target_idx = MAX_CARGO_PODS - 1;
+    station_t *st = &world.stations[station_idx];
+    int module_idx = -1;
+    for (int i = 0; i < st->module_count &&
+                    i < MAX_MODULES_PER_STATION; i++) {
+        if (!st->modules[i].scaffold &&
+            st->modules[i].type == MODULE_DOCK) {
+            module_idx = i;
+            break;
+        }
+    }
+    if (module_idx < 0) return;
+
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        if (world.cargo_pods[i].active)
+            world_cargo_pod_clear_tractor(&world, i);
+        memset(&world.cargo_pods[i], 0, sizeof(world.cargo_pods[i]));
+        world.cargo_pod_generation_live[i] = false;
+    }
+
+    station_module_t *module = &st->modules[module_idx];
+    vec2 module_pos =
+        module_world_pos_ring(st, module->ring, module->slot);
+    vec2 outward = v2_sub(module_pos, st->pos);
+    float outward_len = v2_len(outward);
+    if (outward_len > 0.001f) {
+        outward = v2_scale(outward, 1.0f / outward_len);
+    } else {
+        outward = v2(1.0f, 0.0f);
+    }
+    const vec2 pod_pos =
+        v2_add(module_pos, v2_scale(outward, 260.0f));
+    const vec2 ship_pos =
+        v2_add(module_pos, v2_scale(outward, 360.0f));
+
+    cargo_pod_t *pod = &world.cargo_pods[target_idx];
+    *pod = (cargo_pod_t){
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_LASER_MODULE,
+        .quantity = 32,
+        .manifest_count = 32,
+        .pos = pod_pos,
+        .vel = { 0.0f, 0.0f },
+        .radius = 18.0f,
+    };
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        pod->manifest_units[i] = (cargo_unit_t){
+            .kind = CARGO_KIND_LASER,
+            .commodity = COMMODITY_LASER_MODULE,
+            .grade = MINING_GRADE_COMMON,
+            .prefix_class = INGOT_PREFIX_ANONYMOUS,
+            .origin_station = station_idx,
+            .quantity = 1,
+        };
+        pod->manifest_units[i].pub[0] = (uint8_t)(i + 1u);
+    }
+    cargo_pod_set_station_custody(pod, station_idx);
+    (void)world_entity_ref_for_slot(
+        &world, ENTITY_KIND_CARGO_POD, target_idx, -1);
+    if (!world_cargo_pod_set_module_tractor(
+            &world, target_idx, station_idx, module_idx)) {
+        memset(pod, 0, sizeof(*pod));
+        world.cargo_pod_generation_live[target_idx] = false;
+        return;
+    }
+
+    server_player_clear_transient_input(sp);
+    sp->session_ready = true;
+    sp->docked = false;
+    sp->docking_approach = false;
+    sp->in_dock_range = false;
+    sp->nearby_station = -1;
+    sp->dock_berth = -1;
+    sp->ship->pos = ship_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->angle = 0.0f;
+    sp->ship->hull = ship_max_hull(sp->ship);
+    sp->ship->tractor_active = false;
+    sp->replication->force_authoritative_resync = true;
+    module->active_pulse = 1.0f;
+
+    printf("[server] seeded adverse-network station tow fixture for player %d\n",
+           sp->id);
+}
+
 static void force_player_authoritative_resync(server_player_t *sp) {
     if (sp) sp->replication->force_authoritative_resync = true;
 }
@@ -3080,6 +3178,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                               reattached_live_state);
             server_player_t *ready_sp = &world.players[pid];
             server_apply_tow_smoke_fixture(ready_sp);
+            server_apply_station_tow_smoke_fixture(ready_sp);
             server_player_reset_input_stream(ready_sp);
             invalidate_player_authoritative_caches(ready_sp);
             (void)server_emit_authoritative_player_state_snapshot(

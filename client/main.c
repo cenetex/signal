@@ -3533,6 +3533,91 @@ const char *signal_smoke_live_tow_summary(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+const char *signal_smoke_live_station_tow_summary(void) {
+    static char summary[640];
+    const int target_idx = MAX_CARGO_PODS - 1;
+    const cargo_pod_t *target = &g.world.cargo_pods[target_idx];
+    const cargo_pod_t *target_interp = &g.cargo_pod_interp.curr[target_idx];
+    int station_idx = -1;
+    int module_idx = -1;
+    int interp_station_idx = -1;
+    int interp_module_idx = -1;
+    (void)cargo_pod_module_tractor_indices(
+        target, &station_idx, &module_idx);
+    (void)cargo_pod_module_tractor_indices(
+        target_interp, &interp_station_idx, &interp_module_idx);
+
+    int target_links = 0;
+    int module_target_links = 0;
+    int interaction_matches = 0;
+    uint32_t link_revision = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &g.world.tow_links[i];
+        if (!link->active ||
+            link->target.kind != ENTITY_KIND_CARGO_POD ||
+            link->target.index != target_idx ||
+            link->target.part != -1) {
+            continue;
+        }
+        target_links++;
+        if (link->source.kind == ENTITY_KIND_STATION_MODULE &&
+            link->source.index == station_idx &&
+            link->source.part == module_idx &&
+            link->profile == TOW_PROFILE_MODULE_POD &&
+            link->state == TOW_LINK_HELD &&
+            link->slot == 0) {
+            module_target_links++;
+            link_revision = link->revision;
+        }
+    }
+    for (int i = 0; i < g.world.interactions.count; i++) {
+        const sim_interaction_t *interaction =
+            &g.world.interactions.items[i];
+        if (interaction->type == SIM_INTERACTION_TRACTOR_BEAM &&
+            interaction->visual ==
+                SIM_INTERACTION_VISUAL_CARGO_POD_MODULE_TRACTOR &&
+            interaction->source.type ==
+                SIM_INTERACTION_ENTITY_STATION_MODULE &&
+            interaction->source.index == station_idx &&
+            interaction->source.aux == module_idx &&
+            interaction->target.type == SIM_INTERACTION_ENTITY_CARGO_POD &&
+            interaction->target.index == target_idx) {
+            interaction_matches++;
+        }
+    }
+
+    snprintf(
+        summary, sizeof(summary),
+        "{\"targetActive\":%d,\"targetInterpActive\":%d,"
+        "\"towSnapshotReceived\":%d,\"station\":%d,\"module\":%d,"
+        "\"interpStation\":%d,\"interpModule\":%d,"
+        "\"targetLinks\":%d,\"moduleTargetLinks\":%d,"
+        "\"interactionMatches\":%d,\"towRevision\":%u,"
+        "\"snapshotRevision\":%u,\"linkRevision\":%u,"
+        "\"x\":%.6f,\"y\":%.6f,\"vx\":%.6f,\"vy\":%.6f,"
+        "\"elapsed\":%.6f}",
+        target->active ? 1 : 0,
+        target_interp->active ? 1 : 0,
+        g.tow_snapshot_received ? 1 : 0,
+        station_idx,
+        module_idx,
+        interp_station_idx,
+        interp_module_idx,
+        target_links,
+        module_target_links,
+        interaction_matches,
+        g.world.tow_revision,
+        g.tow_snapshot_revision,
+        link_revision,
+        target->pos.x,
+        target->pos.y,
+        target->vel.x,
+        target->vel.y,
+        g.cargo_pod_interp.elapsed[target_idx]);
+    return summary;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
     bool saved_local_server_active = g.local_server.active;
     bool saved_net_authority_enabled = g.net_authority_enabled;
