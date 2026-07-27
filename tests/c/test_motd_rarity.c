@@ -228,6 +228,65 @@ TEST(test_motd_parse_unknown_keys_ignored) {
     ASSERT_EQ_INT((int)av.seed, 99);
 }
 
+TEST(test_motd_parse_raw_control_byte_in_tier_message_fails) {
+    /* A raw control byte (0x01, SOH) inside a JSON string is illegal
+     * per RFC 8259 §7. The parser must reject it rather than accept
+     * the byte as part of the decoded text. */
+    const char json[] =
+        "{\"messages\":{"
+        "\"common\":\"hello\x01world\","
+        "\"uncommon\":\"b\",\"rare\":\"c\",\"ultra_rare\":\"d\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+
+TEST(test_motd_parse_escaped_control_byte_succeeds) {
+    /* Escaped control characters (\\n, \\r, \\t) are valid per
+     * RFC 8259 and must continue to decode correctly. */
+    const char json[] =
+        "{\"messages\":{"
+        "\"common\":\"line1\\nline2\","
+        "\"uncommon\":\"b\",\"rare\":\"c\",\"ultra_rare\":\"d\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(motd_parse(&av, json, sizeof(json) - 1));
+    ASSERT_STR_EQ(av.tiers[0].text, "line1\nline2");
+}
+
+
+TEST(test_motd_parse_raw_control_in_unknown_value_fails) {
+    /* An unknown key whose string value contains a raw control byte
+     * must also cause the parse to fail (the skip_value walker
+     * must reject unescaped control bytes too). */
+    const char json[] =
+        "{\"extra\":\"bad\x01byte\","
+        "\"messages\":{"
+        "\"common\":\"a\",\"uncommon\":\"b\","
+        "\"rare\":\"c\",\"ultra_rare\":\"d\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+TEST(test_motd_parse_raw_control_in_object_key_fails) {
+    /* A key name containing a raw control byte must cause the
+     * find_key walker to fail closed. */
+    const char json[] =
+        "{\"messages\":{"
+        "\"com\x01mon\":\"a\","
+        "\"uncommon\":\"b\",\"rare\":\"c\",\"ultra_rare\":\"d\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+
 void register_motd_rarity_tests(void) {
     TEST_SECTION("\nMOTD rarity tier selection:\n");
     RUN(test_motd_tier_label);
@@ -242,4 +301,8 @@ void register_motd_rarity_tests(void) {
     RUN(test_motd_parse_truncated_buffer_fails);
     RUN(test_motd_parse_long_text_truncates_to_buffer);
     RUN(test_motd_parse_unknown_keys_ignored);
+    RUN(test_motd_parse_raw_control_byte_in_tier_message_fails);
+    RUN(test_motd_parse_escaped_control_byte_succeeds);
+    RUN(test_motd_parse_raw_control_in_unknown_value_fails);
+    RUN(test_motd_parse_raw_control_in_object_key_fails);
 }

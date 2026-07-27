@@ -81,6 +81,7 @@ static inline const char *motd_json_skip_value(const char *p, const char *end) {
                 p += 2;
                 continue;
             }
+            if ((unsigned char)*p < 0x20) return NULL;
             if (*p == '"') return p + 1;
             p++;
         }
@@ -100,6 +101,7 @@ static inline const char *motd_json_skip_value(const char *p, const char *end) {
                         p += 2;
                         continue;
                     }
+                    if ((unsigned char)*p < 0x20) return NULL;
                     if (*p == '"') { p++; break; }
                     p++;
                 }
@@ -191,6 +193,7 @@ static inline bool motd_json_parse_string(const char **p, const char *end,
             continue;
         }
         if (out_len + 1 >= cap) return false;
+        if ((unsigned char)c < 0x20) return false;
         out[out_len++] = c;
         q++;
     }
@@ -221,6 +224,7 @@ static inline bool motd_json_find_key(const char **p, const char *end,
                 continue;
             }
             if (*r == '"') { k_end = r; break; }
+            if ((unsigned char)*r < 0x20) return false;
             r++;
         }
         if (!k_end) return false;
