@@ -27,6 +27,7 @@
 #include "route_history_labels.h"
 #include "station_policy.h"
 #include "station_util.h"
+#include "actor_principal_resolver.h"
 #include "ws_outbox.h"
 #include <math.h>       /* lroundf */
 
@@ -3475,11 +3476,9 @@ static bool finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
     }
     if (existing >= 0 && existing != pid) {
         server_player_t *old = &world.players[existing];
-        /* Heal any historical token-keyed economy or ownership records for
-         * this already-verified identity before moving its live slot. */
+        /* Heal the bounded legacy economy locator before moving live state.
+         * Bearer sessions are never promoted into durable ownership. */
         if (!world_migrate_legacy_ledger_to_pubkey(
-                &world, old->session_token, sp->pubkey) ||
-            !world_promote_session_owned_state_to_pubkey(
                 &world, old->session_token, sp->pubkey)) {
             return false;
         }
@@ -7373,8 +7372,33 @@ static bool load_world_state(void) {
 
     int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
                                                  STATION_CATALOG_DIR);
+    if (catalog_count < 0) {
+        fprintf(stderr,
+                "[FATAL] current station catalog identity is invalid or "
+                "ambiguous; refusing to start\n");
+        return false;
+    }
     if (catalog_count > 0)
         printf("[server] loaded %d station(s) from catalog\n", catalog_count);
+
+    if (fresh_world) {
+        /* No session snapshot will reconcile legacy/current catalog identity.
+         * Finalize actors before any catalog-owned genesis hull is authored. */
+        if (world.next_station_id == 0) world.next_station_id = 1;
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (station_exists(&world.stations[i]) &&
+                world.stations[i].id == 0) {
+                world.stations[i].id = world.next_station_id++;
+            }
+        }
+        if (!world_ensure_station_actor_ids(&world) ||
+            !world_reseed_genesis_ship_assets(&world)) {
+            fprintf(stderr,
+                    "[FATAL] fresh station catalog identities cannot be "
+                    "reconciled with genesis hull ownership\n");
+            return false;
+        }
+    }
 
     if (!fresh_world) {
         if (!world_load(&world, SAVE_PATH)) {
@@ -7424,11 +7448,18 @@ static bool load_world_state(void) {
         world_seed_station_chain_genesis(&world);
     }
 
-    /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0). */
-    if (world.next_station_id == 0) world.next_station_id = 1;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (station_exists(&world.stations[i]) && world.stations[i].id == 0)
-            world.stations[i].id = world.next_station_id++;
+    if (!fresh_world) {
+        /*
+         * world_load reconciles session + catalog identities before signing
+         * authority rekey. This final read-only check also covers any
+         * catalog-only legacy IDs not represented in an older snapshot.
+         */
+        if (!world_validate_station_actor_ids(&world)) {
+            fprintf(stderr,
+                    "[FATAL] station catalog/session identities cannot be "
+                    "reconciled; refusing to start\n");
+            return false;
+        }
     }
 
     /* The station catalog format doesn't persist currency_name (yet)

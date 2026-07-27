@@ -10,7 +10,7 @@
 
 #include "cargo_receipt_issue.h"
 #include "cargo_receipt_trust.h"
-#include "persistence_io.h"
+#include "actor_principal_resolver.h"
 #include "station_authority.h"
 #include "signal_crypto.h"
 #include "net_protocol.h"
@@ -227,6 +227,7 @@ TEST(test_station_authority_outpost_save_load) {
     uint8_t founder[32];
     for (int i = 0; i < 32; i++) founder[i] = (uint8_t)(0xA0 + i);
     station_authority_init_outpost(out, founder, 9999ULL);
+    ASSERT(world_ensure_station_actor_ids(w));
     uint8_t out_pub_before[32];
     memcpy(out_pub_before, out->station_pubkey, 32);
 
@@ -283,184 +284,6 @@ static bool authority_file_contains_span(const char *path,
     free(bytes);
     fclose(f);
     return found;
-}
-
-enum {
-    AUTHORITY_REGISTRY_WIRE_SIZE =
-        2 + 6 + STATION_AUTHORITY_REGISTRY_CAP * 36
-};
-_Static_assert(AUTHORITY_REGISTRY_WIRE_SIZE == 296,
-               "v77 registry wire span must remain 296 bytes");
-
-static size_t authority_registry_pack_for_save(
-    const station_t *station,
-    uint8_t out[AUTHORITY_REGISTRY_WIRE_SIZE]) {
-    size_t off = 0;
-    out[off++] = station->authority_registry_version;
-    out[off++] = station->authority_registry_count;
-    memcpy(&out[off], station->authority_registry_pad,
-           sizeof(station->authority_registry_pad));
-    off += sizeof(station->authority_registry_pad);
-    for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
-        const station_authority_record_t *record =
-            &station->authority_registry[i];
-        memcpy(&out[off], record->pubkey, sizeof(record->pubkey));
-        off += sizeof(record->pubkey);
-        out[off++] = record->lifecycle;
-        out[off++] = record->trust;
-        memcpy(&out[off], record->_pad, sizeof(record->_pad));
-        off += sizeof(record->_pad);
-    }
-    return off;
-}
-
-static size_t authority_find_span(const uint8_t *haystack,
-                                  size_t haystack_len,
-                                  size_t start,
-                                  const uint8_t *needle,
-                                  size_t needle_len) {
-    if (!haystack || !needle || needle_len == 0 ||
-        start > haystack_len || needle_len > haystack_len - start) {
-        return SIZE_MAX;
-    }
-    for (size_t i = start; i + needle_len <= haystack_len; i++) {
-        if (memcmp(&haystack[i], needle, needle_len) == 0)
-            return i;
-    }
-    return SIZE_MAX;
-}
-
-/*
- * Construct a real v76 byte stream from a canonical current save by deleting
- * the 296-byte registry span introduced in v77 for each of the 128 serialized
- * station slots and the empty ownership-quarantine header introduced in v78,
- * changing the header version, and recomputing the CRC trailer. Every pre-v77
- * byte remains byte-for-byte in its original order, so loading the result
- * exercises the actual old on-disk offsets rather than an in-memory zero-field
- * shortcut.
- */
-static bool authority_construct_v76_save(
-    const world_t *world,
-    const char *current_path,
-    const char *v76_path) {
-    if (!world || !current_path || !v76_path) return false;
-    FILE *f = fopen(current_path, "rb");
-    if (!f) return false;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return false;
-    }
-    long end = ftell(f);
-    if (end < 8 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return false;
-    }
-    size_t file_len = (size_t)end;
-    uint8_t *current = malloc(file_len);
-    if (!current) {
-        fclose(f);
-        return false;
-    }
-    bool ok = fread(current, 1, file_len, f) == file_len;
-    fclose(f);
-    if (!ok) {
-        free(current);
-        return false;
-    }
-
-    const uint32_t crc_magic_expected = 0x43524332u;
-    uint32_t crc_magic = 0;
-    memcpy(&crc_magic, &current[file_len - 8], sizeof(crc_magic));
-    if (crc_magic != crc_magic_expected) {
-        free(current);
-        return false;
-    }
-    size_t payload_len = file_len - 8;
-    if (payload_len < OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE) {
-        free(current);
-        return false;
-    }
-    uint64_t record_id_high_water = UINT64_MAX;
-    uint16_t quarantine_count = UINT16_MAX;
-    memcpy(
-        &record_id_high_water,
-        &current[payload_len - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE],
-        sizeof(record_id_high_water));
-    memcpy(&quarantine_count,
-           &current[payload_len - sizeof(quarantine_count)],
-           sizeof(quarantine_count));
-    if (record_id_high_water != 0 || quarantine_count != 0) {
-        free(current);
-        return false;
-    }
-    size_t legacy_source_payload_len =
-        payload_len - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE;
-    size_t registry_offsets[MAX_STATIONS];
-    size_t cursor = 0;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        uint8_t registry[AUTHORITY_REGISTRY_WIRE_SIZE];
-        if (authority_registry_pack_for_save(
-                &world->stations[i], registry) != sizeof(registry)) {
-            free(current);
-            return false;
-        }
-        size_t found = authority_find_span(
-            current, legacy_source_payload_len, cursor,
-            registry, sizeof(registry));
-        if (found == SIZE_MAX) {
-            free(current);
-            return false;
-        }
-        registry_offsets[i] = found;
-        cursor = found + sizeof(registry);
-    }
-
-    size_t registry_bytes =
-        (size_t)MAX_STATIONS * AUTHORITY_REGISTRY_WIRE_SIZE;
-    if (legacy_source_payload_len < registry_bytes) {
-        free(current);
-        return false;
-    }
-    size_t v76_payload_len = legacy_source_payload_len - registry_bytes;
-    uint8_t *v76 = malloc(v76_payload_len + 8);
-    if (!v76) {
-        free(current);
-        return false;
-    }
-    size_t src = 0;
-    size_t dst = 0;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        size_t keep = registry_offsets[i] - src;
-        memcpy(&v76[dst], &current[src], keep);
-        dst += keep;
-        src = registry_offsets[i] + AUTHORITY_REGISTRY_WIRE_SIZE;
-    }
-    memcpy(&v76[dst], &current[src], legacy_source_payload_len - src);
-    dst += legacy_source_payload_len - src;
-    free(current);
-    if (dst != v76_payload_len || v76_payload_len < 8) {
-        free(v76);
-        return false;
-    }
-
-    uint32_t version = 76;
-    memcpy(&v76[4], &version, sizeof(version));
-    uint32_t crc = persistence_crc32_update(
-        0, v76, v76_payload_len);
-    memcpy(&v76[v76_payload_len], &crc_magic_expected,
-           sizeof(crc_magic_expected));
-    memcpy(&v76[v76_payload_len + 4], &crc, sizeof(crc));
-
-    f = fopen(v76_path, "wb");
-    if (!f) {
-        free(v76);
-        return false;
-    }
-    ok = fwrite(v76, 1, v76_payload_len + 8, f) ==
-         v76_payload_len + 8;
-    if (fclose(f) != 0) ok = false;
-    free(v76);
-    return ok;
 }
 
 TEST(test_station_authority_registry_current_unknown_and_deny_only) {
@@ -742,77 +565,6 @@ TEST(test_station_authority_registry_legacy_synthesizes_current_only) {
                       &st, st.station_pubkey),
                   CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT);
     station_authority_use_dev_secret();
-}
-
-TEST(test_station_authority_registry_v76_byte_stream_migrates) {
-    const char *current_path = TMP("test_auth_registry_source_current.sav");
-    const char *v76_path = TMP("test_auth_registry_exact_v76.sav");
-    station_authority_configure_secret("registry-v76-migration");
-
-    WORLD_HEAP original = calloc(1, sizeof(world_t));
-    ASSERT(original);
-    original->rng = 7638u;
-    world_reset(original);
-    /*
-     * Give every serialized station slot a unique canonical registry blob so
-     * the test can mechanically remove the exact v77-only span without
-     * relying on a production test hook or guessing variable-length offsets.
-     */
-    for (int i = SIGNAL_FIRST_OUTPOST_INDEX; i < MAX_STATIONS; i++) {
-        station_t *slot = &original->stations[i];
-        snprintf(slot->name, sizeof(slot->name), "Migration %03d", i);
-        uint8_t founder[32] = {0};
-        founder[0] = (uint8_t)i;
-        founder[1] = (uint8_t)(i >> 8);
-        founder[31] = (uint8_t)(0xA5u ^ (uint8_t)i);
-        station_authority_init_outpost(
-            slot, founder, (uint64_t)(760000 + i));
-        slot->id = i + 1;
-    }
-    original->station_count = MAX_STATIONS;
-    uint8_t expected_pubkeys[MAX_STATIONS][32];
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        ASSERT(station_authority_registry_validate(
-            &original->stations[i]));
-        memcpy(expected_pubkeys[i],
-               original->stations[i].station_pubkey, 32);
-    }
-
-    ASSERT(world_save(original, current_path));
-    ASSERT(authority_construct_v76_save(
-        original, current_path, v76_path));
-
-    FILE *f = fopen(v76_path, "rb");
-    ASSERT(f);
-    uint32_t magic = 0;
-    uint32_t version = 0;
-    ASSERT_EQ_INT((int)fread(&magic, sizeof(magic), 1, f), 1);
-    ASSERT_EQ_INT((int)fread(&version, sizeof(version), 1, f), 1);
-    fclose(f);
-    ASSERT_EQ_INT((int)magic, (int)0x5349474E);
-    ASSERT_EQ_INT((int)version, 76);
-
-    WORLD_HEAP migrated = calloc(1, sizeof(world_t));
-    ASSERT(migrated);
-    ASSERT(world_load(migrated, v76_path));
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        const station_t *slot = &migrated->stations[i];
-        ASSERT(memcmp(slot->station_pubkey, expected_pubkeys[i], 32) == 0);
-        ASSERT(station_authority_registry_validate(slot));
-        ASSERT_EQ_INT(slot->authority_registry_version,
-                      STATION_AUTHORITY_REGISTRY_VERSION);
-        ASSERT_EQ_INT(slot->authority_registry_count, 1);
-        ASSERT_EQ_INT(station_authority_trust_for_pubkey(
-                          slot, expected_pubkeys[i]),
-                      CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
-        ASSERT_EQ_INT(station_authority_lifecycle_for_pubkey(
-                          slot, expected_pubkeys[i]),
-                      CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT);
-    }
-
-    station_authority_use_dev_secret();
-    remove(current_path);
-    remove(v76_path);
 }
 
 TEST(test_station_authority_registry_save_load_and_secret_omission) {
@@ -1103,7 +855,6 @@ void register_station_authority_tests(void) {
     RUN(test_station_authority_registry_capacity_preserves_distrust);
     RUN(test_station_authority_registry_capacity_evicts_oldest_trusted_rotation);
     RUN(test_station_authority_registry_legacy_synthesizes_current_only);
-    RUN(test_station_authority_registry_v76_byte_stream_migrates);
     RUN(test_station_authority_registry_save_load_and_secret_omission);
     RUN(test_station_authority_historical_origin_composes_trust_verdicts);
 }

@@ -6730,7 +6730,8 @@ TEST(test_station_identity_q_compacts_sparse_text_and_lists) {
     st.pending_scaffolds[0].owner = -1;
     st.pending_ship_build_count = 1;
     st.pending_ship_builds[0].hull_class = HULL_CLASS_HAULER;
-    st.pending_ship_builds[0].owner = 2;
+    st.pending_ship_builds[0].owner_principal.kind = ACTOR_PRINCIPAL_PLAYER;
+    st.pending_ship_builds[0].owner_principal.id[0] = 2;
     st.pending_ship_builds[0].build_progress = 0.75f;
     snprintf(st.hail_message, sizeof(st.hail_message), "hello");
     snprintf(st.miner_chatter[0], sizeof(st.miner_chatter[0]), "mine");
@@ -6784,6 +6785,7 @@ TEST(test_station_identity_q_compacts_sparse_text_and_lists) {
     off += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
     ASSERT_EQ_INT(compact[off++], 1);
     ASSERT_EQ_INT(compact[off], HULL_CLASS_HAULER);
+    ASSERT_EQ_INT(compact[off + 1], 0xFF);
     ASSERT_EQ_FLOAT(read_f32_le(&compact[off + 2]), 0.75f, 0.001f);
     off += STATION_PENDING_SHIP_RECORD_SIZE;
     ASSERT_EQ_INT(compact[off], (int)strlen("hello"));
@@ -6809,15 +6811,17 @@ TEST(test_station_identity_q_compacts_sparse_text_and_lists) {
     ASSERT_EQ_INT(off, len);
 }
 
-TEST(test_station_identity_serializes_pending_ship_builds) {
+TEST(test_station_identity_serializes_pending_ship_builds_without_owners) {
     station_t st;
     memset(&st, 0, sizeof(st));
     st.pending_ship_build_count = 2;
     st.pending_ship_builds[0].hull_class = HULL_CLASS_HAULER;
-    st.pending_ship_builds[0].owner = 3;
+    st.pending_ship_builds[0].owner_principal.kind = ACTOR_PRINCIPAL_PLAYER;
+    st.pending_ship_builds[0].owner_principal.id[0] = 3;
     st.pending_ship_builds[0].build_progress = 0.25f;
     st.pending_ship_builds[1].hull_class = HULL_CLASS_DRONE_TRACTOR;
-    st.pending_ship_builds[1].owner = -1;
+    st.pending_ship_builds[1].owner_principal.kind = ACTOR_PRINCIPAL_STATION;
+    st.pending_ship_builds[1].owner_principal.id[0] = 7;
     st.pending_ship_builds[1].build_progress = 0.0f;
     st.stored_hull_count[HULL_CLASS_MINER] = 3;
     st.stored_hull_count[HULL_CLASS_DRONE_TRACTOR] = 2;
@@ -6835,7 +6839,7 @@ TEST(test_station_identity_serializes_pending_ship_builds) {
     ASSERT_EQ_INT(buf[moff], 2);
     moff++;
     ASSERT_EQ_INT(buf[moff + 0], HULL_CLASS_HAULER);
-    ASSERT_EQ_INT(buf[moff + 1], 3);
+    ASSERT_EQ_INT(buf[moff + 1], 0xFF);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[moff + 2]), 0.25f, 0.001f);
     moff += STATION_PENDING_SHIP_RECORD_SIZE;
     ASSERT_EQ_INT(buf[moff + 0], HULL_CLASS_DRONE_TRACTOR);
@@ -8922,7 +8926,7 @@ void register_protocol_main_tests(void) {
     RUN(test_world_stations_q_omits_zero_inventory_slots);
     RUN(test_station_identity_serializes_operator_text);
     RUN(test_station_identity_q_compacts_sparse_text_and_lists);
-    RUN(test_station_identity_serializes_pending_ship_builds);
+    RUN(test_station_identity_serializes_pending_ship_builds_without_owners);
     RUN(test_station_identity_serializes_faction_trailer);
     RUN(test_station_identity_semantic_hash_ignores_ring_drift);
     RUN(test_payload_cache_suppresses_unchanged_station_identity_per_connection);

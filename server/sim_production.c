@@ -13,6 +13,7 @@
 #include "fixpoint.h"
 #include "sha256.h"
 #include "chain_log.h"         /* signed event emission (#479 C) */
+#include "ship_birth_reservation.h"
 #include <stdlib.h>            /* abs */
 #include <math.h>
 #include <string.h>
@@ -1146,6 +1147,7 @@ void step_furnace_smelting(world_t *w, float dt) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        if (world_ship_birth_fragment_reserved(w, i)) continue;
 
         int smelt_station = -1;
         int smelt_module = -1;

@@ -45,7 +45,8 @@ TEST(test_ownership_quarantine_tags_and_row_size_are_stable) {
     ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN, 2);
     ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL, 3);
     ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL, 4);
-    ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_COUNT, 5);
+    ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN, 5);
+    ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_REASON_COUNT, 6);
 
     ASSERT_EQ_INT(OWNERSHIP_QUARANTINE_CAP, 16384);
     ASSERT_EQ_INT(
@@ -293,6 +294,108 @@ TEST(test_ownership_quarantine_add_is_monotonic_and_transactional) {
     free(table);
 }
 
+TEST(test_ownership_quarantine_batch_is_atomic_ordered_and_alias_safe) {
+    ownership_quarantine_t *table = calloc(1, sizeof(*table));
+    ownership_quarantine_t *before = malloc(sizeof(*before));
+    ASSERT(table && before);
+
+    ownership_quarantine_entry_t initial =
+        quarantine_row(OWNERSHIP_QUARANTINE_SOURCE_CONTRACT,
+                       OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN,
+                       OWNERSHIP_QUARANTINE_NA, 0, 0);
+    initial.record_id = 10;
+    ASSERT(ownership_quarantine_add(table, &initial));
+
+    ownership_quarantine_entry_t candidates[] = {
+        quarantine_row(OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                       OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL,
+                       2, 0, OWNERSHIP_QUARANTINE_NA),
+        quarantine_row(OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+                       OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN,
+                       OWNERSHIP_QUARANTINE_NA, 3,
+                       OWNERSHIP_QUARANTINE_NA),
+        quarantine_row(OWNERSHIP_QUARANTINE_SOURCE_OUTPOST_FOUNDER,
+                       OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL,
+                       SIGNAL_FIRST_OUTPOST_INDEX,
+                       OWNERSHIP_QUARANTINE_NA,
+                       OWNERSHIP_QUARANTINE_NA),
+    };
+    candidates[0].record_id = 11;
+    candidates[1].record_id = 12;
+    candidates[2].record_id = 19;
+    ASSERT(ownership_quarantine_add_batch(
+        table, candidates, sizeof(candidates) / sizeof(candidates[0])));
+    ASSERT(ownership_quarantine_validate(table));
+    ASSERT_EQ_INT(table->count, 4);
+    ASSERT(table->record_id_high_water == 19);
+    ASSERT(table->entries[1].record_id == 11);
+    ASSERT(table->entries[2].record_id == 12);
+    ASSERT(table->entries[3].record_id == 19);
+
+    /*
+     * Stage a range one slot beyond the append destination. The source and
+     * destination overlap, so memcpy would have undefined behavior.
+     */
+    table->entries[table->count + 1] = candidates[0];
+    table->entries[table->count + 2] = candidates[1];
+    table->entries[table->count + 1].record_id = 20;
+    table->entries[table->count + 2].record_id = 21;
+    ASSERT(ownership_quarantine_add_batch(
+        table, &table->entries[table->count + 1], 2));
+    ASSERT(ownership_quarantine_validate(table));
+    ASSERT_EQ_INT(table->count, 6);
+    ASSERT(table->entries[4].record_id == 20);
+    ASSERT(table->entries[5].record_id == 21);
+    ASSERT_EQ_INT(table->entries[4].source_kind,
+                  OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD);
+    ASSERT_EQ_INT(table->entries[5].source_kind,
+                  OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET);
+    ASSERT(table->record_id_high_water == 21);
+
+    ASSERT(ownership_quarantine_add_batch(table, NULL, 0));
+    memcpy(before, table, sizeof(*before));
+    ASSERT(!ownership_quarantine_add_batch(NULL, NULL, 0));
+    ASSERT(!ownership_quarantine_add_batch(table, NULL, 1));
+    ASSERT(!ownership_quarantine_add_batch(
+        table, candidates, SIZE_MAX));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    ownership_quarantine_entry_t invalid[] = {
+        candidates[0], candidates[1],
+    };
+    invalid[0].record_id = 22;
+    invalid[1].record_id = 23;
+    invalid[1].reason = OWNERSHIP_QUARANTINE_REASON_NONE;
+    ASSERT(!ownership_quarantine_add_batch(table, invalid, 2));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    invalid[1] = candidates[1];
+    invalid[0].record_id = 22;
+    invalid[1].record_id = 22;
+    ASSERT(!ownership_quarantine_add_batch(table, invalid, 2));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    invalid[0].record_id = 23;
+    invalid[1].record_id = 22;
+    ASSERT(!ownership_quarantine_add_batch(table, invalid, 2));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    invalid[0].record_id = table->record_id_high_water;
+    invalid[1].record_id = table->record_id_high_water + 1;
+    ASSERT(!ownership_quarantine_add_batch(table, invalid, 2));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    table->entries[1] = table->entries[0];
+    memcpy(before, table, sizeof(*before));
+    invalid[0].record_id = 22;
+    invalid[1].record_id = 23;
+    ASSERT(!ownership_quarantine_add_batch(table, invalid, 2));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    free(before);
+    free(table);
+}
+
 TEST(test_ownership_quarantine_capacity_and_clear_fail_closed) {
     ownership_quarantine_t *table = calloc(1, sizeof(*table));
     ownership_quarantine_t *before = malloc(sizeof(*before));
@@ -306,6 +409,19 @@ TEST(test_ownership_quarantine_capacity_and_clear_fail_closed) {
                        OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN,
                        OWNERSHIP_QUARANTINE_NA, 0, 0);
     ASSERT(!ownership_quarantine_add(table, &row));
+    ASSERT(memcmp(table, before, sizeof(*table)) == 0);
+
+    ownership_quarantine_clear(table);
+    for (uint16_t i = 0; i < OWNERSHIP_QUARANTINE_CAP; i++) {
+        table->entries[i] = row;
+        table->entries[i].record_id = (uint64_t)i + 1;
+    }
+    table->count = OWNERSHIP_QUARANTINE_CAP;
+    table->record_id_high_water = OWNERSHIP_QUARANTINE_CAP;
+    ASSERT(ownership_quarantine_validate(table));
+    memcpy(before, table, sizeof(*before));
+    row.record_id = (uint64_t)OWNERSHIP_QUARANTINE_CAP + 1;
+    ASSERT(!ownership_quarantine_add_batch(table, &row, 1));
     ASSERT(memcmp(table, before, sizeof(*table)) == 0);
 
     table->count = (uint16_t)(OWNERSHIP_QUARANTINE_CAP + 1);
@@ -418,6 +534,7 @@ void register_ownership_quarantine_tests(void) {
     RUN(test_ownership_quarantine_tags_and_row_size_are_stable);
     RUN(test_ownership_quarantine_canonical_matrix_and_invalid_locators);
     RUN(test_ownership_quarantine_add_is_monotonic_and_transactional);
+    RUN(test_ownership_quarantine_batch_is_atomic_ordered_and_alias_safe);
     RUN(test_ownership_quarantine_capacity_and_clear_fail_closed);
     RUN(test_ownership_quarantine_names_and_report_are_public_only);
 }

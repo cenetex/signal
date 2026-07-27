@@ -2,6 +2,7 @@
 #define OWNERSHIP_QUARANTINE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -41,7 +42,8 @@ typedef enum {
     OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN = 2,
     OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL = 3,
     OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL = 4,
-    OWNERSHIP_QUARANTINE_REASON_COUNT = 5,
+    OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN = 5,
+    OWNERSHIP_QUARANTINE_REASON_COUNT = 6,
 } ownership_quarantine_reason_t;
 
 /*
@@ -76,7 +78,7 @@ static_assert(OWNERSHIP_QUARANTINE_CAP <= UINT16_MAX,
               "ownership quarantine count must represent the table capacity");
 static_assert(OWNERSHIP_QUARANTINE_SOURCE_COUNT == 14,
               "ownership quarantine source tags are persistent");
-static_assert(OWNERSHIP_QUARANTINE_REASON_COUNT == 5,
+static_assert(OWNERSHIP_QUARANTINE_REASON_COUNT == 6,
               "ownership quarantine reason tags are persistent");
 #else
 _Static_assert(
@@ -91,7 +93,7 @@ _Static_assert(OWNERSHIP_QUARANTINE_CAP <= UINT16_MAX,
                "ownership quarantine count must represent the table capacity");
 _Static_assert(OWNERSHIP_QUARANTINE_SOURCE_COUNT == 14,
                "ownership quarantine source tags are persistent");
-_Static_assert(OWNERSHIP_QUARANTINE_REASON_COUNT == 5,
+_Static_assert(OWNERSHIP_QUARANTINE_REASON_COUNT == 6,
                "ownership quarantine reason tags are persistent");
 #endif
 
@@ -129,6 +131,19 @@ bool ownership_quarantine_next_record_id(
 bool ownership_quarantine_add(
     ownership_quarantine_t *quarantine,
     const ownership_quarantine_entry_t *entry);
+
+/*
+ * Atomically append canonical rows in strict record-ID order. The existing
+ * table is validated once, followed by one preflight pass over all candidates;
+ * capacity exhaustion, size overflow, invalid rows, and stale or unordered
+ * IDs fail without mutation. The candidate range may alias the quarantine
+ * entry array. A zero-length append validates the table and permits entries
+ * to be NULL.
+ */
+bool ownership_quarantine_add_batch(
+    ownership_quarantine_t *quarantine,
+    const ownership_quarantine_entry_t *entries,
+    size_t entry_count);
 
 const char *ownership_quarantine_source_name(uint8_t source_kind);
 const char *ownership_quarantine_reason_name(uint8_t reason);

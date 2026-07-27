@@ -152,24 +152,44 @@ bool ownership_quarantine_next_record_id(
 bool ownership_quarantine_add(
     ownership_quarantine_t *quarantine,
     const ownership_quarantine_entry_t *entry) {
-    if (!quarantine || !entry) return false;
+    return ownership_quarantine_add_batch(quarantine, entry, 1);
+}
 
-    /*
-     * Snapshot before validating or appending. Callers may build a candidate
-     * in the unused destination slot; assigning that slot must not overwrite
-     * the value that is about to be inserted.
-     */
-    ownership_quarantine_entry_t candidate = *entry;
-    if (!ownership_quarantine_entry_is_canonical(&candidate) ||
-        quarantine->count >= OWNERSHIP_QUARANTINE_CAP ||
-        !ownership_quarantine_validate(quarantine) ||
-        candidate.record_id <= quarantine->record_id_high_water) {
+bool ownership_quarantine_add_batch(
+    ownership_quarantine_t *quarantine,
+    const ownership_quarantine_entry_t *entries,
+    size_t entry_count) {
+    if (!quarantine ||
+        !ownership_quarantine_validate(quarantine)) {
+        return false;
+    }
+    if (entry_count == 0) return true;
+    if (!entries ||
+        entry_count > SIZE_MAX / sizeof(*entries) ||
+        entry_count >
+            (size_t)OWNERSHIP_QUARANTINE_CAP - quarantine->count) {
         return false;
     }
 
-    quarantine->entries[quarantine->count] = candidate;
-    quarantine->count++;
-    quarantine->record_id_high_water = candidate.record_id;
+    uint64_t previous_record_id =
+        quarantine->record_id_high_water;
+    for (size_t i = 0; i < entry_count; i++) {
+        if (!ownership_quarantine_entry_is_canonical(&entries[i]) ||
+            entries[i].record_id <= previous_record_id) {
+            return false;
+        }
+        previous_record_id = entries[i].record_id;
+    }
+
+    /*
+     * All fallible work is complete. memmove keeps the commit alias-safe when
+     * callers stage candidates in the table's unused entry storage.
+     */
+    memmove(&quarantine->entries[quarantine->count],
+            entries, entry_count * sizeof(*entries));
+    quarantine->count =
+        (uint16_t)(quarantine->count + entry_count);
+    quarantine->record_id_high_water = previous_record_id;
     return true;
 }
 
@@ -221,6 +241,8 @@ const char *ownership_quarantine_reason_name(uint8_t reason) {
             return "invalid_principal";
         case OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL:
             return "conflicting_principal";
+        case OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN:
+            return "legacy_build_mode_unproven";
         case OWNERSHIP_QUARANTINE_REASON_COUNT:
         default:
             return "unknown";
@@ -240,6 +262,9 @@ const char *ownership_quarantine_reason_description(uint8_t reason) {
             return "stored principal was malformed or noncanonical";
         case OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL:
             return "multiple records claimed conflicting stable principals";
+        case OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN:
+            return "legacy ship build may have consumed materials or reserved "
+                   "birth fragments; input mode cannot be proven";
         case OWNERSHIP_QUARANTINE_REASON_COUNT:
         default:
             return "unknown quarantine reason";

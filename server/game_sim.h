@@ -1249,19 +1249,21 @@ bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class);
 bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
                                     hull_class_t hull_class);
+/* Rebuild transient birth-fragment slots from persisted stable pubs. */
+bool world_ship_birth_rebind_saved_assemblies(world_t *w);
+bool world_ship_birth_saved_assemblies_valid(const world_t *w);
+bool ship_birth_proof_compute_v1(
+    const uint8_t fragment_pubs[SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32],
+    const uint8_t fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT],
+    uint8_t soul_pub_out[32],
+    uint8_t material_root_out[32]);
 ship_asset_t *world_ship_asset_by_id(world_t *w, uint32_t asset_id);
 const ship_asset_t *world_ship_asset_by_id_const(const world_t *w, uint32_t asset_id);
 ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
-                                    ship_asset_owner_kind_t owner_kind,
-                                    int owner_station, int custody_station,
+                                    const actor_principal_t *owner_principal,
+                                    int custody_station,
                                     ship_asset_provenance_t provenance,
-                                    bool loaner, int build_station,
-                                    const uint8_t owner_pubkey[32],
-                                    const uint8_t owner_session[8]);
-bool world_promote_session_owned_state_to_pubkey(
-    world_t *w,
-    const uint8_t session_token[8],
-    const uint8_t pubkey[32]);
+                                    bool loaner, int build_station);
 int world_station_stored_hull_count(const world_t *w, int station_idx,
                                     hull_class_t hull_class);
 void world_refresh_station_hull_inventories(world_t *w);
@@ -1277,6 +1279,9 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
 bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
                                          hull_class_t hull_class);
 bool world_ship_assets_ensure_legacy_bindings(world_t *w);
+/* Fresh-start integration only: rebuild reset-time genesis hull ownership
+ * after a persisted station catalog has established final actor IDs. */
+bool world_reseed_genesis_ship_assets(world_t *w);
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind);
 int spawn_cargo_pod_with_manifest(world_t *w, vec2 pos, vec2 vel,
@@ -1315,7 +1320,8 @@ void world_apply_starter_stock_migrations(world_t *w, uint32_t version);
  * hoppers in free outer-ring slots. Run automatically by world_load
  * for v50 saves; exposed so tests can exercise directly. Idempotent. */
 void world_apply_cargo_schema_migration(world_t *w);
-/* Station catalog — per-station identity persistence (sim_catalog.c) */
+/* Station catalog — per-station identity persistence (sim_catalog.c).
+ * load_all returns -1 on a hard current-format identity failure. */
 int  station_catalog_load_all(station_t *stations, int max, const char *dir);
 bool station_catalog_save_all(const station_t *stations, int count, const char *dir);
 bool player_save(const server_player_t *sp, const char *dir, int slot);

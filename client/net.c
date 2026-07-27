@@ -335,8 +335,8 @@ static bool decode_station_identity_q(NetStationIdentity *si,
     for (int p = 0; p < si->pending_ship_build_count; p++) {
         if (off + STATION_PENDING_SHIP_RECORD_SIZE > len) return false;
         si->pending_ship_builds[p].hull_class = (hull_class_t)data[off + 0];
-        si->pending_ship_builds[p].owner =
-            (data[off + 1] == 0xFF) ? -1 : (int8_t)data[off + 1];
+        /* Byte 1 is the retired runtime-owner field. It remains reserved so
+         * old and new peers agree on the fixed six-byte record size. */
         si->pending_ship_builds[p].build_progress = read_f32_le(&data[off + 2]);
         off += STATION_PENDING_SHIP_RECORD_SIZE;
     }
@@ -2348,8 +2348,7 @@ static void handle_message(const uint8_t* data, int len) {
             moff++;
             for (int p = 0; p < STATION_PENDING_SHIP_RECORD_COUNT; p++) {
                 si.pending_ship_builds[p].hull_class = (hull_class_t)data[moff + 0];
-                int8_t owner = (int8_t)data[moff + 1];
-                si.pending_ship_builds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
+                /* moff + 1 is the retired runtime-owner byte. */
                 si.pending_ship_builds[p].build_progress = read_f32_le(&data[moff + 2]);
                 moff += STATION_PENDING_SHIP_RECORD_SIZE;
             }

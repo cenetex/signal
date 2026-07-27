@@ -269,7 +269,6 @@ typedef struct {
     int pending_ship_build_count;
     struct {
         hull_class_t hull_class;
-        int8_t owner;
         float build_progress;
     } pending_ship_builds[STATION_PENDING_SHIP_RECORD_COUNT];
     uint8_t stored_hull_count[HULL_CLASS_COUNT];

@@ -38,10 +38,13 @@
 #include "base58.h"
 #include "protocol.h"
 #include "station_authority.h"
+#include "actor_principal_resolver.h"
 #include "chain_log.h"
 #include "ownership_quarantine.h"
 #include "persistence_io.h"
+#include "wire_codec.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <math.h>
@@ -80,7 +83,12 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 78  /* v78: appends a bounded, server-only ownership
+#define SAVE_VERSION 79  /* v79: durable ship builds/assets use canonical
+                          * actor principals, station actors have immutable
+                          * IDs, in-flight birth assemblies and completed
+                          * birth provenance survive restart, and ambiguous
+                          * v73-v78 build modes are quarantined inert.
+                          * v78: appends a bounded, server-only ownership
                           * quarantine before CRC2. Legacy actor rows that
                           * cannot be proven are retained as inert public
                           * locators for operator review; no bearer tokens are
@@ -274,6 +282,72 @@ _Static_assert(sizeof(legacy_named_ingot_t) == 56,
                "legacy_named_ingot_t must match the accepted PLY4 layout");
 #define LEGACY_SHIP_HOLD_INGOTS_MAX     8
 
+typedef enum {
+    LEGACY_SHIP_ASSET_OWNER_NONE = 0,
+    LEGACY_SHIP_ASSET_OWNER_STATION = 1,
+    LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY = 2,
+    LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION = 3,
+} legacy_ship_asset_owner_kind_t;
+
+typedef struct {
+    hull_class_t hull_class;
+    int8_t owner;
+    uint8_t _pad[3];
+    float build_progress;
+} legacy_pending_ship_build_v63_t;
+
+typedef struct {
+    hull_class_t hull_class;
+    int8_t owner;
+    uint8_t owner_kind;
+    uint8_t _pad[2];
+    float build_progress;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_pending_ship_build_v65_t;
+
+_Static_assert(sizeof(legacy_pending_ship_build_v63_t) == 12,
+               "v63-v64 pending ship build layout changed");
+_Static_assert(sizeof(legacy_pending_ship_build_v65_t) == 52,
+               "v65-v78 pending ship build layout changed");
+
+typedef struct {
+    bool present;
+    bool slot_only;
+    int8_t owner_code;
+    uint8_t owner_kind;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_pending_ship_owner_evidence_t;
+
+typedef struct {
+    bool present;
+    uint8_t owner_kind;
+    int16_t owner_station;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_ship_asset_owner_evidence_t;
+
+enum {
+    OWNERSHIP_V79_STAGED_ROW_CAP =
+        MAX_STATIONS * 4 * 2 + MAX_SHIP_ASSETS,
+    SHIP_BIRTH_ASSEMBLY_SAVE_CAP = MAX_STATIONS * 4,
+    SHIP_BIRTH_ASSEMBLY_WIRE_SIZE =
+        2 + 2 * (int)sizeof(float) +
+        3 * (int)sizeof(float) + 3 * 32,
+};
+
+_Static_assert(SHIP_BIRTH_ASSEMBLY_WIRE_SIZE == 118,
+               "v79 birth assembly row must stay explicit");
+
+typedef struct {
+    legacy_pending_ship_owner_evidence_t pending[MAX_STATIONS][4];
+    legacy_ship_asset_owner_evidence_t assets[MAX_SHIP_ASSETS];
+    ownership_quarantine_entry_t
+        staged_rows[OWNERSHIP_V79_STAGED_ROW_CAP];
+    size_t staged_row_count;
+} ownership_v79_migration_t;
+
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
 static int g_loaded_save_version = SAVE_VERSION;
@@ -394,6 +468,172 @@ void world_apply_cargo_schema_migration(world_t *w) {
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 #define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
+
+static bool write_actor_principal(
+    FILE *f,
+    const actor_principal_t *principal) {
+    uint8_t wire[ACTOR_PRINCIPAL_WIRE_SIZE];
+    return f && actor_principal_pack(principal, wire) &&
+           fwrite(wire, sizeof(wire), 1, f) == 1;
+}
+
+static bool read_actor_principal(
+    FILE *f,
+    actor_principal_t *principal) {
+    uint8_t wire[ACTOR_PRINCIPAL_WIRE_SIZE];
+    if (!f || !principal ||
+        fread(wire, sizeof(wire), 1, f) != 1) {
+        if (principal) *principal = actor_principal_none();
+        return false;
+    }
+    return actor_principal_unpack(wire, principal);
+}
+
+static bool save_bytes_any(const uint8_t *bytes, size_t len) {
+    uint8_t any = 0;
+    if (!bytes) return false;
+    for (size_t i = 0; i < len; i++) any |= bytes[i];
+    return any != 0;
+}
+
+static bool ship_asset_birth_proof_is_canonical(
+    const ship_asset_t *asset) {
+    if (!asset) return false;
+    bool grades = save_bytes_any(
+        asset->birth_fragment_grades,
+        sizeof(asset->birth_fragment_grades));
+    bool soul = save_bytes_any(
+        asset->birth_soul_pub, sizeof(asset->birth_soul_pub));
+    bool material = save_bytes_any(
+        asset->birth_material_root,
+        sizeof(asset->birth_material_root));
+    bool fragment[3] = {
+        save_bytes_any(asset->birth_fragment_pubs[0], 32),
+        save_bytes_any(asset->birth_fragment_pubs[1], 32),
+        save_bytes_any(asset->birth_fragment_pubs[2], 32),
+    };
+    if (asset->provenance == SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+        uint8_t expected_soul[32];
+        uint8_t expected_material[32];
+        if (asset->birth_proof_version !=
+                SHIP_BIRTH_PROOF_VERSION_V1 ||
+            !soul || !material ||
+            !ship_birth_proof_compute_v1(
+                asset->birth_fragment_pubs,
+                asset->birth_fragment_grades,
+                expected_soul, expected_material)) {
+            return false;
+        }
+        return memcmp(
+                   asset->birth_soul_pub,
+                   expected_soul, sizeof(expected_soul)) == 0 &&
+               memcmp(
+                   asset->birth_material_root,
+                   expected_material,
+                   sizeof(expected_material)) == 0;
+    }
+    return asset->birth_proof_version == 0 &&
+           !grades && !soul && !material &&
+           !fragment[0] && !fragment[1] && !fragment[2];
+}
+
+static bool validate_ship_birth_provenance_uniqueness(
+    const world_t *w) {
+    if (!w) return false;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active) continue;
+        if (!ship_asset_birth_proof_is_canonical(asset))
+            return false;
+        if (asset->provenance !=
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+            continue;
+        }
+        for (int j = i + 1; j < MAX_SHIP_ASSETS; j++) {
+            const ship_asset_t *other = &w->ship_assets[j];
+            if (!other->active ||
+                other->provenance !=
+                    SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+                continue;
+            }
+            if (memcmp(asset->birth_soul_pub,
+                       other->birth_soul_pub, 32) == 0 ||
+                memcmp(asset->birth_material_root,
+                       other->birth_material_root, 32) == 0) {
+                return false;
+            }
+            for (int f = 0;
+                 f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                for (int other_f = 0;
+                     other_f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                     other_f++) {
+                    if (memcmp(
+                            asset->birth_fragment_pubs[f],
+                            other->birth_fragment_pubs[other_f],
+                            32) == 0) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (int station = 0; station < MAX_STATIONS; station++) {
+            for (int row = 0; row < 4; row++) {
+                const ship_birth_assembly_t *birth =
+                    &w->ship_birth_assemblies[station][row];
+                if (!birth->active) continue;
+                for (int f = 0;
+                     f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                    for (int birth_f = 0;
+                         birth_f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                         birth_f++) {
+                        if (memcmp(
+                                asset->birth_fragment_pubs[f],
+                                birth->fragment_pubs[birth_f],
+                                32) == 0) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            if (!birth->active) continue;
+            int key = station * 4 + row;
+            for (int other_station = station;
+                 other_station < MAX_STATIONS;
+                 other_station++) {
+                for (int other_row = 0; other_row < 4; other_row++) {
+                    int other_key =
+                        other_station * 4 + other_row;
+                    if (other_key <= key) continue;
+                    const ship_birth_assembly_t *other =
+                        &w->ship_birth_assemblies[
+                            other_station][other_row];
+                    if (!other->active) continue;
+                    for (int f = 0;
+                         f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                        for (int other_f = 0;
+                             other_f <
+                                 SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                             other_f++) {
+                            if (memcmp(
+                                    birth->fragment_pubs[f],
+                                    other->fragment_pubs[other_f],
+                                    32) == 0) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
 
 /* ---- station field-by-field I/O ---- */
 /* write_station removed in v24 — station identity now persisted via
@@ -531,9 +771,36 @@ static bool write_station_session(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->pending_scaffold_count);
     for (int p = 0; p < 4; p++)
         WRITE_FIELD(f, s->pending_scaffolds[p]);
+    if (s->pending_ship_build_count < 0 ||
+        s->pending_ship_build_count > 4) {
+        return false;
+    }
     WRITE_FIELD(f, s->pending_ship_build_count);
-    for (int p = 0; p < 4; p++)
-        WRITE_FIELD(f, s->pending_ship_builds[p]);
+    for (int p = 0; p < 4; p++) {
+        pending_ship_build_t empty = {0};
+        const pending_ship_build_t *build =
+            p < s->pending_ship_build_count
+                ? &s->pending_ship_builds[p]
+                : &empty;
+        if ((unsigned)build->hull_class >= HULL_CLASS_COUNT ||
+            !actor_principal_is_canonical(
+                &build->owner_principal) ||
+            !isfinite(build->build_progress) ||
+            build->build_progress < 0.0f ||
+            build->build_progress > 1.0f ||
+            build->mode >= PENDING_SHIP_BUILD_MODE_COUNT) {
+            return false;
+        }
+        WRITE_FIELD(f, build->hull_class);
+        if (!write_actor_principal(
+                f, &build->owner_principal)) {
+            return false;
+        }
+        WRITE_FIELD(f, build->owner_quarantine_record_id);
+        WRITE_FIELD(f, build->mode_quarantine_record_id);
+        WRITE_FIELD(f, build->build_progress);
+        WRITE_FIELD(f, build->mode);
+    }
     /* Placement plans */
     WRITE_FIELD(f, s->placement_plan_count);
     for (int p = 0; p < 8; p++)
@@ -591,6 +858,11 @@ static bool write_station_session(FILE *f, const station_t *s) {
     if (fwrite(s->station_pubkey, 32, 1, f) != 1) return false;
     if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, s->outpost_planted_tick);
+    WRITE_FIELD(f, s->id);
+    if (fwrite(s->station_actor_id,
+               sizeof(s->station_actor_id), 1, f) != 1) {
+        return false;
+    }
     WRITE_FIELD(f, s->name);
     WRITE_FIELD(f, s->faction_id);
     WRITE_FIELD(f, s->faction_allegiance);
@@ -622,7 +894,11 @@ static bool write_station_session(FILE *f, const station_t *s) {
     return true;
 }
 
-static bool read_station_session(FILE *f, station_t *s) {
+static bool read_station_session(
+    FILE *f,
+    station_t *s,
+    ownership_v79_migration_t *migration,
+    int station_index) {
     /* Inventory */
     READ_FIELD(f, s->_inventory_cache);
     if (g_loaded_save_version >= 75)
@@ -692,42 +968,70 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, s->pending_scaffolds[p]);
     if (g_loaded_save_version >= 63) {
         READ_FIELD(f, s->pending_ship_build_count);
-        if (s->pending_ship_build_count < 0) s->pending_ship_build_count = 0;
-        if (s->pending_ship_build_count > 4) s->pending_ship_build_count = 4;
+        if (s->pending_ship_build_count < 0 ||
+            s->pending_ship_build_count > 4) {
+            return false;
+        }
         for (int p = 0; p < 4; p++) {
-            if (g_loaded_save_version >= 65) {
-                READ_FIELD(f, s->pending_ship_builds[p]);
-            } else {
-                struct {
-                    hull_class_t hull_class;
-                    int8_t owner;
-                    float build_progress;
-                } legacy;
+            pending_ship_build_t decoded = {0};
+            legacy_pending_ship_owner_evidence_t evidence = {0};
+            if (g_loaded_save_version >= 79) {
+                READ_FIELD(f, decoded.hull_class);
+                if (!read_actor_principal(
+                        f, &decoded.owner_principal)) {
+                    return false;
+                }
+                READ_FIELD(
+                    f, decoded.owner_quarantine_record_id);
+                READ_FIELD(
+                    f, decoded.mode_quarantine_record_id);
+                READ_FIELD(f, decoded.build_progress);
+                READ_FIELD(f, decoded.mode);
+            } else if (g_loaded_save_version >= 65) {
+                legacy_pending_ship_build_v65_t legacy = {0};
                 READ_FIELD(f, legacy);
+                decoded.hull_class = legacy.hull_class;
+                decoded.build_progress = legacy.build_progress;
+                decoded.mode = g_loaded_save_version >= 73
+                    ? PENDING_SHIP_BUILD_MODE_UNKNOWN
+                    : PENDING_SHIP_BUILD_MODE_MATERIAL;
+                evidence.present = p < s->pending_ship_build_count;
+                evidence.owner_code = legacy.owner;
+                evidence.owner_kind = legacy.owner_kind;
+                memcpy(evidence.owner_pubkey, legacy.owner_pubkey,
+                       sizeof(evidence.owner_pubkey));
+                memcpy(evidence.owner_session, legacy.owner_session,
+                       sizeof(evidence.owner_session));
+            } else {
+                legacy_pending_ship_build_v63_t legacy = {0};
+                READ_FIELD(f, legacy);
+                decoded.hull_class = legacy.hull_class;
+                decoded.build_progress = legacy.build_progress;
+                decoded.mode = PENDING_SHIP_BUILD_MODE_MATERIAL;
+                evidence.present = p < s->pending_ship_build_count;
+                evidence.slot_only = true;
+                evidence.owner_code = legacy.owner;
+            }
+            if (p >= s->pending_ship_build_count) {
                 memset(&s->pending_ship_builds[p], 0,
                        sizeof(s->pending_ship_builds[p]));
-                s->pending_ship_builds[p].hull_class = legacy.hull_class;
-                s->pending_ship_builds[p].owner = legacy.owner;
-                s->pending_ship_builds[p].build_progress =
-                    legacy.build_progress;
-                if (legacy.owner < 0) {
-                    s->pending_ship_builds[p].owner_kind =
-                        (uint8_t)SHIP_ASSET_OWNER_STATION;
-                }
+                continue;
             }
-            if (s->pending_ship_builds[p].hull_class < 0 ||
-                s->pending_ship_builds[p].hull_class >= HULL_CLASS_COUNT) {
-                s->pending_ship_builds[p].hull_class = HULL_CLASS_DRONE_TRACTOR;
+            if ((unsigned)decoded.hull_class >= HULL_CLASS_COUNT ||
+                !actor_principal_is_canonical(
+                    &decoded.owner_principal) ||
+                !isfinite(decoded.build_progress) ||
+                decoded.build_progress < 0.0f ||
+                decoded.build_progress > 1.0f ||
+                decoded.mode >= PENDING_SHIP_BUILD_MODE_COUNT) {
+                return false;
             }
-            if (s->pending_ship_builds[p].owner_kind >
-                SHIP_ASSET_OWNER_PLAYER_SESSION) {
-                s->pending_ship_builds[p].owner_kind =
-                    (uint8_t)SHIP_ASSET_OWNER_NONE;
+            s->pending_ship_builds[p] = decoded;
+            if (migration && g_loaded_save_version < 79 &&
+                station_index >= 0 &&
+                station_index < MAX_STATIONS) {
+                migration->pending[station_index][p] = evidence;
             }
-            if (s->pending_ship_builds[p].build_progress < 0.0f)
-                s->pending_ship_builds[p].build_progress = 0.0f;
-            if (s->pending_ship_builds[p].build_progress > 1.0f)
-                s->pending_ship_builds[p].build_progress = 1.0f;
         }
     } else {
         s->pending_ship_build_count = 0;
@@ -795,6 +1099,36 @@ static bool read_station_session(FILE *f, station_t *s) {
         if (fread(s->station_pubkey, 32, 1, f) != 1) return false;
         if (fread(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
         READ_FIELD(f, s->outpost_planted_tick);
+        if (g_loaded_save_version >= 79) {
+            uint32_t saved_id = 0;
+            uint8_t saved_actor[ACTOR_PRINCIPAL_ID_SIZE] = {0};
+            uint8_t saved_actor_any = 0;
+            READ_FIELD(f, saved_id);
+            if (fread(saved_actor, sizeof(saved_actor), 1, f) != 1) {
+                return false;
+            }
+            for (size_t i = 0; i < sizeof(saved_actor); i++) {
+                saved_actor_any |= saved_actor[i];
+            }
+            bool saved_station_occupied =
+                save_bytes_any(
+                    s->station_pubkey,
+                    sizeof(s->station_pubkey));
+            bool saved_actor_pair =
+                saved_id != 0 && saved_actor_any != 0;
+            if (saved_station_occupied != saved_actor_pair) {
+                return false;
+            }
+            if (s->station_actor_catalog_attested &&
+                (saved_id != s->id ||
+                 memcmp(saved_actor, s->station_actor_id,
+                        sizeof(saved_actor)) != 0)) {
+                return false;
+            }
+            s->id = saved_id;
+            memcpy(s->station_actor_id, saved_actor,
+                   sizeof(s->station_actor_id));
+        }
         /* v40 stamps the station name into the session save too, so
          * outpost rederivation has the name input even when the
          * catalog isn't loaded alongside the world save. The catalog
@@ -985,6 +1319,7 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     if (slot >= MAX_ASTEROIDS) return false;
     a = &w->asteroids[slot];
     state = &w->fracture_claims[slot];
+    if (a->active) return false;
     memset(a, 0, sizeof(*a));
     memset(state, 0, sizeof(*state));
     a->active = true;
@@ -1059,6 +1394,149 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     w->asteroid_origin[slot].chunk_x = 0;
     w->asteroid_origin[slot].chunk_y = 0;
     w->asteroid_origin[slot].from_chunk = false;
+    return true;
+}
+
+static bool write_ship_birth_assemblies(FILE *f, const world_t *w) {
+    if (!f || !w) return false;
+    if (!world_ship_birth_saved_assemblies_valid(w)) return false;
+    uint16_t count = 0;
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            bool expects =
+                row < st->pending_ship_build_count &&
+                st->pending_ship_builds[row].mode ==
+                    PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY;
+            if (birth->active && !expects) return false;
+            if (expects && !birth->active &&
+                st->pending_ship_builds[row].build_progress != 0.0f) {
+                return false;
+            }
+            if (!birth->active) continue;
+            if (count == UINT16_MAX) {
+                return false;
+            }
+            count++;
+        }
+    }
+    uint8_t count_wire[2];
+    wire_write_u16_le(count_wire, count);
+    if (fwrite(count_wire, sizeof(count_wire), 1, f) != 1) {
+        return false;
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            if (!birth->active) continue;
+            uint8_t wire[SHIP_BIRTH_ASSEMBLY_WIRE_SIZE] = {0};
+            wire_writer_t writer =
+                wire_writer_init(wire, sizeof(wire));
+            if (!wire_writer_reserve(&writer, 2)) return false;
+            wire[writer.offset++] = (uint8_t)station;
+            wire[writer.offset++] = (uint8_t)row;
+            wire_put_f32(&writer, birth->target.x);
+            wire_put_f32(&writer, birth->target.y);
+            for (int i = 0; i < 3; i++)
+                wire_put_f32(&writer, birth->start_dist[i]);
+            if (!wire_writer_reserve(
+                    &writer, sizeof(birth->fragment_pubs))) {
+                return false;
+            }
+            memcpy(wire + writer.offset, birth->fragment_pubs,
+                   sizeof(birth->fragment_pubs));
+            writer.offset += sizeof(birth->fragment_pubs);
+            if (!writer.ok || writer.offset != sizeof(wire) ||
+                fwrite(wire, sizeof(wire), 1, f) != 1) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool read_ship_birth_assemblies(FILE *f, world_t *w) {
+    if (!f || !w) return false;
+    memset(w->ship_birth_assemblies, 0,
+           sizeof(w->ship_birth_assemblies));
+    uint8_t count_wire[2];
+    if (fread(count_wire, sizeof(count_wire), 1, f) != 1) {
+        return false;
+    }
+    uint16_t count = wire_read_u16_le(count_wire);
+    if (count > SHIP_BIRTH_ASSEMBLY_SAVE_CAP) return false;
+    int previous_key = -1;
+    for (uint16_t record = 0; record < count; record++) {
+        uint8_t wire[SHIP_BIRTH_ASSEMBLY_WIRE_SIZE];
+        if (fread(wire, sizeof(wire), 1, f) != 1) return false;
+        wire_reader_t reader = wire_reader_init(wire, sizeof(wire));
+        if (!wire_reader_require(&reader, 2)) return false;
+        int station = wire[reader.offset++];
+        int row = wire[reader.offset++];
+        int key = station * 4 + row;
+        if (station < 0 || station >= MAX_STATIONS ||
+            row < 0 || row >= 4 ||
+            key <= previous_key) {
+            return false;
+        }
+        previous_key = key;
+        station_t *st = &w->stations[station];
+        if (row >= st->pending_ship_build_count ||
+            st->pending_ship_builds[row].mode !=
+                PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY) {
+            return false;
+        }
+        ship_birth_assembly_t *birth =
+            &w->ship_birth_assemblies[station][row];
+        birth->active = true;
+        birth->target.x = wire_get_f32(&reader);
+        birth->target.y = wire_get_f32(&reader);
+        for (int i = 0; i < 3; i++)
+            birth->start_dist[i] = wire_get_f32(&reader);
+        if (!wire_reader_require(
+                &reader, sizeof(birth->fragment_pubs))) {
+            return false;
+        }
+        memcpy(birth->fragment_pubs, wire + reader.offset,
+               sizeof(birth->fragment_pubs));
+        reader.offset += sizeof(birth->fragment_pubs);
+        for (int i = 0; i < 3; i++) birth->fragment_slots[i] = -1;
+        birth->age = 0.0f;
+        if (!reader.ok || reader.offset != sizeof(wire)) {
+            return false;
+        }
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        for (int row = 0; row < 4; row++) {
+            bool expects =
+                row < st->pending_ship_build_count &&
+                st->pending_ship_builds[row].mode ==
+                    PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY;
+            bool active =
+                w->ship_birth_assemblies[station][row].active;
+            if (active && !expects) {
+                return false;
+            }
+            if (expects && !active &&
+                st->pending_ship_builds[row].build_progress != 0.0f) {
+                return false;
+            }
+        }
+    }
+    /*
+     * Resolve fragment slots only after persisted NPC state is decoded and
+     * transient player tow state has been cleared. Doing it here would make
+     * acceptance depend on whatever runtime happened to occupy the
+     * destination world before load.
+     */
     return true;
 }
 
@@ -1313,44 +1791,114 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
                              const ship_t *live_ship) {
     ship_asset_t empty = {0};
     if (!asset) asset = &empty;
+    if (!actor_principal_is_canonical(&asset->owner_principal) ||
+        (asset->active &&
+         (asset->asset_id == SHIP_ASSET_ID_NONE ||
+          (unsigned)asset->hull_class >= HULL_CLASS_COUNT ||
+          asset->status > SHIP_ASSET_STATUS_DESTROYED ||
+          asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
+          asset->provenance >
+              SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+          !ship_asset_birth_proof_is_canonical(asset)))) {
+        return false;
+    }
     WRITE_FIELD(f, asset->active);
     WRITE_FIELD(f, asset->asset_id);
     WRITE_FIELD(f, asset->hull_class);
-    WRITE_FIELD(f, asset->owner_kind);
+    if (!write_actor_principal(f, &asset->owner_principal)) {
+        return false;
+    }
+    WRITE_FIELD(f, asset->owner_quarantine_record_id);
     WRITE_FIELD(f, asset->status);
     WRITE_FIELD(f, asset->operator_kind);
     WRITE_FIELD(f, asset->provenance);
-    WRITE_FIELD(f, asset->owner_station);
     WRITE_FIELD(f, asset->custody_station);
     WRITE_FIELD(f, asset->operator_slot);
     WRITE_FIELD(f, asset->build_station);
     WRITE_FIELD(f, asset->loaner);
     WRITE_FIELD(f, asset->destroyed);
-    WRITE_FIELD(f, asset->owner_pubkey);
-    WRITE_FIELD(f, asset->owner_session);
+    WRITE_FIELD(f, asset->birth_proof_version);
+    WRITE_FIELD(f, asset->birth_fragment_grades);
+    if (fwrite(asset->birth_soul_pub,
+               sizeof(asset->birth_soul_pub), 1, f) != 1 ||
+        fwrite(asset->birth_material_root,
+               sizeof(asset->birth_material_root), 1, f) != 1 ||
+        fwrite(asset->birth_fragment_pubs,
+               sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
+        return false;
+    }
     const ship_t *ship = live_ship ? live_ship : &asset->stored_ship;
     return write_asset_ship_payload(f, asset->active ? ship : NULL);
 }
 
-static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
+static bool read_ship_asset(
+    FILE *f,
+    ship_asset_t *asset,
+    ownership_v79_migration_t *migration,
+    int asset_index) {
     if (!asset) return false;
     ship_cleanup(&asset->stored_ship);
     memset(asset, 0, sizeof(*asset));
     READ_FIELD(f, asset->active);
     READ_FIELD(f, asset->asset_id);
     READ_FIELD(f, asset->hull_class);
-    READ_FIELD(f, asset->owner_kind);
-    READ_FIELD(f, asset->status);
-    READ_FIELD(f, asset->operator_kind);
-    READ_FIELD(f, asset->provenance);
-    READ_FIELD(f, asset->owner_station);
-    READ_FIELD(f, asset->custody_station);
-    READ_FIELD(f, asset->operator_slot);
-    READ_FIELD(f, asset->build_station);
-    READ_FIELD(f, asset->loaner);
-    READ_FIELD(f, asset->destroyed);
-    READ_FIELD(f, asset->owner_pubkey);
-    READ_FIELD(f, asset->owner_session);
+    if (g_loaded_save_version >= 79) {
+        if (!read_actor_principal(f, &asset->owner_principal)) {
+            return false;
+        }
+        READ_FIELD(f, asset->owner_quarantine_record_id);
+        READ_FIELD(f, asset->status);
+        READ_FIELD(f, asset->operator_kind);
+        READ_FIELD(f, asset->provenance);
+        READ_FIELD(f, asset->custody_station);
+        READ_FIELD(f, asset->operator_slot);
+        READ_FIELD(f, asset->build_station);
+        READ_FIELD(f, asset->loaner);
+        READ_FIELD(f, asset->destroyed);
+        READ_FIELD(f, asset->birth_proof_version);
+        READ_FIELD(f, asset->birth_fragment_grades);
+        if (fread(asset->birth_soul_pub,
+                  sizeof(asset->birth_soul_pub), 1, f) != 1 ||
+            fread(asset->birth_material_root,
+                  sizeof(asset->birth_material_root), 1, f) != 1 ||
+            fread(asset->birth_fragment_pubs,
+                  sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
+            return false;
+        }
+    } else {
+        legacy_ship_asset_owner_evidence_t evidence = {0};
+        READ_FIELD(f, evidence.owner_kind);
+        READ_FIELD(f, asset->status);
+        READ_FIELD(f, asset->operator_kind);
+        READ_FIELD(f, asset->provenance);
+        READ_FIELD(f, evidence.owner_station);
+        READ_FIELD(f, asset->custody_station);
+        READ_FIELD(f, asset->operator_slot);
+        READ_FIELD(f, asset->build_station);
+        READ_FIELD(f, asset->loaner);
+        READ_FIELD(f, asset->destroyed);
+        READ_FIELD(f, evidence.owner_pubkey);
+        READ_FIELD(f, evidence.owner_session);
+        evidence.present = asset->active;
+        if (migration && asset_index >= 0 &&
+            asset_index < MAX_SHIP_ASSETS) {
+            migration->assets[asset_index] = evidence;
+        }
+        asset->owner_principal = actor_principal_none();
+        asset->birth_proof_version = 0;
+        memset(asset->birth_fragment_grades, 0,
+               sizeof(asset->birth_fragment_grades));
+        memset(asset->birth_soul_pub, 0,
+               sizeof(asset->birth_soul_pub));
+        memset(asset->birth_material_root, 0,
+               sizeof(asset->birth_material_root));
+        memset(asset->birth_fragment_pubs, 0,
+               sizeof(asset->birth_fragment_pubs));
+        if (asset->provenance ==
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+            asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
+        }
+    }
     if (!read_asset_ship_payload(f, &asset->stored_ship)) return false;
     asset->live_ship_ref = entity_ref_none();
     asset->ship = &asset->stored_ship;
@@ -1359,16 +1907,16 @@ static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
         memset(asset, 0, sizeof(*asset));
         return true;
     }
-    if (asset->asset_id == SHIP_ASSET_ID_NONE)
-        asset->active = false;
-    if (asset->hull_class < 0 || asset->hull_class >= HULL_CLASS_COUNT)
-        asset->hull_class = asset->stored_ship.hull_class;
-    if (asset->status > SHIP_ASSET_STATUS_DESTROYED)
-        asset->status = asset->destroyed
-            ? SHIP_ASSET_STATUS_DESTROYED
-            : SHIP_ASSET_STATUS_STORED;
-    if (asset->provenance > SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY)
-        asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
+    if (asset->asset_id == SHIP_ASSET_ID_NONE ||
+        (unsigned)asset->hull_class >= HULL_CLASS_COUNT ||
+        asset->status > SHIP_ASSET_STATUS_DESTROYED ||
+        asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
+        asset->provenance >
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+        !actor_principal_is_canonical(&asset->owner_principal) ||
+        !ship_asset_birth_proof_is_canonical(asset)) {
+        return false;
+    }
     if (asset->destroyed)
         asset->status = SHIP_ASSET_STATUS_DESTROYED;
     return true;
@@ -1700,7 +2248,462 @@ static bool read_ownership_quarantine(
     return true;
 }
 
+static int legacy_pending_station_slot(
+    int station_index,
+    int8_t owner_code) {
+    if (owner_code == -1) return station_index;
+    if (owner_code == INT8_MIN) return 0;
+    if (owner_code <= -2) return -1 - (int)owner_code;
+    return -1;
+}
+
+static bool ownership_migration_stage_row(
+    ownership_v79_migration_t *migration,
+    const ownership_quarantine_t *existing,
+    uint64_t *next_record_id,
+    bool *record_id_initialized,
+    uint8_t source_kind,
+    uint8_t reason,
+    uint16_t station_index,
+    uint16_t row_index,
+    uint16_t legacy_actor_code,
+    uint64_t *record_id_out) {
+    if (record_id_out) *record_id_out = 0;
+    if (!migration || !existing || !next_record_id ||
+        !record_id_initialized ||
+        migration->staged_row_count >=
+            OWNERSHIP_V79_STAGED_ROW_CAP) {
+        return false;
+    }
+    if (!*record_id_initialized) {
+        if (!ownership_quarantine_next_record_id(
+                existing, next_record_id)) {
+            return false;
+        }
+        *record_id_initialized = true;
+    }
+    if (*next_record_id == 0) return false;
+    ownership_quarantine_entry_t row = {
+        .record_id = *next_record_id,
+        .source_kind = source_kind,
+        .reason = reason,
+        .station_index = station_index,
+        .row_index = row_index,
+        .legacy_actor_code = legacy_actor_code,
+    };
+    if (!ownership_quarantine_entry_is_canonical(&row)) {
+        return false;
+    }
+    migration->staged_rows[migration->staged_row_count++] = row;
+    if (record_id_out) *record_id_out = row.record_id;
+    if (*next_record_id == UINT64_MAX) {
+        *next_record_id = 0;
+    } else {
+        (*next_record_id)++;
+    }
+    return true;
+}
+
+static uint8_t legacy_pending_owner_migrate(
+    const world_t *w,
+    int station_index,
+    const legacy_pending_ship_owner_evidence_t *evidence,
+    actor_principal_t *owner_out,
+    uint16_t *legacy_actor_code_out) {
+    if (owner_out) *owner_out = actor_principal_none();
+    if (legacy_actor_code_out)
+        *legacy_actor_code_out = OWNERSHIP_QUARANTINE_NA;
+    if (!w || !evidence || !evidence->present || !owner_out) {
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+    bool pub = save_bytes_any(
+        evidence->owner_pubkey,
+        sizeof(evidence->owner_pubkey));
+    bool session = save_bytes_any(
+        evidence->owner_session,
+        sizeof(evidence->owner_session));
+    bool valid_slot =
+        evidence->owner_code >= 0 &&
+        evidence->owner_code < MAX_PLAYERS;
+    if (evidence->slot_only) {
+        if (evidence->owner_code < 0) {
+            int target = legacy_pending_station_slot(
+                station_index, evidence->owner_code);
+            if (target >= 0 && target < MAX_STATIONS &&
+                actor_principal_from_station(w, target, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        }
+        if (valid_slot) {
+            if (legacy_actor_code_out)
+                *legacy_actor_code_out =
+                    (uint16_t)evidence->owner_code;
+            return OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+        }
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+
+    switch ((legacy_ship_asset_owner_kind_t)evidence->owner_kind) {
+        case LEGACY_SHIP_ASSET_OWNER_STATION: {
+            if (pub || session || evidence->owner_code >= 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            int target = legacy_pending_station_slot(
+                station_index, evidence->owner_code);
+            if (target >= 0 && target < MAX_STATIONS &&
+                actor_principal_from_station(w, target, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        }
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY:
+            if (session || evidence->owner_code < 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot && pub &&
+                actor_principal_from_stable_id(
+                    ACTOR_PRINCIPAL_PLAYER,
+                    evidence->owner_pubkey, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION:
+            if (pub || evidence->owner_code < 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot && session) {
+                if (legacy_actor_code_out)
+                    *legacy_actor_code_out =
+                        (uint16_t)evidence->owner_code;
+                return OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_NONE:
+            if (pub || session) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot) {
+                if (legacy_actor_code_out)
+                    *legacy_actor_code_out =
+                        (uint16_t)evidence->owner_code;
+                return OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        default:
+            return (pub || session)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+}
+
+static uint8_t legacy_ship_asset_owner_migrate(
+    const world_t *w,
+    const legacy_ship_asset_owner_evidence_t *evidence,
+    actor_principal_t *owner_out) {
+    if (owner_out) *owner_out = actor_principal_none();
+    if (!w || !evidence || !evidence->present || !owner_out) {
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+    bool pub = save_bytes_any(
+        evidence->owner_pubkey,
+        sizeof(evidence->owner_pubkey));
+    bool session = save_bytes_any(
+        evidence->owner_session,
+        sizeof(evidence->owner_session));
+    switch ((legacy_ship_asset_owner_kind_t)evidence->owner_kind) {
+        case LEGACY_SHIP_ASSET_OWNER_STATION:
+            if (pub || session) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (evidence->owner_station >= 0 &&
+                evidence->owner_station < MAX_STATIONS &&
+                actor_principal_from_station(
+                    w, evidence->owner_station, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY:
+            if (session || evidence->owner_station != -1) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (pub && actor_principal_from_stable_id(
+                           ACTOR_PRINCIPAL_PLAYER,
+                           evidence->owner_pubkey, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION:
+            if (pub || evidence->owner_station != -1) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            return session
+                ? OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_NONE:
+            return (pub || session || evidence->owner_station != -1)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        default:
+            return (pub || session)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+}
+
+static bool migrate_v79_ownership(
+    world_t *w,
+    ownership_v79_migration_t *migration,
+    uint32_t loaded_version) {
+    if (!w || !migration || loaded_version >= 79 ||
+        !ownership_quarantine_validate(
+            &w->ownership_quarantine)) {
+        return loaded_version >= 79 && w && migration;
+    }
+    uint64_t next_record_id = 0;
+    bool record_id_initialized = false;
+
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < st->pending_ship_build_count; row++) {
+            pending_ship_build_t *build =
+                &st->pending_ship_builds[row];
+            uint16_t legacy_actor_code =
+                OWNERSHIP_QUARANTINE_NA;
+            uint8_t reason = legacy_pending_owner_migrate(
+                w, station,
+                &migration->pending[station][row],
+                &build->owner_principal,
+                &legacy_actor_code);
+            if (reason != OWNERSHIP_QUARANTINE_REASON_NONE &&
+                !ownership_migration_stage_row(
+                    migration, &w->ownership_quarantine,
+                    &next_record_id, &record_id_initialized,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    reason, (uint16_t)station, (uint16_t)row,
+                    legacy_actor_code,
+                    &build->owner_quarantine_record_id)) {
+                return false;
+            }
+            if (loaded_version >= 73) {
+                build->mode = PENDING_SHIP_BUILD_MODE_UNKNOWN;
+                if (!ownership_migration_stage_row(
+                        migration, &w->ownership_quarantine,
+                        &next_record_id, &record_id_initialized,
+                        OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                        OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN,
+                        (uint16_t)station, (uint16_t)row,
+                        OWNERSHIP_QUARANTINE_NA,
+                        &build->mode_quarantine_record_id)) {
+                    return false;
+                }
+            } else {
+                build->mode = PENDING_SHIP_BUILD_MODE_MATERIAL;
+            }
+        }
+    }
+
+    for (int row = 0; row < MAX_SHIP_ASSETS; row++) {
+        ship_asset_t *asset = &w->ship_assets[row];
+        if (!asset->active) continue;
+        uint8_t reason = legacy_ship_asset_owner_migrate(
+            w, &migration->assets[row],
+            &asset->owner_principal);
+        if (reason != OWNERSHIP_QUARANTINE_REASON_NONE) {
+            if (!ownership_migration_stage_row(
+                    migration, &w->ownership_quarantine,
+                    &next_record_id, &record_id_initialized,
+                    OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+                    reason, OWNERSHIP_QUARANTINE_NA,
+                    (uint16_t)row,
+                    OWNERSHIP_QUARANTINE_NA,
+                    &asset->owner_quarantine_record_id)) {
+                return false;
+            }
+            asset->status = asset->destroyed
+                ? SHIP_ASSET_STATUS_DESTROYED
+                : SHIP_ASSET_STATUS_STORED;
+            asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+            asset->operator_slot = -1;
+            asset->live_ship_ref = entity_ref_none();
+            asset->ship = &asset->stored_ship;
+            asset->loaner = false;
+        }
+    }
+    return ownership_quarantine_add_batch(
+        &w->ownership_quarantine,
+        migration->staged_rows,
+        migration->staged_row_count);
+}
+
+static const ownership_quarantine_entry_t *
+ownership_quarantine_find_record(
+    const ownership_quarantine_t *quarantine,
+    uint64_t record_id,
+    uint16_t *index_out) {
+    if (index_out) *index_out = UINT16_MAX;
+    if (!quarantine || record_id == 0) return NULL;
+    uint16_t low = 0;
+    uint16_t high = quarantine->count;
+    while (low < high) {
+        uint16_t mid = (uint16_t)(
+            low + (uint16_t)((high - low) / 2));
+        const ownership_quarantine_entry_t *row =
+            &quarantine->entries[mid];
+        if (row->record_id < record_id) {
+            low = (uint16_t)(mid + 1);
+        } else {
+            high = mid;
+        }
+    }
+    if (low >= quarantine->count ||
+        quarantine->entries[low].record_id != record_id) {
+        return NULL;
+    }
+    if (index_out) *index_out = low;
+    return &quarantine->entries[low];
+}
+
+static bool ownership_quarantine_owner_reason(uint8_t reason) {
+    return reason ==
+               OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+}
+
+static bool ownership_quarantine_bind_once(
+    const ownership_quarantine_t *quarantine,
+    uint64_t record_id,
+    uint8_t expected_source,
+    bool build_mode_reason,
+    bool used[OWNERSHIP_QUARANTINE_CAP]) {
+    uint16_t index = UINT16_MAX;
+    const ownership_quarantine_entry_t *row =
+        ownership_quarantine_find_record(
+            quarantine, record_id, &index);
+    if (!row || index >= OWNERSHIP_QUARANTINE_CAP ||
+        used[index] ||
+        row->source_kind != expected_source) {
+        return false;
+    }
+    bool reason_ok = build_mode_reason
+        ? row->reason ==
+              OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN
+        : ownership_quarantine_owner_reason(row->reason);
+    if (!reason_ok) return false;
+    used[index] = true;
+    return true;
+}
+
+static bool validate_v79_ownership(const world_t *w) {
+    if (!w ||
+        !ownership_quarantine_validate(
+            &w->ownership_quarantine)) {
+        return false;
+    }
+    bool used[OWNERSHIP_QUARANTINE_CAP] = {false};
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < st->pending_ship_build_count; row++) {
+            const pending_ship_build_t *build =
+                &st->pending_ship_builds[row];
+            if (build->mode >=
+                PENDING_SHIP_BUILD_MODE_COUNT) {
+                return false;
+            }
+            bool unknown =
+                build->mode == PENDING_SHIP_BUILD_MODE_UNKNOWN;
+            bool owner_none =
+                build->owner_principal.kind ==
+                    ACTOR_PRINCIPAL_NONE;
+            bool mode_bound =
+                build->mode_quarantine_record_id != 0;
+            bool owner_bound =
+                build->owner_quarantine_record_id != 0;
+            if (unknown != mode_bound ||
+                owner_none != owner_bound) {
+                return false;
+            }
+            if (mode_bound &&
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    build->mode_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    true, used)) {
+                return false;
+            }
+            if (owner_bound &&
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    build->owner_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    false, used)) {
+                return false;
+            }
+            if (!owner_none &&
+                (build->owner_principal.kind !=
+                     ACTOR_PRINCIPAL_PLAYER &&
+                 build->owner_principal.kind !=
+                     ACTOR_PRINCIPAL_STATION)) {
+                return false;
+            }
+        }
+    }
+    for (int row = 0; row < MAX_SHIP_ASSETS; row++) {
+        const ship_asset_t *asset = &w->ship_assets[row];
+        if (!asset->active) continue;
+        bool owner_none =
+            asset->owner_principal.kind == ACTOR_PRINCIPAL_NONE;
+        bool owner_bound =
+            asset->owner_quarantine_record_id != 0;
+        if (owner_none != owner_bound) return false;
+        if (owner_none) {
+            if (asset->status != SHIP_ASSET_STATUS_STORED &&
+                asset->status != SHIP_ASSET_STATUS_DESTROYED) {
+                return false;
+            }
+            if (asset->operator_kind != SHIP_ASSET_OPERATOR_NONE ||
+                asset->operator_slot != -1 ||
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    asset->owner_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+                    false, used)) {
+                return false;
+            }
+        } else if (
+            asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER &&
+            asset->owner_principal.kind != ACTOR_PRINCIPAL_STATION) {
+            return false;
+        }
+        if (asset->loaner &&
+            asset->owner_principal.kind !=
+                ACTOR_PRINCIPAL_STATION) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool world_save_payload(const world_t *w, FILE *f) {
+    if (!world_validate_station_actor_ids(w) ||
+        !validate_v79_ownership(w) ||
+        !world_ship_birth_saved_assemblies_valid(w) ||
+        !validate_ship_birth_provenance_uniqueness(w)) {
+        return false;
+    }
     /* Header */
     uint32_t magic = SAVE_MAGIC;
     uint32_t version = SAVE_VERSION;
@@ -1736,6 +2739,9 @@ static bool world_save_payload(const world_t *w, FILE *f) {
             }
         }
     }
+    /* v79: sparse, identity-keyed in-flight ship-birth choreography. Raw
+     * asteroid slots are transient and are reconstructed from fragment pubs. */
+    if (!write_ship_birth_assemblies(f, w)) return false;
     /* Asteroids: terrain remains derived from belt seed */
     /* Scaffolds: removed in v24 — transient in-flight construction */
     /* v37: belt_seed (anchor for rock_pub derivation). v38: each
@@ -1927,6 +2933,7 @@ bool world_save(const world_t *w, const char *path) {
 
 static bool world_load_payload(world_t *w, FILE *f) {
     uint32_t magic, version;
+    ownership_v79_migration_t ownership_migration = {0};
     READ_FIELD(f, magic);
     READ_FIELD(f, version);
     if (magic != SAVE_MAGIC || version < MIN_SAVE_VERSION || version > SAVE_VERSION) {
@@ -1938,14 +2945,22 @@ static bool world_load_payload(world_t *w, FILE *f) {
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);
-    w->tick = (uint32_t)lroundf(w->time / SIM_DT);
+    if (!isfinite(w->time) || w->time < 0.0f) return false;
+    double loaded_tick = (double)w->time / (double)SIM_DT;
+    if (!isfinite(loaded_tick) ||
+        loaded_tick > (double)UINT32_MAX) {
+        return false;
+    }
+    w->tick = (uint32_t)llround(loaded_tick);
     READ_FIELD(f, w->field_spawn_timer);
+    if (!isfinite(w->field_spawn_timer)) return false;
 
     /* v25+: station_count header; v24: fixed at 8 */
     int save_station_slots = 8; /* v24 and earlier had MAX_STATIONS=8 */
     if (version >= 25) {
         int32_t sc;
         READ_FIELD(f, sc);
+        if (sc < 0 || sc > MAX_STATIONS) return false;
         w->station_count = (int)sc;
         READ_FIELD(f, w->next_station_id);
         if (version >= 27) READ_FIELD(f, w->next_fracture_id);
@@ -1960,7 +2975,11 @@ static bool world_load_payload(world_t *w, FILE *f) {
     if (version >= 24) {
         /* v24+: station identity comes from catalog; read session only */
         for (int i = 0; i < save_station_slots; i++) {
-            if (!read_station_session(f, &w->stations[i])) return false;
+            if (!read_station_session(
+                    f, &w->stations[i],
+                    &ownership_migration, i)) {
+                return false;
+            }
         }
         /* v24→v25 migration: scan for active stations to set station_count */
         if (version < 25) {
@@ -1983,6 +3002,14 @@ static bool world_load_payload(world_t *w, FILE *f) {
                     return false;
                 }
             }
+        }
+        if (version >= 79) {
+            if (!read_ship_birth_assemblies(f, w)) {
+                return false;
+            }
+        } else {
+            memset(w->ship_birth_assemblies, 0,
+                   sizeof(w->ship_birth_assemblies));
         }
         /* No terrain asteroids or scaffolds in v24+ */
     } else {
@@ -2113,7 +3140,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
         if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
             w->next_ship_asset_id = 1;
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-            if (!read_ship_asset(f, &w->ship_assets[i])) {
+            if (!read_ship_asset(
+                    f, &w->ship_assets[i],
+                    &ownership_migration, i)) {
                 return false;
             }
         }
@@ -2176,6 +3205,23 @@ static bool world_load_payload(world_t *w, FILE *f) {
             return false;
         }
     }
+
+    /*
+     * Freeze stable station actors from the saved pre-rekey public identity,
+     * then migrate every legacy hull/build owner against that immutable
+     * namespace. Signing authority may rotate later in this load.
+     */
+    if (version >= 79) {
+        if (!world_validate_station_actor_ids(w)) return false;
+    } else {
+        if (!world_migrate_legacy_station_actor_ids(w)) return false;
+    }
+    if (version < 79 &&
+        !migrate_v79_ownership(
+            w, &ownership_migration, version)) {
+        return false;
+    }
+    if (!validate_v79_ownership(w)) return false;
 
     /* ---- Version migrations ----
      * Each block migrates from version N to N+1.  They run in sequence so
@@ -2402,6 +3448,10 @@ static bool world_load_payload(world_t *w, FILE *f) {
         world_player_runtime_slot_reset(w, i);
         if (!world_player_ship_slot_activate(w, i)) return false;
     }
+    if (!world_ship_birth_rebind_saved_assemblies(w) ||
+        !validate_ship_birth_provenance_uniqueness(w)) {
+        return false;
+    }
 
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
@@ -2530,11 +3580,6 @@ static bool world_load_payload(world_t *w, FILE *f) {
      * station's local view from loaded station/contract state so
      * reset/load does not invent peer-station radio. */
     gossip_bootstrap_world_stations(w);
-    if (w->ownership_quarantine.count > 0) {
-        (void)ownership_quarantine_report_bounded(
-            stderr, &w->ownership_quarantine,
-            OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS);
-    }
     return true;
 }
 
@@ -2567,12 +3612,105 @@ static bool world_load_precheck_crc(FILE *f) {
     return fseek(f, 0, SEEK_SET) == 0;
 }
 
+static world_t *world_load_candidate_create(const world_t *source) {
+    if (!source) return NULL;
+    world_t *candidate = calloc(1, sizeof(*candidate));
+    if (!candidate) return NULL;
+
+    /*
+     * Supported legacy saves intentionally overlay a reset/catalog baseline:
+     * fields introduced after their version retain those baseline defaults.
+     * Start from the exact caller state, but detach every owned allocation
+     * before cloning so candidate cleanup can never free source storage.
+     */
+    *candidate = *source;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        candidate->stations[i].cargo_store = (cargo_store_t){0};
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        candidate->ships[i].component.cargo_store =
+            (cargo_store_t){0};
+    }
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        candidate->ship_assets[i].stored_ship.cargo_store =
+            (cargo_store_t){0};
+    }
+    memset(&candidate->signal_cache, 0,
+           sizeof(candidate->signal_cache));
+    memset(&candidate->asteroid_grid, 0,
+           sizeof(candidate->asteroid_grid));
+
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_copy(&candidate->stations[i],
+                          &source->stations[i])) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        if (!ship_copy(&candidate->ships[i].component,
+                       &source->ships[i].component)) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (!ship_copy(
+                &candidate->ship_assets[i].stored_ship,
+                &source->ship_assets[i].stored_ship)) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        candidate->players[i].connection =
+            &candidate->connections[i];
+        candidate->players[i].replication =
+            &candidate->replications[i];
+    }
+    world_rebind_ship_controllers(candidate);
+    return candidate;
+}
+
 bool world_load(world_t *w, const char *path) {
     if (!w || !path) return false;
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    bool ok = world_load_precheck_crc(f) && world_load_payload(w, f);
+
+    world_t *candidate = world_load_candidate_create(w);
+    if (!candidate) {
+        fclose(f);
+        return false;
+    }
+    int previous_loaded_version = g_loaded_save_version;
+    bool ok =
+        world_load_precheck_crc(f) &&
+        world_load_payload(candidate, f);
     if (fclose(f) != 0) ok = false;
+    g_loaded_save_version = previous_loaded_version;
+
+    if (ok) {
+        spatial_grid_build(candidate);
+        world_cleanup(w);
+        *w = *candidate;
+        memset(candidate, 0, sizeof(*candidate));
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            w->players[i].connection = &w->connections[i];
+            w->players[i].replication = &w->replications[i];
+        }
+        world_rebind_ship_controllers(w);
+        if (w->ownership_quarantine.count > 0) {
+            (void)ownership_quarantine_report_bounded(
+                stderr, &w->ownership_quarantine,
+                OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS);
+        }
+    } else {
+        world_cleanup(candidate);
+    }
+    free(candidate);
     return ok;
 }
 
@@ -3328,31 +4466,39 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
 static bool ship_asset_owner_matches_player_save(const ship_asset_t *asset,
                                                  const server_player_t *sp) {
     if (!asset || !sp) return false;
-    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY &&
-        server_player_can_use_pubkey_persistence(sp)) {
-        return memcmp(asset->owner_pubkey, sp->pubkey, 32) == 0;
-    }
-    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION) {
-        bool nonzero = false;
-        for (int i = 0; i < 8; i++) if (sp->session_token[i]) nonzero = true;
-        return nonzero && memcmp(asset->owner_session, sp->session_token, 8) == 0;
-    }
-    return false;
+    actor_principal_t player = actor_principal_none();
+    return actor_principal_from_verified_player(sp, &player) &&
+           actor_principal_equal(
+               &asset->owner_principal, &player);
 }
 
-static bool ship_asset_load_candidate_assignable(const ship_asset_t *asset,
-                                                 int slot) {
+static bool ship_asset_load_candidate_assignable(
+    const ship_asset_t *asset) {
     if (!asset || !asset->active || asset->destroyed) return false;
-    if (asset->status == SHIP_ASSET_STATUS_STORED) return true;
-    return asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
-           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
-           asset->operator_slot == slot;
+    return asset->status == SHIP_ASSET_STATUS_STORED;
 }
 
-static bool ship_asset_is_station_loaner_for_slot(const ship_asset_t *asset,
-                                                  int slot) {
-    return asset && asset->active && !asset->destroyed &&
-           asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
+static bool ship_asset_load_bound_candidate_assignable(
+    const ship_asset_t *asset,
+    int slot) {
+    if (!asset || !asset->active || asset->destroyed) return false;
+    return asset->status == SHIP_ASSET_STATUS_STORED ||
+           (asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+            asset->operator_slot == slot);
+}
+
+static bool ship_asset_is_station_loaner_for_slot(
+    const ship_asset_t *asset,
+    const world_t *w,
+    int slot) {
+    actor_principal_t station = actor_principal_none();
+    return asset && w &&
+           asset->active && !asset->destroyed &&
+           actor_principal_from_station(
+               w, asset->custody_station, &station) &&
+           actor_principal_equal(
+               &asset->owner_principal, &station) &&
            asset->loaner &&
            asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
@@ -3360,8 +4506,12 @@ static bool ship_asset_is_station_loaner_for_slot(const ship_asset_t *asset,
 }
 
 static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
+                                                  const world_t *w,
                                                   int slot) {
-    if (!ship_asset_is_station_loaner_for_slot(asset, slot)) return;
+    if (!ship_asset_is_station_loaner_for_slot(
+            asset, w, slot)) {
+        return;
+    }
     asset->status = SHIP_ASSET_STATUS_STORED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
     asset->operator_slot = -1;
@@ -3370,41 +4520,52 @@ static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
 static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
     if (sp != &w->players[slot]) return;
-    ship_asset_owner_kind_t owner_kind =
-        server_player_can_use_pubkey_persistence(sp)
-            ? SHIP_ASSET_OWNER_PLAYER_PUBKEY
-            : SHIP_ASSET_OWNER_PLAYER_SESSION;
-    const uint8_t *owner_pubkey =
-        owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
-    const uint8_t *owner_session =
-        owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
+    actor_principal_t owner = actor_principal_none();
+    bool has_stable_owner =
+        actor_principal_from_verified_player(sp, &owner);
 
     ship_asset_t *asset = NULL;
     ship_asset_t *prior = world_ship_asset_by_id(w, sp->ship_asset_id);
-    if (ship_asset_load_candidate_assignable(prior, slot) &&
+    if (has_stable_owner &&
+        ship_asset_load_bound_candidate_assignable(prior, slot) &&
         ship_asset_owner_matches_player_save(prior, sp)) {
         asset = prior;
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         if (asset) break;
         ship_asset_t *candidate = &w->ship_assets[i];
-        if (!ship_asset_load_candidate_assignable(candidate, slot)) continue;
+        if (!has_stable_owner ||
+            !ship_asset_load_candidate_assignable(candidate)) {
+            continue;
+        }
         if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
         asset = candidate;
         break;
     }
-    if (!asset) {
+    if (!asset && has_stable_owner) {
         asset = world_ship_asset_mint(
-            w, sp->ship->hull_class, owner_kind, -1, sp->current_station,
-            SHIP_ASSET_PROVENANCE_LEGACY, false, -1,
-            owner_pubkey, owner_session);
+            w, sp->ship->hull_class, &owner,
+            sp->current_station,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1);
     }
-    if (!asset && ship_asset_is_station_loaner_for_slot(prior, slot)) {
+    if (!asset &&
+        ship_asset_is_station_loaner_for_slot(
+            prior, w, slot) &&
+        prior->custody_station == sp->current_station) {
         asset = prior;
     }
-    if (!asset) return;
+    if (!asset) {
+        if (ship_asset_is_station_loaner_for_slot(
+                prior, w, slot)) {
+            ship_asset_release_loaded_provisional(
+                prior, w, slot);
+            sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+        }
+        return;
+    }
     if (prior && prior != asset)
-        ship_asset_release_loaded_provisional(prior, slot);
+        ship_asset_release_loaded_provisional(
+            prior, w, slot);
     asset->hull_class = sp->ship->hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;

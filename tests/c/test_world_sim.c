@@ -10,6 +10,7 @@
 #include "gossip.h"
 #include "neural_checkpoint.h"
 #include "npc_identity.h"
+#include "actor_principal_resolver.h"
 #include <stdio.h>
 
 #define TEST_FLIGHT_CKPT_DATA _Users_ratimics_develop_crlplrimes_build_float_signal_flight_longhorizon_live_signal_flight_nnckpt
@@ -36,6 +37,55 @@ static int test_spawn_hauler_at(world_t *w, int station_idx) {
     return spawn_npc(w, station_idx, NPC_ROLE_HAULER);
 }
 
+static bool test_make_verified_player_principal(
+    server_player_t *sp,
+    uint8_t discriminator,
+    actor_principal_t *out) {
+    if (!sp || !out) return false;
+    sp->connected = true;
+    sp->grace_period = false;
+    sp->session_ready = true;
+    memset(sp->session_token, discriminator,
+           sizeof(sp->session_token));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    sp->pubkey_identity_finalized = true;
+    for (size_t i = 0; i < sizeof(sp->pubkey); i++)
+        sp->pubkey[i] = (uint8_t)(discriminator + i);
+    return actor_principal_from_verified_player(sp, out);
+}
+
+static bool test_make_principal(actor_principal_kind_t kind,
+                                uint8_t discriminator,
+                                actor_principal_t *out) {
+    uint8_t stable_id[ACTOR_PRINCIPAL_ID_SIZE];
+    for (size_t i = 0; i < sizeof(stable_id); i++)
+        stable_id[i] = (uint8_t)(discriminator + i);
+    return actor_principal_from_stable_id(kind, stable_id, out);
+}
+
+static bool test_assign_station_principal(world_t *w,
+                                          int station_idx,
+                                          uint8_t discriminator,
+                                          actor_principal_t *out) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS || !out)
+        return false;
+    actor_principal_t principal = actor_principal_none();
+    if (!test_make_principal(
+            ACTOR_PRINCIPAL_STATION, discriminator, &principal)) {
+        return false;
+    }
+    memcpy(w->stations[station_idx].station_actor_id, principal.id,
+           sizeof(w->stations[station_idx].station_actor_id));
+    if (w->stations[station_idx].id == 0) {
+        if (w->next_station_id == 0) w->next_station_id = 1;
+        w->stations[station_idx].id = w->next_station_id++;
+    }
+    *out = principal;
+    return true;
+}
+
 static int test_claim_fresh_npc_hull(world_t *w, int station_idx,
                                      npc_role_t role,
                                      hull_class_t hull_class) {
@@ -48,17 +98,22 @@ static int test_claim_fresh_npc_hull(world_t *w, int station_idx,
         w->characters[c].active = false;
     for (int a = 0; a < MAX_SHIP_ASSETS; a++) {
         ship_asset_t *asset = &w->ship_assets[a];
-        if (!asset->active || asset->owner_kind != SHIP_ASSET_OWNER_STATION ||
+        if (!asset->active ||
+            asset->owner_principal.kind != ACTOR_PRINCIPAL_STATION ||
             asset->loaner) {
             continue;
         }
         if (asset->ship) ship_cleanup(asset->ship);
         memset(asset, 0, sizeof(*asset));
     }
+    actor_principal_t station_owner = actor_principal_none();
+    if (!actor_principal_from_station(
+            w, station_idx, &station_owner)) {
+        return -1;
+    }
     ship_asset_t *asset = world_ship_asset_mint(
-        w, hull_class, SHIP_ASSET_OWNER_STATION,
-        station_idx, station_idx, SHIP_ASSET_PROVENANCE_GENESIS,
-        false, station_idx, NULL, NULL);
+        w, hull_class, &station_owner, station_idx,
+        SHIP_ASSET_PROVENANCE_GENESIS, false, station_idx);
     if (!asset) return -1;
     return ship_asset_claim_for_npc(w, station_idx, role);
 }
@@ -283,12 +338,20 @@ static void test_move_pod_past_station_charge_boundary(world_t *w,
 }
 
 static int test_destroy_stored_station_loaners(world_t *w, int station_idx) {
+    actor_principal_t station_owner = actor_principal_none();
+    if (!actor_principal_from_station(
+            w, station_idx, &station_owner)) {
+        return 0;
+    }
     int count = 0;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *asset = &w->ship_assets[i];
         if (!asset->active || asset->destroyed) continue;
         if (!asset->loaner) continue;
-        if (asset->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
+        if (!actor_principal_equal(
+                &asset->owner_principal, &station_owner)) {
+            continue;
+        }
         if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
         if (asset->custody_station != station_idx) continue;
         asset->destroyed = true;
@@ -302,11 +365,17 @@ static int test_destroy_stored_station_loaners(world_t *w, int station_idx) {
 
 static bool test_has_station_hull_request(const world_t *w, int requester_station,
                                           hull_class_t hull_class) {
-    int owner_code = requester_station == 0 ? INT8_MIN : -1 - requester_station;
+    actor_principal_t requester = actor_principal_none();
+    if (!actor_principal_from_station(
+            w, requester_station, &requester)) {
+        return false;
+    }
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         for (int p = 0; p < st->pending_ship_build_count; p++) {
-            if (st->pending_ship_builds[p].owner == (int8_t)owner_code &&
+            if (actor_principal_equal(
+                    &st->pending_ship_builds[p].owner_principal,
+                    &requester) &&
                 st->pending_ship_builds[p].hull_class == hull_class) {
                 return true;
             }
@@ -489,6 +558,8 @@ TEST(test_player_init_claims_station_loaner_asset) {
     world_reset(&w);
     int asset_count_before = test_active_ship_asset_count(&w);
     int stored_before = world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 0, &station_owner));
 
     player_init_ship(&w.players[0], &w);
 
@@ -498,22 +569,54 @@ TEST(test_player_init_claims_station_loaner_asset) {
     ASSERT(w.players[0].ship_asset_id != SHIP_ASSET_ID_NONE);
     ship_asset_t *asset = world_ship_asset_by_id(&w, w.players[0].ship_asset_id);
     ASSERT(asset != NULL);
-    ASSERT_EQ_INT(asset->owner_kind, SHIP_ASSET_OWNER_STATION);
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &station_owner));
+    actor_resolution_result_t resolved =
+        world_resolve_station_principal(&w, &asset->owner_principal);
+    ASSERT_EQ_INT(resolved.state, ACTOR_RESOLUTION_ONLINE);
+    ASSERT_EQ_INT(resolved.slot, 0);
     ASSERT(asset->loaner);
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(asset->operator_slot, 0);
 }
 
+TEST(test_token_only_session_claims_loaner_without_durable_ownership) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x3A, sizeof(sp->session_token));
+
+    actor_principal_t player_owner = actor_principal_none();
+    ASSERT(!actor_principal_from_verified_player(
+        sp, &player_owner));
+
+    player_init_ship(sp, &w);
+
+    const ship_asset_t *asset =
+        world_ship_asset_by_id_const(&w, sp->ship_asset_id);
+    ASSERT(asset != NULL);
+    ASSERT(asset->loaner);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 0, &station_owner));
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &station_owner));
+    ASSERT(!actor_principal_equal(
+        &asset->owner_principal, &player_owner));
+}
+
 TEST(test_player_init_bound_asset_preserves_custody_station) {
     WORLD_DECL;
     world_reset(&w);
     server_player_t *sp = &w.players[0];
-    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+    actor_principal_t player_owner = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(
+        sp, 0x42, &player_owner));
     ship_asset_t *asset = world_ship_asset_mint(
-        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
-        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
-        false, 1, NULL, sp->session_token);
+        &w, HULL_CLASS_HAULER, &player_owner, 1,
+        SHIP_ASSET_PROVENANCE_SHIPYARD, false, 1);
     ASSERT(asset != NULL);
     sp->ship_asset_id = asset->asset_id;
 
@@ -524,6 +627,13 @@ TEST(test_player_init_bound_asset_preserves_custody_station) {
     ASSERT_EQ_INT(sp->nearby_station, 1);
     ASSERT_EQ_INT(sp->ship->hull_class, HULL_CLASS_HAULER);
     ASSERT_EQ_INT(asset->custody_station, 1);
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &player_owner));
+    actor_resolution_result_t resolved =
+        world_resolve_player_principal(
+            &w, &asset->owner_principal);
+    ASSERT_EQ_INT(resolved.state, ACTOR_RESOLUTION_ONLINE);
+    ASSERT_EQ_INT(resolved.slot, 0);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(asset->operator_slot, 0);
 }
@@ -532,13 +642,16 @@ TEST(test_player_init_ignores_foreign_bound_asset) {
     WORLD_DECL;
     world_reset(&w);
     server_player_t *sp = &w.players[0];
-    memset(sp->session_token, 0x11, sizeof(sp->session_token));
-    uint8_t other_token[8];
-    memset(other_token, 0x22, sizeof(other_token));
+    actor_principal_t player_owner = actor_principal_none();
+    actor_principal_t foreign_owner = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(
+        sp, 0x11, &player_owner));
+    ASSERT(test_make_principal(
+        ACTOR_PRINCIPAL_PLAYER, 0x22, &foreign_owner));
+    ASSERT(!actor_principal_equal(&player_owner, &foreign_owner));
     ship_asset_t *foreign = world_ship_asset_mint(
-        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
-        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
-        false, 1, NULL, other_token);
+        &w, HULL_CLASS_HAULER, &foreign_owner, 1,
+        SHIP_ASSET_PROVENANCE_SHIPYARD, false, 1);
     ASSERT(foreign != NULL);
     sp->ship_asset_id = foreign->asset_id;
     int asset_count_before = test_active_ship_asset_count(&w);
@@ -553,9 +666,19 @@ TEST(test_player_init_ignores_foreign_bound_asset) {
     ASSERT_EQ_INT(foreign->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(foreign->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(foreign->operator_slot, -1);
+    ASSERT(actor_principal_equal(
+        &foreign->owner_principal, &foreign_owner));
+    actor_resolution_result_t foreign_resolution =
+        world_resolve_player_principal(
+            &w, &foreign->owner_principal);
+    ASSERT_EQ_INT(foreign_resolution.state, ACTOR_RESOLUTION_OFFLINE);
+    ASSERT_EQ_INT(foreign_resolution.slot, -1);
     ship_asset_t *claimed = world_ship_asset_by_id(&w, sp->ship_asset_id);
     ASSERT(claimed != NULL);
-    ASSERT_EQ_INT(claimed->owner_kind, SHIP_ASSET_OWNER_STATION);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 0, &station_owner));
+    ASSERT(actor_principal_equal(
+        &claimed->owner_principal, &station_owner));
     ASSERT(claimed->loaner);
     ASSERT_EQ_INT(claimed->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(claimed->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
@@ -566,13 +689,16 @@ TEST(test_player_init_clears_stale_binding_when_waiting_for_hull) {
     WORLD_DECL;
     world_reset(&w);
     server_player_t *sp = &w.players[0];
-    memset(sp->session_token, 0x12, sizeof(sp->session_token));
-    uint8_t other_token[8];
-    memset(other_token, 0x23, sizeof(other_token));
+    actor_principal_t player_owner = actor_principal_none();
+    actor_principal_t foreign_owner = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(
+        sp, 0x12, &player_owner));
+    ASSERT(test_make_principal(
+        ACTOR_PRINCIPAL_PLAYER, 0x23, &foreign_owner));
+    ASSERT(!actor_principal_equal(&player_owner, &foreign_owner));
     ship_asset_t *foreign = world_ship_asset_mint(
-        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_SESSION,
-        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
-        false, 1, NULL, other_token);
+        &w, HULL_CLASS_HAULER, &foreign_owner, 1,
+        SHIP_ASSET_PROVENANCE_SHIPYARD, false, 1);
     ASSERT(foreign != NULL);
     sp->ship_asset_id = foreign->asset_id;
     ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
@@ -596,6 +722,8 @@ TEST(test_player_init_clears_stale_binding_when_waiting_for_hull) {
     ASSERT_EQ_FLOAT(sp->ship->hull, 0.0f, 0.001f);
     ASSERT_EQ_INT(foreign->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(foreign->operator_kind, SHIP_ASSET_OPERATOR_NONE);
+    ASSERT(actor_principal_equal(
+        &foreign->owner_principal, &foreign_owner));
     ASSERT(test_has_station_hull_request(&w, 0, HULL_CLASS_MINER));
 }
 
@@ -772,7 +900,10 @@ TEST(test_player_release_returns_provisional_loaner_to_storage) {
     const ship_asset_t *released = world_ship_asset_by_id_const(&w, asset_id);
     ASSERT(released != NULL);
     ASSERT(released->loaner);
-    ASSERT_EQ_INT(released->owner_kind, SHIP_ASSET_OWNER_STATION);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 0, &station_owner));
+    ASSERT(actor_principal_equal(
+        &released->owner_principal, &station_owner));
     ASSERT_EQ_INT(released->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(released->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(released->operator_slot, -1);
@@ -789,13 +920,16 @@ TEST(test_player_release_stores_owned_hull_for_reclaim) {
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
     sp->pubkey_challenge_consumed = true;
+    sp->pubkey_identity_finalized = true;
     memset(sp->session_token, 0x41, sizeof(sp->session_token));
     memset(sp->pubkey, 0x82, sizeof(sp->pubkey));
 
+    actor_principal_t player_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        sp, &player_owner));
     ship_asset_t *asset = world_ship_asset_mint(
-        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_PLAYER_PUBKEY,
-        -1, 1, SHIP_ASSET_PROVENANCE_SHIPYARD,
-        false, 1, sp->pubkey, NULL);
+        &w, HULL_CLASS_HAULER, &player_owner, 1,
+        SHIP_ASSET_PROVENANCE_SHIPYARD, false, 1);
     ASSERT(asset != NULL);
     int asset_count_before = test_active_ship_asset_count(&w);
 
@@ -812,7 +946,8 @@ TEST(test_player_release_stores_owned_hull_for_reclaim) {
 
     ASSERT_EQ_INT(sp->ship_asset_id, SHIP_ASSET_ID_NONE);
     ASSERT_EQ_INT(test_active_ship_asset_count(&w), asset_count_before);
-    ASSERT_EQ_INT(asset->owner_kind, SHIP_ASSET_OWNER_PLAYER_PUBKEY);
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &player_owner));
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NONE);
     ASSERT_EQ_INT(asset->operator_slot, -1);
@@ -828,6 +963,7 @@ TEST(test_player_release_stores_owned_hull_for_reclaim) {
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
     sp->pubkey_challenge_consumed = true;
+    sp->pubkey_identity_finalized = true;
     memset(sp->session_token, 0x41, sizeof(sp->session_token));
     memset(sp->pubkey, 0x82, sizeof(sp->pubkey));
 
@@ -838,6 +974,8 @@ TEST(test_player_release_stores_owned_hull_for_reclaim) {
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(asset->operator_slot, 0);
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &player_owner));
     ASSERT_EQ_INT(sp->current_station, 1);
     ASSERT_EQ_FLOAT(sp->ship->hull, 37.5f, 0.001f);
 }
@@ -947,16 +1085,19 @@ TEST(test_player_respawn_without_loaner_waits_for_shipyard_asset) {
 
 TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
     WORLD_DECL;
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(test_make_principal(
+        ACTOR_PRINCIPAL_STATION, 0x51, &station_owner));
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *asset = world_ship_asset_mint(
-            &w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
-            0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
-            false, 0, NULL, NULL);
+            &w, HULL_CLASS_MINER, &station_owner, 0,
+            SHIP_ASSET_PROVENANCE_GENESIS, false, 0);
         ASSERT(asset != NULL);
     }
     ASSERT_EQ_INT(test_active_ship_asset_count(&w), MAX_SHIP_ASSETS);
 
     uint32_t first_id = w.ship_assets[0].asset_id;
+    w.ship_assets[0].owner_quarantine_record_id = UINT64_C(99);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         w.ship_assets[i].destroyed = true;
         w.ship_assets[i].status = SHIP_ASSET_STATUS_DESTROYED;
@@ -965,14 +1106,14 @@ TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
     }
 
     ship_asset_t *fresh = world_ship_asset_mint(
-        &w, HULL_CLASS_HAULER, SHIP_ASSET_OWNER_STATION,
-        0, 0, SHIP_ASSET_PROVENANCE_SHIPYARD,
-        false, 0, NULL, NULL);
+        &w, HULL_CLASS_HAULER, &station_owner, 0,
+        SHIP_ASSET_PROVENANCE_SHIPYARD, false, 0);
     ASSERT(fresh != NULL);
     ASSERT(fresh->asset_id != first_id);
     ASSERT(!fresh->destroyed);
     ASSERT_EQ_INT(fresh->status, SHIP_ASSET_STATUS_STORED);
     ASSERT_EQ_INT(fresh->hull_class, HULL_CLASS_HAULER);
+    ASSERT(fresh->owner_quarantine_record_id == 0);
 }
 
 TEST(test_spawn_npc_bootstrap_does_not_queue_shipyard_build) {
@@ -992,6 +1133,11 @@ TEST(test_spawn_npc_bootstrap_does_not_queue_shipyard_build) {
     ASSERT(npc->ship_asset_id != SHIP_ASSET_ID_NONE);
     const ship_asset_t *asset = world_ship_asset_by_id_const(&w, npc->ship_asset_id);
     ASSERT(asset != NULL);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(
+        &w, 1, &station_owner));
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &station_owner));
     ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_LEGACY);
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
@@ -1012,10 +1158,12 @@ TEST(test_npc_asset_claim_requires_controller_registry_slot) {
         w.characters[i].kind = CHARACTER_KIND_PLAYER;
         w.characters[i].actor_slot = -1;
     }
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(
+        &w, 0, &station_owner));
     ship_asset_t *asset = world_ship_asset_mint(
-        &w, HULL_CLASS_NPC_MINER, SHIP_ASSET_OWNER_STATION,
-        0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
-        false, 0, NULL, NULL);
+        &w, HULL_CLASS_NPC_MINER, &station_owner, 0,
+        SHIP_ASSET_PROVENANCE_GENESIS, false, 0);
     ASSERT(asset != NULL);
     int active_assets_before = test_active_ship_asset_count(&w);
 
@@ -1042,12 +1190,18 @@ TEST(test_shipyard_keeps_completed_build_when_asset_registry_full) {
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
     ASSERT(shipyard_queue_station_hull_request(&w, 1, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    actor_principal_t requester = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 1, &requester));
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal, &requester));
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(
+        &w, 0, &station_owner));
 
     while (test_active_ship_asset_count(&w) < MAX_SHIP_ASSETS) {
         ship_asset_t *asset = world_ship_asset_mint(
-            &w, HULL_CLASS_MINER, SHIP_ASSET_OWNER_STATION,
-            0, 0, SHIP_ASSET_PROVENANCE_GENESIS,
-            false, 0, NULL, NULL);
+            &w, HULL_CLASS_MINER, &station_owner, 0,
+            SHIP_ASSET_PROVENANCE_GENESIS, false, 0);
         ASSERT(asset != NULL);
     }
     ASSERT_EQ_INT(test_active_ship_asset_count(&w), MAX_SHIP_ASSETS);
@@ -2937,6 +3091,11 @@ TEST(test_dead_neural_worker_auto_respawns) {
     ASSERT_EQ_INT(kepler->pending_ship_build_count, 1);
     ASSERT_EQ_INT(kepler->pending_ship_builds[0].hull_class,
                   HULL_CLASS_DRONE_TRACTOR);
+    actor_principal_t kepler_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(w, 1, &kepler_owner));
+    ASSERT(actor_principal_equal(
+        &kepler->pending_ship_builds[0].owner_principal,
+        &kepler_owner));
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_TRACTOR_MODULE), 0);
 
@@ -3347,6 +3506,11 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
     ASSERT_EQ_INT(helios->pending_ship_build_count, 1);
     ASSERT_EQ_INT(helios->pending_ship_builds[0].hull_class,
                   HULL_CLASS_NPC_MINER);
+    actor_principal_t helios_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(w, 2, &helios_owner));
+    ASSERT(actor_principal_equal(
+        &helios->pending_ship_builds[0].owner_principal,
+        &helios_owner));
 
     for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
 
@@ -3420,14 +3584,19 @@ TEST(test_frontier_outpost_roster_respects_virtual_logistics_budget) {
         add_module_at(st, MODULE_DOCK, 1, 0);
         add_module_at(st, MODULE_SIGNAL_RELAY, 1, 1);
         rebuild_station_services(st);
+        actor_principal_t station_owner = actor_principal_none();
+        ASSERT(test_assign_station_principal(
+            w, s,
+            (uint8_t)(0xC0 + s - SIGNAL_FIRST_OUTPOST_INDEX),
+            &station_owner));
         ASSERT(world_ship_asset_mint(w, HULL_CLASS_NPC_MINER,
-                                     SHIP_ASSET_OWNER_STATION,
-                                     s, s, SHIP_ASSET_PROVENANCE_GENESIS,
-                                     false, s, NULL, NULL) != NULL);
+                                     &station_owner, s,
+                                     SHIP_ASSET_PROVENANCE_GENESIS,
+                                     false, s) != NULL);
         ASSERT(world_ship_asset_mint(w, HULL_CLASS_DRONE_TRACTOR,
-                                     SHIP_ASSET_OWNER_STATION,
-                                     s, s, SHIP_ASSET_PROVENANCE_GENESIS,
-                                     false, s, NULL, NULL) != NULL);
+                                     &station_owner, s,
+                                     SHIP_ASSET_PROVENANCE_GENESIS,
+                                     false, s) != NULL);
     }
     rebuild_signal_chain(w);
 
@@ -10117,6 +10286,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_ship_assets_back_active_hulls);
     RUN(test_station_hull_inventory_cache_tracks_asset_registry);
     RUN(test_player_init_claims_station_loaner_asset);
+    RUN(test_token_only_session_claims_loaner_without_durable_ownership);
     RUN(test_player_init_bound_asset_preserves_custody_station);
     RUN(test_player_init_ignores_foreign_bound_asset);
     RUN(test_player_init_clears_stale_binding_when_waiting_for_hull);

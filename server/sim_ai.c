@@ -26,6 +26,7 @@
 #include "chain_log.h"
 #include "sha256.h"
 #include "station_authority.h"
+#include "actor_principal_resolver.h"
 #include "cargo_receipt_trust.h"
 #include <math.h>
 #include <stdio.h>
@@ -438,8 +439,6 @@ static bool frontier_plan_outpost(world_t *w) {
             station_cleanup(st);
             memset(st, 0, sizeof(*st));
             (void)station_manifest_bootstrap(st);
-            if (w->next_station_id == 0) w->next_station_id = 1;
-            st->id = w->next_station_id++;
             snprintf(st->name, sizeof(st->name), "Frontier %02d", slot);
             st->pos = pos;
             st->planned = true;
@@ -449,6 +448,12 @@ static bool frontier_plan_outpost(world_t *w) {
             frontier_founder_pubkey(w, slot, pos, founder);
             station_authority_init_outpost(st, founder,
                                            (uint64_t)(w->time * 128.0f));
+            if (!world_ensure_station_actor_ids(w)) {
+                station_cleanup(st);
+                memset(st, 0, sizeof(*st));
+                (void)station_manifest_bootstrap(st);
+                return false;
+            }
             chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                  "virtual frontier pilot planned outpost");
             st->radius = 0.0f;
@@ -1553,11 +1558,17 @@ static ship_asset_t *ship_asset_find_stored_npc_hull(world_t *w,
                                                      int station_idx,
                                                      hull_class_t hull_class) {
     if (!w) return NULL;
+    actor_principal_t station_owner = actor_principal_none();
+    if (!actor_principal_from_station(w, station_idx, &station_owner))
+        return NULL;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *candidate = &w->ship_assets[i];
         if (!candidate->active || candidate->destroyed) continue;
         if (candidate->status != SHIP_ASSET_STATUS_STORED) continue;
-        if (candidate->owner_kind != SHIP_ASSET_OWNER_STATION) continue;
+        if (!actor_principal_equal(
+                &candidate->owner_principal, &station_owner)) {
+            continue;
+        }
         if (candidate->loaner) continue;
         if (candidate->custody_station != station_idx) continue;
         if (candidate->hull_class != hull_class) continue;
@@ -1688,10 +1699,12 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     }
     hull_class_t hc = npc_resident_hull_class_for_role(role);
     if (!ship_asset_find_stored_npc_hull(w, station_idx, hc)) {
+        actor_principal_t station_owner = actor_principal_none();
+        if (!actor_principal_from_station(w, station_idx, &station_owner))
+            return -1;
         ship_asset_t *asset = world_ship_asset_mint(
-            w, hc, SHIP_ASSET_OWNER_STATION,
-            station_idx, station_idx,
-            SHIP_ASSET_PROVENANCE_LEGACY, false, -1, NULL, NULL);
+            w, hc, &station_owner, station_idx,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1);
         if (!asset) return -1;
     }
     return ship_asset_claim_for_npc(w, station_idx, role);

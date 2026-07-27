@@ -1613,7 +1613,7 @@ enum {
  * [arm_count:1][arm_speed:MAX_ARMS×f32][ring_offset:MAX_ARMS×f32]
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
  * [pending_count:1][pending:4 × (type:1, owner:1)]
- * [pending_ship_count:1][pending_ship:4 × (hull:1, owner:1, progress:f32)]
+ * [pending_ship_count:1][pending_ship:4 × (hull:1, reserved:1, progress:f32)]
  * [...text trailers...][station_pubkey:32]
  * [stored_hull_count:HULL_CLASS_COUNT×u8] -- appended so v1 trailer offsets stay stable.
  * flags: bit0=scaffold, bit1=planned */
@@ -1622,7 +1622,7 @@ enum {
 #define STATION_PLAN_RECORD_COUNT 8
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
 #define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
-#define STATION_PENDING_SHIP_RECORD_SIZE 6      /* hull:1 + owner:1 + progress:f32 */
+#define STATION_PENDING_SHIP_RECORD_SIZE 6      /* hull:1 + reserved(0xFF):1 + progress:f32 */
 #define STATION_PENDING_SHIP_RECORD_COUNT 4
 #define STATION_IDENTITY_HAIL_MESSAGE_LEN 256  /* trailer: station MOTD/hail copy */
 #define STATION_IDENTITY_CHATTER_LINES 8

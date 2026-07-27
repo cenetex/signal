@@ -10,6 +10,7 @@
 #include "sha256.h"  /* rock_pub derivation (#285 slice 1) */
 #include "chain_log.h" /* signed event emission (#479 C) */
 #include "sim_physics.h"
+#include "ship_birth_reservation.h"
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -756,7 +757,8 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
 
         /* Despawn asteroids that leave station-supported space. */
         if (!point_within_signal_margin(active_stations, active_station_count,
-                                        a->pos, a->radius + 260.0f)) {
+                                        a->pos, a->radius + 260.0f) &&
+            !world_ship_birth_fragment_reserved(w, i)) {
             clear_asteroid_slot(w, i);
             continue;
         }
@@ -774,7 +776,10 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
                     break;
                     }
                 }
-            if (!near_player) clear_asteroid_slot(w, i);
+            if (!near_player &&
+                !world_ship_birth_fragment_reserved(w, i)) {
+                clear_asteroid_slot(w, i);
+            }
         }
 
         /* Station vortex: asteroids near stations get caught in orbit.

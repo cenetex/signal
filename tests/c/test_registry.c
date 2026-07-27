@@ -14,6 +14,7 @@
 
 #include <string.h>
 
+#include "actor_principal_resolver.h"
 #include "protocol.h"
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
@@ -216,6 +217,19 @@ TEST(test_registry_same_token_takeover_moves_live_ship) {
     new_slot->pubkey_challenge_consumed = true;
 
     ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 0);
+    actor_principal_t stable_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(old, &stable_owner));
+    ship_asset_t *owned_asset =
+        world_ship_asset_by_id(w, old_asset_id);
+    ASSERT(owned_asset != NULL);
+    owned_asset->owner_principal = stable_owner;
+    owned_asset->loaner = false;
+    pending_ship_build_t *pending =
+        &w->stations[0].pending_ship_builds[0];
+    w->stations[0].pending_ship_build_count = 1;
+    pending->hull_class = HULL_CLASS_MINER;
+    pending->owner_principal = stable_owner;
+    pending->mode = (uint8_t)PENDING_SHIP_BUILD_MODE_MATERIAL;
     ASSERT(world_player_transfer_ship_state(w, 5, 0));
     old->connected = false;
     old->grace_period = false;
@@ -233,6 +247,16 @@ TEST(test_registry_same_token_takeover_moves_live_ship) {
     ASSERT_EQ_FLOAT(new_slot->ship->vel.y, -3.0f, 0.001f);
     ASSERT_EQ_FLOAT(new_slot->ship->angle, 0.75f, 0.001f);
     ASSERT_EQ_FLOAT(new_slot->ship->stat_credits_earned, 91.0f, 0.001f);
+    actor_principal_t reconnected_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        new_slot, &reconnected_owner));
+    ASSERT(actor_principal_equal(&stable_owner, &reconnected_owner));
+    owned_asset = world_ship_asset_by_id(w, old_asset_id);
+    ASSERT(owned_asset != NULL);
+    ASSERT(actor_principal_equal(
+        &owned_asset->owner_principal, &stable_owner));
+    ASSERT(actor_principal_equal(
+        &pending->owner_principal, &stable_owner));
 }
 
 TEST(test_player_transfer_rebinds_slot_obligations_and_character) {
@@ -295,12 +319,17 @@ TEST(test_player_transfer_rebinds_slot_obligations_and_character) {
     st->placement_plan_count = 1;
     st->placement_plans[0].owner = 0;
     st->pending_ship_build_count = 2;
-    st->pending_ship_builds[0].owner = 0;
-    st->pending_ship_builds[0].owner_kind =
-        SHIP_ASSET_OWNER_PLAYER_SESSION;
-    st->pending_ship_builds[1].owner = 0;
-    st->pending_ship_builds[1].owner_kind =
-        SHIP_ASSET_OWNER_STATION;
+    uint8_t durable_player_id[32];
+    fill_pubkey(durable_player_id, 61);
+    ASSERT(actor_principal_from_stable_id(
+        ACTOR_PRINCIPAL_PLAYER, durable_player_id,
+        &st->pending_ship_builds[0].owner_principal));
+    ASSERT(actor_principal_from_station(
+        w, 0, &st->pending_ship_builds[1].owner_principal));
+    actor_principal_t player_build_owner =
+        st->pending_ship_builds[0].owner_principal;
+    actor_principal_t station_build_owner =
+        st->pending_ship_builds[1].owner_principal;
     w->scaffolds[0].active = true;
     w->scaffolds[0].owner = 0;
 
@@ -312,8 +341,12 @@ TEST(test_player_transfer_rebinds_slot_obligations_and_character) {
     ASSERT_EQ_INT(st->pending_scaffolds[0].owner, 5);
     ASSERT_EQ_INT(st->pending_scaffolds[1].owner, -1);
     ASSERT_EQ_INT(st->placement_plans[0].owner, 5);
-    ASSERT_EQ_INT(st->pending_ship_builds[0].owner, 5);
-    ASSERT_EQ_INT(st->pending_ship_builds[1].owner, 0);
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal,
+        &player_build_owner));
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[1].owner_principal,
+        &station_build_owner));
     ASSERT_EQ_INT(w->scaffolds[0].owner, 5);
     ASSERT_EQ_INT((int)incoming->last_signed_nonce, 777);
     ASSERT_EQ_INT(incoming->autopilot_mode, 1);
@@ -722,14 +755,11 @@ TEST(test_session_first_reattach_pubkey_upgrade_preserves_ship) {
     uint32_t asset_id = old->ship_asset_id;
     ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
     ASSERT(asset != NULL);
-    asset->owner_kind =
-        (uint8_t)SHIP_ASSET_OWNER_PLAYER_SESSION;
-    memcpy(asset->owner_session, token, sizeof(token));
-    memset(asset->owner_pubkey, 0, sizeof(asset->owner_pubkey));
-    ASSERT_EQ_INT(asset->owner_kind,
-                  SHIP_ASSET_OWNER_PLAYER_SESSION);
-    ASSERT_EQ_INT(memcmp(asset->owner_session,
-                         token, sizeof(token)), 0);
+    actor_principal_t loaner_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(w, 0, &loaner_owner));
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &loaner_owner));
+    ASSERT(asset->loaner);
 
     station_t *station = &w->stations[0];
     ledger_earn(station, token, 100.0f);
@@ -760,10 +790,8 @@ TEST(test_session_first_reattach_pubkey_upgrade_preserves_ship) {
     station->pending_ship_build_count = 1;
     pending_ship_build_t *build =
         &station->pending_ship_builds[0];
-    build->owner = 0;
-    build->owner_kind =
-        (uint8_t)SHIP_ASSET_OWNER_PLAYER_SESSION;
-    memcpy(build->owner_session, token, sizeof(token));
+    build->owner_principal = actor_principal_none();
+    build->mode = (uint8_t)PENDING_SHIP_BUILD_MODE_UNKNOWN;
 
     server_player_t *incoming = &w->players[1];
     incoming->connected = true;
@@ -831,16 +859,18 @@ TEST(test_session_first_reattach_pubkey_upgrade_preserves_ship) {
 
     asset = world_ship_asset_by_id(w, asset_id);
     ASSERT(asset != NULL);
-    ASSERT_EQ_INT(asset->owner_kind,
-                  SHIP_ASSET_OWNER_PLAYER_PUBKEY);
-    ASSERT_EQ_INT(memcmp(asset->owner_pubkey, key, sizeof(key)), 0);
-    uint8_t zero_session[8] = {0};
-    ASSERT_EQ_INT(memcmp(asset->owner_session, zero_session,
-                         sizeof(zero_session)), 0);
-    ASSERT_EQ_INT(build->owner, 1);
-    ASSERT_EQ_INT(build->owner_kind,
-                  SHIP_ASSET_OWNER_PLAYER_PUBKEY);
-    ASSERT_EQ_INT(memcmp(build->owner_pubkey, key, sizeof(key)), 0);
+    actor_principal_t verified_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        incoming, &verified_owner));
+    ASSERT(actor_principal_equal(
+        &asset->owner_principal, &loaner_owner));
+    ASSERT(!actor_principal_equal(
+        &asset->owner_principal, &verified_owner));
+    ASSERT(asset->loaner);
+    actor_principal_t no_owner = actor_principal_none();
+    ASSERT(actor_principal_equal(
+        &build->owner_principal, &no_owner));
+    ASSERT_EQ_INT(build->mode, PENDING_SHIP_BUILD_MODE_UNKNOWN);
 }
 
 TEST(test_live_session_requires_nonzero_token) {

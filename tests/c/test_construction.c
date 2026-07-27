@@ -1,6 +1,8 @@
 #include "test_harness.h"
+#include "actor_principal_resolver.h"
 #include "chain_log.h"
 #include "cargo_receipt_issue.h"
+#include "mining.h"
 #include "sim_physics.h"
 #include "signal_intelligence.h"
 
@@ -24,6 +26,34 @@ static bool construction_bytes_any(const uint8_t bytes[32]) {
     for (int i = 0; i < 32; i++)
         if (bytes[i] != 0) return true;
     return false;
+}
+
+static bool construction_make_verified_player(server_player_t *sp,
+                                              uint8_t discriminator) {
+    if (!sp) return false;
+    sp->connected = true;
+    sp->grace_period = false;
+    sp->session_ready = true;
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    sp->pubkey_identity_finalized = true;
+    for (size_t i = 0; i < sizeof(sp->pubkey); i++)
+        sp->pubkey[i] = (uint8_t)(discriminator + i);
+    return actor_principal_from_verified_player(
+        sp, &(actor_principal_t){0});
+}
+
+static void construction_clear_pending_hull_queues(world_t *w) {
+    if (!w) return;
+    for (int station_idx = 0; station_idx < MAX_STATIONS; station_idx++) {
+        station_t *station = &w->stations[station_idx];
+        memset(station->pending_ship_builds, 0,
+               sizeof(station->pending_ship_builds));
+        station->pending_ship_build_count = 0;
+        memset(w->ship_birth_assemblies[station_idx], 0,
+               sizeof(w->ship_birth_assemblies[station_idx]));
+    }
 }
 
 /*
@@ -175,7 +205,16 @@ static void construction_seed_birth_fragment(world_t *w, int idx,
     a->last_fractured_by = -1;
     a->grade = (uint8_t)MINING_GRADE_COMMON;
     for (int i = 0; i < 32; i++)
-        a->fragment_pub[i] = (uint8_t)(tag + i + 1);
+        a->fracture_seed[i] = (uint8_t)(tag + i + 1);
+    fracture_claim_state_t *claim = &w->fracture_claims[idx];
+    claim->resolved = true;
+    claim->best_nonce = (uint32_t)tag + 17u;
+    claim->best_grade = a->grade;
+    for (int i = 0; i < 32; i++)
+        claim->best_player_pub[i] = (uint8_t)(tag ^ (uint8_t)(i + 0x5Au));
+    mining_fragment_pub_compute(
+        a->fracture_seed, claim->best_player_pub, claim->best_nonce,
+        a->fragment_pub);
     a->net_dirty = true;
 }
 
@@ -1255,13 +1294,20 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     sp->connected = true;
     sp->session_ready = true;
     memset(sp->session_token, 0xA1, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xA1));
     sp->docked = true;
     sp->current_station = 1;
     sp->ship->hull_class = HULL_CLASS_NPC_MINER;
     sp->ship->hull = ship_max_hull(sp->ship);
 
+    actor_principal_t owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(sp, &owner));
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal, &owner));
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
@@ -1274,6 +1320,7 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
     const ship_asset_t *asset = world_ship_asset_by_id_const(&w, sp->ship_asset_id);
     ASSERT(asset != NULL);
     ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_SHIPYARD);
+    ASSERT(actor_principal_equal(&asset->owner_principal, &owner));
     ASSERT_EQ_INT(asset->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT(world_station_stored_hull_count(&w, 1, HULL_CLASS_MINER) >= 1);
@@ -1312,6 +1359,7 @@ TEST(test_shipyard_birth_assembly_consumes_three_fragments) {
     sp->connected = true;
     sp->session_ready = true;
     memset(sp->session_token, 0xB1, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xB1));
     sp->docked = true;
     sp->current_station = 1;
     sp->nearby_station = 1;
@@ -1319,6 +1367,8 @@ TEST(test_shipyard_birth_assembly_consumes_three_fragments) {
 
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY);
     ASSERT(w.ship_birth_assemblies[1][0].active);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
@@ -1335,11 +1385,305 @@ TEST(test_shipyard_birth_assembly_consumes_three_fragments) {
     const ship_asset_t *asset = world_ship_asset_by_id_const(&w, sp->ship_asset_id);
     ASSERT(asset != NULL);
     ASSERT_EQ_INT(asset->provenance, SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY);
+    ASSERT_EQ_INT(
+        asset->birth_proof_version,
+        SHIP_BIRTH_PROOF_VERSION_V1);
+    actor_principal_t owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(sp, &owner));
+    ASSERT(actor_principal_equal(&asset->owner_principal, &owner));
     ASSERT(construction_bytes_any(asset->birth_soul_pub));
     ASSERT(construction_bytes_any(asset->birth_material_root));
     ASSERT(memcmp(asset->birth_fragment_pubs[0], expected_pubs[0], 32) == 0);
     ASSERT(memcmp(asset->birth_fragment_pubs[1], expected_pubs[1], 32) == 0);
     ASSERT(memcmp(asset->birth_fragment_pubs[2], expected_pubs[2], 32) == 0);
+}
+
+TEST(test_shipyard_birth_assembly_roundtrips_and_completes_offline) {
+    const char *catalog_dir =
+        TMP("test_birth_assembly_roundtrip_catalog");
+    const char *save_path =
+        TMP("test_birth_assembly_roundtrip.sav");
+    WORLD_HEAP world = calloc(1, sizeof(world_t));
+    ASSERT(world != NULL);
+    world_reset(world);
+    memset(world->asteroids, 0, sizeof(world->asteroids));
+    memset(world->fracture_claims, 0,
+           sizeof(world->fracture_claims));
+    memset(world->cargo_pods, 0, sizeof(world->cargo_pods));
+
+    station_t *station = &world->stations[1];
+    ASSERT(test_set_station_finished_units(
+        station, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(
+        station, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(
+        station, COMMODITY_TRACTOR_MODULE, 0));
+    construction_seed_birth_fragment(
+        world, 0, COMMODITY_FERRITE_ORE,
+        v2_add(station->pos, v2(-640.0f, -180.0f)), 0x16);
+    construction_seed_birth_fragment(
+        world, 1, COMMODITY_CUPRITE_ORE,
+        v2_add(station->pos, v2(620.0f, -160.0f)), 0x46);
+    construction_seed_birth_fragment(
+        world, 2, COMMODITY_CRYSTAL_ORE,
+        v2_add(station->pos, v2(20.0f, 720.0f)), 0x76);
+
+    server_player_t *player = &world->players[0];
+    player->id = 0;
+    player->connected = true;
+    player->session_ready = true;
+    memset(player->session_token, 0xB6,
+           sizeof(player->session_token));
+    ASSERT(construction_make_verified_player(player, 0xB6));
+    player_init_ship(player, world);
+    player->docked = true;
+    player->current_station = 1;
+    player->nearby_station = 1;
+    player->in_dock_range = true;
+
+    ASSERT(shipyard_queue_ship_commission(
+        world, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(
+        station->pending_ship_builds[0].mode,
+        PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY);
+    ASSERT(world->ship_birth_assemblies[1][0].active);
+    actor_principal_t owner =
+        station->pending_ship_builds[0].owner_principal;
+    uint8_t fragment_pubs[
+        SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32];
+    memcpy(fragment_pubs,
+           world->ship_birth_assemblies[1][0].fragment_pubs,
+           sizeof(fragment_pubs));
+
+    ASSERT(station_catalog_save_all(
+        world->stations, MAX_STATIONS, catalog_dir));
+    ASSERT(world_save(world, save_path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT_EQ_INT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS, catalog_dir),
+        SIGNAL_SEEDED_STATION_COUNT);
+    ASSERT(world_load(loaded, save_path));
+    station_t *loaded_station = &loaded->stations[1];
+    ASSERT_EQ_INT(loaded_station->pending_ship_build_count, 1);
+    ASSERT(actor_principal_equal(
+        &loaded_station->pending_ship_builds[0].owner_principal,
+        &owner));
+    ASSERT(loaded->ship_birth_assemblies[1][0].active);
+    ASSERT(memcmp(
+        loaded->ship_birth_assemblies[1][0].fragment_pubs,
+        fragment_pubs, sizeof(fragment_pubs)) == 0);
+    for (int i = 0; i < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; i++) {
+        int slot =
+            loaded->ship_birth_assemblies[1][0].fragment_slots[i];
+        ASSERT(slot >= 0 && slot < MAX_ASTEROIDS);
+        ASSERT(memcmp(
+            loaded->asteroids[slot].fragment_pub,
+            fragment_pubs[i], 32) == 0);
+    }
+
+    for (int i = 0;
+         i < 4000 &&
+         loaded_station->pending_ship_build_count > 0;
+         i++) {
+        world_sim_step(loaded, 1.0f / 120.0f);
+    }
+    ASSERT_EQ_INT(loaded_station->pending_ship_build_count, 0);
+
+    const ship_asset_t *completed = NULL;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *candidate =
+            &loaded->ship_assets[i];
+        if (candidate->active &&
+            candidate->provenance ==
+                SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY &&
+            actor_principal_equal(
+                &candidate->owner_principal, &owner)) {
+            ASSERT(completed == NULL);
+            completed = candidate;
+        }
+    }
+    ASSERT(completed != NULL);
+    ASSERT_EQ_INT(
+        completed->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(
+        completed->birth_proof_version,
+        SHIP_BIRTH_PROOF_VERSION_V1);
+    ASSERT(memcmp(
+        completed->birth_fragment_pubs,
+        fragment_pubs, sizeof(fragment_pubs)) == 0);
+    uint8_t expected_soul[32];
+    uint8_t expected_material[32];
+    ASSERT(ship_birth_proof_compute_v1(
+        completed->birth_fragment_pubs,
+        completed->birth_fragment_grades,
+        expected_soul, expected_material));
+    ASSERT(memcmp(
+        completed->birth_soul_pub,
+        expected_soul, sizeof(expected_soul)) == 0);
+    ASSERT(memcmp(
+        completed->birth_material_root,
+        expected_material, sizeof(expected_material)) == 0);
+
+    remove(save_path);
+}
+
+TEST(test_shipyard_birth_fragments_cannot_back_two_commissions) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.fracture_claims, 0, sizeof(w.fracture_claims));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[1];
+    ASSERT(station_has_module(st, MODULE_SHIPYARD));
+    for (int p = 0; p < 2; p++) {
+        server_player_t *sp = &w.players[p];
+        sp->id = (uint8_t)p;
+        memset(sp->session_token, 0xC2 + p, sizeof(sp->session_token));
+        ASSERT(construction_make_verified_player(sp, (uint8_t)(0xC2 + p)));
+        player_init_ship(sp, &w);
+        sp->docked = true;
+        sp->current_station = 1;
+        sp->nearby_station = 1;
+        sp->in_dock_range = true;
+    }
+    /* A second initial player may request a station loaner while spawning.
+     * Keep this fixture scoped to the two explicit player commissions. */
+    construction_clear_pending_hull_queues(&w);
+
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    construction_seed_birth_fragment(
+        &w, 0, COMMODITY_FERRITE_ORE, v2_add(st->pos, v2(-600.0f, 0.0f)),
+        0x11);
+    construction_seed_birth_fragment(
+        &w, 1, COMMODITY_CUPRITE_ORE, v2_add(st->pos, v2(600.0f, 0.0f)),
+        0x41);
+    construction_seed_birth_fragment(
+        &w, 2, COMMODITY_CRYSTAL_ORE, v2_add(st->pos, v2(0.0f, 700.0f)),
+        0x71);
+
+    actor_principal_t first_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        &w.players[0], &first_owner));
+    ASSERT(shipyard_queue_ship_commission(
+        &w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY);
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal, &first_owner));
+    ASSERT(w.ship_birth_assemblies[1][0].active);
+
+    int16_t reserved[3];
+    memcpy(reserved, w.ship_birth_assemblies[1][0].fragment_slots,
+           sizeof(reserved));
+    ASSERT(!shipyard_queue_ship_commission(
+        &w, 1, 1, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT(w.ship_birth_assemblies[1][0].active);
+    ASSERT(memcmp(reserved,
+                  w.ship_birth_assemblies[1][0].fragment_slots,
+                  sizeof(reserved)) == 0);
+    ASSERT(!w.ship_birth_assemblies[1][1].active);
+}
+
+TEST(test_shipyard_queue_compaction_moves_birth_sidecar_with_owner) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.fracture_claims, 0, sizeof(w.fracture_claims));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[1];
+    ASSERT(station_has_module(st, MODULE_SHIPYARD));
+    for (int p = 0; p < 2; p++) {
+        server_player_t *sp = &w.players[p];
+        sp->id = (uint8_t)p;
+        memset(sp->session_token, 0x92 + p, sizeof(sp->session_token));
+        ASSERT(construction_make_verified_player(sp, (uint8_t)(0x92 + p)));
+        player_init_ship(sp, &w);
+        sp->docked = true;
+        sp->current_station = 1;
+        sp->nearby_station = 1;
+        sp->in_dock_range = true;
+    }
+    construction_clear_pending_hull_queues(&w);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(
+        HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(station_finished_mint(
+        st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(
+        st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(
+        st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    ASSERT(shipyard_queue_ship_commission(
+        &w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
+    ASSERT(!w.ship_birth_assemblies[1][0].active);
+
+    construction_seed_birth_fragment(
+        &w, 0, COMMODITY_FERRITE_ORE, v2_add(st->pos, v2(-640.0f, -80.0f)),
+        0x12);
+    construction_seed_birth_fragment(
+        &w, 1, COMMODITY_CUPRITE_ORE, v2_add(st->pos, v2(620.0f, -60.0f)),
+        0x42);
+    construction_seed_birth_fragment(
+        &w, 2, COMMODITY_CRYSTAL_ORE, v2_add(st->pos, v2(20.0f, 720.0f)),
+        0x72);
+
+    ASSERT(shipyard_queue_ship_commission(
+        &w, 1, 1, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 2);
+    ASSERT_EQ_INT(st->pending_ship_builds[1].mode,
+                  PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY);
+    ASSERT(w.ship_birth_assemblies[1][1].active);
+    st->pending_ship_builds[1].owner_quarantine_record_id =
+        UINT64_C(0x101);
+    st->pending_ship_builds[1].mode_quarantine_record_id =
+        UINT64_C(0x102);
+
+    actor_principal_t birth_owner =
+        st->pending_ship_builds[1].owner_principal;
+    ship_birth_assembly_t birth_before =
+        w.ship_birth_assemblies[1][1];
+    for (int i = 0;
+         i < 4000 && st->pending_ship_build_count == 2; i++) {
+        world_sim_step(&w, 1.0f / 120.0f);
+    }
+
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY);
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal, &birth_owner));
+    ASSERT(st->pending_ship_builds[0].owner_quarantine_record_id ==
+           UINT64_C(0x101));
+    ASSERT(st->pending_ship_builds[0].mode_quarantine_record_id ==
+           UINT64_C(0x102));
+    ASSERT(w.ship_birth_assemblies[1][0].active);
+    ASSERT(memcmp(
+        w.ship_birth_assemblies[1][0].fragment_slots,
+        birth_before.fragment_slots,
+        sizeof(birth_before.fragment_slots)) == 0);
+    ASSERT(memcmp(
+        w.ship_birth_assemblies[1][0].fragment_pubs,
+        birth_before.fragment_pubs,
+        sizeof(birth_before.fragment_pubs)) == 0);
+    ASSERT(!w.ship_birth_assemblies[1][1].active);
+    ASSERT_EQ_INT(st->pending_ship_builds[1].mode,
+                  PENDING_SHIP_BUILD_MODE_UNKNOWN);
 }
 
 TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
@@ -1366,18 +1710,23 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
     original->connected = true;
     original->session_ready = true;
     memcpy(original->session_token, original_token, sizeof(original_token));
+    ASSERT(construction_make_verified_player(original, 0xD4));
     player_init_ship(original, &w);
     original->docked = true;
     original->current_station = 1;
     original->nearby_station = 1;
     original->in_dock_range = true;
 
+    actor_principal_t original_owner = actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        original, &original_owner));
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
-    ASSERT_EQ_INT(st->pending_ship_builds[0].owner_kind,
-                  SHIP_ASSET_OWNER_PLAYER_SESSION);
-    ASSERT(memcmp(st->pending_ship_builds[0].owner_session,
-                  original_token, sizeof(original_token)) == 0);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal,
+        &original_owner));
 
     (void)world_player_release_ship_asset(&w, 0);
     ship_cleanup(original->ship);
@@ -1387,7 +1736,11 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
     replacement->id = 0;
     replacement->connected = true;
     replacement->session_ready = true;
-    memset(replacement->session_token, 0xE5, sizeof(replacement->session_token));
+    /* Even reusing the old transport token and runtime slot cannot inherit
+     * work owned by a different stable player principal. */
+    memcpy(replacement->session_token, original_token,
+           sizeof(replacement->session_token));
+    ASSERT(construction_make_verified_player(replacement, 0xE5));
     player_init_ship(replacement, &w);
     replacement->docked = true;
     replacement->current_station = 1;
@@ -1402,11 +1755,8 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
         const ship_asset_t *asset = &w.ship_assets[i];
         if (!asset->active) continue;
         if (asset->provenance != SHIP_ASSET_PROVENANCE_SHIPYARD) continue;
-        if (asset->owner_kind != SHIP_ASSET_OWNER_PLAYER_SESSION) continue;
-        if (memcmp(asset->owner_session, original_token,
-                   sizeof(original_token)) != 0) {
-            continue;
-        }
+        if (!actor_principal_equal(
+                &asset->owner_principal, &original_owner)) continue;
         commissioned_id = asset->asset_id;
         break;
     }
@@ -1424,13 +1774,16 @@ TEST(test_shipyard_commission_owner_survives_player_slot_reuse) {
     rejoin->id = 1;
     rejoin->connected = true;
     rejoin->session_ready = true;
-    memcpy(rejoin->session_token, original_token, sizeof(original_token));
+    memset(rejoin->session_token, 0xF6, sizeof(rejoin->session_token));
+    ASSERT(construction_make_verified_player(rejoin, 0xD4));
     player_init_ship(rejoin, &w);
 
     ASSERT_EQ_INT(rejoin->ship_asset_id, commissioned_id);
     const ship_asset_t *claimed =
         world_ship_asset_by_id_const(&w, commissioned_id);
     ASSERT(claimed != NULL);
+    ASSERT(actor_principal_equal(
+        &claimed->owner_principal, &original_owner));
     ASSERT_EQ_INT(claimed->status, SHIP_ASSET_STATUS_ASSIGNED);
     ASSERT_EQ_INT(claimed->operator_kind, SHIP_ASSET_OPERATOR_PLAYER);
     ASSERT_EQ_INT(claimed->operator_slot, 1);
@@ -1460,16 +1813,19 @@ TEST(test_shipyard_commission_debits_player_ledger) {
     sp->docked = true;
     sp->current_station = 1;
     memset(sp->session_token, 0xC1, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xC1));
 
     float expected =
         (float)frames * station_sell_price(st, COMMODITY_FRAME) +
         (float)lasers * station_sell_price(st, COMMODITY_LASER_MODULE) +
         (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE);
-    float before = ledger_balance(st, sp->session_token);
+    float before = ledger_balance_by_pubkey(st, sp->pubkey);
 
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
 
-    float after = ledger_balance(st, sp->session_token);
+    float after = ledger_balance_by_pubkey(st, sp->pubkey);
     ASSERT_EQ_FLOAT(before - after, expected, 0.01f);
 }
 
@@ -1500,6 +1856,7 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
     sp->ship->hull_class = HULL_CLASS_HAULER;
     sp->ship->tractor_level = 1;
     memset(sp->session_token, 0xB7, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xB7));
 
     ASSERT(construction_spawn_towed_material_pod(
         &w, sp, COMMODITY_FRAME, frames, (const uint8_t *)"PODHULF1"));
@@ -1516,15 +1873,17 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
 
     construction_stage_towed_pods_at_hoppers(&w, st, sp->ship);
 
-    float before = ledger_balance(st, sp->session_token);
+    float before = ledger_balance_by_pubkey(st, sp->pubkey);
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
 
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
-    ASSERT(ledger_balance(st, sp->session_token) < before - 0.01f);
+    ASSERT(ledger_balance_by_pubkey(st, sp->pubkey) < before - 0.01f);
 }
 
 TEST(test_shipyard_station_request_consumes_staged_material_pods) {
@@ -1598,6 +1957,12 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
     ASSERT(shipyard_queue_station_hull_request(&w, 0, HULL_CLASS_MINER));
 
     ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    actor_principal_t station_owner = actor_principal_none();
+    ASSERT(actor_principal_from_station(&w, 0, &station_owner));
+    ASSERT(actor_principal_equal(
+        &st->pending_ship_builds[0].owner_principal, &station_owner));
+    ASSERT_EQ_INT(st->pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
     ASSERT(!w.cargo_pods[frame_pod].active);
     ASSERT(!w.cargo_pods[laser_pod].active);
     ASSERT(!w.cargo_pods[tractor_pod].active);
@@ -1756,6 +2121,7 @@ TEST(test_shipyard_player_commission_rejects_split_yard_towed_materials) {
     sp->ship->hull_class = HULL_CLASS_HAULER;
     sp->ship->tractor_level = 1;
     memset(sp->session_token, 0xD5, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xD5));
 
     ASSERT(construction_spawn_towed_material_pod(
         &w, sp, COMMODITY_FRAME, frames, (const uint8_t *)"SPLTPYDF"));
@@ -1770,7 +2136,9 @@ TEST(test_shipyard_player_commission_rejects_split_yard_towed_materials) {
 
     ASSERT(!shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
-    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    /* A rejected authorization/yard plan is transactionally inert: the
+     * caller retains every tow binding and material pod. */
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 3);
     ASSERT_EQ_INT(construction_count_exact_pod_units(&w, COMMODITY_FRAME),
                   frames);
     ASSERT_EQ_INT(construction_count_exact_pod_units(&w, COMMODITY_LASER_MODULE),
@@ -1834,6 +2202,7 @@ TEST(test_shipyard_player_commission_rejects_inventory_without_yard_hoppers) {
     sp->nearby_station = 1;
     sp->in_dock_range = true;
     memset(sp->session_token, 0xE6, sizeof(sp->session_token));
+    ASSERT(construction_make_verified_player(sp, 0xE6));
 
     ASSERT(!shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
@@ -1913,6 +2282,47 @@ TEST(test_shipyard_commission_rejects_invalid_owner_without_draining_materials) 
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), frames_before);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), lasers_before);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), tractors_before);
+}
+
+TEST(test_shipyard_commission_rejects_session_only_owner_without_draining) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(
+        HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(station_finished_mint(
+        st, COMMODITY_FRAME, frames, NULL) == frames);
+    ASSERT(station_finished_mint(
+        st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
+    ASSERT(station_finished_mint(
+        st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+
+    server_player_t *sp = &w.players[0];
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x6A, sizeof(sp->session_token));
+    player_init_ship(sp, &w);
+    sp->docked = true;
+    sp->current_station = 1;
+    sp->nearby_station = 1;
+    sp->in_dock_range = true;
+
+    ASSERT(!sp->pubkey_identity_finalized);
+    ASSERT(!shipyard_queue_ship_commission(
+        &w, 1, 0, HULL_CLASS_MINER));
+    ASSERT_EQ_INT(st->pending_ship_build_count, 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), frames);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), lasers);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE),
+                  tractors);
 }
 
 /* Regression: world_seed_station_manifests populates each active
@@ -3358,8 +3768,16 @@ TEST(test_save_preserves_pending_scaffolds) {
     w->stations[1].pending_scaffolds[0].owner = 0;
     w->stations[1].pending_scaffold_count = 1;
     w->stations[1].pending_ship_builds[0].hull_class = HULL_CLASS_HAULER;
-    w->stations[1].pending_ship_builds[0].owner = 0;
+    uint8_t pending_owner_id[ACTOR_PRINCIPAL_ID_SIZE];
+    for (size_t i = 0; i < sizeof(pending_owner_id); i++)
+        pending_owner_id[i] = (uint8_t)(0x71u + i);
+    actor_principal_t pending_owner = actor_principal_none();
+    ASSERT(actor_principal_from_stable_id(
+        ACTOR_PRINCIPAL_PLAYER, pending_owner_id, &pending_owner));
+    w->stations[1].pending_ship_builds[0].owner_principal = pending_owner;
     w->stations[1].pending_ship_builds[0].build_progress = 0.5f;
+    w->stations[1].pending_ship_builds[0].mode =
+        PENDING_SHIP_BUILD_MODE_MATERIAL;
     w->stations[1].pending_ship_build_count = 1;
     /* Some module buffer state */
     w->stations[1].modules[3].input_buffer = 42.5f;
@@ -3385,9 +3803,13 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded->stations[1].pending_ship_build_count, 1);
     ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].hull_class,
                   HULL_CLASS_HAULER);
-    ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].owner, 0);
+    ASSERT(actor_principal_equal(
+        &loaded->stations[1].pending_ship_builds[0].owner_principal,
+        &pending_owner));
     ASSERT_EQ_FLOAT(loaded->stations[1].pending_ship_builds[0].build_progress,
                     0.5f, 0.01f);
+    ASSERT_EQ_INT(loaded->stations[1].pending_ship_builds[0].mode,
+                  PENDING_SHIP_BUILD_MODE_MATERIAL);
     ASSERT_EQ_FLOAT(loaded->stations[1].modules[3].input_buffer, 42.5f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[1].modules[5].output_buffer, 17.0f, 0.01f);
 
@@ -4997,6 +5419,9 @@ void register_construction_modules_tests(void) {
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
     RUN(test_shipyard_commission_completes_onto_docked_player);
     RUN(test_shipyard_birth_assembly_consumes_three_fragments);
+    RUN(test_shipyard_birth_assembly_roundtrips_and_completes_offline);
+    RUN(test_shipyard_birth_fragments_cannot_back_two_commissions);
+    RUN(test_shipyard_queue_compaction_moves_birth_sidecar_with_owner);
     RUN(test_shipyard_commission_owner_survives_player_slot_reuse);
     RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_shipyard_commission_consumes_towed_material_pods);
@@ -5008,6 +5433,7 @@ void register_construction_modules_tests(void) {
     RUN(test_shipyard_player_commission_rejects_inventory_without_yard_hoppers);
     RUN(test_shipyard_manufacture_consumes_staged_material_pod);
     RUN(test_shipyard_commission_rejects_invalid_owner_without_draining_materials);
+    RUN(test_shipyard_commission_rejects_session_only_owner_without_draining);
     RUN(test_world_seed_station_manifests_matches_float);
     RUN(test_kepler_starts_with_frame_pod_not_frame_inventory);
     RUN(test_module_activation_does_not_spawn_free_worker_hull);

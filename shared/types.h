@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>   /* offsetof — Layer B of #479 station_secret guard */
 #include <stdint.h>
+#include "actor_principal.h"
 #include "cell_geometry.h"
 #include "math_util.h"
 #include "mining.h"
@@ -545,13 +546,6 @@ enum {
 };
 
 typedef enum {
-    SHIP_ASSET_OWNER_NONE = 0,
-    SHIP_ASSET_OWNER_STATION,
-    SHIP_ASSET_OWNER_PLAYER_PUBKEY,
-    SHIP_ASSET_OWNER_PLAYER_SESSION,
-} ship_asset_owner_kind_t;
-
-typedef enum {
     SHIP_ASSET_STATUS_STORED = 0,
     SHIP_ASSET_STATUS_ASSIGNED,
     SHIP_ASSET_STATUS_DESTROYED,
@@ -570,6 +564,18 @@ typedef enum {
     SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY,
 } ship_asset_provenance_t;
 
+typedef enum {
+    PENDING_SHIP_BUILD_MODE_UNKNOWN = 0,
+    PENDING_SHIP_BUILD_MODE_MATERIAL,
+    PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY,
+    PENDING_SHIP_BUILD_MODE_COUNT,
+} pending_ship_build_mode_t;
+
+enum {
+    SHIP_BIRTH_PROOF_FRAGMENT_COUNT = 3,
+    SHIP_BIRTH_PROOF_VERSION_V1 = 1,
+};
+
 typedef struct {
     bool active;
     uint32_t asset_id;
@@ -581,32 +587,34 @@ typedef struct {
     ship_t stored_ship;
     entity_ref_t live_ship_ref;
     ship_t *ship; /* transient non-owning view; rebuild after load/world copy */
-    uint8_t owner_kind;      /* ship_asset_owner_kind_t */
+    actor_principal_t owner_principal;
+    /* Stable foreign key to the exact inert ownership-quarantine row when
+     * owner_principal is NONE. Zero for actionable owned assets. */
+    uint64_t owner_quarantine_record_id;
     uint8_t status;          /* ship_asset_status_t */
     uint8_t operator_kind;   /* ship_asset_operator_kind_t */
     uint8_t provenance;      /* ship_asset_provenance_t */
-    int16_t owner_station;
     int16_t custody_station;
     int16_t operator_slot;
     int16_t build_station;
     bool loaner;
     bool destroyed;
-    uint8_t _pad[2];
-    uint8_t owner_pubkey[32];
-    uint8_t owner_session[8];
+    uint8_t birth_proof_version;
+    uint8_t birth_fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT];
     uint8_t birth_soul_pub[32];
     uint8_t birth_material_root[32];
-    uint8_t birth_fragment_pubs[3][32];
+    uint8_t birth_fragment_pubs[SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32];
 } ship_asset_t;
 
 typedef struct {
     hull_class_t hull_class;
-    int8_t owner;
-    uint8_t owner_kind;  /* ship_asset_owner_kind_t */
-    uint8_t _pad[2];
+    actor_principal_t owner_principal;
+    /* Stable deny-latch foreign keys. Historical station/row locators are
+     * diagnostic snapshots and must never authorize queue state. */
+    uint64_t owner_quarantine_record_id;
+    uint64_t mode_quarantine_record_id;
     float build_progress;
-    uint8_t owner_pubkey[32];
-    uint8_t owner_session[8];
+    uint8_t mode; /* pending_ship_build_mode_t */
 } pending_ship_build_t;
 
 typedef enum {
@@ -887,6 +895,19 @@ typedef struct {
     uint8_t  station_pubkey[32];
     uint8_t  outpost_founder_pubkey[32];
     uint64_t outpost_planted_tick;
+    /*
+     * Immutable public actor identity for durable ownership. Unlike the
+     * station signing key above, this identifier never rotates when an
+     * operator key changes. It is derived once from world/station creation
+     * provenance, persisted explicitly, and never used as signing material.
+     */
+    uint8_t station_actor_id[ACTOR_PRINCIPAL_ID_SIZE];
+    /*
+     * Runtime-only provenance bit. Only a successfully validated v8+ catalog
+     * may set this; reset/bootstrap actors and legacy catalogs are not an
+     * independent attestation against the world snapshot.
+     */
+    bool station_actor_catalog_attested;
     /*
      * Versioned, bounded public authority history. Row zero is the live
      * current key for an occupied station. Later rows preserve historical

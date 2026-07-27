@@ -1853,13 +1853,18 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     }
     st->pending_ship_build_count = si->pending_ship_build_count;
     if (st->pending_ship_build_count > 4) st->pending_ship_build_count = 4;
+    memset(st->pending_ship_builds, 0, sizeof(st->pending_ship_builds));
     for (int p = 0; p < st->pending_ship_build_count; p++) {
         st->pending_ship_builds[p].hull_class =
             si->pending_ship_builds[p].hull_class;
-        st->pending_ship_builds[p].owner =
-            si->pending_ship_builds[p].owner;
         st->pending_ship_builds[p].build_progress =
             si->pending_ship_builds[p].build_progress;
+        /*
+         * Station identity intentionally carries no ownership authority.
+         * Client replicas retain an explicit unknown mode and a zero/NONE
+         * principal rather than reconstructing identity from a wire slot.
+         */
+        st->pending_ship_builds[p].mode = PENDING_SHIP_BUILD_MODE_UNKNOWN;
     }
     memcpy(st->stored_hull_count, si->stored_hull_count,
            sizeof(st->stored_hull_count));

@@ -4281,7 +4281,11 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     for (int p = 0; p < STATION_PENDING_SHIP_RECORD_COUNT; p++) {
         if (p < ship_n) {
             buf[moff + 0] = (uint8_t)st->pending_ship_builds[p].hull_class;
-            buf[moff + 1] = (uint8_t)st->pending_ship_builds[p].owner;
+            /*
+             * Preserve the legacy six-byte record shape, but never project a
+             * durable actor principal into its old runtime-owner byte.
+             */
+            buf[moff + 1] = 0xFF;
             write_f32_le(&buf[moff + 2], st->pending_ship_builds[p].build_progress);
         } else {
             buf[moff + 0] = 0;
