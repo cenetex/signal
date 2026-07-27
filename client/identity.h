@@ -30,9 +30,9 @@ typedef struct {
 
 /* Load the player identity from the platform default path. If the file
  * is missing, generate a fresh keypair and save it. If the file exists
- * but is corrupt (wrong size, IO error), rename the bad file to
- * "<path>.bad" so the user can recover it manually, and then generate
- * fresh. Returns true on success.
+ * but has the wrong size, rename it to "<path>.bad" so the user can
+ * recover it manually, and then generate fresh. Other I/O failures are
+ * fail-closed and do not replace the path. Returns true on success.
  *
  * Paths:
  *   POSIX (Linux):  $XDG_DATA_HOME/signal/identity.key
@@ -42,8 +42,14 @@ typedef struct {
  *   wasm:           localStorage["signal:identity"] (base64 of secret)
  *
  * On POSIX the file is created with mode 0600 inside a 0700 directory.
- * If secure entropy is unavailable, returns false with `out` cleared and
- * does not create, replace, rename, or persist identity state.
+ * Native first-use and recovery are serialized in-process and by a path
+ * lock, and install through a fully written, synced temporary file. POSIX
+ * identity reads reject symbolic links and other non-regular paths. Browser
+ * first-use uses a conditional install followed by a winner reread, reducing
+ * last-writer divergence; full cross-tab serialization requires an
+ * asynchronous browser lock during startup. If secure entropy is unavailable,
+ * returns false with `out` cleared and does not create, replace, rename, or
+ * persist identity state.
  */
 bool identity_load_or_generate(player_identity_t *out);
 

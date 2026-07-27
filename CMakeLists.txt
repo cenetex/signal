@@ -61,6 +61,10 @@ option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chai
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
 
+if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+endif()
+
 function(signal_apply_sim_profile target_name)
     if(SIGNAL_SIM_PROFILE)
         target_compile_definitions(${target_name} PRIVATE SIM_PROFILE=1)
@@ -344,6 +348,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         target_compile_definitions(signal_test PRIVATE _GNU_SOURCE)
     endif()
     signal_apply_sim_profile(signal_test)
+    target_link_libraries(signal_test PRIVATE Threads::Threads)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -609,6 +614,9 @@ endif()
 if(NOT MSVC)
     target_link_libraries(signal PRIVATE m)
 endif()
+if(NOT EMSCRIPTEN)
+    target_link_libraries(signal PRIVATE Threads::Threads)
+endif()
 
 if(EMSCRIPTEN)
     set(SIGNAL_HAS_WEB_EPISODE_ASSETS 0)
@@ -870,7 +878,6 @@ else()
         ${X11_LIBRARIES}
         ${X11_Xi_LIB}
         ${X11_Xcursor_LIB}
-        pthread
         dl
     )
 endif()
