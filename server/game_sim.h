@@ -23,6 +23,7 @@
 #include "handoff_ticket.h"
 #include "protocol.h"
 #include "tractor.h"
+#include "ownership_quarantine.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */
@@ -35,6 +36,22 @@ enum {
     MAX_DELIVERY_BOUND_CARGO = 16,
     MAX_DESTROYED_ROCKS = 4096,
 };
+
+/*
+ * The quarantine must be able to retain every currently inventoried legacy
+ * ownership/attribution row at once. Keep this expression aligned with the
+ * pinned source tags in ownership_quarantine.h when adding a source.
+ */
+_Static_assert(
+    OWNERSHIP_QUARANTINE_CAP >=
+        3 * MAX_ASTEROIDS +
+        MAX_CONTRACTS +
+        MAX_DELIVERY_SHIPMENTS +
+        MAX_STATIONS * (2 + 4 + 4 + 8) +
+        MAX_SHIP_ASSETS +
+        MAX_CARGO_PODS +
+        MAX_SCAFFOLDS,
+    "ownership quarantine must cover the complete legacy-row inventory");
 
 enum {
     SIGNAL_BRAIN_FLIGHT_ACTION_COUNT = 9,
@@ -742,6 +759,10 @@ typedef struct {
     sim_interactions_t interactions;
     contract_t contracts[MAX_CONTRACTS];
     delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
+    /* Server-only, inert diagnostics for legacy owner rows that could not be
+     * rebound to a proven stable principal. Never replicated to clients and
+     * deliberately incapable of storing bearer/session material. */
+    ownership_quarantine_t ownership_quarantine;
     uint16_t next_delivery_shipment_id;
     bool player_only_mode;
     uint32_t next_fracture_id;

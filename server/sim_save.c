@@ -39,6 +39,7 @@
 #include "protocol.h"
 #include "station_authority.h"
 #include "chain_log.h"
+#include "ownership_quarantine.h"
 #include "persistence_io.h"
 #include <stdio.h>
 #include <string.h>
@@ -78,7 +79,13 @@
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 77  /* v77: stations persist a bounded, versioned public
+#define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
+#define SAVE_VERSION 78  /* v78: appends a bounded, server-only ownership
+                          * quarantine before CRC2. Legacy actor rows that
+                          * cannot be proven are retained as inert public
+                          * locators for operator review; no bearer tokens are
+                          * stored in this table.
+                          * v77: stations persist a bounded, versioned public
                           * authority lifecycle/trust registry. Private station
                           * keys remain memory-only.
                           * v76: cargo pods persist their named tow hardpoint.
@@ -1636,6 +1643,63 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     return true;
 }
 
+static bool write_ownership_quarantine(
+    FILE *f,
+    const ownership_quarantine_t *quarantine) {
+    if (!f || !ownership_quarantine_validate(quarantine))
+        return false;
+    WRITE_FIELD(f, quarantine->record_id_high_water);
+    WRITE_FIELD(f, quarantine->count);
+    for (uint16_t i = 0; i < quarantine->count; i++) {
+        const ownership_quarantine_entry_t *row =
+            &quarantine->entries[i];
+        WRITE_FIELD(f, row->record_id);
+        WRITE_FIELD(f, row->source_kind);
+        WRITE_FIELD(f, row->reason);
+        WRITE_FIELD(f, row->station_index);
+        WRITE_FIELD(f, row->row_index);
+        WRITE_FIELD(f, row->legacy_actor_code);
+    }
+    return true;
+}
+
+static bool read_ownership_quarantine(
+    FILE *f,
+    ownership_quarantine_t *quarantine) {
+    if (!f || !quarantine) return false;
+    ownership_quarantine_clear(quarantine);
+
+    uint16_t count = 0;
+    if (fread(&quarantine->record_id_high_water,
+              sizeof(quarantine->record_id_high_water), 1, f) != 1 ||
+        fread(&count, sizeof(count), 1, f) != 1 ||
+        count > OWNERSHIP_QUARANTINE_CAP) {
+        ownership_quarantine_clear(quarantine);
+        return false;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        ownership_quarantine_entry_t row = {0};
+        if (fread(&row.record_id, sizeof(row.record_id), 1, f) != 1 ||
+            fread(&row.source_kind, sizeof(row.source_kind), 1, f) != 1 ||
+            fread(&row.reason, sizeof(row.reason), 1, f) != 1 ||
+            fread(&row.station_index, sizeof(row.station_index), 1, f) != 1 ||
+            fread(&row.row_index, sizeof(row.row_index), 1, f) != 1 ||
+            fread(&row.legacy_actor_code,
+                  sizeof(row.legacy_actor_code), 1, f) != 1 ||
+            !ownership_quarantine_entry_is_canonical(&row)) {
+            ownership_quarantine_clear(quarantine);
+            return false;
+        }
+        quarantine->entries[i] = row;
+        quarantine->count = (uint16_t)(i + 1);
+    }
+    if (!ownership_quarantine_validate(quarantine)) {
+        ownership_quarantine_clear(quarantine);
+        return false;
+    }
+    return true;
+}
+
 static bool world_save_payload(const world_t *w, FILE *f) {
     /* Header */
     uint32_t magic = SAVE_MAGIC;
@@ -1780,6 +1844,12 @@ static bool world_save_payload(const world_t *w, FILE *f) {
             }
         }
     }
+
+    /* v78: bounded, server-only legacy ownership quarantine. Rows are
+     * serialized field-by-field in canonical record-ID order and contain no
+     * pubkeys, session tokens, reconnect secrets, or other bearer material. */
+    if (!write_ownership_quarantine(f, &w->ownership_quarantine))
+        return false;
 
     return true;
 }
@@ -2063,13 +2133,33 @@ static bool world_load_payload(world_t *w, FILE *f) {
         }
     }
 
+    if (version >= 78) {
+        if (!read_ownership_quarantine(
+                f, &w->ownership_quarantine)) {
+            return false;
+        }
+    } else {
+        ownership_quarantine_clear(&w->ownership_quarantine);
+    }
+
     /* Every supported world-save version has a CRC32 trailer. Require it at
      * the exact payload boundary so appended or truncated data cannot be
      * mistaken for a legacy save. */
     {
         long data_end = ftell(f);
+        long file_end = -1;
         uint32_t trail_magic = 0;
         uint32_t stored_crc = 0;
+        if (data_end < 0 ||
+            fseek(f, 0, SEEK_END) != 0 ||
+            (file_end = ftell(f)) < 0 ||
+            file_end < data_end ||
+            file_end - data_end !=
+                (long)(sizeof(trail_magic) + sizeof(stored_crc)) ||
+            fseek(f, data_end, SEEK_SET) != 0) {
+            printf("[save] trailing data after CRC32 trailer\n");
+            return false;
+        }
         if (fread(&trail_magic, sizeof(trail_magic), 1, f) != 1 ||
             trail_magic != SAVE_CRC_MAGIC ||
             fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
@@ -2440,6 +2530,11 @@ static bool world_load_payload(world_t *w, FILE *f) {
      * station's local view from loaded station/contract state so
      * reset/load does not invent peer-station radio. */
     gossip_bootstrap_world_stations(w);
+    if (w->ownership_quarantine.count > 0) {
+        (void)ownership_quarantine_report_bounded(
+            stderr, &w->ownership_quarantine,
+            OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS);
+    }
     return true;
 }
 

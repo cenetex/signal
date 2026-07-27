@@ -331,19 +331,20 @@ static size_t authority_find_span(const uint8_t *haystack,
 }
 
 /*
- * Construct a real v76 byte stream from a canonical v77 save by deleting only
+ * Construct a real v76 byte stream from a canonical current save by deleting
  * the 296-byte registry span introduced in v77 for each of the 128 serialized
- * station slots, changing the header version, and recomputing the CRC trailer.
- * Every pre-v77 byte remains byte-for-byte in its original order, so loading
- * the result exercises the actual old on-disk offsets rather than an in-memory
- * zero-field shortcut.
+ * station slots and the empty ownership-quarantine header introduced in v78,
+ * changing the header version, and recomputing the CRC trailer. Every pre-v77
+ * byte remains byte-for-byte in its original order, so loading the result
+ * exercises the actual old on-disk offsets rather than an in-memory zero-field
+ * shortcut.
  */
 static bool authority_construct_v76_save(
     const world_t *world,
-    const char *v77_path,
+    const char *current_path,
     const char *v76_path) {
-    if (!world || !v77_path || !v76_path) return false;
-    FILE *f = fopen(v77_path, "rb");
+    if (!world || !current_path || !v76_path) return false;
+    FILE *f = fopen(current_path, "rb");
     if (!f) return false;
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
@@ -355,39 +356,59 @@ static bool authority_construct_v76_save(
         return false;
     }
     size_t file_len = (size_t)end;
-    uint8_t *v77 = malloc(file_len);
-    if (!v77) {
+    uint8_t *current = malloc(file_len);
+    if (!current) {
         fclose(f);
         return false;
     }
-    bool ok = fread(v77, 1, file_len, f) == file_len;
+    bool ok = fread(current, 1, file_len, f) == file_len;
     fclose(f);
     if (!ok) {
-        free(v77);
+        free(current);
         return false;
     }
 
     const uint32_t crc_magic_expected = 0x43524332u;
     uint32_t crc_magic = 0;
-    memcpy(&crc_magic, &v77[file_len - 8], sizeof(crc_magic));
+    memcpy(&crc_magic, &current[file_len - 8], sizeof(crc_magic));
     if (crc_magic != crc_magic_expected) {
-        free(v77);
+        free(current);
         return false;
     }
     size_t payload_len = file_len - 8;
+    if (payload_len < OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE) {
+        free(current);
+        return false;
+    }
+    uint64_t record_id_high_water = UINT64_MAX;
+    uint16_t quarantine_count = UINT16_MAX;
+    memcpy(
+        &record_id_high_water,
+        &current[payload_len - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE],
+        sizeof(record_id_high_water));
+    memcpy(&quarantine_count,
+           &current[payload_len - sizeof(quarantine_count)],
+           sizeof(quarantine_count));
+    if (record_id_high_water != 0 || quarantine_count != 0) {
+        free(current);
+        return false;
+    }
+    size_t legacy_source_payload_len =
+        payload_len - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE;
     size_t registry_offsets[MAX_STATIONS];
     size_t cursor = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         uint8_t registry[AUTHORITY_REGISTRY_WIRE_SIZE];
         if (authority_registry_pack_for_save(
                 &world->stations[i], registry) != sizeof(registry)) {
-            free(v77);
+            free(current);
             return false;
         }
         size_t found = authority_find_span(
-            v77, payload_len, cursor, registry, sizeof(registry));
+            current, legacy_source_payload_len, cursor,
+            registry, sizeof(registry));
         if (found == SIZE_MAX) {
-            free(v77);
+            free(current);
             return false;
         }
         registry_offsets[i] = found;
@@ -396,27 +417,27 @@ static bool authority_construct_v76_save(
 
     size_t registry_bytes =
         (size_t)MAX_STATIONS * AUTHORITY_REGISTRY_WIRE_SIZE;
-    if (payload_len < registry_bytes) {
-        free(v77);
+    if (legacy_source_payload_len < registry_bytes) {
+        free(current);
         return false;
     }
-    size_t v76_payload_len = payload_len - registry_bytes;
+    size_t v76_payload_len = legacy_source_payload_len - registry_bytes;
     uint8_t *v76 = malloc(v76_payload_len + 8);
     if (!v76) {
-        free(v77);
+        free(current);
         return false;
     }
     size_t src = 0;
     size_t dst = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         size_t keep = registry_offsets[i] - src;
-        memcpy(&v76[dst], &v77[src], keep);
+        memcpy(&v76[dst], &current[src], keep);
         dst += keep;
         src = registry_offsets[i] + AUTHORITY_REGISTRY_WIRE_SIZE;
     }
-    memcpy(&v76[dst], &v77[src], payload_len - src);
-    dst += payload_len - src;
-    free(v77);
+    memcpy(&v76[dst], &current[src], legacy_source_payload_len - src);
+    dst += legacy_source_payload_len - src;
+    free(current);
     if (dst != v76_payload_len || v76_payload_len < 8) {
         free(v76);
         return false;
@@ -724,7 +745,7 @@ TEST(test_station_authority_registry_legacy_synthesizes_current_only) {
 }
 
 TEST(test_station_authority_registry_v76_byte_stream_migrates) {
-    const char *v77_path = TMP("test_auth_registry_source_v77.sav");
+    const char *current_path = TMP("test_auth_registry_source_current.sav");
     const char *v76_path = TMP("test_auth_registry_exact_v76.sav");
     station_authority_configure_secret("registry-v76-migration");
 
@@ -757,9 +778,9 @@ TEST(test_station_authority_registry_v76_byte_stream_migrates) {
                original->stations[i].station_pubkey, 32);
     }
 
-    ASSERT(world_save(original, v77_path));
+    ASSERT(world_save(original, current_path));
     ASSERT(authority_construct_v76_save(
-        original, v77_path, v76_path));
+        original, current_path, v76_path));
 
     FILE *f = fopen(v76_path, "rb");
     ASSERT(f);
@@ -790,7 +811,7 @@ TEST(test_station_authority_registry_v76_byte_stream_migrates) {
     }
 
     station_authority_use_dev_secret();
-    remove(v77_path);
+    remove(current_path);
     remove(v76_path);
 }
 
@@ -813,7 +834,7 @@ TEST(test_station_authority_registry_save_load_and_secret_omission) {
     ASSERT_EQ_INT(empty->authority_registry_version, 0);
     ASSERT_EQ_INT(empty->authority_registry_count, 0);
     ASSERT(station_authority_registry_validate(empty));
-    /* The v77 writer must accept canonical all-zero unused slots. */
+    /* The current writer must accept canonical all-zero unused slots. */
     ASSERT(world_save(original, first_path));
 
     station_authority_configure_secret("save-registry-beta");

@@ -194,6 +194,24 @@ static bool test_rewrite_crc32_trailer(const char *path) {
     return true;
 }
 
+static bool test_append_outer_crc32_trailer(const char *path) {
+    if (!path) return false;
+    FILE *f = fopen(path, "ab");
+    if (!f) return false;
+    static const uint8_t appended_data[] = {
+        0x51, 0x55, 0x41, 0x52, 0x41, 0x4e, 0x54, 0x49, 0x4e, 0x45,
+    };
+    const uint32_t crc_magic = 0x43524332u;
+    const uint32_t zero_crc = 0;
+    bool ok =
+        fwrite(appended_data, 1, sizeof(appended_data), f) ==
+            sizeof(appended_data) &&
+        fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
+        fwrite(&zero_crc, sizeof(zero_crc), 1, f) == 1;
+    if (fclose(f) != 0) ok = false;
+    return ok && test_rewrite_crc32_trailer(path);
+}
+
 static bool test_patch_file_byte(const char *path, long offset, uint8_t value) {
     FILE *f = fopen(path, "rb+");
     if (!f) return false;
@@ -204,6 +222,66 @@ static bool test_patch_file_byte(const char *path, long offset, uint8_t value) {
     bool ok = fwrite(&value, 1, 1, f) == 1;
     fclose(f);
     return ok;
+}
+
+static bool test_patch_file_u16(
+    const char *path,
+    long offset,
+    uint16_t value) {
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    bool ok = fseek(f, offset, SEEK_SET) == 0 &&
+        fwrite(&value, sizeof(value), 1, f) == 1;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static bool test_patch_file_u64(
+    const char *path,
+    long offset,
+    uint64_t value) {
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    bool ok = fseek(f, offset, SEEK_SET) == 0 &&
+        fwrite(&value, sizeof(value), 1, f) == 1;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static bool test_copy_file_bytes_in_place(
+    const char *path,
+    long source_offset,
+    long destination_offset,
+    size_t count) {
+    if (!path || count > 64) return false;
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    uint8_t bytes[64];
+    bool ok = fseek(f, source_offset, SEEK_SET) == 0 &&
+        fread(bytes, 1, count, f) == count &&
+        fseek(f, destination_offset, SEEK_SET) == 0 &&
+        fwrite(bytes, 1, count, f) == count;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static long test_file_length(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    long length = -1;
+    if (fseek(f, 0, SEEK_END) == 0)
+        length = ftell(f);
+    fclose(f);
+    return length;
+}
+
+static bool test_world_load_rejected_file(const char *path) {
+    world_t *loaded = calloc(1, sizeof(*loaded));
+    if (!loaded) return false;
+    bool rejected = !world_load(loaded, path);
+    world_cleanup(loaded);
+    free(loaded);
+    return rejected;
 }
 
 static bool test_copy_file_prefix(const char *src_path,
@@ -234,6 +312,56 @@ static bool test_copy_file_prefix(const char *src_path,
     if (fclose(src) != 0) ok = false;
     if (fclose(dst) != 0) ok = false;
     return ok;
+}
+
+static bool test_construct_empty_quarantine_v77_save(
+    const char *current_path,
+    const char *v77_path) {
+    if (!current_path || !v77_path) return false;
+    FILE *f = fopen(current_path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long len = ftell(f);
+    if (len < 26 ||
+        fseek(f,
+              len - 8 - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE,
+              SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    uint64_t record_id_high_water = UINT64_MAX;
+    uint16_t quarantine_count = UINT16_MAX;
+    uint32_t crc_magic = 0;
+    bool ok =
+        fread(&record_id_high_water,
+              sizeof(record_id_high_water), 1, f) == 1 &&
+        fread(&quarantine_count, sizeof(quarantine_count), 1, f) == 1 &&
+        fread(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
+        record_id_high_water == 0 &&
+        quarantine_count == 0 &&
+        crc_magic == 0x43524332u;
+    if (fclose(f) != 0) ok = false;
+    if (!ok ||
+        !test_copy_file_prefix(
+            current_path, v77_path,
+            len - 8 - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE)) {
+        return false;
+    }
+
+    f = fopen(v77_path, "rb+");
+    if (!f) return false;
+    uint32_t version = 77;
+    uint32_t zero_crc = 0;
+    ok = fseek(f, 4, SEEK_SET) == 0 &&
+        fwrite(&version, sizeof(version), 1, f) == 1 &&
+        fseek(f, 0, SEEK_END) == 0 &&
+        fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
+        fwrite(&zero_crc, sizeof(zero_crc), 1, f) == 1;
+    if (fclose(f) != 0) ok = false;
+    return ok && test_rewrite_crc32_trailer(v77_path);
 }
 
 static long test_find_bytes_in_file(const char *path, const uint8_t *needle,
@@ -1433,6 +1561,7 @@ TEST(test_world_load_rejects_stale_version) {
     uint32_t old_version = 11;
     fwrite(&old_version, sizeof(old_version), 1, f);
     fclose(f);
+    ASSERT(test_rewrite_crc32_trailer(TMP("test_stale.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, TMP("test_stale.sav")));
     /* loaded auto-freed by WORLD_HEAP cleanup */
@@ -2190,8 +2319,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * v76: each active pod persists its named tow hardpoint; two
              * starter pods add two bytes.
              * v77: +296 bytes per station for the fixed public authority
-             * registry, across MAX_STATIONS=128. */
-			#define EXPECTED_SAVE_SIZE 810658
+             * registry, across MAX_STATIONS=128.
+             * v78: +10 bytes for the ownership-quarantine stable-ID
+             * high-water mark and empty row count. */
+			#define EXPECTED_SAVE_SIZE 810668
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2228,11 +2359,195 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 77);
+    ASSERT_EQ_INT((int)version, 78);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
     remove(TMP("test_header.sav"));
+}
+
+TEST(test_world_save_load_preserves_ownership_quarantine) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    ownership_quarantine_entry_t placement = {
+        .record_id = 30,
+        .source_kind = OWNERSHIP_QUARANTINE_SOURCE_PLACEMENT_PLAN,
+        .reason = OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL,
+        .station_index = 7,
+        .row_index = 3,
+        .legacy_actor_code = OWNERSHIP_QUARANTINE_NA,
+    };
+    ownership_quarantine_entry_t contract = {
+        .record_id = 10,
+        .source_kind = OWNERSHIP_QUARANTINE_SOURCE_CONTRACT,
+        .reason = OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN,
+        .station_index = OWNERSHIP_QUARANTINE_NA,
+        .row_index = 5,
+        .legacy_actor_code = 2,
+    };
+    ownership_quarantine_entry_t ship_asset = {
+        .record_id = 20,
+        .source_kind = OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+        .reason = OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN,
+        .station_index = OWNERSHIP_QUARANTINE_NA,
+        .row_index = 11,
+        .legacy_actor_code = OWNERSHIP_QUARANTINE_NA,
+    };
+    ASSERT(ownership_quarantine_add(
+        &w->ownership_quarantine, &contract));
+    ASSERT(ownership_quarantine_add(
+        &w->ownership_quarantine, &ship_asset));
+    ASSERT(ownership_quarantine_add(
+        &w->ownership_quarantine, &placement));
+    /* Simulate a previously resolved row so the persisted allocator state is
+     * intentionally ahead of the highest live row. */
+    w->ownership_quarantine.record_id_high_water = 99;
+    ASSERT(ownership_quarantine_validate(
+        &w->ownership_quarantine));
+
+    ASSERT(world_save(w, TMP("test_ownership_quarantine.sav")));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("test_ownership_quarantine.sav")));
+    ASSERT(ownership_quarantine_validate(
+        &loaded->ownership_quarantine));
+    ASSERT_EQ_INT(
+        loaded->ownership_quarantine.count,
+        w->ownership_quarantine.count);
+    ASSERT(
+        loaded->ownership_quarantine.record_id_high_water ==
+        w->ownership_quarantine.record_id_high_water);
+    ASSERT(memcmp(
+        loaded->ownership_quarantine.entries,
+        w->ownership_quarantine.entries,
+        (size_t)w->ownership_quarantine.count *
+            sizeof(w->ownership_quarantine.entries[0])) == 0);
+
+    remove(TMP("test_ownership_quarantine.sav"));
+}
+
+TEST(test_world_save_invalid_ownership_quarantine_preserves_destination) {
+    const char *path = TMP("test_invalid_ownership_quarantine.sav");
+    WORLD_HEAP baseline = calloc(1, sizeof(world_t));
+    WORLD_HEAP invalid = calloc(1, sizeof(world_t));
+    ASSERT(baseline != NULL);
+    ASSERT(invalid != NULL);
+    world_reset(baseline);
+    world_reset(invalid);
+    baseline->rng = 0x11223344u;
+    invalid->rng = 0x55667788u;
+    ASSERT(world_save(baseline, path));
+
+    invalid->ownership_quarantine.count =
+        (uint16_t)(OWNERSHIP_QUARANTINE_CAP + 1);
+    ASSERT(!world_save(invalid, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, path));
+    ASSERT(loaded->rng == baseline->rng);
+    ASSERT_EQ_INT(loaded->ownership_quarantine.count, 0);
+
+    remove(path);
+}
+
+TEST(test_world_load_rejects_malformed_ownership_quarantine) {
+    const char *path = TMP("test_malformed_ownership_quarantine.sav");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    /* CRC-valid over-capacity count. */
+    ASSERT(world_save(w, path));
+    long len = test_file_length(path);
+    ASSERT(len >= 10);
+    ASSERT(test_patch_file_u16(
+        path, len - 10,
+        (uint16_t)(OWNERSHIP_QUARANTINE_CAP + 1)));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    /* CRC-valid declared row with no row bytes before CRC2. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(len >= 10);
+    ASSERT(test_patch_file_u16(path, len - 10, 1));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    ownership_quarantine_entry_t contract = {
+        .record_id = 1,
+        .source_kind = OWNERSHIP_QUARANTINE_SOURCE_CONTRACT,
+        .reason = OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN,
+        .station_index = OWNERSHIP_QUARANTINE_NA,
+        .row_index = 3,
+        .legacy_actor_code = 1,
+    };
+    ASSERT(ownership_quarantine_add(
+        &w->ownership_quarantine, &contract));
+
+    /* A live row may not exceed the persisted stable-ID high-water mark. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(len >=
+           8 + OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE +
+               OWNERSHIP_QUARANTINE_ENTRY_WIRE_SIZE);
+    ASSERT(test_patch_file_u64(
+        path,
+        len - 8 - OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE -
+            OWNERSHIP_QUARANTINE_ENTRY_WIRE_SIZE,
+        0));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    /* Unknown source tag. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(len >= 18);
+    ASSERT(test_patch_file_byte(
+        path, len - 16, OWNERSHIP_QUARANTINE_SOURCE_COUNT));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    /* Unknown reason tag. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(test_patch_file_byte(
+        path, len - 15, OWNERSHIP_QUARANTINE_REASON_COUNT));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    /* Contract rows are global; a station locator is noncanonical. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(test_patch_file_u16(path, len - 14, 0));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    ownership_quarantine_entry_t delivery = {
+        .record_id = 2,
+        .source_kind = OWNERSHIP_QUARANTINE_SOURCE_DELIVERY_SHIPMENT,
+        .reason = OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN,
+        .station_index = OWNERSHIP_QUARANTINE_NA,
+        .row_index = 4,
+        .legacy_actor_code = 2,
+    };
+    ASSERT(ownership_quarantine_add(
+        &w->ownership_quarantine, &delivery));
+
+    /* Two canonical rows with the same stable record ID are rejected. */
+    ASSERT(world_save(w, path));
+    len = test_file_length(path);
+    ASSERT(len >= 26);
+    ASSERT(test_copy_file_bytes_in_place(
+        path, len - 40, len - 24,
+        OWNERSHIP_QUARANTINE_ENTRY_WIRE_SIZE));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(test_world_load_rejected_file(path));
+
+    remove(path);
 }
 
 TEST(test_contract_target_pub_roundtrips) {
@@ -2311,21 +2626,82 @@ TEST(test_save_load_preserves_player_outpost) {
     remove(TMP("test_outpost.sav"));
 }
 
-TEST(test_save_backward_compat_version_accepted) {
-    /* v24 save format roundtrips correctly with inventory data.
-     * Station identity comes from catalog, session data from world save. */
+TEST(test_save_v77_byte_stream_loads_without_v78_tail) {
+    const char *current_path = TMP("test_compat_current.sav");
+    const char *v77_path = TMP("test_compat_v77.sav");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
     world_reset(w);
     w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 77.0f;
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_compatcat")));
-    ASSERT(world_save(w, TMP("test_compat.sav")));
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 12.0f,
+        .base_price = 31.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    int pod_index = test_find_exact_pod(w, COMMODITY_FRAME);
+    ASSERT(pod_index >= 0);
+    uint16_t pod_quantity = w->cargo_pods[pod_index].quantity;
+    uint8_t pod_first_pub[32];
+    ASSERT(w->cargo_pods[pod_index].manifest_count > 0);
+    memcpy(pod_first_pub,
+           w->cargo_pods[pod_index].manifest_units[0].pub,
+           sizeof(pod_first_pub));
+
+    ASSERT(station_catalog_save_all(
+        w->stations, MAX_STATIONS, TMP("test_compatcat")));
+    ASSERT(world_save(w, current_path));
+    ASSERT(test_construct_empty_quarantine_v77_save(
+        current_path, v77_path));
+
+    FILE *current = fopen(current_path, "rb");
+    FILE *legacy = fopen(v77_path, "rb");
+    ASSERT(current != NULL);
+    ASSERT(legacy != NULL);
+    ASSERT(fseek(current, 0, SEEK_END) == 0);
+    ASSERT(fseek(legacy, 0, SEEK_END) == 0);
+    long current_len = ftell(current);
+    long legacy_len = ftell(legacy);
+    ASSERT(fclose(current) == 0);
+    ASSERT(fclose(legacy) == 0);
+    ASSERT_EQ_INT(
+        (int)legacy_len,
+        (int)(current_len -
+              OWNERSHIP_QUARANTINE_HEADER_WIRE_SIZE));
+
+    legacy = fopen(v77_path, "rb");
+    ASSERT(legacy != NULL);
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    ASSERT_EQ_INT((int)fread(&magic, sizeof(magic), 1, legacy), 1);
+    ASSERT_EQ_INT((int)fread(&version, sizeof(version), 1, legacy), 1);
+    ASSERT(fclose(legacy) == 0);
+    ASSERT_EQ_INT((int)magic, (int)0x5349474E);
+    ASSERT_EQ_INT((int)version, 77);
+
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_compatcat"));
-    ASSERT(world_load(loaded, TMP("test_compat.sav")));
-    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
-    /* loaded auto-freed by WORLD_HEAP cleanup */
-    /* w auto-freed by WORLD_HEAP cleanup */
-    remove(TMP("test_compat.sav"));
+    ASSERT(loaded != NULL);
+    ASSERT(station_catalog_load_all(
+        loaded->stations, MAX_STATIONS, TMP("test_compatcat")) > 0);
+    ASSERT(world_load(loaded, v77_path));
+    ASSERT_EQ_FLOAT(
+        loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+        77.0f, 0.01f);
+    ASSERT(loaded->contracts[0].active);
+    ASSERT_EQ_INT(loaded->contracts[0].action, CONTRACT_TRACTOR);
+    ASSERT_EQ_FLOAT(loaded->contracts[0].quantity_needed, 12.0f, 0.01f);
+    ASSERT(loaded->cargo_pods[pod_index].active);
+    ASSERT_EQ_INT(loaded->cargo_pods[pod_index].quantity, pod_quantity);
+    ASSERT(memcmp(loaded->cargo_pods[pod_index].manifest_units[0].pub,
+                  pod_first_pub, sizeof(pod_first_pub)) == 0);
+    ASSERT_EQ_INT(loaded->ownership_quarantine.count, 0);
+
+    remove(current_path);
+    remove(v77_path);
 }
 
 TEST(test_save_v21_module_remap) {
@@ -2351,6 +2727,7 @@ TEST(test_save_future_version_rejected) {
     uint32_t future = 9999;
     fwrite(&future, sizeof(future), 1, f);
     fclose(f);
+    ASSERT(test_rewrite_crc32_trailer(TMP("test_future.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, TMP("test_future.sav")));
     /* loaded auto-freed by WORLD_HEAP cleanup */
@@ -2414,6 +2791,27 @@ TEST(test_world_load_missing_crc_rejects_before_mutating_destination) {
     remove(TMP("test_world_without_crc.sav"));
 }
 
+TEST(test_world_load_rejects_nested_crc_trailer) {
+    const char *path = TMP("test_world_nested_crc.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    saved->rng = 424242u;
+    ASSERT(world_save(saved, path));
+
+    /*
+     * Retain the valid inner CRC2 trailer, append arbitrary bytes, and add a
+     * second valid trailer over the entire enlarged file. The outer precheck
+     * passes, but the decoder must reject data after its exact payload
+     * boundary instead of accepting the inner trailer.
+     */
+    ASSERT(test_append_outer_crc32_trailer(path));
+
+    ASSERT(test_world_load_rejected_file(path));
+
+    remove(path);
+}
+
 void register_save_persistence_tests(void) {
     TEST_SECTION("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);
@@ -2447,6 +2845,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_repairs_degenerate_dock_berth);
     RUN(test_world_load_bad_crc_rejects_before_mutating_destination);
     RUN(test_world_load_missing_crc_rejects_before_mutating_destination);
+    RUN(test_world_load_rejects_nested_crc_trailer);
     RUN(test_player_load_bad_magic_fails);
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
@@ -2463,6 +2862,8 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_v71_does_not_duplicate_starter_laser_modules);
     RUN(test_player_load_restores_towed_cargo_pods_from_world);
     RUN(test_contract_target_pub_roundtrips);
+    RUN(test_world_save_load_preserves_ownership_quarantine);
+    RUN(test_world_save_invalid_ownership_quarantine_preserves_destination);
 }
 
 void register_save_format_tests(void) {
@@ -2470,7 +2871,8 @@ void register_save_format_tests(void) {
     RUN(test_save_file_size_stable);
     RUN(test_save_header_golden_bytes);
     RUN(test_save_load_preserves_player_outpost);
-    RUN(test_save_backward_compat_version_accepted);
+    RUN(test_save_v77_byte_stream_loads_without_v78_tail);
+    RUN(test_world_load_rejects_malformed_ownership_quarantine);
     RUN(test_save_v21_module_remap);
     RUN(test_save_future_version_rejected);
 }

@@ -19,6 +19,7 @@ void register_world_sim_basic_tests(void);
 void register_bug_regression_batch1_tests(void);
 void register_protocol_main_tests(void);
 void register_actor_principal_tests(void);
+void register_ownership_quarantine_tests(void);
 void register_bug_regression_batch2_tests(void);
 void register_bug_regression_batch3_tests(void);
 void register_bug_regression_batch4_tests(void);
@@ -150,6 +151,7 @@ int main(int argc, char **argv) {
     register_bug_regression_batch1_tests();
     register_protocol_main_tests();
     register_actor_principal_tests();
+    register_ownership_quarantine_tests();
     register_bug_regression_batch2_tests();
     register_bug_regression_batch3_tests();
     register_bug_regression_batch4_tests();

@@ -117,6 +117,7 @@ endif()
 set(SIGNAL_SIM_SOURCES
     server/game_sim.c
     server/actor_principal.c
+    server/ownership_quarantine.c
     server/sim_ai.c
     server/gossip.c
     server/sim_autopilot.c
@@ -277,6 +278,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_world_sim.c
         tests/c/test_protocol.c
         tests/c/test_actor_principal.c
+        tests/c/test_ownership_quarantine.c
         tests/c/test_bug_regression.c
         tests/c/test_save.c
         tests/c/test_construction.c
