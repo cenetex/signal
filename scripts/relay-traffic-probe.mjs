@@ -91,6 +91,7 @@ const MESSAGE_NAMES = new Map([
   [0x6c, 'WORLD_PLAYER_MOTIOND_Q'],
   [0x6d, 'WORLD_PLAYER_POSED_Q'],
   [0x6e, 'WORLD_PLAYER_MOTIONM_Q'],
+  [0x70, 'PUBKEY_CHALLENGE'],
 ]);
 
 const EVENT_NAMES = [

@@ -5012,18 +5012,18 @@ static int smoke_apply_loop_state(int state) {
         if (g.local_server.world.station_count > 0) {
             station_t *authority = &g.local_server.world.stations[0];
             chain_payload_smelt_t smelt = {0};
-            memcpy(smelt.fragment_pub, fragment_pub, 32);
-            memcpy(smelt.ingot_pub, ingot.pub, 32);
-            smelt.prefix_class = ingot.prefix_class;
-            smelt.mined_block = ingot.mined_block;
+            if (!chain_payload_smelt_bind_output(
+                    &smelt, fragment_pub, 0, &ingot)) {
+                return 0;
+            }
             (void)chain_log_emit(&g.local_server.world, authority,
                                  CHAIN_EVT_SMELT, &smelt, sizeof(smelt));
 
             chain_payload_craft_t craft = {0};
-            craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
-            craft.input_count = 1;
-            memcpy(craft.output_pub, frame.pub, 32);
-            memcpy(craft.input_pubs[0], ingot.pub, 32);
+            if (!chain_payload_craft_bind_output(
+                    &craft, &ingot, 1, &frame)) {
+                return 0;
+            }
             (void)chain_log_emit(&g.local_server.world, authority,
                                  CHAIN_EVT_CRAFT, &craft, sizeof(craft));
         }

@@ -65,7 +65,7 @@ typedef struct {
     uint8_t  recipient_pubkey[32];   /* player or station receiving */
     uint64_t event_id;               /* matches the EVT_TRANSFER event_id
                                       * in the authoring station's log;
-                                      * 0 for synthetic receipts */
+                                      * zero is never valid */
     uint64_t epoch;                  /* sim tick */
     uint8_t  prev_receipt_hash[32];  /* SHA-256 of previous receipt
                                       * header, OR — for an origin
@@ -91,7 +91,10 @@ typedef enum {
     CARGO_RECEIPT_REJECT_BROKEN_LINKAGE   = 4, /* prev_receipt_hash mismatch */
     CARGO_RECEIPT_REJECT_CARGO_MISMATCH   = 5, /* receipt cargo_pub != requested cargo */
     CARGO_RECEIPT_REJECT_ZERO_AUTHORITY   = 6, /* authoring_station all zero */
-    CARGO_RECEIPT_REJECT_ZERO_ORIGIN      = 7  /* origin receipt's prev hash is all zero */
+    CARGO_RECEIPT_REJECT_ZERO_ORIGIN      = 7, /* origin receipt's prev hash is all zero */
+    CARGO_RECEIPT_REJECT_ZERO_CARGO       = 8, /* cargo_pub all zero */
+    CARGO_RECEIPT_REJECT_ZERO_RECIPIENT   = 9, /* recipient_pubkey all zero */
+    CARGO_RECEIPT_REJECT_ZERO_EVENT_ID    = 10 /* event_id is zero */
 } cargo_receipt_result_t;
 
 /* Pack the unsigned span (the 144 bytes that get signed / hashed) into
@@ -138,6 +141,130 @@ bool cargo_receipt_verify_signature(const cargo_receipt_t *r);
 cargo_receipt_result_t cargo_receipt_chain_verify(
     const cargo_receipt_t *chain, size_t count,
     const uint8_t *expected_cargo_pub /* nullable, 32 bytes */);
+
+#if defined(SIGNAL_CARGO_RECEIPT_TESTING)
+/* Focused test instrumentation: count complete chain-verifier invocations,
+ * not individual links. Production builds expose no mutable counter. */
+void cargo_receipt_test_reset_chain_verify_walks(void);
+uint64_t cargo_receipt_test_chain_verify_walks(void);
+#endif
+
+/* ---------------- origin trust contract ---------------------------- */
+
+/*
+ * Data-only description of a cargo-producing event resolved from verified
+ * station history. The resolver owns log/federation I/O and event signature
+ * verification; this shared layer checks that the resolved facts match the
+ * receipt's origin pin and the expected cargo.
+ */
+typedef enum {
+    CARGO_RECEIPT_ORIGIN_EVENT_NONE  = 0,
+    CARGO_RECEIPT_ORIGIN_EVENT_SMELT = 1,
+    CARGO_RECEIPT_ORIGIN_EVENT_CRAFT = 2
+} cargo_receipt_origin_event_t;
+
+typedef enum {
+    CARGO_RECEIPT_ORIGIN_SEMANTICS_UNBOUND = 0,
+    CARGO_RECEIPT_ORIGIN_SEMANTICS_V1 = 1,
+} cargo_receipt_origin_semantics_version_t;
+
+/*
+ * Lifecycle of the event authority at the point proven by the resolver.
+ * This is a verified event fact, distinct from the evaluating station's local
+ * decision below. UNSPECIFIED is never valid in a supplied proof.
+ */
+typedef enum {
+    CARGO_RECEIPT_AUTHORITY_LIFECYCLE_UNSPECIFIED = 0,
+    CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT     = 1,
+    CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED     = 2,
+    CARGO_RECEIPT_AUTHORITY_LIFECYCLE_REVOKED     = 3
+} cargo_receipt_authority_lifecycle_t;
+
+typedef struct {
+    cargo_receipt_origin_event_t event_type;
+    cargo_receipt_authority_lifecycle_t authority_lifecycle;
+    uint64_t event_id;
+    uint64_t epoch;
+    /* Populated only for CRAFT origins. These facts let migration and other
+     * policy boundaries distinguish the exact transform that authored an
+     * output instead of accepting any CRAFT event with the same pubkey. */
+    uint16_t craft_recipe_id;
+    uint8_t craft_input_count;
+    uint8_t _reserved;
+    uint8_t event_hash[32];
+    uint8_t output_cargo_pub[32];
+    /*
+     * Versioned semantic view reconstructed from the signed SMELT/CRAFT
+     * payload. origin_station is intentionally left zero here: the
+     * evaluating station derives that numeric slot from the event authority
+     * and writes it into a comparison copy.
+     */
+    uint8_t output_semantics_version;
+    uint8_t _semantic_reserved[7];
+    cargo_unit_t output_cargo;
+    uint8_t authority[32];
+} cargo_receipt_origin_proof_t;
+
+/*
+ * Explicit lifecycle decision supplied by the evaluating station's policy.
+ * TRUSTED_ROTATED means the historical key is accepted for this event even
+ * though it is no longer current. Revoked keys are never accepted here.
+ */
+typedef enum {
+    CARGO_RECEIPT_AUTHORITY_UNKNOWN         = 0,
+    CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT = 1,
+    CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED = 2,
+    CARGO_RECEIPT_AUTHORITY_UNTRUSTED       = 3,
+    CARGO_RECEIPT_AUTHORITY_REVOKED         = 4
+} cargo_receipt_authority_trust_t;
+
+/*
+ * Stable semantic verdict. Cryptographic chain rejection remains one status
+ * with the precise lower-level reason in cargo_receipt_trust_result_t.
+ */
+typedef enum {
+    CARGO_RECEIPT_TRUST_VALID_TRUSTED = 0,
+    CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED,
+    CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS,
+    CARGO_RECEIPT_TRUST_REJECT_CHAIN,
+    CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE,
+    CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY,
+    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA,
+    CARGO_RECEIPT_TRUST_STATUS_COUNT
+} cargo_receipt_trust_status_t;
+
+typedef struct {
+    cargo_receipt_trust_status_t status;
+    /* False means argument validation returned before cryptography ran. */
+    bool chain_checked;
+    cargo_receipt_result_t chain_result;
+    cargo_receipt_origin_event_t origin_event;
+    cargo_receipt_authority_lifecycle_t authority_lifecycle;
+    cargo_receipt_authority_trust_t authority_trust;
+} cargo_receipt_trust_result_t;
+
+/*
+ * Compose cryptographic receipt validity, a resolved origin event, and an
+ * explicit authority policy. This function performs no I/O, allocation, or
+ * mutation. chain and expected_cargo_pub are required; invalid required
+ * pointers return BAD_ARGUMENTS with chain_checked false.
+ */
+cargo_receipt_trust_result_t cargo_receipt_trust_verify(
+    const cargo_receipt_t *chain,
+    size_t count,
+    const uint8_t expected_cargo_pub[32],
+    const cargo_receipt_origin_proof_t *origin,
+    cargo_receipt_authority_trust_t authority_trust);
+
+const char *cargo_receipt_trust_status_name(
+    cargo_receipt_trust_status_t status);
 
 /* ---------------- ship_receipts_t ---------------------------------- */
 

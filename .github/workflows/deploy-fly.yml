@@ -9,6 +9,10 @@ on:
       - 'shared/**'
       - 'vendor/**'
       - 'web/**'
+      - 'assets/**'
+      - 'scripts/webrtc-gateway.mjs'
+      - 'scripts/fly-webrtc-entrypoint.sh'
+      - 'scripts/lightsail-webrtc-entrypoint.sh'
       - 'CMakeLists.txt'
       - 'Makefile'
       - '.dockerignore'
@@ -60,8 +64,9 @@ jobs:
         run: |
           make build-server
           make test
+          make test-soak
           make test-san
-          make banned-apis deterministic-libm
+          make banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
           make cppcheck
       - name: Build browser client
         run: |
@@ -74,7 +79,7 @@ jobs:
       - name: Run browser smoke
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx --no-install playwright install --with-deps chromium
           npm run smoke
       - name: Upload perception review artifacts
         if: always()
@@ -91,10 +96,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
         with:
           version: ${{ vars.FLYCTL_VERSION || '0.4.59' }}
 

@@ -27,6 +27,20 @@ TEST(test_wire_codec_roundtrips_and_fails_closed_on_bounds) {
     ASSERT(!reader.ok);
 }
 
+TEST(test_pre_session_message_policy_excludes_client_telemetry) {
+    for (int type = 0; type <= UINT8_MAX; type++) {
+        bool expected =
+            type == NET_MSG_LATENCY_PING ||
+            type == NET_MSG_REGISTER_PUBKEY ||
+            type == NET_MSG_PROVE_PUBKEY ||
+            type == NET_MSG_SESSION;
+        ASSERT_EQ_INT(net_message_allowed_before_session((uint8_t)type),
+                      expected);
+    }
+    ASSERT(!net_message_allowed_before_session(NET_MSG_CLIENT_METRICS));
+    ASSERT(!net_message_allowed_before_session(NET_MSG_INPUT));
+}
+
 TEST(test_roundtrip_player_state) {
     SERVER_PLAYER_DECL(sp);
     sp.ship->pos = v2(123.45f, -678.9f);
@@ -5145,7 +5159,7 @@ TEST(test_private_snapshot_emitter_sequence_shared) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 7);
+    ASSERT_EQ_INT(cap.count, SERVER_PRIVATE_SNAPSHOT_PACKET_COUNT);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_MANIFEST);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_INSPECT_SNAPSHOT);
@@ -5184,7 +5198,8 @@ TEST(test_private_snapshot_emits_local_authoritative_baseline) {
                                             packet_capture_sink, &cap,
                                             &scratch);
 
-    ASSERT_EQ_INT(cap.count, 8);
+    ASSERT_EQ_INT(
+        cap.count, SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_STATE);
     ASSERT_EQ_INT(cap.len[0], NET_STATE_AUTH_SIZE);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_PLAYER_SHIP);
@@ -7158,6 +7173,7 @@ TEST(test_player_known_ledger_serializes_station_balances) {
     memset(sp->pubkey, 0x21, sizeof(sp->pubkey));
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
     ledger_earn_by_pubkey(&w.stations[1], sp->pubkey, 77.0f);
     len = serialize_player_known_ledger(buf, &w, sp);
     ASSERT_EQ_INT(len, PLAYER_KNOWN_LEDGER_HEADER +
@@ -7756,6 +7772,7 @@ TEST(test_socket_player_requires_session_for_gameplay) {
     ASSERT_EQ_INT(players[0], NET_MSG_WORLD_PLAYERS);
     ASSERT_EQ_INT(players[1], 0);
 
+    memset(sp->session_token, 0xA5, sizeof(sp->session_token));
     sp->session_ready = true;
     ASSERT(server_dispatch_input_message(&w, 0, input_msg,
                                          sizeof(input_msg), 0,
@@ -7991,6 +8008,8 @@ TEST(test_protocol_info_serializes_stream_map) {
     uint8_t buf[PROTOCOL_INFO_SIZE];
     int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
 
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 3);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION, 3);
     ASSERT(len >= PROTOCOL_INFO_HEADER_SIZE);
     ASSERT(len <= PROTOCOL_INFO_SIZE);
     ASSERT_EQ_INT(buf[0], NET_MSG_PROTOCOL_INFO);
@@ -8773,6 +8792,7 @@ TEST(test_parse_input_launch_keeps_semantic_action) {
 void register_protocol_main_tests(void) {
     TEST_SECTION("\nProtocol roundtrip tests:\n");
     RUN(test_wire_codec_roundtrips_and_fails_closed_on_bounds);
+    RUN(test_pre_session_message_policy_excludes_client_telemetry);
     RUN(test_roundtrip_player_state);
     RUN(test_authoritative_player_state_includes_ack_tail);
     RUN(test_roundtrip_batched_player_states);

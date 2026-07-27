@@ -131,6 +131,7 @@ set(SIGNAL_SIM_SOURCES
     server/chain_log.c
     server/chain_log_verify.c
     server/cargo_receipt_issue.c
+    server/cargo_receipt_trust.c
     server/handoff_flow.c
     server/sim_asteroid.c
     server/sim_physics.c
@@ -215,6 +216,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         server/main.c
         server/mongoose.c
         server/highscore.c
+        server/ws_outbox.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
@@ -308,6 +310,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_inspect_labels.c
         tests/c/test_route_history_labels.c
         tests/c/test_rock_usefulness.c
+        tests/c/test_ws_outbox.c
+        server/mongoose.c
+        server/ws_outbox.c
         tests/c/test_signal_field.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
@@ -321,6 +326,15 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     target_include_directories(signal_test PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(signal_test PRIVATE
+        MG_ENABLE_LOG=0
+        SIGNAL_CRYPTO_TESTING=1
+        SIGNAL_CARGO_RECEIPT_TESTING=1
+        SIGNAL_CHAIN_LOG_TESTING=1
+        SIGNAL_SPATIAL_GRID_TESTING=1)
+    if(UNIX AND NOT APPLE)
+        target_compile_definitions(signal_test PRIVATE _GNU_SOURCE)
+    endif()
     signal_apply_sim_profile(signal_test)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
@@ -438,7 +452,9 @@ endif()
 
 # ------------------------------------------------------------------
 # Fuzz targets (libFuzzer, clang only). Off by default; enable with
-# -DSIGNAL_BUILD_FUZZERS=ON. Harnesses live in tests/fuzz/ and probe
+# -DSIGNAL_BUILD_FUZZERS=ON. Headless builders should also set
+# -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF so decoder fuzzing never discovers
+# desktop audio/window dependencies. Harnesses live in tests/fuzz/ and probe
 # untrusted decode paths (cargo receipts, handoff tickets/snapshots).
 # See REMEDIATION_PLAN.md §12.
 # ------------------------------------------------------------------
@@ -754,6 +770,9 @@ if(EMSCRIPTEN)
         "'_signal_mobile_key'"
         "'_signal_mobile_clear'"
         "'_signal_debug_held_control_mask'"
+        "'_signal_debug_identity_available'"
+        "'_signal_debug_auth_available'"
+        "'_signal_debug_auth_transport_closes'"
         "'_signal_net_transport_open'"
         "'_signal_net_transport_message'"
         "'_signal_net_transport_close'"

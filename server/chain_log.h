@@ -99,18 +99,35 @@ typedef enum {
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
-/* On-disk payload schemas — one per event type. Field order, sizes, and
- * padding are wire-stable and verified by static_assert below. The
+/* On-disk payload schemas — one per event type. Field order and sizes are
+ * wire-stable and verified by static_assert below. Cargo transform payloads
+ * deliberately version the bytes that used to be anonymous padding: version
+ * zero is a legacy, semantically-unbound event and must never establish cargo
+ * trust; version one binds every non-derivable output trait without changing
+ * either historical payload size.
+ *
+ * The
  * existing inline anonymous structs at the emit sites used the same
  * layout; these typedefs are the single source of truth so the byte
  * format can't drift across the seven historical callsites. */
+
+typedef enum {
+    CHAIN_CARGO_SEMANTICS_UNBOUND =
+        CARGO_RECEIPT_ORIGIN_SEMANTICS_UNBOUND,
+    CHAIN_CARGO_SEMANTICS_V1 =
+        CARGO_RECEIPT_ORIGIN_SEMANTICS_V1,
+} chain_cargo_semantics_version_t;
 
 SIGNAL_PACK_PUSH
 typedef struct {
     uint8_t  fragment_pub[32];
     uint8_t  ingot_pub[32];
     uint8_t  prefix_class;
-    uint8_t  _pad[7];
+    uint8_t  semantics_version;
+    uint8_t  commodity;
+    uint8_t  grade;
+    uint16_t output_index;
+    uint8_t  _reserved[2];
     uint64_t mined_block;
 } SIGNAL_PACKED chain_payload_smelt_t;
 SIGNAL_PACK_POP
@@ -119,11 +136,31 @@ SIGNAL_PACK_PUSH
 typedef struct {
     uint16_t recipe_id;
     uint8_t  input_count;
-    uint8_t  _pad[5];
+    uint8_t  semantics_version;
+    uint8_t  output_kind;
+    uint8_t  output_commodity;
+    uint8_t  output_grade;
+    uint8_t  output_quantity;
     uint8_t  output_pub[32];
     uint8_t  input_pubs[RECIPE_INPUT_MAX][32];
 } SIGNAL_PACKED chain_payload_craft_t;
 SIGNAL_PACK_POP
+
+/*
+ * Populate the versioned semantic bytes together with the historical
+ * identity fields. These helpers reject internally inconsistent cargo so an
+ * emitter cannot accidentally sign a partial or relabelled transform.
+ */
+bool chain_payload_smelt_bind_output(
+    chain_payload_smelt_t *payload,
+    const uint8_t fragment_pub[32],
+    uint16_t output_index,
+    const cargo_unit_t *output);
+bool chain_payload_craft_bind_output(
+    chain_payload_craft_t *payload,
+    const cargo_unit_t *inputs,
+    size_t input_count,
+    const cargo_unit_t *output);
 
 SIGNAL_PACK_PUSH
 typedef struct {
@@ -303,6 +340,18 @@ SIGNAL_PACK_POP
  * versioning story (or accepted as a hard break). */
 _Static_assert(sizeof(chain_payload_smelt_t)            == 80,  "smelt payload size");
 _Static_assert(sizeof(chain_payload_craft_t)            == 136, "craft payload size");
+_Static_assert(offsetof(chain_payload_smelt_t, semantics_version) == 65,
+               "smelt semantics_version must occupy legacy padding");
+_Static_assert(offsetof(chain_payload_smelt_t, output_index) == 68,
+               "smelt output_index must occupy legacy padding");
+_Static_assert(offsetof(chain_payload_smelt_t, mined_block) == 72,
+               "smelt mined_block compatibility offset");
+_Static_assert(offsetof(chain_payload_craft_t, semantics_version) == 3,
+               "craft semantics_version must occupy legacy padding");
+_Static_assert(offsetof(chain_payload_craft_t, output_pub) == 8,
+               "craft output_pub compatibility offset");
+_Static_assert(offsetof(chain_payload_craft_t, input_pubs) == 40,
+               "craft input_pubs compatibility offset");
 _Static_assert(sizeof(chain_payload_transfer_t)         == 104, "transfer payload size");
 _Static_assert(sizeof(chain_payload_trade_t)            == 48,  "trade payload size");
 _Static_assert(sizeof(chain_payload_rock_destroy_t)     == 96,  "rock_destroy payload size");
@@ -332,6 +381,101 @@ typedef struct {
 
 #define CHAIN_EVENT_HEADER_SIZE 184
 
+/*
+ * One gameplay transaction may require several same-station events (for
+ * example TRANSFER+TRADE, or one SMELT/CRAFT event per output unit). Keep the
+ * batch bounded so staging has a predictable memory ceiling while still
+ * covering the largest current production batch.
+ */
+#define CHAIN_LOG_BATCH_MAX_EVENTS 128
+
+typedef struct {
+    chain_event_type_t type;
+    const void *payload;
+    uint16_t payload_len;
+} chain_log_batch_event_t;
+
+typedef enum {
+    CHAIN_LOG_APPEND_OK = 0,
+    CHAIN_LOG_APPEND_BAD_ARGUMENTS,
+    CHAIN_LOG_APPEND_BATCH_TOO_LARGE,
+    CHAIN_LOG_APPEND_EVENT_ID_OVERFLOW,
+    CHAIN_LOG_APPEND_UNKEYED,
+    CHAIN_LOG_APPEND_BLOCKED,
+    CHAIN_LOG_APPEND_SIGNING_FAILED,
+    CHAIN_LOG_APPEND_NO_MEMORY,
+    CHAIN_LOG_APPEND_PATH_FAILED,
+    CHAIN_LOG_APPEND_OPEN_FAILED,
+    CHAIN_LOG_APPEND_SEEK_FAILED,
+    CHAIN_LOG_APPEND_TELL_FAILED,
+    CHAIN_LOG_APPEND_WRITE_FAILED,
+    CHAIN_LOG_APPEND_FLUSH_FAILED,
+    CHAIN_LOG_APPEND_CLOSE_FAILED,
+    CHAIN_LOG_APPEND_DIR_SYNC_FAILED,
+    CHAIN_LOG_APPEND_ROLLBACK_FAILED,
+} chain_log_append_status_t;
+
+typedef struct {
+    chain_log_append_status_t status;
+    uint16_t event_count;
+    uint64_t first_event_id;
+    uint64_t last_event_id;
+    uint8_t last_hash[32];
+} chain_log_append_result_t;
+
+/*
+ * Append a bounded same-station event batch as one durability transaction.
+ *
+ * Every header, event id, signature, linkage hash, and serialized byte is
+ * derived into private staging memory first. The station and world remain
+ * untouched during staging. With disk logging enabled, the staged bytes are
+ * written in one append sequence and receive exactly one durability flush.
+ * The station counter/hash are committed only after that flush and close
+ * succeed. The first append durably syncs the log entry in the chain
+ * directory; if that directory was created for this append, its entry is
+ * also synced in the directory's parent. Existing-directory appends do not
+ * pay that parent-sync cost. A partial write or failed flush/close/directory
+ * sync truncates back to the original file offset (or removes a newly-created
+ * log and directory) and durably syncs that rollback before returning.
+ *
+ * On success, first_event_id..last_event_id are the contiguous ids assigned to
+ * this batch and last_hash is the committed continuation hash. On failure,
+ * those fields remain zero and the station continuation pointer is unchanged.
+ */
+chain_log_append_result_t chain_log_emit_batch(
+    world_t *w,
+    station_t *s,
+    const chain_log_batch_event_t *events,
+    size_t event_count);
+
+const char *chain_log_append_status_name(chain_log_append_status_t status);
+
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+/* Deterministic test-only I/O fault injection. `event_type` selects matching
+ * staged events (CHAIN_EVT_NONE matches any type); `occurrence` is one-based.
+ * WRITE fails immediately before that matching event, so occurrences after
+ * the first exercise rollback of a deterministic partial append. FLUSH,
+ * SEEK, TELL, and CLOSE fail the batch containing the selected occurrence at
+ * their named file step. DIR_SYNC targets a newly-created log entry;
+ * PARENT_DIR_SYNC targets the first-boot chain-directory entry. A configured
+ * fault fires once and then clears itself. */
+typedef enum {
+    CHAIN_LOG_TEST_FAULT_NONE = 0,
+    CHAIN_LOG_TEST_FAULT_WRITE,
+    CHAIN_LOG_TEST_FAULT_FLUSH,
+    CHAIN_LOG_TEST_FAULT_CLOSE,
+    CHAIN_LOG_TEST_FAULT_SEEK,
+    CHAIN_LOG_TEST_FAULT_TELL,
+    CHAIN_LOG_TEST_FAULT_DIR_SYNC,
+    CHAIN_LOG_TEST_FAULT_PARENT_DIR_SYNC,
+} chain_log_test_fault_point_t;
+
+void chain_log_test_fault_inject(chain_log_test_fault_point_t point,
+                                 chain_event_type_t event_type,
+                                 uint32_t occurrence);
+void chain_log_test_fault_clear(void);
+#endif
+
 /* Override the on-disk directory used for chain log files. NULL or
  * empty restores the default ("chain/"). The string is copied into a
  * static buffer; the caller may free their copy. */
@@ -340,19 +484,24 @@ void chain_log_set_dir(const char *dir);
 /* Returns the currently configured chain directory (default "chain/"). */
 const char *chain_log_get_dir(void);
 
+/* Monotonic process-local epoch for read caches. It changes whenever the
+ * configured chain directory or disk mode changes, or a log is reset. */
+uint64_t chain_log_configuration_generation(void);
+
 /* Controls whether chain_log_emit writes append records to disk. When
  * disabled, emits still sign and advance the in-memory station chain so
  * same-session receipt flows continue to work, but no local files are
  * created. */
 void chain_log_set_disk_enabled(bool enabled);
 
-/* Append a signed event to station s's chain log.
+/* True only while local durable history is enabled. Origin-proof resolvers
+ * must fail closed while this is false even if an older log file exists. */
+bool chain_log_disk_enabled(void);
+
+/* Append one signed event to station s's chain log.
  *
- * Computes payload_hash (SHA-256 of the payload bytes), reads
- * prev_hash from s->chain_last_hash, signs the unsigned-header bytes
- * with the station's private key, writes (header || payload_len ||
- * payload) atomically (fsync + fclose) to the per-station log file,
- * and updates s->chain_last_hash + s->chain_event_count.
+ * This is the compatibility wrapper over chain_log_emit_batch(). It inherits
+ * the same staging, durable rollback, and in-memory commit guarantees.
  *
  * payload may be NULL iff payload_len == 0.
  *
@@ -438,6 +587,18 @@ bool chain_log_verify_station(const station_t *s,
                               uint8_t out_last_hash[32],
                               chain_log_verify_report_t *out_report);
 
+/*
+ * Verify one chain-log identity directly by public key. This keeps preserved
+ * historical identities discoverable after a station rekey. Missing files
+ * retain the same trivially-empty semantics as chain_log_verify_station;
+ * callers that need to distinguish absence must check the path first.
+ */
+bool chain_log_verify_identity(
+    const uint8_t station_pubkey[32],
+    uint64_t *out_event_count,
+    uint8_t out_last_hash[32],
+    chain_log_verify_report_t *out_report);
+
 typedef struct {
     uint64_t event_id;
     uint64_t epoch;
@@ -446,15 +607,61 @@ typedef struct {
 
 /* Read model for one cargo-producing event. A player-facing lineage view can
  * follow a cargo pubkey back through CRAFT outputs and SMELT outputs without
- * treating the chain log as inventory authority. The payload matching `type`
- * is populated; the other payload stays zeroed. */
+ * treating the chain log as inventory authority. header_hash is the exact
+ * signed record hash used for receipt origin pins; authority is copied from
+ * the event header. The payload matching `type` is populated and the other
+ * payload stays zeroed. */
 typedef struct {
     uint8_t type; /* CHAIN_EVT_SMELT or CHAIN_EVT_CRAFT */
     uint64_t event_id;
     uint64_t epoch;
+    uint8_t header_hash[32];
+    uint8_t authority[32];
+    /*
+     * Canonical semantic view reconstructed from the signed payload.
+     * origin_station stays zero here because authority -> station-index
+     * resolution is local policy, not an on-chain numeric identity.
+     */
+    uint8_t output_semantics_version;
+    cargo_unit_t output_cargo;
     chain_payload_smelt_t smelt;
     chain_payload_craft_t craft;
 } chain_cargo_transform_t;
+
+typedef enum {
+    CHAIN_CARGO_TRANSFORM_NOT_FOUND = 0,
+    CHAIN_CARGO_TRANSFORM_FOUND,
+    CHAIN_CARGO_TRANSFORM_AMBIGUOUS,
+    CHAIN_CARGO_TRANSFORM_READ_INVALID,
+} chain_cargo_transform_find_status_t;
+
+typedef bool (*chain_cargo_transform_visitor_t)(
+    const chain_cargo_transform_t *transform,
+    void *user);
+
+/*
+ * Visit exactly `verified_event_count` events from an already-open log.
+ * The caller must first verify the same FILE* with
+ * chain_log_verify_with_pubkey(). Keeping both passes on one open file
+ * prevents an atomic path replacement from making the indexer consume a
+ * different file than the verifier. The stream is rewound before reading
+ * and remains owned by the caller.
+ */
+bool chain_log_visit_cargo_transforms_from_verified_file(
+    FILE *log,
+    uint64_t verified_event_count,
+    chain_cargo_transform_visitor_t visitor,
+    void *user,
+    size_t *out_transform_count,
+    uint8_t out_last_hash[32]);
+
+/* Sequentially visit every SMELT/CRAFT output in one identity log. Call only
+ * after verification when the records are used as trust evidence. */
+bool chain_log_visit_cargo_transforms_for_identity(
+    const uint8_t station_pubkey[32],
+    chain_cargo_transform_visitor_t visitor,
+    void *user,
+    size_t *out_transform_count);
 
 /* Read the most recent route-history summaries from a station chain. This is
  * a read model only: it verifies neither payouts nor inventory, and callers
@@ -471,6 +678,26 @@ int chain_log_read_route_history_tail(const station_t *s,
 bool chain_log_find_cargo_transform(const station_t *s,
                                     const uint8_t cargo_pub[32],
                                     chain_cargo_transform_t *out);
+
+/* Public-key form used to inspect a preserved historical chain identity. */
+bool chain_log_find_cargo_transform_for_identity(
+    const uint8_t station_pubkey[32],
+    const uint8_t cargo_pub[32],
+    chain_cargo_transform_t *out);
+
+/*
+ * Exact transform lookup with optional origin pin. Without a pin, two or more
+ * valid SMELT/CRAFT events naming the same output are ambiguous and rejected.
+ * With a non-zero event_hash_pin, only the event whose signed header hash
+ * matches the pin is eligible; this is how a first receipt selects its exact
+ * origin when duplicate output identities exist.
+ */
+chain_cargo_transform_find_status_t
+chain_log_find_cargo_transform_for_identity_pinned(
+    const uint8_t station_pubkey[32],
+    const uint8_t cargo_pub[32],
+    const uint8_t event_hash_pin[32],
+    chain_cargo_transform_t *out);
 
 /* Compute the SHA-256 of a chain_event_header_t (all 184 bytes,
  * including the signature — this is the full record hash that gets

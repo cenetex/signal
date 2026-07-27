@@ -49,6 +49,25 @@ static inline uint64_t net_payload_hash(const uint8_t *data, size_t len) {
     return h;
 }
 
+/*
+ * Keep the unauthenticated transport surface intentionally small. Latency
+ * probes are connection-local and bounded by their own rate bucket; identity
+ * registration/session messages are required to establish the live session.
+ * Client telemetry is deliberately excluded: accepting it before identity
+ * proof lets anonymous peers mutate per-player analytics state.
+ */
+static inline bool net_message_allowed_before_session(uint8_t type) {
+    switch (type) {
+    case NET_MSG_LATENCY_PING:
+    case NET_MSG_REGISTER_PUBKEY:
+    case NET_MSG_PROVE_PUBKEY:
+    case NET_MSG_SESSION:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static inline bool net_payload_cache_should_send(net_payload_cache_t *cache,
                                                  void *conn,
                                                  const uint8_t *data,
@@ -285,7 +304,7 @@ static inline bool server_fracture_player_in_range_for_world(
         asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
         return false;
     const server_player_t *sp = &w->players[player_id];
-    if (!sp->connected || !sp->session_ready ||
+    if (!server_player_is_gameplay_ready(sp) ||
         !w->asteroids[asteroid_idx].active) {
         return false;
     }
@@ -3094,7 +3113,7 @@ static inline int write_inspect_snapshot_matching_relay_receipt_rows(
     if (!buf || !receipt_world || !npc_diag) return row_count;
     for (int pidx = 0; pidx < MAX_PLAYERS && row_count < max_rows; pidx++) {
         const server_player_t *sp = &receipt_world->players[pidx];
-        if (!sp->connected) continue;
+        if (!server_player_is_gameplay_ready(sp)) continue;
         row_count = write_inspect_snapshot_matching_holder_receipt_rows(
             buf, row_count, max_rows, sp->ship, npc_diag,
             INSPECT_ROW_RELAY_RECEIPT);
@@ -3362,7 +3381,7 @@ static inline int serialize_inspect_snapshot_npc_with_world_receipts(
 static inline int serialize_inspect_snapshot_player(uint8_t *buf,
                                                      uint8_t target_index,
                                                      const server_player_t *player) {
-    if (!player || !player->connected)
+    if (!server_player_is_gameplay_ready(player))
         return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
 
     uint8_t near_station =
@@ -5845,7 +5864,7 @@ static inline void server_emit_world_snapshot_for_player(
     if (!w || !send || !scratch) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_slot];
-    if (!sp->connected) return;
+    if (!server_player_is_gameplay_ready(sp)) return;
     bool emit_live_world_drift = !sp->docked;
 
     if (emit_live_world_drift) {
@@ -6043,7 +6062,7 @@ static inline void server_emit_fracture_updates(
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
                 server_player_t *sp = &w->players[p];
-                if (!sp->connected) continue;
+                if (!server_player_is_gameplay_ready(sp)) continue;
                 if (sp->replication->fracture_challenge_sent_id[i] == state->fracture_id)
                     continue;
                 if (server_fracture_player_in_range_for_world(w, p, i)) {
@@ -6061,7 +6080,7 @@ static inline void server_emit_fracture_updates(
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
                 server_player_t *sp = &w->players[p];
-                if (!sp->connected) continue;
+                if (!server_player_is_gameplay_ready(sp)) continue;
                 if (server_player_fracture_resolved_sent(sp,
                                                          state->fracture_id))
                     continue;
@@ -6088,7 +6107,7 @@ static inline void server_emit_fracture_updates(
             if (!server_player_slot_in_emit_range(pi, only_player_slot))
                 continue;
             server_player_t *sp = &w->players[pi];
-            if (!sp->connected) continue;
+            if (!server_player_is_gameplay_ready(sp)) continue;
             if (server_player_fracture_resolved_sent(sp, pr->fracture_id))
                 continue;
             send(send_user, pi, buf, len);
@@ -6702,7 +6721,8 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
         write_f32_le(&p[21], s->origin_completion_credit);
         write_u32_le(&p[25], s->due_tick);
         uint16_t held_bound = 0;
-        if (player_id < MAX_PLAYERS) {
+        if (player_id < MAX_PLAYERS &&
+            w->players[player_id].ship) {
             const ship_t *ship = w->players[player_id].ship;
             for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
                 int pod_idx = ship->towed_pods[t];
@@ -6739,6 +6759,12 @@ typedef struct {
         DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE
     ];
 } server_private_snapshot_scratch_t;
+
+enum {
+    SERVER_PRIVATE_SNAPSHOT_PACKET_COUNT = 7,
+    SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT =
+        SERVER_PRIVATE_SNAPSHOT_PACKET_COUNT + 1
+};
 
 typedef struct {
     uint8_t station_identity[STATION_IDENTITY_SIZE + 4];
@@ -6788,7 +6814,7 @@ static inline void server_emit_private_snapshot_for_player(
     if (!w || !send || !scratch) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_slot];
-    if (!sp->connected) return;
+    if (!server_player_is_gameplay_ready(sp)) return;
 
     /* This is the recipient's only periodic authoritative pose lane: the
      * shared player stream deliberately excludes its own player. Keep the

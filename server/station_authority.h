@@ -7,10 +7,10 @@
  * server-as-a-whole — the cornerstone of per-zone federation.
  *
  * Seed derivation:
- *   - Seeded stations (indices 0/1/2): seed =
+ *   - Seeded stations (indices below SIGNAL_SEEDED_STATION_COUNT): seed =
  *       SHA256("signal-station-v1" || operator_secret || world_seed_u32
  *              || station_index_u32)
- *   - Player-planted outposts (indices 3+): seed =
+ *   - Player-planted outposts (indices at/after SIGNAL_FIRST_OUTPOST_INDEX):
  *       SHA256("signal-outpost-v1" || operator_secret || founder_pub[32]
  *              || station_name[16] || planted_tick_u64)
  *
@@ -19,9 +19,9 @@
  * omitted from the wire format and from every save — losing the disk
  * does not leak any station's signing key.
  *
- * In this layer, no sim events are signed yet (that's Layer C). This
- * file only establishes the identity infrastructure: derive, store,
- * sign, verify.
+ * Chain-log events and cargo receipts consume this identity layer. This file
+ * owns derivation, in-memory private material, public lifecycle persistence,
+ * signing, and verification; it never serializes a private key.
  */
 #ifndef SERVER_STATION_AUTHORITY_H
 #define SERVER_STATION_AUTHORITY_H
@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cargo_receipt.h"
 #include "types.h"
 
 #ifdef __cplusplus
@@ -90,15 +91,63 @@ void station_authority_init_outpost_keypair(station_t *s,
                                             const uint8_t nacl_secret[64]);
 
 
-/* Re-populate s->station_secret from operator secret + already-set
- * identity material. Called by the world loader so the secret never
- * has to be written to disk. Returns true when a non-zero saved pubkey
- * did not match the currently configured operator secret and was
- * replaced with the derived pubkey; callers should treat that as an
- * intentional station rekey and start a fresh chain head. */
-bool station_authority_rederive_secret(station_t *s,
-                                       uint32_t world_seed,
-                                       int station_index);
+/*
+ * Re-populate s->station_secret from operator secret + already-set identity
+ * material. A changed operator secret first preserves the old public key as
+ * rotated, then replaces the live identity. Rekey is rejected when it would
+ * reactivate an explicitly untrusted/revoked key or when the bounded registry
+ * cannot preserve explicit distrust.
+ */
+typedef enum {
+    STATION_AUTHORITY_REDERIVE_UNCHANGED = 0,
+    STATION_AUTHORITY_REDERIVE_REKEYED,
+    STATION_AUTHORITY_REDERIVE_REJECTED
+} station_authority_rederive_result_t;
+
+station_authority_rederive_result_t station_authority_rederive_secret(
+    station_t *s,
+    uint32_t world_seed,
+    int station_index);
+
+/*
+ * Initialize the public lifecycle registry from station_pubkey. This is also
+ * the v76-and-earlier migration rule: preserve the one saved live key, but do
+ * not invent historical identities or trust.
+ */
+void station_authority_registry_init(station_t *s);
+
+/*
+ * Strict canonical-layout validation used before persistence and resolution.
+ * Empty station slots may have an all-zero registry. Occupied stations require
+ * row zero to be the live trusted-current key. Duplicate, conflicting,
+ * malformed, or non-zero spare rows are rejected.
+ */
+bool station_authority_registry_validate(const station_t *s);
+
+/*
+ * Resolve a public key into the two independent #634 dimensions. A valid
+ * registry with no row returns UNKNOWN / UNSPECIFIED. Any malformed registry
+ * fails closed as REVOKED for both queries.
+ */
+cargo_receipt_authority_trust_t station_authority_trust_for_pubkey(
+    const station_t *s,
+    const uint8_t pubkey[32]);
+
+cargo_receipt_authority_lifecycle_t
+station_authority_lifecycle_for_pubkey(
+    const station_t *s,
+    const uint8_t pubkey[32]);
+
+/*
+ * Mark a non-current key explicitly untrusted or revoked. Distrust is
+ * monotonic: revoked cannot be downgraded, and current keys must rotate before
+ * they can be distrusted. Unknown keys may be added as deny-only rows without
+ * inventing a historical lifecycle.
+ */
+bool station_authority_registry_set_trust(
+    station_t *s,
+    const uint8_t pubkey[32],
+    cargo_receipt_authority_trust_t trust);
 
 /* Sign msg[0..len) with station s's private key. Writes 64 bytes to
  * sig. The station must have a populated secret — pass through the

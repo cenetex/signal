@@ -21,6 +21,7 @@
 #include "signal_field.h"
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
+#include "protocol.h"
 #include "tractor.h"
 
 /* ------------------------------------------------------------------ */
@@ -114,7 +115,7 @@ typedef struct {
     uint32_t capacity;            /* always power of 2 */
     uint32_t mask;                /* capacity - 1 */
     uint32_t occupied;            /* number of occupied slots */
-    uint32_t overflow_count;      /* active asteroids dropped by allocation failure */
+    uint32_t overflow_count;      /* active asteroids omitted from the sparse grid */
 } spatial_grid_t;
 
 /* Map world position to cell coordinates (unbounded). */
@@ -477,6 +478,12 @@ typedef struct {
     bool    pubkey_set;
     bool    pubkey_proof_ok;
     bool    pubkey_identity_finalized;
+    /* Runtime-only proof-of-possession challenge. It is issued once per
+     * transport, cleared after successful verification or any entropy
+     * failure, and deliberately omitted from world/player persistence. */
+    uint8_t pubkey_challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
+    bool    pubkey_challenge_issued;
+    bool    pubkey_challenge_consumed;
     /* Runtime-only reconnect latch. Session reattach can happen before
      * PROVE_PUBKEY arrives; when it does, skip the pubkey save reload that
      * would otherwise overwrite the live transferred ship state. */
@@ -846,9 +853,33 @@ const ship_t *world_ship_asset_state_const(const world_t *w,
 float contract_price(const contract_t *c);
 void world_reset(world_t *w);
 void world_ensure_seeded_freeport(world_t *w);
+/*
+ * Anchor server-generated RECIPE_LEGACY_MIGRATE cargo at a station before
+ * provenance-sensitive gameplay can consume or transfer it. This is an
+ * explicit bootstrap/migration boundary, not a gameplay trust exception:
+ * each unit receives a durable zero-input CRAFT origin first, and its
+ * origin_station byte is stamped only after the append succeeds.
+ *
+ * Callers must pass cargo already admitted by a trusted bootstrap or save
+ * migration path. Normal gameplay must continue to use the receipt trust
+ * evaluator and reject missing origins.
+ */
+bool world_anchor_legacy_cargo_origins(
+    world_t *w, int station_idx,
+    cargo_unit_t *const *units, size_t unit_count);
+/* Anchor one station's legacy manifest plus physical pods already marked as
+ * originating there. Safe to call after additional trusted migration stock
+ * has been materialized; already-resolved origins are left idempotent. */
+bool world_anchor_station_legacy_cargo_origins(world_t *w, int station_idx);
+/* World-wide pass for trusted initialization boundaries. Use either for a
+ * fresh server-generated world or immediately after a CRC-valid operator save
+ * has completed chain-tail verification/reconciliation. */
+bool world_anchor_validated_legacy_cargo_origins(world_t *w);
 /* Genesis MOTD/tier chain events for the seeded stations. Caller must
  * invoke this only on a fresh-world boot (no save loaded), AFTER
- * world_reset. See seed_station_motd_chain_events in game_sim.c. */
+ * world_reset. This also anchors server-generated legacy starter cargo
+ * before emitting presentation events. See seed_station_motd_chain_events
+ * in game_sim.c. */
 void world_seed_station_chain_genesis(world_t *w);
 void world_cleanup(world_t *w);
 void world_sim_step(world_t *w, float dt);
@@ -997,13 +1028,16 @@ void world_player_runtime_slot_reset(world_t *w, int player_slot);
 bool server_player_has_live_session(const server_player_t *sp);
 bool server_player_is_gameplay_ready(const server_player_t *sp);
 void server_player_clear_live_session_identity(server_player_t *sp);
+/* Revert an unfinalized pubkey assertion without disturbing an already
+ * published token session or its live ship state. */
+bool server_player_abandon_pending_pubkey_identity(server_player_t *sp);
 void server_player_reset_input_stream(server_player_t *sp);
 void server_player_clear_transient_input(server_player_t *sp);
 
 /* Layer A.2 of #479 — pubkey registry. */
 /* Look up a player_idx (into world.players[]) by pubkey. Returns -1 if not
- * registered. The lookup walks pubkey_registry to find the binding, then
- * locates the player slot owning that session_token. */
+ * registered. A registry token is only a locator: the live candidate must
+ * also have finalized the same verified pubkey on its current transport. */
 int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
 /* Register / update a (pubkey, session_token) binding for a connection.
  * Returns true if a registry entry was newly added or updated; false on
@@ -1015,8 +1049,14 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
  * server_player_t side. */
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
-int server_find_session_reattach_slot(const world_t *w, int player_idx,
-                                      const uint8_t session_token[8]);
+/* Find an existing live slot that the incoming player may reattach. Identity
+ * classes never bridge: anonymous matches anonymous; verified matches only a
+ * finalized source with the exact same pubkey. `out_identity_conflict` is set
+ * when the token exists but belongs to an incompatible identity. */
+int server_find_session_reattach_slot(
+    const world_t *w,
+    int player_idx,
+    bool *out_identity_conflict);
 bool server_player_can_use_pubkey_persistence(const server_player_t *sp);
 bool server_finalize_pubkey_identity(world_t *w, int player_idx);
 
@@ -1029,6 +1069,7 @@ typedef struct {
 typedef struct {
     bool accepted;
     bool same_pubkey;
+    bool conflicting_pubkey;
     uint8_t pubkey[32];
 } server_pubkey_register_result_t;
 
@@ -1036,8 +1077,11 @@ typedef enum {
     SERVER_PUBKEY_PROOF_OK = 0,
     SERVER_PUBKEY_PROOF_MALFORMED,
     SERVER_PUBKEY_PROOF_NO_REGISTRATION,
+    SERVER_PUBKEY_PROOF_NO_CHALLENGE,
+    SERVER_PUBKEY_PROOF_CHALLENGE_REPLAY,
     SERVER_PUBKEY_PROOF_PUBKEY_MISMATCH,
     SERVER_PUBKEY_PROOF_SESSION_MISMATCH,
+    SERVER_PUBKEY_PROOF_LEGACY_VERSION,
     SERVER_PUBKEY_PROOF_BAD_SIGNATURE
 } server_pubkey_proof_status_t;
 
@@ -1050,6 +1094,11 @@ bool server_parse_session_message(const uint8_t *data, int len,
                                   server_session_message_t *out);
 bool server_apply_session_message(world_t *w, int player_idx,
                                   const server_session_message_t *msg);
+/* Create a server-owned session token (used by headless bot players).
+ * On entropy failure the token and all live identity state are cleared,
+ * `connected` remains false, and the caller must not spawn a ship. */
+bool server_player_start_generated_session(server_player_t *sp);
+#define SERVER_PUBKEY_PROOF_TIMEOUT_SECONDS 5.0f
 bool server_dispatch_register_pubkey_message(
     world_t *w,
     int player_idx,
@@ -1062,7 +1111,28 @@ bool server_dispatch_pubkey_proof_message(
     const uint8_t *data,
     int len,
     server_pubkey_proof_result_t *out);
+/* Issue one fresh challenge for a connected transport. `out` and the
+ * player's challenge state are fully cleared on entropy failure. */
+bool server_issue_pubkey_challenge(
+    world_t *w,
+    int player_idx,
+    uint8_t out[PUBKEY_PROOF_CHALLENGE_SIZE]);
+/* A pubkey may be used as durable identity only after its transport-bound
+ * challenge has been consumed successfully. `out` is cleared on failure. */
+bool server_player_copy_verified_pubkey(
+    const server_player_t *sp,
+    uint8_t out[32]);
+/* Advance the shared pre-session/proof deadline. Returns true exactly when
+ * an incomplete authentication attempt has expired. Token-only sessions and
+ * completed pubkey proofs are not timed by this helper. */
+bool server_player_tick_auth_timeout(
+    server_player_t *sp,
+    float elapsed_seconds);
 const char *server_pubkey_proof_status_name(
+    server_pubkey_proof_status_t status);
+/* Fatal protocol mismatches are closed immediately instead of consuming the
+ * proof retry window. */
+bool server_pubkey_proof_status_requires_disconnect(
     server_pubkey_proof_status_t status);
 
 /* Layer A.3 of #479 — signed-action verification.
@@ -1096,6 +1166,12 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
                                             uint16_t *out_payload_len);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
+#if defined(SIGNAL_SPATIAL_GRID_TESTING)
+/* Fail exactly one spatial-grid allocation after this many successful
+ * spatial-grid allocations. Test-only: production builds expose no hook. */
+void spatial_grid_test_fail_allocation_after(uint32_t successful_allocations);
+void spatial_grid_test_clear_allocation_failure(void);
+#endif
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value);
 
@@ -1161,12 +1237,19 @@ ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
                                     bool loaner, int build_station,
                                     const uint8_t owner_pubkey[32],
                                     const uint8_t owner_session[8]);
+bool world_promote_session_owned_state_to_pubkey(
+    world_t *w,
+    const uint8_t session_token[8],
+    const uint8_t pubkey[32]);
 int world_station_stored_hull_count(const world_t *w, int station_idx,
                                     hull_class_t hull_class);
 void world_refresh_station_hull_inventories(world_t *w);
 bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp);
 bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot);
 bool world_player_release_ship_asset(world_t *w, int player_slot);
+bool world_rebind_player_slot_refs(world_t *w,
+                                   int dst_slot,
+                                   int src_slot);
 bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot);
 bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
 int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
@@ -1300,6 +1383,10 @@ int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]);
 float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]);
 void ledger_sanitize_station(station_t *st);
 void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount);
+bool world_migrate_legacy_ledger_to_pubkey(
+    world_t *w,
+    const uint8_t session_token[8],
+    const uint8_t pubkey[32]);
 bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
 void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
 void ledger_credit_supply_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value);

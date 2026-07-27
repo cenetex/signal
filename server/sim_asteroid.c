@@ -190,7 +190,7 @@ static bool player_can_claim_fracture(const world_t *w, int player_id, int aster
         asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
         return false;
     sp = &w->players[player_id];
-    if (!sp->connected || !sp->session_ready) return false;
+    if (!server_player_is_gameplay_ready(sp)) return false;
     if (!w->asteroids[asteroid_idx].active) return false;
     radius = fracture_signal_radius(w, w->asteroids[asteroid_idx].pos);
     if (radius <= 0.0f) return false;
@@ -556,10 +556,9 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
                 /* fractured_by is a player slot index (or -1). Look up
                  * their pubkey if we have one; otherwise leave zero. */
                 uint8_t player_pub[32] = {0};
-                if (fractured_by >= 0 && fractured_by < MAX_PLAYERS &&
-                    w->players[fractured_by].connected) {
-                    memcpy(player_pub, w->players[fractured_by].pubkey, 32);
-                }
+                if (fractured_by >= 0 && fractured_by < MAX_PLAYERS)
+                    (void)server_player_copy_verified_pubkey(
+                        &w->players[fractured_by], player_pub);
                 chain_payload_rock_destroy_t payload = {0};
                 memcpy(payload.rock_pub, parent.rock_pub, 32);
                 memcpy(payload.fracturing_player_pub, player_pub, 32);
@@ -604,8 +603,8 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
         child->grade = MINING_GRADE_COMMON;
         memset(child->fragment_pub, 0, sizeof(child->fragment_pub));
         if (fractured_by >= 0 && fractured_by < MAX_PLAYERS &&
-            w->players[fractured_by].connected &&
-            w->players[fractured_by].session_ready) {
+            server_player_is_gameplay_ready(
+                &w->players[fractured_by])) {
             memcpy(child->last_fractured_token,
                    w->players[fractured_by].session_token,
                    sizeof(child->last_fractured_token));
@@ -766,7 +765,10 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
             if (a->fracture_child && a->age >= FRACTURE_CHILD_CLEANUP_AGE) {
                 bool near_player = false;
                 for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (!w->players[p].connected) continue;
+                    if (!server_player_is_gameplay_ready(
+                            &w->players[p])) {
+                        continue;
+                    }
                 if (v2_dist_sq(a->pos, w->players[p].ship->pos) <= cleanup_d_sq) {
                     near_player = true;
                     break;
@@ -1051,7 +1053,7 @@ void maintain_asteroid_field(world_t *w, float dt) {
     vec2 viewports[MAX_PLAYERS + MAX_NPC_SHIPS];
     int nv = 0;
     for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (!w->players[p].connected) continue;
+        if (!server_player_is_gameplay_ready(&w->players[p])) continue;
         viewports[nv++] = w->players[p].ship->pos;
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {

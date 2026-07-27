@@ -42,6 +42,8 @@ typedef struct {
  *   wasm:           localStorage["signal:identity"] (base64 of secret)
  *
  * On POSIX the file is created with mode 0600 inside a 0700 directory.
+ * If secure entropy is unavailable, returns false with `out` cleared and
+ * does not create, replace, rename, or persist identity state.
  */
 bool identity_load_or_generate(player_identity_t *out);
 

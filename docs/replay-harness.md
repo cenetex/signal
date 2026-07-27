@@ -71,12 +71,20 @@ Each row has schema `signal.replay_counterfactual.v1` and includes:
 - `prefix_state_hash`: hash after replaying the shared input prefix.
 - `state_hash`: hash after the candidate branch horizon.
 - `event_hash`: hash of branch events in simulator order.
+- State hashes include each station's versioned public authority registry
+  (public keys, lifecycle, and trust decisions); private station keys are never
+  part of replay state or output.
 - Safety metrics: hull, hull loss, damage events, death events, dock/launch
   events, and repair events.
 - Economy metrics: cargo, balance, buy/sell counts, buy cost, buy quantity, and
   sell credits.
 - Motion metrics: end position, velocity, speed, angle, goal distance, progress,
   and scalar utility.
+- `receipt_trust`: an always-on `signal.receipt_trust.v1` known-vector
+  contract covering trusted SMELT and CRAFT origins plus every typed rejection
+  or lifecycle verdict. Replay aborts if any vector produces a different
+  semantic code; native/WASM and cross-runner gates compare the emitted codes
+  exactly.
 - Optional `hnn` object when `--hnn-trace` is set: flat trace contract,
   routed HoloNet contract, route diagnostics, stored count/load/fidelity, raw
   HNN top action, gated top legal action, legal action mask, candidate

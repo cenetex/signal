@@ -190,11 +190,14 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
     case NET_MSG_REGISTER_PUBKEY:
     {
         server_pubkey_register_result_t result;
-        if (server_dispatch_register_pubkey_message(&ls->world, pid, data,
-                                                    len, &result) &&
-            result.same_pubkey &&
-            server_finalize_pubkey_identity(&ls->world, pid)) {
-            player_seed_credits(sp, &ls->world);
+        if (!server_dispatch_register_pubkey_message(
+                &ls->world, pid, data, len, &result)) {
+            if (result.conflicting_pubkey) {
+                server_player_clear_live_session_identity(sp);
+                sp->connected = false;
+                ls->active = false;
+            }
+            break;
         }
         break;
     }
@@ -204,7 +207,12 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
         if (server_dispatch_pubkey_proof_message(&ls->world, pid, data,
                                                  len, &result) &&
             result.verified) {
-            (void)server_finalize_pubkey_identity(&ls->world, pid);
+            if (!server_finalize_pubkey_identity(&ls->world, pid)) {
+                server_player_clear_live_session_identity(sp);
+                sp->connected = false;
+                ls->active = false;
+                break;
+            }
             player_seed_credits(sp, &ls->world);
         }
         break;
@@ -214,10 +222,9 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
     case NET_MSG_SESSION:
     {
         server_session_message_t session;
-        if (server_parse_session_message(data, len, &session) &&
-            server_apply_session_message(&ls->world, pid, &session)) {
-            player_seed_credits(sp, &ls->world);
-        }
+        if (server_parse_session_message(data, len, &session))
+            (void)server_apply_session_message(
+                &ls->world, pid, &session);
         break;
     }
     case NET_MSG_INPUT:
@@ -551,9 +558,33 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
     }
 }
 
-void local_server_send_initial_snapshot(local_server_t *ls, int player_slot) {
-    if (!ls || !ls->active) return;
-    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+bool local_server_send_initial_snapshot(local_server_t *ls, int player_slot) {
+    if (!ls || !ls->active) return false;
+    if (player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+
+    /* net_init_loopback synchronously sent REGISTER then SESSION. Challenge
+     * delivery invokes the client proof and loops it back before this call
+     * returns, giving singleplayer the same one-time authentication gate as
+     * the dedicated WebSocket server. */
+    uint8_t challenge[PUBKEY_CHALLENGE_MSG_SIZE] = {
+        NET_MSG_PUBKEY_CHALLENGE
+    };
+    server_player_t *sp = &ls->world.players[player_slot];
+    if (!server_issue_pubkey_challenge(
+            &ls->world, player_slot, &challenge[1])) {
+        server_player_clear_live_session_identity(sp);
+        sp->connected = false;
+        ls->active = false;
+        return false;
+    }
+    local_server_send_to_client(challenge, sizeof(challenge));
+    if (!sp->pubkey_proof_ok || !sp->pubkey_challenge_consumed) {
+        server_player_clear_live_session_identity(sp);
+        sp->connected = false;
+        ls->active = false;
+        return false;
+    }
+
     /* Advertise the cadence this loopback will actually run at — client
      * extrapolation/smoothing windows are derived from these values, so
      * claiming 50/100 ms streams while emitting per-tick (or vice versa)
@@ -569,6 +600,7 @@ void local_server_send_initial_snapshot(local_server_t *ls, int player_slot) {
     local_server_emit_world_snapshots(ls, player_slot, true);
     local_server_emit_private_snapshots(ls, player_slot);
     local_server_emit_global_snapshots(ls);
+    return true;
 }
 
 void local_server_step_loopback(local_server_t *ls, int player_slot, float dt) {

@@ -32,15 +32,23 @@ static void economy_fill_pubkey(uint8_t out[32], uint8_t seed) {
     for (int i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
 }
 
-static cargo_unit_t economy_test_cargo_unit(const uint8_t cargo_pub[32]) {
+static cargo_unit_t economy_test_cargo_unit(
+    const uint8_t fragment_pub[32],
+    uint16_t *out_output_index) {
     cargo_unit_t unit = {0};
-    unit.kind = CARGO_KIND_INGOT;
-    unit.commodity = COMMODITY_FERRITE_INGOT;
-    unit.grade = MINING_GRADE_COMMON;
-    unit.recipe_id = RECIPE_SMELT;
-    unit.prefix_class = INGOT_PREFIX_M;
-    unit.quantity = 1;
-    memcpy(unit.pub, cargo_pub, 32);
+    for (uint32_t output_index = 0;
+         output_index <= UINT16_MAX; output_index++) {
+        (void)hash_ingot(
+            COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+            fragment_pub, (uint16_t)output_index, &unit);
+        if ((ingot_prefix_t)unit.prefix_class !=
+            INGOT_PREFIX_ANONYMOUS) {
+            if (out_output_index)
+                *out_output_index = (uint16_t)output_index;
+            return unit;
+        }
+    }
+    memset(&unit, 0, sizeof(unit));
     return unit;
 }
 
@@ -87,24 +95,687 @@ static const cargo_pod_t *economy_first_exact_pod(const world_t *w,
 static bool economy_issue_single_receipt(world_t *w,
                                          int station_idx,
                                          const uint8_t recipient[32],
-                                         const uint8_t cargo_pub[32],
+                                         uint16_t output_index,
+                                         cargo_unit_t *unit,
                                          cargo_receipt_chain_t *out) {
-    if (!w || !out || station_idx < 0 || station_idx >= MAX_STATIONS)
+    if (!w || !unit || !out ||
+        station_idx < 0 || station_idx >= MAX_STATIONS)
         return false;
     station_t *st = &w->stations[station_idx];
     memset(out, 0, sizeof(*out));
-    if (chain_log_emit(w, st, CHAIN_EVT_SMELT, "legality", 8) == 0)
+    unit->origin_station = (uint8_t)station_idx;
+    chain_payload_smelt_t smelt = {0};
+    if (!chain_payload_smelt_bind_output(
+            &smelt, unit->parent_merkle, output_index, unit)) {
+        return false;
+    }
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, (uint16_t)sizeof(smelt)) == 0)
         return false;
     cargo_receipt_t receipt = {0};
     if (cargo_receipt_emit_transfer(w, st, st->station_pubkey, recipient,
-                                    cargo_pub, (uint8_t)CARGO_KIND_INGOT,
-                                    st->chain_last_hash, &receipt) == 0) {
+                                    unit, out, &receipt) == 0) {
         return false;
     }
     out->links[0] = receipt;
     out->len = 1;
     return true;
 }
+
+typedef enum {
+    ECONOMY_TRANSFER_FAULT_WRITE = 0,
+    ECONOMY_TRANSFER_FAULT_FLUSH,
+    ECONOMY_TRANSFER_FAULT_PREBLOCKED,
+} economy_transfer_fault_t;
+
+#define ECONOMY_LEDGER_BYTES (sizeof(((station_t *)0)->ledger))
+
+typedef struct {
+    cargo_store_t stores[3];
+    const cargo_store_t *store_refs[3];
+    size_t store_count;
+    cargo_pod_t *pods;
+    delivery_shipment_t *shipments;
+    contract_t contracts[MAX_CONTRACTS];
+    uint16_t next_delivery_shipment_id;
+    uint8_t ledgers[MAX_STATIONS][ECONOMY_LEDGER_BYTES];
+    int ledger_counts[MAX_STATIONS];
+    float credit_pools[MAX_STATIONS];
+    float inventory_cache[MAX_STATIONS][COMMODITY_COUNT];
+    float finished_residue[MAX_STATIONS][COMMODITY_COUNT];
+    bool manifest_dirty[MAX_STATIONS];
+    float ship_credits_earned;
+    float ship_credits_spent;
+    uint64_t chain_event_count;
+    uint8_t chain_last_hash[32];
+    uint64_t chain_verified_event_count;
+    uint8_t chain_verified_last_hash[32];
+    uint8_t chain_health_status;
+    bool chain_append_blocked;
+    bool chain_append_block_warned;
+    char chain_health_message[sizeof(((station_t *)0)->chain_health_message)];
+} economy_transfer_snapshot_t;
+
+typedef struct {
+    bool setup_ok;
+    bool caller_invoked;
+    bool manifests_unchanged;
+    bool receipts_unchanged;
+    bool pods_unchanged;
+    bool ledgers_unchanged;
+    bool contracts_unchanged;
+    bool shipments_unchanged;
+    bool credits_unchanged;
+    bool inventory_unchanged;
+    bool manifest_dirty_unchanged;
+    bool chain_counters_unchanged;
+    bool chain_log_unchanged;
+    bool expected_health_flags;
+    bool receipt_sink_unchanged;
+} economy_transfer_failure_result_t;
+
+typedef struct {
+    int calls;
+    cargo_receipt_chain_t last;
+} economy_receipt_sink_capture_t;
+
+static void economy_capture_receipt_chain(
+    void *user, const cargo_receipt_chain_t *chain) {
+    economy_receipt_sink_capture_t *capture =
+        (economy_receipt_sink_capture_t *)user;
+    if (!capture || !chain) return;
+    capture->calls++;
+    capture->last = *chain;
+}
+
+static bool economy_manifest_equal(const manifest_t *a,
+                                   const manifest_t *b) {
+    if (!a || !b || a->count != b->count || a->cap != b->cap)
+        return false;
+    if (a->count == 0) return true;
+    if (!a->units || !b->units) return false;
+    return memcmp(a->units, b->units,
+                  (size_t)a->count * sizeof(*a->units)) == 0;
+}
+
+static bool economy_receipts_equal(const cargo_store_t *a,
+                                   const cargo_store_t *b) {
+    const ship_receipts_t *ar = cargo_store_receipts_const(a);
+    const ship_receipts_t *br = cargo_store_receipts_const(b);
+    if (!ar || !br) return ar == br;
+    if (ar->count != br->count || ar->cap != br->cap)
+        return false;
+    if (ar->count == 0) return true;
+    if (!ar->chains || !br->chains) return false;
+    return memcmp(ar->chains, br->chains,
+                  (size_t)ar->count * sizeof(*ar->chains)) == 0;
+}
+
+static void economy_transfer_snapshot_cleanup(
+    economy_transfer_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    for (size_t i = 0; i < snapshot->store_count; i++)
+        cargo_store_cleanup(&snapshot->stores[i]);
+    free(snapshot->pods);
+    free(snapshot->shipments);
+    memset(snapshot, 0, sizeof(*snapshot));
+}
+
+static bool economy_transfer_snapshot_take(
+    economy_transfer_snapshot_t *snapshot,
+    const world_t *w,
+    const cargo_store_t *const *stores,
+    size_t store_count,
+    int chain_station,
+    const ship_t *credit_ship) {
+    if (!snapshot || !w || !stores || store_count > 3 ||
+        chain_station < 0 || chain_station >= MAX_STATIONS) {
+        return false;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->store_count = store_count;
+    for (size_t i = 0; i < store_count; i++) {
+        if (!stores[i] ||
+            !cargo_store_clone(&snapshot->stores[i], stores[i])) {
+            economy_transfer_snapshot_cleanup(snapshot);
+            return false;
+        }
+        snapshot->store_refs[i] = stores[i];
+    }
+    snapshot->pods = malloc(sizeof(w->cargo_pods));
+    snapshot->shipments = malloc(sizeof(w->delivery_shipments));
+    if (!snapshot->pods || !snapshot->shipments) {
+        economy_transfer_snapshot_cleanup(snapshot);
+        return false;
+    }
+    memcpy(snapshot->pods, w->cargo_pods, sizeof(w->cargo_pods));
+    memcpy(snapshot->shipments, w->delivery_shipments,
+           sizeof(w->delivery_shipments));
+    memcpy(snapshot->contracts, w->contracts, sizeof(w->contracts));
+    snapshot->next_delivery_shipment_id =
+        w->next_delivery_shipment_id;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *station = &w->stations[s];
+        memcpy(snapshot->ledgers[s], station->ledger,
+               sizeof(station->ledger));
+        snapshot->ledger_counts[s] = station->ledger_count;
+        snapshot->credit_pools[s] = station_credit_pool(station);
+        memcpy(snapshot->inventory_cache[s],
+               station->_inventory_cache,
+               sizeof(station->_inventory_cache));
+        memcpy(snapshot->finished_residue[s],
+               station->_finished_residue,
+               sizeof(station->_finished_residue));
+        snapshot->manifest_dirty[s] = station->manifest_dirty;
+    }
+    if (credit_ship) {
+        snapshot->ship_credits_earned = credit_ship->stat_credits_earned;
+        snapshot->ship_credits_spent = credit_ship->stat_credits_spent;
+    }
+    const station_t *chain = &w->stations[chain_station];
+    snapshot->chain_event_count = chain->chain_event_count;
+    memcpy(snapshot->chain_last_hash, chain->chain_last_hash,
+           sizeof(snapshot->chain_last_hash));
+    snapshot->chain_verified_event_count =
+        chain->chain_verified_event_count;
+    memcpy(snapshot->chain_verified_last_hash,
+           chain->chain_verified_last_hash,
+           sizeof(snapshot->chain_verified_last_hash));
+    snapshot->chain_health_status = chain->chain_health_status;
+    snapshot->chain_append_blocked = chain->chain_append_blocked;
+    snapshot->chain_append_block_warned =
+        chain->chain_append_block_warned;
+    memcpy(snapshot->chain_health_message,
+           chain->chain_health_message,
+           sizeof(snapshot->chain_health_message));
+    return true;
+}
+
+static economy_transfer_failure_result_t
+economy_transfer_snapshot_evaluate(
+    const economy_transfer_snapshot_t *snapshot,
+    const world_t *w,
+    int chain_station,
+    const ship_t *credit_ship,
+    economy_transfer_fault_t fault,
+    bool caller_invoked,
+    int receipt_sink_calls) {
+    economy_transfer_failure_result_t result = {
+        .setup_ok = true,
+        .caller_invoked = caller_invoked,
+        .manifests_unchanged = true,
+        .receipts_unchanged = true,
+        .pods_unchanged = true,
+        .ledgers_unchanged = true,
+        .contracts_unchanged = true,
+        .shipments_unchanged = true,
+        .credits_unchanged = true,
+        .inventory_unchanged = true,
+        .manifest_dirty_unchanged = true,
+        .chain_counters_unchanged = true,
+        .chain_log_unchanged = true,
+        .expected_health_flags = true,
+        .receipt_sink_unchanged = receipt_sink_calls == 0,
+    };
+    if (!snapshot || !w || chain_station < 0 ||
+        chain_station >= MAX_STATIONS) {
+        result.setup_ok = false;
+        return result;
+    }
+    for (size_t i = 0; i < snapshot->store_count; i++) {
+        result.manifests_unchanged &=
+            economy_manifest_equal(
+                &snapshot->stores[i].manifest,
+                &snapshot->store_refs[i]->manifest);
+        result.receipts_unchanged &=
+            economy_receipts_equal(
+                &snapshot->stores[i],
+                snapshot->store_refs[i]);
+    }
+    result.pods_unchanged =
+        memcmp(snapshot->pods, w->cargo_pods,
+               sizeof(w->cargo_pods)) == 0;
+    result.contracts_unchanged =
+        memcmp(snapshot->contracts, w->contracts,
+               sizeof(w->contracts)) == 0;
+    result.shipments_unchanged =
+        snapshot->next_delivery_shipment_id ==
+            w->next_delivery_shipment_id &&
+        memcmp(snapshot->shipments, w->delivery_shipments,
+               sizeof(w->delivery_shipments)) == 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *station = &w->stations[s];
+        result.ledgers_unchanged &=
+            snapshot->ledger_counts[s] == station->ledger_count &&
+            memcmp(snapshot->ledgers[s], station->ledger,
+                   sizeof(station->ledger)) == 0;
+        result.credits_unchanged &=
+            fabsf(snapshot->credit_pools[s] -
+                  station_credit_pool(station)) < 0.0001f;
+        result.inventory_unchanged &=
+            memcmp(snapshot->inventory_cache[s],
+                   station->_inventory_cache,
+                   sizeof(station->_inventory_cache)) == 0 &&
+            memcmp(snapshot->finished_residue[s],
+                   station->_finished_residue,
+                   sizeof(station->_finished_residue)) == 0;
+        result.manifest_dirty_unchanged &=
+            snapshot->manifest_dirty[s] == station->manifest_dirty;
+    }
+    if (credit_ship) {
+        result.credits_unchanged &=
+            snapshot->ship_credits_earned ==
+                credit_ship->stat_credits_earned &&
+            snapshot->ship_credits_spent ==
+                credit_ship->stat_credits_spent;
+    }
+
+    const station_t *chain = &w->stations[chain_station];
+    result.chain_counters_unchanged =
+        snapshot->chain_event_count == chain->chain_event_count &&
+        memcmp(snapshot->chain_last_hash, chain->chain_last_hash,
+               sizeof(snapshot->chain_last_hash)) == 0 &&
+        snapshot->chain_verified_event_count ==
+            chain->chain_verified_event_count &&
+        memcmp(snapshot->chain_verified_last_hash,
+               chain->chain_verified_last_hash,
+               sizeof(snapshot->chain_verified_last_hash)) == 0;
+    uint64_t walked = 0;
+    result.chain_log_unchanged =
+        chain_log_verify(chain, &walked, NULL) &&
+        walked == snapshot->chain_event_count;
+
+    result.expected_health_flags =
+        chain->chain_append_blocked &&
+        chain->chain_health_status == CHAIN_HEALTH_FAILED;
+    if (fault == ECONOMY_TRANSFER_FAULT_WRITE) {
+        result.expected_health_flags &=
+            !chain->chain_append_block_warned &&
+            strstr(chain->chain_health_message,
+                   "write_failed") != NULL;
+    } else if (fault == ECONOMY_TRANSFER_FAULT_FLUSH) {
+        result.expected_health_flags &=
+            !chain->chain_append_block_warned &&
+            strstr(chain->chain_health_message,
+                   "flush_failed") != NULL;
+    } else {
+        result.expected_health_flags &=
+            chain->chain_append_block_warned &&
+            snapshot->chain_append_blocked &&
+            snapshot->chain_health_status == CHAIN_HEALTH_FAILED &&
+            memcmp(snapshot->chain_health_message,
+                   chain->chain_health_message,
+                   sizeof(snapshot->chain_health_message)) == 0;
+    }
+    return result;
+}
+
+static void economy_transfer_test_configure_chain(
+    const char *label,
+    economy_transfer_fault_t fault,
+    chain_event_type_t failure_event) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/transfer_%s_%d_%d",
+             test_tmp_dir(), label, (int)fault, (int)failure_event);
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(path);
+    chain_log_test_fault_clear();
+}
+
+static void economy_transfer_test_arm_fault(
+    station_t *station,
+    economy_transfer_fault_t fault,
+    chain_event_type_t failure_event) {
+    if (!station) return;
+    if (fault == ECONOMY_TRANSFER_FAULT_WRITE) {
+        chain_log_test_fault_inject(
+            CHAIN_LOG_TEST_FAULT_WRITE, failure_event, 1);
+    } else if (fault == ECONOMY_TRANSFER_FAULT_FLUSH) {
+        chain_log_test_fault_inject(
+            CHAIN_LOG_TEST_FAULT_FLUSH, failure_event, 1);
+    } else {
+        chain_log_health_set(
+            station, CHAIN_HEALTH_FAILED, true,
+            station->chain_event_count,
+            station->chain_last_hash,
+            "test pre-blocked prepared transfer");
+    }
+}
+
+static void economy_setup_transfer_player(world_t *w,
+                                           server_player_t **out_player) {
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x71, sizeof(sp->session_token));
+    economy_fill_pubkey(sp->pubkey, 0x91);
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    *out_player = sp;
+}
+
+static economy_transfer_failure_result_t
+economy_run_named_buy_transfer_failure(
+    economy_transfer_fault_t fault,
+    chain_event_type_t failure_event) {
+    economy_transfer_failure_result_t result = {0};
+    economy_transfer_snapshot_t *snapshot =
+        calloc(1, sizeof(*snapshot));
+    economy_receipt_sink_capture_t sink = {0};
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    if (!w || !snapshot) {
+        free(snapshot);
+        return result;
+    }
+
+    economy_transfer_test_configure_chain(
+        "named_buy", fault, failure_event);
+    w->rng = 22001u + (uint32_t)fault +
+             (uint32_t)failure_event;
+    world_reset(w);
+    server_player_t *sp = NULL;
+    economy_setup_transfer_player(w, &sp);
+    station_t *station = &w->stations[0];
+
+    uint8_t cargo_pub[32];
+    economy_fill_pubkey(cargo_pub, (uint8_t)(0x51 + fault));
+    uint16_t output_index = 0;
+    cargo_unit_t unit =
+        economy_test_cargo_unit(cargo_pub, &output_index);
+    cargo_receipt_chain_t chain = {0};
+    if (!economy_issue_single_receipt(
+            w, 0, station->station_pubkey, output_index,
+            &unit, &chain) ||
+        !station_manifest_push_with_chain(station, &unit, &chain)) {
+        goto cleanup;
+    }
+    ledger_earn_by_pubkey(station, sp->pubkey, 100000.0f);
+
+    economy_transfer_test_arm_fault(
+        station, fault, failure_event);
+    const cargo_store_t *stores[] = {
+        &station->cargo_store,
+        &sp->ship->cargo_store,
+    };
+    if (!economy_transfer_snapshot_take(
+            snapshot, w, stores,
+            sizeof(stores) / sizeof(stores[0]), 0, sp->ship)) {
+        goto cleanup;
+    }
+
+    server_signed_action_dispatch_result_t dispatch = {0};
+    bool invoked = server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_BUY_INGOT,
+        unit.pub, sizeof(unit.pub),
+        economy_capture_receipt_chain, &sink, &dispatch);
+    result = economy_transfer_snapshot_evaluate(
+        snapshot, w, 0, sp->ship, fault,
+        invoked, sink.calls);
+
+cleanup:
+    economy_transfer_snapshot_cleanup(snapshot);
+    free(snapshot);
+    chain_log_test_fault_clear();
+    return result;
+}
+
+static economy_transfer_failure_result_t
+economy_run_named_delivery_transfer_failure(
+    economy_transfer_fault_t fault,
+    chain_event_type_t failure_event) {
+    economy_transfer_failure_result_t result = {0};
+    economy_transfer_snapshot_t *snapshot =
+        calloc(1, sizeof(*snapshot));
+    economy_receipt_sink_capture_t sink = {0};
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    if (!w || !snapshot) {
+        free(snapshot);
+        return result;
+    }
+
+    economy_transfer_test_configure_chain(
+        "named_delivery", fault, failure_event);
+    w->rng = 22101u + (uint32_t)fault +
+             (uint32_t)failure_event;
+    world_reset(w);
+    server_player_t *sp = NULL;
+    economy_setup_transfer_player(w, &sp);
+    station_t *station = &w->stations[0];
+
+    uint8_t cargo_pub[32];
+    economy_fill_pubkey(cargo_pub, (uint8_t)(0x61 + fault));
+    uint16_t output_index = 0;
+    cargo_unit_t unit =
+        economy_test_cargo_unit(cargo_pub, &output_index);
+    cargo_receipt_chain_t chain = {0};
+    if (!economy_issue_single_receipt(
+            w, 0, sp->pubkey, output_index,
+            &unit, &chain) ||
+        !ship_manifest_push_with_chain(sp->ship, &unit, &chain)) {
+        goto cleanup;
+    }
+
+    manifest_clear(&station->manifest);
+    ship_receipts_t *station_receipts =
+        station_get_receipts(station);
+    if (!station_receipts) goto cleanup;
+    ship_receipts_clear(station_receipts);
+    int station_capacity = station->manifest.cap;
+    if (station_capacity <= 0 ||
+        station_finished_mint(
+            station, COMMODITY_FRAME,
+            station_capacity, NULL) != station_capacity) {
+        goto cleanup;
+    }
+
+    economy_transfer_test_arm_fault(
+        station, fault, failure_event);
+    const cargo_store_t *stores[] = {
+        &sp->ship->cargo_store,
+        &station->cargo_store,
+    };
+    if (!economy_transfer_snapshot_take(
+            snapshot, w, stores,
+            sizeof(stores) / sizeof(stores[0]), 0, sp->ship)) {
+        goto cleanup;
+    }
+
+    uint8_t target = 0;
+    server_signed_action_dispatch_result_t dispatch = {0};
+    bool invoked = server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_DELIVER,
+        &target, sizeof(target),
+        economy_capture_receipt_chain, &sink, &dispatch);
+    result = economy_transfer_snapshot_evaluate(
+        snapshot, w, 0, sp->ship, fault,
+        invoked, sink.calls);
+
+cleanup:
+    economy_transfer_snapshot_cleanup(snapshot);
+    free(snapshot);
+    chain_log_test_fault_clear();
+    return result;
+}
+
+static economy_transfer_failure_result_t
+economy_run_npc_delivery_transfer_failure(
+    economy_transfer_fault_t fault) {
+    economy_transfer_failure_result_t result = {0};
+    economy_transfer_snapshot_t *snapshot =
+        calloc(1, sizeof(*snapshot));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    if (!w || !snapshot) {
+        free(snapshot);
+        return result;
+    }
+
+    economy_transfer_test_configure_chain(
+        "npc_delivery", fault, CHAIN_EVT_TRANSFER);
+    w->rng = 22201u + (uint32_t)fault;
+    world_reset(w);
+    memset(w->contracts, 0, sizeof(w->contracts));
+    for (int s = 0; s < MAX_STATIONS; s++)
+        memset(&w->stations[s].knowledge, 0,
+               sizeof(w->stations[s].knowledge));
+
+    if (!test_set_station_finished_units(
+            &w->stations[0], COMMODITY_FERRITE_INGOT, 1) ||
+        !test_anchor_station_legacy_cargo(w, 0)) {
+        goto cleanup;
+    }
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_DELIVERY,
+        .station_index = 2,
+        .target_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 1.0f,
+        .base_price = 500.0f,
+        .claimed_by = -1,
+        .proof_flags = CONTRACT_PROOF_REQUIRE_PROOF,
+    };
+
+    int slot = spawn_npc(w, 0, NPC_ROLE_HAULER);
+    if (slot < 0) goto cleanup;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++)
+        if (n != slot) w->npc_ships[n].active = false;
+    npc_ship_t *npc = &w->npc_ships[slot];
+    ship_t *ship = world_npc_ship_for(w, slot);
+    if (!ship || !ship_manifest_bootstrap(ship)) goto cleanup;
+    manifest_clear(&ship->manifest);
+    ship_receipts_t *ship_receipts = ship_get_receipts(ship);
+    if (!ship_receipts) goto cleanup;
+    ship_receipts_clear(ship_receipts);
+    memset(ship->cargo, 0, sizeof(ship->cargo));
+    ship->mining_level = SHIP_UPGRADE_MAX_LEVEL;
+    ship->hold_level = SHIP_UPGRADE_MAX_LEVEL;
+    ship->tractor_level = SHIP_UPGRADE_MAX_LEVEL;
+    npc->state = NPC_STATE_DOCKED;
+    npc->state_timer = 0.0f;
+    npc->home_station = 0;
+    npc->dest_station = 0;
+    npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
+    memset(&ship->knowledge, 0, sizeof(ship->knowledge));
+    knowledge_view_configure(&ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+
+    station_t *origin = &w->stations[0];
+    economy_transfer_test_arm_fault(
+        origin, fault, CHAIN_EVT_TRANSFER);
+    const cargo_store_t *stores[] = {
+        &origin->cargo_store,
+        &ship->cargo_store,
+        &w->stations[2].cargo_store,
+    };
+    if (!economy_transfer_snapshot_take(
+            snapshot, w, stores,
+            sizeof(stores) / sizeof(stores[0]), 0, ship)) {
+        goto cleanup;
+    }
+
+    step_npc_ships(w, SIM_DT);
+    result = economy_transfer_snapshot_evaluate(
+        snapshot, w, 0, ship, fault, true, 0);
+
+cleanup:
+    economy_transfer_snapshot_cleanup(snapshot);
+    free(snapshot);
+    chain_log_test_fault_clear();
+    return result;
+}
+
+#define ASSERT_TRANSFER_FAILURE_INERT(value) do { \
+    economy_transfer_failure_result_t _result = (value); \
+    ASSERT(_result.setup_ok); \
+    ASSERT(_result.caller_invoked); \
+    ASSERT(_result.manifests_unchanged); \
+    ASSERT(_result.receipts_unchanged); \
+    ASSERT(_result.pods_unchanged); \
+    ASSERT(_result.ledgers_unchanged); \
+    ASSERT(_result.contracts_unchanged); \
+    ASSERT(_result.shipments_unchanged); \
+    ASSERT(_result.credits_unchanged); \
+    ASSERT(_result.inventory_unchanged); \
+    ASSERT(_result.manifest_dirty_unchanged); \
+    ASSERT(_result.chain_counters_unchanged); \
+    ASSERT(_result.chain_log_unchanged); \
+    ASSERT(_result.expected_health_flags); \
+    ASSERT(_result.receipt_sink_unchanged); \
+} while (0)
+
+TEST(test_prepared_transfer_callers_write_failure_are_inert) {
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_WRITE,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_WRITE,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_WRITE,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_WRITE,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_npc_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_WRITE));
+}
+
+TEST(test_prepared_transfer_callers_flush_failure_are_inert) {
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_FLUSH,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_FLUSH,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_FLUSH,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_FLUSH,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_npc_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_FLUSH));
+}
+
+TEST(test_prepared_transfer_callers_preblocked_failure_are_inert) {
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_PREBLOCKED,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_buy_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_PREBLOCKED,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_PREBLOCKED,
+            CHAIN_EVT_TRANSFER));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_named_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_PREBLOCKED,
+            CHAIN_EVT_TRADE));
+    ASSERT_TRANSFER_FAILURE_INERT(
+        economy_run_npc_delivery_transfer_failure(
+            ECONOMY_TRANSFER_FAULT_PREBLOCKED));
+}
+
+#undef ASSERT_TRANSFER_FAILURE_INERT
 
 static void economy_force_provenance_screening(world_t *w, int station_idx) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
@@ -1058,9 +1729,12 @@ TEST(test_cargo_legality_clean_chain_is_not_contraband) {
     uint8_t cargo_pk[32];
     economy_fill_pubkey(player_pk, 0x31);
     economy_fill_pubkey(cargo_pk, 0x71);
-    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    uint16_t output_index = 0;
+    cargo_unit_t unit =
+        economy_test_cargo_unit(cargo_pk, &output_index);
     cargo_receipt_chain_t chain = {0};
-    ASSERT(economy_issue_single_receipt(&w, 2, player_pk, cargo_pk, &chain));
+    ASSERT(economy_issue_single_receipt(
+        &w, 2, player_pk, output_index, &unit, &chain));
     economy_force_provenance_screening(&w, 0);
 
     cargo_legality_result_t result = cargo_legality_classify(
@@ -1078,7 +1752,7 @@ TEST(test_cargo_legality_missing_receipt_is_policy_contraband) {
     world_reset(&w);
     uint8_t cargo_pk[32];
     economy_fill_pubkey(cargo_pk, 0x72);
-    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk, NULL);
     economy_force_provenance_screening(&w, 0);
 
     cargo_legality_result_t result = cargo_legality_classify(
@@ -1099,13 +1773,16 @@ TEST(test_cargo_legality_black_market_authority_is_local_policy) {
     uint8_t cargo_pk[32];
     economy_fill_pubkey(player_pk, 0x33);
     economy_fill_pubkey(cargo_pk, 0x73);
-    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    uint16_t output_index = 0;
+    cargo_unit_t unit =
+        economy_test_cargo_unit(cargo_pk, &output_index);
 
     /* Make station 1 a black-market authority without changing the cargo. */
     economy_force_black_market(&w, 1);
 
     cargo_receipt_chain_t chain = {0};
-    ASSERT(economy_issue_single_receipt(&w, 1, player_pk, cargo_pk, &chain));
+    ASSERT(economy_issue_single_receipt(
+        &w, 1, player_pk, output_index, &unit, &chain));
     economy_force_provenance_screening(&w, 0);
 
     cargo_legality_result_t lawful = cargo_legality_classify(
@@ -1137,11 +1814,14 @@ TEST(test_bulk_sell_refuses_black_market_origin_at_lawful_station) {
     uint8_t cargo_pk[32];
     economy_fill_pubkey(player_pk, 0x34);
     economy_fill_pubkey(cargo_pk, 0x74);
-    cargo_unit_t unit = economy_test_cargo_unit(cargo_pk);
+    uint16_t output_index = 0;
+    cargo_unit_t unit =
+        economy_test_cargo_unit(cargo_pk, &output_index);
     cargo_receipt_chain_t chain = {0};
     economy_force_black_market(&w, 0);
     economy_force_provenance_screening(&w, 1);
-    ASSERT(economy_issue_single_receipt(&w, 0, player_pk, cargo_pk, &chain));
+    ASSERT(economy_issue_single_receipt(
+        &w, 0, player_pk, output_index, &unit, &chain));
     ASSERT(ship_manifest_push_with_chain(sp->ship, &unit, &chain));
     ship_finished_sync(sp->ship, COMMODITY_FERRITE_INGOT);
 
@@ -1386,6 +2066,7 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
                                            COMMODITY_CRYSTAL_INGOT, 20));
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_CUPRITE_INGOT, 20));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 0));
 
     int seeded_hauler = spawn_npc(&w, 0, NPC_ROLE_HAULER);
     ASSERT(seeded_hauler >= 0);
@@ -2502,6 +3183,7 @@ TEST(test_prospect_pubkey_buy_debits_pubkey_ledger) {
     memset(sp->pubkey, 0xA5, sizeof(sp->pubkey));
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
     sp->docked = true;
     sp->current_station = 0;
 
@@ -2617,6 +3299,7 @@ TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
     memset(w.players[0].pubkey, 0xAA, 32);
     w.players[0].pubkey_set = true;
     w.players[0].pubkey_proof_ok = true;
+    w.players[0].pubkey_challenge_consumed = true;
     /* Player tows 10 ferrite ingots; Kepler's physical intake contract
      * pays 20 cr each when the hopper tractor takes custody. */
     int pod_idx = test_spawn_towed_exact_cargo_pod(
@@ -2809,6 +3492,7 @@ static int economy_test_spawn_fragment(world_t *w, commodity_t ore,
 TEST(test_refinery_smelts_fragment_into_ingot_pod) {
     WORLD_DECL;
     world_reset(&w);
+    ASSERT(test_anchor_station_legacy_cargo(&w, 0));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     w.players[0].connected = true;
     w.players[0].session_ready = true;
@@ -2895,6 +3579,7 @@ TEST(test_kit_fab_requires_shipyard) {
         ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_TRACTOR_MODULE, 5));
         ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_REPAIR_KIT, 0));
         w.stations[s].repair_kit_fab_timer = 0.0f;
+        ASSERT(test_anchor_station_legacy_cargo(&w, s));
     }
     /* Run long enough for at least one fab cycle (REPAIR_KIT_FAB_PERIOD = 30s). */
     for (int i = 0; i < (int)(35.0f / SIM_DT); i++)
@@ -3179,6 +3864,8 @@ TEST(test_repair_kit_fab_emits_craft_chain_event) {
     ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 1));
     ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 1));
     ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 1));
+    ASSERT(test_anchor_station_legacy_cargo(&w, shipyard));
+    uint64_t before_events = st->chain_event_count;
 
     const cargo_unit_t *frame = test_station_first_unit(st, COMMODITY_FRAME,
                                                        RECIPE_LEGACY_MIGRATE);
@@ -3199,7 +3886,7 @@ TEST(test_repair_kit_fab_emits_craft_chain_event) {
 
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_REPAIR_KIT),
                   (int)REPAIR_KIT_STOCK_CAP);
-    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+    ASSERT_EQ_INT((int)st->chain_event_count, (int)before_events + 1);
 
     const cargo_unit_t *kit = test_station_first_unit(st, COMMODITY_REPAIR_KIT,
                                                      RECIPE_REPAIR_KIT_FAB);
@@ -3207,32 +3894,17 @@ TEST(test_repair_kit_fab_emits_craft_chain_event) {
 
     uint64_t walked = 0;
     ASSERT(chain_log_verify(st, &walked, NULL));
-    ASSERT_EQ_INT((int)walked, 1);
+    ASSERT_EQ_INT((int)walked, (int)st->chain_event_count);
 
-    char path[256];
-    ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
-    FILE *f = fopen(path, "rb");
-    ASSERT(f != NULL);
-    uint8_t header[CHAIN_EVENT_HEADER_SIZE];
-    ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
-    ASSERT_EQ_INT(header[16], CHAIN_EVT_CRAFT);
-    uint8_t len_bytes[2];
-    ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
-    uint16_t payload_len = (uint16_t)len_bytes[0] |
-                           (uint16_t)((uint16_t)len_bytes[1] << 8);
-    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_craft_t));
-    uint8_t payload[sizeof(chain_payload_craft_t)];
-    ASSERT(fread(payload, 1, sizeof(payload), f) == sizeof(payload));
-    fclose(f);
-
-    uint16_t recipe_id = (uint16_t)payload[0] |
-                         (uint16_t)((uint16_t)payload[1] << 8);
-    ASSERT_EQ_INT(recipe_id, RECIPE_REPAIR_KIT_FAB);
-    ASSERT_EQ_INT(payload[2], RECIPE_INPUT_MAX);
-    ASSERT(memcmp(&payload[8], kit->pub, 32) == 0);
-    ASSERT(memcmp(&payload[40], expected_inputs[0], 32) == 0);
-    ASSERT(memcmp(&payload[72], expected_inputs[1], 32) == 0);
-    ASSERT(memcmp(&payload[104], expected_inputs[2], 32) == 0);
+    chain_cargo_transform_t found = {0};
+    ASSERT(chain_log_find_cargo_transform(st, kit->pub, &found));
+    ASSERT_EQ_INT(found.type, CHAIN_EVT_CRAFT);
+    ASSERT_EQ_INT(found.craft.recipe_id, RECIPE_REPAIR_KIT_FAB);
+    ASSERT_EQ_INT(found.craft.input_count, RECIPE_INPUT_MAX);
+    ASSERT(memcmp(found.craft.output_pub, kit->pub, 32) == 0);
+    ASSERT(memcmp(found.craft.input_pubs[0], expected_inputs[0], 32) == 0);
+    ASSERT(memcmp(found.craft.input_pubs[1], expected_inputs[1], 32) == 0);
+    ASSERT(memcmp(found.craft.input_pubs[2], expected_inputs[2], 32) == 0);
 
     economy_chain_test_teardown();
 }
@@ -3291,6 +3963,7 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
                                              &smelt_target));
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_FRAME, 1));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 0));
     w.asteroids[frag].pos = smelt_target;
     w.asteroids[frag].vel = v2(0.0f, 0.0f);
     w.asteroids[frag].smelt_progress = 0.0f;
@@ -3590,6 +4263,9 @@ void register_economy_pricing_tests(void) {
 
 void register_economy_mixed_cargo_tests(void) {
     TEST_SECTION("\nMixed cargo sell/deliver:\n");
+    RUN(test_prepared_transfer_callers_write_failure_are_inert);
+    RUN(test_prepared_transfer_callers_flush_failure_are_inert);
+    RUN(test_prepared_transfer_callers_preblocked_failure_are_inert);
     RUN(test_deliver_ingots_to_contract);
     RUN(test_first_cross_station_haul_uses_local_ledgers);
     RUN(test_delivery_credit_contract_pickup_deliver_and_clear);

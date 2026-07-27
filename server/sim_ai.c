@@ -26,7 +26,7 @@
 #include "chain_log.h"
 #include "sha256.h"
 #include "station_authority.h"
-#include "cargo_legality.h"
+#include "cargo_receipt_trust.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -646,11 +646,6 @@ static int hauler_reserve_units(void) {
     return (int)ceilf(HAULER_RESERVE - 0.0001f);
 }
 
-static bool npc_hash32_is_zero(const uint8_t hash[32]) {
-    static const uint8_t zero[32] = {0};
-    return !hash || memcmp(hash, zero, sizeof(zero)) == 0;
-}
-
 static void npc_custody_pubkey(const npc_ship_t *npc, int npc_slot,
                                uint8_t out[32]) {
     uint8_t role = npc ? (uint8_t)npc->role : 0;
@@ -659,29 +654,97 @@ static void npc_custody_pubkey(const npc_ship_t *npc, int npc_slot,
                                    npc_slot, role, home, out);
 }
 
-static bool append_station_transfer_receipt(world_t *w, station_t *author,
-                                            const uint8_t from_pubkey[32],
-                                            const uint8_t to_pubkey[32],
-                                            const cargo_unit_t *unit,
-                                            cargo_receipt_chain_t *chain) {
-    if (!w || !author || !unit || !chain) return false;
-    if (npc_hash32_is_zero(unit->pub)) return false;
-    if (chain->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
+static const cargo_receipt_chain_t *npc_cargo_store_chain_at(
+    const cargo_store_t *store, uint16_t index) {
+    const ship_receipts_t *receipts =
+        cargo_store_receipts_const(store);
+    if (!receipts || !receipts->chains ||
+        index >= receipts->count) {
+        return NULL;
+    }
+    return &receipts->chains[index];
+}
 
-    uint8_t prev_hash[32] = {0};
-    const uint8_t *prev = author->chain_last_hash;
-    if (chain->len > 0) {
-        cargo_receipt_hash(&chain->links[chain->len - 1], prev_hash);
-        prev = prev_hash;
+/*
+ * One-unit NPC custody move. Both allocation-backed cargo stores are cloned
+ * and fully staged around the pre-signed receipt before the station log is
+ * touched. A rejected/failed append therefore leaves both holders unchanged;
+ * success only swaps already-complete stores.
+ */
+static bool npc_transfer_cargo_between_stores(
+    world_t *w,
+    int author_station,
+    const uint8_t from_pubkey[32],
+    const uint8_t to_pubkey[32],
+    cargo_store_t *source,
+    uint16_t source_index,
+    cargo_store_t *destination,
+    cargo_unit_t *out_unit,
+    cargo_receipt_chain_t *out_chain) {
+    if (!w || !source || !destination || source == destination ||
+        author_station < 0 ||
+        author_station >= w->station_count ||
+        author_station >= MAX_STATIONS ||
+        !source->manifest.units ||
+        source_index >= source->manifest.count) {
+        return false;
+    }
+    cargo_unit_t unit = source->manifest.units[source_index];
+    cargo_receipt_chain_t incoming = {0};
+    const cargo_receipt_chain_t *attached =
+        npc_cargo_store_chain_at(source, source_index);
+    if (attached) incoming = *attached;
+
+    cargo_receipt_prepared_transfer_t prepared =
+        cargo_receipt_prepare_transfer(
+            w, author_station, from_pubkey, to_pubkey,
+            &unit, &incoming, false, 0, NULL);
+    if (prepared.link_status != CARGO_RECEIPT_TRANSFER_LINK_READY ||
+        prepared.preflight_status != CHAIN_LOG_APPEND_OK ||
+        incoming.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+        return false;
+    }
+    cargo_receipt_chain_t outgoing = incoming;
+    outgoing.links[outgoing.len++] = prepared.receipt;
+
+    cargo_store_t staged_source = {0};
+    cargo_store_t staged_destination = {0};
+    if (!cargo_store_clone(&staged_source, source) ||
+        !cargo_store_clone(&staged_destination, destination)) {
+        cargo_store_cleanup(&staged_source);
+        cargo_store_cleanup(&staged_destination);
+        return false;
+    }
+    cargo_unit_t removed = {0};
+    cargo_receipt_chain_t removed_chain = {0};
+    if (!cargo_store_remove_with_chain(
+            &staged_source, source_index,
+            &removed, &removed_chain) ||
+        memcmp(&removed, &unit, sizeof(unit)) != 0 ||
+        memcmp(&removed_chain, &incoming, sizeof(incoming)) != 0 ||
+        !cargo_store_push_with_chain(
+            &staged_destination, &unit, &outgoing)) {
+        cargo_store_cleanup(&staged_source);
+        cargo_store_cleanup(&staged_destination);
+        return false;
     }
 
-    cargo_receipt_t receipt = {0};
-    uint64_t xfer_id = cargo_receipt_emit_transfer(w, author,
-                                                   from_pubkey, to_pubkey,
-                                                   unit->pub, unit->kind,
-                                                   prev, &receipt);
-    if (xfer_id == 0) return false;
-    chain->links[chain->len++] = receipt;
+    chain_log_append_result_t appended =
+        cargo_receipt_commit_prepared_transfer(w, &prepared);
+    if (appended.status != CHAIN_LOG_APPEND_OK) {
+        cargo_store_cleanup(&staged_source);
+        cargo_store_cleanup(&staged_destination);
+        return false;
+    }
+
+    cargo_store_cleanup(source);
+    *source = staged_source;
+    memset(&staged_source, 0, sizeof(staged_source));
+    cargo_store_cleanup(destination);
+    *destination = staged_destination;
+    memset(&staged_destination, 0, sizeof(staged_destination));
+    if (out_unit) *out_unit = unit;
+    if (out_chain) *out_chain = outgoing;
     return true;
 }
 
@@ -896,14 +959,21 @@ static void npc_update_manifest_rarity_tint(npc_ship_t *npc, float dt) {
 }
 
 static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
+                                                  int source_station,
                                                   station_t *src, ship_t *dst,
                                                   const contract_t *contract,
                                                   int n) {
     if (!w || !src || !dst || !contract || n <= 0) return 0;
     if (contract->commodity < COMMODITY_RAW_ORE_COUNT ||
         contract->commodity >= COMMODITY_COUNT) return 0;
-    if (src->manifest.cap == 0 && !station_manifest_bootstrap(src)) return 0;
-    if (!ship_manifest_bootstrap(dst)) return 0;
+    if (source_station < 0 ||
+        source_station >= w->station_count ||
+        source_station >= MAX_STATIONS ||
+        src != &w->stations[source_station]) return 0;
+    if (!src->manifest.units ||
+        !cargo_store_receipts_const(&src->cargo_store) ||
+        !dst->manifest.units ||
+        !cargo_store_receipts_const(&dst->cargo_store)) return 0;
     if (dst->manifest.count >= dst->manifest.cap) return 0;
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
 
@@ -916,39 +986,49 @@ static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
         if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
-                                                           &src->manifest.units[i]))) {
-                idx = (int)i;
-                break;
-            }
+            const cargo_unit_t *candidate = &src->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(
+                        contract, candidate))) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, source_station, candidate,
+                    npc_cargo_store_chain_at(
+                        &src->cargo_store, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        cargo_receipt_chain_t chain = {0};
-        if (!station_manifest_remove_with_chain(src, (uint16_t)idx,
-                                                &unit, &chain)) {
+        if (!npc_transfer_cargo_between_stores(
+                w, source_station, src->station_pubkey,
+                npc_pubkey, &src->cargo_store, (uint16_t)idx,
+                &dst->cargo_store, &unit, NULL)) {
             break;
         }
-        cargo_receipt_chain_t outgoing = chain;
-        (void)append_station_transfer_receipt(w, src, src->station_pubkey,
-                                              npc_pubkey, &unit, &outgoing);
-        if (!ship_manifest_push_with_chain(dst, &unit, &outgoing)) {
-            (void)station_manifest_push_with_chain(src, &unit, &chain);
-            break;
-        }
+        src->manifest_dirty = true;
         moved++;
     }
     return moved;
 }
 
 static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
-                                                 ship_t *src, station_t *dst,
+                                                 ship_t *src, int dest_station,
+                                                 station_t *dst,
                                                  const contract_t *contract,
                                                  int n) {
     if (!w || !src || !dst || !contract || n <= 0) return 0;
     if (contract->commodity < COMMODITY_RAW_ORE_COUNT ||
         contract->commodity >= COMMODITY_COUNT) return 0;
-    if (dst->manifest.cap == 0 && !station_manifest_bootstrap(dst)) return 0;
+    if (dest_station < 0 ||
+        dest_station >= w->station_count ||
+        dest_station >= MAX_STATIONS ||
+        dst != &w->stations[dest_station]) return 0;
+    if (!src->manifest.units ||
+        !cargo_store_receipts_const(&src->cargo_store) ||
+        !dst->manifest.units ||
+        !cargo_store_receipts_const(&dst->cargo_store)) return 0;
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
 
     npc_ship_t *npc = &w->npc_ships[npc_slot];
@@ -960,27 +1040,29 @@ static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
         if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = -1;
         for (uint16_t i = 0; i < src->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
-                                                           &src->manifest.units[i]))) {
-                idx = (int)i;
-                break;
-            }
+            const cargo_unit_t *candidate = &src->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(
+                        contract, candidate))) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, dest_station, candidate,
+                    npc_cargo_store_chain_at(
+                        &src->cargo_store, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        cargo_receipt_chain_t chain = {0};
-        if (!ship_manifest_remove_with_chain(src, (uint16_t)idx,
-                                             &unit, &chain)) {
+        if (!npc_transfer_cargo_between_stores(
+                w, dest_station, npc_pubkey,
+                dst->station_pubkey, &src->cargo_store,
+                (uint16_t)idx, &dst->cargo_store,
+                &unit, NULL)) {
             break;
         }
-        cargo_receipt_chain_t incoming = chain;
-        (void)append_station_transfer_receipt(w, dst, npc_pubkey,
-                                              dst->station_pubkey, &unit,
-                                              &incoming);
-        if (!station_manifest_push_with_chain(dst, &unit, &incoming)) {
-            (void)ship_manifest_push_with_chain(src, &unit, &chain);
-            break;
-        }
+        dst->manifest_dirty = true;
         moved++;
     }
     return moved;
@@ -4314,25 +4396,19 @@ static delivery_shipment_t *npc_delivery_active_for_contract(world_t *w,
     return NULL;
 }
 
-static delivery_shipment_t *npc_delivery_alloc_shipment(world_t *w) {
-    if (!w) return NULL;
+static int npc_delivery_available_shipment_slot(const world_t *w) {
+    if (!w) return -1;
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-        delivery_shipment_t *shipment = &w->delivery_shipments[i];
+        const delivery_shipment_t *shipment =
+            &w->delivery_shipments[i];
         if (shipment->active &&
             shipment->status != DELIVERY_SHIPMENT_CLEARED &&
             shipment->status != DELIVERY_SHIPMENT_DEFAULTED) {
             continue;
         }
-        memset(shipment, 0, sizeof(*shipment));
-        shipment->active = true;
-        if (w->next_delivery_shipment_id == 0)
-            w->next_delivery_shipment_id = 1;
-        shipment->shipment_id = w->next_delivery_shipment_id++;
-        if (w->next_delivery_shipment_id == 0)
-            w->next_delivery_shipment_id = 1;
-        return shipment;
+        return i;
     }
-    return NULL;
+    return -1;
 }
 
 static bool npc_delivery_shipment_has_pub(const delivery_shipment_t *shipment,
@@ -4487,10 +4563,12 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     if (take > MAX_DELIVERY_BOUND_CARGO) take = MAX_DELIVERY_BOUND_CARGO;
     if (take <= 0) return 0;
 
-    delivery_shipment_t *shipment = npc_delivery_alloc_shipment(w);
-    if (!shipment) return 0;
-    uint16_t shipment_id = shipment->shipment_id;
-    memset(shipment, 0, sizeof(*shipment));
+    int shipment_slot = npc_delivery_available_shipment_slot(w);
+    if (shipment_slot < 0) return 0;
+    uint16_t shipment_id = w->next_delivery_shipment_id;
+    if (shipment_id == 0) shipment_id = 1;
+    delivery_shipment_t staged_shipment = {0};
+    delivery_shipment_t *shipment = &staged_shipment;
     shipment->active = true;
     shipment->shipment_id = shipment_id;
     shipment->origin_station = (uint8_t)ct->target_index;
@@ -4508,30 +4586,35 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     while (moved < take && ship->manifest.count < ship->manifest.cap) {
         int idx = -1;
         for (uint16_t i = 0; i < origin->manifest.count; i++) {
-            if (contract_fit_is_ok(contract_fit_cargo_unit(
-                    ct, &origin->manifest.units[i]))) {
-                idx = (int)i;
-                break;
+            const cargo_unit_t *candidate =
+                &origin->manifest.units[i];
+            if (!contract_fit_is_ok(
+                    contract_fit_cargo_unit(ct, candidate))) {
+                continue;
             }
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, ct->target_index, candidate,
+                    npc_cargo_store_chain_at(
+                        &origin->cargo_store, i));
+            if (!evaluated.accepted) continue;
+            idx = (int)i;
+            break;
         }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        cargo_receipt_chain_t chain = {0};
-        if (!station_manifest_remove_with_chain(origin, (uint16_t)idx,
-                                                &unit, &chain)) {
+        cargo_receipt_chain_t outgoing = {0};
+        if (!npc_transfer_cargo_between_stores(
+                w, ct->target_index,
+                origin->station_pubkey, npc_pubkey,
+                &origin->cargo_store, (uint16_t)idx,
+                &ship->cargo_store, &unit, &outgoing)) {
             break;
         }
-        cargo_receipt_chain_t outgoing = chain;
-        (void)append_station_transfer_receipt(w, origin,
-                                              origin->station_pubkey,
-                                              npc_pubkey,
-                                              &unit,
-                                              &outgoing);
-        if (!ship_manifest_push_with_chain(ship, &unit, &outgoing)) {
-            (void)station_manifest_push_with_chain(origin, &unit, &chain);
-            break;
-        }
+        origin->manifest_dirty = true;
         memcpy(shipment->cargo_pub[moved], unit.pub, 32);
+        shipment->cargo_units[moved] = unit;
+        shipment->cargo_chains[moved] = outgoing;
         moved++;
         float unit_debt = station_sell_price(origin, ct->commodity);
         if (unit_debt <= 0.0f)
@@ -4540,7 +4623,6 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     }
 
     if (moved <= 0) {
-        shipment->active = false;
         return 0;
     }
 
@@ -4549,6 +4631,10 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     shipment->debt_principal = debt;
     shipment->destination_payout = contract_price(ct) * (float)moved;
     shipment->origin_completion_credit = debt * NPC_DELIVERY_ORIGIN_CREDIT_RATE;
+    w->delivery_shipments[shipment_slot] = *shipment;
+    w->next_delivery_shipment_id = (uint16_t)(shipment_id + 1u);
+    if (w->next_delivery_shipment_id == 0)
+        w->next_delivery_shipment_id = 1;
     ledger_force_debit(origin, npc->session_token, debt, ship);
     ct->claimed_by = -1;
     station_finished_sync(origin, ct->commodity);
@@ -4585,19 +4671,33 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
         while (remaining > 0 && dest->manifest.count < dest->manifest.cap) {
             int idx = npc_delivery_find_bound_ship_unit(ship, shipment, c);
             if (idx < 0) break;
+            const cargo_unit_t *candidate = &ship->manifest.units[idx];
+            const cargo_receipt_chain_t *candidate_chain =
+                npc_cargo_store_chain_at(
+                    &ship->cargo_store, (uint16_t)idx);
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, station_idx, candidate, candidate_chain);
+            if (!evaluated.accepted) break;
             cargo_unit_t unit = {0};
-            cargo_receipt_chain_t chain = {0};
-            if (!ship_manifest_remove_with_chain(ship, (uint16_t)idx,
-                                                 &unit, &chain)) {
+            cargo_receipt_chain_t incoming = {0};
+            if (!npc_transfer_cargo_between_stores(
+                    w, station_idx, npc_pubkey,
+                    dest->station_pubkey,
+                    &ship->cargo_store, (uint16_t)idx,
+                    &dest->cargo_store, &unit, &incoming)) {
                 break;
             }
-            cargo_receipt_chain_t incoming = chain;
-            (void)append_station_transfer_receipt(w, dest, npc_pubkey,
-                                                  dest->station_pubkey,
-                                                  &unit, &incoming);
-            if (!station_manifest_push_with_chain(dest, &unit, &incoming)) {
-                (void)ship_manifest_push_with_chain(ship, &unit, &chain);
-                break;
+            dest->manifest_dirty = true;
+            for (uint16_t bound = shipment->quantity_delivered;
+                 bound < shipment->quantity_bound &&
+                 bound < MAX_DELIVERY_BOUND_CARGO; bound++) {
+                if (memcmp(shipment->cargo_pub[bound],
+                           unit.pub, 32) == 0) {
+                    shipment->cargo_units[bound] = unit;
+                    shipment->cargo_chains[bound] = incoming;
+                    break;
+                }
             }
             shipment->quantity_delivered++;
             remaining--;
@@ -5547,12 +5647,83 @@ static int npc_hauler_load_from_source(world_t *w,
     if (take_units <= 0) return 0;
     if (!hauler_ship) return 0;
     int moved = hauler_load_station_units_for_contract(
-        w, npc_slot, src, hauler_ship, ct, take_units);
+        w, npc_slot, source_station, src, hauler_ship,
+        ct, take_units);
     if (moved > 0) {
         station_finished_sync(src, commodity);
         ship_finished_sync(hauler_ship, commodity);
     }
     return moved;
+}
+
+static int npc_consume_trusted_scaffold_frames(
+    world_t *w, int station_idx, int requested) {
+    if (!w || station_idx < 0 ||
+        station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS || requested <= 0) {
+        return 0;
+    }
+    station_t *station = &w->stations[station_idx];
+    int consumed = 0;
+    while (consumed < requested) {
+        int selected = -1;
+        for (uint16_t i = 0; i < station->manifest.count; i++) {
+            const cargo_unit_t *candidate =
+                &station->manifest.units[i];
+            if (candidate->commodity !=
+                (uint8_t)COMMODITY_FRAME) continue;
+            cargo_receipt_station_evaluation_t evaluated =
+                cargo_receipt_evaluate_at_station(
+                    w, station_idx, candidate,
+                    npc_cargo_store_chain_at(
+                        &station->cargo_store, i));
+            if (!evaluated.accepted) continue;
+            selected = (int)i;
+            break;
+        }
+        if (selected < 0) break;
+
+        cargo_store_t staged = {0};
+        if (!cargo_store_clone(
+                &staged, &station->cargo_store)) break;
+        cargo_unit_t unit = {0};
+        cargo_receipt_chain_t chain = {0};
+        if (!cargo_store_remove_with_chain(
+                &staged, (uint16_t)selected,
+                &unit, &chain)) {
+            cargo_store_cleanup(&staged);
+            break;
+        }
+        float progress_after = station->scaffold_progress +
+            1.0f / SCAFFOLD_MATERIAL_NEEDED;
+        if (progress_after > 1.0f) progress_after = 1.0f;
+        chain_payload_construction_t payload = {0};
+        memcpy(payload.cargo_pub, unit.pub,
+               sizeof(payload.cargo_pub));
+        payload.target_kind = CONSTRUCTION_TARGET_STATION;
+        payload.station_index = (uint8_t)station_idx;
+        payload.module_index = 0xff;
+        payload.module_type = 0xff;
+        payload.commodity = COMMODITY_FRAME;
+        payload.target_id = (uint64_t)station_idx;
+        payload.contributed_units = 1.0f;
+        payload.progress_after = progress_after;
+        if (chain_log_emit(
+                w, station, CHAIN_EVT_CONSTRUCTION,
+                &payload, sizeof(payload)) == 0) {
+            cargo_store_cleanup(&staged);
+            break;
+        }
+        cargo_store_cleanup(&station->cargo_store);
+        station->cargo_store = staged;
+        memset(&staged, 0, sizeof(staged));
+        station->manifest_dirty = true;
+        station->scaffold_progress = progress_after;
+        consumed++;
+    }
+    if (consumed > 0)
+        station_finished_sync(station, COMMODITY_FRAME);
+    return consumed;
 }
 
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
@@ -5711,7 +5882,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     int request = held < space_units ? held : space_units;
                     if (request > needed) request = needed;
                     int moved = hauler_unload_ship_units_for_contract(
-                        w, n, hauler_ship, dest, ct, request);
+                        w, n, hauler_ship, unload_station,
+                        dest, ct, request);
                     if (moved <= 0) continue;
                     station_finished_sync(dest, cargo);
                     ship_finished_sync(hauler_ship, cargo);
@@ -5741,9 +5913,10 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     int needed = (int)ceilf(needed_f - 0.0001f);
                     if (needed < 0) needed = 0;
                     int request = held < needed ? held : needed;
-                    int delivered = station_finished_drain(dest, COMMODITY_FRAME, request);
+                    int delivered =
+                        npc_consume_trusted_scaffold_frames(
+                            w, unload_station, request);
                     if (delivered > 0) {
-                        dest->scaffold_progress += (float)delivered / SCAFFOLD_MATERIAL_NEEDED;
                         if (dest->scaffold_progress >= 1.0f)
                             activate_outpost(w, npc->dest_station);
                     }

@@ -26,6 +26,134 @@ static bool construction_bytes_any(const uint8_t bytes[32]) {
     return false;
 }
 
+/*
+ * Build the bounded receipt-backed manifest fixture used by the outpost
+ * end-to-end test in two durable batches: one legacy-origin CRAFT batch and
+ * one TRANSFER batch. The live game still needs a receipt-preserving
+ * pod-to-manifest bridge; this helper deliberately does not pretend that
+ * repeated single-row transfers are an acceptable bulk-delivery path.
+ */
+static bool construction_attach_local_ship_receipts(
+    world_t *w, int station_idx, server_player_t *sp) {
+    if (!w || !sp || !sp->ship ||
+        station_idx < 0 || station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    size_t unit_count = sp->ship->manifest.count;
+    if (unit_count == 0 ||
+        unit_count > CHAIN_LOG_BATCH_MAX_EVENTS) {
+        return false;
+    }
+    cargo_unit_t *units[CHAIN_LOG_BATCH_MAX_EVENTS] = {0};
+    for (size_t i = 0; i < unit_count; i++)
+        units[i] = &sp->ship->manifest.units[i];
+    if (!world_anchor_legacy_cargo_origins(
+            w, station_idx, units, unit_count)) {
+        return false;
+    }
+
+    station_t *station = &w->stations[station_idx];
+    if (station->chain_event_count >
+        UINT64_MAX - (uint64_t)unit_count) {
+        return false;
+    }
+    cargo_store_t staged = {0};
+    if (!cargo_store_clone(
+            &staged, &sp->ship->cargo_store)) {
+        return false;
+    }
+    ship_receipts_t *staged_receipts =
+        cargo_store_receipts(&staged);
+    if (!staged_receipts ||
+        staged_receipts->count != staged.manifest.count) {
+        cargo_store_cleanup(&staged);
+        return false;
+    }
+
+    chain_payload_transfer_t
+        payloads[CHAIN_LOG_BATCH_MAX_EVENTS];
+    chain_log_batch_event_t
+        events[CHAIN_LOG_BATCH_MAX_EVENTS];
+    memset(payloads, 0, sizeof(payloads));
+    memset(events, 0, sizeof(events));
+    uint64_t first_event_id = station->chain_event_count + 1u;
+    uint64_t epoch = (uint64_t)(w->time * 120.0);
+    for (size_t i = 0; i < unit_count; i++) {
+        cargo_receipt_chain_t *incoming =
+            &staged_receipts->chains[i];
+        cargo_receipt_transfer_link_t link =
+            cargo_receipt_prepare_transfer_link(
+                station, station->station_pubkey,
+                staged.manifest.units[i].pub,
+                incoming);
+        if (link.status !=
+                CARGO_RECEIPT_TRANSFER_LINK_READY ||
+            incoming->len >=
+                CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            cargo_store_cleanup(&staged);
+            return false;
+        }
+        cargo_receipt_t receipt = {0};
+        if (!cargo_receipt_issue(
+                station, epoch,
+                first_event_id + (uint64_t)i,
+                staged.manifest.units[i].pub,
+                sp->pubkey, link.prev_receipt_hash,
+                &receipt)) {
+            cargo_store_cleanup(&staged);
+            return false;
+        }
+        incoming->links[incoming->len++] = receipt;
+
+        chain_payload_transfer_t *payload =
+            &payloads[i];
+        memcpy(payload->from_pubkey,
+               station->station_pubkey, 32);
+        memcpy(payload->to_pubkey, sp->pubkey, 32);
+        memcpy(payload->cargo_pub,
+               staged.manifest.units[i].pub, 32);
+        payload->kind = staged.manifest.units[i].kind;
+        events[i] = (chain_log_batch_event_t){
+            .type = CHAIN_EVT_TRANSFER,
+            .payload = payload,
+            .payload_len = (uint16_t)sizeof(*payload),
+        };
+    }
+
+    chain_log_append_result_t appended =
+        chain_log_emit_batch(
+            w, station, events, unit_count);
+    if (appended.status != CHAIN_LOG_APPEND_OK ||
+        appended.event_count != (uint16_t)unit_count ||
+        appended.first_event_id != first_event_id) {
+        cargo_store_cleanup(&staged);
+        return false;
+    }
+    cargo_store_cleanup(&sp->ship->cargo_store);
+    sp->ship->cargo_store = staged;
+    memset(&staged, 0, sizeof(staged));
+    return true;
+}
+
+static bool construction_skip_chain_events(FILE *f, uint64_t count) {
+    if (!f) return false;
+    for (uint64_t i = 0; i < count; i++) {
+        uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+        uint8_t len_bytes[2];
+        if (fread(header, 1, sizeof(header), f) != sizeof(header) ||
+            fread(len_bytes, 1, sizeof(len_bytes), f) !=
+                sizeof(len_bytes)) {
+            return false;
+        }
+        uint16_t payload_len = (uint16_t)len_bytes[0] |
+            (uint16_t)((uint16_t)len_bytes[1] << 8);
+        if (fseek(f, (long)payload_len, SEEK_CUR) != 0)
+            return false;
+    }
+    return true;
+}
+
 static void construction_seed_birth_fragment(world_t *w, int idx,
                                              commodity_t commodity,
                                              vec2 pos, uint8_t tag) {
@@ -422,6 +550,8 @@ TEST(test_module_construction_and_delivery) {
         (int)ceilf(module_build_cost_lookup(MODULE_TRACTOR_FAB) - 0.0001f),
         (const uint8_t *)"MODBUILD"));
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT(test_anchor_pod_legacy_cargo(
+        &w, 1, sp->ship->towed_pods[0]));
     ASSERT_EQ_INT(ship_towed_pods_manifest_count(
                       &w, sp->ship, COMMODITY_CUPRITE_INGOT),
                   (int)module_build_cost_lookup(MODULE_TRACTOR_FAB));
@@ -464,6 +594,11 @@ TEST(test_construction_consumes_manifest_units) {
     player_init_ship(sp, &w);
     ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, 5,
                                         MINING_GRADE_COMMON));
+    for (uint16_t i = 0; i < sp->ship->manifest.count; i++) {
+        ASSERT(test_anchor_legacy_cargo_unit(
+            &w, 0, &sp->ship->manifest.units[i]));
+    }
+    uint64_t origin_events = st->chain_event_count;
     ASSERT_EQ_INT(manifest_count_by_commodity(&sp->ship->manifest, COMMODITY_FRAME), 5);
 
     sp->input.service_sell = true;
@@ -475,16 +610,18 @@ TEST(test_construction_consumes_manifest_units) {
     /* Some frames consumed by the scaffold (it needs them). */
     ASSERT(frames_left < 5);
     int consumed = 5 - frames_left;
-    ASSERT_EQ_INT((int)st->chain_event_count, consumed);
+    ASSERT_EQ_INT((int)st->chain_event_count,
+                  (int)origin_events + consumed);
 
     uint64_t walked = 0;
     ASSERT(chain_log_verify(st, &walked, NULL));
-    ASSERT_EQ_INT((int)walked, consumed);
+    ASSERT_EQ_INT((int)walked, (int)origin_events + consumed);
 
     char path[256];
     ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
     FILE *f = fopen(path, "rb");
     ASSERT(f != NULL);
+    ASSERT(construction_skip_chain_events(f, origin_events));
     uint8_t header[CHAIN_EVENT_HEADER_SIZE];
     ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
     ASSERT_EQ_INT(header[16], CHAIN_EVT_CONSTRUCTION);
@@ -503,6 +640,138 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT_EQ_INT(payload.module_type, 0xff);
     ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
     ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
+    chain_log_set_dir(NULL);
+}
+
+TEST(test_station_scaffold_manifest_batch_append_failure_is_inert) {
+    WORLD_DECL;
+    const chain_log_test_fault_point_t faults[] = {
+        CHAIN_LOG_TEST_FAULT_WRITE,
+        CHAIN_LOG_TEST_FAULT_FLUSH,
+    };
+
+    for (int failure_case = 0; failure_case < 3; failure_case++) {
+        char dir[256];
+        snprintf(
+            dir, sizeof(dir), "%s/station_scaffold_batch_failure_%d",
+            test_tmp_dir(), failure_case);
+        chain_log_set_disk_enabled(true);
+        chain_log_set_dir(dir);
+        chain_log_test_fault_clear();
+
+        world_reset(&w);
+        station_t *st = &w.stations[0];
+        st->scaffold = true;
+        st->scaffold_progress = 0.0f;
+
+        server_player_t *sp = &w.players[0];
+        sp->connected = true;
+        sp->session_ready = true;
+        sp->id = 0;
+        memset(sp->session_token, 0xC7, sizeof(sp->session_token));
+        memset(sp->pubkey, 0xA3, sizeof(sp->pubkey));
+        sp->pubkey_set = true;
+        sp->pubkey_proof_ok = true;
+        sp->pubkey_challenge_consumed = true;
+        player_init_ship(sp, &w);
+        sp->docked = true;
+        sp->current_station = 0;
+        ASSERT(test_set_ship_finished_units(
+            sp->ship, COMMODITY_FRAME, 3, MINING_GRADE_COMMON));
+        ASSERT(construction_attach_local_ship_receipts(&w, 0, sp));
+
+        cargo_store_t ship_before = {0};
+        ASSERT(cargo_store_clone(
+            &ship_before, &sp->ship->cargo_store));
+        cargo_unit_t *manifest_ptr_before =
+            sp->ship->cargo_store.manifest.units;
+        void *receipts_ptr_before =
+            sp->ship->cargo_store.receipts_opaque;
+        float cargo_before = sp->ship->cargo[COMMODITY_FRAME];
+        float progress_before = st->scaffold_progress;
+        uint64_t events_before = st->chain_event_count;
+        uint8_t hash_before[32];
+        memcpy(hash_before, st->chain_last_hash, sizeof(hash_before));
+        uint64_t walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT((int)walked, (int)events_before);
+        ASSERT(!st->chain_append_blocked);
+
+        if (failure_case < 2) {
+            /* Fault the second row so WRITE proves the first serialized
+             * contribution is rolled back with the rest of the batch. */
+            chain_log_test_fault_inject(
+                faults[failure_case],
+                CHAIN_EVT_CONSTRUCTION, 2);
+        } else {
+            chain_log_health_set(
+                st, CHAIN_HEALTH_FAILED, true,
+                st->chain_event_count, st->chain_last_hash,
+                "test pre-blocked station scaffold delivery");
+        }
+
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_FRAME;
+        world_sim_step(&w, SIM_DT);
+        chain_log_test_fault_clear();
+
+        ASSERT(st->scaffold);
+        ASSERT_EQ_FLOAT(
+            st->scaffold_progress, progress_before, 0.001f);
+        ASSERT_EQ_INT(
+            (int)st->chain_event_count, (int)events_before);
+        ASSERT(memcmp(
+            st->chain_last_hash, hash_before,
+            sizeof(hash_before)) == 0);
+        ASSERT(st->chain_append_blocked);
+        walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT((int)walked, (int)events_before);
+
+        ASSERT(
+            sp->ship->cargo_store.manifest.units ==
+            manifest_ptr_before);
+        ASSERT(
+            sp->ship->cargo_store.receipts_opaque ==
+            receipts_ptr_before);
+        ASSERT_EQ_INT(
+            sp->ship->cargo_store.manifest.count,
+            ship_before.manifest.count);
+        ASSERT_EQ_INT(
+            sp->ship->cargo_store.manifest.cap,
+            ship_before.manifest.cap);
+        ASSERT(memcmp(
+            sp->ship->cargo_store.manifest.units,
+            ship_before.manifest.units,
+            (size_t)ship_before.manifest.count *
+                sizeof(*ship_before.manifest.units)) == 0);
+        const ship_receipts_t *receipts_after =
+            cargo_store_receipts_const(
+                &sp->ship->cargo_store);
+        const ship_receipts_t *receipts_before =
+            cargo_store_receipts_const(&ship_before);
+        ASSERT(receipts_after != NULL);
+        ASSERT(receipts_before != NULL);
+        ASSERT_EQ_INT(
+            receipts_after->count, receipts_before->count);
+        ASSERT_EQ_INT(
+            receipts_after->cap, receipts_before->cap);
+        ASSERT(memcmp(
+            receipts_after->chains,
+            receipts_before->chains,
+            (size_t)receipts_before->count *
+                sizeof(*receipts_before->chains)) == 0);
+        ASSERT_EQ_FLOAT(
+            sp->ship->cargo[COMMODITY_FRAME],
+            cargo_before, 0.001f);
+        ASSERT_EQ_INT(
+            ship_finished_count(
+                sp->ship, COMMODITY_FRAME),
+            3);
+        cargo_store_cleanup(&ship_before);
+    }
+
+    chain_log_test_fault_clear();
     chain_log_set_dir(NULL);
 }
 
@@ -532,28 +801,48 @@ TEST(test_module_delivery_emits_construction_chain_event) {
 
     ship_t ship = {0};
     ASSERT(manifest_init(&ship.manifest, 4));
-    ship.cargo[COMMODITY_FRAME] = 1.0f;
-    cargo_unit_t unit = {0};
-    unit.kind = CARGO_KIND_FRAME;
-    unit.commodity = COMMODITY_FRAME;
-    unit.recipe_id = RECIPE_FRAME_BASIC;
-    for (int b = 0; b < 32; b++)
-        unit.pub[b] = (uint8_t)(0xA0 + b);
-    ASSERT(manifest_push(&ship.manifest, &unit));
+    ship.cargo[COMMODITY_FRAME] = 3.0f;
+    cargo_unit_t units[3] = {{0}};
+    cargo_unit_t *unit_ptrs[3] = {0};
+    for (int i = 0; i < 3; i++) {
+        uint8_t origin[8] = {
+            'M', 'O', 'D', 'C', 'H', 'N', '0',
+            (uint8_t)('1' + i),
+        };
+        ASSERT(hash_legacy_migrate_unit(
+            origin, COMMODITY_FRAME, 0, &units[i]));
+        ASSERT(ship_manifest_push_with_chain(
+            &ship, &units[i], NULL));
+        unit_ptrs[i] = &ship.manifest.units[i];
+    }
+    ASSERT(world_anchor_legacy_cargo_origins(
+        &w, 0, unit_ptrs, 3));
+    uint64_t origin_events = st->chain_event_count;
+    cargo_receipt_origin_cache_reset();
 
     float payout = step_module_delivery(&w, st, 0, &ship, COMMODITY_FRAME);
     ASSERT(payout > 0.0f);
     ASSERT_EQ_INT(manifest_count_by_commodity(&ship.manifest, COMMODITY_FRAME), 0);
-    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+    ASSERT_EQ_FLOAT(
+        m->build_progress,
+        3.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
+        0.001f);
+    ASSERT_EQ_INT((int)st->chain_event_count, (int)origin_events + 3);
+    cargo_receipt_origin_cache_stats_t cache_stats =
+        cargo_receipt_origin_cache_stats();
+    ASSERT_EQ_INT((int)cache_stats.full_verifications, 1);
+    ASSERT_EQ_INT((int)cache_stats.index_builds, 1);
+    ASSERT(cache_stats.hits >= 2);
 
     uint64_t walked = 0;
     ASSERT(chain_log_verify(st, &walked, NULL));
-    ASSERT_EQ_INT((int)walked, 1);
+    ASSERT_EQ_INT((int)walked, (int)origin_events + 3);
 
     char path[256];
     ASSERT(chain_log_path_for(st->station_pubkey, path, sizeof(path)));
     FILE *f = fopen(path, "rb");
     ASSERT(f != NULL);
+    ASSERT(construction_skip_chain_events(f, origin_events));
     uint8_t header[CHAIN_EVENT_HEADER_SIZE];
     ASSERT(fread(header, 1, sizeof(header), f) == sizeof(header));
     ASSERT_EQ_INT(header[16], CHAIN_EVT_CONSTRUCTION);
@@ -566,7 +855,8 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
     fclose(f);
 
-    ASSERT(memcmp(payload.cargo_pub, unit.pub, sizeof(unit.pub)) == 0);
+    ASSERT(memcmp(payload.cargo_pub, units[0].pub,
+                  sizeof(units[0].pub)) == 0);
     ASSERT_EQ_INT(payload.target_kind, CONSTRUCTION_TARGET_MODULE);
     ASSERT_EQ_INT(payload.station_index, 0);
     ASSERT_EQ_INT(payload.module_index, module_idx);
@@ -576,6 +866,124 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT_EQ_FLOAT(payload.progress_after,
                     1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
                     0.001f);
+    chain_log_set_dir(NULL);
+}
+
+TEST(test_module_manifest_batch_append_failure_is_inert) {
+    WORLD_DECL;
+    const chain_log_test_fault_point_t faults[] = {
+        CHAIN_LOG_TEST_FAULT_WRITE,
+        CHAIN_LOG_TEST_FAULT_FLUSH,
+    };
+
+    for (int failure_case = 0; failure_case < 3; failure_case++) {
+        char dir[256];
+        snprintf(dir, sizeof(dir),
+                 "%s/module_manifest_batch_failure_%d",
+                 test_tmp_dir(), failure_case);
+        chain_log_set_disk_enabled(true);
+        chain_log_set_dir(dir);
+        chain_log_test_fault_clear();
+
+        world_reset(&w);
+        station_t *st = &w.stations[0];
+        chain_log_reset(st);
+        ASSERT(st->module_count < MAX_MODULES_PER_STATION);
+        int module_idx = st->module_count++;
+        station_module_t *m = &st->modules[module_idx];
+        memset(m, 0, sizeof(*m));
+        m->type = MODULE_SIGNAL_RELAY;
+        m->ring = 1;
+        m->slot = 7;
+        m->scaffold = true;
+
+        ship_t ship = {0};
+        ASSERT(manifest_init(&ship.manifest, 4));
+        ship.cargo[COMMODITY_FRAME] = 3.0f;
+        cargo_unit_t units[3] = {{0}};
+        cargo_unit_t *unit_ptrs[3] = {0};
+        for (int i = 0; i < 3; i++) {
+            uint8_t origin[8] = {
+                'M', 'O', 'D', 'F', 'A', 'I', 'L',
+                (uint8_t)('1' + i),
+            };
+            ASSERT(hash_legacy_migrate_unit(
+                origin, COMMODITY_FRAME, 0, &units[i]));
+            ASSERT(ship_manifest_push_with_chain(
+                &ship, &units[i], NULL));
+            unit_ptrs[i] = &ship.manifest.units[i];
+        }
+        ASSERT(world_anchor_legacy_cargo_origins(
+            &w, 0, unit_ptrs, 3));
+
+        cargo_store_t ship_before = {0};
+        ASSERT(cargo_store_clone(
+            &ship_before, &ship.cargo_store));
+        cargo_unit_t *manifest_ptr_before =
+            ship.cargo_store.manifest.units;
+        void *receipts_ptr_before =
+            ship.cargo_store.receipts_opaque;
+        uint64_t events_before = st->chain_event_count;
+        uint8_t hash_before[32];
+        memcpy(hash_before, st->chain_last_hash,
+               sizeof(hash_before));
+
+        if (failure_case < 2) {
+            chain_log_test_fault_inject(
+                faults[failure_case],
+                CHAIN_EVT_CONSTRUCTION, 2);
+        } else {
+            chain_log_health_set(
+                st, CHAIN_HEALTH_FAILED, true,
+                st->chain_event_count, st->chain_last_hash,
+                "test pre-blocked module manifest delivery");
+        }
+        float payout = step_module_delivery(
+            &w, st, 0, &ship, COMMODITY_FRAME);
+        chain_log_test_fault_clear();
+
+        ASSERT_EQ_FLOAT(payout, 0.0f, 0.001f);
+        ASSERT_EQ_FLOAT(m->build_progress, 0.0f, 0.001f);
+        ASSERT_EQ_INT(
+            (int)st->chain_event_count, (int)events_before);
+        ASSERT(memcmp(st->chain_last_hash, hash_before,
+                      sizeof(hash_before)) == 0);
+        ASSERT(st->chain_append_blocked);
+        uint64_t walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT((int)walked, (int)events_before);
+
+        ASSERT(ship.cargo_store.manifest.units ==
+               manifest_ptr_before);
+        ASSERT(ship.cargo_store.receipts_opaque ==
+               receipts_ptr_before);
+        ASSERT_EQ_INT(
+            ship.manifest.count,
+            ship_before.manifest.count);
+        ASSERT(memcmp(
+            ship.manifest.units, ship_before.manifest.units,
+            (size_t)ship_before.manifest.count *
+                sizeof(*ship_before.manifest.units)) == 0);
+        const ship_receipts_t *receipts_after =
+            cargo_store_receipts_const(&ship.cargo_store);
+        const ship_receipts_t *receipts_before =
+            cargo_store_receipts_const(&ship_before);
+        ASSERT(receipts_after != NULL);
+        ASSERT(receipts_before != NULL);
+        ASSERT_EQ_INT(
+            receipts_after->count, receipts_before->count);
+        ASSERT(memcmp(
+            receipts_after->chains, receipts_before->chains,
+            (size_t)receipts_before->count *
+                sizeof(*receipts_before->chains)) == 0);
+        ASSERT_EQ_FLOAT(
+            ship.cargo[COMMODITY_FRAME], 3.0f, 0.001f);
+
+        cargo_store_cleanup(&ship_before);
+        cargo_store_cleanup(&ship.cargo_store);
+    }
+
+    chain_log_test_fault_clear();
     chain_log_set_dir(NULL);
 }
 
@@ -600,29 +1008,121 @@ TEST(test_module_delivery_consumes_towed_manifest_pod) {
     player_init_ship(sp, &w);
     sp->id = 0;
     sp->connected = true;
-    cargo_unit_t unit = {0};
-    ASSERT(hash_legacy_migrate_unit((const uint8_t *)"PODMODL1",
-                                    COMMODITY_FRAME, 0, &unit));
+    cargo_unit_t units[3] = {{0}};
+    for (int i = 0; i < 3; i++) {
+        uint8_t origin[8] = {
+            'P', 'O', 'D', 'M', 'O', 'D', 'L',
+            (uint8_t)('1' + i),
+        };
+        ASSERT(hash_legacy_migrate_unit(
+            origin, COMMODITY_FRAME, 0, &units[i]));
+    }
     int pod_idx = spawn_cargo_pod_with_manifest(&w, st->pos,
                                                 v2(0.0f, 0.0f),
-                                                COMMODITY_FRAME, &unit, 1,
+                                                COMMODITY_FRAME, units, 3,
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
     ASSERT(world_cargo_pod_set_player_tractor(&w, pod_idx, 0));
+    ASSERT(test_anchor_pod_legacy_cargo(&w, 0, pod_idx));
+    uint64_t origin_events = st->chain_event_count;
+    cargo_receipt_origin_cache_reset();
 
     float payout = step_module_delivery(&w, st, 0, sp->ship,
                                         COMMODITY_FRAME);
 
     ASSERT(payout > 0.0f);
     ASSERT_EQ_FLOAT(m->build_progress,
-                    1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
+                    3.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
                     0.001f);
     ASSERT(!w.cargo_pods[pod_idx].active);
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
-    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+    ASSERT_EQ_INT((int)st->chain_event_count, (int)origin_events + 3);
+    cargo_receipt_origin_cache_stats_t cache_stats =
+        cargo_receipt_origin_cache_stats();
+    ASSERT_EQ_INT((int)cache_stats.full_verifications, 1);
+    ASSERT_EQ_INT((int)cache_stats.index_builds, 1);
+    ASSERT(cache_stats.hits >= 2);
 }
 
-TEST(test_station_scaffold_consumes_towed_manifest_pod) {
+TEST(test_module_physical_delivery_append_failure_is_inert) {
+    WORLD_DECL;
+    const chain_log_test_fault_point_t faults[] = {
+        CHAIN_LOG_TEST_FAULT_WRITE,
+        CHAIN_LOG_TEST_FAULT_FLUSH,
+    };
+    for (int failure_case = 0; failure_case < 3; failure_case++) {
+        world_reset(&w);
+        memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+        station_t *st = &w.stations[0];
+        chain_log_reset(st);
+
+        ASSERT(st->module_count < MAX_MODULES_PER_STATION);
+        int module_idx = st->module_count++;
+        station_module_t *m = &st->modules[module_idx];
+        memset(m, 0, sizeof(*m));
+        m->type = MODULE_SIGNAL_RELAY;
+        m->ring = 1;
+        m->slot = 7;
+        m->scaffold = true;
+        m->build_progress = 0.0f;
+
+        server_player_t *sp = &w.players[0];
+        player_init_ship(sp, &w);
+        sp->id = 0;
+        sp->connected = true;
+        cargo_unit_t units[3] = {{0}};
+        for (int i = 0; i < 3; i++) {
+            uint8_t origin[8] = {
+                'P', 'O', 'D', 'F', 'A', 'I', 'L',
+                (uint8_t)('1' + i),
+            };
+            ASSERT(hash_legacy_migrate_unit(
+                origin, COMMODITY_FRAME, 0, &units[i]));
+        }
+        int pod_idx = spawn_cargo_pod_with_manifest(
+            &w, st->pos, v2(0.0f, 0.0f), COMMODITY_FRAME,
+            units, 3, CARGO_POD_CARGO);
+        ASSERT(pod_idx >= 0);
+        ASSERT(world_cargo_pod_set_player_tractor(
+            &w, pod_idx, 0));
+        ASSERT(test_anchor_pod_legacy_cargo(&w, 0, pod_idx));
+
+        cargo_pod_t pod_before = w.cargo_pods[pod_idx];
+        int towed_before = sp->ship->towed_pod_count;
+        uint64_t events_before = st->chain_event_count;
+        uint8_t hash_before[32];
+        memcpy(hash_before, st->chain_last_hash,
+               sizeof(hash_before));
+
+        if (failure_case < 2) {
+            chain_log_test_fault_inject(
+                faults[failure_case],
+                CHAIN_EVT_CONSTRUCTION, 2);
+        } else {
+            st->chain_append_blocked = true;
+        }
+        float payout = step_module_delivery(
+            &w, st, 0, sp->ship, COMMODITY_FRAME);
+        chain_log_test_fault_clear();
+
+        ASSERT_EQ_FLOAT(payout, 0.0f, 0.001f);
+        ASSERT_EQ_FLOAT(m->build_progress, 0.0f, 0.001f);
+        ASSERT(memcmp(&w.cargo_pods[pod_idx], &pod_before,
+                      sizeof(pod_before)) == 0);
+        ASSERT_EQ_INT(sp->ship->towed_pod_count, towed_before);
+        ASSERT_EQ_INT(sp->ship->towed_pods[0], pod_idx);
+        ASSERT_EQ_INT(
+            (int)st->chain_event_count, (int)events_before);
+        ASSERT(memcmp(st->chain_last_hash, hash_before,
+                      sizeof(hash_before)) == 0);
+        uint64_t walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT((int)walked, (int)events_before);
+        ASSERT(st->chain_append_blocked);
+    }
+}
+
+TEST(test_station_scaffold_rejects_towed_manifest_pod) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
@@ -649,17 +1149,18 @@ TEST(test_station_scaffold_consumes_towed_manifest_pod) {
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
     ASSERT(world_cargo_pod_set_player_tractor(&w, pod_idx, 0));
+    ASSERT(test_anchor_pod_legacy_cargo(&w, 0, pod_idx));
+    uint64_t origin_events = st->chain_event_count;
 
     sp->input.service_sell = true;
     sp->input.service_sell_only = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT(!w.cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
-    ASSERT_EQ_FLOAT(st->scaffold_progress,
-                    1.0f / SCAFFOLD_MATERIAL_NEEDED, 0.001f);
+    ASSERT(w.cargo_pods[pod_idx].active);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_FLOAT(st->scaffold_progress, 0.0f, 0.001f);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
-    ASSERT_EQ_INT((int)st->chain_event_count, 1);
+    ASSERT_EQ_INT((int)st->chain_event_count, (int)origin_events);
 }
 
 /* Regression: a single buy_product intent must purchase exactly one
@@ -1493,6 +1994,7 @@ TEST(test_module_activation_does_not_spawn_free_worker_hull) {
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     ASSERT(test_set_station_finished_amount(
         st, mat, module_build_cost_lookup(MODULE_FURNACE)));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 1));
     step_module_activation(&w, SIM_DT);
     ASSERT_EQ_INT(module_build_state(furnace), MODULE_BUILD_BUILDING);
 
@@ -2141,6 +2643,7 @@ TEST(test_scaffold_full_pipeline) {
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -2169,6 +2672,7 @@ TEST(test_build_outpost_full_economy) {
     for (int i = 0; i < 32; i++) sp->pubkey[i] = (uint8_t)(0xA0 + i);
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
     ASSERT(registry_register_pubkey(&w, sp->pubkey, sp->session_token));
 
     sp->connected = true;
@@ -2203,17 +2707,19 @@ TEST(test_build_outpost_full_economy) {
     }
     ASSERT(found_frame_contract);
 
-    /* Step 2 — tow a pod of frames. In a live session the player would have
-     * earned credits at Prospect, hauled ingots to Kepler, and bought
-     * frames there (covered by the buy-flow tests). Drop them straight
-     * into a crate for this test — the value here is what happens *after*
-     * the materials reach the outpost. */
+    /* Step 2 — provision exact, receipt-backed frames in the ship manifest.
+     * Station-core scaffolds intentionally reject physical pods because pods
+     * cannot carry the receipt sidecar required by this path. Anchor each
+     * synthetic frame at this station, then issue and present the same
+     * station-authored transfer receipt a carried manifest row requires. */
     float frame_budget =
         SCAFFOLD_MATERIAL_NEEDED                          /* outpost scaffold */
         + module_build_cost_lookup(MODULE_SIGNAL_RELAY);  /* seed module */
-    const uint8_t frame_origin[8] = { 'O','U','T','P','O','D','0','1' };
-    ASSERT(construction_spawn_towed_material_pod(
-        &w, sp, COMMODITY_FRAME, (int)ceilf(frame_budget), frame_origin));
+    ASSERT(test_set_ship_finished_units(
+        sp->ship, COMMODITY_FRAME, (int)ceilf(frame_budget),
+        MINING_GRADE_COMMON));
+    ASSERT(construction_attach_local_ship_receipts(
+        &w, outpost, sp));
 
     /* Step 3 — dock at the outpost and pour the frames in.
      * The outpost has an OUTPOST_DOCK module stamped on by
@@ -2228,28 +2734,19 @@ TEST(test_build_outpost_full_economy) {
      * server clears the intent flag, so we re-arm it. */
     for (int i = 0; i < 10 && st_out->scaffold; i++) {
         sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_FRAME;
         world_sim_step(&w, SIM_DT);
     }
 
-    /* Step 4 — sim until outpost-level scaffolding finishes. The
-     * activation step lifts st->scaffold once scaffold_progress hits
-     * 1.0 and the seeded module's frames are in. */
-    for (int i = 0; i < 60 * 120 && st_out->scaffold; i++) {
-        world_sim_step(&w, SIM_DT);
-    }
+    /* Step 4 — the final accepted contribution activates the outpost
+     * atomically; signal-chain rebuild is part of that transition. */
     ASSERT(!st_out->scaffold);
     ASSERT(st_out->signal_connected); /* tied back into the chain */
 
-    /* Step 5 — wait for the seed SIGNAL_RELAY module to finish its
-     * 10s build timer and activate. */
-    for (int i = 0; i < 30 * 120; i++) {
-        bool any_seed_scaffolded = false;
-        for (int m = 0; m < st_out->module_count; m++) {
-            if (st_out->modules[m].scaffold) { any_seed_scaffolded = true; break; }
-        }
-        if (!any_seed_scaffolded) break;
-        world_sim_step(&w, SIM_DT);
-    }
+    /* Step 5 — advance the deterministic seed-module build timer directly.
+     * Timer cadence has dedicated tick-level coverage; this scenario keeps
+     * its focus on the cross-system economy/construction transitions. */
+    step_module_activation(&w, MODULE_BUILD_TIME_SEC);
     for (int m = 0; m < st_out->module_count; m++) {
         ASSERT(!st_out->modules[m].scaffold);
     }
@@ -2261,13 +2758,34 @@ TEST(test_build_outpost_full_economy) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
 
     sp->docked = false; /* leave so the snap step has clean state */
-    vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
-    int sc_idx = spawn_scaffold(&w, MODULE_FURNACE, ring1_near, sp->id);
-    ASSERT(sc_idx >= 0);
-    int mod_count_pre = st_out->module_count;
-    for (int i = 0; i < 600 && w.scaffolds[sc_idx].active; i++) {
-        world_sim_step(&w, SIM_DT);
+    int furnace_ring = -1;
+    int furnace_slot = -1;
+    for (int ring = 1;
+         ring <= STATION_NUM_RINGS && furnace_ring < 0; ring++) {
+        for (int slot = 0; slot < STATION_RING_SLOTS[ring]; slot++) {
+            if (station_placement_validate(
+                    st_out, MODULE_FURNACE, ring, slot,
+                    STATION_PLACEMENT_SCAFFOLD) !=
+                STATION_PLACEMENT_OK) {
+                continue;
+            }
+            furnace_ring = ring;
+            furnace_slot = slot;
+            break;
+        }
     }
+    ASSERT(furnace_ring >= 0 && furnace_slot >= 0);
+    vec2 furnace_target = module_world_pos_ring(
+        st_out, furnace_ring, furnace_slot);
+    int sc_idx = spawn_scaffold(
+        &w, MODULE_FURNACE, furnace_target, sp->id);
+    ASSERT(sc_idx >= 0);
+    w.scaffolds[sc_idx].state = SCAFFOLD_SNAPPING;
+    w.scaffolds[sc_idx].placed_station = outpost;
+    w.scaffolds[sc_idx].placed_ring = furnace_ring;
+    w.scaffolds[sc_idx].placed_slot = furnace_slot;
+    int mod_count_pre = st_out->module_count;
+    world_sim_step(&w, SIM_DT);
     ASSERT(!w.scaffolds[sc_idx].active);
     ASSERT_EQ_INT(st_out->module_count, mod_count_pre + 1);
     station_module_t *furn = &st_out->modules[mod_count_pre];
@@ -2281,16 +2799,17 @@ TEST(test_build_outpost_full_economy) {
         &w, sp, COMMODITY_FRAME,
         (int)ceilf(module_build_cost_lookup(MODULE_FURNACE)),
         furnace_frame_origin));
+    ASSERT(sp->ship->towed_pod_count > 0);
+    ASSERT(test_anchor_pod_legacy_cargo(
+        &w, outpost,
+        sp->ship->towed_pods[sp->ship->towed_pod_count - 1]));
     sp->docked = true;
     sp->current_station = outpost;
     for (int i = 0; i < 10 && furn->scaffold; i++) {
         sp->input.service_sell = true;
         world_sim_step(&w, SIM_DT);
     }
-    /* Build timer: ~10s, with enough runway for activation to complete. */
-    for (int i = 0; i < 30 * 120 && furn->scaffold; i++) {
-        world_sim_step(&w, SIM_DT);
-    }
+    step_module_activation(&w, MODULE_BUILD_TIME_SEC);
     ASSERT(!furn->scaffold);
     ASSERT_EQ_FLOAT(furn->build_progress, 1.0f, 0.01f);
 
@@ -2312,6 +2831,10 @@ TEST(test_build_outpost_full_economy) {
         &w, sp, COMMODITY_FRAME,
         (int)ceilf(module_build_cost_lookup(MODULE_HOPPER)),
         hopper_frame_origin));
+    ASSERT(sp->ship->towed_pod_count > 0);
+    ASSERT(test_anchor_pod_legacy_cargo(
+        &w, outpost,
+        sp->ship->towed_pods[sp->ship->towed_pod_count - 1]));
 
     station_slot_pair_t pair_slots[2];
     int pair_count = station_pair_neighbors((int)furn->ring, (int)furn->slot,
@@ -2345,9 +2868,7 @@ TEST(test_build_outpost_full_economy) {
         sp->input.service_sell = true;
         world_sim_step(&w, SIM_DT);
     }
-    for (int i = 0; i < 30 * 120 && hop->scaffold; i++) {
-        world_sim_step(&w, SIM_DT);
-    }
+    step_module_activation(&w, MODULE_BUILD_TIME_SEC);
     ASSERT(!hop->scaffold);
     ASSERT(station_can_smelt(st_out, COMMODITY_FERRITE_ORE));
 
@@ -2368,7 +2889,7 @@ TEST(test_build_outpost_full_economy) {
             if (station_module_at(st_out, ring, slot) != MODULE_COUNT)
                 continue;
             vec2 slot_pos = module_world_pos_ring(st_out, ring, slot);
-            if (v2_dist_sq(slot_pos, smelt_midpoint) > shell_reach_sq)
+            if (v2_dist_sq(slot_pos, furnace_pos) > shell_reach_sq)
                 continue;
             frame_hop_ring = ring;
             frame_hop_slot = slot;
@@ -2387,24 +2908,42 @@ TEST(test_build_outpost_full_economy) {
         &w, sp, COMMODITY_FRAME,
         (int)ceilf(module_build_cost_lookup(MODULE_HOPPER)),
         frame_hopper_origin));
+    ASSERT(sp->ship->towed_pod_count > 0);
+    ASSERT(test_anchor_pod_legacy_cargo(
+        &w, outpost,
+        sp->ship->towed_pods[sp->ship->towed_pod_count - 1]));
     sp->docked = true;
     sp->current_station = outpost;
     for (int i = 0; i < 10 && frame_hop->scaffold; i++) {
         sp->input.service_sell = true;
         world_sim_step(&w, SIM_DT);
     }
-    for (int i = 0; i < 30 * 120 && frame_hop->scaffold; i++) {
-        world_sim_step(&w, SIM_DT);
-    }
+    step_module_activation(&w, MODULE_BUILD_TIME_SEC);
     ASSERT(!frame_hop->scaffold);
 
     const uint8_t shell_origin[8] = { 'S','H','E','L','L','0','0','1' };
+    vec2 frame_hop_pos = module_world_pos_ring(
+        st_out, frame_hop->ring, frame_hop->slot);
+    vec2 frame_hop_out = v2_norm(
+        v2_sub(frame_hop_pos, st_out->pos));
+    vec2 shell_pos = v2_add(
+        frame_hop_pos, v2_scale(
+            frame_hop_out,
+            STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
     int shell_pod = construction_spawn_loose_material_pod(
-        &w, module_world_pos_ring(st_out, frame_hop->ring, frame_hop->slot),
-        COMMODITY_FRAME, 1, shell_origin);
+        &w, shell_pos, COMMODITY_FRAME, 1, shell_origin);
     ASSERT(shell_pod >= 0);
+    ASSERT(test_anchor_pod_legacy_cargo(&w, outpost, shell_pod));
+    w.cargo_pods[shell_pod].vel =
+        station_ring_point_velocity(
+            st_out, frame_hop->ring, shell_pos);
     ASSERT(world_cargo_pod_set_module_tractor(
         &w, shell_pod, outpost, frame_hop_idx));
+    ASSERT(cargo_pod_module_tractor_arrived(
+        &w, &w.cargo_pods[shell_pod],
+        outpost, frame_hop_idx));
+    ASSERT(v2_dist_sq(frame_hop_pos, furnace_pos) <=
+           shell_reach_sq);
 
     /* Step 11 — process ore. The retired hopper-float path no longer
      * accepts raw `_inventory_cache[ORE]`; smelting now means a physical
@@ -2412,6 +2951,12 @@ TEST(test_build_outpost_full_economy) {
      * FERRITE_INGOT cargo pod in space. */
     sp->docked = false;
     sp->input.service_sell = false;
+    furnace_pos = module_world_pos_ring(
+        st_out, furn->ring, furn->slot);
+    hopper_pos = module_world_pos_ring(
+        st_out, hop->ring, hop->slot);
+    smelt_midpoint =
+        v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
 
     int frag = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2434,9 +2979,9 @@ TEST(test_build_outpost_full_economy) {
 
     int ingots_before =
         construction_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
-    for (int i = 0; i < 10 * 120 && w.asteroids[frag].active; i++) {
-        world_sim_step(&w, SIM_DT);
-    }
+    step_furnace_smelting(&w, 0.0f);
+    w.asteroids[frag].smelt_progress = 1.0f;
+    step_furnace_smelting(&w, 0.0f);
     ASSERT(!w.asteroids[frag].active);
     int ingots_after =
         construction_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT);
@@ -2911,6 +3456,7 @@ TEST(test_placed_scaffold_supply_phase) {
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
                                             cost * 0.5f));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(m->build_progress > 0.4f && m->build_progress < 0.6f);
     ASSERT(m->scaffold); /* still building */
@@ -2918,6 +3464,7 @@ TEST(test_placed_scaffold_supply_phase) {
     /* Deliver the rest */
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
                                             cost * 0.5f));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -2925,6 +3472,206 @@ TEST(test_placed_scaffold_supply_phase) {
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold);
     ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
+}
+
+TEST(test_placed_scaffold_manifest_supply_batches_multiple_units) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    int module_idx = -1;
+    int outpost = test_setup_placed_scaffold(
+        &w, &module_idx);
+    ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
+    station_t *st = &w.stations[outpost];
+    station_module_t *module =
+        &st->modules[module_idx];
+    ASSERT(module_build_state(module) ==
+           MODULE_BUILD_AWAITING_SUPPLY);
+
+    commodity_t material =
+        module_build_material_lookup(module->type);
+    float cost =
+        module_build_cost_lookup(module->type);
+    const int units = 3;
+    ASSERT(material == COMMODITY_FRAME);
+    ASSERT(cost > (float)units);
+    ASSERT(test_set_station_finished_units(
+        st, material, units));
+    ASSERT(test_anchor_station_legacy_cargo(
+        &w, outpost));
+
+    float progress_before =
+        module->build_progress;
+    uint64_t events_before =
+        st->chain_event_count;
+    cargo_receipt_origin_cache_reset();
+    step_module_activation(&w, 0.0f);
+
+    ASSERT_EQ_INT(
+        station_finished_count(st, material), 0);
+    ASSERT_EQ_FLOAT(
+        module->build_progress,
+        progress_before + (float)units / cost,
+        0.001f);
+    ASSERT_EQ_INT(
+        (int)st->chain_event_count,
+        (int)events_before + units);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+    ASSERT_EQ_INT(
+        (int)walked, (int)st->chain_event_count);
+    cargo_receipt_origin_cache_stats_t cache_stats =
+        cargo_receipt_origin_cache_stats();
+    ASSERT_EQ_INT(
+        (int)cache_stats.full_verifications, 1);
+    ASSERT_EQ_INT(
+        (int)cache_stats.index_builds, 1);
+    ASSERT(cache_stats.hits >=
+           (uint64_t)(units - 1));
+}
+
+TEST(test_placed_scaffold_manifest_supply_batch_failure_is_inert) {
+    WORLD_DECL;
+    const chain_log_test_fault_point_t faults[] = {
+        CHAIN_LOG_TEST_FAULT_WRITE,
+        CHAIN_LOG_TEST_FAULT_FLUSH,
+    };
+    const int units = 3;
+    int previous_outpost = -1;
+
+    for (int failure_case = 0;
+         failure_case < 3;
+         failure_case++) {
+        if (previous_outpost >= 0)
+            chain_log_reset(
+                &w.stations[previous_outpost]);
+        world_reset(&w);
+        memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+        int module_idx = -1;
+        int outpost = test_setup_placed_scaffold(
+            &w, &module_idx);
+        ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
+        previous_outpost = outpost;
+        station_t *st = &w.stations[outpost];
+        station_module_t *module =
+            &st->modules[module_idx];
+        ASSERT(module_build_state(module) ==
+               MODULE_BUILD_AWAITING_SUPPLY);
+
+        commodity_t material =
+            module_build_material_lookup(module->type);
+        float cost =
+            module_build_cost_lookup(module->type);
+        ASSERT(material == COMMODITY_FRAME);
+        ASSERT(cost > (float)units);
+        ASSERT(test_set_station_finished_units(
+            st, material, units));
+        ASSERT(test_anchor_station_legacy_cargo(
+            &w, outpost));
+
+        cargo_store_t store_before = {0};
+        ASSERT(cargo_store_clone(
+            &store_before, &st->cargo_store));
+        cargo_unit_t *manifest_ptr_before =
+            st->cargo_store.manifest.units;
+        void *receipts_ptr_before =
+            st->cargo_store.receipts_opaque;
+        bool dirty_before = st->manifest_dirty;
+        float progress_before =
+            module->build_progress;
+        uint64_t events_before =
+            st->chain_event_count;
+        uint8_t hash_before[32];
+        memcpy(
+            hash_before, st->chain_last_hash,
+            sizeof(hash_before));
+        uint64_t walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT(
+            (int)walked, (int)events_before);
+
+        cargo_receipt_origin_cache_reset();
+        if (failure_case < 2) {
+            chain_log_test_fault_inject(
+                faults[failure_case],
+                CHAIN_EVT_CONSTRUCTION, 2);
+        } else {
+            chain_log_health_set(
+                st, CHAIN_HEALTH_FAILED, true,
+                st->chain_event_count,
+                st->chain_last_hash,
+                "test pre-blocked station module supply");
+        }
+        step_module_activation(&w, 0.0f);
+        chain_log_test_fault_clear();
+
+        ASSERT_EQ_FLOAT(
+            module->build_progress,
+            progress_before, 0.001f);
+        ASSERT_EQ_INT(
+            station_finished_count(
+                st, material), units);
+        ASSERT_EQ_INT(
+            (int)st->chain_event_count,
+            (int)events_before);
+        ASSERT(memcmp(
+            st->chain_last_hash, hash_before,
+            sizeof(hash_before)) == 0);
+        walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT(
+            (int)walked, (int)events_before);
+        ASSERT(st->chain_append_blocked);
+        ASSERT_EQ_INT(
+            st->manifest_dirty, dirty_before);
+        ASSERT(
+            st->cargo_store.manifest.units ==
+            manifest_ptr_before);
+        ASSERT(
+            st->cargo_store.receipts_opaque ==
+            receipts_ptr_before);
+        ASSERT_EQ_INT(
+            st->cargo_store.manifest.count,
+            store_before.manifest.count);
+        ASSERT_EQ_INT(
+            st->cargo_store.manifest.cap,
+            store_before.manifest.cap);
+        ASSERT(memcmp(
+            st->cargo_store.manifest.units,
+            store_before.manifest.units,
+            (size_t)store_before.manifest.count *
+                sizeof(*store_before.manifest.units)) == 0);
+        const ship_receipts_t *receipts_after =
+            cargo_store_receipts_const(
+                &st->cargo_store);
+        const ship_receipts_t *receipts_before =
+            cargo_store_receipts_const(
+                &store_before);
+        ASSERT(receipts_after != NULL);
+        ASSERT(receipts_before != NULL);
+        ASSERT_EQ_INT(
+            receipts_after->count,
+            receipts_before->count);
+        ASSERT_EQ_INT(
+            receipts_after->cap,
+            receipts_before->cap);
+        ASSERT(memcmp(
+            receipts_after->chains,
+            receipts_before->chains,
+            (size_t)receipts_before->count *
+                sizeof(*receipts_before->chains)) == 0);
+        cargo_receipt_origin_cache_stats_t cache_stats =
+            cargo_receipt_origin_cache_stats();
+        ASSERT_EQ_INT(
+            (int)cache_stats.full_verifications, 1);
+        ASSERT_EQ_INT(
+            (int)cache_stats.index_builds, 1);
+        ASSERT(cache_stats.hits >=
+               (uint64_t)(units - 1));
+        cargo_store_cleanup(&store_before);
+    }
 }
 
 TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
@@ -2943,7 +3690,7 @@ TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
     commodity_t mat = module_build_material_lookup(m->type);
     int units = (int)ceilf(module_build_cost_lookup(m->type) - 0.0001f);
     ASSERT_EQ_INT(mat, COMMODITY_FRAME);
-    ASSERT(units > 0 && units <= CARGO_POD_MANIFEST_CAP);
+    ASSERT(units > 1 && units <= CHAIN_LOG_BATCH_MAX_EVENTS);
     ASSERT(test_set_station_finished_units(st, mat, 0));
     st->_inventory_cache[mat] = 0.0f;
 
@@ -2952,7 +3699,9 @@ TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
     uint8_t hopper_slot = 0;
     ASSERT(construction_serving_slot_from_pos(st, module_pos,
                                               &hopper_ring, &hopper_slot));
+    int hopper_idx = st->module_count;
     add_hopper_for(st, (uint8_t)hopper_ring, hopper_slot, mat);
+    ASSERT(hopper_idx < st->module_count);
     vec2 hopper_pos = module_world_pos_ring(st, hopper_ring, hopper_slot);
     ASSERT(v2_dist_sq(module_pos, hopper_pos) <=
            HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
@@ -2963,6 +3712,7 @@ TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
         &w, module_pos, mat, units,
         (const uint8_t *)"PODPLC01");
     ASSERT(pod_idx >= 0);
+    ASSERT(test_anchor_pod_legacy_cargo(&w, outpost, pod_idx));
 
     world_sim_step(&w, SIM_DT);
 
@@ -2973,12 +3723,163 @@ TEST(test_placed_scaffold_supply_consumes_staged_material_pod) {
     w.cargo_pods[pod_idx].pos = v2_add(hopper_pos, v2_scale(
         hopper_out, STATION_MODULE_COL_RADIUS +
                     w.cargo_pods[pod_idx].radius + 8.0f));
-    world_sim_step(&w, SIM_DT);
+    w.cargo_pods[pod_idx].vel = station_ring_point_velocity(
+        st, hopper_ring, w.cargo_pods[pod_idx].pos);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, pod_idx, outpost, hopper_idx));
+    cargo_receipt_origin_cache_reset();
+    uint64_t events_before = st->chain_event_count;
+    step_module_activation(&w, 0.0f);
 
     ASSERT(!w.cargo_pods[pod_idx].active);
     ASSERT(module_is_fully_supplied(m));
+    ASSERT_EQ_INT(
+        (int)st->chain_event_count,
+        (int)events_before + units);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, (int)st->chain_event_count);
+    cargo_receipt_origin_cache_stats_t cache_stats =
+        cargo_receipt_origin_cache_stats();
+    ASSERT_EQ_INT((int)cache_stats.full_verifications, 1);
+    ASSERT_EQ_INT((int)cache_stats.index_builds, 1);
+    ASSERT(cache_stats.hits >= (uint64_t)(units - 1));
     ASSERT_EQ_INT(station_finished_count(st, mat), 0);
     ASSERT_EQ_FLOAT(st->_inventory_cache[mat], 0.0f, 0.001f);
+}
+
+TEST(test_placed_scaffold_physical_supply_append_failure_is_inert) {
+    WORLD_DECL;
+    const chain_log_test_fault_point_t faults[] = {
+        CHAIN_LOG_TEST_FAULT_WRITE,
+        CHAIN_LOG_TEST_FAULT_FLUSH,
+    };
+    int previous_outpost = -1;
+
+    for (int failure_case = 0; failure_case < 3; failure_case++) {
+        if (previous_outpost >= 0)
+            chain_log_reset(&w.stations[previous_outpost]);
+        world_reset(&w);
+        memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+        int module_idx = -1;
+        int outpost = test_setup_placed_scaffold(
+            &w, &module_idx);
+        ASSERT(outpost >= SIGNAL_FIRST_OUTPOST_INDEX);
+        previous_outpost = outpost;
+        station_t *st = &w.stations[outpost];
+        station_module_t *module =
+            &st->modules[module_idx];
+        ASSERT(module_build_state(module) ==
+               MODULE_BUILD_AWAITING_SUPPLY);
+
+        commodity_t material =
+            module_build_material_lookup(module->type);
+        int units = (int)ceilf(
+            module_build_cost_lookup(module->type) -
+            0.0001f);
+        ASSERT(material == COMMODITY_FRAME);
+        ASSERT(units > 1 &&
+               units <= CHAIN_LOG_BATCH_MAX_EVENTS);
+        ASSERT(test_set_station_finished_units(
+            st, material, 0));
+
+        vec2 module_pos = module_world_pos_ring(
+            st, module->ring, module->slot);
+        int hopper_ring = 0;
+        uint8_t hopper_slot = 0;
+        ASSERT(construction_serving_slot_from_pos(
+            st, module_pos, &hopper_ring,
+            &hopper_slot));
+        int hopper_idx = st->module_count;
+        add_hopper_for(
+            st, (uint8_t)hopper_ring,
+            hopper_slot, material);
+        ASSERT(hopper_idx < st->module_count);
+        vec2 hopper_pos = module_world_pos_ring(
+            st, hopper_ring, hopper_slot);
+        vec2 outward = v2_norm(
+            v2_sub(hopper_pos, st->pos));
+        vec2 pod_pos = v2_add(
+            hopper_pos, v2_scale(
+                outward,
+                STATION_MODULE_COL_RADIUS +
+                18.0f + 8.0f));
+        int pod_idx =
+            construction_spawn_loose_material_pod(
+                &w, pod_pos, material, units,
+                (const uint8_t *)"PODFL001");
+        ASSERT(pod_idx >= 0);
+        ASSERT(test_anchor_pod_legacy_cargo(
+            &w, outpost, pod_idx));
+        w.cargo_pods[pod_idx].vel =
+            station_ring_point_velocity(
+                st, hopper_ring, pod_pos);
+        ASSERT(world_cargo_pod_set_module_tractor(
+            &w, pod_idx, outpost, hopper_idx));
+        step_station_cargo_pod_tractors(
+            &w, 0.0f);
+
+        cargo_pod_t pod_before =
+            w.cargo_pods[pod_idx];
+        float progress_before =
+            module->build_progress;
+        uint64_t events_before =
+            st->chain_event_count;
+        uint8_t hash_before[32];
+        memcpy(
+            hash_before, st->chain_last_hash,
+            sizeof(hash_before));
+        uint64_t walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT(
+            (int)walked, (int)events_before);
+        bool contract_before[MAX_CONTRACTS];
+        for (int k = 0; k < MAX_CONTRACTS; k++)
+            contract_before[k] =
+                w.contracts[k].active;
+
+        if (failure_case < 2) {
+            /* The second matching row distinguishes one atomic batch from
+             * repeated one-row appends: WRITE leaves a serialized prefix
+             * that must be truncated, and FLUSH must reject every row. */
+            chain_log_test_fault_inject(
+                faults[failure_case],
+                CHAIN_EVT_CONSTRUCTION, 2);
+        } else {
+            chain_log_health_set(
+                st, CHAIN_HEALTH_FAILED, true,
+                st->chain_event_count,
+                st->chain_last_hash,
+                "test pre-blocked physical module supply");
+        }
+        step_module_activation(&w, 0.0f);
+        chain_log_test_fault_clear();
+
+        ASSERT(memcmp(
+            &w.cargo_pods[pod_idx], &pod_before,
+            sizeof(pod_before)) == 0);
+        ASSERT_EQ_FLOAT(
+            module->build_progress,
+            progress_before, 0.001f);
+        ASSERT_EQ_INT(
+            (int)st->chain_event_count,
+            (int)events_before);
+        ASSERT(memcmp(
+            st->chain_last_hash, hash_before,
+            sizeof(hash_before)) == 0);
+        walked = 0;
+        ASSERT(chain_log_verify(st, &walked, NULL));
+        ASSERT_EQ_INT(
+            (int)walked, (int)events_before);
+        ASSERT_EQ_INT(
+            station_finished_count(st, material), 0);
+        for (int k = 0; k < MAX_CONTRACTS; k++)
+            ASSERT_EQ_INT(
+                w.contracts[k].active,
+                contract_before[k]);
+        ASSERT(st->chain_append_blocked);
+    }
 }
 
 TEST(test_placed_scaffold_supply_rejects_far_staged_hopper) {
@@ -3015,6 +3916,7 @@ TEST(test_placed_scaffold_supply_rejects_far_staged_hopper) {
         &w, hopper_pos, mat, units,
         (const uint8_t *)"FARPLC01");
     ASSERT(pod_idx >= 0);
+    ASSERT(test_anchor_pod_legacy_cargo(&w, outpost, pod_idx));
 
     world_sim_step(&w, SIM_DT);
 
@@ -3043,6 +3945,11 @@ TEST(test_placed_scaffold_player_delivery) {
     ASSERT(construction_spawn_towed_material_pod(
         &w, &w.players[0], mat, (int)ceilf(cost - 0.0001f),
         (const uint8_t *)"PLYBUILD"));
+    ASSERT(w.players[0].ship->towed_pod_count > 0);
+    ASSERT(test_anchor_pod_legacy_cargo(
+        &w, outpost,
+        w.players[0].ship->towed_pods[
+            w.players[0].ship->towed_pod_count - 1]));
 
     /* Trigger sell action — step_module_delivery pulls from cargo */
     w.players[0].input.service_sell = true;
@@ -3075,6 +3982,7 @@ TEST(test_construction_contract_closes_on_activation) {
     /* Supply and activate */
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
     /* Run build timer */
@@ -3106,6 +4014,7 @@ TEST(test_stale_contract_does_not_block_next_need) {
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold);
@@ -3145,6 +4054,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
      * by adding a different commodity that fills the buffer. */
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat,
                                             cost * 0.3f));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     world_sim_step(&w, SIM_DT);
 
     /* After one tick, step_module_activation routed the partial amount
@@ -3164,6 +4074,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
 
     /* Now deliver the rest */
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
+    ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
 }
@@ -3609,16 +4520,22 @@ TEST(test_module_flow_same_ring_transfer) {
 }
 
 TEST(test_module_flow_production_fills_buffers) {
-    /* Real production should fill module output buffers (mirrored from
-     * station inventory). Run sim with seeded ore at Kepler and verify
-     * the frame press output buffer fills. */
+    /* Finished production now ejects exact physical cargo pods. The
+     * station-manifest path therefore needs both provenance-backed ingot
+     * input and one folded frame for the output pod shell; module buffers
+     * remain routing reservations rather than a second inventory authority. */
     WORLD_DECL;
     world_reset(&w);
-    /* Seed Kepler with frame-press input */
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    /* Seed Kepler with the complete frame-press transaction inputs. */
     ASSERT(test_set_station_finished_units(
         &w.stations[1], COMMODITY_FERRITE_INGOT, 50));
-    float frames_before = station_inventory_amount(
-        &w.stations[1], COMMODITY_FRAME);
+    ASSERT(test_set_station_finished_units(
+        &w.stations[1], COMMODITY_FRAME, 1));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 1));
+    int pod_frames_before =
+        construction_count_exact_pod_units(&w, COMMODITY_FRAME);
     /* Find frame press */
     int press_idx = -1;
     for (int i = 0; i < w.stations[1].module_count; i++) {
@@ -3628,17 +4545,16 @@ TEST(test_module_flow_production_fills_buffers) {
     }
     if (press_idx < 0) return;
 
-    /* Run a few seconds of sim — production should mirror to output buffer */
+    /* Run a few seconds of sim — production should route the ingot and
+     * materialize its output in a physical pod. */
     for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
 
-    /* Production should have pulled ferrite into the chain, and either
-     * buffered or stocked some downstream result. */
+    /* The durable CRAFT transaction consumes one exact ingot and its shell,
+     * then exposes the output as exact physical cargo. */
     ASSERT(station_inventory_amount(&w.stations[1],
                                     COMMODITY_FERRITE_INGOT) < 50.0f);
-    ASSERT(w.stations[1].modules[press_idx].input_buffer > 0.0f ||
-           w.stations[1].modules[press_idx].output_buffer > 0.0f ||
-           station_inventory_amount(&w.stations[1], COMMODITY_FRAME) >
-               frames_before);
+    ASSERT(construction_count_exact_pod_units(
+               &w, COMMODITY_FRAME) > pod_frames_before);
 }
 
 TEST(test_module_flow_does_not_overflow_capacity) {
@@ -4071,9 +4987,12 @@ void register_construction_modules_tests(void) {
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_construction_consumes_manifest_units);
+    RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_emits_construction_chain_event);
+    RUN(test_module_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_consumes_towed_manifest_pod);
-    RUN(test_station_scaffold_consumes_towed_manifest_pod);
+    RUN(test_module_physical_delivery_append_failure_is_inert);
+    RUN(test_station_scaffold_rejects_towed_manifest_pod);
     RUN(test_docked_buy_one_unit_per_intent);
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
     RUN(test_shipyard_commission_completes_onto_docked_player);
@@ -4140,7 +5059,10 @@ void register_construction_scaffold_tests(void) {
 void register_construction_placed_scaffold_tests(void) {
     TEST_SECTION("\nPlaced-scaffold supply (#277):\n");
     RUN(test_placed_scaffold_supply_phase);
+    RUN(test_placed_scaffold_manifest_supply_batches_multiple_units);
+    RUN(test_placed_scaffold_manifest_supply_batch_failure_is_inert);
     RUN(test_placed_scaffold_supply_consumes_staged_material_pod);
+    RUN(test_placed_scaffold_physical_supply_append_failure_is_inert);
     RUN(test_placed_scaffold_supply_rejects_far_staged_hopper);
     RUN(test_placed_scaffold_player_delivery);
     RUN(test_construction_contract_closes_on_activation);

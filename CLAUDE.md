@@ -36,10 +36,13 @@ Or directly:
 ```sh
 cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON
 cmake --build build-test
-./build-test/signal_test            # verbose
-./build-test/signal_test --quiet    # quiet (default for `make test`)
-./build-test/signal_test --shard=0/4   # one of 4 parallel shards
+scripts/run_signal_test.sh ./build-test/signal_test
+scripts/run_signal_test.sh ./build-test/signal_test --quiet
+scripts/run_signal_test.sh ./build-test/signal_test --shard=0/4
 ```
+
+The launcher is required for direct Linux test runs because legacy world
+fixtures need a 64 MiB stack. The Make test targets already use it.
 
 ## Architecture
 

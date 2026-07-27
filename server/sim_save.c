@@ -78,7 +78,10 @@
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 76  /* v76: cargo pods persist their named tow hardpoint.
+#define SAVE_VERSION 77  /* v77: stations persist a bounded, versioned public
+                          * authority lifecycle/trust registry. Private station
+                          * keys remain memory-only.
+                          * v76: cargo pods persist their named tow hardpoint.
                           * v75: station finished-goods residue is persisted
                           * separately; whole stock exists only in manifests.
                           * v74: cargo pods persist their active module tractor
@@ -586,6 +589,22 @@ static bool write_station_session(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->faction_allegiance);
     WRITE_FIELD(f, s->faction_ideology);
     WRITE_FIELD(f, s->faction_relations);
+    /*
+     * v77: fixed-width public station-authority lifecycle and trust history.
+     * Validation makes the persisted representation canonical. The
+     * station_secret field remains deliberately absent.
+     */
+    if (!station_authority_registry_validate(s)) return false;
+    WRITE_FIELD(f, s->authority_registry_version);
+    WRITE_FIELD(f, s->authority_registry_count);
+    WRITE_FIELD(f, s->authority_registry_pad);
+    for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+        if (fwrite(s->authority_registry[i].pubkey, 32, 1, f) != 1)
+            return false;
+        WRITE_FIELD(f, s->authority_registry[i].lifecycle);
+        WRITE_FIELD(f, s->authority_registry[i].trust);
+        WRITE_FIELD(f, s->authority_registry[i]._pad);
+    }
     /* v41: Layer C of #479 — chain log state. The actual events live in
      * side files under chain/<base58(pubkey)>.log; only the
      * continuation pointers (last full-record hash + monotonic event
@@ -795,6 +814,25 @@ static bool read_station_session(FILE *f, station_t *s) {
         memset(s->station_pubkey, 0, sizeof(s->station_pubkey));
         memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
         s->outpost_planted_tick = 0;
+    }
+    if (g_loaded_save_version >= 77) {
+        READ_FIELD(f, s->authority_registry_version);
+        READ_FIELD(f, s->authority_registry_count);
+        READ_FIELD(f, s->authority_registry_pad);
+        for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+            if (fread(s->authority_registry[i].pubkey, 32, 1, f) != 1)
+                return false;
+            READ_FIELD(f, s->authority_registry[i].lifecycle);
+            READ_FIELD(f, s->authority_registry[i].trust);
+            READ_FIELD(f, s->authority_registry[i]._pad);
+        }
+        if (!station_authority_registry_validate(s)) return false;
+    } else {
+        /*
+         * Older saves know only the saved live key. Preserve it as current,
+         * but never infer historical identities or trust.
+         */
+        station_authority_registry_init(s);
     }
     /* v41: Layer C of #479 — chain log state. v40 and earlier saves
      * don't carry the continuation pointers; treat the chain as fresh
@@ -2284,8 +2322,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
      * operator-held station authority secret plus persisted provenance.
      * The secret was never written to disk — this is what makes a save
      * leak NOT a key leak. v39 and earlier saves additionally rederive
-     * the pubkey itself (seeded indices 0/1/2 from world seed; outposts
-     * from a zero-founder placeholder, accepted v39 provenance gap).
+     * the pubkey itself (indices below SIGNAL_SEEDED_STATION_COUNT from the
+     * world seed; outposts from a zero-founder placeholder, accepted v39
+     * provenance gap).
      *
      * We rederive seeded slots unconditionally — they always exist in
      * any reachable world state — and also any outpost slot
@@ -2297,9 +2336,16 @@ static bool world_load_payload(world_t *w, FILE *f) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (i < SIGNAL_SEEDED_STATION_COUNT ||
             memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
-            bool rekeyed = station_authority_rederive_secret(&w->stations[i],
-                                                             w->belt_seed, i);
-            if (rekeyed) {
+            station_authority_rederive_result_t result =
+                station_authority_rederive_secret(&w->stations[i],
+                                                  w->belt_seed, i);
+            if (result == STATION_AUTHORITY_REDERIVE_REJECTED) {
+                SIM_LOG("[chain] station %d (%s): configured authority "
+                        "rekey rejected by lifecycle registry\n",
+                        i, w->stations[i].name);
+                return false;
+            }
+            if (result == STATION_AUTHORITY_REDERIVE_REKEYED) {
                 station_t *st = &w->stations[i];
                 st->chain_event_count = 0;
                 memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
@@ -3332,6 +3378,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     if (!sp || !w || !path) return false;
     ship_t *live_ship = sp->ship;
     entity_ref_t live_ship_ref = sp->ship_ref;
+    uint64_t live_last_signed_nonce = sp->last_signed_nonce;
     if (!live_ship) return false;
     ship_t staged_ship = {0};
     server_player_t staged = *sp;
@@ -3341,6 +3388,8 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
         ship_cleanup(staged.ship);
         return false;
     }
+    if (staged.last_signed_nonce < live_last_signed_nonce)
+        staged.last_signed_nonce = live_last_signed_nonce;
     ship_cleanup(live_ship);
     *live_ship = staged_ship;
     memset(&staged_ship, 0, sizeof(staged_ship));

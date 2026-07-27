@@ -82,10 +82,25 @@ bool cargo_receipt_verify_signature(const cargo_receipt_t *r) {
                                 r->authoring_station);
 }
 
+#if defined(SIGNAL_CARGO_RECEIPT_TESTING)
+static uint64_t g_cargo_receipt_chain_verify_walks;
+
+void cargo_receipt_test_reset_chain_verify_walks(void) {
+    g_cargo_receipt_chain_verify_walks = 0;
+}
+
+uint64_t cargo_receipt_test_chain_verify_walks(void) {
+    return g_cargo_receipt_chain_verify_walks;
+}
+#endif
+
 cargo_receipt_result_t cargo_receipt_chain_verify(
     const cargo_receipt_t *chain, size_t count,
     const uint8_t *expected_cargo_pub) {
     static const uint8_t zero32[32] = {0};
+#if defined(SIGNAL_CARGO_RECEIPT_TESTING)
+    g_cargo_receipt_chain_verify_walks++;
+#endif
     if (count == 0 || !chain) return CARGO_RECEIPT_REJECT_EMPTY;
     if (count > CARGO_RECEIPT_CHAIN_MAX_LEN)
         return CARGO_RECEIPT_REJECT_TOO_LONG;
@@ -103,6 +118,12 @@ cargo_receipt_result_t cargo_receipt_chain_verify(
         const cargo_receipt_t *r = &chain[i];
         if (memcmp(r->authoring_station, zero32, 32) == 0)
             return CARGO_RECEIPT_REJECT_ZERO_AUTHORITY;
+        if (memcmp(r->cargo_pub, zero32, 32) == 0)
+            return CARGO_RECEIPT_REJECT_ZERO_CARGO;
+        if (memcmp(r->recipient_pubkey, zero32, 32) == 0)
+            return CARGO_RECEIPT_REJECT_ZERO_RECIPIENT;
+        if (r->event_id == 0)
+            return CARGO_RECEIPT_REJECT_ZERO_EVENT_ID;
         if (expected_cargo_pub &&
             memcmp(r->cargo_pub, expected_cargo_pub, 32) != 0)
             return CARGO_RECEIPT_REJECT_CARGO_MISMATCH;
@@ -116,6 +137,152 @@ cargo_receipt_result_t cargo_receipt_chain_verify(
         }
     }
     return CARGO_RECEIPT_OK;
+}
+
+/* ---------------- Origin trust contract ---------------------------- */
+
+cargo_receipt_trust_result_t cargo_receipt_trust_verify(
+    const cargo_receipt_t *chain,
+    size_t count,
+    const uint8_t expected_cargo_pub[32],
+    const cargo_receipt_origin_proof_t *origin,
+    cargo_receipt_authority_trust_t authority_trust) {
+    cargo_receipt_trust_result_t out = {
+        .status = CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS,
+        .chain_checked = false,
+        .chain_result = CARGO_RECEIPT_REJECT_EMPTY,
+        .origin_event = origin
+            ? origin->event_type
+            : CARGO_RECEIPT_ORIGIN_EVENT_NONE,
+        .authority_lifecycle = origin
+            ? origin->authority_lifecycle
+            : CARGO_RECEIPT_AUTHORITY_LIFECYCLE_UNSPECIFIED,
+        .authority_trust = authority_trust,
+    };
+
+    if (!chain || !expected_cargo_pub) return out;
+    if ((unsigned)authority_trust >
+        (unsigned)CARGO_RECEIPT_AUTHORITY_REVOKED) {
+        return out;
+    }
+    out.chain_result = cargo_receipt_chain_verify(
+        chain, count, expected_cargo_pub);
+    out.chain_checked = true;
+    if (out.chain_result != CARGO_RECEIPT_OK) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_CHAIN;
+        return out;
+    }
+    if (!origin) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN;
+        return out;
+    }
+    if (origin->event_type != CARGO_RECEIPT_ORIGIN_EVENT_SMELT &&
+        origin->event_type != CARGO_RECEIPT_ORIGIN_EVENT_CRAFT) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE;
+        return out;
+    }
+    if (memcmp(origin->output_cargo_pub, expected_cargo_pub, 32) != 0) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO;
+        return out;
+    }
+    if (origin->output_semantics_version !=
+            CARGO_RECEIPT_ORIGIN_SEMANTICS_V1 ||
+        memcmp(origin->output_cargo.pub,
+               expected_cargo_pub, 32) != 0) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA;
+        return out;
+    }
+    if (memcmp(origin->event_hash, chain[0].prev_receipt_hash, 32) != 0) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN;
+        return out;
+    }
+    if (memcmp(origin->authority, chain[0].authoring_station, 32) != 0) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY;
+        return out;
+    }
+    if ((unsigned)origin->authority_lifecycle <
+            (unsigned)CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT ||
+        (unsigned)origin->authority_lifecycle >
+            (unsigned)CARGO_RECEIPT_AUTHORITY_LIFECYCLE_REVOKED) {
+        out.status =
+            CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE;
+        return out;
+    }
+    if (origin->authority_lifecycle ==
+        CARGO_RECEIPT_AUTHORITY_LIFECYCLE_REVOKED) {
+        out.status = CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY;
+        return out;
+    }
+
+    switch (authority_trust) {
+        case CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT:
+            if (origin->authority_lifecycle !=
+                CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT) {
+                out.status =
+                    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE;
+                break;
+            }
+            out.status = CARGO_RECEIPT_TRUST_VALID_TRUSTED;
+            break;
+        case CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED:
+            if (origin->authority_lifecycle !=
+                CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED) {
+                out.status =
+                    CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE;
+                break;
+            }
+            out.status = CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED;
+            break;
+        case CARGO_RECEIPT_AUTHORITY_UNKNOWN:
+            out.status = CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY;
+            break;
+        case CARGO_RECEIPT_AUTHORITY_UNTRUSTED:
+            out.status = CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY;
+            break;
+        case CARGO_RECEIPT_AUTHORITY_REVOKED:
+            out.status = CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY;
+            break;
+        default:
+            out.status = CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS;
+            break;
+    }
+    return out;
+}
+
+const char *cargo_receipt_trust_status_name(
+    cargo_receipt_trust_status_t status) {
+    switch (status) {
+        case CARGO_RECEIPT_TRUST_VALID_TRUSTED:
+            return "valid_trusted";
+        case CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED:
+            return "valid_trusted_rotated";
+        case CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS:
+            return "reject_bad_arguments";
+        case CARGO_RECEIPT_TRUST_REJECT_CHAIN:
+            return "reject_chain";
+        case CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN:
+            return "reject_missing_origin";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE:
+            return "reject_origin_event_type";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO:
+            return "reject_origin_cargo";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN:
+            return "reject_origin_pin";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY:
+            return "reject_origin_authority";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE:
+            return "reject_origin_authority_lifecycle";
+        case CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY:
+            return "reject_unknown_authority";
+        case CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY:
+            return "reject_untrusted_authority";
+        case CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY:
+            return "reject_revoked_authority";
+        case CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA:
+            return "reject_origin_metadata";
+        default:
+            return "unknown";
+    }
 }
 
 /* ---------------- ship_receipts_t storage --------------------------- */

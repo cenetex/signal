@@ -9,12 +9,29 @@ parsing, sanitizer runs, static analysis, and review rules.
 - Normal C targets compile with `-Wall -Wextra -Wpedantic -Werror`.
 - Linux, macOS, and Windows native builds run in GitHub Actions.
 - `make test` rebuilds and runs fast `signal_test` shards.
-- `make test-soak` runs the long-horizon sim tests.
-- `make test-san` runs `signal_test` with ASan+UBSan locally.
+- `make test-soak` runs every `RUN_SOAK` long-horizon test as a distinct
+  pull-request status and is rerun before release or deployment.
+- `make test-san` runs the non-soak suite with ASan+UBSan locally;
+  `make test-san-soak` covers every functional soak on a weekly schedule.
+- `make soak-automation` checks the exact tagged-test inventory, build and
+  registry reachability, and every required native/sanitizer workflow.
 - `make test-tsan` is available for threaded changes.
 - `make banned-apis` fails on banned libc calls in owned C source.
-- `make cppcheck`, scan-build, and clang-tidy run in CI static analysis.
+- `make cppcheck` runs in CI against owned production C source.
+- `make vendor-drift` checks and mutation-tests the Docker vendor-context
+  invariant in CI.
 - Nightly Valgrind checks run against the non-soak test suite.
+
+## Static Analysis Scope
+
+Cppcheck is the repository's blocking general-purpose static-analysis gate.
+The checked-in `.clang-tidy` file provides C11 defaults for editors and local
+experiments, with diagnostics limited to owned `client/`, `server/`, and
+`shared/` headers. Clang-tidy and scan-build are not advertised as Make or CI
+gates: their current output varies across LLVM/platform versions and the
+existing diagnostic backlog has not been baselined. Promoting either tool to a
+gate requires pinning a toolchain and making its selected checks clean; until
+then, CI documentation must not claim that it ran them.
 
 ## Banned APIs
 

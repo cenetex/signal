@@ -1,8 +1,10 @@
 ---
-# clang-tidy config for Signal Space Miner (C99)
+# clang-tidy editor configuration for Signal (C11)
 #
-# Focus on bug-finding and correctness. Skip style/naming checks
-# (the codebase has its own conventions). Skip C++ checks entirely.
+# Focus on bug-finding and correctness for owned C. Skip style/naming checks
+# and exclude third-party headers through HeaderFilterRegex. This file supports
+# local/editor analysis; docs/c_safety_policy.md records which analyzers are
+# actually blocking CI.
 
 Checks: >
   -*,
@@ -15,8 +17,7 @@ Checks: >
   misc-redundant-expression,
   misc-unused-using-decls,
 
-# Treat all enabled checks as warnings (CI uses --warnings-as-errors
-# selectively, not blanket).
+# Treat enabled checks as advisory warnings.
 WarningsAsErrors: ''
 
 CheckOptions:
@@ -24,5 +25,5 @@ CheckOptions:
   - key: readability-identifier-length.MinimumVariableNameLength
     value: '1'
 
-# Only scan project headers, not system/sokol/stb
-HeaderFilterRegex: '(shared|server|src)/.*\.h$'
+# Only report diagnostics from owned headers, not system/vendor headers.
+HeaderFilterRegex: '(client|server|shared)/.*\.h$'

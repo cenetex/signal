@@ -260,7 +260,21 @@ static bool b64_decode(const char *s, uint8_t *out, size_t out_cap, size_t *out_
  * Public API
  * ------------------------------------------------------------------ */
 
+static bool generate_identity(player_identity_t *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!signal_crypto_keypair(out->pubkey, out->secret)) {
+        /* signal_crypto_keypair already clears both arrays, but keep the
+         * aggregate guarantee here so future backends cannot leak a partial
+         * identity through this persistence boundary. */
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return true;
+}
+
 bool identity_save_to(const player_identity_t *id, const char *path) {
+    if (!id) return false;
 #if defined(__EMSCRIPTEN__)
     (void)path;
     char enc[128];
@@ -272,6 +286,7 @@ bool identity_save_to(const player_identity_t *id, const char *path) {
 }
 
 bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
+    if (!out) return false;
     memset(out, 0, sizeof(*out));
 
 #if defined(__EMSCRIPTEN__)
@@ -290,14 +305,26 @@ bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
                    SIGNAL_CRYPTO_PUBKEY_BYTES);
             return true;
         }
-        /* Corrupt — preserve as .bad before regenerating. */
+        /* Do not mutate localStorage until fresh entropy succeeds. If the
+         * CSPRNG is unavailable, leave the corrupt entry in place and return
+         * a fully cleared identity. */
+        if (!generate_identity(out)) return false;
         fprintf(stderr,
                 "[identity] localStorage entry corrupt; "
                 "moving to signal:identity.bad\n");
         signal_localstorage_rename_bad();
+        if (!identity_save_to(out, path)) {
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+        return true;
     }
-    signal_crypto_keypair(out->pubkey, out->secret);
-    return identity_save_to(out, path);
+    if (!generate_identity(out)) return false;
+    if (!identity_save_to(out, path)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return true;
 #else
     bool corrupt = false;
     uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES];
@@ -310,13 +337,26 @@ bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
         return true;
     }
     if (corrupt) {
+        /* Preserve the original bytes until secure key generation succeeds.
+         * Entropy failure must not rename, truncate, or replace identity
+         * state on disk. */
+        if (!generate_identity(out)) return false;
         fprintf(stderr,
                 "[identity] %s is not 64 bytes; moving to %s.bad\n",
                 path, path);
         rename_to_bad(path);
+        if (!write_secret_file(path, out->secret)) {
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+        return true;
     }
-    signal_crypto_keypair(out->pubkey, out->secret);
-    return write_secret_file(path, out->secret);
+    if (!generate_identity(out)) return false;
+    if (!write_secret_file(path, out->secret)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return true;
 #endif
 }
 
@@ -331,9 +371,7 @@ bool identity_load_or_generate(player_identity_t *out) {
         fprintf(stderr,
                 "[identity] could not resolve a writable identity path; "
                 "using ephemeral keypair for this session\n");
-        memset(out, 0, sizeof(*out));
-        signal_crypto_keypair(out->pubkey, out->secret);
-        return true;
+        return generate_identity(out);
     }
     return identity_load_or_generate_at(out, path);
 #endif

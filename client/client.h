@@ -446,6 +446,7 @@ typedef struct {
      * identity over the network. Later layers wire the pubkey into the
      * HELLO frame, sign inputs, and migrate save files. */
     player_identity_t identity;
+    bool identity_ready;       /* false when secure bootstrap failed closed */
     char identity_pub_b58[48];   /* base58 of pubkey, null-terminated */
     /* --- Network authority (remote WebSocket or local loopback) --- */
     bool net_authority_enabled;

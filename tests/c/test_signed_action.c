@@ -26,6 +26,7 @@
 #endif
 
 #include "protocol.h"
+#include "manifest.h"
 #include "signal_crypto.h"
 
 /* ---- helpers ----------------------------------------------------- */
@@ -73,7 +74,8 @@ static void setup_player_with_keypair(world_t *w, int slot,
     memcpy(sp->pubkey, out_pubkey, 32);
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
-    ASSERT(registry_register_pubkey(w, out_pubkey, sp->session_token));
+    sp->pubkey_challenge_consumed = true;
+    ASSERT(server_finalize_pubkey_identity(w, slot));
 }
 
 /* ---- tests ------------------------------------------------------- */
@@ -207,6 +209,111 @@ TEST(test_legacy_unsigned_dispatch_rejects_pubkey_player) {
     ASSERT(result.rejected_unsigned_action);
 }
 
+TEST(test_anonymous_legacy_named_cargo_actions_are_inert) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->id = 0;
+    fill_token(sp->session_token, 10);
+    sp->session_ready = true;
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    /* No verified pubkey: session tokens must not become cargo custody. */
+    sp->pubkey_set = false;
+    sp->pubkey_proof_ok = false;
+    sp->pubkey_challenge_consumed = false;
+    memset(sp->pubkey, 0, sizeof(sp->pubkey));
+
+    station_t *station = &w->stations[0];
+    ASSERT(station_manifest_bootstrap(station));
+    ASSERT(ship_manifest_bootstrap(sp->ship));
+    manifest_clear(&station->manifest);
+    ship_receipts_clear(station_get_receipts(station));
+    manifest_clear(&sp->ship->manifest);
+    ship_receipts_clear(ship_get_receipts(sp->ship));
+
+    cargo_unit_t named[2] = {{0}};
+    uint8_t fragment_pub[32] = {0};
+    int found = 0;
+    for (uint16_t index = 0; index < UINT16_MAX && found < 2;
+         index++) {
+        fragment_pub[0] = (uint8_t)index;
+        fragment_pub[1] = (uint8_t)(index >> 8);
+        cargo_unit_t candidate = {0};
+        ASSERT(hash_ingot(
+            COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+            fragment_pub, index, &candidate));
+        if (candidate.prefix_class ==
+            (uint8_t)INGOT_PREFIX_ANONYMOUS) {
+            continue;
+        }
+        candidate.origin_station = 0;
+        candidate.mined_block = (uint64_t)index + 1u;
+        named[found++] = candidate;
+    }
+    ASSERT_EQ_INT(found, 2);
+    ASSERT(station_manifest_push_with_chain(
+        station, &named[0], NULL));
+    ASSERT(ship_manifest_push_with_chain(
+        sp->ship, &named[1], NULL));
+    ledger_earn(station, sp->session_token, 50000.0f);
+
+    const float balance_before =
+        ledger_balance(station, sp->session_token);
+    const uint16_t station_count_before =
+        station->manifest.count;
+    const uint16_t ship_count_before =
+        sp->ship->manifest.count;
+    const uint64_t chain_count_before =
+        station->chain_event_count;
+    uint8_t chain_head_before[32];
+    memcpy(chain_head_before, station->chain_last_hash, 32);
+    cargo_unit_t station_unit_before =
+        station->manifest.units[0];
+    cargo_unit_t ship_unit_before =
+        sp->ship->manifest.units[0];
+
+    uint8_t buy_msg[33] = {NET_MSG_BUY_INGOT};
+    memcpy(&buy_msg[1], named[0].pub, 32);
+    server_legacy_cargo_dispatch_result_t dispatch = {0};
+    ASSERT(server_dispatch_legacy_buy_ingot_message(
+        w, 0, buy_msg, sizeof(buy_msg),
+        NULL, NULL, &dispatch));
+    ASSERT(!dispatch.rejected_unsigned_action);
+
+    uint8_t deliver_msg[2] = {
+        NET_MSG_DELIVER_INGOT, 0
+    };
+    ASSERT(server_dispatch_legacy_deliver_ingot_message(
+        w, 0, deliver_msg, sizeof(deliver_msg),
+        NULL, NULL, &dispatch));
+    ASSERT(!dispatch.rejected_unsigned_action);
+
+    ASSERT_EQ_INT(
+        station->manifest.count, station_count_before);
+    ASSERT_EQ_INT(
+        sp->ship->manifest.count, ship_count_before);
+    ASSERT(memcmp(&station->manifest.units[0],
+                  &station_unit_before,
+                  sizeof(station_unit_before)) == 0);
+    ASSERT(memcmp(&sp->ship->manifest.units[0],
+                  &ship_unit_before,
+                  sizeof(ship_unit_before)) == 0);
+    ASSERT_EQ_FLOAT(
+        ledger_balance(station, sp->session_token),
+        balance_before, 0.001f);
+    ASSERT_EQ_INT(
+        (int)station->chain_event_count,
+        (int)chain_count_before);
+    ASSERT(memcmp(station->chain_last_hash,
+                  chain_head_before, 32) == 0);
+}
+
 TEST(test_signed_action_invalid_signature_rejected) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -274,6 +381,43 @@ TEST(test_signed_action_out_of_order_nonce_rejected) {
     w->players[0].last_signed_nonce = 10;
     ASSERT_EQ_INT(signed_action_verify(w, 0, buf_low, nl, NULL, NULL, NULL, NULL),
                   SIGNED_ACTION_REJECT_REPLAY);
+}
+
+TEST(test_signed_action_nonce_survives_live_slot_transfer) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+    server_player_t *old = &w->players[0];
+    player_init_ship(old, w);
+    old->last_signed_nonce = 777;
+
+    server_player_t *incoming = &w->players[1];
+    incoming->connected = true;
+    incoming->id = 1;
+    fill_token(incoming->session_token, 19);
+    incoming->session_ready = true;
+    memcpy(incoming->pubkey, pk, sizeof(pk));
+    incoming->pubkey_set = true;
+    incoming->pubkey_proof_ok = true;
+    incoming->pubkey_challenge_consumed = true;
+    incoming->last_signed_nonce = 10;
+
+    ASSERT(world_player_transfer_ship_state(w, 1, 0));
+    ASSERT(incoming->last_signed_nonce == 777);
+
+    uint8_t payload[2] = {0, 0};
+    uint8_t buf[SIGNED_ACTION_HEADER_SIZE + 2 +
+                SIGNED_ACTION_SIG_SIZE];
+    int n = build_signed_action(
+        buf, sizeof(buf), 777, SIGNED_ACTION_BUY_PRODUCT,
+        payload, sizeof(payload), sk);
+    ASSERT_EQ_INT(
+        signed_action_verify(
+            w, 1, buf, n, NULL, NULL, NULL, NULL),
+        SIGNED_ACTION_REJECT_REPLAY);
 }
 
 TEST(test_signed_action_wrong_pubkey_rejected) {
@@ -364,16 +508,23 @@ TEST(test_signed_action_save_load_persists_nonce) {
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
     sp2->pubkey_proof_ok = true;
+    sp2->pubkey_challenge_consumed = true;
     ASSERT(registry_register_pubkey(w2, pk, sp2->session_token));
     /* Layer A.4 of #479: when a pubkey is registered, the save is keyed
      * by pubkey, not by session_token. */
     ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
     ASSERT(sp2->last_signed_nonce == 777);
 
+    /* Loading an older snapshot into a live authenticated slot must not
+     * roll the replay high-water mark backward. */
+    sp2->last_signed_nonce = 900;
+    ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
+    ASSERT(sp2->last_signed_nonce == 900);
+
     /* A signed action with the same nonce we already accepted is a replay. */
     uint8_t payload[2] = { 0, 0 };
     uint8_t buf[SIGNED_ACTION_HEADER_SIZE + 2 + SIGNED_ACTION_SIG_SIZE];
-    int n = build_signed_action(buf, sizeof(buf), 777,
+    int n = build_signed_action(buf, sizeof(buf), 900,
                                 SIGNED_ACTION_BUY_PRODUCT,
                                 payload, sizeof(payload), sk);
     ASSERT_EQ_INT(signed_action_verify(w2, 1, buf, n, NULL, NULL, NULL, NULL),
@@ -404,9 +555,11 @@ void register_signed_action_tests(void) {
     RUN(test_signed_action_dispatch_buy_product_payload);
     RUN(test_signed_action_dispatch_input_action_marks_station_dirty);
     RUN(test_legacy_unsigned_dispatch_rejects_pubkey_player);
+    RUN(test_anonymous_legacy_named_cargo_actions_are_inert);
     RUN(test_signed_action_invalid_signature_rejected);
     RUN(test_signed_action_replay_rejected);
     RUN(test_signed_action_out_of_order_nonce_rejected);
+    RUN(test_signed_action_nonce_survives_live_slot_transfer);
     RUN(test_signed_action_wrong_pubkey_rejected);
     RUN(test_signed_action_no_pubkey_registered_rejected);
     RUN(test_signed_action_save_load_persists_nonce);

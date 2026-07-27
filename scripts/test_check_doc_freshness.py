@@ -60,5 +60,65 @@ class CellStressFreshnessTests(unittest.TestCase):
             freshness.cell_stress_failures(self.header, changed), [])
 
 
+class ContributorGuidanceFreshnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.guidance = {
+            path: path.read_text(encoding="utf-8")
+            for path in freshness.ACTIVE_CONTRIBUTOR_GUIDANCE
+            if path.is_file()
+        }
+
+    def test_active_guidance_uses_current_layout(self) -> None:
+        self.assertEqual(
+            freshness.retired_layout_failures(self.guidance), [])
+
+    def test_retired_top_level_src_reference_is_rejected(self) -> None:
+        changed = dict(self.guidance)
+        target = freshness.ROOT / ".github" / "AGENT.md"
+        changed[target] += "\nEdit `src/hud.c` for HUD changes.\n"
+        failures = freshness.retired_layout_failures(changed)
+        self.assertTrue(any(
+            ".github/AGENT.md" in failure
+            and "retired top-level src/" in failure
+            for failure in failures
+        ), failures)
+
+    def test_nested_src_path_is_not_misclassified(self) -> None:
+        changed = dict(self.guidance)
+        target = freshness.ROOT / "ENG.md"
+        changed[target] += (
+            "\nThe Solana helper remains in "
+            "`programs/burn-to-mint/onchain-c/src/program.c`.\n"
+        )
+        self.assertEqual(
+            freshness.retired_layout_failures(changed), [])
+
+
+class NativeTestLauncherFreshnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.hooks = {
+            path: path.read_text(encoding="utf-8")
+            for path in freshness.NATIVE_TEST_HOOKS
+            if path.is_file()
+        }
+
+    def test_hooks_use_bounded_test_launcher(self) -> None:
+        self.assertEqual(
+            freshness.native_test_launcher_failures(self.hooks), [])
+
+    def test_direct_signal_test_invocation_is_rejected(self) -> None:
+        changed = dict(self.hooks)
+        target = freshness.ROOT / "scripts" / "git-hooks" / "pre-push"
+        changed[target] += "\n./build-test/signal_test --quiet\n"
+        failures = freshness.native_test_launcher_failures(changed)
+        self.assertTrue(any(
+            "scripts/git-hooks/pre-push" in failure
+            and "invokes signal_test directly" in failure
+            for failure in failures
+        ), failures)
+
+
 if __name__ == "__main__":
     unittest.main()

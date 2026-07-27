@@ -136,6 +136,64 @@ bool test_set_station_finished_amount(station_t *st, commodity_t c,
            fabsf(station_inventory_amount(st, c) - amount) < 0.001f;
 }
 
+bool test_anchor_station_legacy_cargo(world_t *w, int station_idx) {
+    return world_anchor_station_legacy_cargo_origins(w, station_idx);
+}
+
+bool test_anchor_pod_legacy_cargo(world_t *w, int station_idx, int pod_idx) {
+    if (!w || station_idx < 0 ||
+        station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return false;
+    }
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    size_t count = 0;
+    if (pod->has_shell_frame &&
+        pod->shell_frame.recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+        count++;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (pod->manifest_units[i].recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+            count++;
+        }
+    }
+    if (count == 0) return true;
+    cargo_unit_t **units = calloc(count, sizeof(*units));
+    if (!units) return false;
+    size_t at = 0;
+    if (pod->has_shell_frame &&
+        pod->shell_frame.recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+        units[at++] = &pod->shell_frame;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (pod->manifest_units[i].recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+            units[at++] = &pod->manifest_units[i];
+        }
+    }
+    bool anchored = at == count &&
+        world_anchor_legacy_cargo_origins(
+            w, station_idx, units, count);
+    free(units);
+    return anchored;
+}
+
+bool test_anchor_legacy_cargo_unit(
+    world_t *w, int station_idx, cargo_unit_t *unit) {
+    if (!unit) return false;
+    cargo_unit_t *units[] = {unit};
+    return world_anchor_legacy_cargo_origins(
+        w, station_idx, units, 1);
+}
+
 void test_clear_knowledge(knowledge_view_t *view, uint8_t capacity) {
     if (!view) return;
     memset(view, 0, sizeof(*view));

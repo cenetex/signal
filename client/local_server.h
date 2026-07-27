@@ -29,7 +29,10 @@ void local_server_init(local_server_t *ls, uint32_t seed);
 /* Attach the in-process server to net.c's loopback transport and drive it
  * through the same client networking path used by multiplayer. */
 void local_server_attach_loopback(local_server_t *ls);
-void local_server_send_initial_snapshot(local_server_t *ls, int player_slot);
+/* Issue and complete the one-time pubkey challenge before sending world
+ * state. Returns false and disables the loopback authority if authentication
+ * cannot be established. */
+bool local_server_send_initial_snapshot(local_server_t *ls, int player_slot);
 void local_server_step_loopback(local_server_t *ls, int player_slot, float dt);
 
 #endif /* LOCAL_SERVER_H */

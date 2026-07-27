@@ -143,6 +143,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     memcpy(sp->pubkey, pk, 32);
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
     sp->last_signed_nonce = 12345;
     /* Stamp something on the ship so we know we loaded the right file. */
     sp->ship->cargo[COMMODITY_FERRITE_ORE] = 7.0f;
@@ -166,6 +167,7 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
     sp2->pubkey_proof_ok = true;
+    sp2->pubkey_challenge_consumed = true;
     ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
     ASSERT_EQ_FLOAT(sp2->ship->cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.001f);
     ASSERT(sp2->last_signed_nonce == 12345);
@@ -287,23 +289,33 @@ TEST(test_save_legacy_claim_bad_signature_rejected) {
     ASSERT(!signal_crypto_verify(real_sig, msg, dlen + tlen, pk));
 }
 
-TEST(test_pubkey_proof_is_session_bound) {
+TEST(test_pubkey_proof_is_session_and_challenge_bound) {
     uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
-    signal_crypto_keypair(pk, sk);
+    ASSERT(signal_crypto_keypair(pk, sk));
 
     uint8_t token[8];
     uint8_t other_token[8];
+    uint8_t challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
+    uint8_t other_challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
     fill_token(token, 14);
     fill_token(other_token, 15);
+    for (int i = 0; i < PUBKEY_PROOF_CHALLENGE_SIZE; i++) {
+        challenge[i] = (uint8_t)(0x40 + i);
+        other_challenge[i] = (uint8_t)(0x90 + i);
+    }
 
     uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
-    ASSERT(pubkey_proof_sign(sig, pk, sk, token));
-    ASSERT(pubkey_proof_verify(pk, token, sig));
-    ASSERT(!pubkey_proof_verify(pk, other_token, sig));
+    ASSERT(pubkey_proof_sign(sig, pk, sk, token, challenge));
+    ASSERT(pubkey_proof_verify(pk, token, challenge, sig));
+    ASSERT(!pubkey_proof_verify(
+        pk, other_token, challenge, sig));
+    ASSERT(!pubkey_proof_verify(
+        pk, token, other_challenge, sig));
 
     uint8_t other_pk[32], other_sk[SIGNAL_CRYPTO_SECRET_BYTES];
-    signal_crypto_keypair(other_pk, other_sk);
-    ASSERT(!pubkey_proof_verify(other_pk, token, sig));
+    ASSERT(signal_crypto_keypair(other_pk, other_sk));
+    ASSERT(!pubkey_proof_verify(
+        other_pk, token, challenge, sig));
 }
 
 TEST(test_pubkey_persistence_gate_requires_verified_proof) {
@@ -328,6 +340,8 @@ TEST(test_pubkey_persistence_gate_requires_verified_proof) {
     ASSERT(strstr(path, "/legacy/") != NULL);
 
     sp.pubkey_proof_ok = true;
+    ASSERT(!server_player_can_use_pubkey_persistence(&sp));
+    sp.pubkey_challenge_consumed = true;
     ASSERT(server_player_can_use_pubkey_persistence(&sp));
     ASSERT(player_save_path(path, sizeof(path), TMP("a4_gate"), &sp, 7));
     ASSERT(strstr(path, "/pubkey/") != NULL);
@@ -498,7 +512,7 @@ void register_save_keyed_by_pubkey_tests(void) {
     RUN(test_save_legacy_claim_audit_logs_success_and_failure);
     RUN(test_save_legacy_claim_audit_rejects_unsafe_names);
     RUN(test_save_legacy_claim_bad_signature_rejected);
-    RUN(test_pubkey_proof_is_session_bound);
+    RUN(test_pubkey_proof_is_session_and_challenge_bound);
     RUN(test_pubkey_persistence_gate_requires_verified_proof);
     RUN(test_save_legacy_claim_wrong_pubkey_first_claim_wins);
     RUN(test_save_legacy_claim_race_second_loses);

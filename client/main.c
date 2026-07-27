@@ -275,7 +275,11 @@ static bool start_local_loopback_authority(const NetCallbacks *cbs) {
     if (!net_init_loopback(cbs, 0))
         return false;
     reset_remote_dynamic_sync();
-    local_server_send_initial_snapshot(&g.local_server, g.local_player_slot);
+    if (!local_server_send_initial_snapshot(
+            &g.local_server, g.local_player_slot)) {
+        net_shutdown();
+        return false;
+    }
     sync_local_player_slot_from_network();
     return true;
 }
@@ -1738,11 +1742,18 @@ static void init(void) {
     /* Load (or first-run-generate) the persistent Ed25519 player identity.
      * Layer A.1 of #479 — purely client-side for now: no network or save
      * coupling, just persistence + HUD display. */
-    if (identity_load_or_generate(&g.identity)) {
+    g.identity_ready = identity_load_or_generate(&g.identity);
+    if (g.identity_ready) {
         base58_encode(g.identity.pubkey,
                       SIGNAL_CRYPTO_PUBKEY_BYTES,
                       g.identity_pub_b58,
                       sizeof(g.identity_pub_b58));
+    } else {
+        memset(&g.identity, 0, sizeof(g.identity));
+        g.identity_pub_b58[0] = '\0';
+        fprintf(stderr,
+                "[identity] secure bootstrap unavailable; "
+                "network authentication disabled\n");
     }
 
     onboarding_load();
@@ -1777,8 +1788,10 @@ static void init(void) {
         {
             NetCallbacks cbs;
             configure_net_callbacks(&cbs);
-            net_set_identity_pubkey(g.identity.pubkey);
-            net_set_identity_secret(g.identity.secret);
+            net_set_identity_pubkey(
+                g.identity_ready ? g.identity.pubkey : NULL);
+            net_set_identity_secret(
+                g.identity_ready ? g.identity.secret : NULL);
             if (server_url && server_url[0] != '\0') {
                 g.net_authority_enabled = net_init(server_url, &cbs);
                 if (g.net_authority_enabled) {
@@ -5003,6 +5016,14 @@ int signal_debug_held_control_mask(void) {
     if (is_key_down(SAPP_KEYCODE_LEFT_SHIFT) || is_key_down(SAPP_KEYCODE_RIGHT_SHIFT))
         mask |= 1 << 6;
     return mask;
+}
+
+int signal_debug_identity_available(void) {
+    return g.identity_ready ? 1 : 0;
+}
+
+int signal_debug_auth_available(void) {
+    return (g.identity_ready && g.net_authority_enabled) ? 1 : 0;
 }
 #endif
 

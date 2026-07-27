@@ -1,6 +1,8 @@
 #include "test_harness.h"
 #include "sim_physics.h"
 #include "cargo_receipt_issue.h"
+#include "cargo_receipt_trust.h"
+#include "chain_log.h"
 #include "faction.h"
 #include <stddef.h>
 
@@ -21,6 +23,37 @@ static bool test_issue_station_receipt(station_t *st, const uint8_t cargo_pub[32
     out_chain->len = 1;
     return cargo_receipt_chain_verify(out_chain->links, out_chain->len,
                                       cargo_pub) == CARGO_RECEIPT_OK;
+}
+
+static bool test_issue_verified_station_smelt_receipt(
+    world_t *w, station_t *st, const cargo_unit_t *unit,
+    uint16_t output_index,
+    cargo_receipt_chain_t *out_chain) {
+    if (!w || !st || !unit || !out_chain) return false;
+    memset(out_chain, 0, sizeof(*out_chain));
+
+    chain_payload_smelt_t smelt = {0};
+    if (!chain_payload_smelt_bind_output(
+            &smelt, unit->parent_merkle, output_index, unit)) {
+        return false;
+    }
+    if (chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                       &smelt, (uint16_t)sizeof(smelt)) == 0) {
+        return false;
+    }
+
+    cargo_receipt_chain_t empty_chain = {0};
+    cargo_receipt_t receipt = {0};
+    if (cargo_receipt_emit_transfer(
+            w, st, st->station_pubkey, st->station_pubkey,
+            unit, &empty_chain, &receipt) == 0) {
+        return false;
+    }
+    out_chain->links[0] = receipt;
+    out_chain->len = 1;
+    return cargo_receipt_chain_verify(
+               out_chain->links, out_chain->len, unit->pub) ==
+           CARGO_RECEIPT_OK;
 }
 
 static int test_find_exact_pod(const world_t *w, commodity_t c) {
@@ -592,6 +625,42 @@ TEST(test_world_save_load_preserves_fracture_children) {
     remove(TMP("test_fracture_children.sav"));
 }
 
+TEST(test_asteroid_pair_plan_save_load_phase_continuity) {
+    WORLD_HEAP original = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(original != NULL);
+    ASSERT(loaded != NULL);
+    world_reset(original);
+
+    /* world.tick is reconstructed from persisted time. Pick the final
+     * 120 Hz tick of a four-tick pair epoch, then prove load and the next
+     * tick retain the same phase transition. */
+    original->tick = 39;
+    original->time = (float)original->tick * SIM_DT;
+    spatial_grid_build(original);
+    asteroid_pair_plan_t before;
+    ASSERT(asteroid_pair_plan_build(original, &before));
+    ASSERT_EQ_INT(before.epoch, 9);
+
+    ASSERT(world_save(
+        original, TMP("test_asteroid_pair_phase.sav")));
+    ASSERT(world_load(
+        loaded, TMP("test_asteroid_pair_phase.sav")));
+    ASSERT_EQ_INT(loaded->tick, original->tick);
+    spatial_grid_build(loaded);
+    asteroid_pair_plan_t after_load;
+    ASSERT(asteroid_pair_plan_build(loaded, &after_load));
+    ASSERT_EQ_INT(after_load.epoch, before.epoch);
+
+    loaded->tick++;
+    loaded->time += SIM_DT;
+    spatial_grid_build(loaded);
+    asteroid_pair_plan_t next_epoch;
+    ASSERT(asteroid_pair_plan_build(loaded, &next_epoch));
+    ASSERT_EQ_INT(next_epoch.epoch, before.epoch + 1u);
+    remove(TMP("test_asteroid_pair_phase.sav"));
+}
+
 TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
@@ -1032,6 +1101,61 @@ TEST(test_world_save_round_trips_station_manifest) {
                                       loaded_receipts->chains[0].len,
                                       unit.pub) == CARGO_RECEIPT_OK);
     remove(TMP("test_manifest_roundtrip.sav"));
+}
+
+TEST(test_validated_world_load_anchors_legacy_station_cargo_once) {
+    WORLD_DECL;
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(&w);
+    world_reset(loaded);
+
+    station_t *kepler = &w.stations[1];
+    const uint8_t origin[8] =
+        {'O','L','D','S','A','V','E','1'};
+    int before = kepler->manifest.count;
+    ASSERT_EQ_INT(station_finished_mint(
+                      kepler, COMMODITY_FRAME, 1, origin),
+                  1);
+    ASSERT_EQ_INT(kepler->manifest.count, before + 1);
+    cargo_unit_t expected = kepler->manifest.units[before];
+    ASSERT_EQ_INT(expected.recipe_id, RECIPE_LEGACY_MIGRATE);
+    ASSERT_EQ_INT(expected.origin_station, 0);
+
+    ASSERT(world_save(&w, TMP("test_legacy_origin_migration.sav")));
+    ASSERT(world_load(loaded, TMP("test_legacy_origin_migration.sav")));
+    station_t *loaded_kepler = &loaded->stations[1];
+    int loaded_idx = manifest_find(
+        &loaded_kepler->manifest, expected.pub);
+    ASSERT(loaded_idx >= 0);
+    ASSERT_EQ_INT(
+        loaded_kepler->manifest.units[loaded_idx].origin_station, 0);
+
+    /*
+     * This models the dedicated-server boundary immediately after
+     * world_load has validated the save CRC and reconciled chain tails.
+     * The operator-owned legacy row is attested once; normal gameplay
+     * still rejects any missing origin outside this boundary.
+     */
+    ASSERT(world_anchor_validated_legacy_cargo_origins(loaded));
+    loaded_idx = manifest_find(
+        &loaded_kepler->manifest, expected.pub);
+    ASSERT(loaded_idx >= 0);
+    cargo_unit_t *migrated =
+        &loaded_kepler->manifest.units[loaded_idx];
+    ASSERT_EQ_INT(migrated->origin_station, 1);
+    uint64_t anchored_count = loaded_kepler->chain_event_count;
+    ASSERT(anchored_count > 0);
+
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            loaded, 1, migrated, NULL);
+    ASSERT(evaluated.accepted);
+    ASSERT(evaluated.local_origin_without_receipt);
+
+    ASSERT(world_anchor_validated_legacy_cargo_origins(loaded));
+    ASSERT(loaded_kepler->chain_event_count == anchored_count);
+    remove(TMP("test_legacy_origin_migration.sav"));
 }
 
 TEST(test_world_load_ignores_cache_only_station_finished_goods) {
@@ -1513,6 +1637,7 @@ TEST(test_world_save_load_preserves_smelted_ingot_pod) {
     a->vel = v2(0.0f, 0.0f);
 
     ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
     for (int i = 0; i < (int)(10.0f / SIM_DT) && w->asteroids[frag].active; i++)
         world_sim_step(w, SIM_DT);
     ASSERT(!w->asteroids[frag].active);
@@ -1601,8 +1726,8 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
         fragment_pub[31] = (uint8_t)(0x60 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        ASSERT(test_issue_station_receipt(home, units[i].pub,
-                                          (uint64_t)(900 + i), &chains[i]));
+        ASSERT(test_issue_verified_station_smelt_receipt(
+            w, home, &units[i], (uint16_t)i, &chains[i]));
         ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }
     memset(w->contracts, 0, sizeof(w->contracts));
@@ -1630,13 +1755,17 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
 
     step_npc_ships(w, SIM_DT);
 
+    hauler_receipts = ship_get_receipts(hauler_ship);
+    ASSERT(hauler_receipts != NULL);
     ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
     ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
     ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&hauler_ship->manifest, units[1].pub) >= 0);
     ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 2);
-    ASSERT_EQ_INT((int)hauler_receipts->chains[0].links[0].event_id, 900);
+    ASSERT_EQ_INT(
+        (int)hauler_receipts->chains[0].links[0].event_id,
+        (int)chains[0].links[0].event_id);
     ASSERT(hauler_receipts->chains[0].links[1].event_id != 0);
     ASSERT(memcmp(hauler_receipts->chains[0].links[1].authoring_station,
                   home->station_pubkey, 32) == 0);
@@ -1659,7 +1788,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT_EQ_INT(loaded_ship->manifest.count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)loaded_receipts->count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 2);
-    ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].event_id, 900);
+    ASSERT_EQ_INT(
+        (int)loaded_receipts->chains[0].links[0].event_id,
+        (int)chains[0].links[0].event_id);
     ASSERT(loaded_receipts->chains[0].links[1].event_id != 0);
     ASSERT(memcmp(loaded_receipts->chains[0].links[1].authoring_station,
                   loaded->stations[0].station_pubkey, 32) == 0);
@@ -1707,7 +1838,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(d0 >= 0);
     ASSERT(d1 >= 0);
     ASSERT((int)dest_receipts->chains[d0].len >= 2);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d0].links[0].event_id, 900);
+    ASSERT_EQ_INT(
+        (int)dest_receipts->chains[d0].links[0].event_id,
+        (int)chains[0].links[0].event_id);
     ASSERT(memcmp(dest_receipts->chains[d0].links[1].authoring_station,
                   loaded->stations[0].station_pubkey, 32) == 0);
     if (dest_receipts->chains[d0].len >= 3) {
@@ -1715,7 +1848,9 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
                       loaded->stations[1].station_pubkey, 32) == 0);
     }
     ASSERT((int)dest_receipts->chains[d1].len >= 2);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d1].links[0].event_id, 901);
+    ASSERT_EQ_INT(
+        (int)dest_receipts->chains[d1].links[0].event_id,
+        (int)chains[1].links[0].event_id);
     ASSERT(memcmp(dest_receipts->chains[d1].links[1].authoring_station,
                   loaded->stations[0].station_pubkey, 32) == 0);
     if (dest_receipts->chains[d1].len >= 3) {
@@ -2053,8 +2188,10 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * tractor_module; two starter pods add four bytes.
              * v75: 64 station residue arrays add 5,120 bytes.
              * v76: each active pod persists its named tow hardpoint; two
-             * starter pods add two bytes. */
-			#define EXPECTED_SAVE_SIZE 772770
+             * starter pods add two bytes.
+             * v77: +296 bytes per station for the fixed public authority
+             * registry, across MAX_STATIONS=128. */
+			#define EXPECTED_SAVE_SIZE 810658
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2091,7 +2228,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 76);
+    ASSERT_EQ_INT((int)version, 77);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -2286,6 +2423,7 @@ void register_save_persistence_tests(void) {
     RUN(test_npc_ship_physics_in_sync_each_tick);
     RUN(test_world_load_rebuilds_character_pool);
     RUN(test_world_save_load_preserves_fracture_children);
+    RUN(test_asteroid_pair_plan_save_load_phase_continuity);
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
@@ -2296,6 +2434,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_repairs_stale_npc_ship_asset_binding);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
+    RUN(test_validated_world_load_anchors_legacy_station_cargo_once);
     RUN(test_world_load_ignores_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_round_trips_ship_manifest);

@@ -1,15 +1,17 @@
-name: Release Binaries
+name: Stage Release Artifacts
 
 on:
-  release:
-    types: [published]
+  # A tag build creates or updates a draft release only after every artifact
+  # succeeds. Publishing the populated draft remains an explicit review step.
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       release_ref:
-        description: 'Tag/ref to build and attach to an existing release'
-        required: false
+        description: 'Existing tag to build and stage as a draft release'
+        required: true
         type: string
-        default: ''
 
 permissions:
   contents: write
@@ -33,8 +35,9 @@ jobs:
         run: |
           make build-server
           make test
+          make test-soak
           make test-san
-          make banned-apis deterministic-libm
+          make banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
           make cppcheck
 
   build-native:
@@ -73,17 +76,20 @@ jobs:
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
           mkdir -p dist
           cp build/${{ matrix.artifact }} dist/
-          cd dist && tar czf ../signal-${{ matrix.name }}.tar.gz *
+          cd dist
+          tar czf ../signal-${{ matrix.name }}.tar.gz ./*
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir dist
-          copy build\Release\${{ matrix.artifact }} dist\
-          cd dist && Compress-Archive -Path * -DestinationPath ..\signal-${{ matrix.name }}.zip
+          New-Item -ItemType Directory -Path dist
+          Copy-Item "build\Release\${{ matrix.artifact }}" -Destination dist
+          Compress-Archive -Path "dist\*" -DestinationPath "signal-${{ matrix.name }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -113,7 +119,8 @@ jobs:
         run: |
           mkdir -p dist
           cp build/signal_server dist/
-          cd dist && tar czf ../signal_server-linux-x64.tar.gz *
+          cd dist
+          tar czf ../signal_server-linux-x64.tar.gz ./*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -121,20 +128,88 @@ jobs:
           name: signal_server-linux-x64
           path: signal_server-linux-x64.tar.gz
 
-  attach-to-release:
-    needs: [build-native, build-server]
+  build-web:
+    needs: verify
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || inputs.release_ref != ''
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
+
+      - name: Build release WebAssembly client
+        env:
+          RELEASE_REF: ${{ inputs.release_ref || github.ref_name }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GIT_HASH="$RELEASE_REF" \
+            emscripten/emsdk:4.0.15 \
+            bash -lc '
+              emcmake cmake -S . -B build-web \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DGIT_HASH="$GIT_HASH"
+              emmake cmake --build build-web --target signal --parallel
+            '
+          python3 scripts/check_deterministic_build_flags.py \
+            build-web/compile_commands.json
+
+      - name: Run Chromium smoke on release WASM
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+          npm run smoke
+
+      - name: Package
+        run: |
+          tar czf signal-web.tar.gz -C build-web \
+            signal.js signal.wasm play.html signal-touch-controls.js
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: signal-web
+          path: signal-web.tar.gz
+
+  stage-draft-release:
+    needs: [build-native, build-server, build-web]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_ref != ''
     steps:
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
-      - name: Upload release assets
+      - name: Create or verify unpublished draft
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_ref || github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_ref || github.ref_name }}
         run: |
-          for f in artifacts/**/*; do
-            [ -f "$f" ] && gh release upload "$RELEASE_TAG" "$f" --repo "${{ github.repository }}" --clobber
-          done
+          set -euo pipefail
+          if state=$(gh release view "$RELEASE_TAG" \
+              --repo "${{ github.repository }}" \
+              --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$state" != "true" ]]; then
+              echo "::error::Release $RELEASE_TAG is already published; refusing post-publication artifact staging"
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "${{ github.repository }}" \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              --title "$RELEASE_TAG"
+          fi
+
+      - name: Upload assets to unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r artifact; do
+            gh release upload "$RELEASE_TAG" "$artifact" \
+              --repo "${{ github.repository }}" \
+              --clobber
+          done < <(find artifacts -type f -print | sort)

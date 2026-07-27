@@ -14,8 +14,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#include <process.h>
+#define SR_GETPID() ((unsigned long)_getpid())
+#define SR_MKDIR(path) _mkdir(path)
+#define SR_RMDIR(path) _rmdir(path)
+#else
+#include <unistd.h>
+#define SR_GETPID() ((unsigned long)getpid())
+#define SR_MKDIR(path) mkdir((path), 0700)
+#define SR_RMDIR(path) rmdir(path)
+#endif
 
 #include "chain_log.h"
+#include "cargo_receipt.h"
+#include "cargo_receipt_issue.h"
 #include "fixpoint.h"
 #include "game_sim.h"
 #include "gossip.h"
@@ -50,6 +66,7 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_WORKER_REPAIR_HNN,
     SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN,
     SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER,
+    SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS,
 } sr_provenance_script_t;
 
 typedef struct {
@@ -209,6 +226,23 @@ typedef struct {
 } sr_hnn_eval_t;
 
 typedef struct {
+    cargo_receipt_trust_status_t trusted_smelt;
+    cargo_receipt_trust_status_t trusted_craft;
+    cargo_receipt_trust_status_t trusted_rotated;
+    cargo_receipt_trust_status_t bad_arguments;
+    cargo_receipt_trust_status_t broken_chain;
+    cargo_receipt_trust_status_t missing_origin;
+    cargo_receipt_trust_status_t wrong_event_type;
+    cargo_receipt_trust_status_t wrong_cargo;
+    cargo_receipt_trust_status_t wrong_origin_pin;
+    cargo_receipt_trust_status_t wrong_origin_authority;
+    cargo_receipt_trust_status_t wrong_origin_authority_lifecycle;
+    cargo_receipt_trust_status_t unknown_authority;
+    cargo_receipt_trust_status_t untrusted_authority;
+    cargo_receipt_trust_status_t revoked_authority;
+} sr_receipt_trust_eval_t;
+
+typedef struct {
     bool ok;
     int candidate;
     int prefix_ticks;
@@ -236,6 +270,7 @@ typedef struct {
     sr_event_counts_t events;
     sr_ai_summary_t ai;
     sr_hnn_eval_t hnn;
+    sr_receipt_trust_eval_t receipt_trust;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
     uint8_t event_hash[32];
@@ -256,6 +291,134 @@ static const sr_action_def_t SR_ACTIONS[SR_ACTION_COUNT] = {
     { 1, -1, "SD"},
 };
 
+static bool sr_receipt_trust_known_vector(
+    const world_t *w,
+    int station_index,
+    sr_receipt_trust_eval_t *out) {
+    if (!w || !out || station_index < 0 || station_index >= MAX_STATIONS)
+        return false;
+
+    uint8_t cargo_pub[32];
+    uint8_t recipient_pub[32];
+    uint8_t origin_hash[32];
+    for (int i = 0; i < 32; i++) {
+        cargo_pub[i] = (uint8_t)(0x31 + i);
+        recipient_pub[i] = (uint8_t)(0x61 + i);
+        origin_hash[i] = (uint8_t)(0x91 + i);
+    }
+
+    const station_t *station = &w->stations[station_index];
+    cargo_receipt_t receipt;
+    if (!cargo_receipt_issue(station, 7u, 11u, cargo_pub, recipient_pub,
+                             origin_hash, &receipt)) {
+        return false;
+    }
+
+    cargo_receipt_origin_proof_t valid = {
+        .event_type = CARGO_RECEIPT_ORIGIN_EVENT_SMELT,
+        .authority_lifecycle =
+            CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT,
+        .event_id = 11u,
+        .epoch = 7u,
+        .output_semantics_version =
+            CARGO_RECEIPT_ORIGIN_SEMANTICS_V1,
+    };
+    memcpy(valid.event_hash, origin_hash, sizeof(valid.event_hash));
+    memcpy(valid.output_cargo_pub, cargo_pub, sizeof(valid.output_cargo_pub));
+    memcpy(valid.output_cargo.pub, cargo_pub,
+           sizeof(valid.output_cargo.pub));
+    memcpy(valid.authority, station->station_pubkey, sizeof(valid.authority));
+
+    memset(out, 0, sizeof(*out));
+    out->trusted_smelt = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &valid,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+
+    cargo_receipt_origin_proof_t variant = valid;
+    variant.event_type = CARGO_RECEIPT_ORIGIN_EVENT_CRAFT;
+    out->trusted_craft = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
+    variant.authority_lifecycle =
+        CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED;
+    out->trusted_rotated = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED).status;
+    out->bad_arguments = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &valid,
+        (cargo_receipt_authority_trust_t)99).status;
+
+    cargo_receipt_t tampered = receipt;
+    tampered.signature[0] ^= 0x01u;
+    out->broken_chain = cargo_receipt_trust_verify(
+        &tampered, 1, cargo_pub, &valid,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    out->missing_origin = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, NULL,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+
+    variant = valid;
+    variant.event_type = CARGO_RECEIPT_ORIGIN_EVENT_NONE;
+    out->wrong_event_type = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
+    variant.output_cargo_pub[0] ^= 0x80u;
+    out->wrong_cargo = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
+    variant.event_hash[1] ^= 0x40u;
+    out->wrong_origin_pin = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
+    variant.authority[2] ^= 0x20u;
+    out->wrong_origin_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
+    variant.authority_lifecycle =
+        CARGO_RECEIPT_AUTHORITY_LIFECYCLE_UNSPECIFIED;
+    out->wrong_origin_authority_lifecycle = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    out->unknown_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &valid,
+        CARGO_RECEIPT_AUTHORITY_UNKNOWN).status;
+    out->untrusted_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &valid,
+        CARGO_RECEIPT_AUTHORITY_UNTRUSTED).status;
+    out->revoked_authority = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &valid,
+        CARGO_RECEIPT_AUTHORITY_REVOKED).status;
+
+    return out->trusted_smelt == CARGO_RECEIPT_TRUST_VALID_TRUSTED &&
+           out->trusted_craft == CARGO_RECEIPT_TRUST_VALID_TRUSTED &&
+           out->trusted_rotated ==
+               CARGO_RECEIPT_TRUST_VALID_TRUSTED_ROTATED &&
+           out->bad_arguments ==
+               CARGO_RECEIPT_TRUST_REJECT_BAD_ARGUMENTS &&
+           out->broken_chain == CARGO_RECEIPT_TRUST_REJECT_CHAIN &&
+           out->missing_origin ==
+               CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN &&
+           out->wrong_event_type ==
+               CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE &&
+           out->wrong_cargo == CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO &&
+           out->wrong_origin_pin == CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN &&
+           out->wrong_origin_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY &&
+           out->wrong_origin_authority_lifecycle ==
+               CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY_LIFECYCLE &&
+           out->unknown_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_UNKNOWN_AUTHORITY &&
+           out->untrusted_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_UNTRUSTED_AUTHORITY &&
+           out->revoked_authority ==
+               CARGO_RECEIPT_TRUST_REJECT_REVOKED_AUTHORITY;
+}
+
 static void sr_usage(FILE *fp)
 {
     fprintf(fp,
@@ -275,7 +438,7 @@ static void sr_usage(FILE *fp)
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
-            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier\n"
+            "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier,dense-asteroids\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --help               show this help\n"
             "\n"
@@ -460,12 +623,18 @@ static bool sr_parse_provenance_script(const char *text,
         *out = SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER;
         return true;
     }
+    if (strcmp(text, "dense-asteroids") == 0) {
+        *out = SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS;
+        return true;
+    }
     return false;
 }
 
 static const char *sr_provenance_script_name(sr_provenance_script_t script)
 {
     switch (script) {
+    case SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS:
+        return "dense-asteroids";
     case SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER:
         return "worker-gossip-courier";
     case SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN:
@@ -815,6 +984,91 @@ static void sr_reset_worker_fixture_state(world_t *w)
     w->frontier_virtual_pilots = 0;
 }
 
+typedef struct {
+    bool active;
+    char dir[256];
+} sr_chain_fixture_t;
+
+static uint32_t sr_chain_fixture_nonce;
+
+/*
+ * Exact cargo-origin verification intentionally reads the signed durable
+ * station history. Most replay scenarios keep chain I/O disabled, but the
+ * delivery-proof scenario specifically exercises that trust boundary. Give
+ * each branch an isolated temporary chain root so its fixture uses the same
+ * resolver as production without sharing history across candidates or runs.
+ */
+static bool sr_chain_fixture_begin(const sr_config_t *config,
+                                   sr_chain_fixture_t *fixture)
+{
+    if (!config || !fixture) return false;
+    memset(fixture, 0, sizeof(*fixture));
+    if (config->provenance_script !=
+        SR_PROVENANCE_SCRIPT_WORKER_DELIVERY_PROOF_HNN) {
+        return true;
+    }
+
+#if defined(_WIN32)
+    const char *tmp_root = getenv("TEMP");
+    if (!tmp_root || tmp_root[0] == '\0') tmp_root = getenv("TMP");
+    if (!tmp_root || tmp_root[0] == '\0') tmp_root = ".";
+#else
+    const char *tmp_root = getenv("TMPDIR");
+    if (!tmp_root || tmp_root[0] == '\0') tmp_root = "/tmp";
+#endif
+
+    for (int attempt = 0; attempt < 1024; attempt++) {
+        uint32_t nonce = ++sr_chain_fixture_nonce;
+        if (nonce == 0) nonce = ++sr_chain_fixture_nonce;
+        int written = snprintf(
+            fixture->dir, sizeof(fixture->dir),
+            "%s/signal-replay-chain-%lu-%" PRIu32,
+            tmp_root, SR_GETPID(), nonce);
+        /* Leave room for "/<base58 station pubkey>.log". */
+        if (written <= 0 || written > 190) return false;
+
+        if (SR_MKDIR(fixture->dir) != 0) {
+            if (errno == EEXIST) continue;
+            return false;
+        }
+
+        cargo_receipt_origin_cache_reset();
+        chain_log_set_dir(fixture->dir);
+        chain_log_set_disk_enabled(true);
+        fixture->active = true;
+        return true;
+    }
+    return false;
+}
+
+static void sr_chain_fixture_end(sr_chain_fixture_t *fixture,
+                                 const world_t *w)
+{
+    if (!fixture || !fixture->active) return;
+
+    cargo_receipt_origin_cache_reset();
+    if (w) {
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            const station_t *station = &w->stations[s];
+            if (!station_exists(station)) continue;
+            for (uint8_t a = 0;
+                 a < station->authority_registry_count &&
+                 a < STATION_AUTHORITY_REGISTRY_CAP; a++) {
+                char path[256];
+                if (chain_log_path_for(
+                        station->authority_registry[a].pubkey,
+                        path, sizeof(path))) {
+                    (void)remove(path);
+                }
+            }
+        }
+    }
+    (void)SR_RMDIR(fixture->dir);
+    chain_log_set_disk_enabled(false);
+    chain_log_set_dir(NULL);
+    memset(fixture, 0, sizeof(*fixture));
+}
+
 static int sr_station_remote_market_memory_items(
     const knowledge_view_t *view, int local_station);
 static int sr_station_remote_known_contracts(
@@ -828,6 +1082,57 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
     if (config->provenance_script == SR_PROVENANCE_SCRIPT_NONE) return true;
 
     switch (config->provenance_script) {
+    case SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS: {
+        enum { DENSE_ASTEROID_COUNT = 32 };
+        int cell_x = 0;
+        int cell_y = 0;
+        const station_t *station = &w->stations[sp->current_station];
+        vec2 desired = v2_add(station->pos, v2(3200.0f, 1600.0f));
+        spatial_grid_cell(
+            &w->asteroid_grid, desired, &cell_x, &cell_y);
+        vec2 cell_center = v2(
+            ((float)cell_x + 0.5f) * SPATIAL_CELL_SIZE,
+            ((float)cell_y + 0.5f) * SPATIAL_CELL_SIZE);
+
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(w->asteroid_origin, 0, sizeof(w->asteroid_origin));
+        memset(w->asteroid_generation, 0,
+               sizeof(w->asteroid_generation));
+        memset(w->asteroid_generation_live, 0,
+               sizeof(w->asteroid_generation_live));
+        for (int i = 0; i < DENSE_ASTEROID_COUNT; i++) {
+            asteroid_t *asteroid = &w->asteroids[i];
+            asteroid->active = true;
+            asteroid->tier =
+                (i % 2) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+            asteroid->pos = v2_add(
+                cell_center,
+                v2(
+                    (float)(i % 8) * 12.0f - 42.0f,
+                    (float)(i / 8) * 12.0f - 18.0f));
+            asteroid->vel = v2(
+                (float)((i % 5) - 2) * 0.35f,
+                (float)((i % 7) - 3) * 0.25f);
+            asteroid->radius = (i % 2) ? 36.0f : 30.0f;
+            asteroid->hp = 40.0f;
+            asteroid->max_hp = 40.0f;
+            asteroid->ore = 20.0f;
+            asteroid->max_ore = 20.0f;
+            asteroid->commodity = COMMODITY_FERRITE_ORE;
+            asteroid->seed = (float)i + 0.25f;
+            asteroid->spin =
+                (float)((i % 3) - 1) * 0.02f;
+            asteroid->net_dirty = true;
+            asteroid->rock_pub[0] = 0xd5;
+            asteroid->rock_pub[30] = (uint8_t)((i + 1) >> 8);
+            asteroid->rock_pub[31] = (uint8_t)(i + 1);
+        }
+        /* Keep the replay focused on the fixed dense fixture instead of
+         * materializing viewport chunks during its short horizon. */
+        w->field_spawn_timer = -3600.0f;
+        return true;
+    }
     case SR_PROVENANCE_SCRIPT_BUY_SELL: {
         const int station_index = 1; /* Kepler: seeded frame producer. */
         station_t *st;
@@ -1329,6 +1634,14 @@ static bool sr_setup_provenance_script(const sr_config_t *config,
                                          existing_dest);
         if (station_finished_mint(origin, COMMODITY_FERRITE_INGOT,
                                   2, NULL) < 2) {
+            return false;
+        }
+        cargo_unit_t *anchored_units[2] = {
+            &origin->manifest.units[origin->manifest.count - 2u],
+            &origin->manifest.units[origin->manifest.count - 1u],
+        };
+        if (!world_anchor_legacy_cargo_origins(
+                w, origin_station, anchored_units, 2)) {
             return false;
         }
 
@@ -1868,7 +2181,7 @@ static void sr_state_hash(const world_t *w,
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v5-ai-memory", 32);
+    sha256_update(&ctx, "signal-replay-state-v6-authority", 32);
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_bits(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
@@ -1897,6 +2210,18 @@ static void sr_state_hash(const world_t *w,
         sha256_update(&ctx, st->outpost_founder_pubkey,
                       sizeof(st->outpost_founder_pubkey));
         sr_hash_u64(&ctx, st->outpost_planted_tick);
+        sr_hash_u8(&ctx, st->authority_registry_version);
+        sr_hash_u8(&ctx, st->authority_registry_count);
+        sha256_update(&ctx, st->authority_registry_pad,
+                      sizeof(st->authority_registry_pad));
+        for (uint8_t a = 0; a < STATION_AUTHORITY_REGISTRY_CAP; a++) {
+            const station_authority_record_t *record =
+                &st->authority_registry[a];
+            sha256_update(&ctx, record->pubkey, sizeof(record->pubkey));
+            sr_hash_u8(&ctx, record->lifecycle);
+            sr_hash_u8(&ctx, record->trust);
+            sha256_update(&ctx, record->_pad, sizeof(record->_pad));
+        }
         sr_hash_manifest(&ctx, &st->manifest);
         sr_hash_receipts(&ctx, &st->manifest, station_get_receipts_const(st));
         for (int c = 0; c < COMMODITY_COUNT; c++) {
@@ -2203,6 +2528,15 @@ static bool sr_run_provenance_script(const sr_config_t *config,
     if (config->provenance_script == SR_PROVENANCE_SCRIPT_NONE) return true;
 
     switch (config->provenance_script) {
+    case SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS: {
+        enum { DENSE_ASTEROID_COUNT = 32 };
+        spatial_grid_build(w);
+        asteroid_pair_plan_t plan;
+        return asteroid_pair_plan_build(w, &plan) &&
+               plan.active_count == DENSE_ASTEROID_COUNT &&
+               plan.max_cell_count == DENSE_ASTEROID_COUNT &&
+               plan.candidate_pair_count == 128u;
+    }
     case SR_PROVENANCE_SCRIPT_BUY_SELL: {
         int buy_before = counts->buy_events;
         int sell_before = counts->sell_events;
@@ -3385,6 +3719,8 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     hnn_holonet_t *hnn_net_ptr = NULL;
     hnn_action_table_t *hnn_actions_ptr = NULL;
     sha256_ctx_t event_hash;
+    sr_chain_fixture_t chain_fixture = {0};
+    bool world_ready = false;
     bool ok = false;
 
     memset(out, 0, sizeof(*out));
@@ -3393,18 +3729,21 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->horizon_ticks = config->horizon_ticks;
 
     w = (world_t *)calloc(1, sizeof(*w));
-    if (!w) {
-        return false;
-    }
+    if (!w) return false;
 
     if (!sr_setup_world(config, w, &sp, &spawn, &goal)) {
-        free(w);
-        return false;
+        goto cleanup;
+    }
+    world_ready = true;
+    if (!sr_receipt_trust_known_vector(
+            w, config->station, &out->receipt_trust)) {
+        goto cleanup;
+    }
+    if (!sr_chain_fixture_begin(config, &chain_fixture)) {
+        goto cleanup;
     }
     if (!sr_setup_provenance_script(config, w, sp)) {
-        world_cleanup(w);
-        free(w);
-        return false;
+        goto cleanup;
     }
     (void)spawn;
 
@@ -3419,9 +3758,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
 
     if (!sr_replay_prefix(config, w, sp, goal, hnn_mem_ptr, hnn_net_ptr,
                           hnn_actions_ptr)) {
-        world_cleanup(w);
-        free(w);
-        return false;
+        goto cleanup;
     }
 
     out->start_station = sp->current_station;
@@ -3435,9 +3772,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     sha256_init(&event_hash);
     sha256_update(&event_hash, "signal-replay-events-v2-float-bits", 34);
     if (!sr_run_provenance_script(config, w, sp, &out->events, &event_hash)) {
-        world_cleanup(w);
-        free(w);
-        return false;
+        goto cleanup;
     }
     if (config->hnn_trace) {
         sr_hnn_evaluate_branch(w, sp, goal, candidate,
@@ -3493,7 +3828,9 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->ok = true;
     ok = true;
 
-    world_cleanup(w);
+cleanup:
+    sr_chain_fixture_end(&chain_fixture, world_ready ? w : NULL);
+    if (world_ready) world_cleanup(w);
     free(w);
     return ok;
 }
@@ -3863,6 +4200,36 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, &r->hnn);
     }
+    fprintf(out,
+            ",\"receipt_trust\":{\"schema\":\"signal.receipt_trust.v1\","
+            "\"trusted_smelt\":%d,"
+            "\"trusted_craft\":%d,"
+            "\"trusted_rotated\":%d,"
+            "\"bad_arguments\":%d,"
+            "\"broken_chain\":%d,"
+            "\"missing_origin\":%d,"
+            "\"wrong_event_type\":%d,"
+            "\"wrong_cargo\":%d,"
+            "\"wrong_origin_pin\":%d,"
+            "\"wrong_origin_authority\":%d,"
+            "\"wrong_origin_authority_lifecycle\":%d,"
+            "\"unknown_authority\":%d,"
+            "\"untrusted_authority\":%d,"
+            "\"revoked_authority\":%d}",
+            (int)r->receipt_trust.trusted_smelt,
+            (int)r->receipt_trust.trusted_craft,
+            (int)r->receipt_trust.trusted_rotated,
+            (int)r->receipt_trust.bad_arguments,
+            (int)r->receipt_trust.broken_chain,
+            (int)r->receipt_trust.missing_origin,
+            (int)r->receipt_trust.wrong_event_type,
+            (int)r->receipt_trust.wrong_cargo,
+            (int)r->receipt_trust.wrong_origin_pin,
+            (int)r->receipt_trust.wrong_origin_authority,
+            (int)r->receipt_trust.wrong_origin_authority_lifecycle,
+            (int)r->receipt_trust.unknown_authority,
+            (int)r->receipt_trust.untrusted_authority,
+            (int)r->receipt_trust.revoked_authority);
     fprintf(out, ",\"authority\":\"deterministic_seed_prefix_replay\"}\n");
 }
 

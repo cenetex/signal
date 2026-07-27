@@ -168,6 +168,7 @@ static bool finished_good_commodity(commodity_t c) {
 static bool recipe_inputs_match(const recipe_def_t *recipe,
                                 const cargo_unit_t *inputs,
                                 size_t input_count) {
+    static const uint8_t zero_pub[HASH_BYTES] = {0};
     bool matched[RECIPE_INPUT_MAX] = { false };
 
     if (!recipe || !inputs ||
@@ -178,7 +179,13 @@ static bool recipe_inputs_match(const recipe_def_t *recipe,
     for (size_t i = 0; i < input_count; i++) {
         cargo_kind_t input_kind = (cargo_kind_t)inputs[i].kind;
         commodity_t input_commodity = (commodity_t)inputs[i].commodity;
-        if (!cargo_kind_matches_commodity(input_kind, input_commodity)) return false;
+        if (!cargo_kind_matches_commodity(input_kind, input_commodity) ||
+            (unsigned)inputs[i].grade >=
+                (unsigned)MINING_GRADE_COUNT ||
+            inputs[i].quantity != 1u ||
+            memcmp(inputs[i].pub, zero_pub, HASH_BYTES) == 0) {
+            return false;
+        }
         bool found = false;
         for (size_t j = 0; j < input_count; j++) {
             if (matched[j]) continue;
@@ -192,35 +199,42 @@ static bool recipe_inputs_match(const recipe_def_t *recipe,
     return true;
 }
 
-static void hash_recipe_pub(recipe_id_t recipe_id, const uint8_t merkle_root[32],
-                            uint16_t output_index, uint8_t out_pub[32]) {
-    uint8_t buf[8 + 2 + HASH_BYTES + 2];
+static void hash_recipe_pub(recipe_id_t recipe_id,
+                            mining_grade_t output_grade,
+                            const uint8_t merkle_root[32],
+                            uint16_t output_index,
+                            uint8_t out_pub[32]) {
+    uint8_t buf[8 + 2 + 1 + HASH_BYTES + 2];
 
     memcpy(buf, MANIFEST_DOMAIN, sizeof(MANIFEST_DOMAIN));
     buf[8] = (uint8_t)((uint16_t)recipe_id);
     buf[9] = (uint8_t)((uint16_t)recipe_id >> 8);
-    memcpy(&buf[10], merkle_root, HASH_BYTES);
-    buf[42] = (uint8_t)output_index;
-    buf[43] = (uint8_t)(output_index >> 8);
+    buf[10] = (uint8_t)output_grade;
+    memcpy(&buf[11], merkle_root, HASH_BYTES);
+    buf[43] = (uint8_t)output_index;
+    buf[44] = (uint8_t)(output_index >> 8);
     sha256_bytes(buf, sizeof(buf), out_pub);
 }
 
-static bool inputs_parent_merkle(const cargo_unit_t *inputs, size_t input_count,
-                                 uint8_t out_root[32]) {
-    uint8_t *pubs = NULL;
-    bool ok;
+/*
+ * A smelt's parent fragment alone does not identify the material selected by
+ * the refinery or the grade proven by fracture resolution. Keep those traits
+ * in the ingot identity itself so two differently-labelled ingots can never
+ * share a pubkey even before the signed origin event is consulted.
+ */
+static void hash_ingot_pub(commodity_t commodity, mining_grade_t grade,
+                           const uint8_t fragment_pub[32],
+                           uint16_t output_index,
+                           uint8_t out_pub[32]) {
+    uint8_t buf[8 + 2 + 1 + 1 + HASH_BYTES + 2];
 
-    if (!inputs || input_count == 0) {
-        memset(out_root, 0, HASH_BYTES);
-        return false;
-    }
-    pubs = (uint8_t *)malloc(input_count * HASH_BYTES);
-    if (!pubs) return false;
-    for (size_t i = 0; i < input_count; i++)
-        memcpy(&pubs[i * HASH_BYTES], inputs[i].pub, HASH_BYTES);
-    ok = hash_merkle_root((const uint8_t (*)[32])pubs, input_count, out_root);
-    free(pubs);
-    return ok;
+    memcpy(buf, MANIFEST_DOMAIN, sizeof(MANIFEST_DOMAIN));
+    wire_write_u16_le(&buf[8], (uint16_t)RECIPE_SMELT);
+    buf[10] = (uint8_t)commodity;
+    buf[11] = (uint8_t)grade;
+    memcpy(&buf[12], fragment_pub, HASH_BYTES);
+    wire_write_u16_le(&buf[44], output_index);
+    sha256_bytes(buf, sizeof(buf), out_pub);
 }
 
 const char *cargo_kind_name(cargo_kind_t kind) {
@@ -840,9 +854,12 @@ int manifest_consume_by_commodity(manifest_t *manifest, commodity_t commodity, i
 }
 
 bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[32]) {
+    uint8_t stack_level[RECIPE_INPUT_MAX * HASH_BYTES];
+    uint8_t stack_next[RECIPE_INPUT_MAX * HASH_BYTES];
     uint8_t *level = NULL;
     uint8_t *next = NULL;
     size_t level_count = count;
+    bool heap_allocated = false;
     bool ok = false;
 
     if (!out_root) return false;
@@ -854,10 +871,17 @@ bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[3
         memcpy(out_root, pubs[0], HASH_BYTES);
         return true;
     }
+    if (count > SIZE_MAX / HASH_BYTES) return false;
 
-    level = (uint8_t *)malloc(count * HASH_BYTES);
-    next = (uint8_t *)malloc(count * HASH_BYTES);
-    if (!level || !next) goto done;
+    if (count <= RECIPE_INPUT_MAX) {
+        level = stack_level;
+        next = stack_next;
+    } else {
+        level = (uint8_t *)malloc(count * HASH_BYTES);
+        next = (uint8_t *)malloc(count * HASH_BYTES);
+        heap_allocated = true;
+        if (!level || !next) goto done;
+    }
 
     memcpy(level, pubs, count * HASH_BYTES);
     qsort(level, count, HASH_BYTES, compare_pub_32);
@@ -883,15 +907,19 @@ bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[3
     ok = true;
 
 done:
-    free(next);
-    free(level);
+    if (heap_allocated) {
+        free(next);
+        free(level);
+    }
     return ok;
 }
 
 bool hash_ingot(commodity_t commodity, mining_grade_t grade,
                 const uint8_t fragment_pub[32], uint16_t output_index,
                 cargo_unit_t *out_unit) {
-    if (!fragment_pub || !out_unit || !cargo_kind_matches_commodity(CARGO_KIND_INGOT, commodity))
+    if (!fragment_pub || !out_unit ||
+        (unsigned)grade >= (unsigned)MINING_GRADE_COUNT ||
+        !cargo_kind_matches_commodity(CARGO_KIND_INGOT, commodity))
         return false;
 
     memset(out_unit, 0, sizeof(*out_unit));
@@ -903,7 +931,8 @@ bool hash_ingot(commodity_t commodity, mining_grade_t grade,
     /* origin_station / mined_block default to 0; smelt-side caller fills
      * them in from the refinery context. */
     memcpy(out_unit->parent_merkle, fragment_pub, HASH_BYTES);
-    hash_recipe_pub(RECIPE_SMELT, fragment_pub, output_index, out_unit->pub);
+    hash_ingot_pub(commodity, grade, fragment_pub, output_index,
+                   out_unit->pub);
     /* prefix_class is derived from the leading char of base58(pub) — set
      * it once here so callers don't have to recompute. ingot_prefix_t
      * mirrors mining_pubkey_class() one-to-one. */
@@ -911,11 +940,53 @@ bool hash_ingot(commodity_t commodity, mining_grade_t grade,
     return true;
 }
 
+bool hash_product_identity_from_pubs(
+    recipe_id_t recipe_id,
+    const uint8_t input_pubs[][32],
+    size_t input_count,
+    mining_grade_t output_grade,
+    uint16_t output_index,
+    uint8_t out_parent_merkle[32],
+    uint8_t out_pub[32]) {
+    static const uint8_t zero_pub[HASH_BYTES] = {0};
+    const recipe_def_t *recipe = recipe_get(recipe_id);
+
+    if (!recipe || !input_pubs || !out_parent_merkle || !out_pub ||
+        recipe_id == RECIPE_SMELT ||
+        recipe_id == RECIPE_LEGACY_MIGRATE ||
+        input_count != recipe->input_count ||
+        input_count == 0 || input_count > RECIPE_INPUT_MAX ||
+        (unsigned)output_grade >= (unsigned)MINING_GRADE_COUNT ||
+        output_index >= recipe->output_count) {
+        return false;
+    }
+    for (size_t i = 0; i < input_count; i++) {
+        if (memcmp(input_pubs[i], zero_pub, HASH_BYTES) == 0)
+            return false;
+        for (size_t j = 0; j < i; j++) {
+            if (memcmp(input_pubs[i], input_pubs[j],
+                       HASH_BYTES) == 0) {
+                return false;
+            }
+        }
+    }
+    if (!hash_merkle_root(input_pubs, input_count,
+                          out_parent_merkle)) {
+        return false;
+    }
+    hash_recipe_pub(recipe_id, output_grade, out_parent_merkle, output_index,
+                    out_pub);
+    return true;
+}
+
 bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
                   size_t input_count, uint16_t output_index,
                   cargo_unit_t *out_unit) {
     const recipe_def_t *recipe = recipe_get(recipe_id);
+    uint8_t input_pubs[RECIPE_INPUT_MAX][HASH_BYTES] = {{0}};
     uint8_t merkle_root[HASH_BYTES];
+    uint8_t output_pub[HASH_BYTES];
+    mining_grade_t output_grade;
 
     if (!recipe || !out_unit || !inputs) return false;
     if (recipe_id == RECIPE_SMELT || recipe_id == RECIPE_LEGACY_MIGRATE) return false;
@@ -923,16 +994,25 @@ bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
     if (!cargo_kind_matches_commodity(recipe->output_kind, recipe->output_commodity))
         return false;
     if (!recipe_inputs_match(recipe, inputs, input_count)) return false;
-    if (!inputs_parent_merkle(inputs, input_count, merkle_root)) return false;
+    if (input_count > RECIPE_INPUT_MAX) return false;
+    output_grade = min_input_grade(inputs, input_count);
+    for (size_t i = 0; i < input_count; i++)
+        memcpy(input_pubs[i], inputs[i].pub, HASH_BYTES);
+    if (!hash_product_identity_from_pubs(
+            recipe_id, (const uint8_t (*)[HASH_BYTES])input_pubs,
+            input_count, output_grade, output_index,
+            merkle_root, output_pub)) {
+        return false;
+    }
 
     memset(out_unit, 0, sizeof(*out_unit));
     out_unit->kind = (uint8_t)recipe->output_kind;
     out_unit->commodity = (uint8_t)recipe->output_commodity;
-    out_unit->grade = (uint8_t)min_input_grade(inputs, input_count);
+    out_unit->grade = (uint8_t)output_grade;
     out_unit->recipe_id = (uint16_t)recipe_id;
     out_unit->quantity = 1;  /* finished goods always pool-of-one */
     memcpy(out_unit->parent_merkle, merkle_root, HASH_BYTES);
-    hash_recipe_pub(recipe_id, merkle_root, output_index, out_unit->pub);
+    memcpy(out_unit->pub, output_pub, HASH_BYTES);
     return true;
 }
 

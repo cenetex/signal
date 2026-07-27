@@ -264,13 +264,21 @@ enum {
                                             *
                                             *   [type:1=0x3F][pubkey:32][session_token:8][signature:64]
                                             *
-                                            * Signature is Ed25519 over
-                                            *   PUBKEY_PROOF_DOMAIN || pubkey || session_token
+                                            * Protocol v3+ signatures are Ed25519 over
+                                            *   PUBKEY_PROOF_DOMAIN || pubkey || session_token ||
+                                            *   server_challenge
                                             *
-                                            * The session token binds the proof to this live connection, so an
-                                            * observed proof cannot be replayed onto a rotated session. The server
+                                            * The one-time challenge binds the proof to this transport and is
+                                            * consumed on successful verification. A v3+ server never accepts
+                                            * the legacy unchallenged v1 signature. A newer client may use that
+                                            * legacy signature only after PROTOCOL_INFO explicitly advertises
+                                            * protocol <= 2 and no challenge has been received. The server
                                             * only rebinds the pubkey registry, restores pubkey-keyed saves, or
                                             * advertises legacy saves after this verifies. */
+    NET_MSG_PUBKEY_CHALLENGE       = 0x70, /* server -> client:
+                                            * [type:1][nonce:32].
+                                            * Fresh for every transport and
+                                            * consumed by one valid proof. */
     NET_MSG_STATION_DIAG           = 0x40, /* server -> client: live per-module station diagnostics.
                                             *
                                             *   [type:1=0x40][station:1][module_count:1]
@@ -851,8 +859,12 @@ enum {
 
 /* Protocol discovery. Increment SIGNAL_PROTOCOL_VERSION only when a
  * compatibility decision is needed by external consumers; adding a new stream
- * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities. */
-#define SIGNAL_PROTOCOL_VERSION 2u
+ * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities.
+ *
+ * Version 3 makes the server-issued challenge mandatory for pubkey proofs.
+ * Version 2 and older used the unchallenged "prove-pubkey-v1" signature. */
+#define SIGNAL_PROTOCOL_VERSION 3u
+#define SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION 3u
 
 enum {
     SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO   = 1u << 0,
@@ -962,10 +974,18 @@ enum {
 /* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
 #define REGISTER_PUBKEY_MSG_SIZE 33
 
-/* NET_MSG_PROVE_PUBKEY wire constants. */
-#define PUBKEY_PROOF_DOMAIN       "prove-pubkey-v1"
+/* NET_MSG_PROVE_PUBKEY wire constants. The wire packet is unchanged between
+ * the legacy and challenge-bound schemes; only the signed message differs. */
+#define PUBKEY_PROOF_V1_DOMAIN    "prove-pubkey-v1"
+#define PUBKEY_PROOF_V1_DOMAIN_LEN 15
+#define PUBKEY_PROOF_V1_MESSAGE_SIZE \
+    (PUBKEY_PROOF_V1_DOMAIN_LEN + 32 + 8)
+#define PUBKEY_PROOF_DOMAIN       "prove-pubkey-v2"
 #define PUBKEY_PROOF_DOMAIN_LEN   15
-#define PUBKEY_PROOF_MESSAGE_SIZE (PUBKEY_PROOF_DOMAIN_LEN + 32 + 8)
+#define PUBKEY_PROOF_CHALLENGE_SIZE 32
+#define PUBKEY_PROOF_MESSAGE_SIZE \
+    (PUBKEY_PROOF_DOMAIN_LEN + 32 + 8 + PUBKEY_PROOF_CHALLENGE_SIZE)
+#define PUBKEY_CHALLENGE_MSG_SIZE (1 + PUBKEY_PROOF_CHALLENGE_SIZE)
 #define PROVE_PUBKEY_PUBKEY_OFFSET 1
 #define PROVE_PUBKEY_TOKEN_OFFSET  33
 #define PROVE_PUBKEY_SIG_OFFSET    41

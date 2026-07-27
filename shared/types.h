@@ -191,6 +191,39 @@ typedef enum {
     CHAIN_HEALTH_FAILED = 6,
 } chain_health_status_t;
 
+enum {
+    STATION_AUTHORITY_REGISTRY_VERSION = 1,
+    STATION_AUTHORITY_REGISTRY_CAP = 8,
+};
+
+/*
+ * Public station-authority records deliberately keep verified lifecycle
+ * separate from the local trust decision consumed by the receipt evaluator.
+ * This mirrors the origin-proof contract without making shared/types.h depend
+ * on cargo_receipt.h.
+ */
+typedef enum {
+    STATION_AUTHORITY_LIFECYCLE_UNSPECIFIED = 0,
+    STATION_AUTHORITY_LIFECYCLE_CURRENT = 1,
+    STATION_AUTHORITY_LIFECYCLE_ROTATED = 2,
+    STATION_AUTHORITY_LIFECYCLE_REVOKED = 3,
+} station_authority_lifecycle_state_t;
+
+typedef enum {
+    STATION_AUTHORITY_TRUST_UNKNOWN = 0,
+    STATION_AUTHORITY_TRUST_CURRENT = 1,
+    STATION_AUTHORITY_TRUST_ROTATED = 2,
+    STATION_AUTHORITY_TRUST_UNTRUSTED = 3,
+    STATION_AUTHORITY_TRUST_REVOKED = 4,
+} station_authority_trust_state_t;
+
+typedef struct {
+    uint8_t pubkey[32];
+    uint8_t lifecycle; /* station_authority_lifecycle_state_t */
+    uint8_t trust;     /* station_authority_trust_state_t */
+    uint8_t _pad[2];
+} station_authority_record_t;
+
 typedef struct {
     const char* name;
     float max_hull;
@@ -854,6 +887,16 @@ typedef struct {
     uint8_t  station_pubkey[32];
     uint8_t  outpost_founder_pubkey[32];
     uint64_t outpost_planted_tick;
+    /*
+     * Versioned, bounded public authority history. Row zero is the live
+     * current key for an occupied station. Later rows preserve historical
+     * keys or explicit deny decisions. No private material belongs here.
+     */
+    uint8_t authority_registry_version;
+    uint8_t authority_registry_count;
+    uint8_t authority_registry_pad[6];
+    station_authority_record_t
+        authority_registry[STATION_AUTHORITY_REGISTRY_CAP];
     /* Layer C of #479 — signed event chain log state.
      *
      * `chain_last_hash` is the SHA256 of the most recent event header
@@ -918,6 +961,10 @@ _Static_assert(offsetof(station_t, station_secret) >
                offsetof(station_t, station_pubkey),
                "station_secret must be located after station_pubkey "
                "in station_t (Layer B of #479) — keep it the last field");
+_Static_assert(offsetof(station_t, station_secret) +
+                   sizeof(((station_t *)0)->station_secret) ==
+                   sizeof(station_t),
+               "station_secret must be the final bytes of station_t");
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers
  * moved to shared/station_util.h (#273), included at the bottom of this

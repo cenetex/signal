@@ -9,15 +9,21 @@
 #include "test_harness.h"
 
 #include "chain_log.h"
+#include "cargo_receipt_trust.h"
 #include "station_authority.h"
 #include "sim_asteroid.h"
 #include "sim_production.h"
 #include "game_sim.h"
 #include "sha256.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+#  include <direct.h>
+#endif
 
 /* Each test sets a unique chain dir under TMP() so concurrent test
  * shards don't trample each other and so a previous run's residue
@@ -25,11 +31,53 @@
 static void chain_test_setup(const char *suffix) {
     char path[256];
     snprintf(path, sizeof(path), "%s_chain_%s", TMP("clog"), suffix);
+    chain_log_test_fault_clear();
+    chain_log_set_disk_enabled(true);
     chain_log_set_dir(path);
 }
 
 static void chain_test_teardown(void) {
+    chain_log_test_fault_clear();
+    chain_log_set_disk_enabled(true);
     chain_log_set_dir(NULL);
+}
+
+static bool chain_test_make_dir(const char *path) {
+#if defined(_WIN32)
+    int result = _mkdir(path);
+#else
+    int result = mkdir(path, 0700);
+#endif
+    return result == 0 || errno == EEXIST;
+}
+
+static bool chain_test_path_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+static bool chain_test_read_log(const station_t *station,
+                                uint8_t *out,
+                                size_t cap,
+                                size_t *out_len) {
+    if (out_len) *out_len = 0;
+    if (!station || !out || cap == 0 || !out_len) return false;
+    char path[256];
+    if (!chain_log_path_for(station->station_pubkey, path, sizeof(path)))
+        return false;
+    FILE *log = fopen(path, "rb");
+    if (!log) return false;
+    bool ok = fseek(log, 0, SEEK_END) == 0;
+    long end = ok ? ftell(log) : -1;
+    if (end < 0 || (size_t)end > cap) ok = false;
+    if (ok && fseek(log, 0, SEEK_SET) != 0) ok = false;
+    if (ok && end > 0 &&
+        fread(out, 1, (size_t)end, log) != (size_t)end) {
+        ok = false;
+    }
+    if (fclose(log) != 0) ok = false;
+    if (ok) *out_len = (size_t)end;
+    return ok;
 }
 
 /* Iterate the seeded stations and remove their chain log files for
@@ -65,6 +113,546 @@ TEST(test_chain_log_emit_and_verify) {
     ASSERT_EQ_INT((int)walked, 1);
     ASSERT(memcmp(last_hash, w->stations[0].chain_last_hash, 32) == 0);
 
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_commits_contiguous_verified_events) {
+    chain_test_setup("batch_commit");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9021u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t smelt[] = "batch-smelt";
+    const uint8_t transfer[] = "batch-transfer";
+    const uint8_t trade[] = "batch-trade";
+    const chain_log_batch_event_t events[] = {
+        {
+            .type = CHAIN_EVT_SMELT,
+            .payload = smelt,
+            .payload_len = sizeof(smelt),
+        },
+        {
+            .type = CHAIN_EVT_TRANSFER,
+            .payload = transfer,
+            .payload_len = sizeof(transfer),
+        },
+        {
+            .type = CHAIN_EVT_TRADE,
+            .payload = trade,
+            .payload_len = sizeof(trade),
+        },
+    };
+
+    chain_log_append_result_t appended = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(appended.status, CHAIN_LOG_APPEND_OK);
+    ASSERT(strcmp(chain_log_append_status_name(appended.status), "ok") == 0);
+    ASSERT_EQ_INT(appended.event_count, 3);
+    ASSERT(appended.first_event_id == 1);
+    ASSERT(appended.last_event_id == 3);
+    ASSERT(station->chain_event_count == 3);
+    ASSERT(memcmp(appended.last_hash, station->chain_last_hash, 32) == 0);
+
+    chain_log_verify_report_t report;
+    ASSERT(chain_log_verify_station(station, NULL, NULL, &report));
+    ASSERT(report.total_events == 3);
+    ASSERT(report.event_type_counts[CHAIN_EVT_SMELT] == 1);
+    ASSERT(report.event_type_counts[CHAIN_EVT_TRANSFER] == 1);
+    ASSERT(report.event_type_counts[CHAIN_EVT_TRADE] == 1);
+
+    const uint8_t wrapper_payload[] = "wrapper";
+    ASSERT(chain_log_emit(w, station, CHAIN_EVT_LEDGER,
+                          wrapper_payload,
+                          sizeof(wrapper_payload)) == 4);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == 4);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_prevalidates_before_any_commit) {
+    chain_test_setup("batch_prevalidate");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9022u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t payload[] = "valid";
+    const chain_log_batch_event_t invalid[] = {
+        {
+            .type = CHAIN_EVT_SMELT,
+            .payload = payload,
+            .payload_len = sizeof(payload),
+        },
+        {
+            .type = CHAIN_EVT_CRAFT,
+            .payload = NULL,
+            .payload_len = 1,
+        },
+    };
+    uint8_t before_hash[32];
+    memcpy(before_hash, station->chain_last_hash, sizeof(before_hash));
+
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, invalid, sizeof(invalid) / sizeof(invalid[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_BAD_ARGUMENTS);
+    ASSERT_EQ_INT(rejected.event_count, 0);
+    ASSERT(rejected.first_event_id == 0);
+    ASSERT(rejected.last_event_id == 0);
+    ASSERT(station->chain_event_count == 0);
+    ASSERT(memcmp(station->chain_last_hash, before_hash, 32) == 0);
+    ASSERT(!station->chain_append_blocked);
+
+    chain_log_append_result_t too_large = chain_log_emit_batch(
+        w, station, invalid, CHAIN_LOG_BATCH_MAX_EVENTS + 1u);
+    ASSERT_EQ_INT(too_large.status, CHAIN_LOG_APPEND_BATCH_TOO_LARGE);
+    ASSERT(station->chain_event_count == 0);
+
+    char path[256];
+    ASSERT(chain_log_path_for(station->station_pubkey,
+                              path, sizeof(path)));
+    FILE *log = fopen(path, "rb");
+    ASSERT(log == NULL);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_disk_disabled_commits_atomically_in_memory) {
+    chain_test_setup("batch_memory_only");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9026u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+    chain_log_set_disk_enabled(false);
+
+    const uint8_t smelt[] = "memory-smelt";
+    const uint8_t transfer[] = "memory-transfer";
+    const uint8_t trade[] = "memory-trade";
+    const chain_log_batch_event_t events[] = {
+        { CHAIN_EVT_SMELT, smelt, sizeof(smelt) },
+        { CHAIN_EVT_TRANSFER, transfer, sizeof(transfer) },
+        { CHAIN_EVT_TRADE, trade, sizeof(trade) },
+    };
+    chain_log_append_result_t appended = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(appended.status, CHAIN_LOG_APPEND_OK);
+    ASSERT_EQ_INT(appended.event_count, 3);
+    ASSERT(appended.first_event_id == 1);
+    ASSERT(appended.last_event_id == 3);
+    ASSERT(station->chain_event_count == 3);
+    ASSERT(memcmp(station->chain_last_hash, appended.last_hash, 32) == 0);
+
+    uint64_t committed_count = station->chain_event_count;
+    uint8_t committed_hash[32];
+    memcpy(committed_hash, station->chain_last_hash, sizeof(committed_hash));
+    const chain_log_batch_event_t invalid[] = {
+        { CHAIN_EVT_CRAFT, smelt, sizeof(smelt) },
+        { CHAIN_EVT_TRANSFER, NULL, 1 },
+    };
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, invalid, sizeof(invalid) / sizeof(invalid[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_BAD_ARGUMENTS);
+    ASSERT_EQ_INT(rejected.event_count, 0);
+    ASSERT(station->chain_event_count == committed_count);
+    ASSERT(memcmp(station->chain_last_hash, committed_hash, 32) == 0);
+
+    char path[256];
+    ASSERT(chain_log_path_for(station->station_pubkey,
+                              path, sizeof(path)));
+    FILE *log = fopen(path, "rb");
+    ASSERT(log == NULL);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_event_id_overflow_is_inert) {
+    chain_test_setup("batch_event_id_overflow");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9027u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = UINT64_MAX - 1u;
+    memset(station->chain_last_hash, 0xa5, 32);
+    uint8_t before_hash[32];
+    memcpy(before_hash, station->chain_last_hash, sizeof(before_hash));
+
+    const uint8_t transfer[] = "overflow-transfer";
+    const uint8_t trade[] = "overflow-trade";
+    const chain_log_batch_event_t events[] = {
+        { CHAIN_EVT_TRANSFER, transfer, sizeof(transfer) },
+        { CHAIN_EVT_TRADE, trade, sizeof(trade) },
+    };
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_EVENT_ID_OVERFLOW);
+    ASSERT_EQ_INT(rejected.event_count, 0);
+    ASSERT(rejected.first_event_id == 0);
+    ASSERT(rejected.last_event_id == 0);
+    const uint8_t zero_hash[32] = {0};
+    ASSERT(memcmp(rejected.last_hash, zero_hash,
+                  sizeof(rejected.last_hash)) == 0);
+    ASSERT(station->chain_event_count == UINT64_MAX - 1u);
+    ASSERT(memcmp(station->chain_last_hash, before_hash, 32) == 0);
+    ASSERT(!station->chain_append_blocked);
+
+    char path[256];
+    ASSERT(chain_log_path_for(station->station_pubkey,
+                              path, sizeof(path)));
+    FILE *log = fopen(path, "rb");
+    ASSERT(log == NULL);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_partial_write_fault_rolls_back_exact_bytes) {
+    chain_test_setup("batch_write_rollback");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9023u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t baseline_payload[] = "baseline";
+    ASSERT(chain_log_emit(w, station, CHAIN_EVT_LEDGER,
+                          baseline_payload,
+                          sizeof(baseline_payload)) == 1);
+    uint64_t before_count = station->chain_event_count;
+    uint8_t before_hash[32];
+    memcpy(before_hash, station->chain_last_hash, sizeof(before_hash));
+    uint8_t before_bytes[2048];
+    size_t before_len = 0;
+    ASSERT(chain_test_read_log(station, before_bytes,
+                               sizeof(before_bytes), &before_len));
+
+    const uint8_t smelt[] = "smelt";
+    const uint8_t craft_a[] = "craft-a";
+    const uint8_t transfer[] = "transfer";
+    const uint8_t craft_b[] = "craft-b";
+    const chain_log_batch_event_t events[] = {
+        { CHAIN_EVT_SMELT, smelt, sizeof(smelt) },
+        { CHAIN_EVT_CRAFT, craft_a, sizeof(craft_a) },
+        { CHAIN_EVT_TRANSFER, transfer, sizeof(transfer) },
+        { CHAIN_EVT_CRAFT, craft_b, sizeof(craft_b) },
+    };
+    /* Fail immediately before the second CRAFT. The one physical write
+     * therefore contains three complete staged entries and exercises a
+     * deterministic partial-batch truncate. */
+    chain_log_test_fault_inject(CHAIN_LOG_TEST_FAULT_WRITE,
+                                CHAIN_EVT_CRAFT, 2);
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_WRITE_FAILED);
+    ASSERT(strcmp(chain_log_append_status_name(rejected.status),
+                  "write_failed") == 0);
+    ASSERT_EQ_INT(rejected.event_count, 0);
+    ASSERT(station->chain_event_count == before_count);
+    ASSERT(memcmp(station->chain_last_hash, before_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+    ASSERT_EQ_INT(station->chain_health_status, CHAIN_HEALTH_FAILED);
+    ASSERT(strstr(station->chain_health_message, "write_failed") != NULL);
+
+    uint8_t after_bytes[2048];
+    size_t after_len = 0;
+    ASSERT(chain_test_read_log(station, after_bytes,
+                               sizeof(after_bytes), &after_len));
+    ASSERT(after_len == before_len);
+    ASSERT(memcmp(after_bytes, before_bytes, before_len) == 0);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == before_count);
+
+    /* The injection is one-shot. Once an operator/test explicitly clears the
+     * fail-closed health latch, the ordinary single-event wrapper continues
+     * from the exact pre-fault hash. */
+    chain_log_health_set(station, CHAIN_HEALTH_OK, false,
+                         before_count, before_hash, NULL);
+    ASSERT(chain_log_emit(w, station, CHAIN_EVT_LEDGER,
+                          baseline_payload,
+                          sizeof(baseline_payload)) == before_count + 1u);
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == before_count + 1u);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_flush_fault_rolls_back_exact_bytes) {
+    chain_test_setup("batch_flush_rollback");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9024u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t baseline_payload[] = "baseline";
+    ASSERT(chain_log_emit(w, station, CHAIN_EVT_LEDGER,
+                          baseline_payload,
+                          sizeof(baseline_payload)) == 1);
+    uint64_t before_count = station->chain_event_count;
+    uint8_t before_hash[32];
+    memcpy(before_hash, station->chain_last_hash, sizeof(before_hash));
+    uint8_t before_bytes[2048];
+    size_t before_len = 0;
+    ASSERT(chain_test_read_log(station, before_bytes,
+                               sizeof(before_bytes), &before_len));
+
+    const uint8_t craft_a[] = "craft-a";
+    const uint8_t craft_b[] = "craft-b";
+    const chain_log_batch_event_t events[] = {
+        { CHAIN_EVT_CRAFT, craft_a, sizeof(craft_a) },
+        { CHAIN_EVT_CRAFT, craft_b, sizeof(craft_b) },
+    };
+    chain_log_test_fault_inject(CHAIN_LOG_TEST_FAULT_FLUSH,
+                                CHAIN_EVT_CRAFT, 1);
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_FLUSH_FAILED);
+    ASSERT(station->chain_event_count == before_count);
+    ASSERT(memcmp(station->chain_last_hash, before_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+
+    uint8_t after_bytes[2048];
+    size_t after_len = 0;
+    ASSERT(chain_test_read_log(station, after_bytes,
+                               sizeof(after_bytes), &after_len));
+    ASSERT(after_len == before_len);
+    ASSERT(memcmp(after_bytes, before_bytes, before_len) == 0);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == before_count);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_batch_close_fault_rolls_back_exact_bytes) {
+    chain_test_setup("batch_close_rollback");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9025u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t baseline_payload[] = "baseline";
+    ASSERT(chain_log_emit(w, station, CHAIN_EVT_LEDGER,
+                          baseline_payload,
+                          sizeof(baseline_payload)) == 1);
+    uint64_t before_count = station->chain_event_count;
+    uint8_t before_hash[32];
+    memcpy(before_hash, station->chain_last_hash, sizeof(before_hash));
+    uint8_t before_bytes[2048];
+    size_t before_len = 0;
+    ASSERT(chain_test_read_log(station, before_bytes,
+                               sizeof(before_bytes), &before_len));
+
+    const uint8_t transfer[] = "transfer";
+    const uint8_t trade[] = "trade";
+    const chain_log_batch_event_t events[] = {
+        { CHAIN_EVT_TRANSFER, transfer, sizeof(transfer) },
+        { CHAIN_EVT_TRADE, trade, sizeof(trade) },
+    };
+    chain_log_test_fault_inject(CHAIN_LOG_TEST_FAULT_CLOSE,
+                                CHAIN_EVT_TRADE, 1);
+    chain_log_append_result_t rejected = chain_log_emit_batch(
+        w, station, events, sizeof(events) / sizeof(events[0]));
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_CLOSE_FAILED);
+    ASSERT(station->chain_event_count == before_count);
+    ASSERT(memcmp(station->chain_last_hash, before_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+
+    uint8_t after_bytes[2048];
+    size_t after_len = 0;
+    ASSERT(chain_test_read_log(station, after_bytes,
+                               sizeof(after_bytes), &after_len));
+    ASSERT(after_len == before_len);
+    ASSERT(memcmp(after_bytes, before_bytes, before_len) == 0);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == before_count);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_first_append_dir_sync_fault_removes_new_file) {
+    chain_test_setup("first_append_dir_sync_rollback");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9026u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    char path[256];
+    ASSERT(chain_log_path_for(
+        station->station_pubkey, path, sizeof(path)));
+    FILE *before = fopen(path, "rb");
+    ASSERT(before == NULL);
+
+    const uint8_t payload[] = "first-durable-event";
+    const chain_log_batch_event_t event = {
+        CHAIN_EVT_CRAFT, payload, sizeof(payload),
+    };
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_DIR_SYNC, CHAIN_EVT_CRAFT, 1);
+    chain_log_append_result_t rejected =
+        chain_log_emit_batch(w, station, &event, 1);
+    ASSERT_EQ_INT(
+        rejected.status, CHAIN_LOG_APPEND_DIR_SYNC_FAILED);
+    ASSERT(strcmp(chain_log_append_status_name(rejected.status),
+                  "dir_sync_failed") == 0);
+    ASSERT(station->chain_event_count == 0);
+    uint8_t zero_hash[32] = {0};
+    ASSERT(memcmp(station->chain_last_hash, zero_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+
+    FILE *after = fopen(path, "rb");
+    ASSERT(after == NULL);
+    uint64_t walked = 99;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == 0);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_first_boot_parent_sync_fault_removes_new_tree) {
+    char parent[256];
+    char chain_dir[256];
+    snprintf(parent, sizeof(parent), "%s_parent_sync_fault",
+             TMP("clog"));
+    snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent);
+    ASSERT(chain_test_make_dir(parent));
+    ASSERT(!chain_test_path_exists(chain_dir));
+    chain_log_test_fault_clear();
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(chain_dir);
+
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9028u;
+    world_reset(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    char path[256];
+    ASSERT(chain_log_path_for(
+        station->station_pubkey, path, sizeof(path)));
+    const uint8_t payload[] = "first-boot-parent-sync";
+    const chain_log_batch_event_t event = {
+        CHAIN_EVT_CRAFT, payload, sizeof(payload),
+    };
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_PARENT_DIR_SYNC,
+        CHAIN_EVT_CRAFT, 1);
+    chain_log_append_result_t rejected =
+        chain_log_emit_batch(w, station, &event, 1);
+    ASSERT_EQ_INT(
+        rejected.status, CHAIN_LOG_APPEND_DIR_SYNC_FAILED);
+    ASSERT(station->chain_event_count == 0);
+    uint8_t zero_hash[32] = {0};
+    ASSERT(memcmp(station->chain_last_hash, zero_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+    ASSERT(!chain_test_path_exists(path));
+    ASSERT(!chain_test_path_exists(chain_dir));
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_first_boot_syncs_nested_dir_once) {
+    char parent[256];
+    char chain_dir[256];
+    snprintf(parent, sizeof(parent), "%s_parent_sync_success",
+             TMP("clog"));
+    snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent);
+    ASSERT(chain_test_make_dir(parent));
+    ASSERT(!chain_test_path_exists(chain_dir));
+    chain_log_test_fault_clear();
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(chain_dir);
+
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9029u;
+    world_reset(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    const uint8_t payload[] = "first-boot-parent-success";
+    ASSERT(chain_log_emit(
+        w, station, CHAIN_EVT_LEDGER,
+        payload, sizeof(payload)) == 1);
+    ASSERT(chain_test_path_exists(chain_dir));
+
+    /* Once the directory entry is durable, ordinary appends skip the parent
+     * sync. A parent-sync-only fault therefore has no step at which to fire. */
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_PARENT_DIR_SYNC,
+        CHAIN_EVT_LEDGER, 1);
+    ASSERT(chain_log_emit(
+        w, station, CHAIN_EVT_LEDGER,
+        payload, sizeof(payload)) == 2);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT(walked == 2);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_position_faults_remove_new_log_and_directory) {
+    chain_test_setup("position_fault_rollback");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9030u;
+    world_reset(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+    const uint8_t payload[] = "position-fault";
+    const chain_log_batch_event_t event = {
+        CHAIN_EVT_LEDGER, payload, sizeof(payload),
+    };
+    char path[256];
+    ASSERT(chain_log_path_for(
+        station->station_pubkey, path, sizeof(path)));
+
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_SEEK, CHAIN_EVT_LEDGER, 1);
+    chain_log_append_result_t rejected =
+        chain_log_emit_batch(w, station, &event, 1);
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_SEEK_FAILED);
+    ASSERT(station->chain_event_count == 0);
+    ASSERT(station->chain_append_blocked);
+    ASSERT(!chain_test_path_exists(path));
+    ASSERT(!chain_test_path_exists(chain_log_get_dir()));
+
+    uint8_t zero_hash[32] = {0};
+    chain_log_health_set(
+        station, CHAIN_HEALTH_OK, false, 0, zero_hash, NULL);
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_TELL, CHAIN_EVT_LEDGER, 1);
+    rejected = chain_log_emit_batch(w, station, &event, 1);
+    ASSERT_EQ_INT(rejected.status, CHAIN_LOG_APPEND_TELL_FAILED);
+    ASSERT(station->chain_event_count == 0);
+    ASSERT(memcmp(station->chain_last_hash, zero_hash, 32) == 0);
+    ASSERT(station->chain_append_blocked);
+    ASSERT(!chain_test_path_exists(path));
+    ASSERT(!chain_test_path_exists(chain_log_get_dir()));
     chain_test_teardown();
 }
 
@@ -496,7 +1084,17 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     a->pos = midpoint;
     a->vel = v2(0, 0);
 
-    ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
+    ASSERT(station_finished_mint(
+        &w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
+    cargo_unit_t *shell =
+        &w->stations[0]
+             .manifest.units[w->stations[0].manifest.count - 1u];
+    chain_payload_craft_t shell_origin = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &shell_origin, NULL, 0, shell));
+    ASSERT(chain_log_emit(
+        w, &w->stations[0], CHAIN_EVT_CRAFT,
+        &shell_origin, sizeof(shell_origin)) == 1);
 
     /* Run sim until the fragment smelts (smelt_progress accumulates
      * at ~0.5/s; cap at a generous 10 s of sim time). */
@@ -937,6 +1535,8 @@ TEST(test_chain_log_cargo_transform_reader) {
     smelt.mined_block = 4422;
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
                           &smelt, sizeof(smelt)) == 1);
+    uint8_t smelt_hash[32];
+    memcpy(smelt_hash, w->stations[0].chain_last_hash, sizeof(smelt_hash));
 
     chain_payload_craft_t craft = {0};
     craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
@@ -946,12 +1546,16 @@ TEST(test_chain_log_cargo_transform_reader) {
         craft.output_pub[i] = (uint8_t)(0xA0 + i);
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
                           &craft, sizeof(craft)) == 2);
+    uint8_t craft_hash[32];
+    memcpy(craft_hash, w->stations[0].chain_last_hash, sizeof(craft_hash));
 
     chain_cargo_transform_t found = {0};
     ASSERT(chain_log_find_cargo_transform(&w->stations[0],
                                           craft.output_pub, &found));
     ASSERT_EQ_INT(found.type, CHAIN_EVT_CRAFT);
     ASSERT_EQ_INT((int)found.event_id, 2);
+    ASSERT(memcmp(found.header_hash, craft_hash, sizeof(craft_hash)) == 0);
+    ASSERT(memcmp(found.authority, w->stations[0].station_pubkey, 32) == 0);
     ASSERT_EQ_INT(found.craft.recipe_id, RECIPE_FRAME_BASIC);
     ASSERT(memcmp(found.craft.input_pubs[0], smelt.ingot_pub, 32) == 0);
 
@@ -960,12 +1564,385 @@ TEST(test_chain_log_cargo_transform_reader) {
                                           smelt.ingot_pub, &found));
     ASSERT_EQ_INT(found.type, CHAIN_EVT_SMELT);
     ASSERT_EQ_INT((int)found.event_id, 1);
+    ASSERT(memcmp(found.header_hash, smelt_hash, sizeof(smelt_hash)) == 0);
+    ASSERT(memcmp(found.authority, w->stations[0].station_pubkey, 32) == 0);
     ASSERT_EQ_INT((int)found.smelt.mined_block, 4422);
     ASSERT(memcmp(found.smelt.fragment_pub, smelt.fragment_pub, 32) == 0);
 
     uint8_t unknown[32] = {0xFF};
     ASSERT(!chain_log_find_cargo_transform(&w->stations[0], unknown, &found));
 
+    chain_test_teardown();
+}
+
+static void assert_origin_metadata_rejected(
+    const world_t *w,
+    int station_idx,
+    const cargo_unit_t *unit) {
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(
+            w, station_idx, unit, NULL);
+    ASSERT(!evaluated.accepted);
+    ASSERT_EQ_INT(
+        evaluated.origin_status,
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(
+        evaluated.trust.status,
+        CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA);
+    ASSERT_EQ_INT(
+        evaluated.legality.status,
+        CARGO_LEGALITY_CONTRABAND);
+}
+
+static void assert_each_cargo_metadata_tamper_rejected(
+    const world_t *w,
+    int station_idx,
+    const cargo_unit_t *original) {
+    for (int field = 0; field < 9; field++) {
+        cargo_unit_t tampered = *original;
+        switch (field) {
+            case 0:
+                tampered.kind =
+                    original->kind == (uint8_t)CARGO_KIND_FRAME
+                        ? (uint8_t)CARGO_KIND_LASER
+                        : (uint8_t)CARGO_KIND_FRAME;
+                break;
+            case 1:
+                tampered.commodity =
+                    original->commodity ==
+                            (uint8_t)COMMODITY_CUPRITE_INGOT
+                        ? (uint8_t)COMMODITY_FERRITE_INGOT
+                        : (uint8_t)COMMODITY_CUPRITE_INGOT;
+                break;
+            case 2:
+                tampered.grade =
+                    original->grade ==
+                            (uint8_t)MINING_GRADE_FINE
+                        ? (uint8_t)MINING_GRADE_RARE
+                        : (uint8_t)MINING_GRADE_FINE;
+                break;
+            case 3:
+                tampered.prefix_class =
+                    original->prefix_class ==
+                            (uint8_t)INGOT_PREFIX_M
+                        ? (uint8_t)INGOT_PREFIX_H
+                        : (uint8_t)INGOT_PREFIX_M;
+                break;
+            case 4:
+                tampered.recipe_id =
+                    original->recipe_id ==
+                            (uint16_t)RECIPE_FRAME_BASIC
+                        ? (uint16_t)RECIPE_LASER_BASIC
+                        : (uint16_t)RECIPE_FRAME_BASIC;
+                break;
+            case 5:
+                tampered.origin_station =
+                    (uint8_t)(station_idx == 0 ? 1 : 0);
+                break;
+            case 6:
+                tampered.quantity =
+                    original->quantity == 2u ? 3u : 2u;
+                break;
+            case 7:
+                tampered.mined_block =
+                    original->mined_block + 1u;
+                break;
+            case 8:
+                tampered.parent_merkle[0] ^= 0x80u;
+                break;
+            default:
+                ASSERT(false);
+        }
+        assert_origin_metadata_rejected(
+            w, station_idx, &tampered);
+    }
+}
+
+TEST(test_cargo_origin_semantics_bind_every_manifest_trait) {
+    chain_test_setup("cargo_semantic_binding");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 17030u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    uint8_t fragment_pub[32];
+    for (int i = 0; i < 32; i++)
+        fragment_pub[i] = (uint8_t)(0x21 + i);
+    cargo_unit_t ingot = {0};
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+        fragment_pub, 0, &ingot));
+    ingot.origin_station = 0;
+    ingot.mined_block = 4422u;
+    chain_payload_smelt_t smelt = {0};
+    ASSERT(chain_payload_smelt_bind_output(
+        &smelt, fragment_pub, 0, &ingot));
+    chain_payload_smelt_t rejected_smelt = {0};
+    ASSERT(!chain_payload_smelt_bind_output(
+        &rejected_smelt, fragment_pub, 1, &ingot));
+    cargo_unit_t arbitrary_ingot = ingot;
+    arbitrary_ingot.pub[0] ^= 0x80u;
+    arbitrary_ingot.prefix_class =
+        (uint8_t)mining_pubkey_class(arbitrary_ingot.pub);
+    ASSERT(!chain_payload_smelt_bind_output(
+        &rejected_smelt, fragment_pub, 0,
+        &arbitrary_ingot));
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_SMELT,
+            &smelt, (uint16_t)sizeof(smelt)),
+        1);
+
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(w, 0, &ingot, NULL);
+    ASSERT(evaluated.accepted);
+    ASSERT(evaluated.local_origin_without_receipt);
+    assert_each_cargo_metadata_tamper_rejected(
+        w, 0, &ingot);
+
+    cargo_unit_t frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &ingot, 1, 0, &frame));
+    frame.origin_station = 0;
+    chain_payload_craft_t craft = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &craft, &ingot, 1, &frame));
+    chain_payload_craft_t rejected_craft = {0};
+    cargo_unit_t mislabeled_input = ingot;
+    mislabeled_input.commodity =
+        (uint8_t)COMMODITY_CUPRITE_INGOT;
+    ASSERT(!chain_payload_craft_bind_output(
+        &rejected_craft, &mislabeled_input, 1, &frame));
+    cargo_unit_t arbitrary_frame = frame;
+    arbitrary_frame.pub[0] ^= 0x40u;
+    ASSERT(!chain_payload_craft_bind_output(
+        &rejected_craft, &ingot, 1, &arbitrary_frame));
+    cargo_unit_t grouped_frame = frame;
+    grouped_frame.quantity = 2u;
+    ASSERT(!chain_payload_craft_bind_output(
+        &rejected_craft, &ingot, 1, &grouped_frame));
+    const uint8_t legacy_salt[8] = {
+        'S', 'E', 'M', 'V', '1', 'T', 'S', 'T'
+    };
+    cargo_unit_t grouped_legacy = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        legacy_salt, COMMODITY_FRAME, 0,
+        &grouped_legacy));
+    grouped_legacy.quantity = 2u;
+    ASSERT(!chain_payload_craft_bind_output(
+        &rejected_craft, NULL, 0, &grouped_legacy));
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &craft, (uint16_t)sizeof(craft)),
+        2);
+    evaluated =
+        cargo_receipt_evaluate_at_station(w, 0, &frame, NULL);
+    ASSERT(evaluated.accepted);
+    ASSERT(evaluated.local_origin_without_receipt);
+    assert_each_cargo_metadata_tamper_rejected(
+        w, 0, &frame);
+
+    /*
+     * Version-zero payloads remain readable as history, but their former
+     * padding cannot silently become proof of a cargo label.
+     */
+    cargo_unit_t legacy_unbound = {0};
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+        fragment_pub, 1, &legacy_unbound));
+    legacy_unbound.origin_station = 0;
+    legacy_unbound.mined_block = 4423u;
+    chain_payload_smelt_t unbound = {0};
+    memcpy(unbound.fragment_pub, fragment_pub, 32);
+    memcpy(unbound.ingot_pub, legacy_unbound.pub, 32);
+    unbound.prefix_class = legacy_unbound.prefix_class;
+    unbound.mined_block = legacy_unbound.mined_block;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_SMELT,
+            &unbound, (uint16_t)sizeof(unbound)),
+        3);
+    assert_origin_metadata_rejected(
+        w, 0, &legacy_unbound);
+
+    /*
+     * A signed V1 record with recipe/output contradictions is also
+     * semantically unbound. Trust in an authority is not permission for a
+     * malformed imported history to redefine the cargo grammar.
+     */
+    cargo_unit_t malformed = frame;
+    memset(malformed.pub, 0xA5, sizeof(malformed.pub));
+    malformed.kind = (uint8_t)CARGO_KIND_LASER;
+    malformed.commodity =
+        (uint8_t)COMMODITY_LASER_MODULE;
+    malformed.recipe_id =
+        (uint16_t)RECIPE_FRAME_BASIC;
+    chain_payload_craft_t malformed_payload = {0};
+    malformed_payload.recipe_id =
+        (uint16_t)RECIPE_FRAME_BASIC;
+    malformed_payload.input_count = 1u;
+    malformed_payload.semantics_version =
+        CHAIN_CARGO_SEMANTICS_V1;
+    malformed_payload.output_kind = malformed.kind;
+    malformed_payload.output_commodity =
+        malformed.commodity;
+    malformed_payload.output_grade = malformed.grade;
+    malformed_payload.output_quantity =
+        malformed.quantity;
+    memcpy(malformed_payload.output_pub,
+           malformed.pub, 32);
+    memcpy(malformed_payload.input_pubs[0],
+           ingot.pub, 32);
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &malformed_payload,
+            (uint16_t)sizeof(malformed_payload)),
+        4);
+    assert_origin_metadata_rejected(
+        w, 0, &malformed);
+
+    /* A valid pub paired with the wrong signed SMELT output index cannot
+     * become an origin proof. */
+    cargo_unit_t wrong_index_ingot = {0};
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+        fragment_pub, 2, &wrong_index_ingot));
+    wrong_index_ingot.origin_station = 0;
+    wrong_index_ingot.mined_block = 4424u;
+    chain_payload_smelt_t wrong_index_payload = {0};
+    ASSERT(chain_payload_smelt_bind_output(
+        &wrong_index_payload, fragment_pub, 2,
+        &wrong_index_ingot));
+    wrong_index_payload.output_index = 3u;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_SMELT,
+            &wrong_index_payload,
+            (uint16_t)sizeof(wrong_index_payload)),
+        5);
+    assert_origin_metadata_rejected(
+        w, 0, &wrong_index_ingot);
+
+    /* Correct recipe labels do not rescue a caller-selected arbitrary pub. */
+    cargo_unit_t arbitrary_signed_frame = frame;
+    arbitrary_signed_frame.pub[0] ^= 0x20u;
+    chain_payload_craft_t arbitrary_pub_payload = craft;
+    memcpy(arbitrary_pub_payload.output_pub,
+           arbitrary_signed_frame.pub, 32);
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &arbitrary_pub_payload,
+            (uint16_t)sizeof(arbitrary_pub_payload)),
+        6);
+    assert_origin_metadata_rejected(
+        w, 0, &arbitrary_signed_frame);
+
+    /* Likewise, editing an input identity invalidates the derived output
+     * pub even when every visible output label remains plausible. */
+    cargo_unit_t input_tamper_frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &ingot, 1, 1,
+        &input_tamper_frame));
+    input_tamper_frame.origin_station = 0;
+    chain_payload_craft_t input_tamper_payload = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &input_tamper_payload, &ingot, 1,
+        &input_tamper_frame));
+    input_tamper_payload.input_pubs[0][0] ^= 0x10u;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &input_tamper_payload,
+            (uint16_t)sizeof(input_tamper_payload)),
+        7);
+    assert_origin_metadata_rejected(
+        w, 0, &input_tamper_frame);
+
+    /*
+     * The signed grade is an input to the fabricated pub derivation. A
+     * grade-only relabel therefore cannot preserve a product identity.
+     */
+    cargo_unit_t grade_tamper_frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &ingot, 1, 2,
+        &grade_tamper_frame));
+    grade_tamper_frame.origin_station = 0;
+    chain_payload_craft_t grade_tamper_payload = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &grade_tamper_payload, &ingot, 1,
+        &grade_tamper_frame));
+    cargo_unit_t relabeled_grade_frame =
+        grade_tamper_frame;
+    relabeled_grade_frame.grade =
+        (uint8_t)MINING_GRADE_FINE;
+    grade_tamper_payload.output_grade =
+        relabeled_grade_frame.grade;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &grade_tamper_payload,
+            (uint16_t)sizeof(grade_tamper_payload)),
+        8);
+    assert_origin_metadata_rejected(
+        w, 0, &relabeled_grade_frame);
+
+    /*
+     * Unused fixed-width input slots are signed canonical zeroes, not an
+     * extension channel for alternate recipe preimages.
+     */
+    cargo_unit_t unused_input_frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &ingot, 1, 3,
+        &unused_input_frame));
+    unused_input_frame.origin_station = 0;
+    chain_payload_craft_t unused_input_payload = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &unused_input_payload, &ingot, 1,
+        &unused_input_frame));
+    unused_input_payload.input_pubs[1][0] = 0x5Au;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_CRAFT,
+            &unused_input_payload,
+            (uint16_t)sizeof(unused_input_payload)),
+        9);
+    assert_origin_metadata_rejected(
+        w, 0, &unused_input_frame);
+
+    /*
+     * V1 SMELT reserves two authenticated bytes for future schema growth.
+     * Until a later version assigns them, non-zero values are noncanonical.
+     */
+    cargo_unit_t reserved_smelt_ingot = {0};
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+        fragment_pub, 4, &reserved_smelt_ingot));
+    reserved_smelt_ingot.origin_station = 0;
+    reserved_smelt_ingot.mined_block = 4425u;
+    chain_payload_smelt_t reserved_smelt_payload = {0};
+    ASSERT(chain_payload_smelt_bind_output(
+        &reserved_smelt_payload, fragment_pub, 4,
+        &reserved_smelt_ingot));
+    reserved_smelt_payload._reserved[0] = 0x5Au;
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_SMELT,
+            &reserved_smelt_payload,
+            (uint16_t)sizeof(reserved_smelt_payload)),
+        10);
+    assert_origin_metadata_rejected(
+        w, 0, &reserved_smelt_ingot);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(station, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 10);
     chain_test_teardown();
 }
 
@@ -1044,6 +2021,115 @@ TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
         ASSERT(tiers_seen[i] >= 1);
     }
 
+    chain_test_teardown();
+}
+
+TEST(test_fresh_genesis_anchors_legacy_station_cargo_before_motd) {
+    chain_test_setup("legacy_cargo_genesis");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 17031u;
+    chain_test_wipe_logs(w);
+    world_reset(w);
+
+    station_t *kepler = &w->stations[1];
+    const uint8_t origin[8] =
+        {'A','N','C','H','O','R','0','1'};
+    int before = kepler->manifest.count;
+    ASSERT_EQ_INT(station_finished_mint(
+                      kepler, COMMODITY_FRAME, 1, origin),
+                  1);
+    ASSERT_EQ_INT(kepler->manifest.count, before + 1);
+    cargo_unit_t *unit = &kepler->manifest.units[before];
+    ASSERT_EQ_INT(unit->recipe_id, RECIPE_LEGACY_MIGRATE);
+    /* station_finished_mint has no world/index parameter, so the explicit
+     * bootstrap boundary is responsible for stamping the real author. */
+    ASSERT_EQ_INT(unit->origin_station, 0);
+
+    world_seed_station_chain_genesis(w);
+
+    ASSERT(!kepler->chain_append_blocked);
+    ASSERT_EQ_INT(unit->origin_station, 1);
+    cargo_receipt_origin_proof_t proof = {0};
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_local_origin(
+            kepler, unit->pub, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(proof.event_type, CARGO_RECEIPT_ORIGIN_EVENT_CRAFT);
+    ASSERT_EQ_INT(proof.craft_recipe_id, RECIPE_LEGACY_MIGRATE);
+    ASSERT_EQ_INT(proof.craft_input_count, 0);
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_at_station(w, 1, unit, NULL);
+    ASSERT(evaluated.accepted);
+    ASSERT(evaluated.local_origin_without_receipt);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(kepler, &walked, NULL));
+    ASSERT_EQ_INT((int)walked, (int)kepler->chain_event_count);
+    chain_test_teardown();
+}
+
+TEST(test_legacy_cargo_anchor_append_failure_leaves_unit_unchanged) {
+    chain_test_setup("legacy_cargo_anchor_failure");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 17032u;
+    chain_test_wipe_logs(w);
+    world_reset(w);
+
+    const uint8_t origin[8] =
+        {'A','N','C','H','F','A','I','L'};
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        origin, COMMODITY_FRAME, 0, &unit));
+    cargo_unit_t before = unit;
+    cargo_unit_t *units[] = {&unit};
+
+    chain_log_test_fault_inject(
+        CHAIN_LOG_TEST_FAULT_WRITE, CHAIN_EVT_CRAFT, 1);
+    ASSERT(!world_anchor_legacy_cargo_origins(
+        w, 1, units, 1));
+    ASSERT(memcmp(&unit, &before, sizeof(unit)) == 0);
+    ASSERT_EQ_INT((int)w->stations[1].chain_event_count, 0);
+    ASSERT(w->stations[1].chain_append_blocked);
+    chain_test_teardown();
+}
+
+TEST(test_legacy_cargo_anchor_rejects_nonmigration_craft_origin) {
+    chain_test_setup("legacy_cargo_anchor_wrong_recipe");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 17033u;
+    chain_test_wipe_logs(w);
+    world_reset(w);
+
+    const uint8_t origin[8] =
+        {'A','N','C','H','W','R','N','G'};
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        origin, COMMODITY_FRAME, 0, &unit));
+    cargo_unit_t before = unit;
+
+    chain_payload_craft_t conflicting = {
+        .recipe_id = (uint16_t)RECIPE_FRAME_BASIC,
+        .input_count = 1,
+    };
+    memcpy(conflicting.output_pub, unit.pub,
+           sizeof(conflicting.output_pub));
+    memset(conflicting.input_pubs[0], 0x5a,
+           sizeof(conflicting.input_pubs[0]));
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, &w->stations[1], CHAIN_EVT_CRAFT,
+            &conflicting, (uint16_t)sizeof(conflicting)),
+        1);
+
+    cargo_unit_t *units[] = {&unit};
+    ASSERT(!world_anchor_legacy_cargo_origins(
+        w, 1, units, 1));
+    ASSERT(memcmp(&unit, &before, sizeof(unit)) == 0);
+    ASSERT_EQ_INT((int)w->stations[1].chain_event_count, 1);
+    ASSERT(!w->stations[1].chain_append_blocked);
     chain_test_teardown();
 }
 
@@ -1244,6 +2330,17 @@ void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
     RUN(test_chain_log_emit_and_verify);
+    RUN(test_chain_log_batch_commits_contiguous_verified_events);
+    RUN(test_chain_log_batch_prevalidates_before_any_commit);
+    RUN(test_chain_log_batch_disk_disabled_commits_atomically_in_memory);
+    RUN(test_chain_log_batch_event_id_overflow_is_inert);
+    RUN(test_chain_log_batch_partial_write_fault_rolls_back_exact_bytes);
+    RUN(test_chain_log_batch_flush_fault_rolls_back_exact_bytes);
+    RUN(test_chain_log_batch_close_fault_rolls_back_exact_bytes);
+    RUN(test_chain_log_first_append_dir_sync_fault_removes_new_file);
+    RUN(test_chain_log_first_boot_parent_sync_fault_removes_new_tree);
+    RUN(test_chain_log_first_boot_syncs_nested_dir_once);
+    RUN(test_chain_log_position_faults_remove_new_log_and_directory);
     RUN(test_chain_log_chain_linkage);
     RUN(test_chain_log_verify_accepts_clean_segment_reset);
     RUN(test_chain_log_tampered_event_detected);
@@ -1264,7 +2361,11 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_text_tamper);
     RUN(test_chain_log_route_history_tail_reader);
     RUN(test_chain_log_cargo_transform_reader);
+    RUN(test_cargo_origin_semantics_bind_every_manifest_trait);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
+    RUN(test_fresh_genesis_anchors_legacy_station_cargo_before_motd);
+    RUN(test_legacy_cargo_anchor_append_failure_leaves_unit_unchanged);
+    RUN(test_legacy_cargo_anchor_rejects_nonmigration_craft_origin);
     RUN(test_world_reset_does_not_emit_to_chain_log);
     RUN(test_chain_log_fragment_tow_payload_size);
     RUN(test_chain_log_fragment_tow_emit_and_verify);

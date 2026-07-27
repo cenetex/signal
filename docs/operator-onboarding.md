@@ -118,13 +118,29 @@ station's private key:
 
 For stations you operate yourself, keep the same station authority secret
 available across restarts and replicas. Changing it intentionally rekeys
-stations; on load, the server starts a fresh chain identity for any station
-whose saved pubkey no longer matches the configured secret.
+stations; on load, the server preserves the saved public key as a
+trusted-rotated identity and starts a fresh live chain identity under the newly
+derived current key. The public registry is bounded and persisted with the
+world save. Explicitly untrusted or revoked keys are never reactivated: a
+configured secret that would derive one causes the load to fail closed.
+The registry retains at most eight public keys. When it is full, the oldest
+still-trusted rotated row may be evicted; explicit untrusted/revoked rows are
+never discarded to make room. If every historical slot is an explicit deny
+decision, another rekey is rejected until an operator resolves capacity
+deliberately.
 
 The private key is never written to disk and never sent over the wire. Layer B
 keeps `station_secret` as the last field of `station_t` and re-derives it on
 load via `station_authority_rederive_secret`
 ([`server/station_authority.h`](../server/station_authority.h)).
+Only public keys and their independent lifecycle/trust decisions are saved. A
+v76 or earlier world synthesizes one current record from each station's saved
+pubkey; it does not invent historical trust. Historical chain-log files remain
+addressable by those preserved public identities after a rekey.
+An operator may also record an unknown public key as deny-only untrusted or
+revoked policy. Such a row deliberately keeps its event lifecycle unspecified:
+without a verified historical log, the server will not fabricate an origin
+proof merely because a deny decision exists.
 
 ### 3. Wire your station's pubkey into the world
 
@@ -465,11 +481,14 @@ continuity with the permanent history.
 
 `chain_log_emit` runs a self-verify on the freshly-signed header before
 writing it to disk ([`server/chain_log.c`](../server/chain_log.c)).
-A failure here means the secret slot was zero or rederive failed. Check
-that the world load called `station_authority_rederive_secret` for every
-station and that the station authority secret was configured before
-`world_reset` or `world_load`. For outposts, the founder + tick must have been
-loaded from the save.
+A failure here means the secret slot was zero or authority rederivation did
+not complete. Check that the world load called
+`station_authority_rederive_secret` for every station and that the authority
+secret was configured before `world_reset` or `world_load`. A
+`STATION_AUTHORITY_REDERIVE_REJECTED` result is intentional fail-closed
+behavior: the derived key was explicitly untrusted/revoked, the saved public
+registry was malformed, or its bounded capacity could not preserve a deny
+decision. For outposts, the founder + tick must have been loaded from the save.
 
 ### "Disk is filling up faster than expected"
 

@@ -218,7 +218,8 @@ signal/
 │   └── ...
 │
 ├── scripts/                 # Build/CI/dev scripts
-│   ├── sync-assets.sh       # CDN asset sync
+│   ├── run_signal_test.sh   # Linux-safe 64 MiB test launcher
+│   ├── check_vendor_drift.sh # Docker vendor-context invariant
 │   ├── ws-latency-proxy.mjs # WebSocket latency injection proxy
 │   ├── neural-gap-ab.py     # Neural vs heuristic A/B gap harness
 │   ├── protocol-check.py    # Wire protocol validator
@@ -227,11 +228,11 @@ signal/
 │   ├── smoke-latency-suite.mjs # Full latency smoke integration
 │   └── deploy-arweave.mjs   # Arweave permaweb deploy
 │
-├── assets/                  # Runtime media (not in git; synced via manifest.txt)
-│   ├── music/               # MP3 music tracks
-│   ├── avatars/             # Station PNG portraits
-│   ├── episodes/            # MPEG-1 episode cutscenes
-│   └── motd/                # Station MOTD JSON
+├── assets/                  # Runtime media + external-media inventory
+│   ├── manifest.txt         # Required/optional station, music, episode paths
+│   ├── anime/               # Ignored/local MPEG-1 episode cutscenes
+│   ├── music/               # Externally supplied MP3 tracks when provisioned
+│   └── stations/            # Externally supplied portraits/MOTD when provisioned
 │
 ├── stations/                # Per-station identity catalog (.cat files)
 ├── chain/                   # Per-station signed chain logs (.log files)

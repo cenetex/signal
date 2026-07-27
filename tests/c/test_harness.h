@@ -308,6 +308,13 @@ bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
 bool test_set_station_finished_units(station_t *st, commodity_t c, int count);
 bool test_set_station_finished_amount(station_t *st, commodity_t c,
                                       float amount);
+/* Provenance-aware fixture helpers. These author real, signed
+ * CRAFT(RECIPE_LEGACY_MIGRATE) origins; they never relax the gameplay trust
+ * evaluator. Use after a test materializes trusted legacy fixture cargo. */
+bool test_anchor_station_legacy_cargo(world_t *w, int station_idx);
+bool test_anchor_pod_legacy_cargo(world_t *w, int station_idx, int pod_idx);
+bool test_anchor_legacy_cargo_unit(world_t *w, int station_idx,
+                                   cargo_unit_t *unit);
 void test_clear_knowledge(knowledge_view_t *view, uint8_t capacity);
 bool test_add_known_contract(knowledge_view_t *view,
                              const contract_summary_t *summary);

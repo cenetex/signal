@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe banned-apis deterministic-libm deterministic-build-flags doc-freshness fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -287,8 +287,12 @@ signal-hnn-shadow:
 		$(if $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),--min-p50-fidelity $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),) \
 		$(if $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),--max-p90-capacity-load $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),)
 
+# The former S3 sync script was removed with the retired AWS deployment.
+# Keep the old target fail-loud so a stale command cannot silently succeed
+# merely because the assets/ directory exists.
 assets:
-	./scripts/sync-assets.sh
+	@echo "make assets is retired: assets/manifest.txt inventories external/local media, but this repository has no download command" >&2
+	@exit 2
 
 PROTOCOL_CHECK_URL ?= http://127.0.0.1:9091/api/protocol
 
@@ -330,46 +334,80 @@ NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
 TEST_BIN ?= ./build/signal_test
 TEST_ENV ?=
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-# world_t is larger than Linux's usual 8 MiB soft stack limit. Legacy tests
-# intentionally use WORLD_DECL stack allocation, matching the 64 MiB stack
-# reserved for the macOS test binary in CMakeLists.txt.
-TEST_STACK_PREFIX := ulimit -s 65536 &&
-else
-TEST_STACK_PREFIX :=
-endif
-TEST_PREFIX ?= $(TEST_STACK_PREFIX)
+TEST_SUITE_LABEL ?= native
+TEST_EXPECTED_COUNT ?=
+# CI callers can retain a concurrency-safe copy of every shard log on
+# failure. Each invocation creates a unique run.* subdirectory.
+TEST_FAILURE_LOG_DIR ?=
+# world_t is larger than Linux's usual 8 MiB soft stack limit. The launcher
+# raises the limit before exec on Linux; macOS reserves the same 64 MiB in the
+# signal_test link options. Keep documented direct invocations on this path.
+TEST_RUNNER ?= ./scripts/run_signal_test.sh
 
 # Reusable parallel-shard runner. Caller passes RUN_FLAGS for the test
 # binary (e.g. --no-soak / --soak-only); the runner handles sharding,
 # wait, and aggregate reporting.
 define RUN_PARALLEL_TESTS
-	@rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit
-	@for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
-		( $(TEST_PREFIX) $(TEST_ENV) $(TEST_BIN) --shard=$$i/$(TEST_SHARDS) $(1) $(TEST_QUIET) \
-			> /tmp/signal-test-shard.$$i.log 2>&1; \
-		  echo $$? > /tmp/signal-test-shard.$$i.exit ) & \
+	@log_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/signal-test-shards.XXXXXX") || exit 1; \
+	trap 'rm -rf "$$log_dir"' EXIT HUP INT TERM; \
+	for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
+		( $(TEST_ENV) $(TEST_RUNNER) $(TEST_BIN) --shard=$$i/$(TEST_SHARDS) $(1) $(TEST_QUIET) \
+			> "$$log_dir/$$i.log" 2>&1; \
+		  echo $$? > "$$log_dir/$$i.exit" ) & \
 	done; \
 	wait; \
 	fail=0; total_run=0; total_passed=0; total_failed=0; \
 	for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
-		ec=$$(cat /tmp/signal-test-shard.$$i.exit); \
+		if [ ! -f "$$log_dir/$$i.exit" ]; then \
+			echo ""; echo "=== shard $$i did not record an exit status ==="; \
+			[ ! -f "$$log_dir/$$i.log" ] || cat "$$log_dir/$$i.log"; \
+			fail=1; \
+			continue; \
+		fi; \
+		ec=$$(cat "$$log_dir/$$i.exit"); \
 		if [ "$$ec" != "0" ]; then \
 			echo ""; echo "=== shard $$i failed (exit $$ec) ==="; \
-			cat /tmp/signal-test-shard.$$i.log; \
+			cat "$$log_dir/$$i.log"; \
 			fail=1; \
 		fi; \
-		line=$$(grep -E "^[0-9]+ tests run" /tmp/signal-test-shard.$$i.log | tail -1); \
+		summary_count=$$(grep -Ec "^[0-9]+ tests run, [0-9]+ passed, [0-9]+ failed(, [0-9]+ warnings)?$$" "$$log_dir/$$i.log" || true); \
+		if [ "$$summary_count" != "1" ]; then \
+			echo ""; echo "=== shard $$i has $$summary_count valid test summaries (expected 1) ==="; \
+			[ ! -f "$$log_dir/$$i.log" ] || cat "$$log_dir/$$i.log"; \
+			fail=1; \
+			continue; \
+		fi; \
+		line=$$(grep -E "^[0-9]+ tests run, [0-9]+ passed, [0-9]+ failed(, [0-9]+ warnings)?$$" "$$log_dir/$$i.log"); \
 		r=$$(echo $$line | awk '{print $$1}'); \
 		p=$$(echo $$line | awk '{print $$4}'); \
 		f=$$(echo $$line | awk '{print $$6}'); \
+		if [ "$$r" -ne $$((p + f)) ]; then \
+			echo ""; echo "=== shard $$i has an inconsistent test summary ==="; \
+			cat "$$log_dir/$$i.log"; \
+			fail=1; \
+			continue; \
+		fi; \
+		if [ "$$f" -ne 0 ]; then \
+			fail=1; \
+		fi; \
 		total_run=$$(( total_run + $${r:-0} )); \
 		total_passed=$$(( total_passed + $${p:-0} )); \
 		total_failed=$$(( total_failed + $${f:-0} )); \
 	done; \
 	echo ""; \
-	echo "$$total_run tests run, $$total_passed passed, $$total_failed failed (across $(TEST_SHARDS) shards)"; \
+	echo "$(TEST_SUITE_LABEL): $$total_run tests run, $$total_passed passed, $$total_failed failed (across $(TEST_SHARDS) shards)"; \
+	if [ -n "$(TEST_EXPECTED_COUNT)" ] && [ "$$total_run" -ne "$(TEST_EXPECTED_COUNT)" ]; then \
+		echo "=== $(TEST_SUITE_LABEL) discovered $(TEST_EXPECTED_COUNT) tagged tests but ran $$total_run ==="; \
+		fail=1; \
+	fi; \
+	if [ "$$fail" != "0" ] && [ -n "$(TEST_FAILURE_LOG_DIR)" ]; then \
+		mkdir -p "$(TEST_FAILURE_LOG_DIR)" || exit 1; \
+		failure_dir=$$(mktemp -d "$(TEST_FAILURE_LOG_DIR)/run.XXXXXX") || exit 1; \
+		for file in "$$log_dir"/*; do \
+			[ ! -f "$$file" ] || cp "$$file" "$$failure_dir/"; \
+		done; \
+		echo "failure logs saved to $$failure_dir"; \
+	fi; \
 	exit $$fail
 endef
 
@@ -385,21 +423,33 @@ endef
 #   make test-serial  Single-process, in-order, fast tests only —
 #                     for debugging a shard-related flake.
 #   make test-fast    Alias for `make test` (backward compat).
+SOAK_TEST_COUNT := $(shell grep -hE '^[[:space:]]*RUN_SOAK\([[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\)[[:space:]]*;' tests/c/test_*.c | wc -l | tr -d '[:space:]')
+
+test test-fast: TEST_SUITE_LABEL=non-soak
 test test-fast: build-test
 	$(call RUN_PARALLEL_TESTS,--no-soak)
 
+test-soak: TEST_SUITE_LABEL=functional soak (RUN_SOAK)
+test-soak: TEST_EXPECTED_COUNT=$(SOAK_TEST_COUNT)
 test-soak: build-test
 	$(call RUN_PARALLEL_TESTS,--soak-only)
 
+test-all: TEST_SUITE_LABEL=full native
 test-all: build-test
 	$(call RUN_PARALLEL_TESTS,--soak)
 
 test-serial: build-test
-	./build/signal_test --no-soak $(TEST_QUIET)
+	$(TEST_ENV) $(TEST_RUNNER) ./build/signal_test --no-soak $(TEST_QUIET)
+
+asteroid-physics-bench: build-test
+	SIGNAL_RUN_ASTEROID_PHYSICS_BENCH=1 \
+		$(TEST_RUNNER) ./build/signal_test \
+		--filter=asteroid_physics_density_benchmark --no-soak
 
 SANITIZER ?= address,undefined
 SAN_BUILD_DIR ?= build-san
 SAN_TEST_FLAGS ?= --quiet --no-soak
+SAN_SOAK_TEST_FLAGS ?= --quiet --soak-only
 
 build-san:
 	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
@@ -409,19 +459,23 @@ build-san:
 	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
 	cmake --build $(SAN_BUILD_DIR) --parallel
 
-test-san: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
+test-san test-san-soak: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
 # Legacy fixtures frequently clear seeded station/NPC arrays with memset,
 # discarding fixture-owned manifests before WORLD_DECL cleanup runs. Keep this
 # gate focused on address/undefined behavior until those fixture leaks are
 # migrated to cleanup-aware reset helpers.
-test-san: TEST_ENV=ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-test-san: TEST_PREFIX=$(TEST_STACK_PREFIX)
+test-san test-san-soak: TEST_ENV=ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test-san: TEST_SUITE_LABEL=sanitized non-soak
 test-san: build-san
 	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
 
+test-san-soak: TEST_SUITE_LABEL=sanitized functional soak (RUN_SOAK)
+test-san-soak: TEST_EXPECTED_COUNT=$(SOAK_TEST_COUNT)
+test-san-soak: build-san
+	$(call RUN_PARALLEL_TESTS,$(SAN_SOAK_TEST_FLAGS))
+
 test-tsan: TEST_BIN=./build-tsan/signal_test
 test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
-test-tsan: TEST_PREFIX=$(TEST_STACK_PREFIX)
 test-tsan:
 	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
 		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
@@ -437,7 +491,8 @@ test-tsan:
 # when present. Override with FUZZ_CC=... . FUZZ_TIME bounds the run;
 # crash artifacts land in tests/fuzz/artifacts/ for standalone replay.
 # New coverage inputs land in the ignored build tree so routine fuzz runs
-# do not dirty the curated, tracked seed corpus.
+# do not dirty the curated, tracked seed corpus. Keep this configuration
+# headless: decoder fuzzing must not depend on desktop audio/window libraries.
 FUZZ_CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; else echo clang; fi)
 FUZZ_TIME ?= 60
 FUZZ_WORK_CORPUS ?= build-fuzz/corpus
@@ -447,6 +502,7 @@ FUZZ_WORK_CORPUS ?= build-fuzz/corpus
 FUZZ_MAX_LEN ?= 131072
 fuzz-receipts:
 	cmake $(GENERATOR) -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF \
 		-DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=$(FUZZ_CC)
 	cmake --build build-fuzz --parallel --target fuzz_cargo_receipt
 	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus $(FUZZ_WORK_CORPUS)
@@ -490,6 +546,16 @@ deterministic-libm:
 doc-freshness:
 	python3 scripts/check_doc_freshness.py
 	python3 scripts/test_check_doc_freshness.py
+
+soak-automation:
+	python3 scripts/check_soak_automation.py
+	python3 scripts/test_check_soak_automation.py
+
+vendor-drift:
+	bash scripts/check_vendor_drift.sh
+	bash scripts/test_vendor_drift_detection.sh
+	python3 scripts/check_container_workflow_inputs.py
+	python3 scripts/test_check_container_workflow_inputs.py
 
 deterministic-build-flags:
 	python3 scripts/check_deterministic_build_flags.py $(COMPILE_COMMANDS)
@@ -546,6 +612,14 @@ RELAY_PROBE_EXTRA ?=
 relay-traffic-probe:
 	node scripts/relay-traffic-probe.mjs --url=$(RELAY_PROBE_URL) --clients=$(RELAY_PROBE_CLIENTS) --warmup-ms=$(RELAY_PROBE_WARMUP_MS) --duration-ms=$(RELAY_PROBE_DURATION_MS) --ping-hz=$(RELAY_PROBE_PING_HZ) --input-ack-hz=$(RELAY_PROBE_INPUT_ACK_HZ) $(RELAY_PROBE_EXTRA)
 
+WS_BACKPRESSURE_SOAK_EXTRA ?=
+
+ws-backpressure-soak: build-server
+	node scripts/ws-backpressure-soak.mjs $(WS_BACKPRESSURE_SOAK_EXTRA)
+
+ws-backpressure-soak-short: build-server
+	node scripts/ws-backpressure-soak.mjs --short $(WS_BACKPRESSURE_SOAK_EXTRA)
+
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs the fast/non-soak tests,
 # then joins gcovr line coverage with lizard per-function complexity to
@@ -568,7 +642,7 @@ crap:
 		-DCMAKE_EXE_LINKER_FLAGS="--coverage"
 	cmake --build build-coverage --target signal_test
 	find build-coverage -name '*.gcda' -delete
-	ulimit -s 16384 && ./build-coverage/signal_test --quiet --no-soak
+	$(TEST_RUNNER) ./build-coverage/signal_test --quiet --no-soak
 	gcovr -r . --json coverage.json --gcov-ignore-parse-errors \
 		--filter 'server/.*' --filter 'client/.*' --filter 'shared/.*' \
 		--exclude 'server/mongoose\..*' \

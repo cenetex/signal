@@ -11,6 +11,7 @@
  *   STATE (0x03): 45 bytes, optional authoritative ack/timestamp tail
  *   INPUT (0x04): 22 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick + client_sent_ms
  *   PROTOCOL_INFO (0x41): stream classes, record sizes, max counts, cadences
+ *   PUBKEY_CHALLENGE (0x70): protocol-v3 transport-bound auth nonce
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
@@ -594,9 +595,9 @@ void net_set_identity_secret(const uint8_t secret[64]);
 
 /* Send a signed state-changing action.
  *
- * Returns true if the message was queued onto the wire; false if the
- * client lacks an installed secret or the payload exceeds
- * SIGNED_ACTION_MAX_PAYLOAD.
+ * Returns true if the message was admitted to the transport; false if the
+ * client lacks an installed secret, the payload exceeds
+ * SIGNED_ACTION_MAX_PAYLOAD, or the transport rejects the write.
  *
  * Nonce is chosen internally — monotonic across the process lifetime.
  * The first signed action after process start uses the wall clock time
@@ -674,7 +675,8 @@ void net_send_handoff_present(const handoff_ticket_t *ticket,
 
 /* Send a planning intent (outpost create / module slot / cancel).
  * Returns false when an identity-backed client cannot use the signed
- * planning channel and the request is blocked instead of downgraded. */
+ * planning channel or the transport rejects the write; the request is
+ * blocked instead of downgraded. */
 bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py);
 

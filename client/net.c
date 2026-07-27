@@ -49,6 +49,9 @@ static struct {
     bool protocol_info_ready;
     uint8_t session_token[8];
     bool session_token_ready;
+    uint8_t pubkey_challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
+    bool pubkey_challenge_ready;
+    pubkey_proof_client_state_t pubkey_proof;
     char callsign[8];
     bool callsign_ready;
     char server_url[256];
@@ -82,6 +85,7 @@ static struct {
 static bool net_loopback_active = false;
 static net_loopback_send_fn net_loopback_send = NULL;
 static void *net_loopback_user = NULL;
+static uint32_t net_auth_transport_closes = 0;
 
 static void net_player_state_clear_ack_transport(NetPlayerState *ps) {
     if (!ps) return;
@@ -383,13 +387,14 @@ static bool decode_station_identity_q(NetStationIdentity *si,
     return true;
 }
 
-/* Forward declaration — implemented per platform below. */
-static void ws_send_binary(const uint8_t* data, int len);
-static void ensure_session_token(void);
+/* Forward declarations — implemented per platform below. */
+static bool ws_send_binary(const uint8_t* data, int len);
+static void ws_close_authentication_failure(void);
+static bool ensure_session_token(void);
 static void ensure_callsign(void);
-static void send_register_pubkey(void);
+static bool send_register_pubkey(void);
 static void send_pubkey_proof(void);
-static void send_session_token(void);
+static bool send_session_token(void);
 static void handle_message(const uint8_t* data, int len);
 
 static void preserve_identity(uint8_t pubkey[32], uint8_t secret[64],
@@ -408,17 +413,43 @@ static void restore_identity(const uint8_t pubkey[32], const uint8_t secret[64],
     net_state.identity_secret_ready = secret_ready;
 }
 
-static void transport_connected(const char *label) {
+static void clear_pubkey_challenge_state(bool clear_proof_latch) {
+    memset(net_state.pubkey_challenge, 0,
+           sizeof(net_state.pubkey_challenge));
+    net_state.pubkey_challenge_ready = false;
+    if (clear_proof_latch)
+        pubkey_proof_client_state_reset(&net_state.pubkey_proof);
+}
+
+static bool transport_connected(const char *label) {
     net_state.connected = true;
     printf("[net] connected to %s\n", label ? label : "transport");
+    clear_pubkey_challenge_state(true);
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        net_state.connected = false;
+        fprintf(stderr,
+                "[net] secure identity entropy unavailable; "
+                "refusing authentication\n");
+        return false;
+    }
+    ensure_callsign();
     /* Layer A.2 of #479 — pubkey registration MUST precede the session
      * handshake so the server can fold the pubkey into reconnect
-     * resolution. */
-    send_register_pubkey();
-    ensure_session_token();
-    ensure_callsign();
-    send_session_token();
+     * resolution. The proof itself waits for the one-time server challenge. */
+    if (!send_register_pubkey() || !send_session_token()) {
+        net_state.connected = false;
+        clear_pubkey_challenge_state(true);
+        fprintf(stderr,
+                "[net] authentication bootstrap send rejected\n");
+        return false;
+    }
     mining_client_set_session_token(net_state.session_token);
+    return true;
 }
 
 static void transport_message(const uint8_t *data, int len) {
@@ -428,6 +459,7 @@ static void transport_message(const uint8_t *data, int len) {
 static void transport_disconnected(const char *label) {
     printf("[net] disconnected from %s\n", label ? label : "transport");
     net_state.connected = false;
+    clear_pubkey_challenge_state(true);
 }
 
 void net_set_loopback_send(net_loopback_send_fn send_fn, void *user) {
@@ -456,7 +488,10 @@ bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id) {
         net_state.players[local_id].active = true;
     }
 
-    transport_connected("local server loopback");
+    if (!transport_connected("local server loopback")) {
+        net_loopback_active = false;
+        return false;
+    }
     return true;
 }
 
@@ -481,7 +516,8 @@ void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
     buf[34] = 0;
     for (uint8_t i = 0; i < chain->len; i++)
         cargo_receipt_pack(&chain->links[i], &buf[35 + i * CARGO_RECEIPT_SIZE]);
-    ws_send_binary(buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
+    (void)ws_send_binary(
+        buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
 }
 
 void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
@@ -492,7 +528,7 @@ void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
     buf[1] = source_station;
     buf[2] = dest_station;
     write_u32_le(&buf[3], ttl_ticks);
-    ws_send_binary(buf, NET_HANDOFF_REQUEST_SIZE);
+    (void)ws_send_binary(buf, NET_HANDOFF_REQUEST_SIZE);
 }
 
 void net_send_handoff_present(const handoff_ticket_t *ticket,
@@ -513,7 +549,7 @@ void net_send_handoff_present(const handoff_ticket_t *ticket,
         free(buf);
         return;
     }
-    ws_send_binary(buf, (int)len);
+    (void)ws_send_binary(buf, (int)len);
     free(buf);
 }
 
@@ -530,7 +566,10 @@ void net_send_latency_ping(void) {
     buf[0] = NET_MSG_LATENCY_PING;
     write_u32_le(&buf[1], seq);
     write_u32_le(&buf[5], sent_ms);
-    ws_send_binary(buf, NET_LATENCY_PING_SIZE);
+    if (!ws_send_binary(buf, NET_LATENCY_PING_SIZE)) {
+        slot->seq = 0;
+        slot->sent_ms = 0;
+    }
 }
 
 static uint16_t metric_ms_u16(float ms) {
@@ -562,13 +601,14 @@ void net_send_client_metrics(uint32_t seq,
     write_u16_le(&buf[17], replay_depth);
     buf[19] = action_queue_depth;
     buf[20] = recovery_flags;
-    ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
+    (void)ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
 }
 
 #ifdef __EMSCRIPTEN__
 static void transport_error(const char *label) {
     printf("[net] %s error\n", label ? label : "transport");
     net_state.connected = false;
+    clear_pubkey_challenge_state(true);
 }
 #endif
 
@@ -579,8 +619,11 @@ static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
     write_u32_le(&payload[0], fracture_id);
     write_u32_le(&payload[4], burst_nonce);
     payload[8] = (uint8_t)claimed_grade;
-    if (net_send_signed_action(SIGNED_ACTION_FRACTURE_CLAIM,
-                               payload, sizeof(payload))) {
+    if (net_has_identity_pubkey()) {
+        /* An admission failure on the signed path must not downgrade an
+         * identity-backed claim to the unsigned legacy packet. */
+        (void)net_send_signed_action(
+            SIGNED_ACTION_FRACTURE_CLAIM, payload, sizeof(payload));
         return;
     }
     buf[0] = NET_MSG_FRACTURE_CLAIM;
@@ -593,41 +636,127 @@ static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
     buf[7] = (uint8_t)(burst_nonce >> 16);
     buf[8] = (uint8_t)(burst_nonce >> 24);
     buf[9] = (uint8_t)claimed_grade;
-    ws_send_binary(buf, sizeof(buf));
+    (void)ws_send_binary(buf, sizeof(buf));
 }
 
 #ifdef __EMSCRIPTEN__
-static uint8_t hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
-    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
-    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
-    return 0;
+EM_JS(int, signal_session_token_load, (char *out, int cap), {
+    try {
+        var s = globalThis.localStorage.getItem('signal_session_token');
+        if (!s) return 0;
+        if (s.length !== 16 || s.length + 1 > cap) return -1;
+        for (var i = 0; i < s.length; i++) {
+            var code = s.charCodeAt(i);
+            var isDigit = code >= 48 && code <= 57;
+            var isUpper = code >= 65 && code <= 70;
+            var isLower = code >= 97 && code <= 102;
+            if (!isDigit && !isUpper && !isLower) return -1;
+        }
+        stringToUTF8(s, out, cap);
+        return 1;
+    } catch (e) {
+        return -2;
+    }
+})
+
+EM_JS(int, signal_session_token_save, (const char *value), {
+    try {
+        globalThis.localStorage.setItem(
+            'signal_session_token', UTF8ToString(value));
+        return 1;
+    } catch (e) {
+        return 0;
+    }
+})
+
+static bool hex_nibble(char c, uint8_t *out) {
+    if (!out) return false;
+    if (c >= '0' && c <= '9') {
+        *out = (uint8_t)(c - '0');
+        return true;
+    }
+    if (c >= 'a' && c <= 'f') {
+        *out = (uint8_t)(c - 'a' + 10);
+        return true;
+    }
+    if (c >= 'A' && c <= 'F') {
+        *out = (uint8_t)(c - 'A' + 10);
+        return true;
+    }
+    *out = 0;
+    return false;
 }
 #endif
 
-static void ensure_session_token(void) {
-    if (net_state.session_token_ready) return;
+static bool session_token_nonzero(const uint8_t token[8]) {
+    if (!token) return false;
+    uint8_t any = 0;
+    for (int i = 0; i < 8; i++) any |= token[i];
+    return any != 0;
+}
+
+static bool ensure_session_token(void) {
+    if (net_state.session_token_ready)
+        return session_token_nonzero(net_state.session_token);
+    memset(net_state.session_token, 0, sizeof(net_state.session_token));
 #ifdef __EMSCRIPTEN__
-    /* Try to load from localStorage, generate if missing.
-     * Returns 16-char hex string or generates + stores a new one. */
-    const char *hex = emscripten_run_script_string(
-        "(function(){"
-        "var k='signal_session_token',s=localStorage.getItem(k);"
-        "if(s&&s.length===16)return s;"
-        "var a=new Uint8Array(8);crypto.getRandomValues(a);"
-        "var h='';for(var i=0;i<8;i++)h+=('0'+a[i].toString(16)).slice(-2);"
-        "localStorage.setItem(k,h);return h;"
-        "})()"
-    );
-    if (hex && strlen(hex) == 16) {
-        for (int i = 0; i < 8; i++)
-            net_state.session_token[i] = (hex_nibble(hex[i*2]) << 4) | hex_nibble(hex[i*2+1]);
+    char hex[17] = {0};
+    int loaded = signal_session_token_load(hex, sizeof(hex));
+    if (loaded == 1) {
+        for (int i = 0; i < 8; i++) {
+            uint8_t high = 0;
+            uint8_t low = 0;
+            if (!hex_nibble(hex[i * 2], &high) ||
+                !hex_nibble(hex[i * 2 + 1], &low)) {
+                memset(net_state.session_token, 0,
+                       sizeof(net_state.session_token));
+                return false;
+            }
+            net_state.session_token[i] = (uint8_t)((high << 4) | low);
+        }
+        if (!session_token_nonzero(net_state.session_token)) {
+            memset(net_state.session_token, 0,
+                   sizeof(net_state.session_token));
+            /* Treat a persisted all-zero token as malformed. Generate a
+             * replacement below, but do not overwrite storage unless the
+             * CSPRNG succeeds. */
+            loaded = -1;
+        } else {
+            net_state.session_token_ready = true;
+            return true;
+        }
     }
-#else
-    signal_crypto_random_bytes(net_state.session_token,
-                               sizeof(net_state.session_token));
+    /* A malformed entry may be replaced, but only after fresh entropy
+     * succeeds. Storage access failure itself remains a hard failure. */
+    if (loaded == -2) return false;
+#endif
+
+    if (!signal_crypto_random_bytes(net_state.session_token,
+                                    sizeof(net_state.session_token)) ||
+        !session_token_nonzero(net_state.session_token)) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        return false;
+    }
+
+#ifdef __EMSCRIPTEN__
+    static const char digits[] = "0123456789abcdef";
+    char encoded[17];
+    for (int i = 0; i < 8; i++) {
+        encoded[i * 2] = digits[net_state.session_token[i] >> 4];
+        encoded[i * 2 + 1] = digits[net_state.session_token[i] & 0x0Fu];
+    }
+    encoded[16] = '\0';
+    if (!signal_session_token_save(encoded)) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        return false;
+    }
 #endif
     net_state.session_token_ready = true;
+    return true;
 }
 
 static void ensure_callsign(void) {
@@ -651,15 +780,17 @@ static void ensure_callsign(void) {
  * immediately on connect, BEFORE the SESSION handshake, so the server
  * can stage the pubkey assertion. Registry/persistence binding waits for
  * send_pubkey_proof() after the SESSION token is known. */
-static void send_register_pubkey(void) {
-    if (!net_state.identity_pubkey_ready) return;
+static bool send_register_pubkey(void) {
+    if (!net_state.identity_pubkey_ready) return false;
     uint8_t buf[REGISTER_PUBKEY_MSG_SIZE];
     buf[0] = NET_MSG_REGISTER_PUBKEY;
     memcpy(&buf[1], net_state.identity_pubkey, 32);
-    ws_send_binary(buf, REGISTER_PUBKEY_MSG_SIZE);
+    if (!ws_send_binary(buf, REGISTER_PUBKEY_MSG_SIZE))
+        return false;
     printf("[net] sent pubkey registration (%02x%02x%02x%02x...)\n",
            net_state.identity_pubkey[0], net_state.identity_pubkey[1],
            net_state.identity_pubkey[2], net_state.identity_pubkey[3]);
+    return true;
 }
 
 static void send_pubkey_proof_for_token(const uint8_t token[8]) {
@@ -668,19 +799,55 @@ static void send_pubkey_proof_for_token(const uint8_t token[8]) {
         !net_state.identity_secret_ready) {
         return;
     }
+    pubkey_proof_scheme_t scheme =
+        pubkey_proof_client_next_scheme(&net_state.pubkey_proof);
+    if (scheme == PUBKEY_PROOF_SCHEME_NONE)
+        return;
+    if (scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2 &&
+        !net_state.pubkey_challenge_ready) {
+        return;
+    }
+
     uint8_t buf[PROVE_PUBKEY_MSG_SIZE];
     buf[0] = NET_MSG_PROVE_PUBKEY;
     memcpy(&buf[PROVE_PUBKEY_PUBKEY_OFFSET],
            net_state.identity_pubkey, SIGNAL_CRYPTO_PUBKEY_BYTES);
     memcpy(&buf[PROVE_PUBKEY_TOKEN_OFFSET], token, 8);
-    if (!pubkey_proof_sign(&buf[PROVE_PUBKEY_SIG_OFFSET],
-                           net_state.identity_pubkey,
-                           net_state.identity_secret,
-                           token)) {
+    bool signed_ok = scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2
+        ? pubkey_proof_sign(
+              &buf[PROVE_PUBKEY_SIG_OFFSET],
+              net_state.identity_pubkey,
+              net_state.identity_secret,
+              token,
+              net_state.pubkey_challenge)
+        : pubkey_proof_v1_sign(
+              &buf[PROVE_PUBKEY_SIG_OFFSET],
+              net_state.identity_pubkey,
+              net_state.identity_secret,
+              token);
+    if (!signed_ok)
+        return;
+
+    bool admitted = ws_send_binary(buf, PROVE_PUBKEY_MSG_SIZE);
+    pubkey_proof_client_record_send(
+        &net_state.pubkey_proof, scheme, admitted);
+    if (!admitted) {
+        /* Do not consume the challenge or latch an attempted proof. A failed
+         * auth write has no guaranteed future trigger, so fail the transport
+         * closed and let the normal reconnect path obtain a fresh challenge. */
+        fprintf(stderr,
+                "[net] pubkey proof send rejected; closing transport\n");
+        ws_close_authentication_failure();
         return;
     }
-    ws_send_binary(buf, PROVE_PUBKEY_MSG_SIZE);
-    printf("[net] sent pubkey proof\n");
+    if (scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2) {
+        memset(net_state.pubkey_challenge, 0,
+               sizeof(net_state.pubkey_challenge));
+        net_state.pubkey_challenge_ready = false;
+    }
+    printf("[net] sent %s pubkey proof\n",
+           scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2
+               ? "challenge-bound" : "legacy-v1");
 }
 
 static void send_pubkey_proof(void) {
@@ -690,7 +857,11 @@ static void send_pubkey_proof(void) {
 
 void net_set_identity_pubkey(const uint8_t pubkey[32]) {
     if (!pubkey) {
+        memset(net_state.identity_pubkey, 0,
+               sizeof(net_state.identity_pubkey));
         net_state.identity_pubkey_ready = false;
+        memset(net_state.callsign, 0, sizeof(net_state.callsign));
+        net_state.callsign_ready = false;
         return;
     }
     memcpy(net_state.identity_pubkey, pubkey, 32);
@@ -782,8 +953,7 @@ bool net_send_signed_action(uint8_t action_type,
                        net_state.identity_secret);
     int total = SIGNED_ACTION_HEADER_SIZE + (int)payload_len +
                 (int)SIGNED_ACTION_SIG_SIZE;
-    ws_send_binary(buf, total);
-    return true;
+    return ws_send_binary(buf, total);
 }
 
 bool net_send_claim_legacy_save(const char *token_basename) {
@@ -805,25 +975,61 @@ bool net_send_claim_legacy_save(const char *token_basename) {
     buf[1] = (uint8_t)hex_len;
     memcpy(&buf[2], token_basename, hex_len);
     memcpy(&buf[2 + hex_len], sig, SIGNAL_CRYPTO_SIG_BYTES);
-    ws_send_binary(buf, (int)(2 + hex_len + SIGNAL_CRYPTO_SIG_BYTES));
+    if (!ws_send_binary(
+            buf, (int)(2 + hex_len + SIGNAL_CRYPTO_SIG_BYTES))) {
+        return false;
+    }
     printf("[net] sent legacy-save claim for %s\n", token_basename);
     return true;
 }
 
-static void send_session_token(void) {
+static bool send_session_token(void) {
     uint8_t buf[16]; /* type(1) + token(8) + callsign(7) */
     buf[0] = NET_MSG_SESSION;
     memcpy(&buf[1], net_state.session_token, 8);
     memcpy(&buf[9], net_state.callsign, 7);
-    ws_send_binary(buf, 16);
+    if (!ws_send_binary(buf, 16))
+        return false;
     send_pubkey_proof();
+    if (!net_state.connected)
+        return false;
     printf("[net] sent session token + callsign %s\n", net_state.callsign);
+    return true;
 }
 
 static void handle_message(const uint8_t* data, int len) {
     if (len < 1) return;
 
     switch (data[0]) {
+    case NET_MSG_PUBKEY_CHALLENGE:
+        if (len != PUBKEY_CHALLENGE_MSG_SIZE ||
+            net_state.pubkey_challenge_ready ||
+            (net_state.pubkey_proof.proof_admitted &&
+             net_state.pubkey_proof.admitted_scheme ==
+                 PUBKEY_PROOF_SCHEME_CHALLENGE_V2)) {
+            break;
+        }
+        {
+            uint8_t any = 0;
+            for (int i = 1; i < PUBKEY_CHALLENGE_MSG_SIZE; i++)
+                any |= data[i];
+            if (any == 0) {
+                memset(net_state.pubkey_challenge, 0,
+                       sizeof(net_state.pubkey_challenge));
+                net_state.pubkey_challenge_ready = false;
+                break;
+            }
+            memcpy(net_state.pubkey_challenge, &data[1],
+                   sizeof(net_state.pubkey_challenge));
+            net_state.pubkey_challenge_ready = true;
+            /* Challenge receipt wins over an earlier legacy fallback. A
+             * protocol-v3 proof is sent even if PROTOCOL_INFO is delayed or
+             * (incorrectly) advertises an older version. */
+            pubkey_proof_client_note_challenge(&net_state.pubkey_proof);
+            send_pubkey_proof();
+        }
+        break;
+
     case NET_MSG_JOIN:
         if (len < 2) break;
         {
@@ -2863,6 +3069,12 @@ static void handle_message(const uint8_t* data, int len) {
             }
             net_state.protocol_info = info;
             net_state.protocol_info_ready = true;
+            pubkey_proof_client_note_protocol(
+                &net_state.pubkey_proof, info.version);
+            /* A v2-or-older advertisement is the only permission to use the
+             * legacy unchallenged proof. Protocol v3 waits for its challenge;
+             * a challenge received before this packet already selected v2. */
+            send_pubkey_proof();
             if (net_state.callbacks.on_protocol_info)
                 net_state.callbacks.on_protocol_info(&net_state.protocol_info);
         }
@@ -3153,8 +3365,52 @@ static void handle_message(const uint8_t* data, int len) {
 static EMSCRIPTEN_WEBSOCKET_T ws_socket = 0;
 static bool wasm_use_webrtc = false;
 
+/* emscripten_websocket_send_binary currently reports success immediately
+ * after calling WebSocket.send() and does not catch a send exception. Keep the
+ * admission boundary explicit so auth state advances only when an OPEN socket
+ * accepted the bytes without throwing. */
+EM_JS(int, signal_websocket_send_checked_js,
+      (EMSCRIPTEN_WEBSOCKET_T socket_id, const uint8_t *data, int len), {
+    const socket = WS.getSocket(socket_id);
+    if (!socket || socket.readyState !== WebSocket.OPEN) return 0;
+    // Browser smoke fault injection is intentionally scoped to an explicit
+    // test global plus ?smoke=1. It can only reject this page's own auth write.
+    const smokeFault =
+        globalThis.SIGNAL_TEST_REJECT_AUTH_PROOF_SEND === true &&
+        globalThis.location &&
+        new URLSearchParams(globalThis.location.search).has('smoke') &&
+        len > 0 && HEAPU8[data] === 0x3f;
+    if (smokeFault) {
+        globalThis.SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES =
+            (globalThis.SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES || 0) + 1;
+        return 0;
+    }
+    try {
+        socket.send(HEAPU8.slice(data, data + len));
+        return 1;
+    } catch (e) {
+        console.error('[net/websocket] send rejected', e);
+        return 0;
+    }
+})
+
+EM_JS(void, signal_webrtc_close_js, (), {
+    const t = Module.signalWebRTCTransport;
+    if (!t) return;
+    if (t.dc) t.dc.close();
+    if (t.pc) t.pc.close();
+    if (t.ws) t.ws.close();
+    Module.signalWebRTCTransport = null;
+})
+
 EMSCRIPTEN_KEEPALIVE void signal_net_transport_open(void) {
-    transport_connected("webrtc datachannel");
+    if (!transport_connected("webrtc datachannel")) {
+        transport_error("WebRTC authentication bootstrap");
+        /* A live data channel with authentication disabled is ambiguous to
+         * both peers. Tear down the rendezvous and transport immediately so
+         * failure is final and observable. */
+        signal_webrtc_close_js();
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE void signal_net_transport_message(uintptr_t ptr, int len) {
@@ -3172,11 +3428,27 @@ EMSCRIPTEN_KEEPALIVE void signal_net_transport_error(void) {
 
 EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
     const rawUrl = UTF8ToString(url_ptr);
+    // This peer id is rendezvous routing metadata, not an authentication
+    // credential. Identity, session tokens, and challenges are generated by
+    // the checked C crypto wrapper. Still refuse WebRTC setup rather than
+    // silently falling back to a predictable peer id if WebCrypto fails.
     function randomId() {
-        if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
-        const a = new Uint8Array(16);
-        crypto.getRandomValues(a);
-        return Array.from(a, x => x.toString(16).padStart(2, '0')).join("");
+        const source = globalThis.crypto;
+        if (!source) return null;
+        if (typeof source.randomUUID === 'function') {
+            try {
+                return source.randomUUID();
+            } catch (e) {}
+        }
+        if (typeof source.getRandomValues !== 'function') return null;
+        try {
+            const a = new Uint8Array(16);
+            source.getRandomValues(a);
+            return Array.from(
+                a, x => x.toString(16).padStart(2, '0')).join("");
+        } catch (e) {
+            return null;
+        }
     }
     function signalingUrl(raw) {
         if (raw.startsWith('rtc://')) return 'ws://' + raw.slice('rtc://'.length);
@@ -3198,10 +3470,22 @@ EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
         ? parsed.pathname.replace(new RegExp("^/+"), "")
         : "";
     const room = roomFromQuery || roomFromPath || 'signal-main';
-    let nodeId = localStorage.getItem('signal_node_id');
+    let nodeId = null;
+    try {
+        nodeId = localStorage.getItem('signal_node_id');
+    } catch (e) {}
     if (!nodeId) {
         nodeId = randomId();
-        localStorage.setItem('signal_node_id', nodeId);
+        if (!nodeId) {
+            console.error(
+                '[net/webrtc] secure rendezvous peer id unavailable');
+            return 0;
+        }
+        try {
+            localStorage.setItem('signal_node_id', nodeId);
+        } catch (e) {
+            // An ephemeral routing id is sufficient; it is not auth state.
+        }
     }
 
     const state = {
@@ -3337,22 +3621,20 @@ EM_JS(int, signal_webrtc_send_js, (const uint8_t *data, int len), {
     const t = Module.signalWebRTCTransport;
     if (!t || !t.dc || t.dc.readyState !== 'open') return 0;
     const bytes = HEAPU8.slice(data, data + len);
-    t.dc.send(bytes);
-    return 1;
-})
-
-EM_JS(void, signal_webrtc_close_js, (), {
-    const t = Module.signalWebRTCTransport;
-    if (!t) return;
-    if (t.dc) t.dc.close();
-    if (t.pc) t.pc.close();
-    if (t.ws) t.ws.close();
-    Module.signalWebRTCTransport = null;
+    try {
+        t.dc.send(bytes);
+        return 1;
+    } catch (e) {
+        console.error('[net/webrtc] datachannel send rejected', e);
+        return 0;
+    }
 })
 
 static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* event, void* userData) {
     (void)eventType; (void)event; (void)userData;
-    transport_connected("websocket relay");
+    if (!transport_connected("websocket relay") && ws_socket > 0)
+        emscripten_websocket_close(ws_socket, 1011,
+                                   "secure entropy unavailable");
     return EM_TRUE;
 }
 
@@ -3401,6 +3683,16 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
+        return false;
+    }
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        fprintf(stderr,
+                "[net] secure authentication bootstrap unavailable\n");
         return false;
     }
     snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
@@ -3487,6 +3779,7 @@ bool net_reconnect(void) {
 
 void net_shutdown(void) {
     net_loopback_active = false;
+    clear_pubkey_challenge_state(true);
     if (wasm_use_webrtc) {
         signal_webrtc_close_js();
         net_state.connected = false;
@@ -3501,18 +3794,38 @@ void net_shutdown(void) {
     net_state.connected = false;
 }
 
-static void ws_send_binary(const uint8_t* data, int len) {
+static bool ws_send_binary(const uint8_t* data, int len) {
+    if (!data || len <= 0) return false;
     if (net_loopback_active) {
-        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return net_loopback_send
+            ? net_loopback_send(data, len, net_loopback_user)
+            : false;
+    }
+    if (wasm_use_webrtc) {
+        if (!net_state.connected) return false;
+        return signal_webrtc_send_js(data, len) != 0;
+    }
+    if (!net_state.connected || ws_socket <= 0) return false;
+    return signal_websocket_send_checked_js(
+               ws_socket, data, len) != 0;
+}
+
+static void ws_close_authentication_failure(void) {
+    net_auth_transport_closes++;
+    if (net_loopback_active) {
+        net_loopback_active = false;
+        transport_disconnected("local authentication failure");
         return;
     }
     if (wasm_use_webrtc) {
-        if (!net_state.connected) return;
-        (void)signal_webrtc_send_js(data, len);
+        signal_webrtc_close_js();
+        transport_disconnected("WebRTC authentication failure");
         return;
     }
-    if (!net_state.connected || ws_socket <= 0) return;
-    emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
+    if (ws_socket > 0)
+        emscripten_websocket_close(
+            ws_socket, 1011, "authentication send rejected");
+    transport_disconnected("websocket authentication failure");
 }
 
 void net_poll(void) {
@@ -3531,25 +3844,46 @@ static struct mg_mgr net_mgr;
 static struct mg_connection *ws_conn = NULL;
 static bool mgr_initialized = false;
 
-static void ws_send_binary(const uint8_t* data, int len) {
+static bool ws_send_binary(const uint8_t* data, int len) {
+    if (!data || len <= 0) return false;
     if (net_loopback_active) {
-        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return net_loopback_send
+            ? net_loopback_send(data, len, net_loopback_user)
+            : false;
+    }
+    if (!net_state.connected || !ws_conn ||
+        ws_conn->is_closing || ws_conn->is_draining) {
+        return false;
+    }
+    return mg_ws_send(
+               ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY) != 0;
+}
+
+static void ws_close_authentication_failure(void) {
+    net_auth_transport_closes++;
+    if (net_loopback_active) {
+        net_loopback_active = false;
+        transport_disconnected("local authentication failure");
         return;
     }
-    if (!net_state.connected || !ws_conn) return;
-    mg_ws_send(ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY);
+    if (ws_conn) ws_conn->is_closing = 1;
+    transport_disconnected("websocket authentication failure");
 }
 
 static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_WS_OPEN) {
         ws_conn = c;
-        transport_connected("websocket server");
+        if (!transport_connected("websocket server")) {
+            mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE);
+            c->is_closing = 1;
+        }
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
         transport_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
     } else if (ev == MG_EV_ERROR) {
         printf("[net] connection error: %s\n", (char *)ev_data);
         net_state.connected = false;
+        clear_pubkey_challenge_state(true);
         ws_conn = NULL;
     } else if (ev == MG_EV_CLOSE) {
         transport_disconnected("websocket server");
@@ -3584,6 +3918,16 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
         printf("[net] no server URL provided, multiplayer disabled\n");
         return false;
     }
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        fprintf(stderr,
+                "[net] secure authentication bootstrap unavailable\n");
+        return false;
+    }
     if (strncmp(url, "rtc://", 6) == 0 ||
         strncmp(url, "rtcs://", 7) == 0 ||
         strncmp(url, "webrtc+ws://", 13) == 0 ||
@@ -3610,6 +3954,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
 void net_shutdown(void) {
     net_loopback_active = false;
+    clear_pubkey_challenge_state(true);
     if (ws_conn) {
         mg_ws_send(ws_conn, "", 0, WEBSOCKET_OP_CLOSE);
         ws_conn = NULL;
@@ -3667,7 +4012,7 @@ uint32_t net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[13] = (uint8_t)(action_id >> 8);
     write_u32_le(&buf[14], input_tick);
     write_u32_le(&buf[18], sent_ms);
-    ws_send_binary(buf, NET_INPUT_MSG_SIZE);
+    (void)ws_send_binary(buf, NET_INPUT_MSG_SIZE);
     return sent_ms;
 }
 
@@ -3698,8 +4043,7 @@ bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                 (unsigned)op);
         return false;
     }
-    ws_send_binary(buf, NET_PLAN_MSG_SIZE);
-    return true;
+    return ws_send_binary(buf, NET_PLAN_MSG_SIZE);
 }
 
 /* ---------- Common accessors --------------------------------------------- */
@@ -3728,3 +4072,9 @@ const char* net_server_hash(void) {
 const NetProtocolInfo *net_protocol_info(void) {
     return net_state.protocol_info_ready ? &net_state.protocol_info : NULL;
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE uint32_t signal_debug_auth_transport_closes(void) {
+    return net_auth_transport_closes;
+}
+#endif

@@ -1,55 +1,56 @@
-#!/usr/bin/env bash
-# Test that check_vendor_drift.sh correctly detects vendor drift.
-# This verifies the fix for #521.
+#!/bin/sh
+# Mutation tests for the Docker vendor-context checker.
 
-set -e
+set -eu
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT"
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+CHECKER="$ROOT/scripts/check_vendor_drift.sh"
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/signal-vendor-drift.XXXXXX")
+trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
-echo "=== Test 1: Base case (no drift) ==="
-bash scripts/check_vendor_drift.sh
-echo "PASS: no drift detected as expected"
+IGNORE_FILE="$TMP_DIR/.dockerignore"
+DOCKERFILE_FILE="$TMP_DIR/Dockerfile"
 
-echo ""
-echo "=== Test 2: Drift detection (client dep in server code) ==="
-# Temporarily add sokol (client-only) to server code
-TEST_FILE="server/test_drift_sokol_temp.c"
-cat > "$TEST_FILE" << 'EOF'
-#include "vendor/sokol/sokol_gfx.h"
-int main(void) { return 0; }
-EOF
+write_complete_dockerfile() {
+    printf '%s\n' \
+        'FROM example AS web-builder' \
+        'COPY vendor/ ./vendor/' \
+        'FROM example AS native-builder' \
+        'COPY vendor/ ./vendor/' > "$DOCKERFILE_FILE"
+}
 
-if bash scripts/check_vendor_drift.sh 2>&1 | grep -q "ERROR: vendor/sokol"; then
-  echo "PASS: drift detected correctly for sokol"
-  rm "$TEST_FILE"
+run_fixture() {
+    SIGNAL_DOCKERIGNORE_FILE="$IGNORE_FILE" \
+    SIGNAL_DOCKERFILE_FILE="$DOCKERFILE_FILE" \
+        "$CHECKER"
+}
+
+printf '%s\n' '# build output only' 'build-*/' > "$IGNORE_FILE"
+write_complete_dockerfile
+run_fixture
+
+printf '%s\n' 'vendor/sokol/' > "$IGNORE_FILE"
+if run_fixture 2>&1 | grep -q "excludes vendor content"; then
+    echo "vendor exclusion mutation detected"
 else
-  echo "FAIL: drift not detected for sokol"
-  rm "$TEST_FILE"
-  exit 1
+    echo "FAIL: vendor exclusion mutation was accepted" >&2
+    exit 1
 fi
 
-echo ""
-echo "=== Test 3: Drift detection (minimp3 in server code) ==="
-TEST_FILE="shared/test_drift_minimp3_temp.h"
-cat > "$TEST_FILE" << 'EOF'
-#include "../vendor/minimp3/minimp3.h"
-EOF
+printf '%s\n' '# vendor/sokol/ is only a comment' 'assets/voice/' > "$IGNORE_FILE"
+write_complete_dockerfile
+run_fixture
 
-if bash scripts/check_vendor_drift.sh 2>&1 | grep -q "ERROR: vendor/minimp3"; then
-  echo "PASS: drift detected correctly for minimp3"
-  rm "$TEST_FILE"
+printf '%s\n' '# no vendor exclusions' > "$IGNORE_FILE"
+printf '%s\n' \
+    'FROM example AS web-builder' \
+    'COPY vendor/ ./vendor/' > "$DOCKERFILE_FILE"
+if run_fixture 2>&1 | grep -q "both web and native build stages"; then
+    echo "missing vendor COPY mutation detected"
 else
-  echo "FAIL: drift not detected for minimp3"
-  rm "$TEST_FILE"
-  exit 1
+    echo "FAIL: missing vendor COPY mutation was accepted" >&2
+    exit 1
 fi
 
-echo ""
-echo "=== Test 4: No false positive for existing cenetex ==="
-# cenetex is included and NOT in .dockerignore, so should be fine
-bash scripts/check_vendor_drift.sh
-echo "PASS: no false positive for cenetex"
-
-echo ""
-echo "✓ All vendor drift detection tests passed"
+"$CHECKER"
+echo "Vendor context mutation tests passed"

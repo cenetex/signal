@@ -14,12 +14,59 @@
 
 #include "tweetnacl.h"
 
-extern void randombytes(uint8_t *buf, unsigned long long n);
+extern int signal_randombytes_checked(uint8_t *buf, unsigned long long n);
 
-void signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
+#if defined(SIGNAL_CRYPTO_TESTING)
+static signal_crypto_test_entropy_provider_fn test_entropy_provider;
+static void *test_entropy_provider_user;
+
+void signal_crypto_test_set_entropy_provider(
+    signal_crypto_test_entropy_provider_fn provider, void *user) {
+    test_entropy_provider = provider;
+    test_entropy_provider_user = user;
+}
+
+void signal_crypto_test_reset_entropy_provider(void) {
+    test_entropy_provider = NULL;
+    test_entropy_provider_user = NULL;
+}
+#endif
+
+static bool signal_crypto_entropy_fill(uint8_t *buf, size_t len) {
+    if (!buf) return len == 0;
+    if (len == 0) return true;
+
+    bool ok;
+#if defined(SIGNAL_CRYPTO_TESTING)
+    if (test_entropy_provider) {
+        ok = test_entropy_provider(buf, len, test_entropy_provider_user);
+    } else
+#endif
+    {
+        ok = signal_randombytes_checked(
+                 buf, (unsigned long long)len) != 0;
+    }
+    if (!ok) memset(buf, 0, len);
+    return ok;
+}
+
+bool signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                            uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]) {
-    /* TweetNaCl's secret key is already (seed||pub). */
-    crypto_sign_keypair(pub, secret);
+    if (!pub || !secret) {
+        if (pub) memset(pub, 0, SIGNAL_CRYPTO_PUBKEY_BYTES);
+        if (secret) memset(secret, 0, SIGNAL_CRYPTO_SECRET_BYTES);
+        return false;
+    }
+
+    uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYTES] = {0};
+    if (!signal_crypto_entropy_fill(seed, sizeof(seed))) {
+        memset(pub, 0, SIGNAL_CRYPTO_PUBKEY_BYTES);
+        memset(secret, 0, SIGNAL_CRYPTO_SECRET_BYTES);
+        return false;
+    }
+    crypto_sign_keypair_from_seed(pub, secret, seed);
+    memset(seed, 0, sizeof(seed));
+    return true;
 }
 
 void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYTES],
@@ -30,9 +77,8 @@ void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYT
     crypto_sign_keypair_from_seed(pub, secret, seed);
 }
 
-void signal_crypto_random_bytes(uint8_t *buf, size_t len) {
-    if (!buf || len == 0) return;
-    randombytes(buf, (unsigned long long)len);
+bool signal_crypto_random_bytes(uint8_t *buf, size_t len) {
+    return signal_crypto_entropy_fill(buf, len);
 }
 
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],

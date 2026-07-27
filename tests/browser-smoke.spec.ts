@@ -1026,6 +1026,61 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
   await tap(page, 'O');        // autopilot toggle
 }
 
+const authFixtureIdentity =
+  'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+const authFixtureToken = '0102030405060708';
+
+async function installAuthFixture(page: Page): Promise<void> {
+  await page.addInitScript(({ identity, token }) => {
+    window.localStorage.setItem('signal:identity', identity);
+    window.localStorage.setItem('signal_session_token', token);
+  }, { identity: authFixtureIdentity, token: authFixtureToken });
+}
+
+function protocolInfoPacket(version: number): Buffer {
+  const packet = Buffer.alloc(8);
+  packet[0] = 0x41;
+  packet.writeUInt16LE(version, 1);
+  packet.writeUInt32LE(1, 3); // SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO
+  packet[7] = 0;
+  return packet;
+}
+
+async function verifyCapturedPubkeyProof(
+  page: Page,
+  packet: Buffer,
+  domain: 'prove-pubkey-v1' | 'prove-pubkey-v2',
+  challenge: number[] = [],
+): Promise<boolean> {
+  return page.evaluate(async ({ wireBytes, proofDomain, challengeBytes }) => {
+    const wire = Uint8Array.from(wireBytes);
+    const pubkey = wire.slice(1, 33);
+    const token = wire.slice(33, 41);
+    const signature = wire.slice(41, 105);
+    const domainBytes = new TextEncoder().encode(proofDomain);
+    const signed = new Uint8Array(
+      domainBytes.length + pubkey.length + token.length + challengeBytes.length,
+    );
+    signed.set(domainBytes);
+    signed.set(pubkey, domainBytes.length);
+    signed.set(token, domainBytes.length + pubkey.length);
+    signed.set(
+      Uint8Array.from(challengeBytes),
+      domainBytes.length + pubkey.length + token.length,
+    );
+    const key = await crypto.subtle.importKey(
+      'raw', pubkey, { name: 'Ed25519' }, false, ['verify'],
+    );
+    return crypto.subtle.verify(
+      { name: 'Ed25519' }, key, signature, signed,
+    );
+  }, {
+    wireBytes: Array.from(packet),
+    proofDomain: domain,
+    challengeBytes: challenge,
+  });
+}
+
 test.describe('Browser smoke tests', () => {
   const rootBundleSmokeTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
 
@@ -1039,6 +1094,134 @@ test.describe('Browser smoke tests', () => {
     await page.goto('/play.html?online=1&transport=rtc', { waitUntil: 'domcontentloaded' });
     expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
       .toBe(`rtc://${new URL(page.url()).host}/rtc/signal-main`);
+  });
+
+  test('new client uses legacy proof only after an old server advertises v2', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const messageTypes: number[] = [];
+    let protocolAdvertised = false;
+    let proofBeforeAdvertisement = false;
+    let proofPacket: Buffer | undefined;
+    await page.routeWebSocket('ws://signal-auth-v2.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        messageTypes.push(packet[0]);
+        if (packet[0] === 0x3f) {
+          proofBeforeAdvertisement = !protocolAdvertised;
+          proofPacket = packet;
+        } else if (packet[0] === 0x20 && !protocolAdvertised) {
+          protocolAdvertised = true;
+          ws.send(protocolInfoPacket(2));
+        }
+      });
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent('ws://signal-auth-v2.invalid/ws')}`,
+    );
+    await expect.poll(() => proofPacket?.length ?? 0, { timeout: 10_000 })
+      .toBe(105);
+
+    expect(proofBeforeAdvertisement).toBe(false);
+    expect(messageTypes.indexOf(0x32)).toBeLessThan(messageTypes.indexOf(0x20));
+    expect(messageTypes.indexOf(0x20)).toBeLessThan(messageTypes.indexOf(0x3f));
+    expect(await verifyCapturedPubkeyProof(
+      page, proofPacket!, 'prove-pubkey-v1',
+    )).toBe(true);
+  });
+
+  test('challenge receipt selects v3 proof before protocol discovery', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const challenge = Array.from({ length: 32 }, (_, i) => 0x40 + i);
+    let challengeSent = false;
+    let protocolAdvertised = false;
+    let proofPacket: Buffer | undefined;
+    await page.routeWebSocket('ws://signal-auth-v3.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (packet[0] === 0x3f) {
+          proofPacket = packet;
+          if (!protocolAdvertised) {
+            protocolAdvertised = true;
+            ws.send(protocolInfoPacket(3));
+          }
+        } else if (packet[0] === 0x20 && !challengeSent) {
+          challengeSent = true;
+          ws.send(Buffer.from([0x70, ...challenge]));
+        }
+      });
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent('ws://signal-auth-v3.invalid/ws')}`,
+    );
+    await expect.poll(() => proofPacket?.length ?? 0, { timeout: 10_000 })
+      .toBe(105);
+
+    expect(challengeSent).toBe(true);
+    expect(await verifyCapturedPubkeyProof(
+      page, proofPacket!, 'prove-pubkey-v2', challenge,
+    )).toBe(true);
+    expect(await verifyCapturedPubkeyProof(
+      page, proofPacket!, 'prove-pubkey-v1',
+    )).toBe(false);
+  });
+
+  test('rejected proof send closes authentication transport', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+    await installAuthFixture(page);
+    await page.addInitScript(() => {
+      (globalThis as unknown as {
+        SIGNAL_TEST_REJECT_AUTH_PROOF_SEND: boolean;
+        SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+      }).SIGNAL_TEST_REJECT_AUTH_PROOF_SEND = true;
+      (globalThis as unknown as {
+        SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+      }).SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES = 0;
+    });
+
+    let challengeSent = false;
+    let proofPacketsReceived = 0;
+    await page.routeWebSocket('ws://signal-auth-send-fail.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (packet[0] === 0x3f) proofPacketsReceived++;
+        if (packet[0] === 0x20 && !challengeSent) {
+          challengeSent = true;
+          ws.send(Buffer.from([
+            0x70,
+            ...Array.from({ length: 32 }, (_, i) => 0x90 + i),
+          ]));
+        }
+      });
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent('ws://signal-auth-send-fail.invalid/ws')}`,
+    );
+    await expect.poll(
+      () => page.evaluate(() => (
+        globalThis as unknown as {
+          SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+        }
+      ).SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES),
+      { timeout: 10_000 },
+    ).toBe(1);
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_auth_transport_closes'),
+    ).toBe(1);
+    expect(challengeSent).toBe(true);
+    expect(proofPacketsReceived).toBe(0);
   });
 
   test('boots, renders, and persists browser identity across reload', async ({ page }) => {
@@ -1071,6 +1254,102 @@ test.describe('Browser smoke tests', () => {
     const secondIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(secondIdentity).toBe(firstIdentity);
 
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure leaves identity and authentication unpersisted', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('signal:identity');
+      window.localStorage.removeItem('signal:identity.bad');
+      window.localStorage.removeItem('signal_session_token');
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected entropy failure', 'OperationError');
+        },
+      });
+    });
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(0);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBeNull();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity.bad')),
+    ).toBeNull();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBeNull();
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure refuses token creation with an existing identity', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    const persistedIdentity =
+      'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+    await page.addInitScript((identity) => {
+      window.localStorage.setItem('signal:identity', identity);
+      window.localStorage.removeItem('signal_session_token');
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected token entropy failure', 'OperationError');
+        },
+      });
+    }, persistedIdentity);
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBe(persistedIdentity);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBeNull();
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure refuses a loopback challenge with persisted auth', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    const persistedIdentity =
+      'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+    const persistedToken = '0102030405060708';
+    await page.addInitScript(({ identity, token }) => {
+      window.localStorage.setItem('signal:identity', identity);
+      window.localStorage.setItem('signal_session_token', token);
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected challenge entropy failure', 'OperationError');
+        },
+      });
+    }, { identity: persistedIdentity, token: persistedToken });
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBe(persistedIdentity);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBe(persistedToken);
     expectNoFatalErrors(logs);
   });
 
@@ -1863,6 +2142,7 @@ test.describe('Browser smoke tests', () => {
   });
 
   rootBundleSmokeTest('perception acceptance answers all six player questions on desktop and narrow layouts', async ({ page }, testInfo) => {
+    test.setTimeout(90_000);
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     const canvas = await loadGame(page, false, { singleplayer: true });

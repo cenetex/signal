@@ -26,8 +26,11 @@ extern "C" {
 #endif
 
 /* Ed25519 keypair generation. secret[64] holds (seed[32] || pub[32])
- * per the standard NaCl convention. pub[32] is the public key. */
-void signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
+ * per the standard NaCl convention. pub[32] is the public key.
+ *
+ * Returns false and clears every non-null output when the platform CSPRNG
+ * fails. Callers must not persist or publish either output on failure. */
+bool signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                            uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
 
 /* Deterministic Ed25519 keypair derivation from a 32-byte seed.
@@ -45,8 +48,21 @@ void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYT
                                      uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                                      uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
 
-/* Fill buf[0..len) from the platform CSPRNG used by the crypto backend. */
-void signal_crypto_random_bytes(uint8_t *buf, size_t len);
+/* Fill buf[0..len) from the platform CSPRNG used by the crypto backend.
+ * Returns false and clears buf[0..len) if secure entropy is unavailable. */
+bool signal_crypto_random_bytes(uint8_t *buf, size_t len);
+
+#if defined(SIGNAL_CRYPTO_TESTING)
+/* Unit-test-only entropy seam. Production targets do not declare or compile
+ * these controls: their wrapper calls the platform CSPRNG directly. A test
+ * provider may partially write and then return false; the public API still
+ * guarantees that the complete caller-visible output is cleared. */
+typedef bool (*signal_crypto_test_entropy_provider_fn)(
+    uint8_t *buf, size_t len, void *user);
+void signal_crypto_test_set_entropy_provider(
+    signal_crypto_test_entropy_provider_fn provider, void *user);
+void signal_crypto_test_reset_entropy_provider(void);
+#endif
 
 /* Detached Ed25519 signature over msg[0..len). sig[64] is the result. */
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],

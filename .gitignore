@@ -1,5 +1,6 @@
 build/
 build-*/
+target/
 
 # Local one-off tool binary built from tools/music_test.c.
 music_test

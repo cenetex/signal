@@ -37,13 +37,12 @@ jobs:
         run: |
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind --parallel
-          ulimit -s 16384
           # `--track-origins=yes` dropped per #525 — leaks still detected
           # by `--leak-check=full`. `--quiet` cuts stdout so valgrind's
           # interleaved logs don't dominate runtime via I/O.
-          valgrind --error-exitcode=1 \
+          scripts/run_signal_test.sh valgrind --error-exitcode=1 \
             --leak-check=full \
             --show-leak-kinds=definite \
             --errors-for-leak-kinds=definite \
-            --main-stacksize=16777216 \
+            --main-stacksize=67108864 \
             ./build-valgrind/signal_test --quiet --no-soak --shard=${{ matrix.shard }}/8 2>&1 | tail -30

@@ -156,6 +156,21 @@ bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[3
 bool hash_ingot(commodity_t commodity, mining_grade_t grade,
                 const uint8_t fragment_pub[32], uint16_t output_index,
                 cargo_unit_t *out_unit);
+/*
+ * Derive the identity-bearing half of a normal fabricated output directly
+ * from the input pubs and output grade carried by a signed CRAFT event. This
+ * is the shared verifier companion to hash_product(): it deliberately cannot
+ * validate input commodity/grade labels, while hash_product() still does.
+ * Zero or duplicate input identities are never canonical.
+ */
+bool hash_product_identity_from_pubs(
+    recipe_id_t recipe_id,
+    const uint8_t input_pubs[][32],
+    size_t input_count,
+    mining_grade_t output_grade,
+    uint16_t output_index,
+    uint8_t out_parent_merkle[32],
+    uint8_t out_pub[32]);
 bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
                   size_t input_count, uint16_t output_index,
                   cargo_unit_t *out_unit);
