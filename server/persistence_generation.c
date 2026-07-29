@@ -263,8 +263,10 @@ static bool directory_entries_read(const char *dir,
         directory_entries_free(entries);
         return false;
     }
-    qsort(entries->items, entries->count, sizeof(*entries->items),
-          directory_entry_compare);
+    if (entries->count > 1u) {
+        qsort(entries->items, entries->count, sizeof(*entries->items),
+              directory_entry_compare);
+    }
     return true;
 }
 
