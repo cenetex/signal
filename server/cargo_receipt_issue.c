@@ -6,8 +6,11 @@
 #    define _WIN32_WINNT 0x0602
 #  endif
 #endif
-#if defined(__EMSCRIPTEN__) && !defined(_POSIX_C_SOURCE)
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #  define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#  define _DARWIN_C_SOURCE 1
 #endif
 
 /*
