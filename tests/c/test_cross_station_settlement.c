@@ -1271,9 +1271,9 @@ TEST(test_origin_cache_is_bounded_by_verified_disk_and_registry_state) {
     char original_dir[256];
     snprintf(original_dir, sizeof(original_dir), "%s",
              chain_log_get_dir());
-    char alternate_dir[256];
-    snprintf(alternate_dir, sizeof(alternate_dir), "%s_alt",
-             original_dir);
+    char alternate_dir[sizeof(original_dir) + sizeof("_alt")];
+    ASSERT(snprintf(alternate_dir, sizeof(alternate_dir), "%s_alt",
+                    original_dir) > 0);
     chain_log_set_dir(alternate_dir);
     ASSERT_EQ_INT(
         cargo_receipt_resolve_origin_for_authority(

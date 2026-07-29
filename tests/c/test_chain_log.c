@@ -534,10 +534,10 @@ TEST(test_chain_log_first_append_dir_sync_fault_removes_new_file) {
 
 TEST(test_chain_log_first_boot_parent_sync_fault_removes_new_tree) {
     char parent[256];
-    char chain_dir[256];
+    char chain_dir[sizeof(parent) + sizeof("/chain")];
     snprintf(parent, sizeof(parent), "%s_parent_sync_fault",
              TMP("clog"));
-    snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent);
+    ASSERT(snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent) > 0);
     ASSERT(chain_test_make_dir(parent));
     ASSERT(!chain_test_path_exists(chain_dir));
     chain_log_test_fault_clear();
@@ -577,10 +577,10 @@ TEST(test_chain_log_first_boot_parent_sync_fault_removes_new_tree) {
 
 TEST(test_chain_log_first_boot_syncs_nested_dir_once) {
     char parent[256];
-    char chain_dir[256];
+    char chain_dir[sizeof(parent) + sizeof("/chain")];
     snprintf(parent, sizeof(parent), "%s_parent_sync_success",
              TMP("clog"));
-    snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent);
+    ASSERT(snprintf(chain_dir, sizeof(chain_dir), "%s/chain", parent) > 0);
     ASSERT(chain_test_make_dir(parent));
     ASSERT(!chain_test_path_exists(chain_dir));
     chain_log_test_fault_clear();
