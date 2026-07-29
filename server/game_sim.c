@@ -12223,7 +12223,7 @@ bool ship_birth_proof_compute_v1(
     const uint8_t fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT],
     uint8_t soul_pub_out[32],
     uint8_t material_root_out[32]) {
-    const uint8_t (*fragment_pubs)[32] = fragment_pubs_3x32;
+    const uint8_t *fragment_pub_bytes = fragment_pubs_3x32;
     cargo_unit_t ferrite[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
     cargo_unit_t cuprite[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
     cargo_unit_t crystal[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
@@ -12249,13 +12249,16 @@ bool ship_birth_proof_compute_v1(
         return false;
     }
     for (int f = 0; f < SHIP_BIRTH_FRAGMENT_COUNT; f++) {
+        const uint8_t *fragment_pub =
+            fragment_pub_bytes + (size_t)f * 32u;
         if (fragment_grades[f] >= MINING_GRADE_COUNT ||
-            !ship_birth_bytes_any(fragment_pubs[f], 32)) {
+            !ship_birth_bytes_any(fragment_pub, 32)) {
             return false;
         }
         for (int prior = 0; prior < f; prior++) {
-            if (memcmp(fragment_pubs[prior],
-                       fragment_pubs[f], 32) == 0) {
+            const uint8_t *prior_pub =
+                fragment_pub_bytes + (size_t)prior * 32u;
+            if (memcmp(prior_pub, fragment_pub, 32) == 0) {
                 return false;
             }
         }
@@ -12263,7 +12266,7 @@ bool ship_birth_proof_compute_v1(
             if (!hash_ingot(
                     refined[f],
                     (mining_grade_t)fragment_grades[f],
-                    fragment_pubs[f], (uint16_t)i,
+                    fragment_pub, (uint16_t)i,
                     &ingots[f][i])) {
                 return false;
             }
