@@ -937,9 +937,8 @@ typedef struct {
 
 static bool byte_is_quarantine_redacted_member(size_t byte) {
 #define MEMBER_CONTAINS(type, member, index) \
-    ((index) >= offsetof(type, member) && \
-     (index) < offsetof(type, member) + \
-         sizeof(((type *)0)->member))
+    ((size_t)(index) - offsetof(type, member) < \
+     sizeof(((type *)0)->member))
     return
         MEMBER_CONTAINS(
             player_identity_quarantine_redacted_t,
