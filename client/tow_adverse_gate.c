@@ -314,12 +314,14 @@ static int tow_gate_build_payloads(tow_gate_payload_t *payloads,
                 .quantity = 1,
             },
         };
-        packets[packet_count++] = (tow_adverse_packet_t){
-            .sequence = sequence++,
+        packets[packet_count] = (tow_adverse_packet_t){
+            .sequence = sequence,
             .send_ms = send_ms,
             .payload_index = (uint32_t)i,
             .channel = TOW_ADVERSE_CHANNEL_TARGET,
         };
+        packet_count++;
+        sequence++;
         /*
          * From relevance exit at 1300 ms through re-entry at 1500 ms,
          * deliberately withhold every relation snapshot until the final
@@ -329,12 +331,14 @@ static int tow_gate_build_payloads(tow_gate_payload_t *payloads,
          * relation must be projected from the roster transition itself.
          */
         if (send_ms < 1300u || send_ms >= 1750u) {
-            packets[packet_count++] = (tow_adverse_packet_t){
-                .sequence = sequence++,
+            packets[packet_count] = (tow_adverse_packet_t){
+                .sequence = sequence,
                 .send_ms = send_ms,
                 .payload_index = (uint32_t)i,
                 .channel = TOW_ADVERSE_CHANNEL_RELATION,
             };
+            packet_count++;
+            sequence++;
         }
     }
     return packet_count;

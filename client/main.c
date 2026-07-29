@@ -1611,10 +1611,10 @@ static void sim_step(float dt) {
         return;
     }
 
-    input_intent_t intent =
-        legacy_recovery_ui_blocks_gameplay(&legacy_recovery_ui)
-        ? (input_intent_t){0}
-        : sample_input_intent();
+    input_intent_t intent = {0};
+    if (!legacy_recovery_ui_blocks_gameplay(&legacy_recovery_ui)) {
+        intent = sample_input_intent();
+    }
 
     /* Reset the docked view to the first visible station panel. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
