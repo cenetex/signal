@@ -145,6 +145,7 @@ TEST(test_ws_outbox_never_queues_retired_legacy_save_disclosure) {
     ASSERT(outbox->stats.queue_wire_bytes == 0u);
     ASSERT(outbox->frame_count == 0u);
     ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+    free(outbox);
 }
 
 TEST(test_ws_outbox_coalesces_latest_semantic_state) {

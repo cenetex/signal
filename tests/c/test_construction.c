@@ -975,7 +975,7 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     m->scaffold = true;
     m->build_progress = 0.0f;
 
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ASSERT(manifest_init(&ship.manifest, 4));
     ship.cargo[COMMODITY_FRAME] = 3.0f;
     cargo_unit_t units[3] = {{0}};
@@ -6692,7 +6692,7 @@ TEST(test_module_flow_diag_slow_feed) {
 }
 
 TEST(test_module_flow_diag_storage_consumer_full) {
-    station_t st = {0};
+    STATION_DECL(st);
     st.signal_range = 1.0f;
     st.module_count = 2;
     st.modules[0] = (station_module_t){

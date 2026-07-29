@@ -1640,6 +1640,7 @@ TEST(test_npc_delivery_payout_rounds_aggregate_across_partial_retry) {
     uint64_t walked = 0;
     ASSERT(chain_log_verify(destination, &walked, NULL));
     ASSERT(walked == destination->chain_event_count);
+    free(snapshot);
     chain_log_test_fault_clear();
 }
 
@@ -1992,7 +1993,7 @@ static void test_setup_delivery_player(world_t *w, server_player_t **out_sp) {
 }
 
 TEST(test_station_production_yard_makes_frames) {
-    station_t station = {0};
+    STATION_DECL(station);
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FERRITE_INGOT, 5));
     step_station_production(&station, 1, 1.0f);
@@ -2007,7 +2008,7 @@ TEST(test_station_production_yard_makes_frames) {
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
-    station_t station = {0};
+    STATION_DECL(station);
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_LASER_FAB };
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
     ASSERT(test_set_station_finished_units(&station, COMMODITY_CUPRITE_INGOT, 5));
@@ -3313,7 +3314,7 @@ TEST(test_dynamic_ore_price_deficit) {
 }
 
 TEST(test_product_price_tracks_ore) {
-    station_t st = {0};
+    STATION_DECL(st);
     st.base_price[COMMODITY_FRAME] = 20.0f;
     /* Sell price: empty=2× base, full=1× base */
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
