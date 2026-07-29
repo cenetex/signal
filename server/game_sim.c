@@ -6345,7 +6345,7 @@ static bool try_deliver_starter_refit_manifest_batch(
         return false;
     }
 
-    cargo_unit_t units[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+    cargo_unit_t units[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     cargo_receipt_chain_t
         incoming[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     int64_t unit_payouts[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
@@ -6396,15 +6396,15 @@ static bool try_deliver_starter_refit_manifest_batch(
     }
 
     chain_payload_transfer_t
-        transfers[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+        transfers[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     chain_payload_trade_t
-        trades[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+        trades[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     cargo_receipt_t
-        receipts[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+        receipts[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     cargo_receipt_chain_t
         station_chains[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
     chain_log_batch_event_t
-        events[STARTER_REFIT_BATCH_MAX_UNITS * 2] = {{0}};
+        events[STARTER_REFIT_BATCH_MAX_UNITS * 2] = {0};
     size_t event_count = (size_t)needed * 2u;
     if (event_count > CHAIN_LOG_BATCH_MAX_EVENTS ||
         st->chain_event_count >
@@ -12219,10 +12219,11 @@ static bool ship_birth_domain_hash(const char *domain,
 }
 
 bool ship_birth_proof_compute_v1(
-    const uint8_t fragment_pubs[SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32],
+    const void *fragment_pubs_3x32,
     const uint8_t fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT],
     uint8_t soul_pub_out[32],
     uint8_t material_root_out[32]) {
+    const uint8_t (*fragment_pubs)[32] = fragment_pubs_3x32;
     cargo_unit_t ferrite[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
     cargo_unit_t cuprite[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
     cargo_unit_t crystal[SHIP_BIRTH_INGOTS_PER_FRAGMENT];
@@ -12243,7 +12244,7 @@ bool ship_birth_proof_compute_v1(
 
     if (soul_pub_out) memset(soul_pub_out, 0, 32);
     if (material_root_out) memset(material_root_out, 0, 32);
-    if (!fragment_pubs || !fragment_grades ||
+    if (!fragment_pubs_3x32 || !fragment_grades ||
         !soul_pub_out || !material_root_out) {
         return false;
     }

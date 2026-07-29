@@ -1367,8 +1367,11 @@ bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
 /* Rebuild transient birth-fragment slots from persisted stable pubs. */
 bool world_ship_birth_rebind_saved_assemblies(world_t *w);
 bool world_ship_birth_saved_assemblies_valid(const world_t *w);
+/* fragment_pubs_3x32 points to SHIP_BIRTH_PROOF_FRAGMENT_COUNT consecutive
+ * 32-byte public keys. Keep the byte matrix opaque at this API boundary:
+ * qualifying a pointer-to-array is not ISO C11-compatible before C23. */
 bool ship_birth_proof_compute_v1(
-    const uint8_t fragment_pubs[SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32],
+    const void *fragment_pubs_3x32,
     const uint8_t fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT],
     uint8_t soul_pub_out[32],
     uint8_t material_root_out[32]);
