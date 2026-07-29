@@ -614,7 +614,7 @@ bool station_laser_refit_summary(char *out, size_t out_size)
 
     char source[112];
     char gate[80];
-    char supply[96];
+    char supply[128];
     bool has_source = ui_upgrade_source_label(SHIP_UPGRADE_MINING,
                                               source, sizeof(source));
     bool has_gate = ui_upgrade_input_gate_label(SHIP_UPGRADE_MINING, ship,
@@ -4946,7 +4946,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                             ui_upgrade_effect_label(refit[i].upgrade, ship));
                 my += row_h;
             }
-            char supply[96];
+            char supply[128];
             bool has_supply = ui_first_mining_refit_stock_source_label(
                 refit[i].upgrade, ship, from_station,
                 supply, sizeof(supply));
